@@ -235,7 +235,7 @@ describe("GitHub tool access failures", () => {
       toolName: "mcp.github:create_issue",
       parameters: { owner: "paperclipai", repo: "a", title: "Bug" },
     })).toBeNull();
-    // Runtime 403 on suspended owner classifies as github_access_denied (not outside installations).
+    // Runtime 403 on suspended owner classifies as github_app_installation_suspended (not outside installations).
     expect(githubAccessError(
       "github",
       "POST https://api.github.com/repos/paperclipai/a/issues: 403 Resource not accessible by integration []",
@@ -245,10 +245,10 @@ describe("GitHub tool access failures", () => {
         toolName: "mcp.github:create_issue",
         parameters: { owner: "paperclipai", repo: "a", title: "Bug" },
       },
-    )).toEqual({ errorCode: "github_access_denied" });
-    // Unsuspend guidance points operators to unsuspend and then Refresh access.
+    )).toEqual({ errorCode: "github_app_installation_suspended" });
+    // Unsuspend guidance points operators to unsuspend and then Refresh access (with or without explicit owner).
     const guidance = githubAccessErrorInstructions(
-      "github_access_denied",
+      "github_app_installation_suspended",
       "mcp.github:create_issue",
       "managed",
       null,
@@ -259,9 +259,17 @@ describe("GitHub tool access failures", () => {
     expect(guidance).toMatch(/unsuspend/i);
     expect(guidance).toContain("paperclipai");
     expect(guidance).toContain("Refresh access");
+    const genericSuspendedGuidance = githubAccessErrorInstructions(
+      "github_app_installation_suspended",
+      "mcp.github:create_issue",
+      "managed",
+    );
+    expect(genericSuspendedGuidance).toMatch(/suspended/i);
+    expect(genericSuspendedGuidance).toMatch(/unsuspend/i);
+    expect(genericSuspendedGuidance).toContain("Refresh access");
   });
 
-  it("handles create_repository omitted organization and skips pre-check on webhook-invalidated snapshots", () => {
+  it("handles create_repository omitted organization and falls back to github_access_denied on webhook-invalidated snapshots", () => {
     const singleOrg = { login: "octocat", installationOwnerLogins: ["acme"] };
     const multiOrg = { login: "octocat", installationOwnerLogins: ["acme", "globex"] };
     // Omitted organization (personal fallback) and injected single-org default both stay reachable.
@@ -287,19 +295,31 @@ describe("GitHub tool access failures", () => {
       parameters: { name: "site", organization: "external-org" },
     })).toMatchObject({ owner: "external-org" });
 
-    // Webhook-invalidated snapshot (bindingSync present / repositories cleared) skips pre-check.
+    // Webhook-invalidated snapshot (bindingSync present / repositories cleared) skips pre-check
+    // AND keeps runtime 403 as github_access_denied so newly installed orgs get Refresh access guidance.
+    const webhookSnapshot = {
+      login: "octocat",
+      installationIds: ["9", "11"],
+      installationOwnerLogins: ["acme"],
+      repositories: undefined,
+      bindingSync: { id: "sync-1", removeInstallationIds: [] },
+    };
     expect(findUnreachableManagedGitHubTarget({
       sourceTemplateKey: "github",
       connectionMethodKey: "managed",
-      githubGrant: {
-        login: "octocat",
-        installationIds: ["9", "11"],
-        installationOwnerLogins: ["acme"],
-        repositories: undefined,
-        bindingSync: { id: "sync-1", removeInstallationIds: [] },
-      },
+      githubGrant: webhookSnapshot,
       toolName: "mcp.github:create_issue",
-      parameters: { owner: "external-org", repo: "public-repo" },
+      parameters: { owner: "newly-installed-org", repo: "public-repo" },
     })).toBeNull();
+    expect(githubAccessError(
+      "github",
+      "POST https://api.github.com/repos/newly-installed-org/public-repo/issues: 403 Resource not accessible by integration []",
+      {
+        connectionMethodKey: "managed",
+        githubGrant: webhookSnapshot,
+        toolName: "mcp.github:create_issue",
+        parameters: { owner: "newly-installed-org", repo: "public-repo" },
+      },
+    )).toEqual({ errorCode: "github_access_denied" });
   });
 });

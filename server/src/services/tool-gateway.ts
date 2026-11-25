@@ -1712,9 +1712,13 @@ export function createToolGatewayService(
     await connectionManagementService(database).authorize(actor, "connections:gateway", resource, { mutation: false });
     await connectionManagementService(database).authorize(actor, "connections:test", resource, { mutation: false });
   }
-  async function recordToolInvocation(input: ToolAccessDecisionInput, decision: ToolAccessDecision) {
+  async function recordToolInvocation(
+    input: ToolAccessDecisionInput,
+    decision: ToolAccessDecision,
+    recordOptions?: { claimIdempotencyKey?: boolean },
+  ) {
     try {
-      return await policyService.recordInvocation(input, decision);
+      return await policyService.recordInvocation(input, decision, recordOptions);
     } catch (error) {
       const details = error instanceof HttpError ? asRecord(error.details) : null;
       if (error instanceof HttpError && error.status === 409 && details?.reasonCode === "legacy_tool_idempotency_unverifiable") {
@@ -9185,7 +9189,7 @@ export function createToolGatewayService(
         const githubTarget = isGitHubAccessErrorCode(result.errorCode)
           ? extractGitHubTarget(entry.toolName, parameters)
           : null;
-        const suspendedOwner = result.errorCode === "github_access_denied"
+        const suspendedOwner = result.errorCode === "github_app_installation_suspended"
           && connectionMethodKey === "managed"
           ? suspendedManagedGitHubOwner(
               grant.providerTenant?.github,
@@ -14077,15 +14081,12 @@ export function createToolGatewayService(
         const recorded = await recordToolInvocation(
           decisionInput,
           accessDecision,
+          accessDecision.reasonCode === "github_repo_outside_app_installations"
+            ? { claimIdempotencyKey: false }
+            : undefined,
         );
         await policyService.writeAudit(decisionInput, accessDecision);
         invocationId = recorded.invocation.id;
-        if (!recorded.replayed && accessDecision.reasonCode === "github_repo_outside_app_installations") {
-          await db
-            .update(toolInvocations)
-            .set({ idempotencyKey: null, updatedAt: new Date() })
-            .where(eq(toolInvocations.id, invocationId));
-        }
         const retryingSlackRateLimit = recorded.replayed && accessDecision.allowed && tool.providerType === "paperclip_slack_chat" && session.agentId && session.runId && session.issueId
           ? await claimSlackRateLimitRetry(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId, endpointId: String(asRecord(tool.providerMetadata)?.endpointId ?? ""), identityContextId: session.identityContextId }, invocationId)
           : false;

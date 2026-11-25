@@ -142,10 +142,11 @@ cards before asking the user to approve a doomed write and classifies runtime
 integration `403` denials as `github_repo_outside_app_installations` instead of
 `github_access_denied`. Suspended installations are preserved separately in the
 snapshot (`suspendedInstallationOwnerLogins`) so writes targeting a suspended
-organization still classify as `github_access_denied` with unsuspend guidance
-instead of advising a fresh install. When an installation webhook marks the
-owner snapshot incomplete (`bindingSync`), the pre-check defers to GitHub until
-access is refreshed. Failed cards and agent continuation instructions explain
+organization classify as `github_app_installation_suspended` with explicit
+unsuspend + Refresh access guidance instead of advising a fresh install. When an
+installation webhook marks the owner snapshot incomplete (`bindingSync`), both
+the pre-check and runtime `403` classification fall back to `github_access_denied`
+until access is refreshed. Failed cards and agent continuation instructions explain
 that refreshing access alone cannot grant write permission before the App is
 installed on that organization, and advise posting directly on GitHub, using a
 personal access token connection, or having an organization administrator install

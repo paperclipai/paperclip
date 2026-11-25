@@ -967,6 +967,12 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
       expect(remote.requests).toHaveLength(0);
       expect(await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id))).toHaveLength(0);
       expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, company.id))).toHaveLength(0);
+      const [deniedInvocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
+      expect(deniedInvocation).toMatchObject({
+        status: "denied",
+        errorCode: "github_repo_outside_app_installations",
+        idempotencyKey: null,
+      });
 
       // 2. Installed org missing a repo grant STILL creates an approval card and classifies 403 as github_access_denied.
       const installedOrgParams = { owner: "acme", repo: "unselected-repo", title: "Internal issue" };
@@ -1094,7 +1100,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         tool: toolName,
         parameters: { owner: "suspended-org", repo: "app", title: "Suspended write" },
       }).catch((err) => err);
-      expect(suspendedFailure).toMatchObject({ reasonCode: "github_access_denied" });
+      expect(suspendedFailure).toMatchObject({ reasonCode: "github_app_installation_suspended" });
       expect(suspendedFailure.message).toMatch(/unsuspend/i);
       expect(suspendedFailure.message).toContain("suspended-org");
       expect(suspendedFailure.message).toContain("Refresh access");

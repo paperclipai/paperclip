@@ -53,6 +53,7 @@ const FAILURE_CAUSE_BY_ERROR_CODE: Record<string, AgentRunFailureCause> = {
   user_secret_definition_missing: "missing_access",
   user_secret_definition_inactive: "missing_access",
   github_access_denied: "missing_access",
+  github_app_installation_suspended: "missing_access",
   github_repo_outside_app_installations: "missing_access",
   github_repo_not_accessible: "missing_access",
   github_auth_required: "missing_access",

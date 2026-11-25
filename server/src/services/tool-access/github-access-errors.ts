@@ -1,14 +1,17 @@
 import type { RequestConfirmationResult } from "@paperclipai/shared";
 
 export const GITHUB_ACCESS_DENIED_ERROR_CODE = "github_access_denied" as const;
+export const GITHUB_APP_INSTALLATION_SUSPENDED_ERROR_CODE = "github_app_installation_suspended" as const;
 export const GITHUB_REPO_OUTSIDE_APP_INSTALLATIONS_ERROR_CODE = "github_repo_outside_app_installations" as const;
 
 export type GitHubAccessErrorCode =
   | typeof GITHUB_ACCESS_DENIED_ERROR_CODE
+  | typeof GITHUB_APP_INSTALLATION_SUSPENDED_ERROR_CODE
   | typeof GITHUB_REPO_OUTSIDE_APP_INSTALLATIONS_ERROR_CODE;
 
 export function isGitHubAccessErrorCode(code: unknown): code is GitHubAccessErrorCode {
   return code === GITHUB_ACCESS_DENIED_ERROR_CODE
+    || code === GITHUB_APP_INSTALLATION_SUSPENDED_ERROR_CODE
     || code === GITHUB_REPO_OUTSIDE_APP_INSTALLATIONS_ERROR_CODE;
 }
 
@@ -186,13 +189,10 @@ export function findUnreachableManagedGitHubTarget(input: {
   toolName: string;
   parameters?: unknown;
   providerMessage?: unknown;
-  /** Skip pre-check when webhooks have invalidated the owner snapshot. */
-  allowIncompleteSnapshot?: boolean;
 }): { owner: string; repo?: string; installedOwners: string[]; message: string } | null {
   if (input.sourceTemplateKey !== "github" || input.connectionMethodKey !== "managed") return null;
   const snapshot = normalizedInstalledOwners(input.githubGrant);
-  if (!snapshot) return null;
-  if (snapshot.incomplete && !input.allowIncompleteSnapshot) return null;
+  if (!snapshot || snapshot.incomplete) return null;
   const target = extractGitHubTarget(input.toolName, input.parameters, input.providerMessage);
   if (!target) return null;
   const targetOwnerLower = target.owner.toLowerCase();
@@ -225,16 +225,21 @@ export function githubAccessError(
 ): { errorCode: GitHubAccessErrorCode } | null {
   if (sourceTemplateKey !== "github" || typeof message !== "string" ||
       !/\b403\s+Resource not accessible by (?:integration|personal access token)\b/i.test(message.slice(0, 4000))) return null;
-  if (context && findUnreachableManagedGitHubTarget({
-    sourceTemplateKey,
-    connectionMethodKey: context.connectionMethodKey,
-    githubGrant: context.githubGrant,
-    toolName: context.toolName ?? "",
-    parameters: context.parameters,
-    providerMessage: message,
-    allowIncompleteSnapshot: true,
-  })) {
-    return { errorCode: GITHUB_REPO_OUTSIDE_APP_INSTALLATIONS_ERROR_CODE };
+  if (context && context.connectionMethodKey === "managed" && context.githubGrant) {
+    const target = extractGitHubTarget(context.toolName ?? "", context.parameters, message);
+    if (suspendedManagedGitHubOwner(context.githubGrant, target)) {
+      return { errorCode: GITHUB_APP_INSTALLATION_SUSPENDED_ERROR_CODE };
+    }
+    if (findUnreachableManagedGitHubTarget({
+      sourceTemplateKey,
+      connectionMethodKey: context.connectionMethodKey,
+      githubGrant: context.githubGrant,
+      toolName: context.toolName ?? "",
+      parameters: context.parameters,
+      providerMessage: message,
+    })) {
+      return { errorCode: GITHUB_REPO_OUTSIDE_APP_INSTALLATIONS_ERROR_CODE };
+    }
   }
   return { errorCode: GITHUB_ACCESS_DENIED_ERROR_CODE };
 }
@@ -293,6 +298,13 @@ export function githubAccessDeniedInstructions(
   return `${base} Tell the user which account or repository you need. Ask them to give the Paperclip GitHub App access from the GitHub connection's Permissions page and select Refresh access. Continue after they confirm.`;
 }
 
+export function githubSuspendedInstallationInstructions(suspendedOwner?: string | null): string {
+  const safeOwner = validOwner(suspendedOwner);
+  const ownerPhrase = safeOwner ? ` for ${safeOwner}` : " for this account or organization";
+  const adminPhrase = safeOwner ? `an owner or administrator of ${safeOwner}` : "an owner or administrator of that account or organization";
+  return `GitHub denied this action because the Paperclip GitHub App installation${ownerPhrase} is currently suspended. Do not retry or request approval for the same call until the installation is unsuspended. Never automatically replay an approved write. Ask ${adminPhrase} to unsuspend the Paperclip GitHub App on GitHub, then open the GitHub connection's Permissions page and select Refresh access. Continue after they confirm.`;
+}
+
 export function githubAccessErrorInstructions(
   errorCode: GitHubAccessErrorCode,
   toolName: string,
@@ -303,6 +315,9 @@ export function githubAccessErrorInstructions(
 ): string {
   if (errorCode === GITHUB_REPO_OUTSIDE_APP_INSTALLATIONS_ERROR_CODE) {
     return githubOutsideAppInstallationsInstructions(target, installedOwners);
+  }
+  if (errorCode === GITHUB_APP_INSTALLATION_SUSPENDED_ERROR_CODE) {
+    return githubSuspendedInstallationInstructions(options?.suspendedOwner);
   }
   return githubAccessDeniedInstructions(toolName, connectionMethodKey, options);
 }
