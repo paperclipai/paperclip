@@ -1,5 +1,5 @@
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { usePanel } from "../context/PanelContext";
 import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
@@ -92,6 +92,7 @@ const PROPOSAL_WIDTH_STORAGE_KEY = "paperclip.design-proposal.properties-pane-wi
 const DEFAULT_PANE_WIDTH = 322;
 const TASK_DETAIL_DEFAULT_PANE_WIDTH = 434;
 const MIN_PANE_WIDTH = 260;
+const KEYBOARD_RESIZE_STEP = 16;
 /** ~236px sidebar + ~420px minimum center column stay usable while resizing. */
 const RESERVED_LAYOUT_WIDTH = 656;
 /** Content cap while maximized so text doesn't span the full viewport. */
@@ -109,12 +110,14 @@ function readProposalPaneWidth(fallback: number): number {
   return Number.isFinite(tokenWidth) && tokenWidth > 0 ? tokenWidth : fallback;
 }
 
+function getMaximumPaneWidth(): number | undefined {
+  return typeof window === "undefined"
+    ? undefined
+    : Math.max(MIN_PANE_WIDTH, window.innerWidth - RESERVED_LAYOUT_WIDTH);
+}
+
 function clampPaneWidth(width: number): number {
-  const max =
-    typeof window === "undefined"
-      ? Number.POSITIVE_INFINITY
-      : Math.max(MIN_PANE_WIDTH, window.innerWidth - RESERVED_LAYOUT_WIDTH);
-  return Math.min(Math.max(Math.round(width), MIN_PANE_WIDTH), max);
+  return Math.min(Math.max(Math.round(width), MIN_PANE_WIDTH), getMaximumPaneWidth() ?? Number.POSITIVE_INFINITY);
 }
 
 function readStoredPaneWidth(storageKey: string, defaultWidth: number): number {
@@ -196,6 +199,7 @@ function ResizablePropertiesPanel({
   const [width, setWidth] = useState(() =>
     clampPaneWidth(readStoredPaneWidth(widthStorageKey, defaultPaneWidth)),
   );
+  const [maximumPaneWidth, setMaximumPaneWidth] = useState(getMaximumPaneWidth);
   const [dragging, setDragging] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [fixedPane, setFixedPane] = useState<FixedPane | null>(null);
@@ -203,9 +207,17 @@ function ResizablePropertiesPanel({
   // The host can outlive a viewport change while its content is loading.
   // Clamp before revealing it, without overwriting the user's saved width.
   useLayoutEffect(() => {
-    if (panelVisible) setWidth(clampPaneWidth);
+    if (!panelVisible) return;
+    function syncPaneWidth() {
+      setMaximumPaneWidth(getMaximumPaneWidth());
+      setWidth(clampPaneWidth);
+    }
+    syncPaneWidth();
+    window.addEventListener("resize", syncPaneWidth);
+    return () => window.removeEventListener("resize", syncPaneWidth);
   }, [panelVisible]);
 
+  const paneId = useId();
   const asideRef = useRef<HTMLElement | null>(null);
   const widthRef = useRef(width);
   widthRef.current = width;
@@ -289,8 +301,24 @@ function ResizablePropertiesPanel({
     endDrag(true);
   }, [endDrag]);
 
+  function handleGripKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    let nextWidth: number;
+    switch (event.key) {
+      case "ArrowLeft": nextWidth = width + KEYBOARD_RESIZE_STEP; break;
+      case "ArrowRight": nextWidth = width - KEYBOARD_RESIZE_STEP; break;
+      case "Home": nextWidth = MIN_PANE_WIDTH; break;
+      case "End": nextWidth = window.innerWidth; break;
+      default: return;
+    }
+    event.preventDefault();
+    const clamped = clampPaneWidth(nextWidth);
+    setWidth(clamped);
+    persistPaneWidth(widthStorageKey, clamped);
+  }
+
   const handleGripDoubleClick = useCallback(() => {
-    setWidth(designSandbox ? clampPaneWidth(readProposalPaneWidth(productionPaneWidth)) : defaultPaneWidth);
+    setWidth(clampPaneWidth(designSandbox ? readProposalPaneWidth(productionPaneWidth) : defaultPaneWidth));
     clearStoredPaneWidth(widthStorageKey);
   }, [defaultPaneWidth, designSandbox, productionPaneWidth, widthStorageKey]);
 
@@ -408,6 +436,12 @@ function ResizablePropertiesPanel({
             role="separator"
             aria-orientation="vertical"
             aria-label="Resize panel"
+            aria-controls={paneId}
+            aria-valuemin={MIN_PANE_WIDTH}
+            aria-valuemax={maximumPaneWidth}
+            aria-valuenow={width}
+            tabIndex={0}
+            onKeyDown={handleGripKeyDown}
             data-dragging={dragging ? "" : undefined}
             className="pane-resize-handle group absolute inset-y-0 z-10 max-w-full cursor-col-resize touch-none"
             style={{ left: -4, width: 8 }}
@@ -421,12 +455,12 @@ function ResizablePropertiesPanel({
             <div
               className={cn(
                 "mx-auto h-full w-0.5 transition-colors",
-                dragging ? "bg-ring" : "bg-transparent group-hover:bg-ring",
+                dragging ? "bg-ring" : "bg-transparent group-hover:bg-ring group-focus-visible:bg-ring",
               )}
             />
           </div>
         ) : null}
-        <div className="flex min-h-0 flex-1 overflow-hidden">
+        <div id={paneId} className="flex min-h-0 flex-1 overflow-hidden">
           <div
             className={cn("flex shrink-0 flex-col min-h-0", !maximized && "border-l border-border", isFixed && "w-full")}
             style={isFixed ? undefined : { width, minWidth: width }}
