@@ -34,7 +34,8 @@ import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity } from "./activity-log.js";
 import { activeIssueInteractionCondition } from "./issue-question-context.js";
 
-import { hasHermesGatewayTerminalStopProof, historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
+import { hasHermesGatewayTerminalStopProof } from "@paperclipai/hermes-paperclip-adapter/gateway/server";
+import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { firstTurnDeliveredCommentIds, historyReadDeliveredCommentIds } from "./queued-comment-delivery.js";
 import { canResumePreservedResultFinalization } from "./preserved-result-finalization.js";
@@ -587,7 +588,7 @@ export async function admitExplicitNativeContinuation(input: {
         // unconfirmed timeout cannot overlap with a still-running remote run.
         const remoteGatewayStopped = legacyUserTurn
           && historicalAdapter === "hermes_gateway"
-          && hasHermesGatewayTerminalStopProof(run);
+          && hasHermesGatewayTerminalStopProof(run.resultJson);
         if (!run.processPid && !run.processGroupId &&
             !remoteGatewayStopped &&
             !await hasNativeLocalProcessStop(db, companyId, run.id) &&

@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { hasHermesGatewayTerminalStopProof } from "./index.js";
 import { testEnvironment } from "./test.js";
 import { parseHermesGatewayStdoutLine } from "../ui/parse-stdout.js";
 
@@ -1282,5 +1283,20 @@ describe("mapFinalResultForTest", () => {
     });
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorFamily ?? null).toBeNull();
+  });
+
+  it("recognizes confirmed terminal stop proofs and fails closed on unconfirmed timeout or missing status", () => {
+    expect(hasHermesGatewayTerminalStopProof({ status: "completed" })).toBe(true);
+    expect(hasHermesGatewayTerminalStopProof({ status: "failed" })).toBe(true);
+    expect(hasHermesGatewayTerminalStopProof({ status: "cancelled" })).toBe(true);
+    expect(hasHermesGatewayTerminalStopProof({ status: "interrupted", gateway_status: "cancelled" })).toBe(true);
+    expect(hasHermesGatewayTerminalStopProof({
+      connectionFailure: { provider: "hermes_gateway", operation: "configuration" },
+    })).toBe(true);
+    expect(hasHermesGatewayTerminalStopProof({ status: "timeout" })).toBe(false);
+    expect(hasHermesGatewayTerminalStopProof({
+      connectionFailure: { provider: "hermes_gateway", operation: "stream" },
+    })).toBe(false);
+    expect(hasHermesGatewayTerminalStopProof(null)).toBe(false);
   });
 });

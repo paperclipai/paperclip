@@ -2,6 +2,7 @@ import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 
 const FAILURE_STATUSES = new Set(["failed", "error"]);
 const CANCELLED_STATUSES = new Set(["cancelled", "canceled", "stopped", "interrupted"]);
+const TERMINAL_STOP_STATUSES = new Set(["completed", ...FAILURE_STATUSES, ...CANCELLED_STATUSES]);
 
 const TERMINAL_PROVIDER_QUOTA_CODES = new Set([
   "insufficient_quota",
@@ -141,4 +142,16 @@ export function classifyTerminalFailure(
   }
   const retryNotBefore = errorFamily ? parseTerminalRetryNotBefore(payload) : null;
   return { errorFamily, retryNotBefore, gatewayShutdown };
+}
+
+/** Remote hermes_gateway runs have no local host PID; require a saved terminal gateway response. */
+export function hasHermesGatewayTerminalStopProof(
+  resultJson: Record<string, unknown> | null | undefined,
+): boolean {
+  const result = asRecord(resultJson);
+  if (!result) return false;
+  const status = nonEmpty(result.status)?.toLowerCase() ?? "";
+  if (TERMINAL_STOP_STATUSES.has(status)) return true;
+  const connectionFailure = asRecord(result.connectionFailure);
+  return connectionFailure?.provider === "hermes_gateway" && connectionFailure?.operation === "configuration";
 }
