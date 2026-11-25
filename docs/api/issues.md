@@ -38,6 +38,8 @@ Query parameters:
 | `oneChildPerParent` | With `view=index` and `parentIds`, return at most one readable child per parent for collapsed-tree affordances |
 | `includeReadState` | Board-only `true` adds the current user's personal read state without removing read or untouched tasks |
 | `inboxArchive` | `include` adds the viewer's archive state to each result. `archived` returns only tasks actively archived by the viewer. |
+| `updatedSince` | ISO 8601 timestamp; return only issues whose stored `updatedAt` is strictly after it. An invalid value returns `400` |
+| `updatedBefore` | ISO 8601 timestamp; return only issues whose stored `updatedAt` is strictly before it. An invalid value returns `400` |
 
 Results sorted by priority.
 
