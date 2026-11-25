@@ -529,5 +529,43 @@ describe("customer-success runs.search", () => {
     expect(sqlSearch.patterns[1]!.matchedRuns).toBe(1);
     expect(sqlSearch.patterns[1]!.sampleRuns[0]!.runId).toBe(sqlErrRun.id);
     expect(sqlSearch.patterns[1]!.sampleRuns[0]!.excerpt).not.toContain("unregistered-sql-param-secret");
+
+    // 6) Structural redaction (redactEventPayload) runs before matching or excerpting
+    // event payloads so unregistered credentials in secret-named keys never leak.
+    const [structRun] = await db
+      .insert(schema.heartbeatRuns)
+      .values({
+        companyId: co.id,
+        agentId: agent.id,
+        status: "succeeded",
+        runtimeMode: "native",
+        driverKind: "codex",
+        createdAt: new Date(Date.now() + 240_000),
+      })
+      .returning();
+    await db.insert(schema.heartbeatRunEvents).values({
+      companyId: co.id,
+      runId: structRun.id,
+      agentId: agent.id,
+      seq: 1,
+      eventType: "item.completed",
+      stream: "system",
+      payload: {
+        apiKey: "unregistered-api-key-secret-value",
+        aggregatedOutput: "STRUCT_REDACT_MARKER authorization=Bearer unregistered-bearer-token-999",
+      },
+    });
+    const structSearch = await searchCustomerSuccessRuns(db, {
+      operation: "runs.search",
+      companyId: co.id,
+      patterns: ["unregistered-api-key-secret-value", "STRUCT_REDACT_MARKER"],
+      limit: 1,
+      includeExcerpts: true,
+    });
+    expect(structSearch.patterns[0]!.matchedRuns).toBe(0);
+    expect(structSearch.patterns[1]!.matchedRuns).toBe(1);
+    const structExcerpt = structSearch.patterns[1]!.sampleRuns[0]!.excerpt ?? "";
+    expect(structExcerpt).toContain("STRUCT_REDACT_MARKER");
+    expect(structExcerpt).not.toContain("unregistered-bearer-token-999");
   });
 });

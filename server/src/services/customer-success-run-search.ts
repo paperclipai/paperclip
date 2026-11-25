@@ -11,7 +11,7 @@ import {
   type InspectionRunSearchSample,
 } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
-import { REDACTED_EVENT_VALUE } from "../redaction.js";
+import { REDACTED_EVENT_VALUE, redactEventPayload } from "../redaction.js";
 import {
   createRunSecretRedactionRegistry,
   redactRegisteredSecretValues,
@@ -114,11 +114,21 @@ function findDecodedEventMatch(
   pattern: string,
   caseSensitive: boolean,
 ): string | undefined {
-  if (typeof message === "string" && findLiteralIndex(message, pattern, caseSensitive) >= 0) {
-    return message;
+  // Apply the same structural event redaction as `list` on `runEvents` BEFORE
+  // matching or excerpting so secret-named fields, JWTs, and embedded command
+  // credentials can never be matched or leaked via excerpts.
+  const redactedEvent = redactEventPayload({
+    ...(typeof message === "string" ? { message } : {}),
+    ...(payload && typeof payload === "object" && !Array.isArray(payload)
+      ? { payload: payload as Record<string, unknown> }
+      : {}),
+  });
+  const safeMessage = typeof redactedEvent?.message === "string" ? redactedEvent.message : null;
+  if (safeMessage && findLiteralIndex(safeMessage, pattern, caseSensitive) >= 0) {
+    return safeMessage;
   }
   const strings: string[] = [];
-  collectDecodedStrings(payload, strings);
+  collectDecodedStrings(redactedEvent?.payload, strings);
   for (const text of strings) {
     if (findLiteralIndex(text, pattern, caseSensitive) >= 0) return text;
   }
@@ -461,7 +471,18 @@ export async function searchCustomerSuccessRuns(
       for (const run of runs) {
         const hits = new Map<number, string | undefined>();
         const sanitizedError = typeof run.error === "string" ? withoutSqlStatementText(run.error) : null;
-        const runFields = [sanitizedError, run.errorCode, run.stderrExcerpt, run.stdoutExcerpt]
+        const safeRunFields = redactEventPayload({
+          ...(sanitizedError ? { error: sanitizedError } : {}),
+          ...(run.errorCode ? { errorCode: run.errorCode } : {}),
+          ...(run.stderrExcerpt ? { stderrExcerpt: run.stderrExcerpt } : {}),
+          ...(run.stdoutExcerpt ? { stdoutExcerpt: run.stdoutExcerpt } : {}),
+        });
+        const runFields = [
+          safeRunFields?.error,
+          safeRunFields?.errorCode,
+          safeRunFields?.stderrExcerpt,
+          safeRunFields?.stdoutExcerpt,
+        ]
           .filter((v): v is string => typeof v === "string" && v.length > 0)
           .join("\n");
         if (runFields) {
