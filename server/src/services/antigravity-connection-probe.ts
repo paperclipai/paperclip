@@ -61,6 +61,9 @@ export async function probeAntigravityExecutionTarget(
 ): Promise<AdapterEnvironmentTestResult> {
   const unavailable = () => failed("antigravity_remote_runtime_missing",
     "This cloud environment does not have the current Google Antigravity runtime. Use the current Paperclip runner image for this environment.");
+  if (target.transport === "sandbox" && target.runnerTask) {
+    return failed("antigravity_remote_runtime_missing", "Plugin Runner-task targets must be probed through the plugin Runner task API.");
+  }
   const expectedPath = "provider-assets/antigravity/linux-x64";
   const command = [
     `for pack in ${REMOTE_PACK_ROOTS.join(" ")}; do`,

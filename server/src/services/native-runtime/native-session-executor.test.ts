@@ -5310,18 +5310,21 @@ describe("split durable provider checkpoint identity", () => {
 });
 
 describe("remote provider checkpoint snapshots", () => {
-  it.each(["codex", "grok"] as const)("excludes %s credentials and handoffs from real checkpoint copies while retaining sessions", async provider => {
+  it.each(["codex", "grok", "antigravity"] as const)("excludes %s credentials and handoffs from real checkpoint copies while retaining sessions", async provider => {
     const root = await mkdtemp(join(tmpdir(), `${provider}-checkpoint-`));
     try {
       const source = join(root, "source");
       const target = join(root, "backup");
       const sessionDirectory = acpxRuntimeSessionDirectoryName("session");
-      const relativeHome = join("acpx", sessionDirectory, `${provider}-home`);
+      const relativeHome = provider === "antigravity"
+        ? join("acpx", sessionDirectory, "antigravity-home", "antigravity-acp")
+        : join("acpx", sessionDirectory, `${provider}-home`);
+      const primaryToken = provider === "antigravity" ? "acp_token.json" : "auth.json";
       const home = join(source, relativeHome);
       await mkdir(join(home, "logs"), { recursive: true });
       await mkdir(join(home, "sessions"));
       await writeFile(join(home, "logs", "unified.jsonl"), "AUTH_SENTINEL");
-      await writeFile(join(home, "auth.json"), "AUTH_SENTINEL");
+      await writeFile(join(home, primaryToken), "AUTH_SENTINEL");
       await writeFile(join(home, "auth-refresh.json"), "AUTH_SENTINEL");
       await writeFile(join(home, "auth-refresh.json.tmp"), "AUTH_SENTINEL");
       await writeFile(join(home, "sessions", "session.json"), "resume-state");
@@ -5339,7 +5342,7 @@ describe("remote provider checkpoint snapshots", () => {
       await syncRemoteRunnerDirectoryOut({ runner: { execute, syncOut } as never,
         sourcePath: source, targetPath: target, mode: 0o700,
         excludeEntries: profile.directories.find(directory => directory.name === "acpx")!.excludeEntries });
-      for (const entry of ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp", ...(provider === "grok" ? ["logs"] : [])])
+      for (const entry of [primaryToken, "auth-refresh.json", "auth-refresh.json.tmp", ...(provider === "grok" || provider === "antigravity" ? ["logs"] : [])])
         await expect(access(join(target, relativeHome, entry))).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(join(target, relativeHome, "sessions", "session.json"), "utf8")).toBe("resume-state");
       expect(await readFile(join(home, "logs", "unified.jsonl"), "utf8")).toBe("AUTH_SENTINEL");
