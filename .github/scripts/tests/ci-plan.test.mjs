@@ -281,7 +281,7 @@ else process.exit(3);
       writeFileSync(output, "");
       const result = spawnSync("bash", ["-c", shell], { encoding: "utf8", env: {
         ...process.env, PATH: `${directory}:${process.env.PATH}`, TEST_TRUSTED_ROOT: root.pathname,
-        RUNNER_TEMP: directory, FULL_CI: "true", PROFILE_CI: "false", FORCE_FULL_CI: "false",
+        RUNNER_TEMP: directory, EVENT_REPOSITORY: "paperclipai/paperclip", FULL_CI: "true", PROFILE_CI: "false", FORCE_FULL_CI: "false",
         CI_INCREMENTAL_MODE: "enabled", STACK_JSON: "null", EVENT_BASE_SHA: "b".repeat(40), EVENT_HEAD_SHA: prHead, EVENT_MERGE_SHA: merge,
         TEST_GIT_REPOSITORY: repository,
         GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: "", ...overrides,

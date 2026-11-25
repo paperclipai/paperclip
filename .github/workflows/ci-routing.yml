@@ -258,10 +258,11 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_REPOSITORY: ${{ github.repository }}
           PROFILE_REQUESTED: ${{ contains(github.event.pull_request.labels.*.name, 'profile-ci') }}
         run: |
           set -euo pipefail
-          if [[ "$PROFILE_REQUESTED" != 'true' ]]; then
+          if [[ "$EVENT_REPOSITORY" != 'paperclipai/paperclip' || "$PROFILE_REQUESTED" != 'true' ]]; then
             echo 'profile_ci=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -284,6 +285,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT_NAME: ${{ github.event_name }}
+          EVENT_REPOSITORY: ${{ github.repository }}
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PROFILE_CI: ${{ steps.profile.outputs.profile_ci }}
@@ -293,6 +295,11 @@ jobs:
           PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
+
+          if [[ "$EVENT_REPOSITORY" != 'paperclipai/paperclip' ]]; then
+            echo 'full_ci=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           full_ci='true'
           reason='ordinary pull request'
@@ -373,6 +380,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          EVENT_REPOSITORY: ${{ github.repository }}
           FULL_CI: ${{ steps.scope.outputs.full_ci }}
           PROFILE_CI: ${{ steps.profile.outputs.profile_ci }}
           FORCE_FULL_CI: ${{ contains(github.event.pull_request.labels.*.name, 'full-ci') }}
@@ -383,6 +391,7 @@ jobs:
         run: |
           set -euo pipefail
           fallback() { echo 'plan=' >> "$GITHUB_OUTPUT"; exit 0; }
+          [[ "$EVENT_REPOSITORY" == 'paperclipai/paperclip' ]] || fallback
           [[ "$FULL_CI" == 'true' ]] || fallback
           [[ "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$EVENT_MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] || fallback
           trusted="$(gh api /repos/paperclipai/paperclip/git/ref/heads/master --jq .object.sha)" || fallback

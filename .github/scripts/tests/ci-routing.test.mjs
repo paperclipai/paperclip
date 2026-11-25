@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -43,7 +43,7 @@ function executeStep(name, overrides = {}) {
   const output = path.join(directory, "output");
   try {
     const gh = path.join(directory, "gh");
-    writeFileSync(gh, githubStub);
+    writeFileSync(gh, githubStub.replace("set -Eeuo pipefail\n", 'set -Eeuo pipefail\nif [[ "${TEST_FORBID_GH:-}" == 1 ]]; then touch "$RUNNER_TEMP/gh-called"; exit 1; fi\n'));
     chmodSync(gh, 0o700);
     const result = spawnSync("bash", ["-c", stepScript(name)], {
       encoding: "utf8",
@@ -74,6 +74,7 @@ function executeStep(name, overrides = {}) {
       },
     });
     assert.equal(result.status, 0, result.stderr);
+    if (overrides.TEST_FORBID_GH === "1") assert.equal(existsSync(path.join(directory, "gh-called")), false, "fork must not call upstream APIs");
     const lines = readFileSync(output, "utf8").trim().split("\n");
     assert.equal(lines.length, 1, "each step must emit exactly one decision");
     return Object.fromEntries(lines.map((line) => {
@@ -201,6 +202,17 @@ for (const [name, stack, base, expected] of scopeCases) {
 }
 
 const files = (...paths) => JSON.stringify(paths.map((filename) => ({ filename })));
+
+test("forks force full CI and an empty plan without upstream scope or planner calls", () => {
+  for (const repository of ["fork/paperclip", "paperclipai/other"]) {
+    for (const stack of [null, { position: 2, size: 3, base: { ref: "master" } }]) {
+      const env = { EVENT_REPOSITORY: repository, STACK_JSON: JSON.stringify(stack), PR_BASE_REF: "stack-1", TEST_FORBID_GH: "1" };
+      assert.equal(executeStep("Authorize CODEOWNERS CI profiling", { ...env, PROFILE_REQUESTED: "true" }).profile_ci, "false");
+      assert.equal(executeStep("Select PR CI scope", env).full_ci, "true");
+      assert.equal(executeStep("Plan affected CI tasks from trusted definitions", { ...env, FULL_CI: "true" }).plan, "");
+    }
+  }
+});
 
 test("full-suite requests override both middle-stack and release-notes-only skips", () => {
   for (const overrides of [

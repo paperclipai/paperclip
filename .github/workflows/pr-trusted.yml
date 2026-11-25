@@ -25,7 +25,7 @@ concurrency:
 
 jobs:
   gate:
-    uses: paperclipai/paperclip/.github/workflows/ci-routing.yml@master
+    uses: ./.github/workflows/ci-routing.yml
 
   test_selection:
     name: Select Vitest files
@@ -241,6 +241,9 @@ jobs:
 
       - name: Test PR quality-gate scripts
         run: node "$CI_NODE_TEST" '.github/scripts/tests/*.test.mjs'
+
+      - name: Test MCP fixture catalog
+        run: node --test scripts/mcp-fixtures/catalog.test.mjs
 
       - name: Test general-server shard partition
         run: node "$CI_NODE_TEST" ./scripts/__tests__/run-vitest-stable-shard.test.mjs
@@ -1050,6 +1053,12 @@ jobs:
       - name: Mark the restored Runner debug crate current
         if: ${{ steps.runner_debug_crate.outputs.cache-hit == 'true' }}
         run: node scripts/runner-debug-crate-cache.mjs mark-current
+
+      - name: Build native server test binaries
+        if: ${{ matrix.command == 'test:typescript:vitest --native-server' }}
+        timeout-minutes: 10
+        working-directory: packages/paperclip-runner
+        run: cargo build --release --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --bin paperclip-runnerd
 
       - name: Verify Runner Rust through Turbo
         if: matrix.command == 'check:runner' && hashFiles('turbo.json') != ''

@@ -382,6 +382,17 @@ test("the Verify Paperclip Runner job restores the crate only in the lanes that 
   }
 });
 
+test("native server Vitest builds the release binary after restores and before the test", () => {
+  const body = job(prWorkflow, "verify_paperclip_runner");
+  const build = step(body, "Build native server test binaries");
+  assert.match(build, /if: \$\{\{ matrix\.command == 'test:typescript:vitest --native-server' \}\}/);
+  assert.match(build, /working-directory: packages\/paperclip-runner/);
+  assert.match(build, /cargo build --release --manifest-path runner\/Cargo\.toml --locked -p paperclip-runner-core --bin paperclip-runnerd/);
+  assert.ok(body.indexOf(build) > body.indexOf(step(body, MARK_STEP)));
+  assert.ok(body.indexOf(build) > body.indexOf(step(body, "Mark the restored Runner debug crate current")));
+  assert.ok(body.indexOf(build) < body.indexOf(step(body, "Verify Paperclip Runner")));
+});
+
 test("only the master Rust lane writes the crate, after a lookup, with the readers' exact path list and key", () => {
   const body = job(releaseWorkflow, "verify_paperclip_runner");
   const positions = ["Verify Paperclip Runner", "Warm debug dependencies for the shared Runner cache", KEY_STEP, LOOKUP_STEP, BUILD_STEP, SAVE_STEP].map((stepName) => body.indexOf(`      - name: ${stepName}\n`));

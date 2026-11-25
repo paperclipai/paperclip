@@ -46,7 +46,7 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (req.method === "GET" && url.pathname === "/catalog") {
-      sendJson(res, 200, { ok: true, tools: listTools({ schemaVariant: state.schemaVariant }).filter((tool) => tool.transport === "http") });
+      sendJson(res, 200, { ok: true, tools: listTools({ schemaVariant: state.schemaVariant, schemaRevision: state.schemaRevision }).filter((tool) => tool.transport === "http") });
       return;
     }
     if (req.method === "POST" && url.pathname === "/mcp") {
@@ -57,7 +57,7 @@ const server = http.createServer(async (req, res) => {
           jsonrpc: "2.0",
           id: body.id ?? null,
           result: {
-            tools: listTools({ schemaVariant: state.schemaVariant }).filter((tool) => tool.transport === "http"),
+            tools: listTools({ schemaVariant: state.schemaVariant, schemaRevision: state.schemaRevision }).filter((tool) => tool.transport === "http"),
           },
         });
         return;
