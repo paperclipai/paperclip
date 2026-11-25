@@ -234,4 +234,16 @@ describe("ConnectionSetupFlow — Slack customer OAuth error surface and guidanc
     const fallbackLink = container.querySelector('a[href="https://slack.com/oauth/v2_user/authorize?client_id=slack-client-123&state=s1"]');
     expect(fallbackLink?.textContent).toContain("Open sign-in in a new tab");
   });
+
+  it("ignores inherited object property keys in provider_error without crashing the setup screen", async () => {
+    for (const inheritedKey of ["__proto__", "constructor", "toString"]) {
+      fixture.search = `source=slack&resume=conn-slack-1&oauth=denied&code=oauth_authorization_denied&provider_error=${inheritedKey}`;
+      renderFlow();
+      await settle();
+
+      const alert = container.querySelector('[role="alert"]');
+      expect(alert).not.toBeNull();
+      expect(alert?.textContent).toBe("Authorization was cancelled or declined. Your saved connection was not changed.");
+    }
+  });
 });

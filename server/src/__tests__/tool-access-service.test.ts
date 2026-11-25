@@ -13221,7 +13221,6 @@ describeEmbeddedPostgres("tool access service", () => {
       "search:read.public",
     );
 
-    // Simulate a pre-fix draft row that persisted the old bot endpoints.
     const [existingDraft] = await db
       .select()
       .from(toolConnections)
@@ -13251,7 +13250,6 @@ describeEmbeddedPostgres("tool access service", () => {
     );
     const retryState = retryUrl.searchParams.get("state")!;
 
-    // Provider callback returns RFC invalid_scope + untrusted error_description.
     const failedCallbackRes = await request(app)
       .get("/api/tools/oauth/callback")
       .set("Host", "paperclip.example")
@@ -13272,6 +13270,32 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(recoveryLocation.searchParams.get("provider_error")).toBe("invalid_scope");
     expect(failedCallbackRes.headers.location).not.toContain("untrusted-canary");
     expect(failedCallbackRes.headers.location).not.toContain("error_description");
+
+    const unlistedStartRes = await request(app)
+      .post(`/api/tools/oauth/${connectRes.body.connectionId}/start`)
+      .set("Host", "paperclip.example")
+      .set("Origin", origin)
+      .send({})
+      .expect(200);
+    const unlistedState = new URL(unlistedStartRes.body.authorizationUrl).searchParams.get("state")!;
+
+    const unlistedCallbackRes = await request(app)
+      .get("/api/tools/oauth/callback")
+      .set("Host", "paperclip.example")
+      .set("Accept", "text/html")
+      .query({
+        state: unlistedState,
+        error: "evil_unlisted_code",
+        error_description: "unlisted-canary",
+      });
+
+    expect(unlistedCallbackRes.status).toBe(303);
+    const unlistedRecoveryLocation = new URL(unlistedCallbackRes.headers.location, origin);
+    expect(unlistedRecoveryLocation.searchParams.get("oauth")).toBe("denied");
+    expect(unlistedRecoveryLocation.searchParams.get("code")).toBe("oauth_authorization_denied");
+    expect(unlistedRecoveryLocation.searchParams.get("provider_error")).toBeNull();
+    expect(unlistedCallbackRes.headers.location).not.toContain("evil_unlisted_code");
+    expect(unlistedCallbackRes.headers.location).not.toContain("unlisted-canary");
   });
 
   it("normalizes a direct numeric loopback origin for OAuth when no public URL is configured", async () => {
