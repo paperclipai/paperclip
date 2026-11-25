@@ -17385,7 +17385,7 @@ export function issueRoutes(
   }) {
     if (issue.conversationAgentId) {
       const recent = await svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 21 });
-      const comments = recent.slice(0, 20);
+      const comments = await withAntigravitySwarmMarkers(db, issue.companyId, issue.id, recent.slice(0, 20));
       return runRedactions.redactForIssue(issue.companyId, issue.id, {
         comments,
         latestCommentId: comments[0]?.id ?? null,
@@ -17400,7 +17400,8 @@ export function issueRoutes(
         ? Promise.resolve([])
         : svc.listComments(issue.id, { companyId: issue.companyId, order: "asc", limit: 1, humanOnly: true }),
     ]);
-    const comments = [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()];
+    const comments = await withAntigravitySwarmMarkers(db, issue.companyId, issue.id,
+      [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()]);
     const included = new Set(comments.map((comment) => comment.id));
     return runRedactions.redactForIssue(issue.companyId, issue.id, {
       comments,

@@ -4,7 +4,8 @@ import {
   presentationDecisionCommentId,
   semanticProgressCommentIds,
 } from "@/lib/run-answer-visibility";
-import { preparationReceiptIds } from "./task-chat/image-resources";
+import { preparationReceiptIds, runFileCardAttachments } from "./task-chat/image-resources";
+import { RunFileCardsContext } from "./task-chat/RunFileCardsContext";
 import type { ScrollingHistory } from "@/components/task-chat/TaskMessageScroller";
 import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
 import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
@@ -902,6 +903,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     () => preparationReceiptIds(comments, attachments, workProducts),
     [comments, attachments, workProducts],
   );
+  const runFileCards = useMemo(() => runFileCardAttachments(workProducts), [workProducts]);
   const projectedComments = useMemo(
     () =>
       comments.flatMap((comment) => {
@@ -3449,6 +3451,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         ) : null}
                       </div>
                     ) : (
+                      <RunFileCardsContext.Provider value={runFileCards}>
                       <TaskChatThreadView
                         items={threadItems}
                         scrollingHistory={scrollingHistory}
@@ -3577,6 +3580,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         contentKey={`${autoFollowContentKey}:${historyRevealed}`}
                         className={isMobile ? undefined : "pt-3"}
                       />
+                      </RunFileCardsContext.Provider>
                     )}
                   </>
                 ) : null}
