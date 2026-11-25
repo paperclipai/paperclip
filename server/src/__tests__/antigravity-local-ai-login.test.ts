@@ -328,7 +328,7 @@ describe("Google local sign-in service admission", () => {
     mocks.browser.mockReturnValue(browser);
     const db = database(), service = localAiLoginService(db);
     // No existing session, no active local environment, active managed sandbox environment.
-    db.selections.push([], [], [{ id: "sandbox-environment", driver: "sandbox", status: "active" }]);
+    db.selections.push([], [], [{ id: "sandbox-environment", driver: "sandbox", status: "active" }], [{ status: "waiting_for_user", expiresAt: new Date(Date.now() + 60_000) }]);
     const attempt = await service.start("company", "user", intent);
     expect(db.session.environmentId).toBe("sandbox-environment");
     db.selections.push([db.session], [db.session]);
