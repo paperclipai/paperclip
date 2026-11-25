@@ -410,3 +410,14 @@ profile stays **pending** until an operator grants the flip.
 
 Facts above: local darwin-arm64 instance at commit 438ae60922, 2026-11-25,
 Google subscription sign-in.
+
+### Re-check of the swarm fixes (local, 2026-11-25, commit cd8bcfba16)
+
+| Gate | Result |
+| --- | --- |
+| Usage on Stop (Flash) | Passed live: the stopped run recorded 36,910 in / 869 out tokens |
+| Usage on a killed CLI | Still 0 live: CLI 1.5.15 streams no token counts during a swarm prompt and reports them only when the turn ends, so a killed run has nothing to keep. Documented; not estimated |
+| Kill text and automatic recovery | Passed live: the failure says the CLI exited and files stay in the task folder, with no Retry; Paperclip recovered with a fresh swarm and the task finished |
+| Settings receipt in the run record | Passed live: one provider notice with requested and confirmed model, thinking level, mode, channel, CLI version and account match |
+| Thread text | Passed live: no terminal hint, no stray ".", no local paths or `file://` links, no mention of the swarm rules |
+| Helper processes after a killed CLI | Gap found live: helper shell commands lead their own process groups, outlived the killed CLI by about 14 s, one wrote a file 14 s after the kill, and the failure was recorded only when they exited (they held the CLI's output pipe). Fixed in a later pull request: the swarm records every process the CLI starts and stops them all before a failed or stopped turn is reported and on shutdown, and a lost CLI is detected on exit. Proven with the fake CLI (kill, Stop, shutdown; an unrelated process survives); live proof pending |
