@@ -264,15 +264,20 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
 
   it("makes no broker call when removal fails before the grants are revoked, and the retry sends them", async () => {
     const fixture = await connectManagedGmail();
-    const update = db.update.bind(db);
+    const transaction = db.transaction.bind(db);
     let failedOnce = false;
-    vi.spyOn(db, "update").mockImplementation(((table: unknown) => {
-      if (table === connectionGrants && !failedOnce) {
-        failedOnce = true;
-        throw new Error("grant revocation failed");
-      }
-      return update(table as never);
-    }) as never);
+    vi.spyOn(db, "transaction").mockImplementation(((work: (tx: typeof db) => Promise<unknown>, ...rest: unknown[]) =>
+      transaction(async (tx) => {
+        const update = tx.update.bind(tx);
+        tx.update = ((table: unknown) => {
+          if (table === connectionGrants && !failedOnce) {
+            failedOnce = true;
+            throw new Error("grant revocation failed");
+          }
+          return update(table as never);
+        }) as never;
+        return work(tx as unknown as typeof db);
+      }, ...(rest as []))) as never);
 
     const failed = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
     expect(failed.status).toBe(500);

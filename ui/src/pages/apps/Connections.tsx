@@ -202,7 +202,7 @@ export function Connections() {
       const body = target.remainingConnectionCount > 0
         ? `${target.appName} still has ${target.remainingConnectionCount} active ${target.remainingConnectionCount === 1 ? "connection" : "connections"} available to agents.`
         : `${target.appName} is no longer available to agents and its credentials are deleted. Connecting it again needs a new sign-in or key.`;
-      pushToast(connectionRemovalToast({ title: "Connection deleted", body, providerAccess: removed?.removal?.providerAccess }));
+      pushToast(connectionRemovalToast({ title: "Connection deleted", body, providerAccess: removed?.removal?.providerAccess, signInRemoval: removed?.removal?.signInRemoval }));
       setConnectionToDelete(null);
     },
     onError: (error) =>

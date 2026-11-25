@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { connectionRemovalToast, GOOGLE_THIRD_PARTY_ACCESS_URL, googleAccessRemovalNotice, googleAccessRetrySummary } from "./googleAccessRemoval";
+import { aiSignInRemovalNotice, connectionRemovalToast, GOOGLE_THIRD_PARTY_ACCESS_URL, googleAccessRemovalNotice, googleAccessRetrySummary } from "./googleAccessRemoval";
 
 describe("googleAccessRemovalNotice", () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -63,5 +63,39 @@ describe("googleAccessRemovalNotice", () => {
     expect(googleAccessRetrySummary("google_access_ended", { result: "ended" })).toBe("Google confirmed that Paperclip's access to this Google account has ended");
     expect(googleAccessRetrySummary("google_access_not_ended", { result: "other_connections_remain" })).toBe("Google kept Paperclip's access because other Paperclip connections use this Google account");
     expect(googleAccessRetrySummary("google_access_not_ended", { result: "gave_up" })).toBe("Paperclip stopped trying to end its access at Google without a confirmation");
+  });
+});
+
+describe("aiSignInRemovalNotice", () => {
+  it("says nothing when no saved Google sign-in was involved", () => {
+    expect(aiSignInRemovalNotice(undefined)).toBeNull();
+    expect(aiSignInRemovalNotice(null)).toBeNull();
+  });
+
+  it("says the saved sign-in was deleted and stays valid at Google", () => {
+    const notice = aiSignInRemovalNotice({ provider: "google", savedSignIn: "deleted", providerSignIn: "still_valid" });
+    expect(notice?.tone).toBe("info");
+    expect(notice?.body).toBe("Paperclip deleted its saved Google sign-in. The sign-in stays valid at Google until you remove it in your Google account's third-party connections. Removing it there also signs this Google account out of Antigravity everywhere.");
+    expect(notice?.action?.label).toBe("Open Google account connections");
+  });
+
+  it("says a shared sign-in was kept", () => {
+    expect(aiSignInRemovalNotice({ provider: "google", savedSignIn: "kept_shared", providerSignIn: "still_valid" })?.body)
+      .toMatch(/^Another connection still uses this saved Google sign-in, so Paperclip kept it\./);
+  });
+
+  it("warns when the saved sign-in could not be deleted", () => {
+    expect(aiSignInRemovalNotice({ provider: "google", savedSignIn: "not_deleted", providerSignIn: "still_valid" })).toEqual({
+      tone: "warn",
+      body: "Paperclip couldn't delete its saved Google sign-in. Disconnect again to retry.",
+    });
+  });
+
+  it("adds the notice to a connection removal toast", () => {
+    const toast = connectionRemovalToast({
+      title: "Connection deleted", body: "Google is no longer available to agents.", providerAccess: null,
+      signInRemoval: { provider: "google", savedSignIn: "not_deleted", providerSignIn: "still_valid" },
+    });
+    expect(toast).toMatchObject({ tone: "warn", body: "Google is no longer available to agents. Paperclip couldn't delete its saved Google sign-in. Disconnect again to retry." });
   });
 });
