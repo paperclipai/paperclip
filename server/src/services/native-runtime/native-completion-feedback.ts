@@ -185,7 +185,9 @@ export async function nativeCompletionFeedback(
       const handoff = await evaluateBlockerAgentHandoff(db, {
         companyId: run.companyId,
         issue,
+        runId: run.id,
         actorAgentId: run.agentId,
+        responsibleUserId: run.responsibleUserId,
         targetAgentId: owner.agentId,
         unblockAction: result.blocker.unblockAction,
       });

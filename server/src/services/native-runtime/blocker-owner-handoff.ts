@@ -5,6 +5,7 @@ import { isConversation } from "../../lib/conversation-wake-policy.js";
 import { assertAssignableAgent } from "../agent-assignability.js";
 import { agentInteractionDenial } from "../agent-interaction-policy.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { authorizationService } from "../authorization.js";
 
 export type BlockerHandoffEligibility =
   | { allowed: true }
@@ -15,6 +16,7 @@ export type BlockerHandoffEligibility =
         | "conversation_or_chat_locked"
         | "unavailable"
         | "unassignable"
+        | "unauthorized"
         | "interaction_denied";
       message: string;
     };
@@ -36,7 +38,8 @@ export async function hasExternalChatBinding(
 /**
  * Single authority check for handing a blocked task to another named agent.
  * Shared across report-time feedback, finalizer arbitration, and the committer's
- * under-lock recheck so all three layers enforce the exact same invariants.
+ * under-lock recheck so all three layers enforce the exact same invariants,
+ * including `tasks:assign` authorization, assignment policy, and interaction policy.
  */
 export async function evaluateBlockerAgentHandoff(
   db: Db,
@@ -44,20 +47,33 @@ export async function evaluateBlockerAgentHandoff(
     companyId: string;
     issue: {
       id: string;
+      projectId: string | null;
+      parentId: string | null;
+      status: string;
       conversationAgentId: string | null;
+      conversationUserId: string | null;
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     };
+    runId: string;
     actorAgentId: string | null;
+    responsibleUserId?: string | null;
     targetAgentId: string;
     unblockAction: string;
     requireTaskOwner?: boolean;
     lockSources?: boolean;
   },
 ): Promise<BlockerHandoffEligibility> {
+  if (!input.actorAgentId) {
+    return {
+      allowed: false,
+      reason: "not_task_owner",
+      message: "Only the task's current assignee can hand this task off to another agent.",
+    };
+  }
   if (
     input.requireTaskOwner &&
-    (!input.actorAgentId || input.issue.assigneeUserId || input.issue.assigneeAgentId !== input.actorAgentId)
+    (input.issue.assigneeUserId || input.issue.assigneeAgentId !== input.actorAgentId)
   ) {
     return {
       allowed: false,
@@ -95,6 +111,44 @@ export async function evaluateBlockerAgentHandoff(
       };
     }
     throw error;
+  }
+  const authDecision = await authorizationService(db).decide(
+    {
+      actor: {
+        type: "agent",
+        agentId: input.actorAgentId,
+        companyId: input.companyId,
+        runId: input.runId,
+        source: "agent_jwt",
+        onBehalfOfUserId: input.responsibleUserId ?? null,
+      },
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: input.companyId,
+        issueId: input.issue.id,
+        projectId: input.issue.projectId,
+        parentIssueId: input.issue.parentId,
+        assigneeAgentId: input.targetAgentId,
+        assigneeUserId: null,
+        status: input.issue.status,
+      },
+      scope: {
+        issueId: input.issue.id,
+        projectId: input.issue.projectId,
+        parentIssueId: input.issue.parentId,
+        assigneeAgentId: input.targetAgentId,
+        assigneeUserId: null,
+      },
+    },
+    { interactionPolicy: "defer_to_mutation" },
+  );
+  if (!authDecision.allowed) {
+    return {
+      allowed: false,
+      reason: "unauthorized",
+      message: `The named blocker owner cannot be assigned this task: ${authDecision.explanation} Choose another agent or name a person.`,
+    };
   }
   const denial = await agentInteractionDenial(db, {
     companyId: input.companyId,

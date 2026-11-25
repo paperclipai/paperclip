@@ -3490,6 +3490,32 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     } finally {
       await db.update(agents).set({ permissions: {} }).where(eq(agents.id, agentId));
     }
+
+    // Restricted target-agent assignmentPolicy (tasks:assign authorization) also
+    // rejects handoff at report time and falls back cleanly to board on commit.
+    const policySeeded = await seedFixture({ ...corpus.fixtures.find((fixture) => fixture.id === "real-task-wide-blocker")!, id: `policy-denied-blocker-${randomUUID()}` });
+    const [policyStored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, policySeeded.resultId!));
+    const policyNamed = {
+      ...(policyStored!.resultJson.result as Record<string, unknown>),
+      reportedWorkDisposition: "blocked",
+      blocker: { reasonCode: "review_required", owner: { kind: "agent", name: "ESCD" }, unblockAction: "Review the release notes draft.", scope: "task_wide" },
+    };
+    await db.update(agents).set({
+      permissions: { authorizationPolicy: { assignmentPolicy: { mode: "restricted" } } },
+    }).where(eq(agents.id, delegateAgentId));
+    try {
+      await expect(nativeCompletionFeedback(db, policySeeded.runId, policyNamed as never))
+        .rejects.toThrow("cannot be assigned this task");
+      await db.update(nativeRunResults).set({ resultJson: { ...policyStored!.resultJson, result: policyNamed } })
+        .where(eq(nativeRunResults.id, policySeeded.resultId!));
+      await finalizeNativeRun({ db, runId: policySeeded.runId, workspaceFinalizeStatus: "succeeded" });
+      const policyIssue = (await issueService(db).getById(policySeeded.issueId))!;
+      expect(policyIssue.status).toBe("blocked");
+      expect(policyIssue.assigneeAgentId).toBe(agentId);
+      expect(policyIssue.unblockDescriptor).toEqual(expect.objectContaining({ owner: "board" }));
+    } finally {
+      await db.update(agents).set({ permissions: {} }).where(eq(agents.id, delegateAgentId));
+    }
   }, 30_000);
 
   it("withdraws obsolete policy reviews, restores the prior status, and is idempotent", async () => {

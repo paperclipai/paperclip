@@ -1811,7 +1811,9 @@ export async function finalizeNativeRun(input: {
     const blockerHandoffLocked = namedBlockerAgentId !== null && !(await evaluateBlockerAgentHandoff(input.db, {
       companyId: run.companyId,
       issue: authoritativeIssue,
+      runId: run.id,
       actorAgentId: run.agentId,
+      responsibleUserId: run.responsibleUserId,
       targetAgentId: namedBlockerAgentId,
       unblockAction: assessment.blocker!.unblockAction,
       requireTaskOwner: true,
