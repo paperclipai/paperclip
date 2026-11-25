@@ -534,7 +534,10 @@ Coordinator navigation uses **Chat**, **Tasks**, and **Inbox**. Inbox uses the
 inbox icon and keeps the existing decision feed, its count, and decision history
 at `/decisions`. The previous Inbox destination under More is removed.
 
-Inbox opens to **Needs you** with **Assigned to you** selected. Its badge counts
+Inbox opens to **Needs you** with **All assignees** selected for a board member
+and **Assigned to you** for a viewer. The assignee, agent, project, and grouping
+choices are saved per person and company, so the next visit opens the same way;
+a link that names a view still opens that view. Its badge counts
 personal actions. **Waiting** shows scheduled provider retries and personal
 snoozes. A provider limit with a known account and reset appears once per
 recipient, with the affected tasks, agents and run logs inside. When the account or
