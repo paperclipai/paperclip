@@ -9,7 +9,8 @@ import { localTarget, workspaceRelativePath } from "../../live/workspace-file-re
  * The person reads that reply in the task thread, where a local path and its
  * ids mean nothing and a file:// link opens nothing. Before the reply leaves
  * the Runner, a link to a file in the task folder becomes its folder-relative
- * path in code (`a.txt`, which the thread already opens as a task-folder file),
+ * path in code (`notes/a.txt`; the thread opens a nested path as a task-folder
+ * file, while a root-level name stays plain text beside its deliverable link),
  * any other file:// link keeps only its label, and a bare task-folder path
  * loses its local prefix. Other text, including `/api/...` links, is unchanged.
  */
@@ -56,9 +57,9 @@ export function neutralizeAntigravityLocalLinks(text: string, roots: readonly st
     return code(insideRoot(roots, decoded.path) ?? basename(decoded.path)) + match.slice(url.length);
   });
   for (const root of roots) {
+    // The task folder itself (with or without a trailing slash, not followed by more of a path), then its children.
+    value = value.replace(new RegExp(`${escapeRegExp(root)}/?(?![\\w/-]|\\.\\w)`, "g"), "the task folder");
     value = value.split(`${root}/`).join("");
-    // The task folder itself, not followed by more of a path.
-    value = value.replace(new RegExp(`${escapeRegExp(root)}(?![\\w/-]|\\.\\w)`, "g"), "the task folder");
   }
   return value;
 }
@@ -74,9 +75,9 @@ function holdFrom(value: string, roots: readonly string[]): number {
   if (url && url[0]) keep(url.index);
   for (const root of roots) {
     const prefix = `${root}/`;
-    // A complete prefix needs no hold (it is replaced now); only an unfinished one, down to a lone "/", is held.
+    // Held down to a lone "/", and also when complete: what follows decides between a child path and the folder itself.
     for (let length = Math.min(prefix.length, value.length); length >= 1; length--) {
-      if (value.endsWith(prefix.slice(0, length))) { if (length < prefix.length) keep(value.length - length); break; }
+      if (value.endsWith(prefix.slice(0, length))) { keep(value.length - length); break; }
     }
   }
   return start;
