@@ -142,10 +142,10 @@ describe("instanceSettingsService managed overlay", () => {
       expect((await service.get()).experimental).toMatchObject(features);
       expect((await service.getExperimental()).managedKeys).toMatchObject(
         Object.fromEntries(Object.keys(features)
-          .filter((key) => key !== "enableApps" && key !== "enableMcpAggregators" && key !== "enablePublicMcp")
+          .filter((key) => key !== "enableApps" && key !== "enableMcpAggregators" && key !== "enablePublicMcp" && key !== "enableAwsConnector")
           .map((key) => [key, { managed: true, managedBy: "paperclip-cloud" }])),
       );
-      for (const key of Object.keys(features).filter((key) => key !== "enablePublicMcp")) {
+      for (const key of Object.keys(features).filter((key) => key !== "enablePublicMcp" && key !== "enableAwsConnector")) {
         await expect(service.updateExperimental({ [key]: false })).rejects.toMatchObject({
           status: 403,
           details: { code: "settings_operator_managed" },
@@ -271,6 +271,25 @@ describe("instanceSettingsService managed overlay", () => {
     })) });
     expect(await service.getExperimental()).toMatchObject({ enableMcpAggregators: true, enableChatConnectors: true, managedKeys: {} });
     expect(await service.updateExperimental({ enableMcpAggregators: false })).toMatchObject({ experimental: { enableMcpAggregators: true, enableChatConnectors: true } });
+  });
+
+  it.each([{}, { enableAwsConnector: false }])("keeps the AWS connector on with legacy stored and managed values: %j", async (stored) => {
+    const { db } = stubDb(settingsRow(stored));
+    const service = instanceSettingsService(db, { runtimeEnv: managedEnv(JSON.stringify({
+      v: 1, mode: "cloud", catalogVersion: "legacy", features: { enableAwsConnector: false }, plugins: { autoInstall: [] },
+    })) });
+    const experimental = await service.getExperimental();
+    expect(experimental.enableAwsConnector).toBe(true);
+    expect(experimental.managedKeys).not.toHaveProperty("enableAwsConnector");
+    expect(await service.updateExperimental({ enableAwsConnector: false })).toMatchObject({ experimental: { enableAwsConnector: true } });
+  });
+
+  it("accepts an old client's write of the retired AWS connector key while Cloud lists it as on", async () => {
+    const { db } = stubDb(settingsRow({}));
+    const service = instanceSettingsService(db, { runtimeEnv: managedEnv(JSON.stringify({
+      v: 1, mode: "cloud", catalogVersion: "test", features: { enableAwsConnector: true }, plugins: { autoInstall: [] },
+    })) });
+    expect(await service.updateExperimental({ enableAwsConnector: false })).toMatchObject({ experimental: { enableAwsConnector: true } });
   });
 
   it("persists chat connector opt-in and reads it back after service reconstruction", async () => {

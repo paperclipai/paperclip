@@ -66,7 +66,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableMemoryConnectors: z.boolean().default(false),
   enablePaperclipNotebook: z.boolean().default(false),
   enableGoogleWorkspaceConnector: z.boolean().default(false),
-  enableAwsConnector: z.boolean().default(false),
+  enableAwsConnector: z.boolean().default(true),
   enableCases: z.boolean().default(false),
   enableAgentChat: z.boolean().default(true),
   enableCombinedInboxTasks: z.boolean().default(false),
