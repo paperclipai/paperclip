@@ -34,7 +34,7 @@ function bootstrapItem(index: number, companyId = "company-1"): IssueChatBootstr
 }
 
 /** Long enough for two frames and the idle fallback timer. */
-const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 400)); });
+const settle = () => act(async () => { await vi.advanceTimersByTimeAsync(400); });
 
 let container: HTMLDivElement;
 let root: Root;
@@ -57,6 +57,7 @@ function render(props: { companyId?: string | null; userId?: string | null; task
 }
 
 beforeEach(() => {
+  vi.useFakeTimers();
   resetIssueChatBootstrapsForTest();
   chatBootstrap.mockReset();
   chatBootstrap.mockImplementation(async (_companyId: string, ids: string[]) => ({
@@ -208,7 +209,6 @@ describe("useRecentTaskOpenWarmup", () => {
 
   it("warms Recents again on a navigation once the earlier warm may have been dropped", async () => {
     // The sidebar stays mounted for hours; unread cache entries are dropped after five minutes.
-    vi.useFakeTimers({ toFake: ["Date"] });
     render({ tasks: tasks(2), navigationKey: "/PAP/inbox" });
     await settle();
     expect(chatBootstrap).toHaveBeenCalledTimes(1);

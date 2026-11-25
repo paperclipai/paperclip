@@ -58,8 +58,12 @@ supported. They are not automatically merged, upgraded or reauthorized. The Shee
 robot-account method remains separate because it uses explicitly shared files,
 not the user's Google OAuth identity.
 
-Google's hosted Workspace MCP servers are Developer Preview services. The app
-endpoints remain separate. Paperclip namespaces actions by service and routes them
+Google made its hosted Workspace MCP servers generally available on
+2026-11-24. Its Workspace AI Tools Addendum
+(<https://workspace.google.com/terms/ai-tools>) requires a tool that is, or is
+driven by, an AI agent to use them instead of the REST APIs, and Google's MCP
+servers reject an OAuth client that is not marked "Use this client for an
+AI-powered agent" in the Google Console. The app endpoints remain separate. Paperclip namespaces actions by service and routes them
 to a closed endpoint registry using the combined grant. It does not create child
 connections or send provider tokens through Paperclip ID.
 
@@ -68,10 +72,19 @@ Each service has a tool transport, set in `GOOGLE_WORKSPACE_TOOL_TRANSPORT`
 to Google's hosted MCP server for that service. `paperclip_rest` runs Paperclip's
 own tools over Google's REST APIs, in the server process
 (`server/src/google-workspace-rest-tools/`), with the same tool names, inputs
-and results. Gmail, Drive, Docs, Sheets, Slides and Calendar run on
-`paperclip_rest` (since 2026-11-23), so the combined connection lists all 36
-allowlisted actions for a full read and write grant. Chat, People and Search,
-which new setup does not offer, stay on `google_mcp`. A service can move to
+and results. Every service runs on `google_mcp` (since 2026-11-24; Gmail,
+Drive, Docs, Sheets, Slides and Calendar ran on `paperclip_rest` from
+2026-11-23 to 2026-11-24). `paperclip_rest` stays as the fallback. The
+combined connection lists the allowlisted actions that Google's servers list
+and the grant covers, at most 36 for a full read and write grant. Before a call
+goes to Google's MCP server, the gateway applies the REST tools' argument checks
+that need no request to Google: unknown arguments, one file ID per argument,
+the closed list of Docs and Slides edit kinds, and, for a Calendar delete, a
+read of the event that refuses a whole recurring series. A confirmation question
+from Google's server goes to a person on the task's question card. When a
+connection saved on `paperclip_rest` is refreshed on `google_mcp`, Google's
+definitions replace Paperclip's without holding any action for review, and Off
+and Ask first stay. A service can move to
 `paperclip_rest` only when Paperclip implements every tool on its allowlist; a
 test enforces that. Actions of a service on `paperclip_rest` are Paperclip's
 own definitions. Agents receive them at once, also for a connection saved
@@ -482,7 +495,8 @@ profiles.
 5. Choose the services and sign in with Google.
 
 Google's guide:
-[Configure Google Workspace MCP servers](https://developers.google.com/workspace/guides/configure-mcp-servers).
+[Create an OAuth client ID](https://developers.google.com/workspace/guides/create-credentials#oauth-client-id).
+The setup screen links to the same guide.
 An unverified Google app shows a warning screen and has a user cap; only you
 can decide whether to submit your own app for Google's verification.
 

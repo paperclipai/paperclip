@@ -101,14 +101,12 @@ do not establish OAuth registration, public callbacks, or production provider ac
 
 ### `apps-catalog`
 
-Automated: [Browse](../../ui/src/pages/apps/Browse.test.tsx) covers catalog entry
-with mocked APIs (mocked `AppNotConnected` and `AppsConnect` component tests were
-removed; coverage for access selection, method choices, and setup failures now relies
-on browser/manual checks). [Connection intents](../../tests/e2e/connection-intents.spec.ts)
-drives store and task setup against one fake provider through a useful continuation:
+Automated: [Connection intents](../../tests/e2e/connection-intents.spec.ts)
+and [chat provider catalog E2E](../../tests/e2e/chat-adapters-ui-providers-catalog.spec.ts)
+drive catalog entry and setup against fake providers through a useful continuation
+(Tailscale admin gating is covered by [TailscaleConnector](../../ui/src/pages/apps/TailscaleConnector.test.tsx)):
 
 ```sh
-pnpm exec vitest run ui/src/pages/apps/Browse.test.tsx
 pnpm exec playwright test -c tests/e2e/playwright.config.ts tests/e2e/connection-intents.spec.ts
 ```
 
@@ -216,7 +214,7 @@ email setup, and identity confirmation were removed; verify those UI flows via
 [chat adapters E2E](../../tests/e2e/chat-adapters-ui-providers.spec.ts) and manual
 checks). Provider-specific live setup is not implied.
 
-[Channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
+[Telegram draft and progress integration](../../server/src/__tests__/chat-channels/telegram-drafts-and-progress.integration.test.ts)
 also covers bounded Telegram subscription recovery at startup and after committed
 configuration changes, saved retry deadlines, rollback, and parking pending
 repair while an endpoint or connection is inactive. The provider responses are
@@ -242,10 +240,9 @@ Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
 Automated: [agent-authenticated integration](../../server/src/__tests__/connection-management.integration.test.ts)
 uses production agent creation, persistent keys, run JWTs, native tool bindings,
 human sessions, PostgreSQL and deterministic provider fixtures. It covers saved
-setup, ownership, attribution, scope, trust, work modes and revocation. The
-[Google service picker tests](../../ui/src/features/connections/GoogleWorkspaceServices.test.tsx)
-cover pending choices, consent precedence and failed grant loading with API mocks.
-These are separate from live provider setup and model success.
+setup, ownership, attribution, scope, trust, work modes and revocation. (verify pending
+choices and consent-picker UI manually.) These are separate from live provider
+setup and model success.
 
 Manual: Have the agent perform authorized setup, then open its saved handoff as
 the addressed person. Reload before completing the required human step; verify

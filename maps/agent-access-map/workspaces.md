@@ -93,13 +93,9 @@ writers with unfinished saves remain fenced. The wait retains the admitted
 assignment role; reassignment during preparation cancels the old assignee's retry.
 The
 [preparation tests](../../server/src/services/heartbeat/workspace-preparation.test.ts)
-and [heartbeat tests](../../server/src/__tests__/heartbeat-remote-workspace-busy.test.ts)
-cover reservation and persisted waits with PostgreSQL; live sandbox
-provider acceptance remains separate.
-The [reservation tests](../../server/src/services/remote-workspace-reservation.test.ts)
-exercise that service boundary with real PostgreSQL, including competing children,
-private sources, foreign companies, and closed records. This is automated evidence,
-not live agent qualification.
+and [remote workspace integration tests](../../server/src/services/remote-workspaces.integration.test.ts)
+cover reservation and persisted waits with PostgreSQL; live sandbox provider acceptance
+remains separate. This is automated evidence, not live agent qualification.
 Importing an existing local task folder is an operator source-checkout command,
 not an agent API or tool: see the
 [dry-run/apply runbook](../../doc/workspace-storage.md#experimental-native-remote-workspace-storage).
@@ -214,9 +210,9 @@ An admitted native standard task can read a same-agent completion continuation
 for its own pending repository in its current workspace. An explicit yield may
 use that saved continuation; explicit completion remains completion. Existing
 status decisions and wake admission retain Stop and authorization gates. The
-[workspace API regression](../../server/src/__tests__/task-workspace-api.test.ts)
+[workspace session tests](../../server/src/__tests__/heartbeat-workspace-session.test.ts)
 and [driver regression](../../packages/paperclip-runner/src/drivers/completion-continuation.test.ts)
-cover this contract; live qualification remains separate.
+cover workspace continuation contracts; live qualification remains separate.
 
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.
@@ -283,9 +279,8 @@ issue mutation and asset-content ACLs, including responsible-user capture owners
 Publication is create-only after staging/hash checks; conflicting files and symlink
 paths fail. Retry the identical identity after an unknown outcome. Audit records
 contain identity/outcome only; contents remain untrusted and screening still applies.
-The [authority regression](../../server/src/services/native-runtime/artifact-transfer.integration.test.ts)
-and [filesystem faults](../../server/src/services/native-runtime/artifact-transfer.test.ts)
-use disposable data and real files; provider transport qualification is separate.
+The [filesystem faults](../../server/src/services/native-runtime/artifact-transfer.test.ts)
+suite uses disposable data and real files; provider transport qualification is separate.
 
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.

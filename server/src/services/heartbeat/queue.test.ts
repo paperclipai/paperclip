@@ -1635,3 +1635,12 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 });
+
+describe("a /swarm request survives wake coalescing", () => {
+  const swarm = { issueId: "issue-1", wakeReason: "issue_commented", wakeCommentId: "c-swarm", antigravitySwarmCommentId: "c-swarm" };
+  const ordinary = { issueId: "issue-1", wakeReason: "issue_commented", wakeCommentId: "c-later" };
+  it("keeps the swarm marker whichever comment arrived first, so the merged run selects its own swarm", () => {
+    expect(mergeCoalescedContextSnapshot(swarm, ordinary)).toMatchObject({ antigravitySwarmCommentId: "c-swarm" });
+    expect(mergeCoalescedContextSnapshot(ordinary, swarm)).toMatchObject({ antigravitySwarmCommentId: "c-swarm" });
+  });
+});

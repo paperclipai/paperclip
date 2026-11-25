@@ -94,7 +94,7 @@ describe("release and resume task contract", () => {
     expect(environmentTaskResultSchema.safeParse({ ...result, runner: { ...runner, extra: true } }).success).toBe(false);
   });
 
-  it("relaunches as the claimant's identity only when asked, and reports the archived state", () => {
+  it("relaunches as the claimant's identity only when asked, and reports the build", () => {
     expect(environmentTaskResultSchema.parse({ ...description, resumeIdentityVersion: 1 })).toEqual({ ...description, resumeIdentityVersion: 1 });
     expect(environmentTaskResultSchema.safeParse({ ...description, resumeIdentityVersion: 2 }).success).toBe(false);
     const runner = { runId: "claimant-run", turnId: "turn-claimant-run", itemId: "item-claimant-run" };
@@ -104,12 +104,11 @@ describe("release and resume task contract", () => {
       expect(environmentTaskOperationSchema.safeParse({ ...resume, runner: changed }).success).toBe(false);
     }
     const build = { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` };
-    const archivedState = { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "ready" };
-    const resumed = { kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState };
+    const resumed = { kind: "resume", taskId: "task", outcome: "resumed", runner: build };
     expect(parseEnvironmentTaskResult(relaunch, "task", resumed)).toEqual(resumed);
-    expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, archivedState: undefined })).toThrow();
+    const archivedState = { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "ready" };
+    expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, archivedState })).toThrow();
     expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, runner: undefined })).toThrow();
-    expect(() => parseEnvironmentTaskResult(resume, "task", resumed)).toThrow();
     expect(parseEnvironmentTaskResult(relaunch, "task", { kind: "resume", taskId: "task", outcome: "unavailable" }))
       .toEqual({ kind: "resume", taskId: "task", outcome: "unavailable" });
   });

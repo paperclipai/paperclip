@@ -101,8 +101,7 @@ Use these checks alongside the entry-point recipes below and the operation recor
 
 ### `task-thread`
 
-Automated: [interaction cards](../../ui/src/components/IssueThreadInteractionCard.test.tsx),
-[paged task cards](../../ui/src/components/task-chat/TaskChatInteractionCard.test.tsx),
+Automated: [interaction cards](../../ui/src/components/IssueThreadInteractionCard.test.tsx)
 and [task thread](../../ui/src/components/TaskChatThread.test.tsx) cover form,
 receipt, and dismissal behavior. [Resolution routes](../../server/src/__tests__/issue-thread-interaction-routes.test.ts)
 and [response delivery](../../server/src/__tests__/question-response-delivery.test.ts)
@@ -132,8 +131,7 @@ history remains and the conversation does not close as a completed task.
 
 ### `attention`
 
-Automated: the resolution-route tests above cover the API (mocked
-`AttentionInteractionResolver` UI component tests were removed; verify
+Automated: the resolution-route tests above cover the API (verify
 preparing-request refresh and Decisions/Inbox navigation manually).
 
 Manual: open the same pending request in an attention row and task tab. Resolve
@@ -201,8 +199,8 @@ Governed approvals, unsupported mixed forms, attachments, and oversized requests
 retain the full Paperclip review path. Link clicks navigate without attempting an
 answer. Terminal edits preserve the submitted response in the same authorized
 conversation and remove stale controls. Inspect the saved interaction, exactly
-one continuation, and useful reply independently. See the
-[continuation regressions](../../server/src/services/chat-interaction-continuation.test.ts)
+one continuation, and useful reply independently. See
+[question response delivery](../../server/src/__tests__/question-response-delivery.test.ts)
 and [Slack card tests](../../server/src/services/chat-channels/slack/cards.test.ts).
 Local real-Slack proof for eleven formats, including native validation and public
 link navigation, is recorded with PR #17255. It uses a deterministic protocol

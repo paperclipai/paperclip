@@ -201,13 +201,16 @@ this field, the provider must:
 - Move the source Runner state (`runner-state.json`) out of the Runner state
   directory into an archive, so that the Runner creates new state.
 - Start the Runner as the claimant identity with the fresh `bootstrapTicket`.
-- Return `runner: { version, digest }` and `archivedState` (the archived Runner
-  state) on the `resumed` result.
+- Return `runner: { version, digest }` on the `resumed` result.
 
-Core accepts the archived state only when it is the source's settled cut: the
-`suspended` lifecycle, or the `ready` lifecycle with an empty outbox, every
-event acknowledged and no command in progress. Core then sends one ordinary
-`run.attach` with no authority hand-off. A retry with the same source, ticket
+The provider is the authority on whether a park exists. It relaunches only from
+the source's settled cut, and Core does not check that cut again. That cut is the
+`suspended` lifecycle, or the `ready` lifecycle with an empty outbox, every event
+acknowledged and no command in progress. Core resumes on the assumption that the
+source parked. When the task has no park of that source, return `unavailable`
+once nothing runs for the task, and Core starts a fresh task from the saved
+session. Otherwise Core sends one ordinary `run.attach` with no authority
+hand-off. A retry with the same source, ticket
 and `runner` must return the original result and must not start a second
 Runner. Without `runner` on `resume`, keep the claimant handover above.
 
@@ -274,18 +277,14 @@ turn replay. A known `unavailable` result still requires ordinary physical
 cleanup. Transparent cold fallback remains a separate qualification requirement.
 
 A normal Core cache timeout detaches only Core's quiet local owner. The host
-keeps its retained resources under its own retention policy. Core's existing
-completed-session record stores only the confirmed source, physical task and a
-digest of the selected account, credential revision and workspace scope. The
-transport returns the exact source after the host's release receipt; Core does
-not infer it from a local checkpoint marker, which may still name an older run.
-An invalid source receipt or failed proof write keeps cleanup under the same
-owner until physical retirement finishes. Later
-cache adoption validates that Core-authored proof before claiming or
-reconnecting. A stale or missing proof never licenses a claim. A changed
-selection remains blocked until guarded retirement/recovery; it does not imply
-that a cold launch is safe. Confirmed claim or physical cleanup clears only the
-matching proof. Raw tickets are never stored in this record.
+keeps its retained resources under its own retention policy. Core keeps no
+record of a release beyond that owner. The transport returns the exact source
+after the host's release receipt. Core checks it against the attached run,
+session, Runner and lease, and only then marks its owner released. An invalid
+source receipt keeps cleanup under the same owner until physical retirement
+finishes. A later run resumes the source Core restores from its controller
+checkpoint, on the lease's current task only, and the provider answers from its
+own park record. Raw tickets are never stored.
 
 When graceful host eviction has saved a suspended session and Core has recorded
 physical stop, a later allocation can use ordinary `resumeFrom` recovery. Core

@@ -8,7 +8,7 @@ import { githubResponseExecution } from "./response-execution.js";
 import { readGitHubResponseRuns, type GitHubResponseRunRead } from "./response-run-state.js";
 import { githubResponseReconstructionIntervalMs, type GitHubResponseSweepScope as Scope } from "./response-sweep-scope.js";
 import { HttpError } from "../../../errors.js";
-export const GITHUB_TERMINAL_RESPONSE_DECISION_VERSION = "v2";
+export const GITHUB_TERMINAL_RESPONSE_DECISION_VERSION = "v3";
 type Entry = { id: string; companyId: string; endpointId: string; deliveryId: string;
   issueId: string; conversationId: string; repositoryId: string | null; number: number | null; dueAt: number };
 
@@ -49,14 +49,19 @@ export function registerGitHubTerminalResponseWork(
   // the request's own row changes. Such a request records this key, and a broad
   // rebuild skips it until one of them changes. A targeted load still reads it.
   const actionVersion = sql<string>`extract(epoch from ${chatActions.updatedAt})::text`;
+  const latestPublication = sql<string>`coalesce((select extract(epoch from max(p.updated_at))::text from ${chatActions} p
+    where p.company_id = ${chatActions.companyId} and p.endpoint_id = ${chatActions.endpointId}
+      and p.kind = 'github_review_publication' and p.status = 'processed'
+      and p.payload->'session'->>'issueId' = ${issues.id}::text), 'none')`;
   const waitKey = sql<string>`${GITHUB_TERMINAL_RESPONSE_DECISION_VERSION} || '|' || coalesce(${latestIssueRun.version}, 'none')
-    || '|' || ${issues.status} || '|' || ${actionVersion}`;
+    || '|' || ${issues.status} || '|' || ${actionVersion} || '|' || ${latestPublication}`;
   async function page(scope?: Scope, cursor?: string, actionId?: string) {
     return db.select({
       id: chatActions.id, companyId: chatActions.companyId, endpointId: chatActions.endpointId,
       deliveryId: chatActions.deliveryId, conversationId: chatConversations.id, issueId: issues.id,
       agentId: chatEndpoints.assignedAgentId, issueStatus: issues.status,
-      deliveryCreatedAt: chatDeliveries.createdAt, repositoryId, number, result: chatActions.result, actionVersion, waitKey,
+      deliveryCreatedAt: chatDeliveries.createdAt, repositoryId, number,
+      threadId: chatConversations.externalThreadId, result: chatActions.result, actionVersion, waitKey,
       sourceMessageId: sql<string | null>`(select l.comment_id from ${chatMessageLinks} l
         where l.company_id = ${chatActions.companyId} and l.endpoint_id = ${chatActions.endpointId}
           and l.delivery_id = ${chatActions.deliveryId} and l.direction = 'inbound' limit 1)`,

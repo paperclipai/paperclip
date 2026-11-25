@@ -734,10 +734,12 @@ export const issuesApi = {
     interrupt?: boolean,
     attachmentIds?: string[],
     clientRequestId?: string,
+    nativeCommand?: "swarm",
   ) =>
     confirmedCommentResponse(
       api.post<IssueComment>(`/issues/${id}/comments`, {
         body,
+        ...(nativeCommand ? { nativeCommand } : {}),
         ...(clientRequestId ? { clientRequestId } : {}),
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
