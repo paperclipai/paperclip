@@ -15,7 +15,7 @@ import { accessService, heartbeatService, issueReferenceService, issueService, l
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { responsibilityBarService } from "../services/responsibility-bars.js";
 import { responsibilityService } from "../services/responsibilities.js";
-import { assertBoard, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardUser, getAccessibleResource, getActorInfo } from "./authz.js";
 import { getReadableIssue } from "./readable-issue.js";
 import { boardCanManageResponsibilityOwner } from "./responsibilities.js";
 
@@ -107,7 +107,7 @@ export function responsibilityBarRoutes(db: Db, opts: { heartbeat?: IssueAssignm
       await svc.assertEnabled();
       const row = await getAccessibleResource(req, res, responsibilitiesSvc.getById(req.params.id as string), NOT_FOUND);
       if (!row) return;
-      assertBoard(req);
+      assertBoardUser(req);
       assertWriter(req, row);
       const actor = getActorInfo(req);
       const agentId = req.body.agentId ?? await svc.defaultAgentId(row);
@@ -197,7 +197,7 @@ export function responsibilityBarRoutes(db: Db, opts: { heartbeat?: IssueAssignm
       await svc.assertEnabled();
       const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
-      assertBoard(req);
+      assertBoardUser(req);
       const { responsibility } = await svc.responsibilityForConversation(issue);
       assertWriter(req, responsibility);
       const accepted = await svc.accept(issue, req.params.interactionId as string, { userId: boardUserId(req) }, {
@@ -270,7 +270,7 @@ export function responsibilityBarRoutes(db: Db, opts: { heartbeat?: IssueAssignm
       await svc.assertEnabled();
       const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
-      assertBoard(req);
+      assertBoardUser(req);
       const { responsibility } = await svc.responsibilityForConversation(issue);
       assertWriter(req, responsibility);
       const interaction = await svc.decline(issue, req.params.interactionId as string, { userId: boardUserId(req) });

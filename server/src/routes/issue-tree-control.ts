@@ -23,7 +23,7 @@ import {
   issueTreeControlService,
   logActivity,
 } from "../services/index.js";
-import { assertBoard, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, boardAuthorityUserId, getAccessibleResource, getActorInfo, isBoardOperatorAgent } from "./authz.js";
 
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
@@ -200,7 +200,8 @@ export function issueTreeControlRoutes(
               {
                 resultJson: {
                   cancelledByActorType: "user",
-                  cancelledByUserId: req.actor.userId ?? null,
+                  cancelledByUserId: boardAuthorityUserId(req) ?? null,
+                  ...(isBoardOperatorAgent(req) ? { cancelledByAgentId: req.actor.agentId } : {}),
                 },
               },
             );

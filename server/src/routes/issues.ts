@@ -297,6 +297,7 @@ import { privateJsonEtag } from "../middleware/private-json-etag.js";
 import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
 import {
   assertBoard,
+  assertBoardUser,
   assertCompanyAccess,
   getAccessibleResource,
   getActorInfo,
@@ -8679,7 +8680,7 @@ export function issueRoutes(
     const startedAt = Date.now();
     const timing = createInboxMineTiming();
     const companyId = req.params.companyId as string;
-    assertBoard(req);
+    assertBoardUser(req);
     assertCompanyAccess(req, companyId);
     if (Object.keys(req.query).length > 0) {
       res.status(400).json({ error: "The Mine snapshot does not accept query parameters" });
@@ -9394,7 +9395,7 @@ export function issueRoutes(
   );
 
   router.post("/issues/:id/context/compact", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     if (!req.actor.userId) throw forbidden("Board user context required");
     const issue = await getAccessibleResource(
       req,
@@ -10086,7 +10087,7 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/retry", validate(taskRetrySchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await decideIssueAccess(req, issue, "issue:mutate");
@@ -10167,7 +10168,7 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/recovery-actions/resume-workspace-finalization", validate(resumeWorkspaceFinalizationSchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
@@ -10178,7 +10179,7 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/recovery-actions/confirm-run-stopped", validate(confirmRunStoppedSchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
@@ -10209,7 +10210,7 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/recovery-actions/confirm-controller-stopped", validate(confirmNativeControllerStoppedSchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
@@ -10220,7 +10221,7 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/recovery-actions/confirm-owner-gone", validate(confirmOwnerGoneSchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
     const decision = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop", resource: { type: "company", companyId: issue.companyId } });
@@ -10320,7 +10321,7 @@ export function issueRoutes(
         if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
       }
       if (executionReconciliation?.controllerStopped !== undefined || executionReconciliation?.controllerAuthorityDigest !== undefined) {
-        assertBoard(req);
+        assertBoardUser(req);
         const permission = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop",
           resource: { type: "company", companyId: existing.companyId } });
         if (!permission.allowed) throw forbidden(permission.explanation, authorizationDeniedDetails(permission));
@@ -10587,7 +10588,7 @@ export function issueRoutes(
         const controllerContainment = executionReconciliation?.controllerStopped === true
           || executionReconciliation?.controllerAuthorityDigest !== undefined;
         if (controllerContainment) {
-          assertBoard(req);
+          assertBoardUser(req);
           const permission = await access.decide({ actor: req.actor, action: "runtime:confirm_owner_stop",
             resource: { type: "company", companyId: lockedIssue.companyId } });
           if (!permission.allowed) throw forbidden(permission.explanation, authorizationDeniedDetails(permission));
@@ -14350,7 +14351,7 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
-      assertBoard(req);
+      assertBoardUser(req);
 
       if (req.actor.source !== "local_implicit") {
         const userId = req.actor.userId?.trim();
@@ -17336,7 +17337,7 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/admin/force-release", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     if (!req.actor.userId) {
       throw forbidden("Board user context required");
     }
@@ -17552,7 +17553,7 @@ export function issueRoutes(
     "/issues/:id/queued-comments/:commentId",
     validate(editQueuedCommentSchema),
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       if (!req.actor.userId) throw forbidden("Board user context required");
       const id = req.params.id as string;
       const commentId = req.params.commentId as string;
@@ -17584,7 +17585,7 @@ export function issueRoutes(
     "/issues/:id/queued-comments/order",
     validate(reorderQueuedCommentsSchema),
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       if (!req.actor.userId) throw forbidden("Board user context required");
       const id = req.params.id as string;
       const issue = await getAccessibleResource(
@@ -17614,7 +17615,7 @@ export function issueRoutes(
     "/issues/:id/queued-comments/interrupt",
     validate(queuedCommentInterruptTargetSchema),
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       if (!req.actor.userId) throw forbidden("Board user context required");
       const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
@@ -17701,7 +17702,7 @@ export function issueRoutes(
     "/issues/:id/queued-comments/:commentId/steer",
     validate(queuedCommentSteeringTargetSchema),
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       if (!req.actor.userId) throw forbidden("Board user context required");
       const id = req.params.id as string;
       const commentId = req.params.commentId as string;
@@ -17802,7 +17803,7 @@ export function issueRoutes(
   );
 
   router.get("/issues/:id/chat-handoffs", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     if (!req.actor.userId) throw forbidden("Board user context required");
     const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Conversation not found");
     if (!issue) return;
@@ -17819,7 +17820,7 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id/pending-questions", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     if (!req.actor.userId) throw forbidden("Board user context required");
     const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Conversation not found");
     if (!issue) return;
@@ -17834,7 +17835,7 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id/decision-receipts", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     if (!req.actor.userId) throw forbidden("Board user context required");
     const issue = await getAccessibleResource(req, res, getIssueById(req, req.params.id as string), "Conversation not found");
     if (!issue) return;
@@ -18754,7 +18755,7 @@ export function issueRoutes(
   router.post(
     "/issues/:id/interactions/:interactionId/dismiss",
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
       if (!(await assertIssueReadAllowed(req, res, issue))) return;

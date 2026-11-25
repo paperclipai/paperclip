@@ -93,6 +93,33 @@ describe("Board agent permission grants", () => {
     expect(await grants(f)).toEqual([]);
   });
 
+  it("lets only a board user give board:operate: never the agent itself, and never another board operator", async () => {
+    const f = await seed();
+    const peerId = randomUUID();
+    await db.insert(agents).values({ id: peerId, companyId: f.companyId, name: "Peer", adapterType: "process", status: "idle" });
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "agent", principalId: peerId,
+      membershipRole: "member", status: "active" });
+    const operate = { permissionKey: "board:operate", enabled: true };
+    const agentActor = (agentId: string, boardOperator: boolean) => app({ type: "agent", source: "agent_key",
+      companyId: f.companyId, agentId, onBehalfOfUserId: f.userId,
+      onBehalfOfMemberships: [{ companyId: f.companyId, membershipRole: "owner", status: "active" }],
+      ...(boardOperator ? { boardOperator } : {}) });
+
+    const self = await request(agentActor(f.agentId, false)).patch(path(f)).send(operate);
+    expect(self.status).toBe(403);
+    expect(await grants(f)).toEqual([]);
+    expect((await request(owner(f)).patch(path(f)).send(operate)).status).toBe(200);
+    expect(await grants(f)).toEqual([expect.objectContaining({ permissionKey: "board:operate", scope: null,
+      grantedByUserId: f.userId })]);
+    const toPeer = await request(agentActor(f.agentId, true)).patch(`/agents/${peerId}/permission-grants`).send(operate);
+    expect(toPeer.status).toBe(403);
+    expect(toPeer.body).toMatchObject({ error: "Board access required", code: "board_access_required" });
+    expect((await request(agentActor(f.agentId, true)).patch(path(f)).send({ ...operate, enabled: false })).status).toBe(403);
+    expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, peerId))).toEqual([]);
+    expect((await request(owner(f)).patch(path(f)).send({ ...operate, enabled: false })).status).toBe(200);
+    expect(await grants(f)).toEqual([]);
+  });
+
   it("rejects invalid grants and inactive agents or memberships without reactivating them", async () => {
     const f = await seed(), api = owner(f);
     expect((await request(api).patch(path(f)).send({ ...grant, permissionKey: "invalid" })).status).toBe(400);

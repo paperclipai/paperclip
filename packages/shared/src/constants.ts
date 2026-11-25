@@ -1202,8 +1202,20 @@ export const PERMISSION_KEYS = [
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
   "joins:approve",
+  "board:operate",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+export const BOARD_OPERATOR_PERMISSION_KEY = "board:operate" as const satisfies PermissionKey;
+
+export const BOARD_ONLY_AGENT_PERMISSION_KEYS = [
+  BOARD_OPERATOR_PERMISSION_KEY,
+] as const satisfies readonly PermissionKey[];
+export type BoardOnlyAgentPermissionKey = (typeof BOARD_ONLY_AGENT_PERMISSION_KEYS)[number];
+
+export function isBoardOnlyAgentPermissionKey(value: unknown): value is BoardOnlyAgentPermissionKey {
+  return (BOARD_ONLY_AGENT_PERMISSION_KEYS as readonly unknown[]).includes(value);
+}
 
 export const TOOL_APPLICATION_TYPES = ["rest_api", "mcp_http", "mcp_stdio", "paperclip_plugin", "a2a", "chat"] as const;
 export type ToolApplicationType = (typeof TOOL_APPLICATION_TYPES)[number];

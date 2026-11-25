@@ -36,6 +36,19 @@ describe("agentJoinGrantsFromDefaults", () => {
     ).toEqual([{ permissionKey: "agents:create", scope: null }, ...defaultAgentGrants]);
   });
 
+  it("never carries the board operator grant in from an invitation", () => {
+    expect(
+      agentJoinGrantsFromDefaults({
+        agent: {
+          grants: [
+            { permissionKey: "board:operate", scope: null },
+            { permissionKey: "agents:create", scope: null },
+          ],
+        },
+      }, invitedAgentId),
+    ).toEqual([{ permissionKey: "agents:create", scope: null }, ...defaultAgentGrants]);
+  });
+
   it("does not duplicate tasks:assign when invite defaults already include it", () => {
     expect(
       agentJoinGrantsFromDefaults({

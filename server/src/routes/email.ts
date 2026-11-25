@@ -10,7 +10,7 @@ import {
 } from "@paperclipai/shared";
 import type { Db } from "@paperclipai/db";
 import { validate } from "../middleware/validate.js";
-import { assertBoard, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
 import { emailConnectionService } from "../services/email-connections.js";
 import { accessService } from "../services/access.js";
 import { badRequest, forbidden, HttpError, notFound } from "../errors.js";
@@ -91,7 +91,7 @@ export function emailRoutes(db: Db, service: EmailChannelService) {
   const managementGuard = connectionManagementGuard(db, "chat");
   async function manager(req: Request, companyId: string) {
     if (req.actor.type === "agent" && connectionRequestContext(req)) return;
-    assertBoard(req);
+    assertBoardUser(req);
     if (!hasCompanyAccess(req, companyId))
       throw notFound("Email inbox not found");
     assertCompanyAccess(req, companyId);

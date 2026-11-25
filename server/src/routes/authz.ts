@@ -162,14 +162,29 @@ export function issueNotFoundBody(req: Request): Record<string, unknown> {
   };
 }
 
+export function isBoardOperatorAgent(req: Request) {
+  return req.actor.type === "agent" && req.actor.boardOperator === true;
+}
+
 /**
  * Board-only check. Pass `controlPage` when the board control lives on a different
  * page from the one the route path implies, e.g. a budget field on a general route.
  */
 export function assertBoard(req: Request, controlPage?: BoardControlPage) {
+  if (req.actor.type === "board" || isBoardOperatorAgent(req)) return;
+  throw boardAccessRequired(req, controlPage);
+}
+
+export function assertBoardUser(req: Request, controlPage?: BoardControlPage) {
   if (req.actor.type !== "board") {
     throw boardAccessRequired(req, controlPage);
   }
+}
+
+export function boardAuthorityUserId(req: Request): string | undefined {
+  if (req.actor.type === "board") return req.actor.userId;
+  if (isBoardOperatorAgent(req)) return req.actor.onBehalfOfUserId?.trim() || undefined;
+  return undefined;
 }
 
 export function hasBoardOrgAccess(req: Request) {
@@ -183,7 +198,7 @@ export function hasBoardOrgAccess(req: Request) {
 }
 
 export function assertBoardOrgAccess(req: Request) {
-  assertBoard(req);
+  assertBoardUser(req);
   if (hasBoardOrgAccess(req)) {
     return;
   }
@@ -202,7 +217,7 @@ export function assertBoardOrAgent(req: Request) {
 }
 
 export function assertInstanceAdmin(req: Request) {
-  assertBoard(req);
+  assertBoardUser(req);
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) {
     return;
   }

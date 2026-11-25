@@ -37,6 +37,7 @@ import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { runningProcesses } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { withBoardOperatorActor } from "../services/board-operator-context.js";
 
 const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RETRY_CANCELLATION_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalTestDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -90,7 +91,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     app.use(express.json());
     app.use((req, _res, next) => {
       req.actor = actor;
-      next();
+      withBoardOperatorActor(req.actor, () => next());
     });
     app.use("/api", issueRoutes(db, {} as any));
     app.use(errorHandler);
@@ -1002,6 +1003,38 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       .send({});
 
     expect(res.status).toBe(403);
+  });
+
+  it("lets a board operator agent press Retry now on a provider usage-limit hold, and only with the grant", async () => {
+    const f = await seedIssueWithRetry();
+    await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "provider_limit_wait",
+      error: "Provider usage limit reached" }).where(eq(heartbeatRuns.id, f.sourceRunId));
+    const leadAgentId = randomUUID();
+    await db.insert(agents).values({ id: leadAgentId, companyId: f.companyId, name: "Lead", role: "ceo",
+      adapterType: "claude_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} });
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "agent", principalId: leadAgentId,
+      status: "active", membershipRole: "member" });
+    const lead = (boardOperator: boolean): Express.Request["actor"] => ({
+      ...agentActor(f.companyId, leadAgentId),
+      onBehalfOfUserId: "board-user",
+      onBehalfOfMemberships: [{ companyId: f.companyId, membershipRole: "admin", status: "active" }],
+      ...(boardOperator ? { boardOperator } : {}),
+    });
+    const retryNow = (actor: Express.Request["actor"]) => request(createApp(actor))
+      .post(`/api/issues/${f.issueId}/scheduled-retry/retry-now`).send({});
+
+    const refused = await retryNow(lead(false));
+    expect(refused.status).toBe(403);
+    expect(refused.body).toMatchObject({ error: "Board access required", code: "board_access_required" });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId)))[0]?.status).toBe("scheduled_retry");
+
+    const promoted = await retryNow(lead(true));
+    expect(promoted.status, JSON.stringify(promoted.body)).toBe(200);
+    expect(promoted.body).toMatchObject({ outcome: "promoted", scheduledRetry: { runId: f.retryRunId, status: "queued" } });
+    const [entry] = await db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId),
+      eq(activityLog.action, "issue.scheduled_retry_retry_now")));
+    expect(entry).toMatchObject({ actorType: "agent", actorId: leadAgentId, entityId: f.issueId,
+      responsibleUserId: "board-user", details: expect.objectContaining({ boardOperator: true }) });
   });
 
   it("enforces company scoping for retry-now with a uniform 404", async () => {

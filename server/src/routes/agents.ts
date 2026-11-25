@@ -148,7 +148,7 @@ import {
 import { badRequest, conflict, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { ONBOARDING_FIRST_TASK_SKILL_KEY, PAPERCLIP_CORE_SKILL_KEYS } from "../services/company-skills.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
-import { agentBudgetPage, assertAuthenticated, assertBoard, assertCompanyAccess, COMPANY_BUDGETS_PAGE, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { agentBudgetPage, assertAuthenticated, assertBoard, assertBoardUser, assertCompanyAccess, isBoardOperatorAgent, boardAuthorityUserId, COMPANY_BUDGETS_PAGE, assertInstanceAdmin, buildActorSecretContext, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { runAdapterLoginStartSpine } from "./adapter-login-route-spine.js";
 import { isLoginCommandSupportedAdapterType } from "../services/login-command.js";
 import {
@@ -2773,6 +2773,7 @@ export function agentRoutes(
       (key !== "env" || !containsOnlyLocalAdapterCredentialRefs(harness, adapterConfig.env, allowPlainCredentials)),
     );
     if (changedKeys.length === 0) return;
+    if (isBoardOperatorAgent(req)) return;
     throw forbidden(
       `Agent keys cannot configure host-executed local adapter settings (${changedKeys.join(", ")}).`,
     );
@@ -4402,7 +4403,7 @@ export function agentRoutes(
       throw unprocessable("Invalid revision snapshot");
     }
     if (typeof rollbackConfig.budgetMonthlyCents === "number" && rollbackConfig.budgetMonthlyCents !== existing.budgetMonthlyCents) {
-      assertBoard(req, agentBudgetPage(existing.id));
+      assertBoardUser(req, agentBudgetPage(existing.id));
     }
     assertProviderTraceSettingTransition(
       req,
@@ -4548,7 +4549,7 @@ export function agentRoutes(
 
     // Budgets are board-only. An agent may propose one in a hire that waits for
     // board approval; the approving operator then activates it.
-    if (!company.requireBoardApprovalForNewAgents && req.body.budgetMonthlyCents > 0) assertBoard(req, COMPANY_BUDGETS_PAGE);
+    if (!company.requireBoardApprovalForNewAgents && req.body.budgetMonthlyCents > 0) assertBoardUser(req, COMPANY_BUDGETS_PAGE);
     const sourceIssueIds = parseSourceIssueIds(req.body);
     const {
       desiredSkills: requestedDesiredSkills,
@@ -4573,7 +4574,7 @@ export function agentRoutes(
     } = req.body;
 
     if (setupAgentId) {
-      assertBoard(req);
+      assertBoardUser(req);
       if (!req.actor.userId) throw forbidden("User identity required for agent setup");
       const setupAgent = await svc.getById(setupAgentId);
       if (!setupAgent || setupAgent.companyId !== companyId) throw notFound("Agent setup not found");
@@ -4928,7 +4929,7 @@ export function agentRoutes(
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     await assertCanCreateAgentsForCompany(req, companyId, { hiring: true });
-    if (req.body.budgetMonthlyCents > 0) assertBoard(req, COMPANY_BUDGETS_PAGE);
+    if (req.body.budgetMonthlyCents > 0) assertBoardUser(req, COMPANY_BUDGETS_PAGE);
 
     const company = await db
       .select()
@@ -4940,7 +4941,7 @@ export function agentRoutes(
       return;
     }
     if (req.body.setupId) {
-      assertBoard(req);
+      assertBoardUser(req);
       if (!req.actor.userId) throw forbidden("User identity required for agent setup");
     }
     if (company.requireBoardApprovalForNewAgents && !req.body.setupId) {
@@ -5588,7 +5589,7 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/connection-intents/:interactionId/adopt", validate(completeConnectionIntentSchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const agent = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
     if (!agent) return;
     await assertCanUpdateAgent(req, agent);
@@ -5632,7 +5633,7 @@ export function agentRoutes(
     // A budget change is the board-only budget control (PATCH /agents/:id/budgets),
     // so PATCH is never a way around it.
     if (hasOwn(req.body as object, "budgetMonthlyCents") && req.body.budgetMonthlyCents !== existing.budgetMonthlyCents) {
-      assertBoard(req, agentBudgetPage(existing.id));
+      assertBoardUser(req, agentBudgetPage(existing.id));
     }
 
     if (hasOwn(req.body as object, "permissions")) {
@@ -6082,7 +6083,7 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/approve", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const id = req.params.id as string;
     const existing = await getAccessibleAgent(req, res, id);
     if (!existing) {
@@ -6174,7 +6175,7 @@ export function agentRoutes(
   });
 
   router.delete("/agents/:id", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const id = req.params.id as string;
     if (!(await getAccessibleAgent(req, res, id))) {
       return;
@@ -6209,7 +6210,7 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/keys", validate(createAgentKeySchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const id = req.params.id as string;
     const agent = await getAccessibleAgent(req, res, id);
     if (!agent) {
@@ -6238,7 +6239,7 @@ export function agentRoutes(
   });
 
   router.delete("/agents/:id/keys/:keyId", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const id = req.params.id as string;
     const keyId = req.params.keyId as string;
     const agent = await getAccessibleAgent(req, res, id);
@@ -6677,7 +6678,7 @@ export function agentRoutes(
   });
 
   router.post("/agents/:id/claude-login", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const id = req.params.id as string;
     const agent = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!agent) return;
@@ -7114,7 +7115,7 @@ export function agentRoutes(
   });
 
   router.post("/companies/:companyId/setup-token-login-sessions/:sessionId/code", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const companyId = req.params.companyId as string;
     const ownerUserId = resolveCompanySessionOwner(req, companyId, res);
     if (ownerUserId === null) return;
@@ -7424,11 +7425,14 @@ export function agentRoutes(
     // Stamp the cancellation as operator-initiated (this route is board-only).
     // Recovery reads this to stand down instead of classifying the cancelled
     // run as agent stranding and re-waking the agent the operator just stopped.
+    const stopUserId = boardAuthorityUserId(req) ?? null;
+    const operatorAgentId = isBoardOperatorAgent(req) ? req.actor.agentId ?? null : null;
     const run = await heartbeat.cancelRun(runId, "Cancelled by a board operator", {
-      ...(requestId ? { cancellationRequestId: requestId, cancellationRequestedByUserId: req.actor.userId ?? null } : {}),
+      ...(requestId ? { cancellationRequestId: requestId, cancellationRequestedByUserId: stopUserId } : {}),
       resultJson: {
         cancelledByActorType: "user",
-        cancelledByUserId: req.actor.userId ?? null,
+        cancelledByUserId: stopUserId,
+        ...(operatorAgentId ? { cancelledByAgentId: operatorAgentId } : {}),
       },
     });
 
@@ -7456,7 +7460,7 @@ export function agentRoutes(
   router.post(
     "/heartbeat-runs/:runId/runtime-requests/:requestId/resolve",
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       const runId = readHeartbeatRunId(req);
       const requestId = req.params.requestId as string;
       const existing = await getAccessibleResource(

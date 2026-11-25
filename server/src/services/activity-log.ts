@@ -1,4 +1,5 @@
 import { isDashboardActivity } from "./responsibility-privacy.js";
+import { attributeActivityToBoardOperator } from "./board-operator-context.js";
 import { notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { beginRunPhase } from "./execution-preparation-timing.js";
@@ -172,6 +173,7 @@ export function publishActivity(publication: ActivityPublication) {
 }
 
 export async function persistActivity(db: Db, input: LogActivityInput, receipt?: { id: string }) {
+  input = attributeActivityToBoardOperator(input);
   const redactedDetails = await redactActivityDetails(db, input.authorization ? { ...input.details, permissionDecision: input.authorization, ...(input.agentApiKeyId ? { agentApiKeyId: input.agentApiKeyId } : {}) } : input.details ?? null);
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
   const insert = (runner: Db) => runner.insert(activityLog).values({

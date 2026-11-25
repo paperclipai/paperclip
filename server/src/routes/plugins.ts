@@ -70,7 +70,7 @@ import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES } from "@paperclipai/plugin-sd
 import { findPluginWorkerUnavailableError } from "../services/plugin-worker-unavailable-error.js";
 import {
   assertAuthenticated,
-  assertBoard,
+  assertBoardUser,
   assertBoardOrAgent,
   assertBoardOrgAccess,
   assertCompanyAccess,
@@ -652,7 +652,7 @@ export function pluginRoutes(
 
   function assertScopedApiAuth(req: Request, route: PluginApiRouteDeclaration) {
     if (route.auth === "board") {
-      assertBoard(req);
+      assertBoardUser(req);
       return;
     }
     if (route.auth === "agent") {

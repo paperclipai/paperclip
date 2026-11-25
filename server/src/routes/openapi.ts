@@ -3976,7 +3976,7 @@ registry.registerPath({
   path: "/api/agents/{id}/permission-grants",
   tags: ["agents"],
   summary: "Grant or revoke one explicit agent permission",
-  description: "Board-only. Requires users:manage_permissions in the agent's company. Enables an unscoped grant or removes that permission key without replacing other grants. Does not reactivate inactive memberships or start agent work. Writes an activity record in the same transaction.",
+  description: "Board users only; a board operator agent is refused. Requires users:manage_permissions in the agent's company. This is the only way to give an agent board:operate. Enables an unscoped grant or removes that permission key without replacing other grants. Does not reactivate inactive memberships or start agent work. Writes an activity record in the same transaction.",
   request: { params: z.object({ id: z.string().uuid() }), body: jsonBody(updateAgentPermissionGrantSchema) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
@@ -8242,6 +8242,7 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/cancel",
   tags: ["runs"],
   summary: "Cancel a heartbeat run",
+  description: "Board-only: a board user, or an agent granted board:operate. The caller must be able to read the run. A board operator agent's Stop is recorded for its responsible user, with cancelledByAgentId, and its activity entry names the agent.",
   request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });

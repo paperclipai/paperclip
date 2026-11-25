@@ -16,7 +16,7 @@ import {
   updateUserSecretValueSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource } from "./authz.js";
+import { assertBoard, assertBoardUser, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
@@ -66,7 +66,7 @@ function setProposalPaginationHeaders(
 }
 
 function hasSecretDefinitionAdminAccess(req: Parameters<typeof assertBoard>[0], companyId: string) {
-  assertBoard(req);
+  assertBoardUser(req);
   assertCompanyAccess(req, companyId);
   if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
   const membership = req.actor.memberships?.find((item) => item.companyId === companyId);
@@ -79,12 +79,12 @@ function assertSecretDefinitionAdmin(req: Parameters<typeof assertBoard>[0], com
 }
 
 function assertCompanySecretWrite(req: Parameters<typeof assertBoard>[0], companyId: string) {
-  assertBoard(req);
+  assertBoardUser(req);
   assertCompanyAccess(req, companyId);
 }
 
 function currentUserId(req: Parameters<typeof assertBoard>[0]) {
-  assertBoard(req);
+  assertBoardUser(req);
   if (req.actor.userId) return req.actor.userId;
   throw unauthorized("User identity required for user-specific secrets");
 }

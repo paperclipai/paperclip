@@ -30,7 +30,7 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { validate } from "../middleware/validate.js";
 import { z } from "zod";
 import { badRequest, HttpError } from "../errors.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { cancelApprovalAndNotify } from "./approvals.js";
 import { withdrawIssueThreadInteractionAndNotify } from "./issues.js";
 
@@ -58,7 +58,7 @@ export function attentionRoutes(
   function cardRequest(req: Request) {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     const userId = req.actor.userId;
     const sourceKind = req.params.sourceKind as string;
     if (!(ATTENTION_SOURCE_KINDS as readonly string[]).includes(sourceKind)) {
@@ -72,7 +72,7 @@ export function attentionRoutes(
   router.get("/companies/:companyId/attention/summary", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     if (!req.actor.userId) { res.status(403).json({ error: "Board user context required" }); return; }
     res.json(await svc.summary(companyId, { userId: req.actor.userId, actor: req.actor }));
   });
@@ -80,7 +80,7 @@ export function attentionRoutes(
   router.get("/companies/:companyId/attention/tasks", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     if (!req.actor.userId) { res.status(403).json({ error: "Board user context required" }); return; }
     res.json(await svc.taskIndex(companyId, { userId: req.actor.userId, actor: req.actor }));
   });
@@ -88,7 +88,7 @@ export function attentionRoutes(
   router.get("/companies/:companyId/attention/run-history", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     if (!req.actor.userId) { res.status(403).json({ error: "Board user context required" }); return; }
     const cursor = z.object({ at: z.string().datetime(), id: z.string().uuid() }).strict();
     const before = Object.keys(req.query).length ? cursor.safeParse(req.query) : null;
@@ -107,7 +107,7 @@ export function attentionRoutes(
   router.get("/companies/:companyId/attention/history", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     if (!req.actor.userId) { res.status(403).json({ error: "Board user context required" }); return; }
     const query = z.object({
       cursor: z.string().max(1000).optional(), limit: z.coerce.number().int().min(1).max(100).optional(),
@@ -132,7 +132,7 @@ export function attentionRoutes(
   router.get("/companies/:companyId/attention", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     if (!req.actor.userId) {
       res.status(403).json({ error: "Board user context required" });
       return;

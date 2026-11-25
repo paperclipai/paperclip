@@ -47,6 +47,7 @@ import {
 } from "../services/invite-rate-limit.js";
 import {
   assertBoard,
+  assertBoardUser,
   assertBoardOrAgent,
   assertCompanyAccess,
   getAccessibleResource,
@@ -122,7 +123,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   }
 
   async function assertIdentityLinkAccess(req: ExpressRequest) {
-    assertBoard(req);
+    assertBoardUser(req);
     const userId = actorUserId(req);
     if (!userId) throw badRequest("A signed-in Paperclip user is required");
     // Enforce rollout here: invited nonmembers cannot read the board's
@@ -254,7 +255,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   });
   router.get("/chat-slack/managed/oauth/callback", async (req, res) => {
     res.set("Cache-Control", "no-store"); res.set("Referrer-Policy", "no-referrer");
-    assertBoard(req);
+    assertBoardUser(req);
     const actor = slackActor(req);
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const expiredId = await service.slackRegistration.managerGrants.expiredReturn(state, actor);
@@ -296,7 +297,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   router.get("/chat-slack/oauth/callback", async (req, res) => {
     res.set("Cache-Control", "no-store");
     res.set("Referrer-Policy", "no-referrer");
-    assertBoard(req);
+    assertBoardUser(req);
     const actor = slackActor(req);
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const expiredReturn = await service.slackRegistration.expiredReturn(state, actor);
@@ -351,7 +352,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     if (!(await assertEndpointAccess(req, res, service))) return;
     res.json(await github.personalConnections(endpointId(req), githubUser(req)));
   });
-  router.post("/chat-endpoints/:endpointId/github/identity", (req, _res, next) => { assertBoard(req); next(); }, validate(z.object({ connectionId: z.string().uuid(), confirmedGithubUserId: z.string().regex(/^[1-9][0-9]*$/).optional() }).strict()), async (req, res) => {
+  router.post("/chat-endpoints/:endpointId/github/identity", (req, _res, next) => { assertBoardUser(req); next(); }, validate(z.object({ connectionId: z.string().uuid(), confirmedGithubUserId: z.string().regex(/^[1-9][0-9]*$/).optional() }).strict()), async (req, res) => {
     if (!(await assertEndpointAccess(req, res, service))) return;
     res.json(await github.identity(endpointId(req), req.body.connectionId, githubUser(req), req.body.confirmedGithubUserId));
   });
@@ -390,7 +391,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     if (req.actor.type === "agent") { res.json(await setupHandoff(req, "The responsible user must authenticate and confirm their own GitHub identity.", "confirm_identity")); return; }
     res.json(await service.githubWizard.startIdentity(endpointId(req), githubUser(req), req.actor));
   });
-  router.post("/chat-endpoints/:endpointId/github/identity/confirm", (req, _res, next) => { assertBoard(req); next(); }, validate(z.object({ githubUserId: z.string().regex(/^[1-9][0-9]*$/) }).strict()), async (req, res) => {
+  router.post("/chat-endpoints/:endpointId/github/identity/confirm", (req, _res, next) => { assertBoardUser(req); next(); }, validate(z.object({ githubUserId: z.string().regex(/^[1-9][0-9]*$/) }).strict()), async (req, res) => {
     if (!(await assertEndpointManagementAccess(req, res))) return;
     res.set("Cache-Control", "no-store");
     res.json(await service.githubWizard.confirmIdentity(endpointId(req), githubUser(req), req.body.githubUserId));
@@ -631,7 +632,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   );
 
   router.post(
-    "/chat-endpoints/:endpointId/publications/:publicationId/resolve", (req, _res, next) => { assertBoard(req); next(); },
+    "/chat-endpoints/:endpointId/publications/:publicationId/resolve", (req, _res, next) => { assertBoardUser(req); next(); },
     validate(resolveChatPublicationSchema),
     async (req, res) => {
       if (!(await assertEndpointManagementAccess(req, res))) return;
@@ -649,7 +650,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   );
 
   router.post(
-    "/chat-endpoints/:endpointId/actions/:actionId/resolve", (req, _res, next) => { assertBoard(req); next(); },
+    "/chat-endpoints/:endpointId/actions/:actionId/resolve", (req, _res, next) => { assertBoardUser(req); next(); },
     validate(resolveChatActionSchema),
     async (req, res) => {
       if (!(await assertEndpointManagementAccess(req, res))) return;
@@ -666,7 +667,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
   );
 
   router.post(
-    "/chat-endpoints/:endpointId/conversations/:conversationId/publications", (req, _res, next) => { assertBoard(req); next(); },
+    "/chat-endpoints/:endpointId/conversations/:conversationId/publications", (req, _res, next) => { assertBoardUser(req); next(); },
     validate(publishChatPublicationSchema),
     async (req, res) => {
       if (!(await assertEndpointAccess(req, res, service))) return;

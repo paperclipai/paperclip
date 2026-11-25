@@ -2,7 +2,7 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { approveCompanyMcpSkillSchema, mcpSkillFileQuerySchema } from "@paperclipai/shared";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertBoardUser, assertCompanyAccess } from "./authz.js";
 import { validate } from "../middleware/validate.js";
 import { forbidden } from "../errors.js";
 import { accessService } from "../services/access.js";
@@ -37,7 +37,7 @@ export function mcpSkillsRoutes(db: Db, toolGateway: McpSkillsGateway) {
    * `skills.install` for an external package from that connection.
    */
   async function assertCanReview(req: Request, companyId: string, connectionId: string, skillId: string) {
-    assertBoard(req);
+    assertBoardUser(req);
     assertCompanyAccess(req, companyId);
     const platform = await accessService(db).decide({ actor: req.actor, action: "skill_config:update", resource: { type: "company", companyId } });
     if (!platform.allowed && !["deny_no_grant", "deny_missing_consent", "deny_missing_grant"].includes(platform.reason)) {
@@ -69,7 +69,7 @@ export function mcpSkillsRoutes(db: Db, toolGateway: McpSkillsGateway) {
 
   router.get("/companies/:companyId/mcp-skills/:skillId/content", async (req, res) => {
     const companyId = req.params.companyId as string;
-    assertBoard(req);
+    assertBoardUser(req);
     assertCompanyAccess(req, companyId);
     if (!uuidSchema.safeParse(req.params.skillId).success) {
       res.status(404).json({ error: "Skill not found" });

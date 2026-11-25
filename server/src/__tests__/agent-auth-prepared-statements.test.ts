@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { fillPlaceholders, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, principalPermissionGrants } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { agentAuthenticationQuery, actorMiddleware, responsibleUserMembershipsQuery } from "../middleware/auth.js";
@@ -26,6 +26,10 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId,
       status: "active", membershipRole: "owner" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Worker", adapterType: "process", lifecycleHolds: [] });
+    await db.insert(companyMemberships).values({ companyId, principalType: "agent", principalId: agentId,
+      status: "active", membershipRole: "member" });
+    await db.insert(principalPermissionGrants).values({ companyId, principalType: "agent", principalId: agentId,
+      permissionKey: "board:operate", grantedByUserId: userId });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", responsibleUserId: userId,
       resultJson: { executionCancellation: { state: "none" }, freshContinuationSupersededAt: null },
       contextSnapshot: { conversationMode: true, issueId: randomUUID() } });
@@ -50,9 +54,10 @@ const support = await getEmbeddedPostgresTestSupport();
       values: { runId, companyId, agentId },
     },
     {
-      bound: responsibleUserMembershipsQuery(db, { companyId, userId }),
-      prepared: responsibleUserMembershipsQuery(db, { companyId: sql.placeholder("companyId"), userId: sql.placeholder("userId") }),
-      values: { companyId, userId },
+      bound: responsibleUserMembershipsQuery(db, { companyId, userId, agentId }),
+      prepared: responsibleUserMembershipsQuery(db, { companyId: sql.placeholder("companyId"), userId: sql.placeholder("userId"),
+        agentId: sql.placeholder("agentId") }),
+      values: { companyId, userId, agentId },
     },
   ];
 
@@ -79,7 +84,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const first = await call();
     expect(first.status).toBe(200);
     expect(first.body).toMatchObject({ type: "agent", agentId, companyId, runId, onBehalfOfUserId: userId,
-      onBehalfOfMemberships: [{ companyId, membershipRole: "owner", status: "active" }] });
+      onBehalfOfMemberships: [{ companyId, membershipRole: "owner", status: "active" }], boardOperator: true });
     select.mockClear();
 
     for (let index = 0; index < 3; index += 1) {

@@ -7,10 +7,10 @@ import { validate } from "../middleware/validate.js";
 import { tailscaleConnectionService } from "../services/connectors/tailscale/connections.js";
 import { tailscaleDeviceLoginService } from "../services/connectors/tailscale/device-login.js";
 import { logActivity } from "../services/activity-log.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 function operator(req: Request) {
-  assertBoard(req);
+  assertBoardUser(req);
   if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin) throw forbidden("Instance admin access required");
   return getActorInfo(req).actorId;
 }

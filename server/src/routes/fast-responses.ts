@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { Db } from "@paperclipai/db";
 import { updateFastResponseSchema } from "@paperclipai/shared";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { canManageAiConnections } from "./ai-connections.js";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -21,7 +21,7 @@ export function fastResponseRoutes(db: Db) {
   router.get("/companies/:companyId/fast-response", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     const canManage = await canManageAiConnections(db, req, companyId);
     res.json(
       canManage
@@ -39,7 +39,7 @@ export function fastResponseRoutes(db: Db) {
   router.put("/companies/:companyId/fast-response", validate(updateFastResponseSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     if (!(await canManageAiConnections(db, req, companyId))) throw forbidden();
     res.json(
       await service.configure(companyId, getActorInfo(req).actorId, req.body),
@@ -48,7 +48,7 @@ export function fastResponseRoutes(db: Db) {
   router.get("/companies/:companyId/fast-response/models", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     if (!(await canManageAiConnections(db, req, companyId))) throw forbidden();
     const choices = await service.choices(companyId, getActorInfo(req).actorId);
     const connection = choices.find((c) => c.id === req.query.connectionId);
@@ -66,13 +66,13 @@ export function fastResponseRoutes(db: Db) {
   router.get("/companies/:companyId/fast-response/availability", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     res.json(await service.availability(companyId, getActorInfo(req).actorId));
   });
   router.post("/companies/:companyId/fast-response/test", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     if (!(await canManageAiConnections(db, req, companyId))) throw forbidden();
     res.json(await service.test(companyId, getActorInfo(req).actorId));
   });

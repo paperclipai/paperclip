@@ -16,7 +16,7 @@ import { connectionManagementGuard } from "./connection-management-authz.js";
 import { validate } from "../middleware/validate.js";
 import { agentSetupProgressService } from "../services/agent-setup-progress.js";
 import { workloadIdentityPublicOrigin } from "../services/workload-identity.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 
 const idSchema = z.string().uuid();
 
@@ -83,7 +83,7 @@ export function agentSetupProgressBoardRoutes(db: Db) {
     });
   }
   router.post("/companies/:companyId/agent-setup-progress", validate(createAgentSetupProgressSchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const companyId = idSchema.parse(req.params.companyId);
     assertCompanyAccess(req, companyId);
     const body = req.body as CreateAgentSetupProgress;
@@ -97,7 +97,7 @@ export function agentSetupProgressBoardRoutes(db: Db) {
     }));
   });
   router.get("/agent-setup-progress/:id", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const id = idSchema.safeParse(req.params.id);
     // Another company's checklist, or another person's, answers exactly like a missing one.
     const progress = await getAccessibleResource(req, res, id.success ? service.get(id.data) : null, "Setup progress not found");

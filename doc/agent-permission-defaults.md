@@ -19,11 +19,24 @@ This document describes the server defaults for an ordinary, standard trust agen
 
 ## Not granted by default
 
-These permission keys have no blanket grant for new standard agents: `agents:create` (the flag above is separate), `environments:manage`, `tools:admin`, `users:invite`, `users:manage_permissions`, and `joins:approve`. Existing agents keep their current permissions. The defaults above apply when a new standard agent is created or a pending new hire is activated. Some actions have separate bounded paths; the absence of a grant row does not describe every route decision.
+These permission keys have no blanket grant for new standard agents: `agents:create` (the flag above is separate), `environments:manage`, `tools:admin`, `users:invite`, `users:manage_permissions`, `joins:approve`, and `board:operate`. Existing agents keep their current permissions. The defaults above apply when a new standard agent is created or a pending new hire is activated. Some actions have separate bounded paths; the absence of a grant row does not describe every route decision.
 
 The new direct grants do not grant company administration, user permission management, blanket tool administration, or cross-company access. The responsible user's permissions, route checks, and the normal approval gates still apply.
 
 Agent-authenticated callers cannot set process adapter configuration or switch an existing agent onto the process adapter. For local adapters, they cannot change host command, argument, working-directory, arbitrary environment, or filesystem sandbox command settings. Provider credential secret references on known environment keys remain allowed so agents can hire peers with their own credentials. When a caller uses an AI connection pool, a new peer can use a plain provider authentication override on the small allowlist of supported keys. Arbitrary environment keys remain blocked. The same limits apply to creation, hiring, adapter switches, and configuration rollback. They also cannot restore host-executed workspace commands through a configuration revision. This keeps host-executed commands under board control while standard agents configure other supported agent settings.
+
+## Board operator agents
+
+`board:operate` makes one agent a board operator in its own company. No agent has it by default; no migration, default set or invitation adds it. A board user with `users:manage_permissions` grants and revokes it with `PATCH /api/agents/{id}/permission-grants`. That route is person-only, so an agent cannot add the grant to itself or a peer, even when it is a board operator.
+
+A board operator passes the board-only route check (`assertBoard`), and it may change a local adapter's host-executed settings as a board user may. It stays an agent actor, so every other check still applies to it:
+
+- **Same company only.** Company access, task privacy and run visibility are the agent's own. Instance administration (`assertInstanceAdmin`, `assertBoardOrgAccess`) is never included.
+- **Its responsible user's authority, never more.** Authentication sets the operator flag only for a standard key whose responsible user is an active member of the agent's company. Writes still need that user's non-viewer role. A board Stop the agent makes records that user, so it is the same Stop.
+- **Audited as the agent.** Activity written while serving the request names the agent, with `details.boardOperator: true`, including entries that board-only code writes as a user.
+- **Person-only actions stay with a person** (`assertBoardUser`): permission grants, memberships, invites, join and hire approvals, approval and decision cards, agent API keys, budgets, company create, import, archive and delete, OAuth and identity consent, secret-binding and tool-action approvals, and a person's own settings, inbox and connections.
+
+Task-scoped keys (`task_bridge`, `skill_test`) and low-trust agents never act as board operators. Revoking the grant takes effect on the next request.
 
 ## Exceptions and rollout
 

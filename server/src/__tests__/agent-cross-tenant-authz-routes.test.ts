@@ -128,9 +128,24 @@ vi.mock("../routes/authz.js", async () => {
   }
 
   function assertBoard(req: Express.Request) {
+    if (req.actor.type !== "board" && !isBoardOperatorAgent(req)) {
+      throw forbidden("Board access required");
+    }
+  }
+
+  function assertBoardUser(req: Express.Request) {
     if (req.actor.type !== "board") {
       throw forbidden("Board access required");
     }
+  }
+
+  function isBoardOperatorAgent(req: Express.Request) {
+    return req.actor.type === "agent" && req.actor.boardOperator === true;
+  }
+
+  function boardAuthorityUserId(req: Express.Request) {
+    if (req.actor.type === "board") return req.actor.userId;
+    return isBoardOperatorAgent(req) ? req.actor.onBehalfOfUserId ?? undefined : undefined;
   }
 
   function assertCompanyAccess(req: Express.Request, expectedCompanyId: string) {
@@ -169,7 +184,7 @@ vi.mock("../routes/authz.js", async () => {
   }
 
   function assertInstanceAdmin(req: Express.Request) {
-    assertBoard(req);
+    assertBoardUser(req);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
     throw forbidden("Instance admin access required");
   }
@@ -197,8 +212,11 @@ vi.mock("../routes/authz.js", async () => {
   return {
     assertAuthenticated,
     assertBoard,
+    assertBoardUser,
     assertCompanyAccess,
     assertInstanceAdmin,
+    boardAuthorityUserId,
+    isBoardOperatorAgent,
     getAccessibleResource,
     getActorInfo,
     hasCompanyAccess,

@@ -1,7 +1,7 @@
 import { slackCapabilities } from "../services/connectors/slack-capabilities.js";
 import { slackSearchOAuthService } from "../services/connectors/slack-search-oauth.js";
 import { accessService } from "../services/access.js";
-import { assertBoard } from "./authz.js";
+import { assertBoard, assertBoardUser } from "./authz.js";
 import type { Request } from "express";
 import { Router } from "express";
 import { companies, type Db } from "@paperclipai/db";
@@ -27,7 +27,7 @@ export function slackToolRoutes(db: Db, publicBaseUrl?: string) {
     },
   );
   function user(req: Request) {
-    assertBoard(req);
+    assertBoardUser(req);
     if (!req.actor.userId)
       throw forbidden("Sign in before connecting Slack search");
     return req.actor.userId;

@@ -28,7 +28,7 @@ import {
   type AiConnectionList,
   aiConnectionPoolConfigSchema,
 } from "@paperclipai/shared";
-import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoardUser, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { accessService } from "../services/access.js";
 import { logActivity } from "../services/activity-log.js";
@@ -213,7 +213,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
   router.post("/companies/:companyId/ai-connections/local/attempts/:sessionId/code", validate(z.object({ browserCode: browserCodeSchema })), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertLocalLoginAvailable();
-    assertBoard(req);
+    assertBoardUser(req);
     assertCompanyAccess(req, companyId);
     const id = z.string().uuid().parse(req.params.sessionId);
     await localLogin.submitCode(companyId, getActorInfo(req).actorId, id, browserCodeSchema.parse(req.body.browserCode));

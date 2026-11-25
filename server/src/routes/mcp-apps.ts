@@ -11,7 +11,7 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { logActivity } from "../services/index.js";
-import { assertBoard, getAccessibleResource } from "./authz.js";
+import { assertBoardUser, getAccessibleResource } from "./authz.js";
 import { connectionRequestUserId } from "./connection-management-authz.js";
 import { authorizationService } from "../services/authorization.js";
 import { mcpAppViewsService, toMcpAppViewSummary } from "../services/mcp-app-views.js";
@@ -36,7 +36,7 @@ export function mcpAppsRoutes(db: Db, toolGateway: McpAppsGateway) {
   const views = mcpAppViewsService(db);
 
   const readableTask = async (req: Request, res: Response, next: () => void) => {
-    assertBoard(req);
+    assertBoardUser(req);
     if (!uuidSchema.safeParse(req.params.issueId).success) {
       res.status(404).json({ error: "Task not found" });
       return;

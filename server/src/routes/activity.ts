@@ -4,7 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { normalizeIssueIdentifier } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { activityService, normalizeActivityLimit } from "../services/activity.js";
-import { assertAuthenticated, assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertBoardUser, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { accessService, heartbeatService, issueService } from "../services/index.js";
 import { sanitizeRecord } from "../redaction.js";
 import { badRequest, forbidden } from "../errors.js";
@@ -143,7 +143,7 @@ export function activityRoutes(db: Db) {
   }
 
   async function assertAgentAuditPermission(req: import("express").Request, companyId: string) {
-    assertBoard(req);
+    assertBoardUser(req);
     assertCompanyAccess(req, companyId);
     if (await hasAgentAuditPermission(req, companyId)) return;
     throw forbidden("Missing permission: audit:view_agent_actions");
@@ -353,7 +353,7 @@ export function activityRoutes(db: Db) {
   });
 
   router.post("/companies/:companyId/activity", validate(createActivitySchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     const event = await svc.create({

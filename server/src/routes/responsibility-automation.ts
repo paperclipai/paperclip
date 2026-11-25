@@ -35,7 +35,7 @@ import { responsibilityAutomationService } from "../services/responsibility-auto
 import { automationConversationService } from "../services/responsibility-automation-conversations.js";
 import { standingCheckService } from "../services/routine-standing-checks.js";
 import { routineSuggestionService, type RoutineSuggestionResponsibilityFiling } from "../services/routine-suggestions.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { getReadableIssue } from "./readable-issue.js";
 
 const automationQuerySchema = listResponsibilitiesQuerySchema.pick({ ownerUserId: true });
@@ -155,7 +155,7 @@ export function responsibilityAutomationRoutes(
     await assertResponsibilitiesEnabled();
     const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
     if (!issue) return;
-    assertBoard(req);
+    assertBoardUser(req);
     res.json(await conversations.conversationFor(issue, boardUserId(req)));
   });
 
@@ -163,7 +163,7 @@ export function responsibilityAutomationRoutes(
     await assertResponsibilitiesEnabled();
     const source = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
     if (!source) return;
-    assertBoard(req);
+    assertBoardUser(req);
     await assertBoardCanAssignTasks(req, source.companyId);
     const actor = getActorInfo(req);
     const agentId = req.body.agentId ?? await conversations.defaultAgentId(source, boardUserId(req), req.body.responsibilityId);
@@ -255,7 +255,7 @@ export function responsibilityAutomationRoutes(
       await assertResponsibilitiesEnabled();
       const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
-      assertBoard(req);
+      assertBoardUser(req);
       await assertBoardCanAssignTasks(req, issue.companyId);
       const accepted = await conversations.accept(issue, req.params.interactionId as string, req.body, {
         userId: boardUserId(req),
@@ -329,7 +329,7 @@ export function responsibilityAutomationRoutes(
       await assertResponsibilitiesEnabled();
       const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
-      assertBoard(req);
+      assertBoardUser(req);
       const interaction = await conversations.decline(issue, req.params.interactionId as string, { userId: boardUserId(req) });
       await log(req, {
         companyId: issue.companyId,

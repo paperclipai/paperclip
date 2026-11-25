@@ -1,4 +1,4 @@
-import { PERMISSION_KEYS } from "@paperclipai/shared";
+import { PERMISSION_KEYS, isBoardOnlyAgentPermissionKey } from "@paperclipai/shared";
 import type { HumanCompanyMembershipRole } from "@paperclipai/shared";
 import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS, newStandardAgentGrantScope } from "../lib/agent-permissions.js";
 import { grantsForHumanRole } from "./company-member-roles.js";
@@ -45,7 +45,8 @@ export function agentJoinGrantsFromDefaults(
   permissionKey: (typeof PERMISSION_KEYS)[number];
   scope: Record<string, unknown> | null;
 }> {
-  const grants = grantsFromDefaults(defaultsPayload, "agent");
+  const grants = grantsFromDefaults(defaultsPayload, "agent")
+    .filter((grant) => !isBoardOnlyAgentPermissionKey(grant.permissionKey));
   // Invitation approval replaces the whole grant set after agent creation.
   // Retain new-agent defaults, but never widen an explicitly scoped grant.
   for (const permissionKey of NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS) {

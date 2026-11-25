@@ -13,7 +13,7 @@ import {
   createToolMcpGatewayTokenSchema,
   updateToolMcpGatewaySchema,
 } from "@paperclipai/shared/validators/tool-access";
-import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardUser, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import { forbidden, HttpError } from "../errors.js";
 import { accessService } from "../services/index.js";
@@ -390,7 +390,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   }
 
   function assertBoardMutationAccess(req: import("express").Request, companyId: string) {
-    assertBoard(req);
+    assertBoardUser(req);
     assertCompanyAccess(req, companyId);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
     const membership = Array.isArray(req.actor.memberships)

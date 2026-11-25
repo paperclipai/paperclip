@@ -1,7 +1,7 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess } from "./authz.js";
 import { forbidden, HttpError } from "../errors.js";
 import { publicMcpConfig, McpOAuthError } from "../services/public-mcp/oauth.js";
 import { dotInvitationService } from "../services/dot-invitations.js";
@@ -17,7 +17,7 @@ export function dotRunnerRoutes(db: Db, resourceUrl?: string) {
   const path = "/companies/:companyId/agents/:agentId/dot-binding";
   function companyScope(req: Request, write = false) {
     const companyId = z.uuid().parse(req.params.companyId);
-    assertBoard(req); assertCompanyAccess(req, companyId);
+    assertBoardUser(req); assertCompanyAccess(req, companyId);
     if (write && (!req.actor.userId || !["session", "cloud_tenant"].includes(req.actor.source ?? "")
         || req.actor.memberships?.find(m => m.companyId === companyId)?.membershipRole === "viewer")) {
       throw forbidden("Sign in as an operator to connect a Dot agent.");

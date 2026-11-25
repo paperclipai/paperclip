@@ -50,7 +50,7 @@ import {
   startRuntimeServicesForWorkspaceControl,
   stopRuntimeServicesForExecutionWorkspace,
 } from "../services/workspace-runtime.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardUser, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { logger } from "../middleware/logger.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
@@ -220,7 +220,7 @@ export function executionWorkspaceRoutes(db: Db, opts: { pluginWorkerManager?: P
    */
   router.post("/execution-workspaces/:id/login-handoff", async (req, res) => {
     const id = req.params.id as string;
-    assertBoard(req);
+    assertBoardUser(req);
     const workspace = await getAccessibleResource(req, res, svc.getById(id), "Execution workspace not found");
     if (!workspace) return;
     if (!(await assertWorkspacePrivacy(req, res, workspace.id))) return;

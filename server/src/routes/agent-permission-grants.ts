@@ -6,14 +6,14 @@ import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { accessService } from "../services/access.js";
 import { logActivity, publishActivity, type ActivityPublication } from "../services/activity-log.js";
-import { assertAuthenticated, assertBoard, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertBoardUser, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
 
 export function agentPermissionGrantRoutes(db: Db) {
   const router = Router();
 
   router.patch("/agents/:id/permission-grants", validate(updateAgentPermissionGrantSchema), async (req, res) => {
     assertAuthenticated(req);
-    assertBoard(req);
+    assertBoardUser(req);
     const id = req.params.id as string;
     if (!isUuidLike(id)) throw badRequest("Agent ID must be a UUID");
     const { permissionKey, enabled } = req.body;

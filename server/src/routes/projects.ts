@@ -38,7 +38,7 @@ import { accessService, projectService, logActivity, workspaceOperationService }
 import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardUser, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { ensureProjectAccessMember } from "../services/projects.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
@@ -302,7 +302,7 @@ export function projectRoutes(db: Db) {
   });
 
   router.get("/projects/:id/git-authorization", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
     if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
     if (!req.actor.userId) throw forbidden("A signed-in user is required");
@@ -310,7 +310,7 @@ export function projectRoutes(db: Db) {
   });
 
   router.put("/projects/:id/git-authorization", validate(z.object({ grantId: z.string().uuid().nullable() }).strict()), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const project = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Project not found");
     if (!project || !(await assertProjectReadAllowed(req, res, project)) || !(await assertProjectWorkspaceWriteAllowed(req, res, project))) return;
     if (!req.actor.userId) throw forbidden("A signed-in user is required");
@@ -590,7 +590,7 @@ export function projectRoutes(db: Db) {
   });
 
   router.post("/projects/:id/access-members", validate(addProjectAccessMemberSchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const id = req.params.id as string;
     const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!project || !(await assertProjectReadAllowed(req, res, project))) return;
@@ -635,7 +635,7 @@ export function projectRoutes(db: Db) {
   });
 
   router.delete("/projects/:id/access-members/:memberId", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const id = req.params.id as string;
     const project = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!project || !(await assertProjectReadAllowed(req, res, project))) return;

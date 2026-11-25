@@ -1013,6 +1013,80 @@ describe("agent permission routes", () => {
     expect(mockAgentService.update).not.toHaveBeenCalled();
   });
 
+  describe("board operator agents", () => {
+    const operatorActor = {
+      type: "agent", agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId, source: "agent_key", runId: "run-1",
+      onBehalfOfUserId: "owner-user", onBehalfOfMemberships: [{ companyId, membershipRole: "owner", status: "active" }],
+    };
+
+    it.each([
+      ["claude_local", { engine: "cli", command: "/opt/claude/bin/claude" }],
+      ["codex_local", { args: ["--profile", "work"] }],
+      ["cursor_local", { env: { PATH: "/usr/local/bin:/usr/bin" } }],
+      ["opencode_local", { env: { PAPERCLIP_OPENCODE_PROVIDERS: "" } }],
+    ])("lets a board operator agent change host settings for %s", async (adapterType, adapterConfig) => {
+      mockAgentService.getById.mockResolvedValue({ ...baseAgent, adapterType });
+      const app = createApp({ ...operatorActor, boardOperator: true });
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({ adapterConfig }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockAgentService.update).toHaveBeenCalledOnce();
+    });
+
+    it("refuses the same agent without the grant, with today's message", async () => {
+      mockAgentService.getById.mockResolvedValue({ ...baseAgent, adapterType: "claude_local" });
+      const app = createApp(operatorActor);
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`)
+        .send({ adapterConfig: { env: { PATH: "/tmp" } } }));
+
+      expect(res.status).toBe(403);
+      expect(res.body.error).toBe("Agent keys cannot configure host-executed local adapter settings (env).");
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("lets a board operator agent hire a peer with host settings", async () => {
+      mockAccessService.hasPermission.mockResolvedValue(true);
+      const app = createApp({ ...operatorActor, agentId, boardOperator: true });
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .post(`/api/companies/${companyId}/agents`)
+        .send({ name: "Granted", role: "engineer", adapterType: "codex_local",
+          adapterConfig: { env: { HTTPS_PROXY: "http://proxy.internal:3128" } } }));
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(mockAgentService.create).toHaveBeenCalledWith(companyId, expect.objectContaining({
+        adapterConfig: expect.objectContaining({ env: expect.objectContaining({ HTTPS_PROXY: expect.anything() }) }),
+      }), expect.anything());
+    });
+
+    it("still refuses a board operator agent the person-only routes", async () => {
+      mockAgentService.getById.mockResolvedValue({ ...baseAgent });
+      const app = createApp({ ...operatorActor, boardOperator: true });
+      const keys = await requestApp(app, (baseUrl) => request(baseUrl).post(`/api/agents/${agentId}/keys`).send({ name: "minted" }));
+      expect(keys.status).toBe(403);
+      expect(keys.body).toMatchObject({ error: "Board access required", code: "board_access_required" });
+      const approve = await requestApp(app, (baseUrl) => request(baseUrl).post(`/api/agents/${agentId}/approve`).send({}));
+      expect(approve.status).toBe(403);
+      const budget = await requestApp(app, (baseUrl) => request(baseUrl)
+        .patch(`/api/agents/${agentId}`).send({ budgetMonthlyCents: baseAgent.budgetMonthlyCents + 100 }));
+      expect(budget.status).toBe(403);
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    });
+
+    it("refuses heartbeat cancellation to an agent without the grant", async () => {
+      mockHeartbeatService.getRun.mockResolvedValue({ id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", companyId, agentId, status: "running" });
+      const app = createApp(operatorActor);
+      const res = await requestApp(app, (baseUrl) => request(baseUrl)
+        .post("/api/heartbeat-runs/bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb/cancel").send({}));
+
+      expect(res.status).toBe(403);
+      expect(res.body).toMatchObject({ error: "Board access required", code: "board_access_required" });
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    });
+  });
+
   it("allows an agent to update a peer's local model without host settings", async () => {
     mockAgentService.getById.mockResolvedValue({ ...baseAgent, adapterType: "claude_local" });
     const app = await createApp({ type: "agent", agentId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId, source: "agent_key", runId: "run-1" });

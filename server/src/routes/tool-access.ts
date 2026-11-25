@@ -66,7 +66,7 @@ import {
 import { filterConnectionManagementRows, filterConnectionManagementPolicies, connectionManagementGuard, requiredConnectionUserAction, connectionRequestActor, connectionRequestContext, connectionRequestUserId } from "./connection-management-authz.js";
 import { assertAgentConnectionInstallAccess, connectionManagementService } from "../services/connection-management.js";
 import { validate } from "../middleware/validate.js";
-import { getActorInfo, assertBoard, assertBoardOrAgent, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess } from "./authz.js";
+import { getActorInfo, assertBoard, assertBoardUser, assertBoardOrAgent, assertCompanyAccess, assertInstanceAdmin, getAccessibleResource, hasCompanyAccess } from "./authz.js";
 import { badRequest, forbidden, HttpError, notFound, unprocessable } from "../errors.js";
 import { accessService, logActivity, toolAccessPolicyService, toolAccessService, vercelConnectIntegrationStatus } from "../services/index.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
@@ -870,7 +870,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
   }
 
   async function assertToolsAdmin(req: Request, companyId: string) {
-    assertBoard(req);
+    assertBoardUser(req);
     await assertBoardToolPermission(req, companyId, "tools:admin");
   }
 
@@ -1244,7 +1244,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
   });
 
   router.get("/tools/oauth/cloud-connector/enrollment", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const canEndInstanceAccess = req.actor.type === "board" && (req.actor.isInstanceAdmin || req.actor.source === "local_implicit");
     res.json(await reconcilePaperclipCloudConnectorEnrollmentStatus(process.env, fetch, canEndInstanceAccess ? async () => {
       try {
@@ -1350,7 +1350,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
   });
 
   const handlePaperclipCloudConnectorCallback = async (req: Request, res: Response) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const claimId = typeof req.query.claim_id === "string" ? req.query.claim_id : null;
     const error = typeof req.query.error === "string" ? req.query.error : null;
@@ -1493,7 +1493,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
   router.get("/tools/oauth/paperclip-id/callback", handlePaperclipCloudConnectorCallback);
 
   router.get("/tools/vercel-connect/callback", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const error = typeof req.query.error === "string" ? req.query.error : null;
     const pendingState = state ? await svc.peekOAuthState(state) : null;
@@ -1596,7 +1596,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
   });
 
   router.get("/tools/oauth/callback", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const state = typeof req.query.state === "string" ? req.query.state : "";
     const code = typeof req.query.code === "string" ? req.query.code : null;
     const error = typeof req.query.error === "string" ? req.query.error : null;
@@ -2514,7 +2514,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
     if (aiConnectionRouterPluginKey(existing)) throw badRequest("Remove this connection pool through its revision-checked pool settings.");
     const applicationBefore = await svc.getApplication(existing.applicationId);
     const deleteStoredContent = req.query.deleteStoredContent === "true";
-    if (deleteStoredContent) assertBoard(req);
+    if (deleteStoredContent) assertBoardUser(req);
     const { connection, removal } = await svc.archiveConnection(
       existing.id,
       existing.companyId,
@@ -2613,7 +2613,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
   });
 
   router.post("/tool-connections/:connectionId/stored-content/deletion", managementGuard("connections:configure", "POST /tool-connections/:connectionId/stored-content/deletion", { personal: true }), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
     if (!existing) return;
     await assertToolConnectionConfigureAccess(req, existing);

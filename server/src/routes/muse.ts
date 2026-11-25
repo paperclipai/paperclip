@@ -12,7 +12,7 @@ import { museInvitationService } from "../services/muse-invitations.js";
 import { agentService } from "../services/agents.js";
 import { canConfigureAgentConnection } from "../modules/agent-lifecycle/index.js";
 import { authorizationService } from "../services/authorization.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess } from "./authz.js";
 import { HttpError, badRequest, forbidden, notFound, unauthorized, payloadTooLarge } from "../errors.js";
 function bearer(req:Request) {const header=req.get("authorization")??"";if(!/^Bearer [A-Za-z0-9_-]{20,200}$/.test(header))throw unauthorized("A Muse bearer credential is required.");return header.slice(7);}
 /** Exact manifest is registered here and consumed by Cloud. No adjacent namespace has machine authority. */
@@ -84,7 +84,7 @@ export function museTransportRoutes(db:Db,publicOrigin?:string,options:{allowLeg
 export function museBoardRoutes(db:Db,publicOrigin?:string) {
   const router=Router(),broker=museExternalAgents(db,{publicOrigin}),invitations=museInvitationService(db);
   async function scope(req:Request,write=false) {
-    const companyId=z.uuid().parse(req.params.companyId);assertBoard(req);assertCompanyAccess(req,companyId);
+    const companyId=z.uuid().parse(req.params.companyId);assertBoardUser(req);assertCompanyAccess(req,companyId);
     const operatorId=req.actor.userId;
     if(!operatorId||!["session","cloud_tenant","board_key"].includes(req.actor.source??"")||req.actor.memberships?.find(m=>m.companyId===companyId)?.membershipRole==="viewer")throw forbidden("Sign in as a company operator to configure Muse.");
     const agentId=req.params.agentId?z.uuid().parse(req.params.agentId):undefined;

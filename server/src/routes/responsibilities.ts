@@ -47,7 +47,7 @@ import {
 } from "../services/responsibilities.js";
 import { AGENT_PERSON_RULE, agentActsForResponsibilityOwner, agentPersonInCompany } from "./agent-person-authz.js";
 import {
-  assertBoard,
+  assertBoardUser,
   assertBoardOrAgent,
   assertCompanyAccess,
   getAccessibleResource,
@@ -532,7 +532,7 @@ export function responsibilityRoutes(db: Db, opts: { heartbeat?: IssueAssignment
 
   router.post("/responsibilities/:id/delegate", validate(delegateResponsibilitySchema), async (req, res) => {
     await assertResponsibilitiesEnabled();
-    assertBoard(req);
+    assertBoardUser(req);
     const row = await loadForWrite(req, res);
     if (!row) return;
     if (row.status !== "active") {

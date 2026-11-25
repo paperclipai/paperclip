@@ -5,14 +5,14 @@ import { updateWorkspacePreferenceSchema } from "@paperclipai/shared";
 import { forbidden, notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { workspacePreferenceService } from "../services/workspace-preferences.js";
-import { assertBoard, hasCompanyAccess } from "./authz.js";
+import { assertBoardUser, hasCompanyAccess } from "./authz.js";
 
 export function workspacePreferenceRoutes(db: Db) {
   const router = Router();
   const svc = workspacePreferenceService(db);
   const paths = ["/workspace-preferences/me", "/companies/:companyId/workspace-preferences/me"];
   router.use(paths, (req, res, next) => {
-    assertBoard(req);
+    assertBoardUser(req);
     if (!req.actor.userId) throw forbidden("Board user access required");
     res.setHeader("Cache-Control", "private, no-store");
     next();

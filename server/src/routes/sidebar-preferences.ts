@@ -3,10 +3,10 @@ import type { Db } from "@paperclipai/db";
 import { upsertSidebarOrderPreferenceSchema } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { logActivity, sidebarPreferenceService } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 function requireBoardUserId(req: Request, res: Response): string | null {
-  assertBoard(req);
+  assertBoardUser(req);
   if (!req.actor.userId) {
     res.status(403).json({ error: "Board user context required" });
     return null;

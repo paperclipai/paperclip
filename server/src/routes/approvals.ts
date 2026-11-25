@@ -23,7 +23,7 @@ import {
   logActivity,
   secretService,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
@@ -459,7 +459,7 @@ export function approvalRoutes(
   });
 
   router.post("/approvals/:id/approve", validate(resolveApprovalSchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const id = req.params.id as string;
     if (!(await requireApprovalAccess(req, id))) {
       res.status(404).json({ error: "Approval not found" });
@@ -578,7 +578,7 @@ export function approvalRoutes(
   });
 
   router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const id = req.params.id as string;
     if (!(await requireApprovalAccess(req, id))) {
       res.status(404).json({ error: "Approval not found" });
@@ -617,7 +617,7 @@ export function approvalRoutes(
     "/approvals/:id/request-revision",
     validate(requestApprovalRevisionSchema),
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       const id = req.params.id as string;
       if (!(await requireApprovalAccess(req, id))) {
         res.status(404).json({ error: "Approval not found" });
@@ -647,7 +647,7 @@ export function approvalRoutes(
   // Withdraw an out-of-date approval (PAP-749 plan §2, Rule 6). Board users
   // only; it never approves. 409 when it was already resolved.
   router.post("/approvals/:id/cancel", validate(cancelApprovalSchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const id = req.params.id as string;
     if (!(await requireApprovalAccess(req, id))) {
       res.status(404).json({ error: "Approval not found" });

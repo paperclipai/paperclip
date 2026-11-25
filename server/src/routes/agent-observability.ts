@@ -1,7 +1,7 @@
 import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import { agentObservabilityRevisionSchema, agentObservabilityStatus, updateAgentObservabilitySchema } from "@paperclipai/shared";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { canManageAiConnections } from "./ai-connections.js";
 import { forbidden } from "../errors.js";
 import { validate } from "../middleware/validate.js";
@@ -13,7 +13,7 @@ export function agentObservabilityRoutes(db: Db, options: { deploymentMode?: str
   const path = "/companies/:companyId/observability";
   async function access(req: Request, manage: boolean) {
     const companyId = req.params.companyId as string;
-    assertCompanyAccess(req, companyId); assertBoard(req);
+    assertCompanyAccess(req, companyId); assertBoardUser(req);
     const canManage = await canManageAiConnections(db, req, companyId);
     if (manage && !canManage) throw forbidden("Manage connections permission is required");
     return { companyId, canManage, userId: getActorInfo(req).actorId };

@@ -16,7 +16,7 @@ import { connectionIntentService } from "../services/connection-intents.js";
 import { logActivity } from "../services/activity-log.js";
 import { accessService } from "../services/access.js";
 import type { heartbeatService } from "../services/heartbeat.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess } from "./authz.js";
 import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
 
 function bearer(req: Request) {
@@ -162,7 +162,7 @@ export function connectionIntentBoardRoutes(db: Db, heartbeat: Heartbeat) {
   }
 
   async function addressedIntent(req: Request) {
-    assertBoard(req);
+    assertBoardUser(req);
     const loaded = await service.loadIntent(req.params.interactionId as string);
     assertCompanyAccess(req, loaded.issue.companyId);
     const userId = req.actor.userId ?? "local-board";

@@ -31,7 +31,7 @@ import {
   heartbeatService,
   accessService,
 } from "../services/index.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardUser, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { attentionHandledDetails, attentionHandledFor } from "../services/attention-receipts.js";
 import { badRequest, forbidden } from "../errors.js";
@@ -332,7 +332,7 @@ export function costRoutes(
   router.get("/companies/:companyId/costs/quota-windows", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     // validate companyId resolves to a real company so the "__none__" sentinel
     // and any forged ids are rejected before we touch provider credentials
     const company = await companies.getById(companyId);
@@ -356,7 +356,7 @@ export function costRoutes(
     "/companies/:companyId/budgets/policies",
     validate(upsertBudgetPolicySchema),
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
       const summary = await budgets.upsertPolicy(companyId, req.body, req.actor.userId ?? "board");
@@ -368,7 +368,7 @@ export function costRoutes(
     "/companies/:companyId/budget-incidents/:incidentId/resolve",
     validate(resolveBudgetIncidentSchema),
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       const companyId = req.params.companyId as string;
       const incidentId = req.params.incidentId as string;
       assertCompanyAccess(req, companyId);
@@ -397,7 +397,7 @@ export function costRoutes(
   });
 
   router.patch("/companies/:companyId/budgets", validate(updateBudgetSchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     await budgets.upsertPolicy(
@@ -420,7 +420,7 @@ export function costRoutes(
     const agent = await getAccessibleResource(req, res, agents.getById(agentId), "Agent not found");
     if (!agent) return;
 
-    assertBoard(req);
+    assertBoardUser(req);
 
     await budgets.upsertPolicy(
       agent.companyId,
@@ -449,7 +449,7 @@ export function costRoutes(
     // to a provider. Ordinary company membership does not authorize that use.
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     const membership = req.actor.memberships?.find((item) => item.companyId === companyId);
     if (req.actor.source !== "local_implicit" && !req.actor.isInstanceAdmin
       && !(membership?.status === "active" && ["owner", "admin"].includes(String(membership.membershipRole)))) {
@@ -459,7 +459,7 @@ export function costRoutes(
   }, validate(importProviderCostsSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     const result = await importProviderDailyCosts(db, companyId, req.body, getActorInfo(req).actorId);
     res.json(result);
   });

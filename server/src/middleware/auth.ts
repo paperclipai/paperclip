@@ -2,7 +2,8 @@ import { notifyMuseContactVerification } from "../modules/external-agents/index.
 import { idleApiActivity } from "../services/idle-api-activity.js";
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
-import { and, eq, exists, isNull, sql, type Placeholder } from "drizzle-orm";
+import { and, eq, exists, isNull, notInArray, sql, type Placeholder } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -26,7 +27,9 @@ import {
 import { verifyLocalAgentJwt } from "../agent-auth-jwt.js";
 import { agentRunSupersededByFreshContinuation, agentRunWritesRevoked } from "../agent-run-cancellation.js";
 import { loadAgentRunAuthentication } from "./agent-run-authentication.js";
-import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
+import { permissionsImplyLowTrust } from "../lib/agent-permissions.js";
+import { withBoardOperatorActor } from "../services/board-operator-context.js";
+import { BOARD_OPERATOR_PERMISSION_KEY, isUuidLike, normalizeAgentApiKeyScope, type AgentApiKeyScope, type DeploymentMode } from "@paperclipai/shared";
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { localAgentProcessBoundary, type LocalAgentProcessBoundary } from "./local-agent-process-boundary.js";
@@ -92,12 +95,16 @@ function loadAgentAuthentication(db: Db, agentId: string) {
   return agentAuthenticationStatement(db).execute({ agentId }).then((rows) => rows[0] ?? null);
 }
 
-export function responsibleUserMembershipsQuery(db: Db, input: { companyId: Bound<string>; userId: Bound<string> }) {
+export function responsibleUserMembershipsQuery(
+  db: Db,
+  input: { companyId: Bound<string>; userId: Bound<string>; agentId: Bound<string> },
+) {
   return db
     .select({
       companyId: companyMemberships.companyId,
       membershipRole: companyMemberships.membershipRole,
       status: companyMemberships.status,
+      boardOperatorPermissions: sql<Record<string, unknown> | null>`(${boardOperatorPermissionsQuery(db, input)})`,
     })
     .from(companyMemberships)
     .where(
@@ -111,17 +118,64 @@ export function responsibleUserMembershipsQuery(db: Db, input: { companyId: Boun
     );
 }
 
+const operatorMemberships = alias(companyMemberships, "board_operator_memberships");
+
+function boardOperatorPermissionsQuery(db: Db, input: { companyId: Bound<string>; agentId: Bound<string> }) {
+  return db
+    .select({ permissions: agents.permissions })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.id, input.agentId),
+        eq(agents.companyId, input.companyId),
+        notInArray(agents.status, ["terminated", "pending_approval"]),
+        exists(db.select({ id: principalPermissionGrants.id }).from(principalPermissionGrants).where(and(
+          eq(principalPermissionGrants.companyId, input.companyId),
+          eq(principalPermissionGrants.principalType, "agent"),
+          eq(principalPermissionGrants.principalId, input.agentId),
+          eq(principalPermissionGrants.permissionKey, BOARD_OPERATOR_PERMISSION_KEY),
+          isNull(principalPermissionGrants.scope),
+        ))),
+        exists(db.select({ id: operatorMemberships.id }).from(operatorMemberships).where(and(
+          eq(operatorMemberships.companyId, input.companyId),
+          eq(operatorMemberships.principalType, "agent"),
+          eq(operatorMemberships.principalId, input.agentId),
+          eq(operatorMemberships.status, "active"),
+        ))),
+      ),
+    );
+}
+
 const responsibleUserMembershipsStatement = preparedStatement(db => responsibleUserMembershipsQuery(db, {
   companyId: sql.placeholder("companyId"),
   userId: sql.placeholder("userId"),
+  agentId: sql.placeholder("agentId"),
 }).prepare("responsible_user_memberships"));
 
 async function loadResponsibleUserMemberships(
   db: Db,
-  input: { companyId: string; userId: string | null },
+  input: { companyId: string; userId: string | null; agentId: string },
 ) {
-  if (!input.userId) return [];
-  return responsibleUserMembershipsStatement(db).execute({ companyId: input.companyId, userId: input.userId });
+  if (!input.userId) return { memberships: [], boardOperatorPermissions: null };
+  const rows = await responsibleUserMembershipsStatement(db).execute(
+    { companyId: input.companyId, userId: input.userId, agentId: input.agentId });
+  return {
+    memberships: rows.map(({ boardOperatorPermissions: _permissions, ...membership }) => membership),
+    boardOperatorPermissions: rows.find((row) => row.boardOperatorPermissions != null)?.boardOperatorPermissions ?? null,
+  };
+}
+
+function isBoardOperator(actor: {
+  companyId: string;
+  keyScope: AgentApiKeyScope;
+  onBehalfOfUserId: string | null;
+  onBehalfOfMemberships: Array<{ companyId: string; status?: string | null }>;
+  boardOperatorPermissions: unknown;
+}) {
+  if (actor.keyScope.kind !== "standard" || !actor.onBehalfOfUserId?.trim()) return false;
+  if (!actor.onBehalfOfMemberships.some((item) => item.companyId === actor.companyId && item.status === "active")) return false;
+  if (actor.boardOperatorPermissions == null) return false;
+  return !permissionsImplyLowTrust(actor.boardOperatorPermissions);
 }
 
 /**
@@ -506,22 +560,28 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         : isUuidLike(claims.run_id)
         ? normalizeOptionalString(identityRun?.responsibleUserId)
         : null;
-      const onBehalfOfMemberships = await loadResponsibleUserMemberships(db, {
+      const { memberships: onBehalfOfMemberships, boardOperatorPermissions } = await loadResponsibleUserMemberships(db, {
         companyId: claims.company_id,
         userId: onBehalfOfUserId,
+        agentId: claims.sub,
       });
 
+      const keyScope = normalizeAgentApiKeyScope(claims.key_scope);
+      const boardOperator = isBoardOperator({
+        companyId: claims.company_id, keyScope, onBehalfOfUserId, onBehalfOfMemberships, boardOperatorPermissions,
+      });
       req.actor = {
         type: "agent",
         agentId: claims.sub,
         companyId: claims.company_id,
         keyId: undefined,
-        keyScope: normalizeAgentApiKeyScope(claims.key_scope),
+        keyScope,
         runId: claims.run_id,
         onBehalfOfUserId,
         ...(claims.authorizing_user_id ? { authorizingUserId: claims.authorizing_user_id } : {}),
         identityContextId: identityRun?.activeIdentityContextId ?? null,
         onBehalfOfMemberships,
+        ...(boardOperator ? { boardOperator } : {}),
         source: "agent_jwt",
       };
       next();
@@ -567,18 +627,26 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       return;
     }
 
+    const keyScope = normalizeAgentApiKeyScope(key.scopeConfig);
+    const { memberships: keyResponsibleMemberships, boardOperatorPermissions } = await loadResponsibleUserMemberships(db, {
+      companyId: key.companyId,
+      userId: responsibleUserId,
+      agentId: key.agentId,
+    });
+    const boardOperator = isBoardOperator({
+      companyId: key.companyId, keyScope, onBehalfOfUserId: responsibleUserId,
+      onBehalfOfMemberships: keyResponsibleMemberships, boardOperatorPermissions,
+    });
     req.actor = {
       type: "agent",
       agentId: key.agentId,
       companyId: key.companyId,
       keyId: key.id,
-      keyScope: normalizeAgentApiKeyScope(key.scopeConfig),
+      keyScope,
       onBehalfOfUserId: responsibleUserId,
-      onBehalfOfMemberships: await loadResponsibleUserMemberships(db, {
-        companyId: key.companyId,
-        userId: responsibleUserId,
-      }),
+      onBehalfOfMemberships: keyResponsibleMemberships,
       runId: runIdHeader || undefined,
+      ...(boardOperator ? { boardOperator } : {}),
       source: "agent_key",
     };
     if (isCloudManagedInstance() && req.actor.onBehalfOfMemberships?.length) {
@@ -600,7 +668,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
     } finally {
       finish();
     }
-    continueRequest?.();
+    withBoardOperatorActor(req.actor, () => continueRequest?.());
   };
 }
 

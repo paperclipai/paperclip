@@ -13,7 +13,7 @@ import { accessService, heartbeatService, issueReferenceService, logActivity } f
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { responsibilityService } from "../services/responsibilities.js";
 import { responsibilityStatusReportService, type StatusReportAuthor } from "../services/responsibility-status-reports.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { boardCanManageResponsibilityOwner } from "./responsibilities.js";
 
 const NOT_FOUND = "Responsibility not found";
@@ -125,7 +125,7 @@ export function responsibilityStatusReportRoutes(db: Db, opts: { heartbeat?: Iss
       await svc.assertEnabled();
       const row = await loadForRead(req, res);
       if (!row) return;
-      assertBoard(req);
+      assertBoardUser(req);
       if (!boardCanManageResponsibilityOwner(req, row.companyId, row.ownerUserId)) {
         throw forbidden("Only the person who owns this responsibility can ask for an update");
       }

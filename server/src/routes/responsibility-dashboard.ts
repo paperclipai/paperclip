@@ -23,7 +23,7 @@ import {
   toDashboardVersionSummary,
   type DashboardActivityEvent,
 } from "../services/responsibility-dashboard-versions.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { getReadableIssue } from "./readable-issue.js";
 import { boardCanManageResponsibilityOwner } from "./responsibilities.js";
 
@@ -136,7 +136,7 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
   router.post("/companies/:companyId/responsibility-dashboard/conversation", validate(startDashboardConversationSchema), async (req, res) => {
     await svc.assertEnabled();
     const companyId = req.params.companyId as string;
-    assertBoard(req);
+    assertBoardUser(req);
     assertCompanyAccess(req, companyId);
     const ownerUserId = await dashboardOwner(db, req, companyId, req.body.ownerUserId);
     assertWriter(req, companyId, ownerUserId);
@@ -230,7 +230,7 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
       await svc.assertEnabled();
       const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
-      assertBoard(req);
+      assertBoardUser(req);
       const { ownerUserId } = await svc.ownerForConversation(issue);
       assertWriter(req, issue.companyId, ownerUserId);
       const accepted = await svc.accept(issue, req.params.interactionId as string, { userId: boardUserId(req) }, { keep: req.body.keep });
@@ -271,7 +271,7 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
       await svc.assertEnabled();
       const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
-      assertBoard(req);
+      assertBoardUser(req);
       const { ownerUserId } = await svc.ownerForConversation(issue);
       assertWriter(req, issue.companyId, ownerUserId);
       const interaction = await svc.decline(issue, req.params.interactionId as string, { userId: boardUserId(req) });
@@ -290,7 +290,7 @@ export function responsibilityDashboardRoutes(db: Db, opts: { heartbeat?: IssueA
     await svc.assertEnabled();
     const version = await getAccessibleResource(req, res, versions.getById(req.params.id as string), VERSION_NOT_FOUND);
     if (!version) return;
-    assertBoard(req);
+    assertBoardUser(req);
     assertWriter(req, version.companyId, version.ownerUserId);
     const restored = await versions.restore(version, { userId: getActorInfo(req).actorId });
     await logEvents(req, version.companyId, restored.events);

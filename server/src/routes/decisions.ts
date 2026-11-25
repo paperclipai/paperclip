@@ -12,7 +12,7 @@ import {
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { decisionService, type DecisionServiceOptions } from "../services/decisions.js";
-import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardUser, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { attentionService } from "../services/attention.js";
 import { attentionHandledDetails, attentionHandledFor } from "../services/attention-receipts.js";
 import { authorizationDeniedDetails, authorizationService } from "../services/authorization.js";
@@ -46,7 +46,7 @@ function agentContext(req: Parameters<typeof getActorInfo>[0]) {
 }
 
 function boardUserId(req: Parameters<typeof getActorInfo>[0]) {
-  assertBoard(req);
+  assertBoardUser(req);
   return req.actor.userId ?? "local-implicit-board";
 }
 

@@ -13,7 +13,7 @@ import { authorizationDeniedDetails, issueReadSqlCondition, projectReadSqlCondit
 import { accessService, logActivity } from "../services/index.js";
 import { responsibilityMetricService } from "../services/responsibility-metrics.js";
 import { responsibilityService, type ResponsibilityReadScope } from "../services/responsibilities.js";
-import { assertBoard, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoardUser, getAccessibleResource, getActorInfo } from "./authz.js";
 import { boardCanManageResponsibilityOwner } from "./responsibilities.js";
 
 const NOT_FOUND = "Responsibility not found";
@@ -86,7 +86,7 @@ export function responsibilityMetricRoutes(db: Db) {
     await svc.assertEnabled();
     const row = await loadForRead(req, res);
     if (!row) return;
-    assertBoard(req);
+    assertBoardUser(req);
     assertOwnerOrAdmin(req, row);
     const actor = getActorInfo(req);
     const definitions = await svc.setChosen(row, req.body, { userId: actor.actorId });
@@ -102,7 +102,7 @@ export function responsibilityMetricRoutes(db: Db) {
     await svc.assertEnabled();
     const row = await loadForRead(req, res);
     if (!row) return;
-    assertBoard(req);
+    assertBoardUser(req);
     assertOwnerOrAdmin(req, row);
     const metricRef = req.params.metricId as string;
     const changed = await svc.setDisplay(row, metricRef, req.body.display, { userId: getActorInfo(req).actorId });
@@ -119,7 +119,7 @@ export function responsibilityMetricRoutes(db: Db) {
     await svc.assertEnabled();
     const row = await loadForRead(req, res);
     if (!row) return;
-    assertBoard(req);
+    assertBoardUser(req);
     assertOwnerOrAdmin(req, row);
     const metric = await svc.remove(row, req.params.metricId as string);
     await log(req, row.companyId, "responsibility.metric_removed", row.id, { metricId: metric.id, title: metric.title });

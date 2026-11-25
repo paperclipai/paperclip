@@ -3,7 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { z } from "zod";
 import { validate } from "../middleware/validate.js";
 import { workloadIdentityService } from "../services/workload-identity.js";
-import { assertBoard, assertCompanyAccess, getActorInfo } from "./authz.js";
+import { assertBoard, assertBoardUser, assertCompanyAccess, getActorInfo } from "./authz.js";
 
 const companyIdSchema = z.string().uuid();
 
@@ -52,7 +52,7 @@ export function workloadIdentityRoutes(db: Db) {
     res.json(await service.describe(companyId));
   });
   router.post("/companies/:companyId/workload-identity/rotation", validate(rotationSchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const companyId = companyIdSchema.parse(req.params.companyId);
     assertCompanyAccess(req, companyId);
     const { step } = req.body as z.infer<typeof rotationSchema>;

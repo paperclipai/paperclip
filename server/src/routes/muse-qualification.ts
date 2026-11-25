@@ -1,7 +1,7 @@
 import { Router, type Request } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess } from "./authz.js";
 import { forbidden, notFound } from "../errors.js";
 import { accessService } from "../services/access.js";
 import { agentService } from "../services/agents.js";
@@ -17,7 +17,7 @@ export function museQualificationRoutes(db: Db) {
   const path = "/companies/:companyId/agents/:agentId/muse-binding/qualification";
   async function operator(req: Request) {
     const companyId = z.uuid().parse(req.params.companyId), agentId = z.uuid().parse(req.params.agentId);
-    assertBoard(req); assertCompanyAccess(req, companyId);
+    assertBoardUser(req); assertCompanyAccess(req, companyId);
     if (!req.actor.userId || !["session", "cloud_tenant", "board_key"].includes(req.actor.source ?? "")) {
       throw forbidden("Sign in as an operator to manage a Muse qualification.");
     }

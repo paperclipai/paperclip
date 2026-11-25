@@ -3,7 +3,7 @@ import { z } from "zod";
 import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { and, eq, sql } from "drizzle-orm";
 import { createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema } from "@paperclipai/shared";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoardUser, assertCompanyAccess } from "./authz.js";
 import { forbidden, HttpError, notFound } from "../errors.js";
 import { issueReadSqlCondition } from "../services/authorization.js";
 import { agentService } from "../services/agents.js";
@@ -20,7 +20,7 @@ export function grokBotRoutes(db: Db, resourceUrl: string) {
   const path = "/companies/:companyId/agents/:agentId/grok-binding";
   async function companyScope(req: Request, write = false) {
     const companyId = z.uuid().parse(req.params.companyId);
-    assertBoard(req); assertCompanyAccess(req, companyId);
+    assertBoardUser(req); assertCompanyAccess(req, companyId);
     const operatorId = req.actor.userId;
     if (!operatorId || write && !["session", "cloud_tenant"].includes(req.actor.source ?? "")) throw forbidden("Sign in to manage this Grok agent.");
     if (write) await authorizeExternalBotOperator(db, companyId, operatorId);

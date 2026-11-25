@@ -6,14 +6,14 @@ import { forbidden, notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { accessService } from "../services/access.js";
 import { primaryAgentService } from "../services/primary-agent.js";
-import { assertBoard, hasCompanyAccess } from "./authz.js";
+import { assertBoardUser, hasCompanyAccess } from "./authz.js";
 
 export function primaryAgentRoutes(db: Db) {
   const router = Router();
   const svc = primaryAgentService(db);
   const access = accessService(db);
   router.use("/companies/:companyId/primary-agent/me", async (req, _res, next) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const companyId = req.params.companyId as string;
     if (!hasCompanyAccess(req, companyId)) throw forbidden("User does not have access to this company");
     if (!req.actor.userId) throw forbidden("Board user access required");

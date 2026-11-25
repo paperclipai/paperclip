@@ -16,7 +16,7 @@ import {
   type RoutineSuggestionResponsibilityFiling,
 } from "../services/routine-suggestions.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
-import { assertBoard, getActorInfo } from "./authz.js";
+import { assertBoardUser, getActorInfo } from "./authz.js";
 import { getReadableIssue } from "./readable-issue.js";
 
 const ISSUE_NOT_FOUND = "Issue not found";
@@ -110,7 +110,7 @@ export function routineSuggestionRoutes(
     async (req, res) => {
       const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
-      assertBoard(req);
+      assertBoardUser(req);
       await assertBoardCanAssignTasks(req, issue.companyId);
       const accepted = await svc.accept(issue, req.params.interactionId as string, req.body, {
         userId: boardUserId(req),
@@ -163,7 +163,7 @@ export function routineSuggestionRoutes(
   router.post("/issues/:id/repeat-as-routine", validate(createRoutineFromTaskSchema), async (req, res) => {
     const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
     if (!issue) return;
-    assertBoard(req);
+    assertBoardUser(req);
     await assertBoardCanAssignTasks(req, issue.companyId);
     const created = await svc.createFromTask(issue, req.body, {
       userId: boardUserId(req),
@@ -233,7 +233,7 @@ export function routineSuggestionRoutes(
     async (req, res) => {
       const issue = await getReadableIssue(access, req, res, issues.getById(req.params.id as string), ISSUE_NOT_FOUND);
       if (!issue) return;
-      assertBoard(req);
+      assertBoardUser(req);
       const interaction = await svc.decline(issue, req.params.interactionId as string, { userId: boardUserId(req) });
       await log(req, {
         companyId: issue.companyId,

@@ -69,7 +69,7 @@ import {
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { getHiddenSettings } from "../services/settings-visibility.js";
 import type { StorageService } from "../storage/types.js";
-import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo, hasCompanyAccess } from "./authz.js";
+import { assertBoard, assertBoardUser, assertCompanyAccess, assertInstanceAdmin, getActorInfo, hasCompanyAccess } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
 
 // A company import can arrive one of two ways on the import + preview routes:
@@ -379,7 +379,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   }
 
   router.get("/", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const scope = req.query.scope;
     if (scope !== undefined && scope !== "accessible") {
       throw badRequest("scope must be a single accessible value when provided");
@@ -401,7 +401,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   });
 
   router.get("/stats", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const allowed = req.actor.source === "local_implicit" || req.actor.isInstanceAdmin
       ? null
       : new Set(req.actor.companyIds ?? []);
@@ -579,7 +579,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   router.use("/:companyId/imports", importFloor);
 
   router.post("/import/preview", async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const body = companyPortabilityPreviewSchema.parse(await resolveImportPayload(req, res));
     assertImportTargetAccess(req, body.target);
     const preview = await portability.previewImport(body);
@@ -592,7 +592,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     // like every unknown or expired id — gets the same 404, so job ids
     // cannot be probed across users or tenants. Jobs live in memory only
     // (see the async block below), so a restart also surfaces as this 404.
-    assertBoard(req);
+    assertBoardUser(req);
     cleanupTerminalImportJobs(importJobs, importJobTerminalRetentionMs);
     const job = importJobs.get(req.params.jobId as string);
     if (!job || job.actorKey !== importJobActorKey(req)) {
@@ -702,7 +702,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   }
 
   router.post(COMPANY_IMPORT_ROUTE_PATH, async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     // Resolve the request body up front: a JSON caller's inline body is used
     // unchanged; a multipart/application-zip caller's uploaded zip is read into
     // the same `{ source: { type: "inline", rootPath, files } }` bundle here,
@@ -769,7 +769,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   // so re-declaring the same zip resumes the prior run (with its uploaded
   // parts intact) instead of starting over.
   router.post(COMPANY_IMPORT_TRANSFERS_ROUTE_PATH, async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const declared = importTransferManifestSchema.parse(req.body);
     if (declared.totalBytes > PORTABLE_ZIP_UPLOAD_LIMIT_BYTES) {
       throw unprocessable(
@@ -850,7 +850,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     `${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}/:transferId/parts/:partIndex`,
     importTransferPartBodyParser,
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       const run = await requireImportTransferRun(req);
       if (run.status === "completed") {
         throw conflict("Import transfer has already been applied");
@@ -912,7 +912,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
 
   // Resume polling: which parts are done, which are still missing.
   router.get(`${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}/:transferId`, async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const run = await requireImportTransferRun(req);
     const manifest = storedImportTransferManifest(run);
     const missingParts = run.status === "completed" ? [] : await importTransferMissingParts(run, manifest);
@@ -1031,7 +1031,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   // subsequent apply reuses them instead of re-uploading. The body carries the
   // same meta fields the multipart preview route's `meta` field does.
   router.post(`${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}/:transferId/preview`, async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const resolved = await resolveImportTransferBody(req, res);
     if (!resolved) return;
     const body = companyPortabilityPreviewSchema.parse(resolved.rawBody);
@@ -1045,7 +1045,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   // single-shot zip upload takes. The body carries the same meta fields the
   // multipart route's `meta` field does (include/target/collisionStrategy/...).
   router.post(`${COMPANY_IMPORT_TRANSFERS_ROUTE_PATH}/:transferId/apply`, async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     const resolved = await resolveImportTransferBody(req, res, { claimApply: true });
     if (!resolved) return;
     const { run, rawBody: rawImportBody } = resolved;
@@ -1205,7 +1205,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   });
 
   router.post("/", (req, _res, next) => {
-    assertBoard(req);
+    assertBoardUser(req);
     if (isCloudManagedInstance()) {
       throw forbidden("Company creation is managed by Paperclip Cloud", {
         code: "cloud_managed",
@@ -1213,7 +1213,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
     }
     next();
   }, validate(createCompanySchema), async (req, res) => {
-    assertBoard(req);
+    assertBoardUser(req);
     if (!(req.actor.source === "local_implicit" || req.actor.isInstanceAdmin)) {
       throw forbidden("Instance admin required");
     }
@@ -1375,7 +1375,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   router.post("/:companyId/archive", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     const company = await svc.archive(companyId, getActorInfo(req));
     if (!company) {
       res.status(404).json({ error: "Company not found" });
@@ -1387,7 +1387,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
   router.delete("/:companyId", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
-    assertBoard(req);
+    assertBoardUser(req);
     const company = await svc.remove(companyId);
     if (!company) {
       res.status(404).json({ error: "Company not found" });

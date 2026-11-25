@@ -4,7 +4,7 @@ import { companies, type Db } from "@paperclipai/db";
 import { ANNOUNCEMENT_ANIMATION_CSP, announcementIdSchema, dismissAnnouncementSchema } from "@paperclipai/shared";
 import { badRequest, forbidden, notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
-import { assertAuthenticated, assertBoard, hasCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertBoardUser, hasCompanyAccess } from "./authz.js";
 import { announcementService } from "../services/announcements.js";
 import { announcementFeedService, type AnnouncementFeedOptions } from "../services/announcement-feed.js";
 
@@ -14,7 +14,7 @@ export function announcementRoutes(db: Db, options: AnnouncementFeedOptions) {
   const service = announcementService(db);
   router.use("/announcements", (req, res, next) => {
     assertAuthenticated(req);
-    assertBoard(req);
+    assertBoardUser(req);
     if (!req.actor.userId) throw forbidden("Board user context required");
     res.setHeader("Cache-Control", "private, no-store");
     next();

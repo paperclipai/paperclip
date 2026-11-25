@@ -9,7 +9,7 @@ import {
   browserUseViewerSchema,
 } from "@paperclipai/shared";
 import {
-  assertBoard,
+  assertBoardUser,
   assertCompanyAccess,
   getActorInfo,
   getAccessibleResource,
@@ -21,7 +21,7 @@ const issueIdSchema = z.string().uuid();
 export function browserUseRoutes(db: Db, service = browserUseService(db)) {
   const router = Router();
   router.use("/issues/:issueId/browsers", async (req, res, next) => {
-    assertBoard(req);
+    assertBoardUser(req);
     if (
       req.params.issueId !== req.params.issueId.trim() ||
       !issueIdSchema.safeParse(req.params.issueId).success
@@ -127,7 +127,7 @@ export function browserUseRoutes(db: Db, service = browserUseService(db)) {
   router.get(
     "/companies/:companyId/browser-use-cloud/grants/:grantId/profiles",
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       assertCompanyAccess(req, req.params.companyId);
       res.setHeader("Cache-Control", "no-store");
       res.json(
@@ -142,7 +142,7 @@ export function browserUseRoutes(db: Db, service = browserUseService(db)) {
   router.get(
     "/companies/:companyId/browser-use-cloud/grants/:grantId/settings",
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       assertCompanyAccess(req, req.params.companyId);
       await service.humanGrant(
         req.params.companyId,
@@ -157,7 +157,7 @@ export function browserUseRoutes(db: Db, service = browserUseService(db)) {
   router.put(
     "/companies/:companyId/browser-use-cloud/grants/:grantId/settings",
     async (req, res) => {
-      assertBoard(req);
+      assertBoardUser(req);
       assertCompanyAccess(req, req.params.companyId);
       res.json(
         await service.saveSettings(

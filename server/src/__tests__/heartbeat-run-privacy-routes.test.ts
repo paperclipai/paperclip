@@ -31,6 +31,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { activityRoutes } from "../routes/activity.js";
 import { agentRoutes } from "../routes/agents.js";
+import { withBoardOperatorActor } from "../services/board-operator-context.js";
 import { authorizationService } from "../services/authorization.js";
 import { canActorReadWorkspaceOperation, getHeartbeatRunReadDecisions } from "../services/heartbeat-run-privacy.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -242,6 +243,26 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     });
     app.use("/api", agentRoutes(sourceDb));
     app.use("/api", activityRoutes(sourceDb));
+    app.use(errorHandler);
+    return app;
+  }
+
+  function createOperatorApp(companyId: string, agentId: string, responsibleUserId: string, boardOperator = true) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "agent",
+        agentId,
+        companyId,
+        source: "agent_jwt",
+        onBehalfOfUserId: responsibleUserId,
+        onBehalfOfMemberships: [{ companyId, membershipRole: "operator", status: "active" }],
+        ...(boardOperator ? { boardOperator } : {}),
+      };
+      withBoardOperatorActor(req.actor, () => next());
+    });
+    app.use("/api", agentRoutes(db));
     app.use(errorHandler);
     return app;
   }
@@ -554,6 +575,38 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     expect(activity.find((row) => row.action === "issue.updated")).toMatchObject({ actorType: "user",
       actorId: fixture.ownerUserId, entityId: fixture.issueId, details: expect.objectContaining({ status: "todo",
         previousStatus: "in_progress", reason: "stopped_while_waiting" }) });
+  });
+
+  it("lets a board operator agent Stop a run it can read exactly as its responsible user would", async () => {
+    const fixture = await seedFixture();
+    await db.update(heartbeatRuns).set({ status: "queued", startedAt: null, finishedAt: null, resultJson: null,
+      nextEventSeq: 100 })
+      .where(eq(heartbeatRuns.id, fixture.privateRunId));
+    await db.update(issues).set({ executionRunId: fixture.privateRunId, executionLockedAt: new Date() })
+      .where(eq(issues.id, fixture.issueId));
+    const cancel = (app: express.Express) => request(app).post(`/api/heartbeat-runs/${fixture.privateRunId}/cancel`).send({});
+
+    const refused = await cancel(createOperatorApp(fixture.companyId, fixture.grantedAgentId, fixture.ownerUserId, false));
+    expect(refused.status).toBe(403);
+    expect(refused.body).toMatchObject({ error: "Board access required", code: "board_access_required" });
+    expect((await cancel(createOperatorApp(fixture.companyId, fixture.otherAgentId, fixture.ownerUserId))).status).toBe(404);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.privateRunId)))[0]?.status).toBe("queued");
+
+    const stopped = await cancel(createOperatorApp(fixture.companyId, fixture.grantedAgentId, fixture.ownerUserId));
+    expect(stopped.status, JSON.stringify(stopped.body)).toBe(200);
+    expect(stopped.body.status).toBe("cancelled");
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.privateRunId));
+    expect(run?.resultJson).toMatchObject({ cancelledByActorType: "user", cancelledByUserId: fixture.ownerUserId,
+      cancelledByAgentId: fixture.grantedAgentId });
+    expect((await db.select().from(issues).where(eq(issues.id, fixture.issueId)))[0])
+      .toMatchObject({ status: "todo", executionRunId: null });
+    const activity = await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.companyId));
+    expect(activity.map((row) => row.action)).toEqual(expect.arrayContaining(["heartbeat.cancelled", "issue.updated"]));
+    for (const action of ["heartbeat.cancelled", "issue.updated"]) {
+      expect(activity.find((row) => row.action === action)).toMatchObject({ actorType: "agent",
+        actorId: fixture.grantedAgentId, responsibleUserId: fixture.ownerUserId,
+        details: expect.objectContaining({ boardOperator: true }) });
+    }
   });
 
   it("conceals private runs from unauthorized cancellation and watchdog mutations", async () => {

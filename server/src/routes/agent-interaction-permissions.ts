@@ -5,7 +5,7 @@ import { isUuidLike, updateAgentInteractionPermissionsSchema } from "@paperclipa
 import { badRequest, notFound } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { readAgentInteractionPermissions, updateAgentInteractionPermissions } from "../services/agent-interaction-permissions.js";
-import { assertAuthenticated, assertBoard, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertBoardUser, assertCompanyAccess, hasCompanyAccess } from "./authz.js";
 
 export function agentInteractionPermissionRoutes(db: Db) {
   const router = Router();
@@ -24,7 +24,7 @@ export function agentInteractionPermissionRoutes(db: Db) {
   });
   router.patch("/agents/:id/interaction-permissions", validate(updateAgentInteractionPermissionsSchema), async (req, res) => {
     assertAuthenticated(req);
-    assertBoard(req);
+    assertBoardUser(req);
     const agent = await target(req);
     res.json(await updateAgentInteractionPermissions(db, req.actor, agent.companyId, agent.id, req.body));
   });
