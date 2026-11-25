@@ -58,7 +58,8 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { nativeProviderPackAdmissionFailureCode, prepareNativeProviderPackAdmission, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
-import { type AdmittedProviderPackReceipt, type ProviderPackInstallation, providerPackIncompatible, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
+import { type AdmittedProviderPackReceipt, type PackProvider, type ProviderPackInstallation, providerPackIncompatible, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
+import { toPackProvider } from "./provider-pack-compatibility.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 export { renewNativeSessionExecutionLease } from "./native-execution-lease.js";
@@ -14983,6 +14984,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
   runner: CommandManagedRuntimeRunner;
   configuredProviderPackRoot: string | null;
   manifest: RemoteProviderPackManifest;
+  provider?: PackProvider;
   signal?: AbortSignal;
   trace?: NativeRunTrace;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => void | Promise<void>;
@@ -14998,7 +15000,8 @@ export async function prepareRemoteProviderPackOnTarget(input: {
   const seal = remoteProviderPackSeal(remoteTarget);
   const verifyRemoteProviderPack = (packRoot: string, acceptProvenance = false) =>
     verifyRemoteProviderPackIdentity({ runner: remoteCommandRunner, cwd: remoteTarget.remoteCwd, packRoot,
-      manifest: expectedProviderPackManifest, acceptProvenance: acceptProvenance && input.acceptProvenanceDifferences === true,
+      manifest: expectedProviderPackManifest, ...(input.provider ? { provider: input.provider } : {}),
+      acceptProvenance: acceptProvenance && input.acceptProvenanceDifferences === true,
       ...(seal ? { seal } : {}) });
   const discoverPreinstalledProviderPack = async () => {
     if (!remoteTarget || !remoteCommandRunner) return [];
@@ -15078,6 +15081,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
         sourceDigest: readRemoteProviderPackIdentity(configuredProviderPackRoot, false).digest,
         expectedDigest: expectedProviderPackManifest.digest,
         manifest: expectedProviderPackManifest,
+        ...(input.provider ? { provider: input.provider } : {}),
         signal: input.signal,
         runner: remoteCommandRunner,
         cwd: remoteTarget.remoteCwd,
@@ -15092,6 +15096,30 @@ export async function prepareRemoteProviderPackOnTarget(input: {
           targetPath: stagedRemoteProviderPackRoot,
           mode: 0o700,
         }),
+        verifyStagedCore: async () => {
+          const escapedTarget = stagedRemoteProviderPackRoot.replaceAll("'", "'\\''");
+          const writable = await remoteCommandRunner.execute({
+            command: "sh",
+            args: ["-c", `test ! -L '${escapedTarget}' && test -d '${escapedTarget}'`],
+            cwd: remoteTarget.remoteCwd,
+            bypassSession: true,
+            timeoutMs: 10_000,
+          });
+          if (writable.exitCode !== 0 || writable.timedOut) return false;
+          try {
+            await verifyRemoteProviderPackIdentity({
+              runner: remoteCommandRunner,
+              cwd: remoteTarget.remoteCwd,
+              packRoot: stagedRemoteProviderPackRoot,
+              manifest: expectedProviderPackManifest,
+              provider: { kind: "opencode" },
+              ...(seal ? { seal } : {}),
+            });
+            return true;
+          } catch {
+            return false;
+          }
+        },
         verifyUploaded: async () => { await verifyRemoteProviderPack(stagedRemoteProviderPackRoot); },
       });
       activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
@@ -17495,13 +17523,15 @@ async function createRunnerdBackendWithinSessionClaim(
       })
     : Promise.resolve();
 
+  const packProvider = toPackProvider(input.execution.provider);
   const verifyRemoteProviderPack = async (packRoot: string) => {
     if (providerPackVerified && packRoot === activeRemoteProviderPackRoot) return;
     if (!remoteTarget || !remoteCommandRunner || !expectedProviderPackManifest)
       return;
     const seal = remoteProviderPackSeal(remoteTarget);
     await verifyRemoteProviderPackIdentity({ runner: remoteCommandRunner,
-      cwd: remoteTarget.remoteCwd, packRoot, manifest: expectedProviderPackManifest, ...(seal ? { seal } : {}) });
+      cwd: remoteTarget.remoteCwd, packRoot, manifest: expectedProviderPackManifest,
+      ...(packProvider ? { provider: packProvider } : {}), ...(seal ? { seal } : {}) });
     providerPackVerified = true;
   };
 
@@ -17678,7 +17708,8 @@ async function createRunnerdBackendWithinSessionClaim(
       const sourceSignals = [startupSignal, contextSignal].filter((signal): signal is AbortSignal => !!signal);
       const prepared = await prepareRemoteProviderPackOnTarget({
         target: remoteTarget, runner: remoteCommandRunner, configuredProviderPackRoot,
-        manifest: expectedProviderPackManifest, trace: input.trace, onLog: input.onLog,
+        manifest: expectedProviderPackManifest, ...(packProvider ? { provider: packProvider } : {}),
+        trace: input.trace, onLog: input.onLog,
         signal: sourceSignals.length ? AbortSignal.any(sourceSignals) : undefined,
         acceptProvenanceDifferences: providerPackProvenanceReuseAllowed({ retainProviderPack, explicitProviderPackSelection,
           authoritySelectable: providerPackAuthority !== null }),
