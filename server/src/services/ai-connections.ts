@@ -3,7 +3,7 @@ import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
-import { AI_AUTHENTICATION_FAILURE_CODE_PATTERN, AI_AUTHENTICATION_FAILURE_CODES, isAiAuthenticationFailure } from "./ai-auth-failure.js";
+import { AI_AUTHENTICATION_FAILURE_CODE_PATTERN, AI_AUTHENTICATION_FAILURE_CODES, isAiAuthenticationFailureRun } from "./ai-auth-failure.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -1189,16 +1189,17 @@ export function aiConnectionService(db: Db) {
           ))
           .orderBy(sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) desc`).limit(1);
         const since = lastSuccess?.at ? new Date(Math.max(new Date(lastSuccess.at).getTime(), grant.updatedAt.getTime())) : grant.updatedAt;
-        const failedRuns = await tx.select({ id: heartbeatRuns.id, errorCode: heartbeatRuns.errorCode }).from(heartbeatRuns).where(and(
+        const failedRuns = await tx.select({ id: heartbeatRuns.id, errorCode: heartbeatRuns.errorCode, resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.status, "failed"), sameGeneration,
           or(
             sql`${heartbeatRuns.errorCode} ~* ${AI_AUTHENTICATION_FAILURE_CODE_PATTERN}`,
             inArray(heartbeatRuns.errorCode, AI_AUTHENTICATION_FAILURE_CODES),
+            sql`${heartbeatRuns.resultJson}->'providerFailure'->>'category' = 'authentication'`,
           ),
           sql`coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.createdAt}) >= ${since.toISOString()}::timestamptz`,
         )).limit(AI_AUTHENTICATION_FAILURE_SCAN_LIMIT);
         const observed = new Set<string>(input.runId ? [] : ["probe:current"]);
-        for (const run of failedRuns) if (isAiAuthenticationFailure(run.errorCode)) observed.add(run.id);
+        for (const run of failedRuns) if (isAiAuthenticationFailureRun(run)) observed.add(run.id);
         if (observed.size < threshold) {
           outcome = "below_threshold";
           await logActivity(tx as unknown as Db, {
