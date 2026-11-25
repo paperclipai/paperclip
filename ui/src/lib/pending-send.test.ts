@@ -55,17 +55,18 @@ describe("isInlineSendRefusal", () => {
 describe("showsSendFailureToast", () => {
   const refusal = new ApiError("Swarm is not available while the task is in Plan mode", 422, null);
 
-  it("leaves a refusal to the task chat composer, which explains it inline", () => {
+  it("leaves a refusal to a composer that explains it inline", () => {
     expect(showsSendFailureToast(refusal, { explainsRefusalInline: true })).toBe(false);
   });
 
-  it("keeps the toast for the classic composer, which has no inline reason", () => {
+  it("keeps the toast when the sending composer does not explain refusals inline", () => {
+    expect(showsSendFailureToast(refusal, undefined)).toBe(true);
     expect(showsSendFailureToast(refusal, { explainsRefusalInline: false })).toBe(true);
   });
 
   it("keeps the toast for other failures and never for a pending send", () => {
     expect(showsSendFailureToast(new Error("try again"), { explainsRefusalInline: true })).toBe(true);
-    expect(showsSendFailureToast(new ApiError("x", 503, null), { explainsRefusalInline: false })).toBe(false);
+    expect(showsSendFailureToast(new ApiError("x", 503, null), undefined)).toBe(false);
   });
 });
 

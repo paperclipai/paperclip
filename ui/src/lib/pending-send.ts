@@ -58,9 +58,13 @@ export function isInlineSendRefusal(error: unknown): boolean {
   return status !== null && status >= 400 && status < 500 && classifySendFailure(error) === "rejected";
 }
 
-export function showsSendFailureToast(error: unknown, composer: { explainsRefusalInline: boolean }): boolean {
+export interface ComposerSendDelivery {
+  explainsRefusalInline: boolean;
+}
+
+export function showsSendFailureToast(error: unknown, delivery: ComposerSendDelivery | undefined): boolean {
   if (classifySendFailure(error) === "pending") return false;
-  return !(composer.explainsRefusalInline && isInlineSendRefusal(error));
+  return !(delivery?.explainsRefusalInline === true && isInlineSendRefusal(error));
 }
 
 // --- Persisted records ------------------------------------------------------------
