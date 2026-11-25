@@ -26,7 +26,8 @@ export function supportsNativeWarmFiles(profile: WarmProviderSelection): boolean
  * managed key. A warm owner needs its own proof that a credential change retires
  * it and refreshes its native home on attach, so no choice selects warm yet. */
 export function requiresPerTurnNativeSession(profile: WarmProviderSelection): boolean {
-  return profile.backend === "acpx_runtime" && profile.acpxAgent === "antigravity";
+  return (profile.backend === "acpx_runtime" && profile.acpxAgent === "antigravity")
+    || ["openai_dot_mcp", "grok_bot_mcp", "muse_external", "cursor_cloud_api"].includes(profile.backend);
 }
 
 /** Copilot carries a token in its fenced session environment, not a temporary auth file.

@@ -1,7 +1,9 @@
 import { resolvePaperclipRunnerIdleTimeoutMs } from "@paperclipai/adapter-utils";
 import type { Environment } from "@paperclipai/shared";
 import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runtime/native-runner-recovery-contract.js";
-import { defaultsRemoteSandboxRunToWarm, resolveWarmProviderSelection } from "./native-runtime/native-warm-capability.js";
+import {
+  defaultsRemoteSandboxRunToWarm, requiresPerTurnNativeSession, resolveWarmProviderSelection,
+} from "./native-runtime/native-warm-capability.js";
 
 /** Facts the remote-sandbox warm default needs beyond the configuration. */
 export interface RunnerLifecycleDefaultContext {
@@ -11,12 +13,19 @@ export interface RunnerLifecycleDefaultContext {
   managedAiCredentialIdentity?: string;
 }
 
+function harnessRequiresPerTurn(adapterConfig: Record<string, unknown>): boolean {
+  const profile = resolveWarmProviderSelection(adapterConfig) ?? (adapterConfig.provider === "acpx"
+    ? { backend: "acpx_runtime" as const, acpxAgent: adapterConfig.acpxAgent ?? "claude" } : null);
+  return profile !== null && requiresPerTurnNativeSession(profile);
+}
+
 function explicitLifecycleMode(
   config: Record<string, unknown>,
   adapterConfig: Record<string, unknown>,
   admittedLifecycleMode?: "warm" | "per_turn",
 ): "warm" | "per_turn" | undefined {
   if (admittedLifecycleMode) return admittedLifecycleMode;
+  if (harnessRequiresPerTurn(adapterConfig)) return "per_turn";
   if (config.runnerLifecycleMode === "warm" || config.runnerLifecycleMode === "per_turn") return config.runnerLifecycleMode;
   if (adapterConfig.lifecycleMode === "warm" || adapterConfig.lifecycleMode === "per_turn") return adapterConfig.lifecycleMode;
   return undefined;
