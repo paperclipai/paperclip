@@ -257,6 +257,77 @@ describe("toggleReaction", () => {
     await act(async () => root.unmount());
     client.clear();
   });
+
+  it("serializes reaction writes and preserves latest choice across panel remounts", async () => {
+    let finishAdd!: () => void;
+    let finishRemove!: () => void;
+    const doneSummary = { reaction: "done" as const, count: 1, reactedByMe: true, actors: [{ actorType: "user" as const, agentId: null, userId: null }] };
+    setReaction
+      .mockReset()
+      .mockImplementationOnce(() => new Promise((resolve) => { finishAdd = () => resolve({ id: "comment-1", reactions: [doneSummary] }); }))
+      .mockImplementationOnce(() => new Promise((resolve) => { finishRemove = () => resolve({ id: "comment-1", reactions: [] }); }));
+
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const queryKey = ["issues", "document-annotations", "issue-1", "plan", "all"];
+    client.setQueryData(queryKey, [{ id: "thread-1", comments: [{ id: "comment-1", reactions: [] }] }]);
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    let toggle!: ReturnType<typeof useDocumentAnnotationMutations>["toggleReaction"];
+    function Harness() {
+      toggle = useDocumentAnnotationMutations({
+        target: { kind: "issue", issueId: "issue-1", documentKey: "plan" },
+        baseRevisionId: "rev-1",
+        baseRevisionNumber: 1,
+        pendingAnchor: null,
+        onFocusThread: () => undefined,
+      }).toggleReaction;
+      return null;
+    }
+
+    const reactionsInCache = () =>
+      (client.getQueryData(queryKey) as Array<{ comments: Array<{ reactions: Array<{ reaction: string; reactedByMe: boolean }> }> }>)[0]!
+        .comments[0]!.reactions.map((entry) => [entry.reaction, entry.reactedByMe]);
+
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    await act(async () => root.render(<QueryClientProvider client={client}><Harness key="open-1" /></QueryClientProvider>));
+
+    await act(async () => {
+      toggle.mutate({ threadId: "thread-1", commentId: "comment-1", reaction: "done", present: true });
+    });
+    await vi.waitFor(() => expect(setReaction).toHaveBeenCalledTimes(1));
+    expect(reactionsInCache()).toEqual([["done", true]]);
+
+    // Close and reopen the panel while the add request is still in flight.
+    await act(async () => root.render(<QueryClientProvider client={client}><Harness key="open-2" /></QueryClientProvider>));
+    await act(async () => {
+      toggle.mutate({ threadId: "thread-1", commentId: "comment-1", reaction: "done", present: false });
+    });
+
+    // The DELETE must wait behind the in-flight PUT rather than racing ahead of it.
+    expect(setReaction).toHaveBeenCalledTimes(1);
+    expect(reactionsInCache()).toEqual([]);
+    invalidate.mockClear();
+
+    await act(async () => finishAdd());
+    await vi.waitFor(() => expect(setReaction).toHaveBeenCalledTimes(2));
+    expect(setReaction).toHaveBeenNthCalledWith(
+      2,
+      { kind: "issue", issueId: "issue-1", documentKey: "plan" },
+      "thread-1",
+      "comment-1",
+      "done",
+      false,
+    );
+    expect(reactionsInCache()).toEqual([]);
+    expect(invalidate).not.toHaveBeenCalled();
+
+    await act(async () => finishRemove());
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalled());
+    expect(reactionsInCache()).toEqual([]);
+
+    await act(async () => root.unmount());
+    client.clear();
+  });
 });
 
 describe("ThreadCard comment reactions", () => {

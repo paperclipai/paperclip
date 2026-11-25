@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import type { DocumentAnnotationComment, DocumentAnnotationCommentReactionName, DocumentAnnotationCommentReactionSummary, DocumentAnnotationThreadStatus, DocumentAnnotationThreadWithComments } from "@paperclipai/shared";
 import { DOCUMENT_ANNOTATION_COMMENT_REACTIONS } from "@paperclipai/shared";
 import { authApi } from "@/api/auth";
@@ -115,9 +115,6 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
     onSuccess: () => setMutationError(null),
     onSettled: invalidateAll,
   });
-  const reactionWrites = useRef(new Map<string, Promise<DocumentAnnotationComment>>());
-  const pendingCounts = useRef(new Map<string, number>());
-  const pendingChoices = useRef(new Map<string, PendingReactionChoice>());
   const queryKeyHash = useMemo(() => JSON.stringify(queryKey), [queryKey]);
 
   useEffect(() => {
@@ -125,11 +122,12 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
     return queryClient.getQueryCache().subscribe((event) => {
       if (reapplying) return;
       if (event.type !== "updated" || event.action.type !== "success" || event.action.manual) return;
-      if (pendingChoices.current.size === 0) return;
+      const reactionState = peekTargetReactionState(queryClient, queryKeyHash);
+      if (!reactionState || reactionState.pendingChoices.size === 0) return;
       if (JSON.stringify(event.query.queryKey) !== queryKeyHash) return;
       const current = queryClient.getQueryData<DocumentAnnotationThreadWithComments[]>(queryKey);
       if (!current) return;
-      const next = applyPendingReactionChoices(current, pendingChoices.current.values());
+      const next = applyPendingReactionChoices(current, reactionState.pendingChoices.values());
       if (next === current) return;
       reapplying = true;
       try {
@@ -153,19 +151,22 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
     })), [queryClient, queryKey]);
   const toggleReaction = useMutation({
     mutationFn: ({ threadId, commentId, reaction, present }: ReactionToggle) => {
+      const reactionState = getTargetReactionState(queryClient, queryKeyHash);
       const key = reactionWriteKey(commentId, reaction);
-      const previous = reactionWrites.current.get(key);
+      const previous = reactionState.writes.get(key);
       const write = (previous ? previous.catch(() => undefined) : Promise.resolve())
         .then(() => documentAnnotationsApi.setReactionForTarget(options.target, threadId, commentId, reaction, present));
-      reactionWrites.current.set(key, write);
+      reactionState.writes.set(key, write);
       return write.finally(() => {
-        if (reactionWrites.current.get(key) === write) reactionWrites.current.delete(key);
+        if (reactionState.writes.get(key) === write) reactionState.writes.delete(key);
+        cleanupTargetReactionState(queryClient, queryKeyHash, reactionState);
       });
     },
     onMutate: async ({ threadId, commentId, reaction, present }) => {
+      const reactionState = getTargetReactionState(queryClient, queryKeyHash);
       const key = reactionWriteKey(commentId, reaction);
-      pendingCounts.current.set(key, (pendingCounts.current.get(key) ?? 0) + 1);
-      pendingChoices.current.set(key, { threadId, commentId, reaction, present, userId: currentUser.id });
+      reactionState.pendingCounts.set(key, (reactionState.pendingCounts.get(key) ?? 0) + 1);
+      reactionState.pendingChoices.set(key, { threadId, commentId, reaction, present, userId: currentUser.id });
       setMutationError(null);
       await queryClient.cancelQueries({ queryKey });
       let previous: DocumentAnnotationCommentReactionSummary | undefined;
@@ -176,17 +177,19 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
       return { previous };
     },
     onError: (error, { threadId, commentId, reaction }, context) => {
+      const reactionState = peekTargetReactionState(queryClient, queryKeyHash);
       const key = reactionWriteKey(commentId, reaction);
-      if ((pendingCounts.current.get(key) ?? 0) <= 1 && context) {
+      if ((reactionState?.pendingCounts.get(key) ?? 0) <= 1 && context) {
         updateCommentReactions(threadId, commentId, (reactions) => replaceReaction(reactions, reaction, context.previous));
       }
       setMutationError(messageFor(error, "Failed to update reaction."));
     },
     onSuccess: (comment, { threadId, commentId, reaction }) => {
       setMutationError(null);
+      const reactionState = peekTargetReactionState(queryClient, queryKeyHash);
       const key = reactionWriteKey(commentId, reaction);
-      if ((pendingCounts.current.get(key) ?? 0) > 1) return;
-      const otherPending = Array.from(pendingChoices.current.values()).filter(
+      if ((reactionState?.pendingCounts.get(key) ?? 0) > 1) return;
+      const otherPending = Array.from(reactionState?.pendingChoices.values() ?? []).filter(
         (choice) => choice.commentId === commentId && choice.reaction !== reaction,
       );
       updateCommentReactions(threadId, commentId, () => otherPending.reduce(
@@ -195,19 +198,59 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
       ));
     },
     onSettled: (_comment, _error, { commentId, reaction }) => {
+      const reactionState = peekTargetReactionState(queryClient, queryKeyHash);
+      if (!reactionState) return invalidateAll();
       const key = reactionWriteKey(commentId, reaction);
-      const remaining = (pendingCounts.current.get(key) ?? 1) - 1;
+      const remaining = (reactionState.pendingCounts.get(key) ?? 1) - 1;
       if (remaining > 0) {
-        pendingCounts.current.set(key, remaining);
+        reactionState.pendingCounts.set(key, remaining);
       } else {
-        pendingCounts.current.delete(key);
-        pendingChoices.current.delete(key);
+        reactionState.pendingCounts.delete(key);
+        reactionState.pendingChoices.delete(key);
       }
-      if (pendingCounts.current.size > 0) return;
+      const hasPending = reactionState.pendingCounts.size > 0;
+      cleanupTargetReactionState(queryClient, queryKeyHash, reactionState);
+      if (hasPending) return;
       return invalidateAll();
     },
   });
   return { createThread, addReply, updateStatus, toggleReaction, mutationError, currentUser };
+}
+
+interface TargetReactionState {
+  writes: Map<string, Promise<DocumentAnnotationComment>>;
+  pendingCounts: Map<string, number>;
+  pendingChoices: Map<string, PendingReactionChoice>;
+}
+
+const reactionStateByClient = new WeakMap<QueryClient, Map<string, TargetReactionState>>();
+
+function peekTargetReactionState(queryClient: QueryClient, queryKeyHash: string): TargetReactionState | undefined {
+  return reactionStateByClient.get(queryClient)?.get(queryKeyHash);
+}
+
+function getTargetReactionState(queryClient: QueryClient, queryKeyHash: string): TargetReactionState {
+  let byTarget = reactionStateByClient.get(queryClient);
+  if (!byTarget) {
+    byTarget = new Map();
+    reactionStateByClient.set(queryClient, byTarget);
+  }
+  let state = byTarget.get(queryKeyHash);
+  if (!state) {
+    state = {
+      writes: new Map(),
+      pendingCounts: new Map(),
+      pendingChoices: new Map(),
+    };
+    byTarget.set(queryKeyHash, state);
+  }
+  return state;
+}
+
+function cleanupTargetReactionState(queryClient: QueryClient, queryKeyHash: string, state: TargetReactionState) {
+  if (state.writes.size > 0 || state.pendingCounts.size > 0 || state.pendingChoices.size > 0) return;
+  const byTarget = reactionStateByClient.get(queryClient);
+  if (byTarget?.get(queryKeyHash) === state) byTarget.delete(queryKeyHash);
 }
 
 interface PendingReactionChoice extends ReactionToggle {
