@@ -137,14 +137,16 @@ export function createGoogleTechnicalInformationRetention(db: Db) {
     for (const { connectionId } of due) {
       await db.transaction(async (rawTx) => {
         const tx = rawTx as unknown as Db;
-        await tx.update(toolCatalogEntries)
+        const stripped = await tx.update(toolCatalogEntries)
           .set({ title: null, description: null, inputSchema: {}, outputSchema: null, annotations: {}, uiMeta: null, icons: null })
           .where(and(
             eq(toolCatalogEntries.connectionId, connectionId),
             catalogNotStrippedSql,
             sql`(${toolCatalogEntries.lastSeenAt} <= ${cutoff}::timestamptz
               or exists (select 1 from tool_connections c where c.id = ${connectionId} and c.status = 'archived'))`,
-          ));
+          ))
+          .returning({ id: toolCatalogEntries.id });
+        if (stripped.length === 0) return;
         await tx.update(toolConnections).set({ lastCatalogRefreshAt: null })
           .where(and(eq(toolConnections.id, connectionId), sql`${toolConnections.status} <> 'archived'`));
       });
