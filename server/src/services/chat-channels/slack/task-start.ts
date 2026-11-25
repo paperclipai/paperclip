@@ -19,7 +19,6 @@ import {
   inArray,
   lte,
   ne,
-  notInArray,
   or,
   sql,
 } from "drizzle-orm";
@@ -173,8 +172,6 @@ export function createSlackTaskStart(db: Db, options: SlackTaskStartOptions) {
           eq(chatConversations.endpointId, endpointId),
           inArray(chatConversations.externalConversationId, conversationIds),
           eq(chatConversations.isDirectMessage, true),
-          inArray(chatConversations.state, ["active", "waiting"]),
-          notInArray(issues.status, ["done", "cancelled"]),
         ),
       )
       .orderBy(
@@ -1072,4 +1069,22 @@ export function createSlackTaskStart(db: Db, options: SlackTaskStartOptions) {
     return processed;
   }
   return { latestSlackDmControlThreadId, finalizeSlackTaskStartFailure, admitConfirmedSlackTaskStart, processSlackTaskStart, processPendingSlackTaskStarts };
+}
+
+export function slackTaskStartActivityStatus(action: {
+  status: string;
+  updatedAt: Date;
+}): string {
+  const age = Date.now() - action.updatedAt.getTime();
+  if (action.status === "validating" && age >= SLACK_COMMAND_POST_STALE_MS) {
+    return "queued";
+  }
+  if (
+    (action.status === "received" && age >= SLACK_COMMAND_POST_STALE_MS) ||
+    (action.status === "resolving" &&
+      age >= SLACK_COMMAND_EXPLICIT_RETRY_STALE_MS)
+  ) {
+    return "delivery_unknown";
+  }
+  return action.status;
 }

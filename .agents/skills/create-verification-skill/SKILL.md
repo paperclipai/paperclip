@@ -44,6 +44,11 @@ Paperclip's APIs, admitted tools and existing verification infrastructure. Run
 `node scripts/check-maps.mjs` after map changes. Do not create maps inside a skill
 directory or generate a second runtime.
 
+For Paperclip, add navigation metadata to each feature recipe as described in the
+map contract. Discovery generates the indexes; do not register new features in a
+central table or commit generated catalogs. Keep review/run evidence in the PR
+or evidence report and use Git for source history.
+
 For other projects, create `.agents/skills/verify-<app>/features/README.md` plus one file per user-facing feature you can identify (aim for the top 3-5 to start, from routes, commands, menus, or docs). Follow the shape in [`references/feature-map-example/`](references/feature-map-example/), with a README index and one file per feature. Each file answers, from the user's point of view: what the feature is, how to reach it, how to drive it with the harness, and what observable end state proves it works. The four H2s are `Sub-features`, `How to get to it (user POV)`, `Driving it with <harness>`, and `Gotchas`. The map is the repo's maintained verification source; a proof that drives one convenient entry point is incomplete when the map lists others.
 
 ## 4. Prove the generated skill before handing it over

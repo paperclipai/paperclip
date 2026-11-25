@@ -27,6 +27,12 @@ const SENSITIVE_KEYS = new Set<string>([
   "configuration_token",
   "credential",
   "credentials",
+  // The app-connect/reconnect envelope. Its keys are caller-chosen provider
+  // config paths (`credentials.authorization`, `headers.X-Api-Key`), so they
+  // never match a leaf name in this set; redact the envelope by name. This is
+  // the durable half: the path list in http-log-redaction.ts only ever covers
+  // shapes someone has already seen leak.
+  "credentialvalues",
   "password",
   "currentpassword",
   "newpassword",
@@ -76,11 +82,16 @@ const SENSITIVE_KEYS = new Set<string>([
   "signingsecret",
   "webhook_secret",
   "webhooksecret",
+  "webhookkey",
+  "webhookurl",
   "paperclip_capability",
-  // The Claude setup-token login fields. `browserCode` carries the one-time
-  // sign-in code and `authorization_code` carries the OAuth code; neither may
-  // reach a log line.
+  // The Claude setup-token and hosted Google redirect login fields.
+  // `browserCode` carries a one-time sign-in code or loopback redirect URL,
+  // `redirectUrl` carries an OAuth callback URL, and `authorization_code`
+  // carries the OAuth code; none may reach a log line.
   "browsercode",
+  "redirecturl",
+  "redirect_url",
   "authorization_code",
   "code_verifier",
   "codeverifier",
@@ -130,11 +141,14 @@ function isUrlishKey(key: string): boolean {
 export function stripSecretBearingUrlParts(value: string): string {
   const suffixStart = value.search(/[?#]/);
   const withoutQueryOrFragment =
-    suffixStart === -1 ? value : value.slice(0, suffixStart);
+    (suffixStart === -1 ? value : value.slice(0, suffixStart)).replace(
+      /(^|^[a-z][a-z\d+.-]*:\/\/[^/]*)(\/(?:(?:api\/)?invites\/(?![^/]+\/revoke(?:\/|$))|invite\/))[^/]+/i,
+      "$1$2[REDACTED]",
+    );
 
   try {
     const url = new URL(withoutQueryOrFragment);
-    if (!url.username && !url.password && suffixStart === -1) return value;
+    if (!url.username && !url.password) return withoutQueryOrFragment;
     url.username = "";
     url.password = "";
     return url.toString();
@@ -227,6 +241,35 @@ function encodedSensitiveVariants(values: readonly string[]): string[] {
     .sort((left, right) => right.length - left.length);
 }
 
+/** Decode candidate spans rather than enumerating secret encodings. This also
+ * finds credentials embedded inside an encoded diagnostic or authorization value.
+ * Bound nesting so untrusted provider text cannot cause unbounded decoding work. */
+function redactEncodedSensitiveOccurrences(text: string, variants: readonly string[], depth = 0): string {
+  if (depth >= 3 || variants.length === 0) return text;
+  const containsSecret = (decoded: string) => variants.some(value => decoded.includes(value))
+    || redactEncodedSensitiveOccurrences(decoded, variants, depth + 1) !== decoded;
+  const percentRedacted = text.replace(/[^\s<>"`]+/g, token => {
+    if (!/%[0-9a-f]{2}/i.test(token)) return token;
+    // Try URI and form encoding separately: '+' is literal in URI components.
+    for (const candidate of [token, token.replaceAll("+", " ")]) {
+      const decoded = candidate.replace(/(?:%[0-9a-f]{2})+/gi, span => {
+        try { return decodeURIComponent(span); }
+        catch { return span; } // Keep malformed UTF-8 without hiding valid spans.
+      });
+      if (containsSecret(decoded)) return REDACTED;
+    }
+    return token;
+  });
+  return percentRedacted.replace(/[A-Za-z0-9+/_-]+={0,2}/g, token => {
+    if (token.length < 4) return token;
+    const canonical = token.replaceAll("-", "+").replaceAll("_", "/").replace(/=+$/, "");
+    const bytes = Buffer.from(canonical, "base64");
+    // Buffer accepts invalid base64; only inspect a lossless canonical decode.
+    if (bytes.toString("base64").replace(/=+$/, "") !== canonical) return token;
+    return containsSecret(bytes.toString("utf8")) ? REDACTED : token;
+  });
+}
+
 /**
  * Redacts sensitive-shaped fields, then removes submitted credential values
  * wherever an upstream validator/provider echoed them into otherwise-safe
@@ -244,7 +287,7 @@ export function redactSensitiveValueOccurrences(
     if (typeof entry === "string") {
       return variants.reduce(
         (text, sensitiveValue) => text.replaceAll(sensitiveValue, REDACTED),
-        entry,
+        redactEncodedSensitiveOccurrences(entry, variants),
       );
     }
     if (entry === null || typeof entry !== "object") return entry;

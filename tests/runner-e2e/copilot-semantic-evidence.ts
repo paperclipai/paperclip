@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readCopilotToolEvidence, type CopilotToolNotice } from "./copilot-evidence.js";
+import { readCopilotContextRead, type CopilotContextReadProof } from "./copilot-context-evidence.js";
 
 type Row = Record<string, any>;
 const rec = (v: unknown): Row => v !== null && typeof v === "object" && !Array.isArray(v) ? v as Row : {};
@@ -10,15 +11,17 @@ const canonical = (v: unknown): string => Array.isArray(v) ? `[${v.map(canonical
 const digest = (v: unknown) => hash(canonical(v));
 const receiptKeys = ["callIdentitySha256", "inputSha256", "normalizedInputSha256", "operationId", "outcome", "resultSha256", "schema", "stage"].sort().join(",");
 export interface CopilotSemanticCompletionProof {
-  schema: "paperclip.e2e.copilot-semantic-completion.v2";
+  schema: "paperclip.e2e.copilot-semantic-completion.v2" | "paperclip.e2e.copilot-semantic-completion.v4";
+  contextRead?: CopilotContextReadProof;
   runId: string; turnId: string; nativeSessionId: string; normalizedSessionId: string; sourceInstanceId: string;
   nativeToolCallId: string; callIdentitySha256: string; inputSha256: string; normalizedInputSha256: string; resultSha256: string;
+  nativePendingSeq: number; nativePendingObservedAtMs: number;
   proposedSeq: number; receiptSeq: number; nativeCompletedSeq: number; turnCompletedSeq: number; acceptedSeq: number;
   summarySha256: string;
 }
 /** Independent public-event oracle. A transport receipt alone never proves completion acceptance. */
 export function readCopilotSemanticCompletion(rows: readonly unknown[], expected: {
-  companyId: string; runId: string; turnId: string; nativeSessionId: string; command: CopilotToolNotice; summary: string;
+  companyId: string; runId: string; turnId: string; nativeSessionId: string; command: CopilotToolNotice; summary: string; requireContextRead?: boolean;
 }): CopilotSemanticCompletionProof {
   const fail = (message: string): never => { throw new Error(`Copilot semantic completion: ${message}`); };
   const all = rows.map(rec), notices = readCopilotToolEvidence(rows, expected.runId);
@@ -45,7 +48,8 @@ export function readCopilotSemanticCompletion(rows: readonly unknown[], expected
     frame(rs[0]!, "runner");
   }
   if (expected.command.runId !== expected.runId || expected.command.turnId !== expected.turnId || expected.command.sessionId !== expected.nativeSessionId) fail("foreign command");
-  const authorityRows = all.filter(r => rec(rec(rec(r.payload).prpEvent).payload).category === "paperclip_semantic_tool_receipt_v2" || rec(rec(rec(r.payload).prpEvent).payload).category === "paperclip_semantic_tool_receipt_v1");
+  const contextRead = readCopilotContextRead(rows, expected.command, expected.requireContextRead);
+  const authorityRows = all.filter(r => (rec(rec(rec(r.payload).prpEvent).payload).category === "paperclip_semantic_tool_receipt_v2" || rec(rec(rec(r.payload).prpEvent).payload).category === "paperclip_semantic_tool_receipt_v1") && ![contextRead?.receiptSeq, ...(contextRead?.discoveries.map(d => d.receiptSeq) ?? [])].includes(r.seq));
   // This authored case asks for one finish, not arbitrary semantic actions.
   if (authorityRows.length !== 1) fail("expected one authoritative finish receipt");
   const authorityRow = authorityRows[0]!, authority = frame(authorityRow, "runner"), payload = rec(authority.payload), origin = rec(payload.provenance);
@@ -95,9 +99,10 @@ export function readCopilotSemanticCompletion(rows: readonly unknown[], expected
     && authorityRow.seq < native.seq && native.seq < terminals[0]!.seq && terminals[0]!.seq < acceptedRows[0]!.seq)
     || !(base.sourceSeq < pendingFrame.sourceSeq && pendingFrame.sourceSeq < proposed.sourceSeq && proposed.sourceSeq < authority.sourceSeq
       && authority.sourceSeq < completedFrame.sourceSeq && completedFrame.sourceSeq < terminal.sourceSeq)) fail("invalid causal order");
-  return { schema: "paperclip.e2e.copilot-semantic-completion.v2", runId: expected.runId, turnId: expected.turnId, nativeSessionId: expected.nativeSessionId,
+  return { schema: expected.requireContextRead ? "paperclip.e2e.copilot-semantic-completion.v4" : "paperclip.e2e.copilot-semantic-completion.v2", ...(contextRead ? { contextRead } : {}), runId: expected.runId, turnId: expected.turnId, nativeSessionId: expected.nativeSessionId,
     normalizedSessionId: base.normalizedSessionId, sourceInstanceId: base.sourceInstanceId, nativeToolCallId: native.toolCallId,
     callIdentitySha256: fields.callIdentitySha256!, inputSha256: fields.inputSha256!, normalizedInputSha256: fields.normalizedInputSha256!, resultSha256: fields.resultSha256!,
+    nativePendingSeq: pending[0]!.seq, nativePendingObservedAtMs: pending[0]!.observedAtMs,
     proposedSeq: proposedRows[0]!.seq, receiptSeq: authorityRow.seq, nativeCompletedSeq: native.seq, turnCompletedSeq: terminals[0]!.seq, acceptedSeq: acceptedRows[0]!.seq, summarySha256: hash(expected.summary) };
 }
 
@@ -110,6 +115,16 @@ export function onlyCopilotAttachedOperations(notices: readonly CopilotToolNotic
     || new Set(notices.map(n => n.seq)).size !== notices.length) return false;
   const groups = new Map<string, CopilotToolNotice[]>();
   for (const n of notices) { const group = groups.get(n.toolCallId) ?? []; group.push(n); groups.set(n.toolCallId, group); }
+  if (proof.contextRead) {
+    const context = groups.get(proof.contextRead.toolCallId);
+    if (context && context.some(n => n.seq >= command.seq)) return false;
+    groups.delete(proof.contextRead.toolCallId);
+    for (const discovery of proof.contextRead.discoveries) {
+      const group = groups.get(discovery.toolCallId);
+      if (group && group.some(n => n.seq >= proof.contextRead!.pendingSeq)) return false;
+      groups.delete(discovery.toolCallId);
+    }
+  }
   // Exactly one command, one shell-result read, and the already-proven finish.
   // A completed-only extra read cannot borrow the original command's identity.
   if (groups.size !== 3 || !groups.has(proof.nativeToolCallId)) return false;
@@ -131,9 +146,27 @@ export function onlyCopilotAttachedOperations(notices: readonly CopilotToolNotic
   const shellGroup = [...groups].find(([key]) => key !== command.toolCallId && key !== proof.nativeToolCallId)![1];
   if (!complete(shellGroup)) return false;
   const terminal = shellGroup.at(-1)!;
-  return shellGroup[0]!.seq > started.seq && terminal.seq < proof.turnCompletedSeq
+  return shellGroup[0]!.seq > started.seq && shellGroup[0]!.seq > proof.nativePendingSeq && terminal.seq < proof.turnCompletedSeq
     && terminal.commandToolCallId === command.toolCallId && terminal.shellState === "completed" && terminal.exitCode === 0
     && shellGroup.every(n => n.operation === "read" && n.shellId === started.shellId && n.target === undefined && n.readTargetSha256 === undefined
       && n.commandSha256 === undefined && n.mode === undefined && n.detach === undefined && semanticFree(n)
       && (n === terminal || (n.commandToolCallId === undefined && n.shellState === undefined && n.exitCode === undefined)));
+}
+
+/** The finish origin is producer-stamped on the same host as the independent child observer. */
+export function copilotFinishAttemptBeforeCommandExit(proof: CopilotSemanticCompletionProof, commandExitAtMs: number): boolean {
+  return Number.isFinite(proof.nativePendingObservedAtMs) && proof.nativePendingObservedAtMs >= 0
+    && Number.isFinite(commandExitAtMs) && commandExitAtMs > proof.nativePendingObservedAtMs;
+}
+
+/** Fixture scheduling only; final grading still verifies the complete durable receipt and acceptance. */
+export function copilotAttachedFinishReady(notices: readonly CopilotToolNotice[], command: CopilotToolNotice): CopilotToolNotice | undefined {
+  const matches = notices.filter(n => n.semanticOperationId === "paperclip_finish" && n.semanticOutcome === "returned" && n.stage === "tool" && n.status === "completed"
+    && n.runId === command.runId && n.turnId === command.turnId && n.sessionId === command.sessionId && n.seq > command.seq);
+  if (!matches.length) return undefined;
+  if (matches.length !== 1) throw new Error("Attached fixture has ambiguous finish receipts");
+  const finish = matches[0]!, pending = notices.filter(n => n.toolCallId === finish.toolCallId && n.stage === "tool" && n.status === "pending"
+    && n.runId === command.runId && n.turnId === command.turnId && n.sessionId === command.sessionId && n.seq > command.seq && n.seq < finish.seq);
+  if (pending.length !== 1) throw new Error("Attached fixture lacks the matching finish origin");
+  return pending[0];
 }
