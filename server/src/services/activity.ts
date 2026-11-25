@@ -1,3 +1,4 @@
+import { dashboardActivityCondition, dashboardAuditConversationCondition } from "./responsibility-privacy.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { skillAccessService } from "./skill-access.js";
 import { credentialAccessConnectionNameSql } from "./credential-access-visibility.js";
@@ -37,6 +38,7 @@ export interface ActivityFilters {
   limit?: number;
   readCondition?: SQL<boolean>;
   caseReadCondition?: SQL<boolean>;
+  dashboardUserId?: string | null;
 }
 
 const DEFAULT_ACTIVITY_LIMIT = 100;
@@ -193,6 +195,13 @@ export function activityService(db: Db) {
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
         'workspaceRestorePath', case when length(${heartbeatRuns.resultJson} ->> 'workspaceRestorePath') <= 180
           then ${heartbeatRuns.resultJson} -> 'workspaceRestorePath' end,
+        -- A failed /swarm offers Retry unless the swarm route said the person must
+        -- change something first (task-interruption-presentation.ts decides the same).
+        'providerFailure', case when ${heartbeatRuns.errorCode} = 'antigravity_swarm_unavailable'
+          and jsonb_typeof(${heartbeatRuns.resultJson} -> 'providerFailure') = 'object'
+          then jsonb_strip_nulls(jsonb_build_object(
+            'provider', ${heartbeatRuns.resultJson} #>> '{providerFailure,provider}',
+            'retryability', ${heartbeatRuns.resultJson} #>> '{providerFailure,retryability}')) end,
         'finalResponseRecorded', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'finalResponseRecorded') = 'boolean'
           then ${heartbeatRuns.resultJson} -> 'finalResponseRecorded' end,
         'billingType', coalesce(${heartbeatRuns.resultJson} -> 'billingType', ${heartbeatRuns.resultJson} -> 'billing_type'),
@@ -418,6 +427,7 @@ export function activityService(db: Db) {
   return {
     list: async (filters: ActivityFilters) => {
       const conditions = [eq(activityLog.companyId, filters.companyId), await skillAccessService(db).activityCondition(filters.companyId),
+        dashboardActivityCondition(filters.dashboardUserId), dashboardAuditConversationCondition(filters.dashboardUserId),
         filters.caseReadCondition ?? sql<boolean>`${activityLog.entityType} <> 'case'`];
       const limit = normalizeActivityLimit(filters.limit);
 

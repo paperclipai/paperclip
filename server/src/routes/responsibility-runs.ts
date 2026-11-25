@@ -1,3 +1,4 @@
+import { dashboardOwner } from "./responsibility-owner.js";
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
 import { forbidden } from "../errors.js";
@@ -39,6 +40,7 @@ export function responsibilityRunRoutes(db: Db) {
         throw forbidden("Responsibilities are outside this agent's authorization boundary", authorizationDeniedDetails(decision));
       }
     }
+    await dashboardOwner(db, req, row.companyId, row.ownerUserId);
     return row;
   }
 

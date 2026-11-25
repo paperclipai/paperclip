@@ -31,6 +31,7 @@ import { mergeComposerRunSettings, type ComposerRunSettings } from "@/components
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
+import { captureAgentChatMessageSent } from "@/lib/analytics/onboarding-analytics";
 import { trackRecentProject } from "@/lib/recent-projects";
 import { ExecutionBlockerNotice } from "../components/ExecutionBlockerNotice";
 import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
@@ -92,7 +93,7 @@ import {
   type RecentIssueRunWindow,
 } from "../lib/issue-chat-history-queries";
 import { readFromIssueChatBootstrap, sameIds, startIssueChatBootstrap } from "../lib/issue-chat-bootstrap";
-import { isRestoredSavedRead } from "../lib/persisted-query-cache";
+import { isRestoredSavedRead, recordTaskOpen } from "../lib/persisted-query-cache";
 import {
   heartbeatsApi,
   type ActiveRunForIssue,
@@ -426,6 +427,7 @@ import {
 import { AgentQueueWaitChip } from "@/components/AgentQueueWait";
 import { agentQueueWaitOf, isWaitingToStart } from "@/lib/agent-queue-wait";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+import { openSafeUrl } from "@/lib/safe-url";
 
 // Stable empty array for React Query `data` defaults. A literal `= []` default
 // creates a new array reference on every render while `data` is undefined
@@ -3490,6 +3492,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       issue.identifier?.toLowerCase() === issueId.toLowerCase())
       ? issue
       : null;
+  const openedIssueId = loadedIssue ? loadedIssue.id : null;
+  useEffect(() => {
+    if (openedIssueId) recordTaskOpen(queryClient, { id: openedIssueId });
+  }, [queryClient, openedIssueId]);
   const loadedIssueCompany = loadedIssue
     ? companies.find((company) => company.id === loadedIssue.companyId)
     : undefined;
@@ -5143,8 +5149,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const addComment = useAccountBoundMutation({
-    mutationFn: async ({ body, reopen, interrupt, attachmentIds, clientRequestId, runSettings }: {
-      body: string; reopen?: boolean; interrupt?: boolean; attachmentIds?: string[]; clientRequestId?: string; runSettings?: ComposerRunSettings;
+    mutationFn: async ({ body, reopen, interrupt, attachmentIds, clientRequestId, runSettings, nativeCommand }: {
+      body: string; reopen?: boolean; interrupt?: boolean; attachmentIds?: string[]; clientRequestId?: string; runSettings?: ComposerRunSettings; nativeCommand?: "swarm";
     }, { assertCurrentAccount }) => {
       if (issue?.conversationAgentId) clearLegacyChatMessageRequests(`${issue.companyId}:${currentUserId}:${issue.conversationAgentId}`);
       const writableIssueId = await resolveWritableIssueId();
@@ -5166,7 +5172,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         assertCurrentAccount();
         queryClient.setQueryData(queryKeys.issues.detail(writableIssueId), updated);
       }
-      return issuesApi.addComment(writableIssueId, body, reopen, interrupt, attachmentIds, clientRequestId ?? createUuid());
+      return issuesApi.addComment(writableIssueId, body, reopen, interrupt, attachmentIds, clientRequestId ?? createUuid(), nativeCommand);
     },
     onMutate: async ({ body, reopen, interrupt }) => {
       // Start cache cancellation immediately but do not put it in front of the
@@ -5258,6 +5264,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         void queryClient.invalidateQueries({
           queryKey: queryKeys.issues.queuedComments(issueId ?? comment.issueId),
         });
+      }
+      if (issue?.conversationAgentId) {
+        captureAgentChatMessageSent(
+          issue.originKind === "onboarding_chat" ? "onboarding_chat" : "agent_chat",
+        );
       }
       if (context?.optimisticCommentId) {
         commentRenderKeys.current.set(comment.id, context.optimisticCommentId);
@@ -6367,7 +6378,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const handleChatImageClick = useCallback(
     (src: string) => {
-      if (!openIssueGallery(src)) window.open(src, "_blank");
+      if (!openIssueGallery(src)) openSafeUrl(src);
     },
     [openIssueGallery],
   );
@@ -7037,7 +7048,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       attachmentIds?: string[],
       clientRequestId?: string,
       runSettings?: ComposerRunSettings,
+      nativeCommand?: "swarm",
     ) => {
+      // A swarm request always uses the comments endpoint, which checks it.
+      if (nativeCommand) {
+        await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, nativeCommand });
+        return;
+      }
       if (!issue?.conversationAgentId && (reassignment || runSettings)) {
         await addCommentAndReassign.mutateAsync({
           body,

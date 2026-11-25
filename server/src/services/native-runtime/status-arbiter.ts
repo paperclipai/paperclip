@@ -5,6 +5,7 @@ import { NATIVE_MODEL_REJECTION_MESSAGE, NATIVE_PROVIDER_CAPACITY_MAX_RETRIES, N
 import { NATIVE_TOOL_RECEIPT_LIMIT_CODE, NATIVE_TOOL_RECEIPT_LIMIT_MAX_CONTINUATIONS } from "./native-tool-receipt-limit.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_ACTION, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE,
   NATIVE_ENVIRONMENT_BLOCKER_MAX_RETRIES } from "./native-environment-blocker.js";
+import { planNotProducedDecision } from "./plan-mode-status.js";
 import { NATIVE_AGENT_BLOCKER_CONTINUATION_CODE, NATIVE_AGENT_BLOCKER_HANDOFF_CODE,
   NATIVE_AGENT_BLOCKER_MAX_CONTINUATIONS } from "./native-agent-blocker.js";
 
@@ -236,6 +237,8 @@ export function arbitrateNativeStatus(input: {
   publishedExternalReview?: boolean;
   /** Server-verified accepted plan request and normal provider terminal. */
   planWaitAuthorized?: boolean;
+  /** A Plan-mode run settled with no unanswered plan revision to review. */
+  planNotProduced?: boolean;
   monitorWaitAuthorized?: boolean;
   caseHandoffAuthorized?: boolean;
   /** The saved timer already admitted another run and this run no longer owns checkout. */
@@ -853,6 +856,12 @@ export function arbitrateNativeStatus(input: {
       unblockDescriptor: null,
       effects: [],
     };
+  }
+  // Before the passive board/response waits: a Plan-mode run, assigned or
+  // comment-started, with no plan to review must not rest as a silent wait.
+  if (input.planNotProduced === true && !input.isConversation && input.assessment.reportedDisposition === "yielded" &&
+    input.assessment.continuation?.kind === "response_wake") {
+    return { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, ...planNotProducedDecision(input) };
   }
   if (
     input.assessment.reportedDisposition === "yielded" &&

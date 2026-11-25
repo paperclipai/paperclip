@@ -1,4 +1,5 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
@@ -88,6 +89,54 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
     await instanceSettingsService(db).updateExperimental({ enableResponsibilities: true });
   });
 
+  it("splits a previously shared area, preserves each owner's history and hides unattributed areas", async () => {
+    const migration = readFileSync(new URL("../../../packages/db/src/migrations/0500_funny_malcolm_colcord.sql", import.meta.url), "utf8");
+    await db.$client.begin(async (tx) => {
+      await tx`set local search_path to pg_temp`;
+      await tx.unsafe(`create temp table responsibility_areas (
+        id uuid primary key, company_id uuid, title text, description text, status text default 'active',
+        source text, proposed_by_agent_id uuid, sort_order integer, created_at timestamptz, updated_at timestamptz
+      ) on commit drop`);
+      await tx`create unique index responsibility_areas_company_title_uq on responsibility_areas(company_id, lower(title))`;
+      await tx`create temp table responsibilities (id uuid, company_id uuid, owner_user_id text, area_id uuid) on commit drop`;
+      await tx`create temp table activity_log (company_id uuid, actor_type text, actor_id text, action text, entity_type text, entity_id text, details jsonb) on commit drop`;
+      await tx`create temp table responsibility_dashboard_versions (company_id uuid, owner_user_id text, snapshot jsonb, snapshot_hash text) on commit drop`;
+      await tx`create temp table issues (id uuid, company_id uuid, visibility text, privacy_root_issue_id uuid, responsible_user_id text, origin_id text, created_by_user_id text, origin_kind text) on commit drop`;
+      await tx`create temp table issue_thread_interactions (company_id uuid, kind text, status text, payload jsonb) on commit drop`;
+      const company = randomUUID();
+      const shared = randomUUID();
+      const empty = randomUUID();
+      const unknown = randomUUID();
+      await tx`insert into responsibility_areas (id, company_id, title) values
+        (${shared}, ${company}, 'Operations'), (${empty}, ${company}, 'Future work'), (${unknown}, ${company}, 'Unattributed')`;
+      await tx`insert into responsibilities values (gen_random_uuid(), ${company}, 'Alex', ${shared}), (gen_random_uuid(), ${company}, 'Blair', ${shared})`;
+      await tx`insert into activity_log values (${company}, 'user', 'Alex', 'responsibility_area.created', 'responsibility_area', ${empty}, null)`;
+      await tx`insert into responsibility_dashboard_versions values (${company}, 'Blair', ${JSON.stringify({
+        areas: [{ id: shared, title: "Operations" }], responsibilities: [{ areaId: shared }], createdAreaIds: [shared],
+      })}::jsonb, 'old')`;
+      await tx`insert into issue_thread_interactions values (${company}, 'propose_dashboard_changes', 'pending', ${JSON.stringify({
+        ownerUserId: "Blair", changes: [{ groupAreaId: shared, fromAreaId: shared }],
+      })}::jsonb)`;
+      // The old overview included every active area, even for a newcomer.
+      expect(await tx`select id from responsibility_areas where company_id = ${company} and status = 'active'`).toHaveLength(3);
+      for (const statement of migration.split("--> statement-breakpoint")) await tx.unsafe(statement);
+      const rows = await tx`select r.owner_user_id as owner, a.id from responsibilities r
+        join responsibility_areas a on a.id = r.area_id and r.owner_user_id = a.owner_user_id order by owner`;
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toEqual({ owner: "Alex", id: shared });
+      expect(rows[1].id).not.toBe(shared);
+      const [proposal] = await tx`select payload from issue_thread_interactions`;
+      expect(proposal.payload.changes).toEqual([{ groupAreaId: rows[1].id, fromAreaId: rows[1].id }]);
+      const [version] = await tx`select snapshot from responsibility_dashboard_versions`;
+      expect(version.snapshot).toMatchObject({
+        areas: [{ id: rows[1].id, title: "Operations" }], responsibilities: [{ areaId: rows[1].id }], createdAreaIds: [rows[1].id],
+      });
+      expect(await tx`select id from responsibility_areas where owner_user_id = 'Alex' and id = ${empty}`).toHaveLength(1);
+      expect(await tx`select id from responsibility_areas where owner_user_id is null`).toMatchObject([{ id: unknown }]);
+      expect(await tx`select id from responsibility_areas where owner_user_id = 'New member'`).toHaveLength(0);
+    });
+  });
+
   function createApp(actor: Actor) {
     const app = express();
     app.use(express.json());
@@ -102,6 +151,23 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
     app.use(errorHandler);
     return app;
   }
+
+  it("keeps two dashboards private when teammates create the same area", async () => {
+    const { company, app } = await seed();
+    const second = createApp(sessionBoardActor(company.id, OTHER, "owner"));
+    const path = `/api/companies/${company.id}/responsibility-areas`;
+    const overview = `/api/companies/${company.id}/responsibilities`;
+    await db.insert(responsibilityAreas).values(Array.from({ length: 22 }, (_, i) => ({
+      companyId: company.id, ownerUserId: OWNER, title: `Area ${i}`,
+    })));
+    expect((await request(second).get(overview).expect(200)).body.areas).toEqual([]);
+    const mine = (await request(second).post(path).send({ title: "Area 0" }).expect(201)).body;
+    const item = (await request(second).post(overview).send({ title: "Track operations", areaId: mine.id }).expect(201)).body;
+    expect((await request(second).get(overview)).body.areas.map((area: { id: string }) => area.id)).toEqual([mine.id]);
+    await request(app).get(`/api/responsibilities/${item.id}`).expect(404);
+    await request(app).patch(`/api/responsibility-areas/${mine.id}`).send({ title: "Renamed" }).expect(404);
+    expect((await request(app).get(overview)).body.areas).toHaveLength(22);
+  });
 
   async function seed(opts: { populated?: boolean } = {}) {
     const company = await db.insert(companies)
@@ -226,9 +292,9 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
       const seeded = await seed({ populated: true });
       const url = `/api/companies/${seeded.company.id}/responsibility-dashboard`;
       const agentApp = createApp(agentActor(seeded.company.id, seeded.analyst.id));
-      expect((await request(agentApp).get(url)).status).toBe(422);
-      expect((await request(agentApp).get(`${url}?ownerUserId=${OWNER}`)).status).toBe(200);
-      expect((await request(agentApp).get(`${url}/versions?ownerUserId=${OWNER}`)).status).toBe(200);
+      expect((await request(agentApp).get(url)).status).toBe(403);
+      expect((await request(agentApp).get(`${url}?ownerUserId=${OWNER}`)).status).toBe(403);
+      expect((await request(agentApp).get(`${url}/versions?ownerUserId=${OWNER}`)).status).toBe(403);
       expect((await request(createApp(agentActor(randomUUID(), seeded.analyst.id))).get(`${url}?ownerUserId=${OWNER}`)).status).toBe(403);
       // An agent's read never saves a version.
       expect(await versionsOf(seeded)).toHaveLength(0);
@@ -313,14 +379,13 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
       expect(second.body.conversation.issueId).not.toBe(issueId);
     });
 
-    it("lets only the person or an admin start it, and says so when no agent can hold it", async () => {
+    it("lets only the dashboard owner start it, and says so when no agent can hold it", async () => {
       const seeded = await seed();
-      expect((await start(seeded, { mode: "create", ownerUserId: OWNER }, createApp(sessionBoardActor(seeded.company.id, OTHER)))).status).toBe(403);
+      expect((await start(seeded, { mode: "create", ownerUserId: OWNER }, createApp(sessionBoardActor(seeded.company.id, OTHER)))).status).toBe(404);
       expect((await start(seeded, { mode: "create" }, createApp(agentActor(seeded.company.id, seeded.ceo.id)))).status).toBe(403);
-      // An admin may start one for someone else; their own dashboard is untouched.
+      // Company administration grants no access to personal dashboards.
       const forOther = await start(seeded, { mode: "create", ownerUserId: OTHER });
-      expect(forOther.status).toBe(201);
-      expect(forOther.body.ownerUserId).toBe(OTHER);
+      expect(forOther.status).toBe(404);
       expect((await start(seeded, { mode: "create", ownerUserId: "stranger" })).status).toBe(404);
 
       const quiet = await seed();
@@ -371,7 +436,7 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
     it("lets only the conversation's agent propose, and writes nothing", async () => {
       const seeded = await seed();
       const issueId = (await start(seeded)).body.conversation.issueId as string;
-      expect((await propose(seeded, issueId, FIRST_DASHBOARD, seeded.analyst.id)).status).toBe(403);
+      expect((await propose(seeded, issueId, FIRST_DASHBOARD, seeded.analyst.id)).status).toBe(404);
       expect((await request(seeded.app).post(`/api/issues/${issueId}/dashboard-changes`).send(FIRST_DASHBOARD)).status).toBe(403);
       const elsewhere = await seed();
       expect((await request(createApp(agentActor(elsewhere.company.id, elsewhere.ceo.id))).post(`/api/issues/${issueId}/dashboard-changes`).send(FIRST_DASHBOARD)).status).toBe(404);
@@ -402,8 +467,9 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
     it("validates each kind of change against the dashboard", async () => {
       const seeded = await seed({ populated: true });
       const issueId = (await start(seeded, { mode: "edit" })).body.conversation.issueId as string;
-      const [archived] = await db.insert(responsibilityAreas).values({ companyId: seeded.company.id, title: "Old area", status: "archived" }).returning();
-      const [theirs] = await db.insert(responsibilities).values({ companyId: seeded.company.id, ownerUserId: OTHER, title: "Theirs", status: "active", areaId: seeded.areas.Hiring }).returning();
+      const [archived] = await db.insert(responsibilityAreas).values({ companyId: seeded.company.id, ownerUserId: OWNER, title: "Old area", status: "archived" }).returning();
+      const [otherArea] = await db.insert(responsibilityAreas).values({ companyId: seeded.company.id, ownerUserId: OTHER, title: "Hiring" }).returning();
+      const [theirs] = await db.insert(responsibilities).values({ companyId: seeded.company.id, ownerUserId: OTHER, title: "Theirs", status: "active", areaId: otherArea!.id }).returning();
       const fails = async (changes: object[], status: number, words?: string) => {
         const res = await propose(seeded, issueId, { changes });
         expect(res.status, JSON.stringify(changes)).toBe(status);
@@ -427,7 +493,7 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
       await fails([{ op: "add_area", ref: "f", name: "fundraising" }], 422, "already exists");
       await fails([{ op: "rename_area", areaId: fund, name: "Hiring" }], 422, "already called");
       await fails([{ op: "rename_area", areaId: fund, name: "Fundraising" }], 422, "already has that name");
-      await fails([{ op: "remove_area", areaId: hiring, reason: "Not yours" }], 422, "another person");
+      await fails([{ op: "remove_area", areaId: otherArea!.id, reason: "Not yours" }], 422, "No area");
       await fails([{ op: "reword_responsibility", responsibilityId: theirs!.id, sentence: "Mine now." }], 422, "not one of this person's");
       await fails([{ op: "reword_responsibility", responsibilityId: deck, sentence: "The deck is always current." }], 422, "same as the one it has");
       await fails([{ op: "move_responsibility", responsibilityId: deck, areaId: fund }], 422, "already in that area");
@@ -435,7 +501,7 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
       // A rename of a shared area says who else sees it.
       const shared = await propose(seeded, issueId, { changes: [{ op: "rename_area", areaId: hiring, name: "Recruiting" }] });
       expect(shared.status).toBe(201);
-      expect(shared.body.payload.changes[0]).toMatchObject({ fromName: "Hiring", name: "Recruiting", sharedWith: 1 });
+      expect(shared.body.payload.changes[0]).toMatchObject({ fromName: "Hiring", name: "Recruiting", sharedWith: 0 });
       // A removed area lists what goes with it, minus what is moved out.
       const removal = await propose(seeded, issueId, {
         changes: [
@@ -477,7 +543,7 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
       expect(logged).toEqual(expect.arrayContaining(["responsibility_dashboard.changes_applied", "issue.thread_interaction_accepted"]));
       // Only the person or an admin applies.
       const next = await propose(seeded, issueId, { changes: [{ op: "add_area", ref: "x", name: "Ops" }] });
-      expect((await accept(seeded, issueId, next.body.id, {}, createApp(sessionBoardActor(seeded.company.id, OTHER)))).status).toBe(403);
+      expect((await accept(seeded, issueId, next.body.id, {}, createApp(sessionBoardActor(seeded.company.id, OTHER)))).status).toBe(404);
       expect((await accept(seeded, issueId, next.body.id, {}, createApp(agentActor(seeded.company.id, seeded.ceo.id)))).status).toBe(403);
     });
 
@@ -538,12 +604,12 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
           { op: "remove_area", areaId: seeded.areas.Fundraising, reason: "The raise is done." },
         ],
       });
-      // Someone else files a responsibility in Fundraising meanwhile.
-      await db.insert(responsibilities).values({ companyId: seeded.company.id, ownerUserId: OTHER, title: "Theirs", status: "active", areaId: seeded.areas.Fundraising });
+      // The destination is archived after the proposal was made.
+      await db.update(responsibilityAreas).set({ status: "archived" }).where(eq(responsibilityAreas.id, seeded.areas.Hiring));
       const before = await dashboard(seeded);
       const refused = await accept(seeded, issueId, proposed.body.id);
       expect(refused.status).toBe(409);
-      expect(refused.body.error).toContain("Someone else now has responsibilities in \"Fundraising\"");
+      expect(refused.body.error).toContain("removed since");
       expect(await dashboard(seeded)).toEqual(before);
       expect(await versionsOf(seeded)).toHaveLength(0);
       const [card] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, proposed.body.id));
@@ -679,9 +745,10 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
       expect(areas.find((row) => row.id === seeded.areas.Hiring)).toMatchObject({ title: "Talent", status: "archived" });
     });
 
-    it("leaves a shared area's name and order alone, and never archives what someone else still uses", async () => {
+    it("restores private area names and ordering without touching a teammate’s copy", async () => {
       const seeded = await seed({ populated: true });
-      await db.insert(responsibilities).values({ companyId: seeded.company.id, ownerUserId: OTHER, title: "Theirs", status: "active", areaId: seeded.areas.Hiring });
+      const [otherArea] = await db.insert(responsibilityAreas).values({ companyId: seeded.company.id, ownerUserId: OTHER, title: "Hiring" }).returning();
+      await db.insert(responsibilities).values({ companyId: seeded.company.id, ownerUserId: OTHER, title: "Theirs", status: "active", areaId: otherArea!.id });
       const svc = responsibilityDashboardVersionService(db);
       const first = await db.transaction((tx) => svc.checkpoint(tx, seeded.company.id, OWNER, OWNER));
       await request(seeded.app).patch(`/api/responsibility-areas/${seeded.areas.Hiring}`).send({ title: "Recruiting", sortOrder: 5 });
@@ -690,7 +757,7 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
       await request(seeded.app).patch(`/api/responsibilities/${seeded.items.pipeline}`).send({ areaId: seeded.areas.Fundraising });
       await request(seeded.app).post(`/api/responsibility-dashboard-versions/${first.row.id}/restore`).send({});
       const areas = await areaRows(seeded);
-      expect(areas.find((row) => row.id === seeded.areas.Hiring)).toMatchObject({ title: "Recruiting", sortOrder: 5, status: "active" });
+      expect(areas.find((row) => row.id === seeded.areas.Hiring)).toMatchObject({ title: "Hiring", sortOrder: 0, status: "active" });
       expect(areas.find((row) => row.id === seeded.areas.Fundraising)).toMatchObject({ title: "Fundraising" });
       expect((await ownRows(seeded)).find((row) => row.id === seeded.items.pipeline)).toMatchObject({ areaId: seeded.areas.Hiring });
 
@@ -700,17 +767,18 @@ describeEmbeddedPostgres("dashboard conversations, change sets and versions", ()
       }));
       await request(seeded.app).post(`/api/responsibility-dashboard-versions/${blank.row.id}/restore`).send({});
       const after = await areaRows(seeded);
-      expect(after.find((row) => row.id === seeded.areas.Hiring)).toMatchObject({ status: "active" });
+      expect(after.find((row) => row.id === seeded.areas.Hiring)).toMatchObject({ status: "archived" });
+      expect(after.find((row) => row.id === otherArea!.id)).toMatchObject({ title: "Hiring", status: "active" });
       expect(after.find((row) => row.id === seeded.areas.Fundraising)).toMatchObject({ status: "archived" });
       expect((await ownRows(seeded)).every((row) => row.status === "let_go")).toBe(true);
       expect(await db.select().from(responsibilities).where(eq(responsibilities.ownerUserId, OTHER)).then((rows) => rows.filter((row) => row.companyId === seeded.company.id).map((row) => row.status))).toEqual(["active"]);
     });
 
-    it("lets only the person or an admin restore", async () => {
+    it("lets only the dashboard owner restore", async () => {
       const seeded = await seed();
       const { applied } = await createFirstDashboard(seeded);
       const url = `/api/responsibility-dashboard-versions/${applied.version.id}/restore`;
-      expect((await request(createApp(sessionBoardActor(seeded.company.id, OTHER))).post(url).send({})).status).toBe(403);
+      expect((await request(createApp(sessionBoardActor(seeded.company.id, OTHER))).post(url).send({})).status).toBe(404);
       expect((await request(createApp(agentActor(seeded.company.id, seeded.ceo.id))).post(url).send({})).status).toBe(403);
       expect((await request(createApp(sessionBoardActor(randomUUID(), OWNER))).post(url).send({})).status).toBe(404);
       expect((await request(seeded.app).post(`/api/responsibility-dashboard-versions/${randomUUID()}/restore`).send({})).status).toBe(404);

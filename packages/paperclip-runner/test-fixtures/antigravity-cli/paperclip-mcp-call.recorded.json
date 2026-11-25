@@ -1,0 +1,135 @@
+{
+  "recorded": "agy acp 1.5.15 (pinned darwin-arm64), 2026-11-24, auto mode, gemini-3.8-flash-low; a session whose only MCP server is an http server named paperclip exposing get_task_context. Inbound messages for one call, verbatim except session ids.",
+  "toolCallUpdates": [
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "s-1",
+        "update": {
+          "sessionUpdate": "tool_call",
+          "toolCallId": "call_8421575239314794650",
+          "name": "mcp_paperclip_get_task_context",
+          "args": {
+            "toolSummary": "Task context retrieval"
+          },
+          "status": "in_progress",
+          "kind": "other",
+          "title": "Run mcp_paperclip_get_task_context",
+          "rawInput": {
+            "toolSummary": "Task context retrieval"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "s-1",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call_8421575239314794650",
+          "name": "mcp_paperclip_get_task_context",
+          "args": {
+            "toolSummary": "Task context retrieval"
+          },
+          "status": "pending",
+          "kind": "other",
+          "title": "Run mcp_paperclip_get_task_context",
+          "rawInput": {
+            "toolSummary": "Task context retrieval"
+          }
+        }
+      }
+    }
+  ],
+  "requestPermission": {
+    "jsonrpc": "2.0",
+    "method": "session/request_permission",
+    "params": {
+      "sessionId": "s-1",
+      "toolCall": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "call_8421575239314794650",
+        "name": "mcp_paperclip_get_task_context",
+        "args": {
+          "toolSummary": "Task context retrieval"
+        },
+        "status": "pending",
+        "kind": "other",
+        "title": "Run mcp_paperclip_get_task_context",
+        "rawInput": {
+          "toolSummary": "Task context retrieval"
+        }
+      },
+      "options": [
+        {
+          "optionId": "allow",
+          "name": "Allow",
+          "kind": "allow_once"
+        },
+        {
+          "optionId": "deny",
+          "name": "Deny",
+          "kind": "reject_once"
+        }
+      ]
+    },
+    "id": "1"
+  },
+  "afterAllow": [
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "s-1",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call_8421575239314794650",
+          "name": "mcp_paperclip_get_task_context",
+          "args": {
+            "toolSummary": "Task context retrieval"
+          },
+          "status": "in_progress",
+          "kind": "other",
+          "title": "Run mcp_paperclip_get_task_context",
+          "rawInput": {
+            "toolSummary": "Task context retrieval"
+          }
+        }
+      }
+    },
+    {
+      "jsonrpc": "2.0",
+      "method": "session/update",
+      "params": {
+        "sessionId": "s-1",
+        "update": {
+          "sessionUpdate": "tool_call_update",
+          "toolCallId": "call_8421575239314794650",
+          "name": "mcp_paperclip_get_task_context",
+          "args": {
+            "toolSummary": "Task context retrieval"
+          },
+          "status": "completed",
+          "kind": "other",
+          "title": "Run mcp_paperclip_get_task_context",
+          "rawInput": {
+            "toolSummary": "Task context retrieval"
+          }
+        }
+      }
+    }
+  ],
+  "clientAnswer": {
+    "jsonrpc": "2.0",
+    "id": "1",
+    "result": {
+      "outcome": {
+        "outcome": "selected",
+        "optionId": "allow"
+      }
+    }
+  }
+}

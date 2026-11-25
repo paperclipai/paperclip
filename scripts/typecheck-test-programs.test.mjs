@@ -1,20 +1,26 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
   checkCoverage,
+  checkCoverageAsync,
+  defaultConcurrency,
   findUncheckedTests,
   LOCKED_PROVIDERS,
+  orderProgramsLpt,
   PROGRAMS,
   prepareTestPrograms,
   PROVIDER_WORKSPACE,
   RESOLVE_ARGS,
+  SANDBOX_PROVIDER_PROGRAMS,
   SANDBOX_PROVIDERS,
+  selectTestPrograms,
   typecheckTestPrograms,
+  typecheckTestProgramsAsync,
 } from "./typecheck-test-programs.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -239,6 +245,7 @@ test("checkCoverage uses the compiler's file list, so a dropped sibling is caugh
     const unchecked = checkCoverage({
       root,
       programs: [`${relative}/tsconfig.json`],
+      projects: [],
       workspaceConfigs: () => [],
       trackedFiles: () => [`${relative}/foo.test.ts`, `${relative}/foo.test.tsx`],
     });
@@ -258,5 +265,221 @@ test("a real type error in a test-style program makes tsc exit non-zero", () => 
     assert.match(stdout, /bad\.test\.ts.*TS2322/);
   } finally {
     rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("selectTestPrograms skips sandbox providers and examples unless their inputs or SDK/shared changed", () => {
+  const full = selectTestPrograms(null);
+  assert.deepEqual(full.programs, PROGRAMS);
+  assert.equal(full.includeProviders, true);
+  assert.equal(full.checkCoverage, true);
+
+  const serverOnly = selectTestPrograms(["server/src/services/issues.ts", "server/src/__tests__/issues.test.ts"]);
+  assert.deepEqual(serverOnly.programs, []);
+  assert.equal(serverOnly.includeProviders, false);
+  assert.equal(serverOnly.includeRunnerEval, false);
+  assert.equal(serverOnly.checkCoverage, false);
+
+  const daytonaOnly = selectTestPrograms(["packages/plugins/sandbox-providers/daytona/src/plugin.ts"]);
+  assert.deepEqual(daytonaOnly.programs, ["packages/plugins/sandbox-providers/daytona/tsconfig.test.json"]);
+  assert.equal(daytonaOnly.includeProviders, true);
+  assert.equal(daytonaOnly.includeRunnerEval, false);
+
+  const cloudflare = selectTestPrograms(["packages/plugins/sandbox-providers/cloudflare/src/plugin.ts"]);
+  assert.deepEqual(cloudflare.programs, [
+    "packages/plugins/sandbox-providers/cloudflare/tsconfig.test.json",
+    "packages/plugins/sandbox-providers/cloudflare/bridge-template/tsconfig.test.json",
+  ]);
+  assert.equal(cloudflare.includeProviders, true);
+
+  const sdkChange = selectTestPrograms(["packages/plugins/sdk/src/index.ts"]);
+  assert.equal(sdkChange.includeProviders, true);
+  for (const providerProgram of SANDBOX_PROVIDER_PROGRAMS) {
+    assert.ok(sdkChange.programs.includes(providerProgram), providerProgram);
+  }
+  assert.ok(sdkChange.programs.includes("packages/kv-demo-mcp-server/tsconfig.test.json"));
+  assert.ok(sdkChange.programs.includes("packages/plugins/examples/plugin-orchestration-smoke-example/tsconfig.test.json"));
+
+  const uiWithTest = selectTestPrograms(["ui/src/components/Card.tsx", "ui/src/components/Card.test.tsx"]);
+  assert.deepEqual(uiWithTest.programs, ["tests/tsconfig.playwright.json"]);
+  assert.equal(uiWithTest.includeProviders, false);
+  assert.equal(uiWithTest.checkCoverage, true);
+  assert.deepEqual(uiWithTest.changedTestFiles, ["ui/src/components/Card.test.tsx"]);
+
+  const tsconfigEdit = selectTestPrograms(["ui/tsconfig.json"]);
+  assert.equal(tsconfigEdit.checkCoverage, true);
+  assert.equal(tsconfigEdit.changedTestFiles, null);
+
+  const adapterUtilsEdit = selectTestPrograms(["packages/adapter-utils/src/github-launcher.ts"]);
+  assert.ok(adapterUtilsEdit.programs.some((program) => program.startsWith("packages/paperclip-runner/")));
+  assert.equal(adapterUtilsEdit.includeRunnerEval, true);
+});
+
+test("prepareTestPrograms can skip sandbox provider installs, runner eval prep, and plugin SDK", () => {
+  const { options, calls } = harness();
+  assert.equal(
+    prepareTestPrograms({ ...options, includeProviders: false, includeRunnerEval: false, includePluginSdk: false }),
+    0,
+  );
+  assert.deepEqual(calls.pnpm, []);
+  assert.equal(calls.linked, 0);
+
+  const evalOnly = harness();
+  assert.equal(
+    prepareTestPrograms({ ...evalOnly.options, includeProviders: false, includeRunnerEval: true, includePluginSdk: false }),
+    0,
+  );
+  assert.equal(evalOnly.calls.pnpm.length, 1);
+  assert.ok(evalOnly.calls.pnpm[0].args.includes("ensure:eval-build-deps"));
+  assert.equal(evalOnly.calls.linked, 0);
+});
+
+test("typecheckTestProgramsAsync runs programs concurrently up to the limit and preserves failure/signal semantics", async () => {
+  let active = 0;
+  let peak = 0;
+  const started = [];
+  const status = await typecheckTestProgramsAsync({
+    root: "/repo",
+    programs: ["a/tsconfig.test.json", "b/tsconfig.test.json", "c/tsconfig.test.json", "d/tsconfig.test.json"],
+    prepare: false,
+    coverage: false,
+    concurrency: 2,
+    checkers: 1,
+    log: () => {},
+    logError: () => {},
+    runAsync: async (args) => {
+      started.push(args);
+      active += 1;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      return { status: args[1].startsWith("b/") ? 2 : 0, signal: null, output: "", durationMs: 10 };
+    },
+  });
+  assert.equal(status, 2);
+  assert.equal(peak, 2);
+  assert.equal(started.length, 4);
+  assert.deepEqual(started[0], ["-p", "a/tsconfig.test.json", "--checkers", "1"]);
+
+  // A killed compiler stops queuing further programs.
+  const killedStarts = [];
+  const killedStatus = await typecheckTestProgramsAsync({
+    root: "/repo",
+    programs: ["a/tsconfig.test.json", "b/tsconfig.test.json", "c/tsconfig.test.json"],
+    prepare: false,
+    coverage: false,
+    concurrency: 1,
+    log: () => {},
+    logError: () => {},
+    runAsync: async (args) => {
+      killedStarts.push(args[1]);
+      return { status: 1, signal: "SIGKILL", output: "", durationMs: 5 };
+    },
+  });
+  assert.equal(killedStatus, 1);
+  assert.deepEqual(killedStarts, ["a/tsconfig.test.json"]);
+});
+
+test("checkCoverageAsync checks targeted files with early exit and skips uninstalled providers", async () => {
+  const listed = [];
+  const covered = await checkCoverageAsync({
+    root: "/repo",
+    includeProviders: false,
+    onlyFiles: ["ui/src/Card.test.tsx"],
+    concurrency: 1,
+    workspaceConfigs: () => ["cli/tsconfig.json", "ui/tsconfig.json"],
+    trackedFiles: () => ["ui/src/Card.test.tsx", "packages/plugins/sandbox-providers/daytona/src/x.test.ts"],
+    listFilesAsync: async (config) => {
+      listed.push(config);
+      return {
+        status: 0,
+        output: "",
+        files: config === "ui/tsconfig.json" ? ["ui/src/Card.test.tsx"] : [],
+      };
+    },
+    logError: () => {},
+  });
+  assert.deepEqual(covered, []);
+  // Prioritized ui/tsconfig.json first and stopped immediately once covered.
+  assert.deepEqual(listed, ["ui/tsconfig.json"]);
+
+  const uncovered = await checkCoverageAsync({
+    root: "/repo",
+    includeProviders: false,
+    onlyFiles: ["ui/src/Orphan.test.tsx"],
+    concurrency: 2,
+    workspaceConfigs: () => ["ui/tsconfig.json"],
+    trackedFiles: () => ["ui/src/Orphan.test.tsx"],
+    listFilesAsync: async (config) => {
+      assert.ok(!SANDBOX_PROVIDER_PROGRAMS.includes(config), `should skip uninstalled provider ${config}`);
+      return { status: 0, output: "", files: [] };
+    },
+    logError: () => {},
+  });
+  assert.deepEqual(uncovered, ["ui/src/Orphan.test.tsx"]);
+});
+
+test("defaultConcurrency scales safely with CPU count and memory", () => {
+  const GiB = 1024 ** 3;
+  assert.equal(defaultConcurrency({ cpus: 2, totalMemoryBytes: 8 * GiB }), 1);
+  assert.equal(defaultConcurrency({ cpus: 4, totalMemoryBytes: 16 * GiB }), 3);
+  assert.equal(defaultConcurrency({ cpus: 8, totalMemoryBytes: 16 * GiB }), 4);
+  assert.equal(defaultConcurrency({ cpus: 8, totalMemoryBytes: 32 * GiB }), 4);
+});
+
+test("orderProgramsLpt schedules heaviest test programs first while preserving unknown order", () => {
+  const ordered = orderProgramsLpt([
+    "packages/plugins/sdk/tsconfig.test.json",
+    "packages/db/tsconfig.test.json",
+    "tests/tsconfig.playwright.json",
+    "packages/paperclip-runner/tsconfig.test.json",
+  ]);
+  assert.equal(ordered[0], "tests/tsconfig.playwright.json");
+  assert.equal(ordered[1], "packages/paperclip-runner/tsconfig.test.json");
+  assert.equal(ordered[2], "packages/db/tsconfig.test.json");
+  assert.equal(ordered[3], "packages/plugins/sdk/tsconfig.test.json");
+});
+
+test("checkCoverageAsync prefers tsconfig.layers.json for test projects when server declarations exist", async () => {
+  const tmpRoot = mkdtempSync(path.join(tmpdir(), "coverage-layers-"));
+  try {
+    mkdirSync(path.join(tmpRoot, "tests", "e2e"), { recursive: true });
+    writeFileSync(path.join(tmpRoot, "tests", "e2e", "tsconfig.json"), "{}\n");
+    writeFileSync(path.join(tmpRoot, "tests", "e2e", "tsconfig.layers.json"), "{}\n");
+
+    const listedWithoutDecls = [];
+    await checkCoverageAsync({
+      root: tmpRoot,
+      programs: [],
+      projects: ["tests/e2e"],
+      workspaceConfigs: () => [],
+      trackedFiles: () => [],
+      listFilesAsync: async (config) => {
+        listedWithoutDecls.push(config);
+        return { status: 0, output: "", files: [] };
+      },
+    });
+    assert.deepEqual(listedWithoutDecls, ["tests/e2e/tsconfig.json"]);
+
+    mkdirSync(path.join(tmpRoot, "server", "node_modules", ".cache", "paperclip-typecheck"), { recursive: true });
+    writeFileSync(
+      path.join(tmpRoot, "server", "node_modules", ".cache", "paperclip-typecheck", "tsconfig.declarations.json"),
+      "{}\n",
+    );
+    const listedWithDecls = [];
+    await checkCoverageAsync({
+      root: tmpRoot,
+      programs: [],
+      projects: ["tests/e2e"],
+      workspaceConfigs: () => [],
+      trackedFiles: () => [],
+      listFilesAsync: async (config) => {
+        listedWithDecls.push(config);
+        return { status: 0, output: "", files: [] };
+      },
+    });
+    assert.deepEqual(listedWithDecls, ["tests/e2e/tsconfig.layers.json"]);
+  } finally {
+    rmSync(tmpRoot, { recursive: true, force: true });
   }
 });

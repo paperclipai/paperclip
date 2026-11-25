@@ -1,3 +1,4 @@
+import { createAgentSetupProgressSchema, setAgentSetupChecklistSchema, updateAgentSetupItemSchema, finishAgentSetupSchema } from "@paperclipai/shared";
 import { catalogTeamInstallSchema, catalogTeamPreviewSchema, updateWorkspacePreferenceSchema, issueDocumentBatchQuerySchema } from "@paperclipai/shared";
 import { MUSE_ASSET_VERSION, museStopBoundarySchema, museDetectorCleanupAttestationSchema, createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema, updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
@@ -1363,6 +1364,7 @@ type OpenApiAuthLevel =
   | "agent_run"
   | "agent_heartbeat"
   | "runtime_tools"
+  | "agent_setup_token"
   | "authenticated"
   | "board"
   | "instance_admin";
@@ -1372,6 +1374,7 @@ const BOARD_API_KEY_AUTH_SCHEME = "BoardApiKeyAuth";
 const AGENT_BEARER_AUTH_SCHEME = "AgentBearerAuth";
 const AGENT_RUN_AUTH_SCHEME = "AgentRunAuth";
 const RUNTIME_TOOLS_BEARER_AUTH_SCHEME = "RuntimeToolsBearerAuth";
+const AGENT_SETUP_TOKEN_AUTH_SCHEME = "AgentSetupTokenAuth";
 
 function securityRequirement(name: string): Record<string, string[]> {
   return { [name]: [] };
@@ -1397,6 +1400,13 @@ const RUNTIME_TOOLS_OPERATIONS = new Set([
   "POST /mcp/runtime-tools",
   "POST /runtime-tools/connections/search",
   "POST /runtime-tools/connections/request",
+]);
+
+/** A person's own agent reports setup progress with the checklist's bearer token, not a Paperclip sign-in (routes/agent-setup-progress.ts). */
+const AGENT_SETUP_TOKEN_OPERATIONS = new Set([
+  "PUT /api/agent-setup-progress/{id}/checklist",
+  "POST /api/agent-setup-progress/{id}/items/{key}",
+  "POST /api/agent-setup-progress/{id}/finish",
 ]);
 
 const PUBLIC_OPERATIONS = new Set([
@@ -1473,9 +1483,15 @@ const BOARD_ONLY_OPERATIONS = new Set([
   // Workload identity status and key rotation are board-only (assertBoard in routes/workload-identity.ts).
   "GET /api/companies/{companyId}/workload-identity",
   "POST /api/companies/{companyId}/workload-identity/rotation",
+  // Setup progress checklists are created and read by board members (assertBoard in routes/agent-setup-progress.ts).
+  "POST /api/companies/{companyId}/agent-setup-progress",
+  "GET /api/agent-setup-progress/{id}",
   "POST /api/companies/{companyId}/chats/{agentRef}/onboarding",
   "POST /api/companies/{companyId}/chats/{agentRef}/onboarding/greeting",
   "PATCH /api/agents/{id}/permission-grants",
+  "GET /api/agents/{id}/runtime-state",
+  "POST /api/agents/{id}/runtime-state/reset-session",
+  "GET /api/agents/{id}/task-sessions",
   // Budget changes are board-only (assertBoard in routes/costs.ts).
   "POST /api/companies/{companyId}/budgets/policies",
   "POST /api/companies/{companyId}/budget-incidents/{incidentId}/resolve",
@@ -1490,6 +1506,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/issues/{id}/decision-receipts",
   "GET /api/issues/{id}/chat-handoffs",
   "GET /api/companies/{companyId}/attention/history",
+  "GET /api/companies/{companyId}/attention/run-history",
   "GET /api/companies/{companyId}/attention/summary",
   "GET /api/companies/{companyId}/attention/tasks",
   "POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/claim",
@@ -1657,6 +1674,7 @@ const INSTANCE_ADMIN_OPERATIONS = new Set([
 ]);
 
 const CREATED_OPERATIONS = new Set([
+  "POST /api/companies/{companyId}/agent-setup-progress",
   "POST /api/adapters/install",
   "POST /api/companies/{companyId}/agent-hires",
   "POST /api/companies/{companyId}/agents",
@@ -1758,6 +1776,7 @@ function resolveOperationAuthLevel(
   if (path === "/api/companies/{companyId}/grok-invitations"
       || /^\/api\/companies\/\{companyId\}\/agents\/\{agentId\}\/grok-binding(?:\/(?:routine|verify|retry|stop|recover))?$/.test(path)) return "board";
   if (PUBLIC_OPERATIONS.has(key)) return "public";
+  if (AGENT_SETUP_TOKEN_OPERATIONS.has(key)) return "agent_setup_token";
   if (key === "POST /api/companies/{companyId}/agent-commentary") return "agent_heartbeat";
   if (key === "POST /api/agents/me/chat/messages") return "agent_heartbeat";
   // An approved connected-app skill's file: an agent in an active run only.
@@ -1817,6 +1836,12 @@ function applyDocumentFixups(document: any): any {
       description:
         "Scoped token bound to an active heartbeat run and presented in the Authorization bearer header. The GitHub credential endpoint requires the distinct github_credentials scope.",
     },
+    [AGENT_SETUP_TOKEN_AUTH_SCHEME]: {
+      type: "http",
+      scheme: "bearer",
+      bearerFormat: "Setup checklist token (pcsp_…)",
+      description: "The token from a setup prompt, presented in the Authorization bearer header. It updates only its own setup checklist, until the checklist finishes or expires.",
+    },
     [AGENT_RUN_AUTH_SCHEME]: {
       type: "http",
       scheme: "bearer",
@@ -1839,6 +1864,8 @@ function applyDocumentFixups(document: any): any {
         operation.security = [securityRequirement(AGENT_BEARER_AUTH_SCHEME)];
       } else if (authLevel === "runtime_tools") {
         operation.security = RUNTIME_TOOLS_SECURITY;
+      } else if (authLevel === "agent_setup_token") {
+        operation.security = [securityRequirement(AGENT_SETUP_TOKEN_AUTH_SCHEME)];
       } else if (authLevel === "authenticated") {
         operation.security = AUTHENTICATED_SECURITY;
       } else {
@@ -1856,6 +1883,8 @@ function applyDocumentFixups(document: any): any {
               ? { actor: "agent", heartbeatBound: true }
             : authLevel === "runtime_tools"
               ? { actor: "runtime_tools", heartbeatBound: true }
+            : authLevel === "agent_setup_token"
+              ? { actor: "setup_token" }
               : authLevel === "authenticated"
                 ? { actor: "board_or_agent" }
                 : { actor: "public" };
@@ -1866,7 +1895,8 @@ function applyDocumentFixups(document: any): any {
       }
 
       const key = operationKey(method, path);
-      if (authLevel !== "public") {
+      // The setup token is only ever valid or not (401); it has no permissions to be refused.
+      if (authLevel !== "public" && authLevel !== "agent_setup_token") {
         const responses = (operation.responses ??= {}) as Record<
           string,
           unknown
@@ -2112,6 +2142,7 @@ registry.registerPath({
     200: r.ok(),
     403: r.forbidden,
     404: r.notFound,
+    429: { description: "Paperclip Cloud is rate limiting portfolio reads (code cloud_portfolio_rate_limited). Retry-After, when present, gives whole seconds from 1 to 300. Not cached." },
     502: r.serverError,
     503: r.serverError,
     500: r.serverError,
@@ -6610,8 +6641,8 @@ registry.registerPath({
       includeDismissed: z.enum(["true", "false"]).optional(),
       archived: z.enum(["true", "false"]).optional(),
       all: z.enum(["true", "false"]).optional(),
-      view: z.enum(["mine", "unassigned", "company", "archived", "all"]).optional()
-        .describe("Audience slice (PAP-749). `all` (default) keeps the full feed; `viewCounts` and the For you badge `deskBadgeCount` ignore it. `mine` also returns `receipts`: what a different person did with your cards in the last 7 days. `archived` returns only the open cards you archived or snoozed for yourself, whatever their audience; `viewCounts.archived` counts them and is never in the badge. `viewCounts.all` counts the Everyone tab (every person's open cards, board members only) and is never in the badge."),
+      view: z.enum(["mine", "unassigned", "company", "archived", "all", "waiting"]).optional()
+        .describe("Audience slice (PAP-749). `waiting` lists snoozed requests and automatic retries visible to the caller. `all` (default) keeps the full feed; `viewCounts` and the For you badge `deskBadgeCount` ignore it. `mine` also returns `receipts`: what a different person did with your cards in the last 7 days. `archived` returns only the open cards you archived or snoozed for yourself, whatever their audience; `viewCounts.archived` counts them and is never in the badge. `viewCounts.all` counts the Everyone tab (every person's open cards, board members only) and is never in the badge."),
       activitySince: z.string().datetime().optional(),
       activityUntil: z.string().datetime().optional(),
       queue: z.string().min(1).optional(),
@@ -6624,6 +6655,8 @@ registry.registerPath({
 });
 
 const attentionSummaryResponseSchema = z.object({
+  waitingCount: z.number().int().nonnegative().optional(),
+  nextSnoozeAt: z.string().datetime().optional(),
   companyId: z.string().uuid(),
   generatedAt: z.string().datetime(),
   totalCount: z.number().int().nonnegative(),
@@ -6716,6 +6749,29 @@ registry.registerPath({
 });
 
 // ─── Decisions ──────────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/attention/run-history",
+  tags: ["inbox"],
+  summary: "List recent failures in inbox run history",
+  description: "Requires a board user. Returns up to 100 recent failed runs on tasks visible to the caller, newest first. For the next page, pass the last row’s recordedAt and runId as at and id together. Limited to 60 requests per minute per board user and company.",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({ at: z.string().datetime().optional(), id: z.string().uuid().optional() }).strict(),
+  },
+  responses: {
+    200: r.ok(z.array(z.object({
+      runId: z.string().uuid(), agentId: z.string().uuid(), agentName: z.string(),
+      taskId: z.string().uuid(), taskTitle: z.string(), identifier: z.string().nullable(),
+      recordedAt: z.string().datetime(), reason: z.string(), outcome: z.string(),
+    }))),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    429: r.tooManyRequests,
+  },
+});
 
 registry.registerPath({
   method: "get",
@@ -9769,6 +9825,64 @@ registry.registerPath({
   }).strict()) }).strict()), ...workloadIdentityPublicNotFound },
 });
 
+const agentSetupItem = z.object({
+  key: z.string(), title: z.string(), status: z.enum(["pending", "in_progress", "done", "failed"]), detail: z.string().nullable(),
+}).strict();
+const agentSetupProgressDoc = z.object({
+  id: z.string().uuid(), companyId: z.string().uuid(), purpose: z.string(), subjectId: z.string().nullable(),
+  status: z.enum(["waiting", "in_progress", "done", "failed"]), items: z.array(agentSetupItem), summary: z.string().nullable(),
+  expiresAt: z.string().datetime(), createdAt: z.string().datetime(), updatedAt: z.string().datetime(),
+}).strict();
+const agentSetupProgressId = z.object({ id: z.string().uuid() });
+const agentSetupAgentErrors = {
+  400: r.badRequest, 401: { description: "The bearer token is missing or does not open this checklist" },
+  404: r.notFound, 409: { description: "Another update changed the checklist at the same time; send it again" },
+  410: { description: "The checklist's token expired" }, 429: { description: "The checklist reached its update limit" },
+};
+
+registry.registerPath({
+  method: "post", path: "/api/companies/{companyId}/agent-setup-progress", tags: ["agent-setup-progress"],
+  summary: "Create a setup checklist for a person's own agent",
+  description: "Board only. For aws_connection, subjectId must be a connection of this company that the caller may configure. Creates an empty checklist and returns it with a bearer token (shown once; only its hash is kept) and the URLs the agent uses to set the checklist, update items and finish. The token works for six hours and can only write to this checklist.",
+  request: { params: z.object({ companyId: z.string().uuid() }), body: { content: { "application/json": { schema: createAgentSetupProgressSchema } } } },
+  responses: {
+    201: r.ok(z.object({ progress: agentSetupProgressDoc, token: z.string(), urls: z.object({ checklist: z.string().url(), item: z.string(), finish: z.string().url() }).strict() }).strict()),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "get", path: "/api/agent-setup-progress/{id}", tags: ["agent-setup-progress"],
+  summary: "Read a setup checklist",
+  description: "Board only, for the person who started the setup; anyone else gets 404. Updates also arrive as agent_setup_progress.updated live events.",
+  request: { params: agentSetupProgressId },
+  responses: { 200: r.ok(agentSetupProgressDoc), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "put", path: "/api/agent-setup-progress/{id}/checklist", tags: ["agent-setup-progress"],
+  summary: "Set the agent's setup checklist",
+  description: "Called by the person's own agent with Authorization: Bearer <token>; no Paperclip sign-in. Replaces the checklist (1 to 20 items, keys of lowercase letters, numbers, - and _).",
+  request: { params: agentSetupProgressId, body: { content: { "application/json": { schema: setAgentSetupChecklistSchema } } } },
+  responses: { 200: r.ok(agentSetupProgressDoc), ...agentSetupAgentErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/agent-setup-progress/{id}/items/{key}", tags: ["agent-setup-progress"],
+  summary: "Update one step of the agent's setup checklist",
+  description: "Called by the person's own agent with Authorization: Bearer <token>. Sets the item's status (pending, in_progress, done or failed) and an optional one-line detail.",
+  request: { params: agentSetupProgressId.extend({ key: z.string() }), body: { content: { "application/json": { schema: updateAgentSetupItemSchema } } } },
+  responses: { 200: r.ok(agentSetupProgressDoc), ...agentSetupAgentErrors },
+});
+
+registry.registerPath({
+  method: "post", path: "/api/agent-setup-progress/{id}/finish", tags: ["agent-setup-progress"],
+  summary: "Finish the agent's setup",
+  description: "Called by the person's own agent with Authorization: Bearer <token>. done ticks off any open items; failed keeps them. An optional summary is shown on the setup page.",
+  request: { params: agentSetupProgressId, body: { content: { "application/json": { schema: finishAgentSetupSchema } } } },
+  responses: { 200: r.ok(agentSetupProgressDoc), ...agentSetupAgentErrors },
+});
+
 registry.registerPath({
   method: "get", path: "/api/companies/{companyId}/workload-identity", tags: ["workload-identity"],
   summary: "Company workload identity issuer and key states",
@@ -12576,7 +12690,7 @@ registerCurrentRoute({
 
 const managedGoogleAccessRemovalSchema = z.object({
   provider: z.literal("google"),
-  result: z.enum(["ended", "ended_unconfirmed", "other_connections_remain", "not_ended"]),
+  result: z.enum(["ended", "ended_unconfirmed", "other_connections_remain", "retrying", "not_ended"]),
   outcomes: z.array(z.string()).describe("One diagnostic code per refresh token sent to Paperclip Cloud, in order."),
 }).describe("Present only for a Google connection managed by Paperclip Cloud. A failure to end access at Google does not undo the local removal.");
 
@@ -12788,6 +12902,15 @@ registerCurrentRoute({
   tags: ["tool-access"],
   summary: "Switch to the new machine sign-in key once the provider accepts it",
   responses: { 200: r.ok(), ...MACHINE_SIGN_IN_ERRORS },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:configure",
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/sign-in/cancel",
+  tags: ["tool-access"],
+  summary: "Remove a connection whose first sign-in was cancelled; a connection that ever signed in is left unchanged",
 });
 
 registerCurrentRoute({

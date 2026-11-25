@@ -1,4 +1,5 @@
 export const queryKeys = {
+  agentSetupProgress: (id: string | null) => ["agent-setup-progress", id] as const,
   linkPreview: (companyId: string, userId: string | null, url: string) =>
     ["link-preview", companyId, userId, url] as const,
   workspacePreferences: {
@@ -591,7 +592,7 @@ export const queryKeys = {
     /** The responsibilities one routine is under, directly or through its project. */
     routineLinks: (companyId: string, routineId: string) =>
       ["responsibilities", "links", companyId, "routine", routineId] as const,
-    /** The company's areas (active and proposed). */
+    /** The viewer's active and proposed areas. */
     areas: (companyId: string) => ["responsibilities", "areas", companyId] as const,
     /** Recent activity on one responsibility, for who last reported its reading. */
     activity: (id: string) => ["responsibilities", "activity", id] as const,

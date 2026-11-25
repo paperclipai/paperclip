@@ -38,6 +38,11 @@ Example: A CEO agent's adapter config tells it to "review what your executives a
 
 Then you define who reports to the CEO: a CTO managing programmers, a CMO managing the marketing team, and so on. Every agent in the tree gets their own adapter configuration.
 
+When Areas & Responsibilities is enabled, each person has a private dashboard in each company.
+People can use the same area names independently. Dashboard conversations, saved versions and
+the way a person files shared work are visible only to that person and their authorized agent
+where the workflow requires it. Filing an existing task or project keeps its existing access rules.
+
 Each person also has a personal primary agent per company. Their first human-created
 agent becomes primary automatically; they can choose another from its profile.
 An existing primary is replaced only after confirmation. The crown appears on the
@@ -109,13 +114,16 @@ marker. Tasks archived from the viewer’s inbox leave Recents. Canceled and
 completed tasks remain eligible. Opening a recent task moves its row to the top
 of Recents.
 
-Standard Recents also shows recent chats and projects as individual links.
+Standard Recents also shows recent chats and projects.
 Coordinator Recents lets you pin tasks, agent chats, and projects above More.
 The pin button appears on the current row or when a row is hovered or focused
 with the keyboard. Shortcuts share the saved order with pinned pages and stay
 available as Recents changes.
-Project links in Recents and pinned navigation open the project's Tasks tab.
-Both locations have a chevron that shows up to 12 recently updated project tasks.
+In **More → Projects**, each project row also lets you pin or unpin its sidebar
+shortcut without opening the project. Project star and join/leave controls appear
+only in the Classic workspace.
+In Recents and pinned navigation, clicking a project row opens or closes its
+folder to show up to 12 recently updated tasks. Each task links to its detail page.
 The task list loads when expanded and keeps the task status and unread markers.
 
 Agent-owned tasks show **In Progress** only while a task-linked run is queued
@@ -526,7 +534,20 @@ Coordinator navigation uses **Chat**, **Tasks**, and **Inbox**. Inbox uses the
 inbox icon and keeps the existing decision feed, its count, and decision history
 at `/decisions`. The previous Inbox destination under More is removed.
 
-Inbox opens with **Assigned to you**. Its assignee filter can show all accessible
+Inbox opens to **Needs you** with **Assigned to you** selected. Its badge counts
+personal actions. **Waiting** shows scheduled provider retries and personal
+snoozes. A provider limit with a known account and reset appears once per
+recipient, with the affected tasks, agents and run logs inside. When the account or
+reported reset is unknown, each task’s linked retry attempts share one card.
+Automatic retries update its attempt count and preserve a personal archive.
+A collapsible group brings these task cards together. Each card shows its own
+retry state and distinguishes a scheduled recheck from a reported reset. Exhausted retries
+return to Needs you when someone must act. Resumed or closed tasks leave the
+group. **History** includes decision receipts and failed or
+provider-held runs on accessible tasks. Open a card’s ellipsis menu to choose
+**Archive for me**. The confirmation offers **Undo**. Archiving a provider episode covers later failures in the same
+window until the required action changes. Personal archive leaves approvals pending.
+The assignee filter can show all accessible
 assignees, a particular person, ownerless requests, or company alerts. Cards for
 someone else prepend that person's name to the action label; your own cards omit
 your name. Routing validates who may reassign a request and whether its recipient

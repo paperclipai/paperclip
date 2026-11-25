@@ -1594,6 +1594,9 @@ function invalidateActivityQueries(
     typeof details?.handledForUserId === "string" ||
     action?.startsWith("issue.thread_interaction_") ||
     action === "issue.status_decision_recorded" ||
+    action === "issue.provider_limit_retry_settled" ||
+    action === "issue.recovery_action_resolved" ||
+    action === "issue.retry_requested" ||
     action === "issue.conversation_session_started" ||
     (entityType === "issue" && ["issue.created", "issue.updated", "issue.deleted"].includes(action ?? ""));
   const decisionAudienceChanged = action?.startsWith("issue_access_grant.") ||
@@ -2181,6 +2184,9 @@ function handleLiveEvent(
     }
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     if (event.type === "heartbeat.run.status") {
+      if (["scheduled_retry", "running", "succeeded", "failed", "timed_out", "cancelled"].includes(String(payload.status))) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.attention(expectedCompanyId) }, { cancelRefetch: false });
+      }
       const toast = buildRunStatusToast(payload, nameOf);
       if (toast && event.toastEligible === true && !suppressRunToast) {
         gatedPushToast(gate, pushToast, "run-status", toast);
@@ -2196,6 +2202,13 @@ function handleLiveEvent(
   }
 
   if (event.type === "heartbeat.run.event") {
+    return;
+  }
+
+  if (event.type === "agent_setup_progress.updated") {
+    // A person's own agent checked off a setup step; the open setup page shows it.
+    const progressId = readString(payload.progressId);
+    if (progressId) queryClient.invalidateQueries({ queryKey: queryKeys.agentSetupProgress(progressId) });
     return;
   }
 

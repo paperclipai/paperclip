@@ -86,7 +86,7 @@ jobs:
         with:
           node-version: 24
       - name: Check the source verification consumer
-        run: node --test scripts/cloud-source-verification.test.mjs
+        run: node --test scripts/cloud-source-verification.test.mjs scripts/github-actions-rate-limit.test.mjs scripts/docker-image-metadata.test.mjs
       - name: Record source verification
         env:
           SOURCE_SHA: ${{ github.sha }}

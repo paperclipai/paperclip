@@ -17,13 +17,22 @@ all eight allowlisted Drive tools (see "Drive tools" below), both Docs tools
 and both Slides tools (see "Docs and Slides tools" below), and all six
 allowlisted Sheets tools (see "Sheets tools" below).
 
-## Why this exists, and why it is temporary
+## Why this exists, and why it is the fallback now
 
-Google's Workspace MCP servers are a Developer Preview and cannot be offered to
-the public. On 2026-11-17 the owner decided that Paperclip will launch on its
-own tools over the REST APIs. The tools are built so Paperclip can switch to
-Google's MCP servers later without a rewrite, and they live in this one folder
-so they can be deleted cleanly when that happens.
+On 2026-11-17 Google's Workspace MCP servers were a Developer Preview and could
+not be offered to the public, so the owner decided that Paperclip would launch
+on its own tools over the REST APIs. All six services ran on this folder from
+2026-11-23 to 2026-11-24.
+
+On 2026-11-24 Google made its Workspace MCP servers generally available and
+published the Workspace AI Tools Addendum
+(<https://workspace.google.com/terms/ai-tools>): a tool that is, or is driven
+by, an AI agent must use a Google MCP, not the REST APIs. The owner decided the
+same day to switch all six services back to Google's MCP servers. This folder
+and the switch stay in the code as the fallback; do not delete them.
+
+`argument-guards.ts` is the one part of this folder that also runs on the
+`google_mcp` path (see "Argument checks on Google's MCP path").
 
 ## Boundary rules
 
@@ -72,6 +81,10 @@ so they can be deleted cleanly when that happens.
 - **One tool, one file.** Each tool in `gmail/`, `calendar/`, `drive/`, `docs/`, `slides/` and `sheets/` is a set of pure functions
   (arguments to REST request, REST response to MCP result) plus a short `run`
   that sequences them. The pure functions are unit tested without network.
+- **Every tool has a `title`.** It is a short action name in sentence case,
+  such as "Read a message". The gateway shows it to people as
+  "Gmail: Read a message" for both transports. `allowlist.test.ts` fails if a
+  tool has no title.
 - **`server.ts` is thin MCP wiring:** `tools/list` and `tools/call`.
 - **The allowlist stays where it is.** `toolScopes` in
   `packages/shared/src/google-workspace-connectors.ts` is the single list of
@@ -91,11 +104,53 @@ so they can be deleted cleanly when that happens.
 | 403 `appNotAuthorizedToFile` (Drive) | Tool error saying `drive.file` covers only files this app created or opened, without the app's project number |
 | Any 3xx redirect | Tool error; the redirect is not followed |
 | Other 403, 404, 400, 429, 5xx, timeout, network failure | Tool error result (`isError: true`) with a short message |
+| Unknown argument (see "Unknown arguments") | Tool error result that names it and lists the accepted ones, no request sent |
 | Invalid arguments | Tool error result, no request sent |
 | Unknown tool | Throws `McpError` `InvalidParams` |
 
 Token problems are thrown, not returned, so a caller can refresh the token or
 ask the user to reconnect exactly as it does for Google's MCP servers.
+
+### Unknown arguments
+
+No tool ignores an argument. `defineTool` in `tool.ts` checks the call's
+arguments against the tool's advertised input schema before anything else,
+for all 36 tools. An argument that is not in the schema, at the top level or
+inside a structured input (for example `attendees[0]` or `writeControl`),
+fails the call before any request is sent to Google:
+
+```text
+Invalid arguments for list_threads: unknown argument "q". Accepted arguments: pageSize, pageToken, query, labelIds, includeTrash, view. Nothing was sent to Google.
+```
+
+`defineTool` also sets `additionalProperties: false` on every object in the
+advertised input schema that lists its `properties`, so agents see the rule.
+`strict-arguments.test.ts` builds its cases from the tool list, so a new tool
+is covered without a test change, and checks that the zod schema of each tool
+has the same objects, at the same paths, with the same fields, types and
+enums as its JSON schema. Every field the zod schema requires is also
+required in the JSON schema. Only `update_doc` and `update_presentation`
+require more in the JSON schema than in zod (`writeControl` and its
+`requiredRevisionId`); the tool checks those itself, to give an error that
+says to read the file first. The check follows only `properties` and `items`,
+so `defineTool` refuses to define a tool whose input schema uses anything it
+cannot follow (`anyOf`, `oneOf`, `allOf`, `$ref`, tuple `items`, an
+`additionalProperties` other than `false` beside `properties`, and similar). A new schema shape
+fails at startup and in tests; it can never let an argument through unchecked.
+
+**Pass-through inputs.** These are Google's own request objects and are sent
+to Google as given. Their contents are not checked for unknown fields here
+(each tool still checks the request kind, see "Allowed request kinds"):
+
+- `docs__update_doc` `requests[]` (`documents.batchUpdate` requests)
+- `slides__update_presentation` `requests[]` (`presentations.batchUpdate` requests)
+- `sheets__update_spreadsheet` `requests[]` (`spreadsheets.batchUpdate` requests)
+
+The recorded Google MCP references do not say what Google's servers do with
+an unknown argument, and this was not checked against Google's servers. The
+decision is to refuse: an ignored filter can read data the agent did not ask
+for (a staging test on 2026-11-23 called `list_threads` with `query` and got
+every thread).
 
 ## How it plugs in
 
@@ -109,9 +164,12 @@ deployment is ever needed; the gateway does not use it.
 One setting per service, `GOOGLE_WORKSPACE_TOOL_TRANSPORT` in
 `packages/shared/src/google-workspace-connectors.ts`:
 
-- `google_mcp` (every service today): calls go to Google's hosted MCP server
-  for that service, exactly as before this folder existed.
-- `paperclip_rest`: calls go to this folder.
+- `google_mcp`: calls go to Google's hosted MCP server for that service.
+  Every service uses it since 2026-11-24. Chat, People and Search are not
+  offered for new setup.
+- `paperclip_rest`: calls go to this folder. Gmail, Drive, Docs, Sheets,
+  Slides and Calendar used it from 2026-11-23 to 2026-11-24. It is the
+  fallback.
 
 `googleWorkspaceToolTarget(name)` returns the setting as `transport`. It is a
 plain constant: no environment variable, instance setting or database row.
@@ -172,6 +230,64 @@ plain constant: no environment variable, instance setting or database row.
   the others stay usable. Health checks use the same branch.
 
 MCP Tasks, MCP resources and elicitation only exist on the `google_mcp` path.
+Google's MCP servers ask a person to confirm some actions (MCP elicitation).
+The gateway puts the question on the task's question card, as for any MCP
+server (`server/src/services/mcp-elicitation.ts`); skipping the card sends
+"decline". `server/src/__tests__/google-workspace-mcp-transport.test.ts`
+covers this with a fake Google server, for a server that asks over a session
+stream and for a stateless one.
+
+### Argument checks on Google's MCP path
+
+Before the gateway sends a call to Google's MCP server for Gmail, Drive,
+Docs, Sheets, Slides or Calendar, it runs `googleWorkspaceArgumentRefusal`
+(`argument-guards.ts`, through `googleWorkspaceMcpPreflightRefusal` in the
+adapter). A refusal is a tool error that ends with "Nothing was sent to
+Google.", recorded and audited like a REST refusal. It checks only what an
+argument shows, with no request to Google:
+
+- An argument that the action's saved schema does not list. The top level is
+  always checked; a nested object only when its schema has
+  `additionalProperties: false`. A schema with `additionalProperties` open at
+  the top level, or with neither `properties` nor `additionalProperties:
+  false`, is not checked.
+- `fileId` and `parentId` (Drive), `documentId`, `spreadsheetId` and
+  `presentationId` must each be one file ID: no link, no list.
+- Docs `update_doc` and Slides `update_presentation`: each request names
+  exactly one kind, and the kind is on the closed list in
+  `docs/request-kinds.ts` or `slides/request-kinds.ts` (so kinds that read
+  another file, and images from Drive or Docs links, are refused).
+
+For Calendar `delete_event`, `googleWorkspaceMcpPreflightRefusal` in the
+adapter first reads the event with the connection's own `calendar__get_event`
+(only `calendarId` and `eventId`), through a callback the gateway passes, and
+gives the answer to `googleCalendarSeriesRefusal`. The gateway only looks up
+and runs that action, with the grant and scope checks, inside the delete's
+own deadline. The read action's Off or Ask first setting does not apply: the
+read is part of a delete that the policy already allowed, and its answer never
+reaches the agent. The REST `delete_event` makes the same read. A whole recurring series is
+refused, as on REST. If the read does not return the event, nothing is
+deleted.
+
+Each refusal has a stable code: `unknown_argument`, `invalid_arguments`,
+`invalid_file_id`, `request_kind_refused`, `recurring_series_delete_refused`
+or `delete_target_unverified`. Paperclip wrote the refusal text, so an agent
+on the Paperclip Runner sees the code and the full text. For an error that
+Google returns, the agent sees only a code. `googleWorkspaceMcpErrorDetails`
+takes Google's HTTP status or status name and classifies it with the REST
+tools' `googleError`, for example `google_permission_denied`,
+`google_insufficient_scope` or `google_unavailable`, else `google_error`.
+`google_rate_limited` is retryable. `google_unavailable` is retryable only for a
+read action, because a write can already be applied when Google reports a
+server error. Google's own text is not sent to the
+agent. The failed call event records the code in
+`errorCode`, and the text in `errorMessage`, which the 30-day Google Technical
+Information sweep clears.
+
+The REST tools' other checks describe a REST limit or a stricter REST rule, so
+they do not run on MCP: mandatory `requiredRevisionId`, the Sheets comment and
+data-source refusals, the result size budget, and the Drive search query
+rules.
 
 Measured with a stubbed fetch, the adapter adds about 15 µs per call. A full
 `gmail__get_message` through `executeTool` (policy, records, screening) took a
@@ -227,6 +343,34 @@ that JSON escapes, and non-ASCII characters, count more):
 The check costs one `JSON.stringify` of the result: about 5 µs for a 4 KB
 result and 0.24 ms for a 700 KB one.
 
+### Connections saved on REST, after the switch back
+
+A connection whose catalog was refreshed while its services were on
+`paperclip_rest` has this folder's definitions saved. After the switch back,
+agents see those saved definitions until the next catalog refresh, and the
+argument checks use them. That refresh saves Google's definitions. It does not
+hold an action for review when the saved row's schema hash is one of this
+folder's shipped definitions (`shippedPaperclipSchemaHashes` in
+`server/src/services/connectors/paperclip-defined-tools.ts` and the hold rule
+in `server/src/services/tool-access/catalog/publication.ts`), and it keeps Off,
+Ask first and the review fields.
+
+`shipped-schema-hashes.ts` lists the input schema hash of every revision of
+every tool that a connection could have saved: the first launch (#22634) and
+the strict-argument revision (#22706). `fixtures/input-schemas-22634.json`
+holds the #22634 schemas. A test fails when a tool's current schema is not in
+the list, so add the new hash whenever a schema changes.
+
+The first switch-back refresh on builds before this list held each action
+whose row carried the #22634 schemas (`quarantined`, `pending_review`). That
+hold replaced the saved definition with Google's. No record keeps the earlier
+definition: a refresh can save rows and stop before it writes its audit event,
+so neither the audit history nor the call records prove which definition a row
+had just before the hold. A refresh does not release such an action. A person
+reviews it. An action that Google's server does not list (for example Gmail
+`get_draft`, `list_threads` or `search_messages`, if Google does not have
+them) is removed by that refresh.
+
 ### Flipping a service
 
 1. Implement every tool in that service's allowlist (`toolScopes` in the
@@ -237,6 +381,61 @@ result and 0.24 ms for a 700 KB one.
 `googleWorkspaceRestTransportGaps()` in the adapter, run by
 `google-workspace-rest-dispatch.test.ts`, fails while any service set to
 `paperclip_rest` is missing an allowlisted tool, so a partial flip cannot ship.
+
+### Connections saved before a switch
+
+A connection keeps the tool definitions its last catalog refresh saved. After
+a service switches to `paperclip_rest`, the saved definitions of an existing
+connection are still Google's MCP definitions. Two things keep such a
+connection working with no user action:
+
+- **Agents see this folder's definitions at once.** When the gateway lists a
+  connection's tools for an agent, it takes the input schema, output schema,
+  description and annotations of a `paperclip_rest` tool from this folder, not
+  from the saved row. It asks `paperclipDefinedTool` in
+  `server/src/services/connectors/paperclip-defined-tools.ts`, which calls
+  `googleWorkspaceRestToolDefinition` in the adapter.
+  Routing and the advertised definition read the same transport setting in
+  the same process, so an agent never gets Google's MCP schema for a call that
+  goes to REST. This is an in-memory lookup: no request and no refresh before
+  the turn starts.
+- **The next catalog refresh saves this folder's definitions.** Catalog
+  publication asks the same `paperclipDefinedTool`. It never holds such an
+  action for review, and it clears the review hold (`quarantined`,
+  `pending_review`) of an action held only because a remote definition
+  changed. Clearing the hold does not count the action as new, so it does not
+  add the action to the connection's profile: an action a person turned Off
+  (left out of the profile) stays Off, also when it was held, and an Ask first
+  policy stays in force. Only actions the connection never had (Gmail
+  `list_threads` and `search_messages`) get the connection's default for new
+  actions.
+
+The saved risk level of an action changes only on that refresh. Until then,
+`docs__update_doc`, `slides__update_presentation`, `sheets__update_spreadsheet`
+and `calendar__update_event` keep the level saved from Google's MCP
+definition (`write`); after it they are `destructive`. Write actions are
+Allowed by default at either level.
+
+### Input differences an agent meets after a switch
+
+Checked against Google's published MCP references, since no `tools/list`
+from Google's servers is recorded yet. These are the cases where a call that
+Google's saved schema allowed is refused by this folder; each is also stated
+in the tool's own description and schema, which agents now receive:
+
+| Tool | Google's schema | This folder |
+| --- | --- | --- |
+| `docs__update_doc`, `slides__update_presentation` | `writeControl` optional; `targetRevisionId` allowed | `writeControl.requiredRevisionId` required (read the document first); `targetRevisionId` refused |
+| `docs__update_doc`, `slides__update_presentation` | any request kind | closed list of request kinds; kinds that read another file refused |
+| `sheets__update_spreadsheet` | `writeControl` allowed | `writeControl` refused (no revision check in Sheets REST) |
+| `sheets__get_spreadsheet` | `commentsIncluded: true` allowed | refused (not in the Sheets API) |
+| `sheets__insert_dimension` | `DIMENSION_UNSPECIFIED` in the enum | refused |
+| `calendar__delete_event` | a recurring series ID deletes the series | refused; pass one occurrence |
+| `gmail__create_draft` | attachments | refused, as Google's tool does today |
+| `drive__search_files` | full MCP query language and `orderBy` | terms without a Drive `q` equivalent refused; `orderBy` limited |
+| every tool | not recorded what an argument outside the schema does | refused with the argument's name (see "Unknown arguments") |
+
+Each refusal is a tool error that says what to do, and nothing is changed.
 
 ## Known differences from Google's MCP tools
 
@@ -316,6 +515,15 @@ result and 0.24 ms for a 700 KB one.
   this folder. `threadsTotal` and `threadsUnread` are left out: REST returns
   them only from `labels.get`, one request per label. A label with only one
   of its two colors set is returned without `color`.
+- **Filters on list tools** (checked 2026-11-23). `list_threads` had no
+  `query`, so a call with `query` listed every thread; it now takes `query`
+  (see "Not verified against Google's servers"). `search_messages` and
+  `list_drafts` already take `query`, sent as Gmail's `q`. `list_labels` has
+  no filter: Gmail's `labels.list` has none. Calendar `list_events` filters
+  with `fullText`, and `list_calendars` has no filter in REST. Drive
+  `list_recent_files` stays without `query`, as in Google's Drive MCP tool;
+  `search_files` is the Drive tool that filters. In each case an argument the
+  tool does not have is refused, never ignored.
 - **Errors** for Google failures are tool error results with our own short
   messages, not Google's raw error text (except for 400 and 403 messages,
   trimmed to one line).
@@ -376,11 +584,13 @@ Google's servers return if they ever expose tools with these names:
 - **`get_draft`**: input `draftId` (required) and `view` (`DraftView` from
   `list_drafts`); result is one `Draft`, the shape `list_drafts` and
   `create_draft` return. One `drafts.get`, plus bodies.
-- **`list_threads`**: input `pageSize`, `pageToken`, `includeTrash` and `view`
-  as in `search_threads`, plus `labelIds` (at most 20; a thread must have all
-  of them) instead of `query`; result is `search_threads`'s. Drafts are
-  excluded unless `DRAFT` is among the labels; spam and trash are included
-  when `SPAM` or `TRASH` is among them.
+- **`list_threads`**: input `pageSize`, `pageToken`, `query`, `includeTrash`
+  and `view` as in `search_threads`, plus `labelIds` (at most 20; a thread
+  must have all of them); result is `search_threads`'s. `query` is sent as
+  Gmail's `q`, with the same name and meaning as in `search_threads`, and a
+  thread must match both the query and the labels. Drafts are excluded unless
+  `DRAFT` is among the labels or the query uses `in:draft`; spam and trash are
+  included when `SPAM` or `TRASH` is among the labels or `includeTrash` is set.
 - **`search_messages`**: input as `search_threads`, with `messageFormat` from
   `get_message` instead of `view`; result is `{ messages, nextPageToken,
   resultCountEstimate }` with `get_message`'s `Message`. Unlike `get_message`,
@@ -952,6 +1162,7 @@ made" warning.
   option). Numbers, currency, percentages and dates come back as the displayed
   text (`"$1,200.50"`, `"12%"`, `"1/5/2026"`), booleans as `"TRUE"`/`"FALSE"`,
   errors as their text (`"#DIV/0!"`), and formula cells as their result.
+  Any other argument, such as `valueRenderOption`, is refused.
   Google's answer is returned unchanged: trailing empty rows and columns are
   left out, so rows can differ in length; an empty range has no `values`
   field; in a merged area only the top-left cell holds the value. One range per
@@ -1062,9 +1273,10 @@ says `false`.
 ## Open questions
 
 - Whether an OAuth client marked as an AI-powered agent may call the REST APIs.
+  The AI Tools Addendum says an agent must use a Google MCP, so the fallback
+  is for an outage or a Google problem, not for normal use.
 - Each Google Cloud project behind a connection needs the REST APIs enabled
-  (Gmail now; Drive, Docs, Sheets, Slides and Calendar as their tools land).
-  Without that, calls return the `api_disabled` tool error.
+  for the fallback. Without that, calls return the `api_disabled` tool error.
 - `freeBusy.query` does not accept `calendar.events`, and the read & write
   Calendar selection grants `calendar.calendarlist.readonly` and
   `calendar.events` only (the `calendar.events` → `calendar.events.freebusy`
@@ -1079,7 +1291,12 @@ says `false`.
 
 ## Removal procedure
 
-1. Set every service in `GOOGLE_WORKSPACE_TOOL_TRANSPORT` to `google_mcp`.
+The owner decided on 2026-11-24 to keep this folder as the fallback. Remove it
+only on a new decision.
+
+1. Check that every service in `GOOGLE_WORKSPACE_TOOL_TRANSPORT` is
+   `google_mcp`. Move `argument-guards.ts` and the request-kind lists it uses
+   out of this folder first, because the MCP path uses them.
 2. Delete this folder, `server/src/google-workspace-rest-tools/`.
 3. Delete `server/src/services/google-workspace-rest-dispatch.ts` and its
    test, and the two call sites: the `paperclip_rest` branch in

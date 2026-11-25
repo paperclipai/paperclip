@@ -3,6 +3,7 @@ import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
 type JsonSchemaNode = {
   type?: unknown;
   properties?: Record<string, JsonSchemaNode>;
+  items?: JsonSchemaNode;
   required?: unknown;
   description?: unknown;
 };
@@ -32,6 +33,16 @@ function listFields(keys: string[]) {
   return keys.length > MAX_LISTED_FIELDS ? `${shown}, and ${keys.length - MAX_LISTED_FIELDS} more` : shown;
 }
 
+function schemaAtInstancePath(root: JsonSchemaNode | undefined, instancePath: string): JsonSchemaNode | undefined {
+  let node = root;
+  for (const segment of instancePath.split("/").filter(Boolean)) {
+    if (!node) return undefined;
+    const key = segment.replaceAll("~1", "/").replaceAll("~0", "~");
+    node = /^\d+$/.test(key) && node.items && typeof node.items === "object" ? node.items : node.properties?.[key];
+  }
+  return node;
+}
+
 /** Return schema-owned recovery guidance without changing validation or dispatch. */
 export function toolInputError(validator: ValidateFunction | undefined, input?: unknown): string {
   const errors = validator?.errors ?? [];
@@ -51,6 +62,15 @@ export function toolInputError(validator: ValidateFunction | undefined, input?: 
     const description = properties[key]?.description;
     if (typeof description === "string" && description.trim()) guidance.add(description.slice(0, 1000));
     if (guidance.size === 3) break;
+  }
+  // A value that broke a pattern or format: the field's own description says the
+  // rule in words (a client may not have been shown the pattern itself).
+  for (const error of errors) {
+    if (guidance.size === 3) break;
+    if (error.keyword !== "pattern" && error.keyword !== "format") continue;
+    const node = schemaAtInstancePath(rootSchema, error.instancePath);
+    const field = error.instancePath.split("/").filter(Boolean).at(-1);
+    if (field && typeof node?.description === "string" && node.description.trim()) guidance.add(`${field}: ${node.description.slice(0, 1000)}`);
   }
   const parts: string[] = [];
   if (missing.length) {

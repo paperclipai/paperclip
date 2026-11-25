@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
+import { imageMetadata } from "../../../scripts/docker-image-metadata.mjs";
 
 const workflow = readFileSync(new URL("../../workflows/cloud-readiness.yml", import.meta.url), "utf8");
 
@@ -51,7 +52,11 @@ test("Runner chaos evals still run but stay out of the publication gate", async 
 test("standard image provenance and independent exact-source migrators remain available", () => {
   const docker = readFileSync(new URL("../../workflows/docker.yml", import.meta.url), "utf8");
   assert.match(docker, /target: production/);
-  assert.match(docker, /type=raw,value=sha-\$\{\{ github.sha \}\}/);
+  assert.equal(docker.match(/run: node scripts\/docker-image-metadata.mjs/g)?.length, 2);
+  const sha = "a".repeat(40);
+  const metadata = imageMetadata({ repository: "paperclipai/paperclip", sha, ref: "refs/heads/master", event: "push",
+    lastMigration: "0000_fixture.sql", migrationCount: "1", created: "2000-01-01T00:00:00.000Z" });
+  assert.ok(metadata.tags.includes(`ghcr.io/paperclipai/paperclip:sha-${sha}`));
   assert.match(docker, /run: node scripts\/standard-image-contract.mjs --resolve "\$GITHUB_SHA"/);
   assert.match(docker, /subject-digest: \$\{\{ steps.standard.outputs.digest \}\}/);
   const migrator = readFileSync(new URL("../../workflows/cloud-migrator-artifacts.yml", import.meta.url), "utf8");

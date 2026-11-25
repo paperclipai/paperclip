@@ -415,7 +415,7 @@ export function FailedRunInboxRow({
     : interruption?.state === "retry_scheduled" ? `Trying again in ${retrySeconds}s…`
       : interruption?.state === "failed" ? "Couldn’t finish this attempt. Your message is saved."
         : interruption?.state === "waiting_for_user" ? ({
-          approval: "Approval required", question: "Respond to the pending question", reconnect: "Reconnect account", assign_agent: "Assign an agent", choose_model: "Choose a supported model",
+          approval: "Approval required", question: "Respond to the pending question", reconnect: "Reconnect account", provider_billing: "Review provider billing and usage", assign_agent: "Assign an agent", choose_model: "Choose a supported model",
           resume: "Work is paused", budget: "Budget limit reached",
           project_access: "Agent needs project access",
           confirm_owner_stop: "Confirm the previous server stopped",
@@ -2747,7 +2747,7 @@ function StreamlinedInbox({
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
+    return <EmptyState placement={surfaceLabel === "Inbox" ? "upper" : "center"} icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
   }
 
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
@@ -3101,7 +3101,7 @@ function StreamlinedInbox({
       )}
 
       {tab !== "blocked" && allLoaded && !listError && !optionalSourceError && visibleSections.length === 0 && (
-        <EmptyState
+        <EmptyState placement={surfaceLabel === "Inbox" ? "upper" : "center"}
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
             searchQuery.trim()
