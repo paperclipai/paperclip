@@ -18714,6 +18714,95 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
+  it.each([
+    ["plugin Runner-task", "none"], ["plugin Runner-task", "linux-x64"], ["Core sandbox", "none"],
+  ] as const)("refuses a pending Antigravity run on a %s target with grant %s before any launch", async (targetKind, grant) => {
+    expect(antigravityRelease.antigravityReleasePending()).toBe(true);
+    const model = "gemini-3.8-flash-high";
+    const current = { ...execution,
+      provider: { kind: "acpx", agent: "antigravity", model, permissionMode: "deny-all" },
+      binding: { ...execution.binding, runId: `antigravity-pending-${targetKind}-${grant}` },
+      session: { ...execution.session, driverKind: "acpx_runtime" },
+    } as unknown as NativeExecutionInputV1;
+    vi.stubEnv("PAPERCLIP_ACPX_CANDIDATE_ADMISSION", grant === "none" ? undefined : JSON.stringify({
+      schema: "paperclip.acpx-candidate-admission.v1", companyId: current.binding.companyId, agent: "antigravity", model,
+      profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest,
+      nativeClosureDigest: `sha256:${ANTIGRAVITY_PATCHED_CLOSURE_SHA256["linux-x64"]}`,
+      platform: "linux", architecture: "x64", expiresAt: Date.now() + 60_000 }));
+    const task = vi.fn();
+    const execute = vi.fn();
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner");
+    state.execute.mockClear(); state.createBackend.mockClear();
+    const runnerExecutionTarget = targetKind === "plugin Runner-task"
+      ? { kind: "remote", transport: "sandbox", providerKey: "plugin", leaseId: "lease", remoteCwd: "/unused", runnerTask: task } as const
+      : { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runner: { execute } } as const;
+    try {
+      await expect(executePaperclipNativeSession({ db: leaseDb(current), execution: current, useRunnerd: true,
+        runnerInstanceId: "antigravity-pending-remote", runnerIngressAuthorized: true, runnerExecutionTarget }))
+        .rejects.toThrow(/paperclip_runner_antigravity_candidate_ineligible/);
+      expect(task).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+      expect(owner).not.toHaveBeenCalled();
+      expect(state.execute).not.toHaveBeenCalled();
+      expect(state.createBackend).not.toHaveBeenCalled();
+    } finally {
+      owner.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.each(["api_key", "sign_in"] as const)("hands a released Antigravity %s run on a plugin Runner-task target only its typed task credential", async method => {
+    const directory = await realpath(await mkdtemp(join(tmpdir(), "native-plugin-antigravity-")));
+    const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
+    process.env.PAPERCLIP_RUNNER_STATE_DIR = join(directory, "runner");
+    const managedHome = join(directory, "managed-home");
+    await mkdir(join(managedHome, "antigravity-acp"), { recursive: true, mode: 0o700 });
+    const signIn = JSON.stringify({
+      client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com", client_secret: "fixture-client-secret",
+      refresh_token: "fixture-google-refresh", token_uri: "https://oauth2.googleapis.com/token",
+      scopes: ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/aicode"],
+    });
+    await writeFile(join(managedHome, "antigravity-acp", "acp_token.json"), signIn, { mode: 0o600 });
+    const current = { ...execution,
+      provider: { kind: "acpx", agent: "antigravity", model: "gemini-3.8-flash-high", permissionMode: "deny-all" },
+      binding: { ...execution.binding, runId: `antigravity-plugin-released-${method}`, executionWorkspaceId: `antigravity-plugin-${method}` },
+      session: { ...execution.session, driverKind: "acpx_runtime", normalizedSessionId: `antigravity-plugin-${method}` },
+    } as unknown as NativeExecutionInput;
+    const launcher = vi.fn(), registration = vi.fn();
+    const driver = { authorityRunId: current.binding.runId, prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue(
+      { launcher, registration, driver, readWorkspaceFile: vi.fn(), isRetired: () => false, rebind: vi.fn() } as never);
+    const handoff = vi.spyOn(pluginCredentialWriteback, "registerPluginTaskCredentialHandoff").mockResolvedValue(undefined as never);
+    const releaseSpy = vi.spyOn(antigravityRelease, "antigravityReleasePending").mockReturnValue(false);
+    const task = vi.fn(async (operation: unknown) => {
+      environmentTaskOperationSchema.parse(operation);
+      return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, taskId: "task",
+        runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+    });
+    vi.stubEnv("PAPERCLIP_ACPX_CANDIDATE_ADMISSION", undefined);
+    state.createBackend.mockClear(); state.createTransport.mockClear();
+    try {
+      await createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: "plugin-antigravity", runnerIngressAuthorized: true,
+        managedAiCredentialHome: managedHome, managedAiCredentialIdentity: "revision", managedAiAccountIdentity: "account",
+        ...(method === "sign_in" ? { managedAiCredentialWriteback: { grantId: "10000000-0000-4000-8000-000000000001",
+          secretId: "10000000-0000-4000-8000-000000000002", sessionEpoch: 1, versionSelector: "latest" as const,
+          google: { credentialSha256: "c".repeat(64) } } } : {}),
+        runnerEnvironment: { ...(method === "api_key" ? { GEMINI_API_KEY: "fixture-gemini" } : {}),
+          GOOGLE_API_KEY: "ambient-google", GEMINI_HOME: "/ambient" },
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", providerKey: "plugin",
+          leaseId: `antigravity-lease-${method}`, remoteCwd: "/unused", runnerTask: task } });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      expect(owner).toHaveBeenCalledOnce();
+      expect(owner.mock.calls[0]![0].credential).toEqual({ type: "provider-env", provider: "antigravity",
+        environment: method === "api_key" ? { GEMINI_API_KEY: "fixture-gemini" } : { PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: signIn } });
+      expect(handoff).toHaveBeenCalledTimes(method === "sign_in" ? 1 : 0);
+    } finally {
+      owner.mockRestore(); handoff.mockRestore(); releaseSpy.mockRestore(); vi.unstubAllEnvs();
+      if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_STATE_DIR; else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("still cleans up managed Codex credentials after an owned session closes", async () => {
     const close = vi.fn(async () => undefined);
     state.copyBackCodexAuth.mockClear();
