@@ -239,6 +239,20 @@ The dashboard shows the spend of the current month against the monthly company b
 
 Select **Costs** in the sidebar. The page shows spend for the period you select, with breakdowns by agent, project, provider, and biller.
 
+### When Hermes Gateway shows $0.00
+
+A completed Hermes Gateway run can report tokens without a dollar amount. Use the gateway and the adapter result to trace the missing cost.
+
+1. Find the Hermes run ID in the adapter result (`run_id`). Use that ID to inspect the completed run on the gateway (`GET /v1/runs/{run_id}`).
+2. Compare the gateway’s `usage.input_tokens` and `usage.output_tokens` with `usage.inputTokens` and `usage.outputTokens` in the adapter result. Check for a dollar amount at the top level or inside `usage` (`cost_usd` or `costUsd`).
+3. Check `cost_usd` in the adapter result. A missing or null value means the adapter did not report a price. A numeric zero means it reported zero. If the result contains a positive price but the dashboard shows no spend, check the Paperclip cost event for the same run.
+
+In the Costs overview, expand **run costs unavailable** if it appears. Read the label in the expanded list. **Cost unavailable** means the usage has no reliable price. **Receiving usage** means Paperclip is waiting for final usage data. **Final usage unavailable** means the run stopped without that data. Select **View run** for run details. See [Cost Reporting](/guides/agent-developer/cost-reporting#understanding-incomplete-cost-data).
+
+To stop new work on unpriced Hermes usage, follow [Usage With No Reliable Price](#usage-with-no-reliable-price). Check that Paperclip recorded an unpriced cost event for the run. A missing event cannot trigger the policy.
+
+When a provider bills separately, compare its usage statement with recorded spend. A dashboard total of $0.00 does not establish that the provider charged nothing.
+
 ### Cost Breakdown API
 
 ```
