@@ -40,8 +40,8 @@ export function nativeSystemInstructions(input: NativeExecutionInput): string {
   }
   const entry = readFileSync(entryPath, "utf8");
   if (input.provider.kind === "acpx" && isAntigravitySwarmRoute(input.provider.agent, input.provider.mode)) {
-    return [composeNativeSystemInstructions(input.runtimeContext, entry), antigravitySwarmHandInInstructions(input.completionContract.contract)]
-      .filter(Boolean).join("\n\n");
+    return composeNativeSystemInstructions(input.runtimeContext,
+      [entry.trim(), antigravitySwarmHandInInstructions(input.completionContract.contract)].filter(Boolean).join("\n\n"));
   }
   if (input.provider.kind === "muse") {
     return ["You are running as a named Paperclip agent. Complete the assigned task, follow the attached agent instructions, and use the admitted Paperclip catalog for coordination. Record durable text deliverables with write_document. When work depends on another task, preserve the existing dependencies with set_dependencies and report the concrete blocker through paperclip_block. Follow each tool's approval and completion rules.", entry.trim(),

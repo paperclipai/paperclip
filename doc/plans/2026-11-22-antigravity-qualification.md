@@ -367,9 +367,11 @@ What exists:
   visible calls, not a boundary. The feature stays off by default.
 - **Agent instructions (owner decision, 2026-11-25).** A swarm turn carries
   the agent's own instructions, composed exactly as for an ordinary
-  Antigravity turn, followed by the hand-in values and Paperclip's swarm rules,
-  which state that they take precedence and that the agent's instructions
-  cannot widen what helpers may touch. #22733 had left the instructions out;
+  Antigravity turn (the hand-in values follow the instruction entry, so the
+  prompt stays retargetable), then Paperclip's swarm rules. The rules state
+  that they take precedence, that the agent's instructions cannot widen the
+  Paperclip tools offered or Paperclip's permission decisions, and that helpers
+  must keep their work inside the task folder. #22733 had left the instructions out;
   the owner reviewed that risk and chose to carry them. Enforced in code
   whatever the prompt says: only Paperclip's own tools are approved and every
   other permission request is refused, delegation tools are removed from the
@@ -377,7 +379,7 @@ What exists:
   folder or a visible outside change stops the swarm, and a changed model,
   thinking level or mode fails the run. Not enforced by Paperclip: helper
   shell commands (see "Not confined by Paperclip" below). Prompt-only: the
-  precedence statement itself, handing in once, naming files by task-folder
+  precedence statement itself, keeping helper work inside the task folder, handing in once, naming files by task-folder
   path, and not mentioning the rules. Residual
   risk: an agent that can edit its own instructions can influence what its
   swarm helpers do inside the task folder.
