@@ -27,24 +27,30 @@ vi.mock("@/hooks/useWarmTaskDetailCode", () => ({
   useWarmTaskDetailCode: noop,
 }));
 
-it("shows a running task's live marker in both layouts and clears it when the run ends", async () => {
+it("shows running and waiting tasks in both layouts and clears their markers when the runs end", async () => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
-  const tasks = ["running", "idle"].map((id, index) => ({
+  const tasks = ["running", "idle", "queued"].map((id, index) => ({
     id, identifier: `TASK-${index + 1}`, title: `${id} task`,
-    companyId: "company-a", status: "todo", priority: "medium", parentId: null,
+    companyId: "company-a", status: "todo", priority: "medium", parentId: id === "queued" ? "idle" : null,
     createdAt: "2026-11-24T10:00:00Z", updatedAt: "2026-11-24T10:00:00Z",
   }));
   vi.stubGlobal("fetch", vi.fn(async (input: string) =>
     Response.json(input.startsWith("/api/companies/company-a/issues?") ? tasks : [])));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   const runsKey = queryKeys.liveRuns("company-a");
-  client.setQueryData(runsKey, [{ id: "run-a", issueId: "running", status: "running" }]);
+  client.setQueryData(runsKey, [
+    { id: "run-a", issueId: "running", status: "running" },
+    { id: "run-b", issueId: "queued", status: "queued", startedAt: null },
+  ]);
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
   const visibleTask = (id: string) => [...container.querySelectorAll(`[data-issue-row-details="${id}"]`)]
     .find(row => !row.closest("[hidden]"));
   const liveMarker = (id: string) => visibleTask(id)?.querySelector(".animate-pulse");
+  const waitingMarker = () => visibleTask("queued")?.querySelector('[data-testid="agent-queue-wait-chip"]');
+  const selectLayout = (label: string) => act(async () =>
+    container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!.click());
 
   try {
     await act(async () => root.render(
@@ -59,16 +65,26 @@ it("shows a running task's live marker in both layouts and clears it when the ru
     await act(async () => vi.waitFor(() => expect(visibleTask("idle")).toBeDefined()));
     expect(liveMarker("running")).not.toBeNull();
     expect(liveMarker("idle")).toBeNull();
+    expect(liveMarker("queued")).toBeNull();
+    expect(waitingMarker()).not.toBeNull();
 
-    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Board view"]')!.click());
+    await selectLayout("Board view");
     expect(visibleTask("running")).toBeDefined();
     expect(liveMarker("running")).not.toBeNull();
     expect(liveMarker("idle")).toBeNull();
+    expect(liveMarker("queued")).toBeNull();
+    expect(waitingMarker()).not.toBeNull();
+    expect(visibleTask("idle")?.textContent).not.toContain("live below");
 
     await act(async () => {
       client.setQueryData(runsKey, []);
       await vi.waitFor(() => expect(liveMarker("running")).toBeNull());
     });
+    expect(waitingMarker()).toBeNull();
+    await selectLayout("List view");
+    expect(visibleTask("running")).toBeDefined();
+    expect(liveMarker("running")).toBeNull();
+    expect(waitingMarker()).toBeNull();
   } finally {
     await act(async () => root.unmount());
     client.clear();

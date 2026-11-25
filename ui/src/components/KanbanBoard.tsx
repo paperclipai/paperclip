@@ -25,11 +25,12 @@ import { Identity } from "./Identity";
 import type { Issue, IssueDisplayStatus, IssueStatus } from "@paperclipai/shared";
 import { AlertTriangle } from "lucide-react";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
-import { collectSubtreeLiveCounts } from "../lib/liveIssueIds";
+import { collectSubtreeLiveCounts, issueWaitingOf, type IssueWaiting } from "../lib/liveIssueIds";
 import { cn } from "../lib/utils";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { HorizontalScrollViewport } from "./HorizontalScrollViewport";
+import { AgentQueueWaitChip } from "./AgentQueueWait";
 
 export const KANBAN_BOARD_HIGH_VOLUME_THRESHOLD = 100;
 export const KANBAN_COLUMN_PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
@@ -247,6 +248,7 @@ function KanbanColumn({
               issue={issue}
               agents={agents}
               isLive={liveIssueIds?.has(issue.id)}
+              waiting={issueWaitingOf(liveIssueIds, issue.id)}
               subtreeLiveCount={subtreeLiveCounts?.get(issue.id) ?? 0}
               compact={compactCards}
               className={tone.card}
@@ -278,6 +280,7 @@ function KanbanCard({
   issue,
   agents,
   isLive,
+  waiting,
   subtreeLiveCount = 0,
   isOverlay,
   compact = false,
@@ -286,6 +289,7 @@ function KanbanCard({
   issue: Issue;
   agents?: Agent[];
   isLive?: boolean;
+  waiting?: IssueWaiting | null;
   subtreeLiveCount?: number;
   isOverlay?: boolean;
   compact?: boolean;
@@ -348,7 +352,7 @@ function KanbanCard({
               Next step
             </Badge>
           ) : null}
-          {isLive && (
+          {isLive && waiting ? <AgentQueueWaitChip queue={waiting.queue} /> : isLive && (
             <span className="inline-flex shrink-0 items-center gap-1 text-(length:--text-nano) font-medium text-blue-600 dark:text-blue-400">
               <span className="relative flex h-2 w-2">
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
@@ -433,7 +437,7 @@ export function KanbanBoard({
   );
 
   const subtreeLiveCounts = useMemo(
-    () => collectSubtreeLiveCounts(issues, liveIssueIds ?? new Set<string>()),
+    () => collectSubtreeLiveCounts(issues, liveIssueIds ?? new Set<string>(), { startedOnly: true }),
     [issues, liveIssueIds],
   );
 
@@ -497,7 +501,9 @@ export function KanbanBoard({
         : <div className="flex gap-3 overflow-x-auto pb-4 -mx-2 px-2">{columns}</div>}
       <DragOverlay>
         {activeIssue ? (
-          <KanbanCard issue={activeIssue} agents={agents} isOverlay compact={compactCards} />
+          <KanbanCard issue={activeIssue} agents={agents} isLive={liveIssueIds?.has(activeIssue.id)}
+            waiting={issueWaitingOf(liveIssueIds, activeIssue.id)} subtreeLiveCount={subtreeLiveCounts.get(activeIssue.id)}
+            isOverlay compact={compactCards} />
         ) : null}
       </DragOverlay>
     </DndContext>
