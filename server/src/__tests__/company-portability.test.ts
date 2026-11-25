@@ -1549,7 +1549,7 @@ describe("company portability", () => {
         projectWorkspaceId: "workspace-imported",
         title: "Write launch task",
       }),
-    ]), undefined, undefined);
+    ]), undefined, undefined, "user-1");
   });
 
   it("normalizes invalid imported project icon names to null", async () => {
@@ -4021,6 +4021,7 @@ describe("company portability", () => {
       ]),
       undefined,
       undefined,
+      "user-1",
     );
   });
 
@@ -4081,6 +4082,7 @@ describe("company portability", () => {
       ]),
       undefined,
       undefined,
+      "user-1",
     );
     expect(result.warnings).toContain(
       "Existing label color was kept for bug; the imported bundle used different colors.",
@@ -4141,6 +4143,7 @@ describe("company portability", () => {
       ]),
       undefined,
       undefined,
+      "user-1",
     );
     expect(result.warnings).toContain(
       "Task kickoff dropped 2 label references because the bundle carries raw label ids that do not exist in the target company.",
@@ -4438,6 +4441,7 @@ describe("company portability", () => {
       ]),
       undefined,
       undefined,
+      "user-1",
     );
     expect(documentSvc.createIssueDocumentsForImport).not.toHaveBeenCalled();
     expect(workProductSvc.createManyForImport).not.toHaveBeenCalled();
@@ -5315,6 +5319,7 @@ describe("company portability", () => {
       ]),
       undefined,
       undefined,
+      "user-1",
     );
     expect(result.warnings).toContain(v5Warning);
   });

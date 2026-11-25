@@ -11341,6 +11341,7 @@ export function issueService(db: Db) {
       rows: ImportIssueRow[],
       actorAgentId?: string | null,
       actorCompanyId?: string | null,
+      actorUserId?: string | null,
     ): Promise<void> => {
       if (rows.length === 0) return;
       const isolatedWorkspacesEnabled = (
@@ -11380,6 +11381,7 @@ export function issueService(db: Db) {
 
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         const defaultGoalId = defaultCompanyGoal?.id ?? null;
+        const accessGrants: Array<typeof issueAccessGrants.$inferInsert> = [];
 
         // Project-scoped derivations depend only on the project, so resolve each
         // distinct project once and reuse it across that project's issues.
@@ -11510,6 +11512,25 @@ export function issueService(db: Db) {
             || projectVisibility === "private" || parentPrivacyRoot ? "private" : "open";
           const privacyRootIssueId = parentPrivacyRoot ?? (visibility === "private" ? row.id : null);
           importedPrivacyRoots.set(row.id, privacyRootIssueId);
+          if (visibility === "private" && actorUserId) {
+            accessGrants.push({
+              issueId: row.id,
+              subjectType: "user",
+              subjectId: actorUserId,
+              source: "explicit",
+              grantedByUserId: actorUserId,
+            });
+          }
+          if (visibility === "private" && row.assigneeAgentId) {
+            accessGrants.push({
+              issueId: row.id,
+              subjectType: "agent",
+              subjectId: row.assigneeAgentId,
+              source: "assignment",
+              grantedByUserId: actorUserId ?? null,
+              grantedByAgentId: actorAgentId ?? null,
+            });
+          }
 
           issueRows.push({
             id: row.id,
@@ -11559,6 +11580,7 @@ export function issueService(db: Db) {
 
         await notifyStatusCardIssueChange(tx, companyId);
         await insertRowsInChunks(tx, issues, issueRows);
+        await insertRowsInChunks(tx, issueAccessGrants, accessGrants);
         await insertRowsInChunks(tx, issueLabels, labelRows);
       });
     },
