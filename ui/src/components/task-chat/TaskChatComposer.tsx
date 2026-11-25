@@ -32,7 +32,7 @@ import {
   type ComposerSendRequest,
 } from "@/lib/composer-draft";
 import { classifySendFailure, type SendOutcome } from "@/lib/pending-send";
-import { describeError, errorStatus } from "@/api/errors";
+import { describeError } from "@/api/errors";
 import { useAutoResend } from "@/hooks/useDurableSubmit";
 import { useDraftOwner } from "@/hooks/useDraftOwner";
 import { useRequestOwnerBinding } from "@/hooks/useRequestOwnerBinding";
@@ -462,6 +462,7 @@ export function TaskChatComposer({
   });
   function changeBody(value: string) {
     bodyRef.current = value;
+    setActionError(null);
     if (creation) {
       creation.onChange(value);
       return;
@@ -1040,6 +1041,7 @@ export function TaskChatComposer({
     // text from the composer at the same time. The editor remains writable for
     // the next draft while the request is pending.
     bodyRef.current = "";
+    setActionError(null);
     if (draftTimer.current) {
       clearTimeout(draftTimer.current);
       draftTimer.current = null;
@@ -1146,7 +1148,8 @@ export function TaskChatComposer({
       const nextDraft = bodyRef.current;
       // Not delivered, or not known to be: keep it and resend with the same
       // ID when the connection allows. The server dedupes by that ID.
-      if (attemptId && request && classifySendFailure(error) === "pending") {
+      const failure = classifySendFailure(error);
+      if (attemptId && request && failure === "pending") {
         const uncertain = {
           attemptId, reviewed: false,
           nextDraftOffset: submittedBody.length + (nextDraft ? 2 : 0),
@@ -1157,14 +1160,12 @@ export function TaskChatComposer({
         setUncertainSubmission(uncertain);
         if (draftKey && loadDraftSubmission(draftKey)?.attemptId === attemptId)
           saveDraftSubmission(draftKey, uncertain);
-      } else if (draftKey && attemptId)
-        clearDraftSubmission(draftKey, attemptId);
-      // A refusal (for example /swarm while the task is in Plan mode) stays
-      // under the restored text until dismissed or the next send; a toast alone
-      // disappears before it can be read.
-      const status = errorStatus(error);
-      if (status !== null && status >= 400 && status < 500 && classifySendFailure(error) === "rejected") {
-        setActionError(describeError(error).body);
+      } else {
+        if (draftKey && attemptId) clearDraftSubmission(draftKey, attemptId);
+        // A failure stays under the restored text until dismissed or the next
+        // send (for example a /swarm refusal in Plan mode); a toast alone
+        // disappears before it can be read.
+        setActionError(describeError(error, { action: "send this message" }).body);
       }
       // Restore the failed message for retry without discarding a next draft
       // that was entered while the request was pending.
@@ -1481,7 +1482,7 @@ export function TaskChatComposer({
               <p
                 className="min-w-0 flex-1 text-xs text-destructive"
                 role="alert"
-                data-testid={creation ? "task-chat-create-error" : queuedEdit ? "task-chat-queued-edit-error" : "task-chat-goal-error"}
+                data-testid={creation ? "task-chat-create-error" : queuedEdit ? "task-chat-queued-edit-error" : "task-chat-composer-error"}
               >
                 {actionError}
               </p>

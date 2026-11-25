@@ -7,6 +7,7 @@ import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-uti
 import { parseObject } from "../../adapters/utils.js";
 import { isConversation } from "../agent-conversations.js";
 import { chatCompletionInstruction } from "../chat-completion-delivery.js";
+import { chatAwaitsFirstAgentTurn } from "../chat-titles.js";
 import { getConversationConfirmationContext } from "../conversation-confirmation-context.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { getIssueContinuationSummaryDocument } from "../issue-continuation-summary.js";
@@ -263,6 +264,8 @@ export async function prepareHeartbeatTaskContext(db: Db, input: HeartbeatTaskCo
     ? await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, agent.companyId))
     : [];
   const taskMarkdownInput = {
+    chatTitleRequested: Boolean(issueRef && isConversation(issueContext) && issueContext?.titleNeedsGeneration
+      && await chatAwaitsFirstAgentTurn(db, agent.companyId, issueRef.id)),
     companyPrefix: chatCompany?.issuePrefix,
     coordinatorWorkspace: Boolean(coordinatorWorkspace),
     personTimeZone,

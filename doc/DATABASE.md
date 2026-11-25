@@ -328,6 +328,18 @@ array lists every packed migration in journal order with `idx`, `tag`,
 `compatibility`, `classified` (the classifier's verdict before an override),
 `override`, `overrideJustification`, and `reasons`.
 
+### Migrations that need a deploy without overlap
+
+Some `requires_staging` migrations ship in one release instead of an expand
+and a contract release. Their `requires_staging` header records that the
+operator accepts a maintenance deploy; this table explains why. Deploy such a
+release without overlap: stop every server of the previous release before a
+server of the new release accepts traffic.
+
+| Migration | Why the previous release cannot run beside it |
+| --- | --- |
+| `0509_multiple_agent_chat_conversations` | The new release lets a person open more than one chat with an agent (`conversation_default = false`). A previous-release server finds a chat by company, agent and user without the default predicate, so it can open or deliver into a secondary chat instead of the default one, and it ignores `?new=true`. Duplicate default chats stay impossible: the partial unique index still allows one `conversation_default = true` chat per person and agent. |
+
 ## Migration authoring checklist
 
 Older embedded databases can use `SQL_ASCII`. Test encoding-sensitive SQL on

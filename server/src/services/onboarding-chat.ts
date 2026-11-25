@@ -18,7 +18,8 @@ export async function ensureOnboardingChat(db: Db, input: {
   const companyGoals = await db.select({ title: goals.title, description: goals.description }).from(goals)
     .where(and(eq(goals.companyId, input.companyId), eq(goals.level, "company")));
   const issue = await svc.create(input.companyId, {
-    title: `Chat with ${input.agentName}`,
+    // A placeholder, as for every new chat: the first message and the agent's first turn name it.
+    title: `Chat with ${input.agentName}`, titleIsProvisional: true,
     description: JSON.stringify({ organization: company?.name, goals: companyGoals,
       initialIdea: seed?.firstTaskTitle, initialDetails: seed?.firstTaskDetails }),
     originKind: ONBOARDING_CHAT_ORIGIN_KIND,

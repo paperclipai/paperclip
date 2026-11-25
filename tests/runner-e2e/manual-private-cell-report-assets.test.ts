@@ -53,10 +53,16 @@ beforeAll(async () => {
 }, 30_000);
 afterEach(async () => { reads.oversized = ""; reads.files.length = 0; reads.directories.length = 0; await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 afterAll(async () => { await rm(producerRoot, { recursive: true, force: true }); });
-async function fixture() {
+async function fixture(report: "full" | "canonical-static" = "full") {
   const root = await mkdtemp(path.join(temporaryRoot, "synthetic-private-cell-")); roots.push(root);
   const id = MANUAL_PRIVATE_EXECUTIONS[0]!, cell = path.join(root, "capture/cases/activity.agent-feedback"); await mkdir(cell, { recursive: true });
-  await copySharedEvidence(reporter, cell, path.join(root, "controller"), []);
+  if (report === "canonical-static") {
+    const target = path.join(cell, "html-report/trace/index.html");
+    await mkdir(path.dirname(target), { recursive: true });
+    await cp(canonicalGeneratedReportAsset("html/trace/index.html")!, target);
+  } else {
+    await copySharedEvidence(reporter, cell, path.join(root, "controller"), []);
+  }
   await writeFile(path.join(cell, "result.json"), '{"status":"failed","failureClass":"assertion"}');
   const context = { root, private: true, protocol: MANUAL_PRIVATE_PROTOCOL, workflowSha: "a".repeat(40), targetSha: "b".repeat(40), runId: "123", attempt: "1", executionIds: [id], cellReportProducer: producer } as ManualPrivateHandoff;
   const owner = await privateCellEvidenceOwner(context, id), prefix = `gha-123-1-${id}/chat-features/runner-opencode/local/activity.agent-feedback/attempt-1`;
@@ -157,9 +163,17 @@ it.each(["final", "final-wrapper"] as const)("binds exactly the %s layout withou
   expect(cellTraceAsset(proper.replace("/activity.agent-feedback/", "/activity.work-timeline/"), f.owner, layout).canonical).toBeUndefined();
 });
 it("registered roots remain protected even when equal to genuine public static bytes", async () => {
-  const f = await fixture(), bytes = await readFile(canonicalGeneratedReportAsset("html/trace/index.html")!);
+  const f = await fixture("canonical-static"), relative = "html-report/trace/index.html";
+  const bytes = await readFile(canonicalGeneratedReportAsset("html/trace/index.html")!);
   expect(bytes.toString()).toContain("Playwright");
-  await expect(packageEvidence({ privateDir: f.cell, uploadDir: f.upload, secrets: ["Playwright"], expectPassScreenshot: false, privateCell: { owner: f.owner, layout: "original" } })).rejects.toThrow(/Secret leak/);
+  const accepted = await packageEvidence({ privateDir: f.cell, uploadDir: f.upload, secrets: [], expectPassScreenshot: false, privateCell: { owner: f.owner, layout: "original" } });
+  expect(accepted.files).toContain(relative);
+  expect(accepted.leaks).toEqual([]);
+  reads.files.length = 0;
+  await expect(packageEvidence({ privateDir: f.cell, uploadDir: f.upload, secrets: ["Playwright"], expectPassScreenshot: false, privateCell: { owner: f.owner, layout: "original" } }))
+    .rejects.toThrow("Secret leak in private cell trace bytes: exact secret value");
+  expect(reads.files).toContain(path.join(f.cell, relative));
+  await expect(readFile(path.join(f.upload, relative))).rejects.toMatchObject({ code: "ENOENT" });
 });
 it.each(["encoded", "unknown-shape"])("private cell original scan still rejects %s contamination in standard evidence", async kind => {
   const f = await fixture(), secret = "synthetic-credential-1234567890";
