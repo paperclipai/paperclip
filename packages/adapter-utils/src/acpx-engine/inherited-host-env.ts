@@ -1,11 +1,3 @@
-/**
- * The closed set of host environment variables a local ACPX provider process
- * inherits. It is the one source for the launch environment and for every
- * caller that must know what the launched provider sees (for example billing).
- * This module has no engine dependencies, so a caller can import it without
- * loading the engine.
- */
-
 // ACPX runs inside the long-lived Paperclip server process. A local child needs
 // a small amount of host context (PATH, locale, certificate/proxy settings, and
 // provider authentication), but it must not inherit the server's complete

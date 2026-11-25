@@ -185,8 +185,6 @@ export async function testEnvironment(
     // vars from the adapter config in that case; the probe itself will surface
     // any auth issues on the remote box.
     const considerHostEnv = !targetIsRemote && !config.managedAiConnection;
-    // Detect auth from the same merged env the run passes to the CLI, so an
-    // adapter-config override of a host value is honored here too.
     const authMode = resolveClaudeAuthMode(considerHostEnv ? { ...process.env, ...env } : env);
     const authSource = resolveClaudeAuthMode(env) === authMode ? "adapter config env" : "server environment";
     const hasBedrock = authMode === "bedrock";

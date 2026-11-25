@@ -190,12 +190,6 @@ export function resolveClaudeAcpBillingIdentity(
   return claudeBillingIdentity(resolveClaudeAuthMode(authEnv));
 }
 
-/**
- * The env that decides Claude auth for an ACP run is the env the ACP engine
- * launches: the allowlisted host projection, overlaid with the adapter-config
- * env. A host value outside the allowlist never reaches Claude, so it does not
- * count here either.
- */
 function claudeAcpAuthEnv(envConfig: Record<string, unknown>, inheritHostEnvironment: boolean): Record<string, unknown> {
   const authEnv: Record<string, unknown> = projectAcpxInheritedHostEnvironment(process.env, "claude", inheritHostEnvironment);
   for (const [key, value] of Object.entries(envConfig)) {

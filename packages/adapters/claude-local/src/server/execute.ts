@@ -490,8 +490,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       (entry): entry is [string, string] => typeof entry[1] === "string",
     ),
   );
-  // The env the Claude process receives: the host merge for a local target,
-  // only the explicit env for a remote one. Model and billing both read it.
   const launchEnv = executionTargetIsRemote ? env : effectiveEnv;
   const model = resolveClaudeModel(config.model, launchEnv);
   const { biller, billingType } = claudeBillingIdentity(resolveClaudeAuthMode(launchEnv));

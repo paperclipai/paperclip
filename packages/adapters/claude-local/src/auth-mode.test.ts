@@ -15,7 +15,6 @@ describe("resolveClaudeAuthMode", () => {
     ["the Bedrock flag over the Foundry flag", { CLAUDE_CODE_USE_BEDROCK: "1", CLAUDE_CODE_USE_FOUNDRY: "1" }, "bedrock"],
     ["a disabled Foundry flag", { CLAUDE_CODE_USE_FOUNDRY: "0" }, "subscription"],
     ["an empty Foundry flag", { CLAUDE_CODE_USE_FOUNDRY: "" }, "subscription"],
-    // The CLI does not switch to Foundry without the flag.
     ["a Foundry resource alone", { ANTHROPIC_FOUNDRY_RESOURCE: "my-resource" }, "subscription"],
     ["a Foundry base URL alone", { ANTHROPIC_FOUNDRY_BASE_URL: "https://gw.example/anthropic" }, "subscription"],
   ])("resolves %s", (_name, env, mode) => {
