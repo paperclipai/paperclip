@@ -2,7 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { agentHarnessName, requiresExecutionReconciliation } from "@paperclipai/shared";
 import { PERMANENT_FAILURE_CODES, RESTART_CLASS_FAILURE_CODES, SETUP_FAILURE_CODES } from "./continuation-cause.js";
-import { trackAgentTaskRun } from "@paperclipai/shared/telemetry";
+import { trackAgentTaskCompleted, trackAgentTaskRun } from "@paperclipai/shared/telemetry";
 import { parseObject } from "../adapters/utils.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -318,5 +318,63 @@ export async function emitAgentTaskRunById(
     if (run) await emitAgentTaskRun(db, run);
   } catch (err) {
     logger.warn({ err, runId: input.runId }, "failed to load run for agent.task_run telemetry");
+  }
+}
+
+/**
+ * Emits one `agent.task_completed` telemetry event for a task that an agent's
+ * native run moved to done. The REST issue route emits the same event when an
+ * agent sets a task to done through the API. Each caller emits only on its own
+ * committed transition into done, so one completion never counts twice.
+ *
+ * Call this function after the status change commits. It never throws.
+ * Telemetry enrichment does an awaited database lookup, so fire this call with
+ * `void emitAgentTaskCompleted(...)` and never await it on the commit path.
+ */
+export async function emitAgentTaskCompleted(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    taskCreatedByUserId?: string | null;
+    taskAssignedByUserId?: string | null;
+    runOwnerUserId?: string | null;
+  },
+): Promise<void> {
+  try {
+    const client = getTelemetryClient();
+    if (!client) return;
+
+    const agent = await db
+      .select({
+        id: agents.id,
+        role: agents.role,
+        adapterType: agents.adapterType,
+        adapterConfig: agents.adapterConfig,
+      })
+      .from(agents)
+      .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!agent) return;
+
+    const model = readNonEmptyString(parseObject(agent.adapterConfig).model) ?? undefined;
+    const person = resolveTelemetryPerson({
+      taskCreatedByUserId: input.taskCreatedByUserId,
+      taskAssignedByUserId: input.taskAssignedByUserId,
+      runOwnerUserId: input.runOwnerUserId,
+    });
+    withTelemetryActor({ companyId: input.companyId, person }, () => trackAgentTaskCompleted(client, {
+      agentRole: agent.role,
+      agentId: agent.id,
+      adapterType: telemetryAdapterType(agent),
+      ...(model ? { model } : {}),
+      taskId: input.issueId,
+    }));
+  } catch (err) {
+    logger.warn(
+      { err, issueId: input.issueId },
+      "failed to emit agent.task_completed telemetry",
+    );
   }
 }
