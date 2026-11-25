@@ -3702,6 +3702,55 @@ describe("remote provider pack manifest", () => {
       expect(fixture.execute.mock.calls.some(([request]) => request.command.includes("/.paperclip-runtime/paperclip-runner/provider-pack/"))).toBe(false);
     });
 
+    it("relaunches a settled OpenCode runner when durable providerArtifacts are recovered from PostgreSQL without an initial backup or providerPackAdmissionSource", async () => {
+      const admitted = buildPackManifest("a", { nodeChar: "1", proxyChar: "2" });
+      const newerImage = buildPackManifest("b", { nodeChar: "3", proxyChar: "4" });
+      const current = buildPackManifest("c", { nodeChar: "5", proxyChar: "6" });
+      const fixture = await setupReattachFixture("opencode", { imageManifest: newerImage, currentManifest: current });
+      const launchRoot = `/home/runtime-account/.paperclip-runtime/paperclip-runner/provider-artifacts/${admitted.digest.slice(7)}`;
+      const artifactReceipt = {
+        schema: "paperclip.native-provider-artifacts.v1" as const, artifactId: randomUUID(),
+        closureDigest: "sha256:" + "9".repeat(64), providerPackDigest: admitted.digest, manifest: admitted, launchRoot, accountUid: 1000,
+      };
+      const storageMode = vi.spyOn(harnessStorage, "durableNativeHarnessStorage").mockReturnValue({} as never);
+      const backupOwner = vi.spyOn(harnessStorage, "nativeHarnessBackupOwner").mockResolvedValue({} as never);
+      const restore = vi.spyOn(providerArtifactStorage, "restoreNativeProviderArtifacts").mockResolvedValue(undefined);
+      onTestFinished(() => { storageMode.mockRestore(); backupOwner.mockRestore(); restore.mockRestore(); });
+
+      const dbWithRecordedArtifacts = new Proxy(fixture.recoveryInput.db, {
+        get(target, key, receiver) {
+          if (key !== "select") return Reflect.get(target, key, receiver);
+          return (fields?: Record<string, unknown>) => {
+            if (fields && "runnerProfileJson" in fields && Object.keys(fields).length === 1) {
+              return {
+                from: () => ({
+                  where: () => ({
+                    limit: async () => [{ runnerProfileJson: { nativeProviderArtifacts: artifactReceipt } }],
+                  }),
+                }),
+              };
+            }
+            return target.select(fields as never);
+          };
+        },
+      });
+
+      await createRunnerdBackend({
+        ...fixture.recoveryInput,
+        db: dbWithRecordedArtifacts,
+      });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      expect(restore).toHaveBeenCalledWith(expect.objectContaining({ receipt: artifactReceipt }));
+      expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({
+        providerPackAuthorityDigest: admitted.digest,
+        providerNodeCommand: `${launchRoot}/${admitted.payload.artifacts.nodeCommand.path}`,
+        providerNodeCommandSha256: admitted.payload.artifacts.nodeCommand.sha256,
+        opencodeProxyPath: `${launchRoot}/${admitted.payload.artifacts.opencodeProxy.path}`,
+        opencodeCommand: `${launchRoot}/${admitted.payload.artifacts.opencodeExecutable.path}`,
+      });
+      expect(fixture.execute.mock.calls.some(([request]) => request.command.includes("/.paperclip-runtime/paperclip-runner/provider-pack/"))).toBe(false);
+    });
+
     it.each(["opencode", "claude"] as const)(
       "recovers the admitted immutable image pack for %s from the durable DB admission receipt when a deploy wipes local authority files",
       async provider => {

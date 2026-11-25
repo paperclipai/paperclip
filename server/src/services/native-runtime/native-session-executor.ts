@@ -18859,6 +18859,7 @@ async function createRunnerdBackendWithinSessionClaim(
     relaunchesSettledRemoteRunner = true;
     if (artifactStorage && !providerArtifacts && durableBinding !== null && durableIdentityMatchesSession(durableIdentity, input.execution)) {
       providerArtifacts = await recordedSessionProviderArtifacts(input.db, input.execution, durableIdentity.runId);
+      if (providerArtifacts) legacyProviderContinuity = false;
     }
     if (adoptingPersistedRemoteRunner || providerArtifacts) {
       providerPackAuthority = selectProviderPackAuthority(true);
