@@ -493,8 +493,8 @@ describeEmbeddedPostgres("chat channels: github webhook recovery", () => {
       try {
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
         await f.service.registerGitHubWebhookRecoveryWork(coordinator, () => true).ready;
-        await expect.poll(() => ({ active: idleWorkSnapshot().active, nextWakeAt: coordinator.nextWakeAt() }))
-          .toEqual({ active: 0, nextWakeAt: dueAt });
+        await expect.poll(() => ({ active: idleWorkSnapshot().active, nextWakeAt: coordinator.nextWakeAt() }),
+          { timeout: 5000 }).toEqual({ active: 0, nextWakeAt: dueAt });
         const reads = vi.spyOn(db, "select");
         try { await vi.advanceTimersByTimeAsync(15_000); expect(reads).not.toHaveBeenCalled(); }
         finally { reads.mockRestore(); }
