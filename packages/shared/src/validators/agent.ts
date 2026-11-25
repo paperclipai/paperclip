@@ -263,6 +263,8 @@ export const wakeAgentSchema = z.object({
   /** Select an exact failed run; its chat request and actor are server-derived. */
   failedRunId: z.string().uuid().optional(),
   payload: z.record(z.string(), z.unknown()).optional().nullable(),
+  issueId: z.string().uuid().optional(),
+  taskId: z.string().uuid().optional(),
   idempotencyKey: z.string().optional().nullable(),
   forceFreshSession: z.preprocess(
     (value) => (value === null ? undefined : value),

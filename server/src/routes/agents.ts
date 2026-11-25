@@ -6478,6 +6478,18 @@ export function agentRoutes(
         ),
       );
     }
+    if (!req.body.failedRunId) {
+      const topLevelIssueId = typeof req.body.issueId === "string" ? req.body.issueId.trim() : "";
+      const topLevelTaskId = typeof req.body.taskId === "string" ? req.body.taskId.trim() : "";
+      if (topLevelIssueId || topLevelTaskId) {
+        const scopedPayload: Record<string, unknown> = { ...(wakePayload ?? {}) };
+        const scopedIssueId = typeof scopedPayload.issueId === "string" ? scopedPayload.issueId.trim() : "";
+        const scopedTaskId = typeof scopedPayload.taskId === "string" ? scopedPayload.taskId.trim() : "";
+        if (topLevelIssueId && !scopedIssueId) scopedPayload.issueId = topLevelIssueId;
+        if (topLevelTaskId && !scopedTaskId) scopedPayload.taskId = topLevelTaskId;
+        wakePayload = scopedPayload;
+      }
+    }
     const run = await heartbeat.wakeup(id, {
       failedRunId: req.body.failedRunId ?? null,
       ...(req.actor.type === "board" && !req.body.failedRunId ? { manualUserWake: true } : {}),
