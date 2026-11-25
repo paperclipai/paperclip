@@ -679,6 +679,7 @@ suite("heartbeat physical workspace source trust", () => {
       providerType: "local_fs",
       name: "Archived other-task directory",
       status: "archived",
+      cleanupReason: "issue_terminal_done",
       cwd: path.join(root, companyId, "archived-other-task"),
     });
     await db.insert(issues).values({
@@ -704,6 +705,59 @@ suite("heartbeat physical workspace source trust", () => {
     expect(archivedBlockedRun).toBeNull();
     const [archivedBlockedIssue] = await db.select().from(issues).where(eq(issues.id, archivedBindingIssueId));
     expect(archivedBlockedIssue.status).toBe("blocked");
+
+    const ownArchivedIssueId = randomUUID();
+    const ownArchivedWorkspaceId = randomUUID();
+    const ownArchivedCwd = path.join(
+      await realpath(resolvePaperclipInstanceRoot()),
+      "isolated-workspaces",
+      companyId,
+      ownArchivedIssueId,
+    );
+    await mkdir(ownArchivedCwd, { recursive: true });
+    await db.insert(issues).values({
+      id: ownArchivedIssueId,
+      companyId,
+      projectId: null,
+      projectWorkspaceId: null,
+      title: "Projectless task reopening its own archived directory",
+      status: "todo",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 7,
+      identifier: `GR-7`,
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+    await db.insert(executionWorkspaces).values({
+      id: ownArchivedWorkspaceId,
+      companyId,
+      sourceIssueId: ownArchivedIssueId,
+      mode: "isolated_workspace",
+      strategyType: "project_primary",
+      providerType: "local_fs",
+      name: "Own archived directory",
+      status: "archived",
+      cleanupReason: "issue_terminal_done",
+      cwd: ownArchivedCwd,
+    });
+    await db.update(issues).set({
+      executionWorkspaceId: ownArchivedWorkspaceId,
+      executionWorkspacePreference: "reuse_existing",
+    }).where(eq(issues.id, ownArchivedIssueId));
+    const ownArchivedRun = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      contextSnapshot: { issueId: ownArchivedIssueId },
+    });
+    expect(ownArchivedRun).not.toBeNull();
+    await vi.waitFor(
+      async () => expect((await heartbeat.getRun(ownArchivedRun!.id))?.status).toMatch(/^(succeeded|failed)$/),
+      { timeout: 15_000 },
+    );
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+    expect(await heartbeat.getRun(ownArchivedRun!.id)).toMatchObject({ status: "succeeded", errorCode: null });
+    const [reopenedIssue] = await db.select().from(issues).where(eq(issues.id, ownArchivedIssueId));
+    expect(reopenedIssue.status).not.toBe("blocked");
   }, 30_000);
 
 });

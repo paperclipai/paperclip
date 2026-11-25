@@ -194,6 +194,7 @@ import {
 } from "../execution-workspace-policy.js";
 import { isExecutionForcedToKubernetes } from "../execution-allowlist.js";
 import { shouldUseIsolatedTaskDirectory } from "../isolated-task-directory.js";
+import { readTaskDirectoryRetention } from "../isolated-task-directory-retention.js";
 import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
 import { readContinuationAttempt } from "../recovery/index.js";
 import { AI_CONNECTION_POOL_WAIT_RETRY_REASON, allowsDependencyBlockedWake, extractWakeCommentIds, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
@@ -4539,9 +4540,19 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               resolvedMode,
               workspaceManagedConfig,
             );
-            const existingExecutionWorkspaceStatus = issue.executionWorkspaceId
+            const existingExecutionWorkspace = issue.executionWorkspaceId
               ? await tx
-                  .select({ status: executionWorkspaces.status })
+                  .select({
+                    status: executionWorkspaces.status,
+                    sourceIssueId: executionWorkspaces.sourceIssueId,
+                    projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
+                    mode: executionWorkspaces.mode,
+                    strategyType: executionWorkspaces.strategyType,
+                    repoUrl: executionWorkspaces.repoUrl,
+                    branchName: executionWorkspaces.branchName,
+                    cleanupReason: executionWorkspaces.cleanupReason,
+                    metadata: executionWorkspaces.metadata,
+                  })
                   .from(executionWorkspaces)
                   .where(
                     and(
@@ -4549,8 +4560,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                       eq(executionWorkspaces.companyId, issue.companyId),
                     ),
                   )
-                  .then((rows) => rows[0]?.status ?? null)
+                  .then((rows) => rows[0] ?? null)
               : null;
+            const existingExecutionWorkspaceStatus =
+              existingExecutionWorkspace?.status ?? null;
             const reuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
               issueExecutionWorkspaceId: issue.executionWorkspaceId,
               issueExecutionWorkspacePreference:
@@ -4640,6 +4653,41 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   environmentDriver = "sandbox";
                 }
               }
+              const candidateOwnArchivedTaskDirectory = Boolean(
+                issue.executionWorkspaceId &&
+                  existingExecutionWorkspace &&
+                  existingExecutionWorkspace.sourceIssueId === issue.id &&
+                  !existingExecutionWorkspace.projectWorkspaceId &&
+                  existingExecutionWorkspace.mode === "isolated_workspace" &&
+                  existingExecutionWorkspace.strategyType ===
+                    "project_primary" &&
+                  !existingExecutionWorkspace.repoUrl &&
+                  !existingExecutionWorkspace.branchName &&
+                  (existingExecutionWorkspace.status === "archived" ||
+                    existingExecutionWorkspace.status === "cleanup_failed") &&
+                  (readTaskDirectoryRetention(existingExecutionWorkspace) !==
+                    null ||
+                    existingExecutionWorkspace.cleanupReason?.startsWith(
+                      "issue_terminal",
+                    ) === true),
+              );
+              const reopenableOwnArchivedTaskDirectory =
+                candidateOwnArchivedTaskDirectory &&
+                !(await tx
+                  .select({ id: issues.id })
+                  .from(issues)
+                  .where(
+                    and(
+                      eq(issues.companyId, issue.companyId),
+                      eq(
+                        issues.executionWorkspaceId,
+                        issue.executionWorkspaceId!,
+                      ),
+                      ne(issues.id, issue.id),
+                    ),
+                  )
+                  .limit(1)
+                  .then((rows) => rows.length > 0));
               if (
                 shouldUseIsolatedTaskDirectory({
                   trustPreset: trustPreset.kind,
@@ -4648,8 +4696,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   hasProjectWorkspace: false,
                   projectWorkspaceId: issue.projectWorkspaceId,
                   hasSelectedExecutionWorkspace:
-                    Boolean(issue.executionWorkspaceId) ||
-                    reuseRequest.requestedShouldReuseExisting,
+                    (Boolean(issue.executionWorkspaceId) ||
+                      reuseRequest.requestedShouldReuseExisting) &&
+                    !reopenableOwnArchivedTaskDirectory,
                   workspaceStrategies: [
                     agentConfig.workspaceStrategy,
                     issueSettings?.workspaceStrategy,
