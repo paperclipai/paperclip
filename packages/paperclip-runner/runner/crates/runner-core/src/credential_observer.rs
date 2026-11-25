@@ -361,7 +361,9 @@ impl CredentialObserver {
 
     /// Settle one refreshed credential against the host file. Failures keep the
     /// run going: the host file is left unchanged, the failure is reported once
-    /// per credential, and the next scan retries.
+    /// per credential, and the next scan of the session retries. Nothing
+    /// retries after the final scan at close, so the host file then keeps a
+    /// refresh token the provider already rotated.
     fn write_back(&mut self, provider: &str, bytes: &[u8], host_file: &Path) {
         let digest = format!("{:x}", Sha256::digest(bytes));
         // A kept decision holds only while the host file is unchanged, so a
@@ -394,7 +396,7 @@ impl CredentialObserver {
             Err(error) => {
                 if self.reported.as_deref() != Some(digest.as_str()) {
                     eprintln!(
-                        "paperclip-runnerd: {provider} credential write-back to the host credential file failed ({:?}); retrying",
+                        "paperclip-runnerd: {provider} credential write-back to the host credential file failed ({:?}); later scans of this session retry it",
                         error.kind()
                     );
                     self.reported = Some(digest);

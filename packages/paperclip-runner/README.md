@@ -1100,17 +1100,39 @@ in the host file's directory, renamed over the host file and followed by a
 directory sync. It keeps the host file's mode and, where the Runner user may
 set it, its group. If the host file changed while the replacement was prepared,
 Runner discards it and decides again on the next scan. A failed write-back is
-reported once on the Runner's standard error and retried; it does not fail the
-run. When the consumer opted in to credential observation, the
+reported once on the Runner's standard error and retried on every later scan of
+the session; it does not fail the run. The final write-back at close is
+attempted once. When the consumer opted in to credential observation, the
 `auth.credentials.updated` event follows the write-back as before.
 
-The host directory must allow the Runner user to create and rename files. The
-host owns any concurrency between sessions that share one file. Runner
-compares against the file's current contents and abandons the replacement if
-the file changes before the rename, but it does not lock the file. Sessions
-that share one account and one file can still invalidate each other's refresh
-token when the provider rotates it; give concurrent sessions separate
-accounts or serialize them.
+The host directory must allow the Runner user to create and rename files.
+
+Both providers rotate the refresh token when they refresh, and a rotated token
+stops working:
+
+- Codex saves the new refresh token that a refresh returns. A rotated token is
+  refused with `refresh_token_reused`, and the user must sign in again. Codex
+  refreshes when `last_refresh` is older than about eight days, or after a
+  request is refused. OpenAI's guidance is one `auth.json` per runner or per
+  serialized job stream, and never one file shared across concurrent jobs or
+  machines ([Codex CI/CD authentication](https://developers.openai.com/codex/auth/ci-cd-auth)).
+- Grok Build expects xAI's identity provider to accept a rotated refresh token
+  for about a minute at most, then to refuse it (`invalid_grant`). Presenting a
+  rotated token can also make the identity provider revoke the newer token that
+  another holder received.
+
+Each provider coordinates its own processes through its home: Codex re-reads
+`auth.json` before it refreshes after a refused request, and Grok Build
+serializes refreshes with `auth.json.lock`. Each session's provider runs in its
+own isolated home, so that coordination never reaches the host file or another
+session. Runner does not lock the host file either. Run at most one session at
+a time for each account and host file, or give concurrent sessions separate
+accounts.
+
+When the final write-back at close fails, for example because the host
+directory cannot be written, the host file keeps a refresh token that the
+session already rotated. The next session that needs to refresh from it fails
+until the user signs in again.
 
 ## Preconfigured home
 

@@ -5,6 +5,8 @@
 //! `tokens.account_id` and `last_refresh`, Grok compares the `<issuer>::<uuid>`
 //! identity key and `expires_at`. The host file is replaced only by a strictly
 //! fresher credential for the same identity, never by a different account.
+//! Both providers rotate the refresh token on refresh and refuse a rotated one,
+//! so an older credential must never replace a newer one.
 
 use std::fs::{self, File};
 use std::io::{self, Read};
