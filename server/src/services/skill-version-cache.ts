@@ -133,13 +133,15 @@ export async function protectedVersions(db: Db, companyId: string, targetSkill?:
     leaseDeadline: sql<number | null>`case when ${heartbeatRuns.status} in ('succeeded', 'failed', 'timed_out', 'cancelled', 'interrupted')
       and ${heartbeatRuns.finishedAt} is not null and ${heartbeatRuns.controllerLeaseExpiresAt} > now()
       then extract(epoch from ${heartbeatRuns.controllerLeaseExpiresAt}) * 1000 end`,
-    pins: sql<unknown>`${heartbeatRuns.contextSnapshot}->'skillVersions'`,
+    pins: sql<unknown>`snapshot.value->'skillVersions'`,
     // Avoid loading large execution inputs for runs with the modern pin map.
     legacyInput: sql<unknown>`case when ${heartbeatRuns.runtimeMode} = 'native'
-      and not coalesce(${heartbeatRuns.contextSnapshot} ? 'skillVersions', false)
+      and not coalesce(snapshot.value ? 'skillVersions', false)
       then ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput' end`,
   })
-    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), skillRunNeedsFilesSql()));
+    .from(heartbeatRuns)
+    .crossJoinLateral(sql`jsonb_extract_path(${heartbeatRuns.contextSnapshot}, variadic array[]::text[]) as snapshot(value)`)
+    .where(and(eq(heartbeatRuns.companyId, companyId), skillRunNeedsFilesSql()));
   const versions = new Set<string>();
   const leaseDeadlines = new Map<string, number>();
   const unknown = () => ({ versions: null, leaseDeadlines });
