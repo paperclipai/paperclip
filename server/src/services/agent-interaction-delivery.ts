@@ -168,8 +168,6 @@ export async function filterQueuedInteractionComments(db: Executor, input: {
   return { allowedIds, denials };
 }
 
-// `lock` takes FOR SHARE locks on the agent rows. Pass it only inside a
-// transaction: on the pool, the lock ends with its statement and only waits.
 async function assignmentDenial(db: Executor, run: Run, wake: Wake | undefined, issueId: string | null, lock: boolean, depth = 0): Promise<DeliveryDenial | null> {
   const origin = record(record(wake?.payload)[ORIGIN_KEY]);
   const reason = wake?.reason ?? string(record(run.contextSnapshot).wakeReason);
@@ -393,7 +391,6 @@ export async function preparedRunInteractionDeliveryDenied(db: Db, run: Run): Pr
     eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
     or(eq(agentWakeupRequests.runId, run.id), run.wakeupRequestId ? eq(agentWakeupRequests.id, run.wakeupRequestId) : undefined),
   )).orderBy(asc(agentWakeupRequests.id));
-  // This path runs on the pool, outside a transaction, so it reads without row locks.
   const denial = await recheckAssignmentWakes(db, run, wakes, issueId, inputIds.length > 0, false);
   if (!denial && allowed.size === inputIds.length) return false;
   if (issueId && allowed.size) await db.transaction(tx => retainAllowedMessages(tx, run, issueId, [...allowed]));

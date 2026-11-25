@@ -72,7 +72,6 @@ describe.skipIf(!support.supported)("pending agent interaction delivery", () => 
       locked();
       await released;
     });
-    // A short statement timeout turns a lock wait into SQLSTATE 57014, as in production.
     const timed = createDb(database.connectionString, { statementTimeoutMs: 500 });
     try {
       await lockTaken;
