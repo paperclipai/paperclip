@@ -2850,6 +2850,52 @@ describe("TaskChatThread runtime transcript selection", () => {
     },
   );
 
+  it("shows a refused /swarm in its own plain words, without its code or a Retry", () => {
+    const plain = "Swarm is not available with Gemini 4 Neon (Low) yet, so nothing was changed: choose another model for this agent, such as Gemini 4 Argon, and send /swarm again.";
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "blocked",
+      onRetryFailedRun: vi.fn(),
+      linkedRuns: [{
+        runId: "swarm-refused", runtimeMode: "native", status: "failed", errorCode: "antigravity_swarm_unavailable", error: plain,
+        resultJson: { providerFailure: { provider: "antigravity", retryability: "requires_action" } },
+        agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+        createdAt: "2026-11-24T18:00:00.000Z", startedAt: "2026-11-24T18:00:00.000Z", finishedAt: "2026-11-24T18:00:08.000Z",
+      }],
+    } as Parameters<typeof renderThread>[0]);
+    const marker = container.querySelector('[data-testid="task-chat-collapsible-marker"]');
+    expect(marker?.textContent).toContain("Swarm did not start");
+    flushSync(() => marker!.querySelector<HTMLButtonElement>('button[aria-expanded="false"]')!.click());
+    const details = container.querySelector('[data-testid="task-chat-collapsible-marker-details"]')?.textContent ?? "";
+    expect(details).toContain(plain);
+    expect(container.textContent).not.toMatch(/antigravity_swarm_unavailable|The runner stopped/);
+    expect(container.textContent).not.toMatch(/Try again|Retry/);
+  });
+
+  it("keeps Retry for a swarm that ran and failed, as the server does", async () => {
+    const plain = "The swarm ended without doing any work. Send /swarm again to retry.";
+    const onRetryFailedRun = vi.fn();
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "blocked",
+      onRetryFailedRun,
+      linkedRuns: [{
+        runId: "swarm-no-result", runtimeMode: "native", status: "failed", errorCode: "antigravity_swarm_unavailable", error: plain,
+        resultJson: { providerFailure: { provider: "antigravity", retryability: "unknown" } },
+        agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+        createdAt: "2026-11-24T18:00:00.000Z", startedAt: "2026-11-24T18:00:00.000Z", finishedAt: "2026-11-24T18:00:08.000Z",
+      }],
+    } as Parameters<typeof renderThread>[0]);
+    expect(container.textContent).toContain("Swarm did not finish");
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]');
+    expect(button).not.toBeNull();
+    flushSync(() => button!.click());
+    await Promise.resolve();
+    expect(onRetryFailedRun).toHaveBeenCalledExactlyOnceWith("swarm-no-result");
+  });
+
   it("does not treat a progress comment as the final response of a failed native run", () => {
     nativeTranscriptState.transcriptByRun.set("native-progress-failed", [
       assistantEntry("2026-08-25T18:00:01.000Z", "Still working through the provider request.", "progress"),

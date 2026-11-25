@@ -1,5 +1,6 @@
 import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
-import { heartbeatRunEvents, heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
+import { activityLog, heartbeatRunEvents, heartbeatRuns, issueComments, type Db } from "@paperclipai/db";
+import { ANTIGRAVITY_SWARM_REQUESTED_ACTION } from "./antigravity-swarm-refusal.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 
 /** The wake reason an inbound chat message records (see chat inbound wakeups). */
@@ -37,15 +38,56 @@ export async function deliveredQueuedCommentIds(tx: Pick<Db, "select">, input: {
         and (delivered_run.native_issue_id = ${issueId} or delivered_run.context_snapshot->>'issueId' = ${issueId})
         and delivered_run.started_at > ${issueComments.createdAt}
         and delivered_run.started_at >= ${issueComments.updatedAt}
+        and ${swarmRunDeliversOnlyItsRequest(sql`delivered_run`)}
         and (coalesce(delivered_run.context_snapshot->'wakeCommentIds', '[]'::jsonb) ? ${issueComments.id}::text
           or (delivered_run.retry_of_run_id is not null and jsonb_path_exists(delivered_run.context_snapshot, '$.executionContinuation.messages[*] ? (@.id == $id)',
             jsonb_build_object('id', ${issueComments.id}::text))
           or jsonb_path_exists(delivered_run.context_snapshot, '$.paperclipWake.messages[*] ? (@.id == $id)',
             jsonb_build_object('id', ${issueComments.id}::text)))))
     or ${firstTurnDeliveredSql(companyId, issueId, input.agentId)}
-    or ${historyReadDeliveredSql(companyId, issueId, input.agentId)})`,
+    or ${historyReadDeliveredSql(companyId, issueId, input.agentId)}
+    or ${replacedSwarmRequestSql(companyId)})`,
   ));
   return new Set(rows.map(row => row.id));
+}
+
+/**
+ * A trusted /swarm run (services/antigravity-swarm.ts) sends the provider only
+ * its recorded request comment. Other comments merged into its wake stay
+ * undelivered and wait for an ordinary run.
+ */
+function swarmRunDeliversOnlyItsRequest(run: SQL) {
+  return sql`(${run}.context_snapshot->>'antigravitySwarmCommentId' is null
+    or ${run}.context_snapshot->>'antigravitySwarmCommentId' = ${issueComments.id}::text)`;
+}
+
+/**
+ * SQL: the comment row `comment` (an `issue_comments` reference or alias) is a
+ * signed-in user's recorded /swarm request on its task: the user wrote it and
+ * the server recorded the request for that user (services/antigravity-swarm.ts).
+ */
+export function recordedSwarmRequestSql(companyId: string, comment: SQL) {
+  return sql`(${comment}.author_user_id is not null and ${comment}.author_agent_id is null
+    and exists (select 1 from ${activityLog} swarm_record
+      where swarm_record.company_id = ${companyId} and swarm_record.action = ${ANTIGRAVITY_SWARM_REQUESTED_ACTION}
+        and swarm_record.entity_id = ${comment}.issue_id::text and swarm_record.actor_type = 'user'
+        and swarm_record.actor_id = ${comment}.author_user_id
+        and swarm_record.details->>'commentId' = ${comment}.id::text))`;
+}
+
+/**
+ * A later user /swarm replaces an earlier one: once a newer recorded request
+ * exists on the task, the earlier request is handled. It never runs, neither
+ * as a swarm nor as ordinary work, and no backstop replays it.
+ */
+function replacedSwarmRequestSql(companyId: string) {
+  const newer = sql.raw("newer_swarm_request");
+  return sql`(${recordedSwarmRequestSql(companyId, sql`${issueComments}`)}
+    and exists (select 1 from ${issueComments} ${newer}
+      where ${newer}.company_id = ${companyId} and ${newer}.issue_id = ${issueComments.issueId}
+        and ${newer}.deleted_at is null
+        and (${newer}.created_at, ${newer}.id) > (${issueComments.createdAt}, ${issueComments.id})
+        and ${recordedSwarmRequestSql(companyId, newer)}))`;
 }
 
 export const TASK_HISTORY_READ_EVENT = "task_history.read";

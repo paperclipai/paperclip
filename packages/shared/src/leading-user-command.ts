@@ -33,3 +33,10 @@ export function parseLeadingUserCommand<Name extends string>(
   if (!match || !(allowlist as readonly string[]).includes(match[1]!)) return null;
   return { command: match[1] as Name, argument: userAuthoredText.slice(match[0].length).replace(TRIM, "") };
 }
+
+/**
+ * The longest `/swarm` request (the text after the command) a swarm accepts,
+ * in UTF-16 code units. The composer and the server refuse longer requests up
+ * front; the Paperclip Runner enforces the same bound on its own.
+ */
+export const SWARM_REQUEST_MAX_CHARS = 16_000;
