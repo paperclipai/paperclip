@@ -2539,7 +2539,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
   line-height: 1.6;
 }
 
-/* Markdown inside a sized control (such as a question prompt) follows
+/* Markdown inside a sized control (a question prompt or question context) follows
    that control's text size, colour and leading instead of the 15px body copy. */
 .paperclip-markdown.paperclip-markdown-inherit-size {
   color: inherit;
@@ -2553,7 +2553,7 @@ a.paperclip-mention-chip[data-mention-kind="agent"]::before {
 }
 
 .paperclip-markdown.paperclip-markdown-inherit-size > * + * {
-  margin-top: 0.4em;
+  margin-top: 0.6em;
 }
 
 .paperclip-markdown.paperclip-markdown-on-accent {

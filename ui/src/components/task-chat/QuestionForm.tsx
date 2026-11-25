@@ -536,7 +536,7 @@ function QuestionFormForRequest({
           tabIndex={0}
           className={cn("max-h-96 overflow-auto text-muted-foreground", decision ? "text-xs" : "mb-3 text-sm")}
         >
-          <MarkdownBody mediaMode="reference" linkIssueReferences={false}>{questionSet.description}</MarkdownBody>
+          <MarkdownBody mediaMode="reference" linkIssueReferences={false} className="paperclip-markdown-inherit-size">{questionSet.description}</MarkdownBody>
         </div>
       ) : null}
       {question.answerMode === "text" && !decision ? (

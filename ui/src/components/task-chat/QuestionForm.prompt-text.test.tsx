@@ -14,7 +14,7 @@ const prompt = "Why this question:\n\n- first situation\n- second situation";
 it("renders a multi-paragraph prompt at the card's text size and in body weight", async () => {
   const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
   try {
-    await act(async () => root.render(<QuestionForm id="q" presentation="decision" questionSet={{ schema: "paperclip.question_set.v1", questions: [
+    await act(async () => root.render(<QuestionForm id="q" presentation="decision" questionSet={{ schema: "paperclip.question_set.v1", description: "- context point", questions: [
       { id: "one", prompt, answerMode: "single_select", required: true, options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] },
       { id: "two", prompt: "Second?", answerMode: "single_select", required: true, options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] },
     ] }} onSubmit={vi.fn()} />));
@@ -24,6 +24,9 @@ it("renders a multi-paragraph prompt at the card's text size and in body weight"
     expect(promptBlock!.className).toContain("paperclip-markdown-inherit-size");
     // A multi-paragraph prompt reads as body text, not as one bold heading.
     expect(promptBlock!.closest(".font-medium")).toBeNull();
+    // The question-set context sits in a smaller, muted container; it must not outgrow the prompt.
+    const contextBlock = [...host.querySelectorAll<HTMLElement>("[data-markdown]")].find((node) => node.textContent === "- context point");
+    expect(contextBlock?.className).toContain("paperclip-markdown-inherit-size");
   } finally { await act(async () => root.unmount()); host.remove(); localStorage.clear(); }
 });
 
