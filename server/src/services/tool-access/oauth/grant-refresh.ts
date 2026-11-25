@@ -44,23 +44,27 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
   const { getOAuthGrantRow, resolveOAuthGrantSecret, createOrRotateOAuthSecret, oauthClientForConnection, syncCredentialBindings } = store;
   const { acquireOAuthGrantRefreshLease, clearOAuthGrantRefreshLease } = leases;
   async function markConnectionNeedsSignInWhenNoGrantIsActive(tx: Db, connection: typeof toolConnections.$inferSelect) {
-    const [active] = await tx.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
-      eq(connectionGrants.companyId, connection.companyId),
-      eq(connectionGrants.connectionId, connection.id),
-      eq(connectionGrants.status, "active"),
-    )).limit(1);
-    if (active) return null;
-    const [updated] = await writeToolConnectionHealthChange(tx, connection, inner => inner
-      .update(toolConnections)
-      .set({
-        healthStatus: "error",
-        healthMessage: "Access to this app ended. Reconnect to continue.",
-        lastError: "oauth_reauthorization_required",
-        updatedAt: now(),
-      })
-      .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId)))
-      .returning());
-    return updated ?? null;
+    return writeToolConnectionHealthChange(tx, connection, async inner => {
+      const connectionScope = and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId));
+      await inner.select({ id: toolConnections.id }).from(toolConnections).where(connectionScope).for("update");
+      const [active] = await inner.select({ id: connectionGrants.id }).from(connectionGrants).where(and(
+        eq(connectionGrants.companyId, connection.companyId),
+        eq(connectionGrants.connectionId, connection.id),
+        eq(connectionGrants.status, "active"),
+      )).limit(1);
+      if (active) return null;
+      const [updated] = await inner
+        .update(toolConnections)
+        .set({
+          healthStatus: "error",
+          healthMessage: "Access to this app ended. Reconnect to continue.",
+          lastError: "oauth_reauthorization_required",
+          updatedAt: now(),
+        })
+        .where(connectionScope)
+        .returning();
+      return updated ?? null;
+    });
   }
   async function refreshOAuthGrantCredentials(input: {
     companyId: string;

@@ -82,16 +82,16 @@ export function withoutRunAnswers(value: Record<string, unknown> | null): { valu
 export function withoutCheckpointAnswers(profile: Record<string, unknown> | null): { value: Record<string, unknown> | null; changed: boolean } {
   if (!isRecord(profile) || !isRecord(profile.sessionCheckpoint)) return { value: profile, changed: false };
   const checkpoint = profile.sessionCheckpoint;
-  const nextCheckpoint: Record<string, unknown> = { ...checkpoint };
-  if (isRecord(checkpoint.semanticResult)) {
-    nextCheckpoint.semanticResult = {
-      ...checkpoint.semanticResult,
-      result: withoutFreeText(checkpoint.semanticResult.result),
-      fingerprint: hashedFingerprint(checkpoint.semanticResult.fingerprint),
-    };
+  const nextCheckpoint = { ...(withoutRunAnswers(checkpoint).value as Record<string, unknown>) };
+  if (isRecord(nextCheckpoint.semanticResult) && "fingerprint" in nextCheckpoint.semanticResult) {
+    nextCheckpoint.semanticResult = { ...nextCheckpoint.semanticResult, fingerprint: hashedFingerprint(nextCheckpoint.semanticResult.fingerprint) };
   }
-  if (Array.isArray(checkpoint.terminalTurns)) {
-    nextCheckpoint.terminalTurns = checkpoint.terminalTurns.map((turn) => isRecord(turn) ? { ...turn, fingerprint: hashedFingerprint(turn.fingerprint) } : turn);
+  if (Array.isArray(nextCheckpoint.terminalTurns)) {
+    nextCheckpoint.terminalTurns = nextCheckpoint.terminalTurns.map((turn) => isRecord(turn) ? { ...turn, fingerprint: hashedFingerprint(turn.fingerprint) } : turn);
+  }
+  if (isRecord(nextCheckpoint.governedWait) && isRecord(nextCheckpoint.governedWait.sourceEvent)) {
+    const sourceEvent = nextCheckpoint.governedWait.sourceEvent;
+    nextCheckpoint.governedWait = { ...nextCheckpoint.governedWait, sourceEvent: { ...sourceEvent, payload: withoutFreeText(sourceEvent.payload) } };
   }
   if (canonicalNativeJson(nextCheckpoint) === canonicalNativeJson(checkpoint)) return { value: profile, changed: false };
   const next: Record<string, unknown> = { ...profile, sessionCheckpoint: nextCheckpoint };

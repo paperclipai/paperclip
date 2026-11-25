@@ -187,15 +187,17 @@ export function runsWithStoredContentSql(scope: Scope): SQL {
   const inScope = scope.connectionId && scope.cutoff
     ? runsCallingConnectionSql({ ...scope, connectionId: scope.connectionId, cutoff: scope.cutoff })
     : sql`${heartbeatRuns.id} = any(${uuidList(scope.runIds)}) and ${runUsedToolsSql(scope.companyId)}`;
-  const unhashedFingerprintSql = sql.join(["semanticResult", "terminalTurns[*]"].map((path) =>
-    sql.raw(`jsonb_path_exists(coalesce("heartbeat_runs"."runner_profile_json", '{}'::jsonb),
-      'lax $.sessionCheckpoint.${path}.fingerprint ? (@.type() == "string" && !(@ like_regex "^sha256:[a-f0-9]{64}$"))')`)), sql` or `);
+  const checkpointContentSql = sql.join([
+    `lax $.sessionCheckpoint.semanticResult.fingerprint ? (@.type() == "string" && !(@ like_regex "^sha256:[a-f0-9]{64}$"))`,
+    `lax $.sessionCheckpoint.terminalTurns[*].fingerprint ? (@.type() == "string" && !(@ like_regex "^sha256:[a-f0-9]{64}$"))`,
+    `lax $.sessionCheckpoint.** ? (@.schema == "paperclip.run_result.v1").summary ? (@.type() == "string" && @ != "")`,
+  ].map((path) => sql.raw(`jsonb_path_exists(coalesce("heartbeat_runs"."runner_profile_json", '{}'::jsonb), '${path}')`)), sql` or `);
   return sql`${heartbeatRuns.companyId} = ${scope.companyId}
     and ${inScope}
     and (${savedResultSql(sql`${heartbeatRuns.id}`)} or ${heartbeatRuns.logRef} is not null or ${heartbeatRuns.logStore} is not null
       or ${heartbeatRuns.stdoutExcerpt} is not null or ${heartbeatRuns.stderrExcerpt} is not null
       or ${resultText}
-      or ${unhashedFingerprintSql}
+      or ${checkpointContentSql}
       or ${runCopiesRemainSql({ id: sql`${heartbeatRuns.id}`, companyId: sql`${heartbeatRuns.companyId}`, issueId: sql`${heartbeatRuns.issueId}`, error: sql`${heartbeatRuns.error}` })}
       or exists (select 1 from ${heartbeatRunEvents} where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
         and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id} and ${contentEventSql()}))`;
