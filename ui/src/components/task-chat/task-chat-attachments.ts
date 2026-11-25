@@ -157,7 +157,7 @@ export interface AttachmentRef {
   downloadPath?: string;
 }
 
-function attachmentIdFromUrl(url: string): string | null {
+export function attachmentIdFromUrl(url: string): string | null {
   return /\/api\/(?:attachments|assets)\/([^/?]+)\/content/.exec(url)?.[1] ?? null;
 }
 

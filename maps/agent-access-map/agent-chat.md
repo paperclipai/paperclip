@@ -143,8 +143,9 @@ New chat handoffs default to the conversation agent when no agent or person is s
 tasks; nested execution tasks retain normal parent/child rules. Source participant,
 session generation, task assignment and private-source inheritance are checked;
 quality confirmations remain separate from task completion and publication.
-[Focused regression coverage](../../server/src/__tests__/coordinator-handoff.test.ts)
-does not claim live model/tool selection or external delivery verification.
+Canonical conversation coverage lives in
+[agent conversations](../../server/src/__tests__/agent-conversations.test.ts) and does not claim
+live model/tool selection or external delivery verification.
 Additional coverage: the explicit [chat feature evals](../../tests/runner-e2e/CHAT-FEATURES.md)
 exercise native task creation and completion delivery through the real chat UI.
 The [chat directive](../../server/src/services/agent-conversations.ts) tells agents

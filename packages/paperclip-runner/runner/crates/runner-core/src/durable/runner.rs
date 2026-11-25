@@ -2487,6 +2487,9 @@ fn process_command<E: CommandExecutor>(
             if let Some(provider_failure) = error.provider_failure() {
                 failure["providerFailure"] = provider_failure;
             }
+            if let Some(rejection) = error.sidecar_rejection() {
+                failure["sidecarRejection"] = rejection;
+            }
             let result = state.fail_command(command, failure)?;
             store.save(state)?;
             return Ok((result, CommandLifecycle::after_failure(command)));
@@ -6571,6 +6574,11 @@ mod tests {
         )
     ))]
     fn released_antigravity_handoff_uses_ordinary_authority_and_rejects_candidate_injection() {
+        assert!(
+            !crate::generated_acpx_profiles::acpx_release_profile("antigravity")
+                .unwrap()
+                .qualification_pending
+        );
         let directory =
             std::env::temp_dir().join(format!("antigravity-grant-handoff-{}", std::process::id()));
         let mut current = config(directory);
@@ -6593,10 +6601,7 @@ mod tests {
             candidate_admission: Some(grant.clone()),
             ..ordinary.clone()
         });
-        // Pending: the grant admits this run's startup.
-        candidate.validate().unwrap();
 
-        let _released = crate::acpx_candidate_admission::released_for_test::release("antigravity");
         current.acpx_launch_profile = Some(ordinary);
         current.validate().unwrap();
         let mut next_grant = grant.clone();

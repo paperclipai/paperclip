@@ -55,6 +55,17 @@ const credentials: [string, unknown, boolean][] = [
   ["an unsupported provider", { type: "provider-env", provider: "gemini", environment: { GEMINI_API_KEY: "fixture-gemini" } }, false],
   ["a provider credential without a provider", { type: "provider-env", environment: { XAI_API_KEY: "fixture-xai" } }, false],
   ["an extra provider credential field", { type: "provider-env", provider: "grok", environment: { XAI_API_KEY: "fixture-xai" }, home: "/home/agent" }, false],
+  ["a Gemini API key for Antigravity", { type: "provider-env", provider: "antigravity", environment: { GEMINI_API_KEY: "fixture-gemini" } }, true],
+  ["an Antigravity sign-in document", { type: "provider-env", provider: "antigravity",
+    environment: { PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "{\"refresh_token\":\"fixture\"}" } }, true],
+  ["a Gemini API key mixed with a sign-in document", { type: "provider-env", provider: "antigravity",
+    environment: { GEMINI_API_KEY: "fixture-gemini", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "{\"refresh_token\":\"fixture\"}" } }, false],
+  ["a Google API key for Antigravity", { type: "provider-env", provider: "antigravity", environment: { GOOGLE_API_KEY: "fixture-google" } }, false],
+  ["a Gemini API key with Google routing", { type: "provider-env", provider: "antigravity",
+    environment: { GEMINI_API_KEY: "fixture-gemini", GOOGLE_GEMINI_BASE_URL: "https://router.example.test" } }, false],
+  ["no Antigravity variable", { type: "provider-env", provider: "antigravity", environment: {} }, false],
+  ["an empty Gemini API key", { type: "provider-env", provider: "antigravity", environment: { GEMINI_API_KEY: "" } }, false],
+  ["a Gemini API key for another provider", { type: "provider-env", provider: "copilot", environment: { GEMINI_API_KEY: "fixture-gemini" } }, false],
 ];
 
 async function invoke(operation: unknown, handler: (params: PluginEnvironmentTaskParams) => Promise<PluginEnvironmentTaskResult>) {
@@ -94,7 +105,7 @@ describe("release and resume task contract", () => {
     expect(environmentTaskResultSchema.safeParse({ ...result, runner: { ...runner, extra: true } }).success).toBe(false);
   });
 
-  it("relaunches as the claimant's identity only when asked, and reports the archived state", () => {
+  it("relaunches as the claimant's identity only when asked, and reports the build", () => {
     expect(environmentTaskResultSchema.parse({ ...description, resumeIdentityVersion: 1 })).toEqual({ ...description, resumeIdentityVersion: 1 });
     expect(environmentTaskResultSchema.safeParse({ ...description, resumeIdentityVersion: 2 }).success).toBe(false);
     const runner = { runId: "claimant-run", turnId: "turn-claimant-run", itemId: "item-claimant-run" };
@@ -104,12 +115,11 @@ describe("release and resume task contract", () => {
       expect(environmentTaskOperationSchema.safeParse({ ...resume, runner: changed }).success).toBe(false);
     }
     const build = { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` };
-    const archivedState = { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "ready" };
-    const resumed = { kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState };
+    const resumed = { kind: "resume", taskId: "task", outcome: "resumed", runner: build };
     expect(parseEnvironmentTaskResult(relaunch, "task", resumed)).toEqual(resumed);
-    expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, archivedState: undefined })).toThrow();
+    const archivedState = { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "ready" };
+    expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, archivedState })).toThrow();
     expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, runner: undefined })).toThrow();
-    expect(() => parseEnvironmentTaskResult(resume, "task", resumed)).toThrow();
     expect(parseEnvironmentTaskResult(relaunch, "task", { kind: "resume", taskId: "task", outcome: "unavailable" }))
       .toEqual({ kind: "resume", taskId: "task", outcome: "unavailable" });
   });

@@ -242,6 +242,20 @@ describe("heartbeat task markdown rendering", () => {
     expect(markdown).toContain("[ancestor context truncated after 6 entries]");
   });
 
+  it("points the follow-up directive at the wake comment when the wake payload carries its text", () => {
+    const input = {
+      issue: { id: "issue-48", identifier: "PAP-48", title: "Two small files", workMode: "standard", description: "Two small files are needed." },
+      wakeComment: { id: "comment-latest", body: "append three to w1.txt" },
+    };
+    const assignment = buildPaperclipTaskMarkdown({ ...input, includeWakeComments: false })!;
+    expect(assignment).toContain('Follow-up directive:');
+    expect(assignment).toContain('Latest wake comment: "comment-latest", shown in the wake payload.');
+    expect(assignment).not.toMatch(/Latest wake comment:\n\n/);
+    expect(assignment).not.toContain("append three to w1.txt");
+    const legacy = buildPaperclipTaskMarkdown(input)!;
+    expect(legacy).toContain("Latest wake comment:\n```text\nappend three to w1.txt\n```");
+  });
+
   it.each([true, false])("retains attachment-only wakes with hidden comment bodies (native=%s)", (nativeRunner) => {
     const contentPath = "/api/attachments/attachment-1/content";
     const markdown = buildPaperclipTaskMarkdown({
@@ -261,6 +275,8 @@ describe("heartbeat task markdown rendering", () => {
       }],
     });
 
+    expect(markdown).toContain('Latest wake comment: "comment-file" has attachments only; see the attachment directive.');
+    expect(markdown).not.toContain("shown in the wake payload");
     expect(markdown).toContain('Attachments on wake comment "comment-file":');
     expect(markdown).toContain('"filename":"evidence.txt"');
     expect(markdown).toContain("Attachment directive:");

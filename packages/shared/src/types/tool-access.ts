@@ -429,6 +429,13 @@ export interface ToolConnectionRemovalSummary {
     manageUrl: string;
   } | null;
   providerAccess?: ManagedGoogleAccessRemoval | null;
+  signInRemoval?: AiSignInRemoval | null;
+}
+
+export interface AiSignInRemoval {
+  provider: "google";
+  savedSignIn: "deleted" | "kept_shared" | "not_deleted";
+  providerSignIn: "still_valid";
 }
 
 export type ManagedGoogleRevocationOutcome =
@@ -452,6 +459,7 @@ export interface ManagedGoogleAccessRemoval {
 
 export type ConnectionGrantRevocationResult = ConnectionGrant & {
   providerAccess?: ManagedGoogleAccessRemoval | null;
+  signInRemoval?: AiSignInRemoval | null;
 };
 
 export interface ToolConnectionRemovalResult {
@@ -479,9 +487,18 @@ export interface ToolConnectionContentDeletionCounts {
 
 export type ToolConnectionContentDeletionStatus = "pending" | "completed";
 
+export type ToolConnectionContentDeletionReason =
+  | "requested"
+  | "connection_removed"
+  | "access_revoked"
+  | "provider_access_ended"
+  | "member_removed"
+  | "instance_removed";
+
 export interface ToolConnectionContentDeletion {
   id: string;
   status: ToolConnectionContentDeletionStatus;
+  reason: ToolConnectionContentDeletionReason;
   requestedAt: string;
   completedAt: string | null;
   retrying: boolean;

@@ -640,6 +640,19 @@ for native onboarding and physical login-process retirement. Cancellation and
 expiry await retirement before removing the private home. After a server restart,
 start a new Google sign-in attempt.
 
+Disconnecting a Google Antigravity account, or removing its connection, deletes
+the sign-in that Paperclip saved for it. Paperclip does not revoke the sign-in at
+Google. The sign-in uses the OAuth client of Google's own Antigravity runtime, not
+a Paperclip client, and Google revocation removes the grant for the whole client.
+A revoke would also sign the person out of their own Antigravity app or CLI and
+out of every other Paperclip connection for that Google account. The disconnect
+says that the sign-in stays valid at Google until the person removes it in their
+Google account. Paperclip keeps a saved sign-in that another connection or target
+still uses. If the delete fails, the grant keeps its reference, and disconnecting
+again retries the delete. A reconnect that saves a new version first is never
+deleted. The disconnect also releases work held by that account's usage limits in
+the same transaction as the grant revocation.
+
 Antigravity task execution remains pending acceptance. Its managed subscription
 path is local and turn-by-turn: native execution retires before refreshed tokens
 are verified and saved with generation checks. Remote and warm OAuth execution
