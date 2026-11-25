@@ -1,5 +1,5 @@
 import { and, desc, eq, inArray, or, sql, type SQL } from "drizzle-orm";
-import { agents, heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, agents, heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
 import type { AttentionItem, AttentionProviderLimit, AttentionRunHistoryEntry } from "@paperclipai/shared";
 import { alias } from "drizzle-orm/pg-core";
 import { createHash } from "node:crypto";
@@ -96,16 +96,27 @@ export async function attachProviderRetryChains(db: Db, companyId: string, items
   const legacyDismissals = new Map<string, string>();
   if (!members.length) return legacyDismissals;
   const ids = [...new Set(members.map(item => item.providerLimit!.runId))];
+  // A native retry may bind a durable task retry request without setting retry_of_run_id.
   const rows = await db.execute<{ run_id: string; attempts: string[] }>(sql`
-    with recursive chain(run_id, task_id, id, parent_id, path, limited) as (
-      select id, ${taskId}, id, retry_of_run_id, array[id], true
+    with recursive chain(run_id, task_id, id, agent_id, parent_id, retry_request_id, path, limited) as (
+      select id, ${taskId}, id, agent_id, retry_of_run_id, context_snapshot->>'taskRetryRequestId', array[id], true
       from ${heartbeatRuns}
       where company_id = ${companyId} and ${inArray(heartbeatRuns.id, ids)}
       union all
-      select c.run_id, c.task_id, r.id, r.retry_of_run_id, c.path || r.id,
+      select c.run_id, c.task_id, r.id, r.agent_id, r.retry_of_run_id, r.context_snapshot->>'taskRetryRequestId',
+        c.path || r.id,
         r.error_code in ('provider_limit_wait','native_provider_usage_limit')
           or r.result_json#>>'{providerFailure,category}' in ('rate_limit','quota_exhausted')
-      from chain c join ${heartbeatRuns} r on r.id = c.parent_id and r.company_id = ${companyId}
+      from chain c
+      left join ${agentWakeupRequests} wake on c.parent_id is null
+        and wake.company_id = ${companyId} and wake.run_id = c.id and wake.agent_id = c.agent_id
+        and wake.id::text = c.retry_request_id and wake.reason = 'task_retry'
+        and wake.payload->>'issueId' = c.task_id
+        and wake.payload#>>'{taskRetry,schema}' = 'paperclip.task-retry.v1'
+        and wake.payload#>>'{taskRetry,generationId}' = c.retry_request_id
+      join ${heartbeatRuns} r on r.company_id = ${companyId} and r.id = coalesce(c.parent_id,
+        case when wake.payload#>>'{taskRetry,sourceRunId}' ~* '^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$'
+          then (wake.payload#>>'{taskRetry,sourceRunId}')::uuid end)
       where coalesce(r.issue_id::text, r.native_issue_id::text, r.context_snapshot->>'issueId', r.context_snapshot->>'taskId') = c.task_id
         and r.status in ('failed','timed_out','cancelled')
         and not r.id = any(c.path)

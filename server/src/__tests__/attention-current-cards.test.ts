@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
   agentRuntimeState,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -348,6 +349,53 @@ describeEmbeddedPostgres("attention current cards (PAP-749 task 2a)", () => {
     await inboxDismissalService(db).dismiss(companyId, SCOTT, oldKey, new Date(), before.changeFingerprint);
     expect((await list(companyId, SCOTT, "archived")).map(item => item.dismissalKey)).toEqual([oldKey]);
     expect((await list(companyId, SCOTT, "waiting")).map(item => item.providerLimit?.runId)).toEqual([separate]);
+  });
+
+  it("keeps a native retry linked to an archived provider limit through its saved retry request", async () => {
+    const { companyId, workerId } = await seedCompany();
+    const issueId = await insertIssue({ companyId, createdByUserId: SCOTT, assigneeAgentId: workerId });
+    const [initialRun] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: workerId, issueId, scopeKind: "issue", runtimeMode: "native",
+      status: "failed", errorCode: "native_provider_usage_limit",
+    }).returning();
+    const evidence = { runId: initialRun!.id, providerLimitAutomatic: true, providerLimitEstimated: true };
+    const [hold] = await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board",
+      cause: "native_provider_usage_limit", fingerprint: "limit", nextAction: "Retry when capacity returns.", evidence,
+    }).returning();
+    const [original] = await list(companyId, SCOTT, "waiting");
+    expect(original?.providerLimit).toMatchObject({ grouping: "retry_chain", attempts: 1 });
+    await inboxDismissalService(db).dismiss(companyId, SCOTT, original!.dismissalKey, new Date(), original!.changeFingerprint);
+
+    const requestId = randomUUID();
+    const [retry] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: workerId, issueId, scopeKind: "issue", runtimeMode: "native",
+      status: "failed", errorCode: "native_provider_usage_limit",
+      contextSnapshot: { issueId, previousRunId: initialRun!.id, taskRetryRequestId: requestId },
+    }).returning();
+    const taskRetry = {
+      schema: "paperclip.task-retry.v1", generationId: requestId, sourceRunId: initialRun!.id,
+      actorId: SCOTT, strategy: "evaluate", initiatedBy: "provider_limit_reset",
+    };
+    await db.insert(agentWakeupRequests).values({
+      id: requestId, companyId, agentId: workerId, source: "on_demand", reason: "task_retry",
+      requestedByActorType: "user", requestedByActorId: SCOTT, runId: retry!.id,
+      payload: { issueId, taskRetry },
+    });
+    await db.update(issueRecoveryActions).set({ evidence: { ...evidence, runId: retry!.id } })
+      .where(eq(issueRecoveryActions.id, hold!.id));
+    expect(await list(companyId, SCOTT, "waiting")).toHaveLength(0);
+    expect(await list(companyId, SCOTT, "archived")).toEqual([expect.objectContaining({
+      dismissalKey: original!.dismissalKey,
+      providerLimit: expect.objectContaining({ attempts: 2, runId: retry!.id }),
+    })]);
+
+    await db.update(agentWakeupRequests).set({ payload: { issueId: randomUUID(), taskRetry } })
+      .where(eq(agentWakeupRequests.id, requestId));
+    expect(await list(companyId, SCOTT, "archived")).toHaveLength(0);
+    expect(await list(companyId, SCOTT, "waiting")).toEqual([expect.objectContaining({
+      providerLimit: expect.objectContaining({ attempts: 1, runId: retry!.id }),
+    })]);
   });
 
   function find(items: AttentionItem[], sourceId: string) {
