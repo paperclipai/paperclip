@@ -59,12 +59,13 @@ async function googleRunIds(db: Pick<Db, "select">, companyId: string, runs: SQL
   const events = await db.select({ runId: toolCallEvents.runId }).from(toolCallEvents)
     .where(and(eq(toolCallEvents.companyId, companyId), sql`${toolCallEvents.runId} in ${runs}`,
       sql`${toolCallEvents.connectionId} in ${googleConnectionIdsSql()}`));
-  const googleRequestIds = sql`array(select tar.id::text from tool_action_requests tar
-    join tool_invocations ti on ti.id = tar.invocation_id
-    where tar.company_id = ${companyId} and ti.connection_id in ${googleConnectionIdsSql()})`;
   const delivered = await db.select({ runId: heartbeatRuns.id }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.id} in ${runs}`,
-      sql`coalesce(${heartbeatRuns.contextSnapshot} -> 'toolActionRequestIds' ?| ${googleRequestIds}, false)`));
+      sql`jsonb_typeof(${heartbeatRuns.contextSnapshot} -> 'toolActionRequestIds') = 'array'`,
+      sql`exists (select 1 from jsonb_array_elements_text(${heartbeatRuns.contextSnapshot} -> 'toolActionRequestIds') as carried(request_id)
+        join tool_action_requests tar on tar.id::text = carried.request_id and tar.company_id = ${companyId}
+        join tool_invocations ti on ti.id = tar.invocation_id
+        where ti.connection_id in ${googleConnectionIdsSql()})`));
   return new Set([...calls, ...events, ...delivered].flatMap((row) => row.runId ? [row.runId] : []));
 }
 

@@ -168,6 +168,13 @@ function googleRunStub(run: typeof heartbeatRuns.$inferSelect) {
   });
 }
 
+function withoutHandoff<T>(run: T): T {
+  const record = run as unknown as { contextSnapshot?: unknown };
+  if (!record.contextSnapshot || typeof record.contextSnapshot !== "object") return run;
+  const { paperclipSessionHandoffMarkdown: _handoff, ...context } = record.contextSnapshot as Record<string, unknown>;
+  return { ...record, contextSnapshot: context } as unknown as T;
+}
+
 function withoutToolActionContent(value: Record<string, unknown>): Record<string, unknown> {
   const record: Record<string, unknown> = { ...value };
   for (const key of ["payload", "result"]) {
@@ -196,7 +203,7 @@ export async function withoutGoogleWorkspaceContent(
     runs: runs.map((run) => typeof run.id === "string" && googleRuns.has(run.id)
       ? { id: run.id, agentId: run.agentId ?? null, status: run.status ?? null, startedAt: run.startedAt ?? null,
         finishedAt: run.finishedAt ?? null, googleWorkspaceContentOmitted: true }
-      : run),
+      : googleRuns.size > 0 ? withoutHandoff(run) : run),
     ...(googleCard && snapshot.decision
       ? { decision: { ...snapshot.decision, payload: withoutToolActionContent((snapshot.decision.payload ?? {}) as Record<string, unknown>) } }
       : {}),
@@ -293,7 +300,7 @@ export async function captureDecisionSnapshot(
       },
       issue: jsonCopy(issue),
       comments: comments.map(jsonCopy),
-      runs: runs.map((run) => googleRuns.has(run.id) ? googleRunStub(run) : jsonCopy(run)),
+      runs: runs.map((run) => googleRuns.has(run.id) ? googleRunStub(run) : googleRuns.size > 0 ? withoutHandoff(jsonCopy(run)) : jsonCopy(run)),
       decision: {
         kind: input.sourceKind,
         payload: decision.payload,

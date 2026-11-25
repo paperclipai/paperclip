@@ -420,7 +420,7 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
     const [issue] = await db.insert(issues).values({ companyId: seed.company.id, title: "Summaries" }).returning();
     await db.update(heartbeatRuns).set({ issueId: issue!.id, error: SECRET }).where(eq(heartbeatRuns.id, seed.settledRun.id));
     const [laterRun] = await db.insert(heartbeatRuns).values({
-      companyId: seed.company.id, agentId: seed.agent.id, issueId: issue!.id, status: "succeeded", finishedAt: new Date(),
+      companyId: seed.company.id, agentId: seed.agent.id, issueId: issue!.id, status: "running",
       contextSnapshot: { issueId: issue!.id, paperclipSessionHandoffMarkdown: SECRET },
     }).returning();
     const [document] = await db.insert(documents).values({ companyId: seed.company.id, title: "Continuation summary", latestBody: SECRET }).returning();

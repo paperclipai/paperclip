@@ -10,7 +10,6 @@ import {
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { RESULT_TEXT_KEYS, withoutResultText } from "./content-cleaning.js";
-import { settledRunSql } from "./content-deletion.js";
 
 export async function forgetRunInTrainingExamples(tx: Db, companyId: string, run: { id: string; changed: boolean }) {
   const runs = sql`${decisionTrainingExamples.snapshot}->'runs'`;
@@ -76,7 +75,6 @@ export async function forgetRunCopies(tx: Db, companyId: string, run: { id: stri
       eq(heartbeatRuns.issueId, row.issueId),
       gt(heartbeatRuns.createdAt, row.createdAt),
       sql`${heartbeatRuns.contextSnapshot} ? 'paperclipSessionHandoffMarkdown'`,
-      settledRunSql(sql`${heartbeatRuns.id}`),
     ))
     .returning({ id: heartbeatRuns.id });
   if (handoffs.length > 0) run.changed = true;

@@ -250,7 +250,7 @@ describeEmbeddedPostgres("decision training", () => {
       {
         companyId: seeded.companyId, agentId: agent!.id, status: "succeeded", resultJson: { summary: "Other work" },
         startedAt: new Date("2026-07-16T11:20:00.000Z"), finishedAt: new Date("2026-07-16T11:30:00.000Z"),
-        contextSnapshot: { issueId: seeded.issueId }, createdAt: new Date("2026-07-16T11:20:00.000Z"), updatedAt: new Date("2026-07-16T11:30:00.000Z"),
+        contextSnapshot: { issueId: seeded.issueId, paperclipSessionHandoffMarkdown: secret }, createdAt: new Date("2026-07-16T11:20:00.000Z"), updatedAt: new Date("2026-07-16T11:30:00.000Z"),
       },
     ]).returning();
     const [application] = await db.insert(toolApplications).values({ companyId: seeded.companyId, name: "Google Workspace", type: "mcp_http" }).returning();
