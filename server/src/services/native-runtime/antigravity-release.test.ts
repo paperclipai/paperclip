@@ -90,6 +90,7 @@ describe("Antigravity executor admission", () => {
     const execution = antigravityExecution();
     vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, candidateGrant("linux-x64"));
     expect(admissible(execution, { remoteTarget: true })).not.toThrow();
+    expect(admissible(execution, { remoteTarget: true, pluginTask: true })).toThrow(/candidate_ineligible/);
     const warm = { ...execution, session: { ...execution.session, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 1 } } } as NativeExecutionInput;
     expect(admissible(warm, { remoteTarget: true })).toThrow(/candidate_ineligible/);
     expect(admissible(execution, { remoteTarget: true, restartRecovery: { kind: "reattach_remote_runner" } })).toThrow(/candidate_ineligible/);
@@ -108,6 +109,7 @@ describe("Antigravity executor admission", () => {
     vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, undefined);
     const execution = antigravityExecution();
     expect(admissible(execution)).not.toThrow();
+    expect(admissible(execution, { remoteTarget: true, pluginTask: true })).not.toThrow();
     expect(admissible(execution, { remoteTarget: true, restartRecovery: { kind: "reattach_remote_runner" } })).not.toThrow();
     const preconfigured = { ...execution, homeMode: "preconfigured" } as NativeExecutionInput;
     expect(admissible(preconfigured)).not.toThrow();
