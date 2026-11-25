@@ -222,7 +222,7 @@ describe("Antigravity CLI swarm runtime", () => {
     // Its own denial echoed back by the CLI is not a helper change outside the task folder.
     expect(run.titles).not.toContain("A helper was blocked from changing something outside the task folder");
     expect(run.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_NO_RESULT", retryable: false,
-      message: "The swarm stopped because Paperclip blocked an action it may not take during a swarm, so nothing was handed in. Send /swarm again to retry." } });
+      message: "The swarm stopped because Paperclip blocked an action it may not take during a swarm, so nothing was handed in. No files changed. Send /swarm again to retry." } });
   });
 
   it("fails a swarm that ended without doing any work, plainly, instead of leaving it to automatic recovery", async () => {
@@ -234,6 +234,13 @@ describe("Antigravity CLI swarm runtime", () => {
     expect(terminal.error.code).toBe("ANTIGRAVITY_SWARM_NO_RESULT");
     expect(terminal.error.providerFailure).toMatchObject({ message: "The swarm ended without doing any work. Send /swarm again to retry." });
     expect(terminal.error.providerFailure.retryability).not.toBe("requires_action");
+  });
+
+  it("says file changes remain when a swarm without a hand-in changed the task folder", async () => {
+    const run = await runTurn("solo-edit");
+    expect(run.titles).toContain("Files changed in the task folder: a.txt");
+    expect(run.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_NO_RESULT",
+      message: "The swarm ended without handing in a result. 1 file change it made stays in the task folder. Check them before you send /swarm again." } });
   });
 
   it("approves only admitted Paperclip tools, by the CLI's own tool name, and nothing else", () => {

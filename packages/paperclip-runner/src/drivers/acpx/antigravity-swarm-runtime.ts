@@ -615,12 +615,21 @@ export async function openAntigravitySwarmRuntime(
       // A swarm that ended without handing in is a typed swarm failure the person
       // retries, never an interruption Paperclip resumes or retries on its own
       // (each attempt is a full, billed swarm).
+      // The reason comes from what happened, including the task folder itself, so
+      // nobody repeats the request without knowing changes are already there.
       if (!handedIn) {
-        return failed("ANTIGRAVITY_SWARM_NO_RESULT" satisfies AntigravitySwarmError["code"], deniedCalls.size > 0
-          ? "The swarm stopped because Paperclip blocked an action it may not take during a swarm, so nothing was handed in. Send /swarm again to retry."
-          : helpers.size === 0
-            ? "The swarm ended without doing any work. Send /swarm again to retry."
-            : "The swarm finished without handing in its result. Files its helpers wrote stay in the task folder. Send /swarm again to retry.");
+        const listed = before.complete && after.complete;
+        const why = deniedCalls.size > 0
+          ? "The swarm stopped because Paperclip blocked an action it may not take during a swarm, so nothing was handed in."
+          : "The swarm ended without handing in a result.";
+        const message = !listed
+          ? `${why} Paperclip could not check every file in the task folder, so changes may remain there. Check them before you send /swarm again.`
+          : changed.length > 0
+            ? `${why} ${changed.length === 1 ? "1 file change it made stays" : `${changed.length} file changes it made stay`} in the task folder. Check them before you send /swarm again.`
+            : deniedCalls.size > 0 ? `${why} No files changed. Send /swarm again to retry.`
+              : helpers.size === 0 ? "The swarm ended without doing any work. Send /swarm again to retry."
+                : "The swarm ended without handing in a result, and no files changed. Send /swarm again to retry.";
+        return failed("ANTIGRAVITY_SWARM_NO_RESULT" satisfies AntigravitySwarmError["code"], message);
       }
       return { status: "completed", stopReason: "end_turn" };
     } catch (error) {

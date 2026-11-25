@@ -20,6 +20,7 @@
 //   context-read   the coordinator first reads Paperclip's get_task_context (the live
 //                  2026-11-24 run6 opening), then runs the swarm and hands in
 //   no-work        the coordinator ends its turn without helpers and without handing in
+//   solo-edit      the coordinator writes a.txt itself (no helpers) and ends without handing in
 //   denied-tool    the coordinator calls a Paperclip tool the swarm does not admit
 //                  (create_task); the CLI ends the whole turn on the denial, as live
 //   outside-edit   the coordinator edits a file outside the workspace (absolute path)
@@ -162,6 +163,7 @@ async function prompt(id, params) {
     if (!state.cancelled) await new Promise(resolve => { state.cancel = resolve; });
     return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
   }
+  if (scenario === "solo-edit") { writeFileSync(join(state.cwd, "a.txt"), "A"); say("I wrote a.txt."); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage } }); }
   if (scenario === "no-work") { say("I looked at the request; there is nothing to do."); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage } }); }
   if (scenario === "denied-tool") { await paperclipCall("create_task"); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage } }); }
   if (scenario === "context-read" && !await paperclipCall("get_task_context")) return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage } });
