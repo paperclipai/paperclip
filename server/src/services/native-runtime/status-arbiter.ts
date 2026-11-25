@@ -105,11 +105,7 @@ export interface NativeStatusDecision {
   } | null;
   effects: NativeStatusEffect[];
   blockerOwnerKind?: string;
-  /**
-   * Hand the task to this agent with the status. Set when a blocked report
-   * names another agent as unblock owner: only the assignee can be woken on
-   * a task, so the owner must hold it to act on the blocker.
-   */
+  /** Hand the task to this agent when a blocked report names another agent owner. */
   handoffAgentId?: string;
 }
 
@@ -117,13 +113,14 @@ function humanBlockerOwner(blocker: NativeEvidenceAssessment["blocker"]): IssueU
   return blocker?.ownerUserId ? { userId: blocker.ownerUserId } : "board";
 }
 
-/** The saved unblock owner: the agent the report named, the resolved human/board, or the reporting agent. */
-function blockerOwner(
-  blocker: NativeEvidenceAssessment["blocker"],
-  agentId: string,
-): IssueUnblockDescriptor["owner"] {
-  if (blocker?.ownerAgentId) return { agentId: blocker.ownerAgentId };
-  return blocker?.boardOwned ? humanBlockerOwner(blocker) : { agentId };
+/** Resolve the saved unblock owner and optional handoff target for a blocker. */
+function resolveBlockerHandoff(blocker: NativeEvidenceAssessment["blocker"], agentId: string, handoffLocked?: boolean):
+  { owner: IssueUnblockDescriptor["owner"]; handoffAgentId?: string; namedOtherAgent: boolean } {
+  const raw = blocker?.ownerAgentId ? { agentId: blocker.ownerAgentId }
+    : blocker?.boardOwned ? humanBlockerOwner(blocker) : { agentId };
+  const namedOtherAgent = typeof raw === "object" && "agentId" in raw && raw.agentId !== agentId;
+  if (!namedOtherAgent) return { owner: raw, namedOtherAgent: false };
+  return handoffLocked ? { owner: "board", namedOtherAgent: true } : { owner: raw, handoffAgentId: raw.agentId, namedOtherAgent: true };
 }
 
 /**
@@ -546,20 +543,23 @@ export function arbitrateNativeStatus(input: {
     input.hasUnresolvedIssueBlockers === true &&
     (["done", "blocked"].includes(input.assessment.reportedDisposition) || unfinishedResponseWait || input.assessment.continuation?.kind === "monitor")
   ) {
-    const owner = blockerOwner(input.assessment.blocker, input.agentId);
+    const { owner, handoffAgentId } = resolveBlockerHandoff(
+      input.assessment.blocker, input.agentId, input.blockerHandoffLocked,
+    );
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "blocked",
       toStatus: "blocked",
       reasonCode: "durable_dependency_blocker_bound",
+      ...(handoffAgentId ? { handoffAgentId } : {}),
       unblockDescriptor: {
         owner,
         action:
           input.assessment.blocker?.unblockAction ??
           "Wait for the issue's durable dependency blockers to complete.",
       },
-      // Dependency completion owns the wake. Do not immediately rerun the
-      // blocked issue merely because the provider mislabeled its scope/status.
+      // Dependency completion owns the wake (and wakes the current assignee,
+      // which becomes handoffAgentId when a named agent takes over).
       effects: [],
     };
   }
@@ -739,15 +739,10 @@ export function arbitrateNativeStatus(input: {
     input.assessment.reportedDisposition === "blocked" &&
     input.assessment.blocker
   ) {
-    const rawOwner = blockerOwner(input.assessment.blocker, input.agentId);
-    const rawNamedAgentOwner =
-      typeof rawOwner === "object" && "agentId" in rawOwner && rawOwner.agentId !== input.agentId
-        ? rawOwner
-        : null;
-    // A conversation or external-chat-bound task cannot change assignee; fall
-    // back to board rather than binding an unwakeable agent owner.
-    const handoffOwner = rawNamedAgentOwner && !input.blockerHandoffLocked ? rawNamedAgentOwner : null;
-    const owner = rawNamedAgentOwner && input.blockerHandoffLocked ? "board" : rawOwner;
+    const { owner, handoffAgentId, namedOtherAgent } = resolveBlockerHandoff(
+      input.assessment.blocker, input.agentId, input.blockerHandoffLocked,
+    );
+    const action = input.assessment.blocker.unblockAction;
     if (input.assessment.blocker.scope === "task_wide") {
       return {
         policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -755,59 +750,31 @@ export function arbitrateNativeStatus(input: {
         toStatus: "blocked",
         reasonCode: "task_wide_blocker_bound",
         blockerOwnerKind: input.assessment.blocker.ownerKind,
-        ...(handoffOwner ? { handoffAgentId: handoffOwner.agentId } : {}),
-        unblockDescriptor: {
-          owner,
-          action: input.assessment.blocker.unblockAction,
-        },
+        ...(handoffAgentId ? { handoffAgentId } : {}),
+        unblockDescriptor: { owner, action },
         effects: [
-          {
-            kind: "bind_blocker",
-            owner,
-            action: input.assessment.blocker.unblockAction,
-          },
+          { kind: "bind_blocker", owner, action },
           // A named human or other-agent owner owns the next action; do not
           // also wake the reporting agent to repeat the blocked work.
-          ...(input.assessment.blocker.ownerUserId || rawNamedAgentOwner ? [] : [{
-            kind: "notify_owner" as const,
-            agentId: input.agentId,
-            reason: "task_wide_blocker_bound",
+          ...(input.assessment.blocker.ownerUserId || namedOtherAgent ? [] : [{
+            kind: "notify_owner" as const, agentId: input.agentId, reason: "task_wide_blocker_bound",
           }]),
         ],
       };
     }
-    if (handoffOwner) {
-      return {
-        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
-        statusAction: "blocked",
-        toStatus: "blocked",
-        reasonCode: "current_track_blocker_waiting",
-        blockerOwnerKind: input.assessment.blocker.ownerKind,
-        handoffAgentId: handoffOwner.agentId,
-        unblockDescriptor: { owner, action: input.assessment.blocker.unblockAction },
-        effects: [{ kind: "bind_blocker", owner, action: input.assessment.blocker.unblockAction }],
-      };
-    }
+    const currentTrackOwner = handoffAgentId ? owner : humanBlockerOwner(input.assessment.blocker);
     return {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "blocked",
       toStatus: "blocked",
       reasonCode: "current_track_blocker_waiting",
       blockerOwnerKind: input.assessment.blocker.ownerKind,
+      ...(handoffAgentId ? { handoffAgentId } : {}),
       // A provider's current_track label is not evidence that another
       // authorized, productive track exists. Bind the actual unblock request
       // without waking the same agent to repeat the blocked work or old title.
-      unblockDescriptor: {
-        owner: humanBlockerOwner(input.assessment.blocker),
-        action: input.assessment.blocker.unblockAction,
-      },
-      effects: [
-        {
-          kind: "bind_blocker",
-          owner: humanBlockerOwner(input.assessment.blocker),
-          action: input.assessment.blocker.unblockAction,
-        },
-      ],
+      unblockDescriptor: { owner: currentTrackOwner, action },
+      effects: [{ kind: "bind_blocker", owner: currentTrackOwner, action }],
     };
   }
   if (input.assessment.reportedDisposition === "yielded" && input.assessment.continuation?.kind === "monitor") {

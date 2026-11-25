@@ -8,7 +8,7 @@ import { agentInteractionDeliveryDenial, agentWakeInteractionTexts, INTERACTION_
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { lockCurrentNativeWorkAssessmentEvidence } from "./work-assessments.js";
 import { nativeBlockerUserId } from "./native-blocker-owner.js";
-import { hasExternalChatBinding, isBlockerOwnerAssignable } from "./blocker-owner.js";
+import { evaluateBlockerAgentHandoff } from "./blocker-owner.js";
 import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { lockCurrentNativeCompletionContract } from "./completion-contracts.js";
@@ -1913,27 +1913,17 @@ export async function commitNativeStatusDecision(input: {
       }
     }
     if (input.decision.handoffAgentId) {
-      if (
-        isConversation(issue) ||
-        issue.assigneeUserId ||
-        !originRun?.agentId ||
-        issue.assigneeAgentId !== originRun.agentId ||
-        await hasExternalChatBinding(tx as unknown as Db, input.companyId, input.issueId)
-      ) {
-        throw new NativeStatusRaceError();
-      }
       try {
-        const [target] = await tx.select({ id: agents.id, status: agents.status }).from(agents).where(and(
-          eq(agents.id, input.decision.handoffAgentId),
-          eq(agents.companyId, input.companyId),
-        )).limit(1).for("share", { noWait: true });
-        if (
-          !target ||
-          target.status === "terminated" ||
-          !(await isBlockerOwnerAssignable(tx as unknown as Db, input.companyId, input.decision.handoffAgentId))
-        ) {
-          throw new NativeStatusRaceError();
-        }
+        const handoff = await evaluateBlockerAgentHandoff(tx as unknown as Db, {
+          companyId: input.companyId,
+          issue,
+          actorAgentId: originRun?.agentId ?? null,
+          targetAgentId: input.decision.handoffAgentId,
+          unblockAction: input.decision.unblockDescriptor?.action ?? "",
+          requireTaskOwner: true,
+          lockSources: true,
+        });
+        if (!handoff.allowed) throw new NativeStatusRaceError();
       } catch (error) {
         if (error instanceof NativeStatusRaceError || record(error).code === "55P03" || record(record(error).cause).code === "55P03") {
           throw new NativeStatusRaceError();

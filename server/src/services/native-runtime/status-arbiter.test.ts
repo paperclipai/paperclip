@@ -864,4 +864,31 @@ describe("native status authority", () => {
     );
     expect(decision.handoffAgentId).toBeUndefined();
   });
+
+  it("carries named-agent handoff on a dependency-gated block while preserving the dependency gate", () => {
+    const action = "Review after upstream finishes.";
+    const blocked = assessment({
+      reportedDisposition: "blocked",
+      blocker: { boardOwned: false, ownerKind: "agent", ownerAgentId: "reviewer", scope: "current_track", unblockAction: action },
+    });
+    expect(arbitrate({ assessment: blocked, hasUnresolvedIssueBlockers: true })).toEqual(
+      expect.objectContaining({
+        toStatus: "blocked",
+        reasonCode: "durable_dependency_blocker_bound",
+        handoffAgentId: "reviewer",
+        unblockDescriptor: { owner: { agentId: "reviewer" }, action },
+        effects: [],
+      }),
+    );
+    const locked = arbitrate({ assessment: blocked, hasUnresolvedIssueBlockers: true, blockerHandoffLocked: true });
+    expect(locked).toEqual(
+      expect.objectContaining({
+        toStatus: "blocked",
+        reasonCode: "durable_dependency_blocker_bound",
+        unblockDescriptor: { owner: "board", action },
+        effects: [],
+      }),
+    );
+    expect(locked.handoffAgentId).toBeUndefined();
+  });
 });
