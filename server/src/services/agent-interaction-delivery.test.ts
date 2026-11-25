@@ -72,16 +72,15 @@ describe.skipIf(!support.supported)("pending agent interaction delivery", () => 
       locked();
       await released;
     });
+    // A short statement timeout turns a lock wait into SQLSTATE 57014, as in production.
+    const timed = createDb(database.connectionString, { statementTimeoutMs: 500 });
     try {
       await lockTaken;
-      const outcome = await Promise.race([
-        preparedRunInteractionDeliveryDenied(db, await readRun(f.run.id)).then(denied => ({ denied })),
-        new Promise(resolve => setTimeout(() => resolve("blocked"), 5_000)),
-      ]);
-      expect(outcome).toEqual({ denied: false });
+      await expect(preparedRunInteractionDeliveryDenied(timed, await readRun(f.run.id))).resolves.toBe(false);
     } finally {
       release();
       await holder;
+      await timed.$client.end();
     }
     await restriction(f.sender, { canAssignTasksToAgents: false });
     expect(await preparedRunInteractionDeliveryDenied(db, await readRun(f.run.id))).toBe(true);
