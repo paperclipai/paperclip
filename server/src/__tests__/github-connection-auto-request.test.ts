@@ -167,6 +167,20 @@ describe("detectUnconfiguredGitHubAuthFailureInEvents", () => {
         output: "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
       }),
     ],
+    [
+      "timeout-wrapped git clone",
+      toolExecutionEvent({
+        name: "timeout 60 git clone https://github.com/acme/private-repo.git",
+        output: "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+      }),
+    ],
+    [
+      "timeout-wrapped bash -lc git clone",
+      toolExecutionEvent({
+        name: "timeout -k 5 60 bash -lc 'git clone https://github.com/acme/private-repo.git'",
+        output: "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+      }),
+    ],
   ])("detects unambiguous GitHub auth failure: %s", (_label, event) => {
     expect(detectUnconfiguredGitHubAuthFailureInEvents([event])).toBe(true);
   });

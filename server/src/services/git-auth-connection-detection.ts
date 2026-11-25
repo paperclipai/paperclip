@@ -140,7 +140,7 @@ function basename(executable: string): string {
   return (idx >= 0 ? executable.slice(idx + 1) : executable).toLowerCase();
 }
 
-function parseCommandSegment(segment: string): ParsedGitHubCommand | null {
+function parseCommandSegment(segment: string): ParsedGitHubCommand[] {
   const tokens = tokenizeSegment(segment);
   let i = 0;
   while (i < tokens.length) {
@@ -154,7 +154,7 @@ function parseCommandSegment(segment: string): ParsedGitHubCommand | null {
       i += 1;
       while (i < tokens.length) {
         const arg = tokens[i]!;
-        if (arg === "-u" || arg === "--unset") {
+        if (arg === "-u" || arg === "--unset" || arg === "-C" || arg === "--chdir") {
           i += 2;
         } else if (arg.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(arg)) {
           i += 1;
@@ -163,6 +163,59 @@ function parseCommandSegment(segment: string): ParsedGitHubCommand | null {
         }
       }
       continue;
+    }
+    if (base === "timeout") {
+      i += 1;
+      while (i < tokens.length && tokens[i]!.startsWith("-")) {
+        const arg = tokens[i]!;
+        if (arg === "-k" || arg === "--kill-after" || arg === "-s" || arg === "--signal") {
+          i += 2;
+        } else {
+          i += 1;
+        }
+      }
+      // Skip the duration argument (e.g. "60", "30s", "2m").
+      if (i < tokens.length) i += 1;
+      continue;
+    }
+    if (base === "nice") {
+      i += 1;
+      if (tokens[i] === "-n" || tokens[i] === "--adjustment") {
+        i += 2;
+      } else if (tokens[i]?.startsWith("-")) {
+        i += 1;
+      }
+      continue;
+    }
+    if (base === "stdbuf") {
+      i += 1;
+      while (i < tokens.length && tokens[i]!.startsWith("-")) {
+        const arg = tokens[i]!;
+        if (arg === "-i" || arg === "-o" || arg === "-e" || arg === "--input" || arg === "--output" || arg === "--error") {
+          i += 2;
+        } else {
+          i += 1;
+        }
+      }
+      continue;
+    }
+    if (base === "nohup" || base === "time" || base === "command" || base === "exec" || base === "setsid" || base === "unbuffer") {
+      i += 1;
+      while (i < tokens.length && tokens[i]!.startsWith("-")) {
+        i += 1;
+      }
+      continue;
+    }
+    if (base === "bash" || base === "sh" || base === "zsh") {
+      let j = i + 1;
+      while (j < tokens.length && tokens[j]!.startsWith("-")) {
+        const flag = tokens[j]!;
+        j += 1;
+        if (/^-[a-zA-Z]*c$/.test(flag) && j < tokens.length) {
+          return parseGitHubCommands(tokens[j]!);
+        }
+      }
+      return [];
     }
     if (base === "git") {
       i += 1;
@@ -176,20 +229,20 @@ function parseCommandSegment(segment: string): ParsedGitHubCommand | null {
           i += 1;
           continue;
         }
-        return { kind: "git", subcommand: arg.toLowerCase() };
+        return [{ kind: "git", subcommand: arg.toLowerCase() }];
       }
-      return { kind: "git", subcommand: null };
+      return [{ kind: "git", subcommand: null }];
     }
     if (base === "gh") {
       const rest = tokens.slice(i + 1);
       const hasHelpOrVersionFlag = rest.some((arg) => arg === "-h" || arg === "--help" || arg === "--version");
       const firstSubcommand = rest.find((arg) => !arg.startsWith("-"))?.toLowerCase() ?? null;
       const isLocal = hasHelpOrVersionFlag || !firstSubcommand || GH_LOCAL_SUBCOMMANDS.has(firstSubcommand);
-      return { kind: "gh", authenticated: !isLocal };
+      return [{ kind: "gh", authenticated: !isLocal }];
     }
-    return null;
+    return [];
   }
-  return null;
+  return [];
 }
 
 function parseGitHubCommands(command: string): ParsedGitHubCommand[] {
@@ -198,8 +251,7 @@ function parseGitHubCommands(command: string): ParsedGitHubCommand[] {
   const segments = unwrapped.split(/\s*(?:&&|\|\||;|\||\n)\s*/);
   const parsed: ParsedGitHubCommand[] = [];
   for (const segment of segments) {
-    const item = parseCommandSegment(segment);
-    if (item) parsed.push(item);
+    parsed.push(...parseCommandSegment(segment));
   }
   return parsed;
 }
@@ -275,6 +327,7 @@ function didRecoverGitHubAuth(
   if (NON_GITHUB_REMOTE_URL_RE.test(combined) && !isGitHubRemoteUrl(combined)) {
     return false;
   }
+  const hasGitHubRemote = isGitHubRemoteUrl(combined);
   const succeededRepoSlug = extractGitHubRepoSlug(combined);
   for (const cmd of commands) {
     if (cmd.kind === "gh" && cmd.authenticated) {
@@ -282,12 +335,12 @@ function didRecoverGitHubAuth(
         return true;
       }
     }
-    if (cmd.kind === "git" && cmd.subcommand === "push") {
+    if (cmd.kind === "git" && cmd.subcommand === "push" && hasGitHubRemote) {
       if (!failedRepoSlug || !succeededRepoSlug || succeededRepoSlug === failedRepoSlug) {
         return true;
       }
     }
-    if (cmd.kind === "git" && cmd.subcommand && GIT_REMOTE_READ_SUBCOMMANDS.has(cmd.subcommand)) {
+    if (cmd.kind === "git" && cmd.subcommand && GIT_REMOTE_READ_SUBCOMMANDS.has(cmd.subcommand) && hasGitHubRemote) {
       // A successful public clone/fetch of a different repository does not prove
       // access to the private GitHub repository that previously failed.
       if (failedRepoSlug && succeededRepoSlug === failedRepoSlug) {
