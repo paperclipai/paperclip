@@ -215,4 +215,69 @@ describe("IssueFiltersPopover Updated time filter", () => {
       vi.useRealTimers();
     }
   });
+
+  it("bounds timestamp reads on large collections across expiry and unchanged rerenders", () => {
+    vi.useFakeTimers({ now: new Date("2026-11-15T12:00:00.000Z") });
+    const root = createRoot(container);
+    try {
+      const count = 500;
+      const maxReads = count * 5;
+      let timestampReads = 0;
+
+      const tasks: Issue[] = Array.from({ length: count }, (_, index) => {
+        // First task is 23h old (ages out in 1h); remaining 499 are 1h-10h old.
+        const ageMs = index === 0
+          ? 23 * 60 * 60 * 1000
+          : (1 + (index % 9)) * 60 * 60 * 1000;
+        const storedUpdatedAt = new Date(Date.now() - ageMs);
+        const task = makeIssue(`task-${index}`, `Task ${index}`, storedUpdatedAt);
+        Object.defineProperty(task, "updatedAt", {
+          enumerable: true,
+          get() {
+            timestampReads += 1;
+            if (timestampReads > maxReads) {
+              throw new Error(`Exceeded bounded timestamp reads (${timestampReads} > ${maxReads})`);
+            }
+            return storedUpdatedAt;
+          },
+        });
+        return task;
+      });
+
+      const filters: IssueFilterState = { ...defaultIssueFilterState, updatedWithin: "24h" };
+
+      function LargeListHarness({ unrelatedProp }: { unrelatedProp: number }) {
+        const updatedNow = useIssueUpdatedFilterNow(tasks, filters.updatedWithin);
+        const visible = useMemo(
+          () => applyIssueFilters(tasks, filters, null, false, undefined, {}, updatedNow),
+          [updatedNow],
+        );
+        return <output data-testid="large-count" data-prop={unrelatedProp}>{visible.length}</output>;
+      }
+
+      act(() => root.render(<LargeListHarness unrelatedProp={1} />));
+      expect(container.querySelector('[data-testid="large-count"]')?.textContent).toBe("500");
+      const readsAfterMount = timestampReads;
+      expect(readsAfterMount).toBe(count * 2);
+
+      // Unchanged rerender hits memoization with zero extra scans.
+      act(() => root.render(<LargeListHarness unrelatedProp={2} />));
+      expect(timestampReads).toBe(readsAfterMount);
+
+      // Advance past the first task's 24h boundary: exactly one expiry refresh scan runs.
+      act(() => {
+        vi.advanceTimersByTime(2 * 60 * 60 * 1000);
+      });
+      expect(container.querySelector('[data-testid="large-count"]')?.textContent).toBe("499");
+      const readsAfterExpiry = timestampReads;
+      expect(readsAfterExpiry).toBe(count * 4);
+
+      // Subsequent unchanged rerender still performs zero extra scans.
+      act(() => root.render(<LargeListHarness unrelatedProp={3} />));
+      expect(timestampReads).toBe(readsAfterExpiry);
+    } finally {
+      act(() => root.unmount());
+      vi.useRealTimers();
+    }
+  });
 });

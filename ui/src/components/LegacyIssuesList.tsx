@@ -49,6 +49,7 @@ import {
   shouldIncludeIssueFilterWorkspaceOption,
   issueStatusOrder,
   issueUpdatedServerBefore,
+  issueUpdatedTime,
   type IssueFilterState,
   type IssueUpdatedFilter,
 } from "../lib/issue-filters";
@@ -1173,6 +1174,7 @@ export function IssuesList({
         assignee: issue.assigneeAgentId ? agentName(issue.assigneeAgentId) ?? "Unknown agent" : companyUserLabelMap.get(issue.assigneeUserId ?? "") ?? null,
         project: projectById.get(issue.projectId ?? "")?.name,
         parentTask: parent ? `${parent.identifier} ${parent.title}` : null,
+        updated: issueUpdatedTime(issue),
       };
     });
   }, [

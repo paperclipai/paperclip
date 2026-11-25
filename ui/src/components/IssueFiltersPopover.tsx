@@ -332,7 +332,7 @@ export function IssueFiltersPopover({
                         ? "border-primary bg-primary text-primary-foreground"
                         : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground"
                     }`}
-                    onClick={() => onChange(issueUpdatedWithinPatch(option.value))}
+                    onClick={() => onChange(issueUpdatedWithinPatch(isActive ? null : option.value))}
                   >
                     {option.label}
                   </button>
