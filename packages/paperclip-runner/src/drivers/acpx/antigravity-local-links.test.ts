@@ -45,6 +45,11 @@ describe("Antigravity replies never link local task-folder paths", () => {
     expect(through([task], [`It ran in ${task}/.`])).toBe("It ran in the task folder.");
     expect(through([task], [`It ran in ${task}/`])).toBe("It ran in the task folder");
     expect(through([task], [`Wrote ${task}.`])).toBe("Wrote the task folder.");
+    for (const [reply, expected] of [
+      [`Folder: **${task}**.`, "Folder: **the task folder**."], [`保存在 ${task}。`, "保存在 the task folder。"],
+      [`Wrote ${task}—done.`, "Wrote the task folder—done."], [`Saved in ${task}…`, "Saved in the task folder…"],
+      [`In ${task},and more`, "In the task folder,and more"], [`Copy ${task}.bak/x and ${task}-old`, `Copy ${task}.bak/x and ${task}-old`],
+    ]) for (let at = 0; at <= reply.length; at++) expect(through([task], [reply.slice(0, at), reply.slice(at)])).toBe(expected);
     // Child names that start with a letter outside ASCII or with punctuation stay whole, whole or split.
     for (const name of ["报告.txt", "(notes).md", "_draft.md", ".env.example"]) {
       const reply = `Wrote ${task}/${name} now.`;

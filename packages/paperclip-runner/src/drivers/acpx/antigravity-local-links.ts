@@ -36,6 +36,8 @@ function insideRoot(roots: readonly string[], path: string): string | null {
   return null;
 }
 
+/** Punctuation that can close a sentence or Markdown emphasis right after a path. */
+const CLOSING = ".,;:!?)\\]}\"'`*_";
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const code = (path: string) => `\`${path}\``;
@@ -57,9 +59,9 @@ export function neutralizeAntigravityLocalLinks(text: string, roots: readonly st
     return code(insideRoot(roots, decoded.path) ?? basename(decoded.path)) + match.slice(url.length);
   });
   for (const root of roots) {
-    // The task folder itself (optional trailing slash) only where the text then ends, breaks or closes
-    // a sentence; anything else after it is a child path, handled next.
-    value = value.replace(new RegExp(`${escapeRegExp(root)}/?(?=$|\\s|[.,;:!?)\\]}"'\`]+(?:\\s|$))`, "g"), "the task folder");
+    // The task folder itself: not followed by more of its own name, or by a slash and a child name
+    // (a trailing slash counts only before the end, a break, or closing punctuation). Children are handled next.
+    value = value.replace(new RegExp(`${escapeRegExp(root)}(?:/(?=$|\\s|[${CLOSING}]+(?:\\s|$))|(?![\\w/-]|\\.\\w))`, "g"), "the task folder");
     value = value.split(`${root}/`).join("");
   }
   return value;
@@ -81,7 +83,7 @@ function holdFrom(value: string, roots: readonly string[]): number {
       if (value.endsWith(prefix.slice(0, length))) { keep(value.length - length); break; }
     }
     // The folder then punctuation at the very end: a sentence end, or the start of a dot-file name.
-    const ending = new RegExp(`${escapeRegExp(root)}/?[.,;:!?)\\]}"'\`]+$`).exec(value);
+    const ending = new RegExp(`${escapeRegExp(root)}/?[${CLOSING}]+$`).exec(value);
     if (ending) keep(ending.index);
   }
   return start;
