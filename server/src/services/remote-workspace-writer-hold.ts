@@ -12,14 +12,64 @@ import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { wakeWorkspaceBusyWaitersInTx, WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS } from "../modules/run-dispatch/index.js";
 
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type WriterHoldTx = Db | Transaction;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const TERMINAL_WRITER_STATUSES = ["failed", "cancelled", "interrupted", "timed_out"];
-const TERMINAL_SUCCESSOR_STATUSES = ["failed", "cancelled", "interrupted", "timed_out", "succeeded"];
+const TERMINAL_RUN_STATUSES = ["failed", "cancelled", "interrupted", "timed_out", "succeeded"];
 const ACTIVE_SYSTEM_RECOVERY_STATES = ["scheduled", "running", "awaiting_evidence"];
+const ACTIVE_CONTINUATION_DELIVERIES = ["pending", "delivered", "delegated"];
 
 const object = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const uuid = (value: unknown): string | null => typeof value === "string" && UUID_RE.test(value) ? value : null;
+
+type RecoveryActionRow = { status: string; evidence: Record<string, unknown> };
+
+function hasBlockingUnsafeArchiveHold(action: RecoveryActionRow, writerId: string): boolean {
+  if (action.evidence.workspaceRestoreFailure !== "restore_unsafe_archive") return false;
+  return explicitContinuationSuccessorId(action, writerId) === null
+    && reconciliationSuccessorId(action, writerId) === null;
+}
+
+function explicitContinuationSuccessorId(action: RecoveryActionRow, writerId: string): string | null {
+  const explicit = object(action.evidence.explicitUserContinuation);
+  const runId = uuid(explicit.runId);
+  return explicit.previousRunId === writerId && runId && runId !== writerId ? runId : null;
+}
+
+function reconciliationSuccessorId(action: RecoveryActionRow, writerId: string): string | null {
+  if (!action.evidence.executionReconciliation) return null;
+  if (!ACTIVE_CONTINUATION_DELIVERIES.includes(String(action.evidence.continuationDelivery))) return null;
+  const runId = uuid(action.evidence.continuationRunId);
+  return runId && runId !== writerId ? runId : null;
+}
+
+function writerHasBlockingHold(actions: RecoveryActionRow[], writerId: string): boolean {
+  return actions.some(action => {
+    if (["active", "escalated"].includes(action.status)) return true;
+    const systemRecovery = readSystemRecovery(action.evidence);
+    if (systemRecovery && ACTIVE_SYSTEM_RECOVERY_STATES.includes(systemRecovery.state)) return true;
+    if (object(action.evidence.automaticRecovery).replay === "blocked") return true;
+    return hasBlockingUnsafeArchiveHold(action, writerId);
+  });
+}
+
+function collectDurableSuccessorIds(
+  writerId: string,
+  coordinatorFailureDetail: Record<string, unknown> | null | undefined,
+  actions: RecoveryActionRow[],
+): string[] {
+  const ids = new Set<string>();
+  const coordinatorSuccessor = uuid(object(coordinatorFailureDetail).successorRunId);
+  if (coordinatorSuccessor && coordinatorSuccessor !== writerId) ids.add(coordinatorSuccessor);
+  for (const action of actions) {
+    if (action.status !== "resolved") continue;
+    const explicit = explicitContinuationSuccessorId(action, writerId);
+    if (explicit) ids.add(explicit);
+    const reconciled = reconciliationSuccessorId(action, writerId);
+    if (reconciled) ids.add(reconciled);
+  }
+  return [...ids];
+}
 
 export type RemoteWorkspaceWriter = {
   runId: string; agentId: string; issueId: string; issueIdentifier: string | null; lastActivityAt: Date;
@@ -128,7 +178,7 @@ export async function readRemoteWorkspaceWriterHold(tx: Db, input: {
  * the next writer restores the last committed snapshot into a new directory.
  * The caller holds the workspace row lock.
  */
-export async function releaseSupersededRemoteWorkspaceWriter(tx: Transaction, input: {
+export async function releaseSupersededRemoteWorkspaceWriter(tx: WriterHoldTx, input: {
   workspace: typeof executionWorkspaces.$inferSelect;
   authority: RemoteWorkspaceAuthority;
   callerRunId?: string | null;
@@ -137,7 +187,7 @@ export async function releaseSupersededRemoteWorkspaceWriter(tx: Transaction, in
   const { workspace, authority } = input;
   const runId = authority.writerRunId;
   if (!runId || !authority.dirty || !authority.location || runId === input.callerRunId) return null;
-  const db = tx as unknown as Db;
+  const db = tx as Db;
   const now = new Date();
   // Never wait on a writer run another transaction holds; that owner settles it.
   const [writer] = await db.select({
@@ -148,7 +198,7 @@ export async function releaseSupersededRemoteWorkspaceWriter(tx: Transaction, in
     contextIssueId: sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
   }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, workspace.companyId), eq(heartbeatRuns.id, runId)))
     .for("update", { skipLocked: true });
-  if (!writer || !TERMINAL_WRITER_STATUSES.includes(writer.status) || !writer.finishedAt
+  if (!writer || !TERMINAL_RUN_STATUSES.includes(writer.status) || !writer.finishedAt
     || adapterExecutionControls.has(writer.id)
     || (writer.controllerLeaseExpiresAt && writer.controllerLeaseExpiresAt > now)) return null;
   const remoteProfile = writer.runnerProfileJson?.remoteWorkspace;
@@ -180,46 +230,31 @@ export async function releaseSupersededRemoteWorkspaceWriter(tx: Transaction, in
     eq(issueRecoveryActions.companyId, workspace.companyId), eq(issueRecoveryActions.sourceIssueId, writerIssueId),
     or(sql`${issueRecoveryActions.evidence}->>'runId' = ${writer.id}`,
       sql`${issueRecoveryActions.evidence}->>'sourceRunId' = ${writer.id}`)));
+  if (writerHasBlockingHold(actions, writer.id)) return null;
 
-  const successorIds = new Set<string>();
-  const coordinatorSuccessor = uuid(object(coordinator?.failureDetail).successorRunId);
-  if (coordinatorSuccessor && coordinatorSuccessor !== writer.id) successorIds.add(coordinatorSuccessor);
-
-  for (const action of actions) {
-    if (["active", "escalated"].includes(action.status)) return null;
-    const systemRecovery = readSystemRecovery(action.evidence);
-    if (systemRecovery && ACTIVE_SYSTEM_RECOVERY_STATES.includes(systemRecovery.state)) return null;
-    if (object(action.evidence.automaticRecovery).replay === "blocked") return null;
-    const explicit = object(action.evidence.explicitUserContinuation);
-    const hasExplicit = explicit.previousRunId === writer.id && uuid(explicit.runId) !== null && uuid(explicit.runId) !== writer.id;
-    const hasReconciliation = Boolean(action.evidence.executionReconciliation)
-      && ["pending", "delivered", "delegated"].includes(String(action.evidence.continuationDelivery))
-      && uuid(action.evidence.continuationRunId) !== null && uuid(action.evidence.continuationRunId) !== writer.id;
-    if (action.evidence.workspaceRestoreFailure === "restore_unsafe_archive" && !hasExplicit && !hasReconciliation) return null;
-    if (action.status === "resolved") {
-      if (hasExplicit) successorIds.add(uuid(explicit.runId)!);
-      if (hasReconciliation) successorIds.add(uuid(action.evidence.continuationRunId)!);
-    }
-  }
-  if (successorIds.size === 0) return null;
+  const successorIds = collectDurableSuccessorIds(writer.id, coordinator?.failureDetail, actions);
+  if (successorIds.length === 0) return null;
 
   const successorRows = await db.select({
     id: heartbeatRuns.id, status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt,
     controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
   }).from(heartbeatRuns).where(and(
-    eq(heartbeatRuns.companyId, workspace.companyId), inArray(heartbeatRuns.id, [...successorIds])));
+    eq(heartbeatRuns.companyId, workspace.companyId), inArray(heartbeatRuns.id, successorIds)));
   const successorsById = new Map(successorRows.map(row => [row.id, row]));
   for (const successorId of successorIds) {
     if (successorId === input.callerRunId) continue;
     const successor = successorsById.get(successorId);
-    if (!successor || !TERMINAL_SUCCESSOR_STATUSES.includes(successor.status) || !successor.finishedAt
+    if (!successor || !TERMINAL_RUN_STATUSES.includes(successor.status) || !successor.finishedAt
       || adapterExecutionControls.has(successor.id)
       || (successor.controllerLeaseExpiresAt && successor.controllerLeaseExpiresAt > now)) return null;
   }
 
+  // Register terminal-workspace work intent BEFORE modifying the workspace row
+  // (rules/sleep-aware-background-work.mdc).
+  await notifyTerminalWorkspaceWork(db, `workspace:${workspace.id}`);
   let abandoned: Awaited<ReturnType<typeof abandonUnverifiedRemoteWorkspaceEpoch>>;
   try {
-    abandoned = await abandonUnverifiedRemoteWorkspaceEpoch(tx, {
+    abandoned = await abandonUnverifiedRemoteWorkspaceEpoch(tx as Transaction, {
       companyId: workspace.companyId, workspaceId: workspace.id, runId: writer.id,
       epoch: authority.epoch, snapshotId: authority.snapshotId, location: authority.location,
     });
@@ -227,7 +262,6 @@ export async function releaseSupersededRemoteWorkspaceWriter(tx: Transaction, in
     if (error instanceof Error && error.message === "remote_workspace_authority_changed") return null;
     throw error;
   }
-  await notifyTerminalWorkspaceWork(db, `workspace:${workspace.id}`);
   if (input.wakeWaiters !== false) {
     await wakeWorkspaceBusyWaitersInTx(db, {
       companyId: workspace.companyId, runId: writer.id, contextSnapshot: null, scheduledRetryReason: null, now,

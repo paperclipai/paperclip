@@ -122,7 +122,7 @@ async function continueOne(tx: Db, input: { actionId: string; companyId: string;
     .where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, issue.executionWorkspaceId))).for("update");
   let authority = workspace ? readRemoteWorkspaceAuthority(workspace.metadata) : null;
   if (workspace && authority?.dirty && authority.writerRunId) {
-    const released = await releaseSupersededRemoteWorkspaceWriter(tx as never, { workspace, authority });
+    const released = await releaseSupersededRemoteWorkspaceWriter(tx, { workspace, authority });
     if (released) authority = released.authority;
   }
   if (!authority || (await readRemoteWorkspaceWriterHold(tx, { companyId: input.companyId, authority })).kind !== "free") return null;
