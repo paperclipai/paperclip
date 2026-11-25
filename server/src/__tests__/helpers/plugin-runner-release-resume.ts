@@ -329,7 +329,7 @@ export function registerPluginRunnerReleaseResumeSuite(group: "cached" | "adopte
       const providerSessionId = (await supervisor()).snapshot.providerSessionId;
       expect(providerSessionId).toEqual(expect.any(String));
       const pid = handle!.child.pid;
-      const { heartbeatService } = await import("../heartbeat.js");
+      const { heartbeatService } = await import("../../services/heartbeat.js");
       expect(await heartbeatService(db).prepareIdleWarmNativeSessionsForSleep({ canRetire: () => true }))
         .toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
       expect(stops).toBe(0); expect(handle!.isExitConfirmed?.()).toBe(false);
