@@ -11,9 +11,9 @@
     }
   ],
   "coverage": {
-    "measured": 400,
+    "measured": 402,
     "withSetup": 0,
-    "inventory": 404
+    "inventory": 410
   },
   "durations": {
     "packages/paperclip-runner/devtools/browser/src/live/transcript-model.test.ts": 365,
@@ -79,8 +79,10 @@
     "packages/paperclip-runner/src/contracts/runner-version.test.ts": 100,
     "packages/paperclip-runner/src/contracts/runtime-context.test.ts": 100,
     "packages/paperclip-runner/src/contracts/tool-input-variants.test.ts": 166,
-    "packages/paperclip-runner/src/control-plane/acpx-controller-recovery.test.ts": 96282,
-    "packages/paperclip-runner/src/control-plane/cursor-cloud-runner-launch.test.ts": 104673,
+    "packages/paperclip-runner/src/control-plane/acpx-controller-adoption.test.ts": 44200,
+    "packages/paperclip-runner/src/control-plane/acpx-controller-recovery.test.ts": 51800,
+    "packages/paperclip-runner/src/control-plane/cursor-cloud-runner-launch.test.ts": 48200,
+    "packages/paperclip-runner/src/control-plane/cursor-cloud-runner-questions.test.ts": 50000,
     "packages/paperclip-runner/src/control-plane/durable-prp-checkpoint-records.test.ts": 439,
     "packages/paperclip-runner/src/control-plane/durable-prp-control-plane.test.ts": 32565,
     "packages/paperclip-runner/src/control-plane/relaunched-runner.test.ts": 144,
