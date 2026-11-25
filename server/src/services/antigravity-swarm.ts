@@ -247,7 +247,7 @@ async function selectSwarm(tx: Db, input: Parameters<typeof resolveAntigravitySw
   commentId: string; request: string; replacedCommentIds: string[];
 }): Promise<SwarmDecision> {
   const { commentId, request } = input;
-  const attempts = await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, createdAt: heartbeatRuns.createdAt,
+  const attempts = await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, createdAt: heartbeatRuns.createdAt,
     finishedAt: heartbeatRuns.finishedAt, updatedAt: heartbeatRuns.updatedAt }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, input.companyId), ne(heartbeatRuns.id, input.runId),
       sql`${heartbeatRuns.contextSnapshot}->>'antigravitySwarmCommentId' = ${commentId}`,
@@ -271,6 +271,11 @@ async function selectSwarm(tx: Db, input: Parameters<typeof resolveAntigravitySw
     since: stoppedAt && stoppedAt > lastAttemptAt ? stoppedAt : lastAttemptAt });
   if (!manual && attempts.some(run => run.status === "cancelled")) {
     return { refusal: "The swarm for this request was stopped. Send /swarm again, or use Retry, to start it again." };
+  }
+  // A swarm the route itself failed (no result, helpers timed out, a blocked
+  // action) waits for the person: only interruptions are attempted again automatically.
+  if (!manual && attempts.some(run => run.status === "failed" && run.errorCode === ANTIGRAVITY_SWARM_UNAVAILABLE)) {
+    return { refusal: "The swarm for this request did not finish. Send /swarm again, or use Retry, to start it again." };
   }
   if (!manual && attempts.filter(run => ["failed", "timed_out"].includes(run.status)).length >= ANTIGRAVITY_SWARM_AUTOMATIC_ATTEMPTS) {
     return { refusal: "The swarm did not finish after three attempts, so Paperclip stopped retrying it. Send /swarm again to start a new one." };

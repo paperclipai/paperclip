@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { classifyContinuationFailure } from "./recovery/service.js";
+import { NativeProviderTerminalFailure } from "../vendor/paperclip-runner/index.js";
+import { nativeSessionFailureDisposition, nativeSessionFailureSourceCode, nativeStartupFailureMessage } from "./native-runtime/native-session-executor.js";
 import { antigravitySwarmRefusal, isAntigravitySwarmExecution, requestedAntigravitySwarmCommentId } from "./antigravity-swarm.js";
 
 const antigravity = { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-low" } };
@@ -32,5 +34,20 @@ describe("trusted /swarm for Google Antigravity", () => {
   it("does not automatically replay a refused /swarm (the user sends /swarm again or presses Retry)", () => {
     expect(classifyContinuationFailure({ errorCode: "antigravity_swarm_unavailable", resultJson: null } as never))
       .toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+  });
+
+  // Live run6: a swarm turn that ended with no result became "native_session_interrupted",
+  // showed the Runner's raw continuation text, and recovery started two more billed swarms.
+  it("settles a swarm turn the route failed by its own code as a plain, person-retried failure", () => {
+    const message = "The swarm ended without doing any work. Send /swarm again to retry.";
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "turn", category: "unknown", retryability: "unknown", message } as const;
+    const failure = new NativeProviderTerminalFailure("ANTIGRAVITY_SWARM_NO_RESULT", false, message, providerFailure as never);
+    const code = nativeSessionFailureSourceCode(failure);
+    expect(code).toBe("antigravity_swarm_unavailable");
+    expect(nativeSessionFailureDisposition(1, new Date(), code)).toMatchObject({ phase: "terminal_failure", failureCode: "antigravity_swarm_unavailable", nextAttemptAt: null });
+    expect(nativeStartupFailureMessage(code, `native_session_recovery_failed: ${message}`, providerFailure)).toBe(message);
+    expect(classifyContinuationFailure({ errorCode: code, resultJson: null } as never)).toMatchObject({ kind: "non_retryable", maxAttempts: 0 });
+    // A lost CLI process is an interruption and still recovers on its own.
+    expect(nativeSessionFailureSourceCode(new NativeProviderTerminalFailure("ACPX_PROVIDER_PROCESS_LOST", true, "lost"))).not.toBe("antigravity_swarm_unavailable");
   });
 });

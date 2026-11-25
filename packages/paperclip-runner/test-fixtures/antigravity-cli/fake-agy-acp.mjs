@@ -17,6 +17,11 @@
 //   hang-helpers   the follow-up wait never ends
 //   mode-flip      the CLI switches back to default mode right after the model is set
 //   mode-flip-idle the CLI switches back to default mode after the session opened, between turns
+//   context-read   the coordinator first reads Paperclip's get_task_context (the live
+//                  2026-11-24 run6 opening), then runs the swarm and hands in
+//   no-work        the coordinator ends its turn without helpers and without handing in
+//   denied-tool    the coordinator calls a Paperclip tool the swarm does not admit
+//                  (create_task); the CLI ends the whole turn on the denial, as live
 //   outside-edit   the coordinator edits a file outside the workspace (absolute path)
 //   dotdot-edit    the coordinator edits ../escape.txt through its path argument
 //   symlink-edit   the coordinator edits link/x.txt where link points outside the workspace
@@ -30,7 +35,7 @@
 //                  outside, and the real ~/.gemini; never written, the swarm must stop
 // FAKE_AGY_LOG (optional) appends every client message, one JSON per line.
 import { spawn } from "node:child_process";
-import { appendFileSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -57,6 +62,32 @@ const tool = async (name, args, status = "completed") => {
   await sleep(2);
   update(state.sessionId, { sessionUpdate: "tool_call_update", toolCallId, name, args, status, kind: "other", title: `Run ${name}`, rawInput: args });
 };
+// A call to a client MCP server exactly as the pinned CLI (1.5.15) sends it, recorded
+// live (paperclip-mcp-call.recorded.json): name `mcp_<server>_<tool>`, kind other,
+// no _meta, and a string request id. The CLI asks before every such call in auto mode,
+// and a denial ends its whole turn (live run6: `approved=false`, then the cascade is cancelled).
+const RECORDED = JSON.parse(readFileSync(new URL("./paperclip-mcp-call.recorded.json", import.meta.url), "utf8"));
+const permissionAnswers = new Map();
+let permissionId = 0;
+const paperclipCall = async tool => {
+  const name = `mcp_paperclip_${tool}`;
+  const toolCallId = `call_${++call}`;
+  const shape = update => ({ ...update, toolCallId, name, title: `Run ${name}` });
+  for (const recorded of RECORDED.toolCallUpdates) update(state.sessionId, shape(recorded.params.update));
+  const id = String(++permissionId);
+  const answered = new Promise(resolve => permissionAnswers.set(id, resolve));
+  write({ ...RECORDED.requestPermission, id, params: { ...RECORDED.requestPermission.params, sessionId: state.sessionId, toolCall: shape(RECORDED.requestPermission.params.toolCall) } });
+  const answer = await answered;
+  log({ permissionAnswer: answer.result, tool });
+  if (answer.result?.outcome?.optionId === "allow") {
+    for (const recorded of RECORDED.afterAllow) update(state.sessionId, shape(recorded.params.update));
+    return true;
+  }
+  update(state.sessionId, shape({ sessionUpdate: "tool_call_update", args: {}, status: "failed", kind: "other", rawInput: {},
+    rawOutput: `permission check failed for mcp "paperclip/${tool}": user denied permission for mcp(paperclip/${tool})` }));
+  return false;
+};
+const handIn = () => paperclipCall("paperclip_finish");
 const say = text => update(state.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
 const usage = { inputTokens: 49646, outputTokens: 1421, cachedReadTokens: 81968, cachedWriteTokens: 0, thoughtTokens: 0, totalTokens: 133035 };
 const addWriters = async () => {
@@ -106,7 +137,7 @@ async function prompt(id, params) {
     // Paperclip's follow-up: wait for the helpers, then confirm.
     if (scenario === "hang-helpers") { await new Promise(resolve => { state.cancel = resolve; }); return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } }); }
     await tool("read_board", { since: 5 });
-    if (scenario === "live-helpers") writeFiles();
+    if (scenario === "live-helpers") { writeFiles(); await handIn(); }
     say("All helpers have finished. a.txt contains A and b.txt contains B.");
     return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage: { ...usage, totalTokens: 1000, inputTokens: 900, outputTokens: 100, cachedReadTokens: 0 } } });
   }
@@ -131,6 +162,9 @@ async function prompt(id, params) {
     if (!state.cancelled) await new Promise(resolve => { state.cancel = resolve; });
     return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
   }
+  if (scenario === "no-work") { say("I looked at the request; there is nothing to do."); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage } }); }
+  if (scenario === "denied-tool") { await paperclipCall("create_task"); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage } }); }
+  if (scenario === "context-read" && !await paperclipCall("get_task_context")) return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage } });
   if (scenario === "escape") { await tool("swarm", { action: "add", name: "writer-a", workspace: "branch", brief: "Write a.txt." }); if (!state.cancelled) await new Promise(resolve => { state.cancel = resolve; }); return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn" } }); }
   await addWriters();
   if (scenario.startsWith("plan")) {
@@ -164,6 +198,7 @@ async function prompt(id, params) {
   }
   await tool("read_board", { since: 5 });
   await tool("post_message", { text: "[done] Verification verified and tasks finished successfully." });
+  await handIn();
   say("\n\nThe swarm has completed its work. a.txt contains A and b.txt contains B.");
   write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage } });
 }
@@ -183,7 +218,11 @@ process.stdin.on("end", () => process.exit(0));
 
 async function handle(message) {
   const { id, method, params = {} } = message;
-  if (method === undefined) { if (id === 77) { log({ permissionAnswer: message.result }); state.permission?.(); } return; }
+  if (method === undefined) {
+    if (id === 77) { log({ permissionAnswer: message.result }); state.permission?.(); }
+    permissionAnswers.get(id)?.(message);
+    return;
+  }
   if (method === "initialize") {
     return write({ jsonrpc: "2.0", id, result: { protocolVersion: 1,
       agentCapabilities: { loadSession: true, promptCapabilities: { image: true, embeddedContext: true }, _meta: { antigravity: { tier: true, systemPrompt: { append: true } } } },

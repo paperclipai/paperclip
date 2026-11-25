@@ -32,7 +32,9 @@ export type AntigravitySwarmErrorCode =
   | "ANTIGRAVITY_SWARM_SIGN_IN_REQUIRED"
   | "ANTIGRAVITY_SWARM_RECEIPT_MISMATCH"
   | "ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE"
-  | "ANTIGRAVITY_SWARM_HELPERS_TIMEOUT";
+  | "ANTIGRAVITY_SWARM_HELPERS_TIMEOUT"
+  /** The swarm turn ended without handing in (no helpers ran, or Paperclip blocked an action). */
+  | "ANTIGRAVITY_SWARM_NO_RESULT";
 
 const CATEGORY: Record<AntigravitySwarmErrorCode, ProviderFailure["category"]> = {
   // Each of these needs the person to change something; a plain Retry meets the same refusal.
@@ -41,6 +43,7 @@ const CATEGORY: Record<AntigravitySwarmErrorCode, ProviderFailure["category"]> =
   ANTIGRAVITY_SWARM_RECEIPT_MISMATCH: "unknown",
   ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE: "unknown",
   ANTIGRAVITY_SWARM_HELPERS_TIMEOUT: "timeout",
+  ANTIGRAVITY_SWARM_NO_RESULT: "unknown",
 };
 
 /**

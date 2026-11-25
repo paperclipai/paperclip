@@ -87,7 +87,7 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
       companyId: run.companyId, agentId: run.agentId, runId: run.id, now,
     }).then(async limited => {
       if (!limited) return null;
-      quotaScope = deps.providerQuotaScope ? await deps.providerQuotaScope(agent, run) : runProviderQuotaScope(run.contextSnapshot);
+      quotaScope = deps.providerQuotaScope ? await deps.providerQuotaScope(agent, run) : runProviderQuotaScope(run.contextSnapshot, run.runnerProfileJson);
       const ssh = options.sshAuthentication !== undefined ? options.sshAuthentication
         : deps.sshAuthentication ? await deps.sshAuthentication(agent, run) : null;
       // Dispatch checks again once the environment, and so the account, is known.

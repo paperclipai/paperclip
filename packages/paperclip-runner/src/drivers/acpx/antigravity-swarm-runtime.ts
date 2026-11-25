@@ -15,6 +15,8 @@ import {
 import { GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL, GENERATED_ANTIGRAVITY_SWARM_ENVELOPE_SCHEMA, GENERATED_ANTIGRAVITY_SWARM_REQUEST_FIELD, GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS } from "./generated-sidecar-contract.js";
 import { antigravitySwarmEvent } from "./antigravity-swarm-presentation.js";
 import { awaitVerifiedAcpxProviderOwnership } from "./installation-integrity.js";
+import { canonicalRunnerToolName } from "../runner-tool-bridge.js";
+import { PRP_BLOCK_TOOL_NAME, PRP_COMPLETION_TOOL_NAME } from "../../contracts/completion-result.js";
 import type { AcpxModelStatus } from "./model-verification.js";
 import type { AcpxRuntimePort, AcpxRuntimePortIdentity, AcpxRuntimePortOpenOptions, AcpxRuntimeTurn, AcpxRuntimeTurnInput } from "./runtime-host.js";
 
@@ -45,7 +47,12 @@ const DEFAULT_CANCEL_GRACE_MS = 5_000;
 const READBACK_TIMEOUT_MS = 5_000;
 const SNAPSHOT_LIMIT = 20_000;
 const SKIPPED_DIRECTORIES = new Set([".git", "node_modules", ".venv", "__pycache__"]);
-const BLOCKED_TEXT = /timed out waiting for user response|permission check failed/i;
+// The CLI's sandbox refusing a helper's change outside the task folder. A denial
+// Paperclip itself answered (`permission check failed for mcp …`) is not one.
+const BLOCKED_TEXT = /timed out waiting for user response|permission check failed(?! for mcp)/i;
+/** How the pinned CLI (1.5.15) names a call to a client MCP server: `mcp_<server>_<tool>`, with no `_meta`. */
+const PAPERCLIP_TOOL_PREFIX = `mcp_${ANTIGRAVITY_SWARM_MCP_SERVER}_`;
+const HAND_IN_TOOLS: ReadonlySet<string> = new Set([PRP_COMPLETION_TOOL_NAME, PRP_BLOCK_TOOL_NAME]);
 export const ANTIGRAVITY_SWARM_PROCESS_LOST = "ACPX_PROVIDER_PROCESS_LOST";
 
 export type AntigravitySwarmStage = "spawned" | "initialized" | "session" | "mode" | "model" | "snapshot" | "helpers";
@@ -246,6 +253,31 @@ export function antigravitySwarmRequestText(turnText: string): string | null {
   return typeof request === "string" && request.trim() && request.length <= GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS ? request : null;
 }
 
+/**
+ * The Paperclip tool a CLI permission request or tool update names, when it is
+ * one the run's Paperclip bridge admits (its served catalog for a swarm turn plus
+ * the reserved finish and block tools). The swarm session has no other MCP
+ * server (admission refuses one), so the `mcp_paperclip_` prefix can only mean
+ * Paperclip's bridge; anything else, or a tool outside the admitted set, is null.
+ */
+export function antigravitySwarmPaperclipTool(toolCall: unknown, admitted: ReadonlySet<string>): string | null {
+  const name = record(toolCall).name;
+  if (typeof name !== "string" || !name.startsWith(PAPERCLIP_TOOL_PREFIX)) return null;
+  const tool = canonicalRunnerToolName(name.slice(PAPERCLIP_TOOL_PREFIX.length));
+  return tool && admitted.has(tool) ? tool : null;
+}
+
+export type AntigravityCliAccountReason = "no_connection_account" | "cli_sign_in_not_found";
+
+/** One line for the run's history: whether the CLI's own Google sign-in is the agent's connection account. */
+function accountLine(match: AntigravityCliAccountMatch, reason: AntigravityCliAccountReason | null): string {
+  if (match === "matches") return "This swarm runs on the Google account of this agent's Google connection.";
+  if (match === "does_not_match") return "This swarm runs on the Google account signed in to this computer, which is different from this agent's Google connection.";
+  return reason === "no_connection_account"
+    ? "Paperclip could not confirm which Google account this swarm runs on: this agent's Google connection names no account."
+    : "Paperclip could not confirm which Google account this swarm runs on: the Antigravity CLI did not record its sign-in.";
+}
+
 function failed(code: string, message: string): AcpRuntimeTurnResult {
   return { status: "failed", error: { code, message, retryable: false } };
 }
@@ -353,6 +385,8 @@ export async function openAntigravitySwarmRuntime(
   let sessionId: string;
   let receipt: AntigravitySwarmReceipt;
   let cliAccount: AntigravityCliAccountMatch = "unknown";
+  const accountDigest = options.antigravitySwarm?.accountDigest ?? null;
+  const paperclipTools: ReadonlySet<string> = new Set(options.paperclipTools ?? []);
   // A Stop during admission retires the CLI at once; every await re-checks it.
   const abortAdmission = () => { void retire().catch(() => undefined); };
   options.signal?.addEventListener("abort", abortAdmission, { once: true });
@@ -396,7 +430,7 @@ export async function openAntigravitySwarmRuntime(
     guard.assertSwarmCommand();
     receipt = guard.receipt();
     cliAccount = options.antigravityStateDirectory
-      ? await antigravityCliAccountMatch(antigravitySwarmLogFile(options.antigravityStateDirectory), options.antigravitySwarm?.accountDigest ?? null)
+      ? await antigravityCliAccountMatch(antigravitySwarmLogFile(options.antigravityStateDirectory), accountDigest)
       : "unknown";
     if (protocolFailure) throw protocolFailure;
     options.signal?.throwIfAborted();
@@ -410,7 +444,10 @@ export async function openAntigravitySwarmRuntime(
 
   options.signal?.removeEventListener("abort", abortAdmission);
   // Diagnostics only: the channel and whether the CLI's own sign-in is the agent's connection account (never the account itself).
-  const status: Json = { antigravitySwarmReceipt: { ...receipt, channel, cliAccountMatchesConnection: cliAccount } };
+  const accountReason: AntigravityCliAccountReason | null = cliAccount !== "unknown" ? null
+    : accountDigest ? "cli_sign_in_not_found" : "no_connection_account";
+  const status: Json = { antigravitySwarmReceipt: { ...receipt, channel, cliAccountMatchesConnection: cliAccount,
+    ...(accountReason ? { cliAccountUnknownReason: accountReason } : {}) } };
   let turns = 0;
   let active: { cancel(reason?: string): Promise<void>; result: Promise<AcpRuntimeTurnResult> } | null = null;
   let closed = false;
@@ -443,9 +480,11 @@ export async function openAntigravitySwarmRuntime(
     let stop: AntigravitySwarmError | null = null;
     const halt = (error: AntigravitySwarmError) => { stop ??= error; connection.notify("session/cancel", { sessionId }); wake?.(); };
     events.push(line("setup", `Swarm started in the task folder with ${receipt.modelName} on ${antigravitySwarmChannelLabel(channel)} (Antigravity CLI ${receipt.agentVersion}). Helper changes inside the task folder are approved automatically; anything else is blocked.`));
-    if (cliAccount === "does_not_match") {
-      events.push(line("account", "This swarm runs on the Google account signed in to this computer, which is different from this agent's Google connection."));
-    }
+    // Always recorded in the run's history, including when it cannot be told.
+    events.push(line("account", accountLine(cliAccount, accountReason)));
+    // Calls Paperclip's own handler refused (each already reported once), and whether the swarm handed in.
+    const deniedCalls = new Set<string>();
+    let handedIn = false;
 
     updateListener = params => {
       try { guard.observe(params); } catch (error) {
@@ -466,6 +505,10 @@ export async function openAntigravitySwarmRuntime(
           `Swarm stopped: it tried to change ${outside}, which is outside the task folder.`));
         return;
       }
+      if (update.sessionUpdate === "tool_call_update" && update.status === "completed") {
+        const tool = antigravitySwarmPaperclipTool(update, paperclipTools);
+        if (tool && HAND_IN_TOOLS.has(tool)) handedIn = true;
+      }
       const args = { ...record(update.rawInput), ...record(update.args) };
       if (update.sessionUpdate === "tool_call" && update.name === "swarm" && args.action === "add" && typeof args.name === "string") {
         helpers.set(args.name, typeof args.brief === "string" ? args.brief : "");
@@ -477,7 +520,7 @@ export async function openAntigravitySwarmRuntime(
       const content = record(update.content);
       const text = typeof content.text === "string" ? content.text : JSON.stringify(update.rawOutput ?? "");
       if (update.sessionUpdate === "agent_message_chunk" && typeof content.text === "string") transcript += content.text;
-      if (BLOCKED_TEXT.test(text)) {
+      if (BLOCKED_TEXT.test(text) && !(typeof update.toolCallId === "string" && deniedCalls.has(update.toolCallId))) {
         blocked += 1;
         events.push(line(`blocked-${blocked}`, "A helper was blocked from changing something outside the task folder"));
       }
@@ -487,16 +530,20 @@ export async function openAntigravitySwarmRuntime(
     connection.onRequest = async (method, params) => {
       if (method !== "session/request_permission" || params.sessionId !== sessionId) throw new Error("unsupported");
       const toolCall = record(params.toolCall);
-      const meta = record(record(toolCall._meta).mcp);
       const choices = Array.isArray(params.options) ? params.options.map(record) : [];
-      // Only Paperclip's own tool server is approved here; auto mode already
-      // allows the task folder, so anything else that asks is outside it.
-      const paperclip = meta.server === ANTIGRAVITY_SWARM_MCP_SERVER;
+      // Only the run's own Paperclip tools are approved here (the CLI asks before
+      // every client MCP call); auto mode already allows the task folder, so
+      // anything else that asks is outside it. The CLI ends the whole turn on a
+      // denial, so a refused call is reported once and ends the swarm plainly.
+      const paperclip = antigravitySwarmPaperclipTool(toolCall, paperclipTools) !== null;
       const choice = choices.find(option => option.kind === (paperclip ? "allow_once" : "reject_once"));
       if (!paperclip) {
         blocked += 1;
-        const title = typeof toolCall.title === "string" ? toolCall.title.split(workspace).join(".") : "an action outside the task folder";
-        events.push(line(`blocked-${blocked}`, `Blocked: ${title.slice(0, 160)}`));
+        if (typeof toolCall.toolCallId === "string") deniedCalls.add(toolCall.toolCallId);
+        const requested = typeof toolCall.name === "string" && toolCall.name.startsWith(PAPERCLIP_TOOL_PREFIX)
+          ? `Paperclip does not allow ${toolCall.name.slice(PAPERCLIP_TOOL_PREFIX.length).slice(0, 80)} during a swarm`
+          : `Blocked: ${(typeof toolCall.title === "string" ? toolCall.title.split(workspace).join(".") : "an action outside the task folder").slice(0, 160)}`;
+        events.push(line(`blocked-${blocked}`, requested));
       }
       return choice ? { outcome: { outcome: "selected", optionId: choice.optionId } } : { outcome: { outcome: "cancelled" } };
     };
@@ -565,6 +612,16 @@ export async function openAntigravitySwarmRuntime(
       const changed = changedFiles(before.files, after.files);
       events.push(line("files", !before.complete || !after.complete ? "The task folder is too large to list every change"
         : changed.length ? `Files changed in the task folder: ${changed.slice(0, 20).join(", ")}${changed.length > 20 ? ", …" : ""}` : "No files changed in the task folder"));
+      // A swarm that ended without handing in is a typed swarm failure the person
+      // retries, never an interruption Paperclip resumes or retries on its own
+      // (each attempt is a full, billed swarm).
+      if (!handedIn) {
+        return failed("ANTIGRAVITY_SWARM_NO_RESULT" satisfies AntigravitySwarmError["code"], deniedCalls.size > 0
+          ? "The swarm stopped because Paperclip blocked an action it may not take during a swarm, so nothing was handed in. Send /swarm again to retry."
+          : helpers.size === 0
+            ? "The swarm ended without doing any work. Send /swarm again to retry."
+            : "The swarm finished without handing in its result. Files its helpers wrote stay in the task folder. Send /swarm again to retry.");
+      }
       return { status: "completed", stopReason: "end_turn" };
     } catch (error) {
       if (connection.lost instanceof ProcessLostError || error instanceof ProcessLostError) {

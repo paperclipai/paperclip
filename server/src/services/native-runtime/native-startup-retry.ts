@@ -5,6 +5,7 @@ import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { infrastructureRetryDelayMs, PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 import { isProviderQuotaActionRequired, parseProviderQuotaClockReset } from "../provider-quota-reset.js";
+import { ANTIGRAVITY_CLI_QUOTA_SCOPE } from "../antigravity-swarm-refusal.js";
 
 /** Categories that report an exhausted account or request allowance. */
 const PROVIDER_LIMIT_CATEGORIES = ["rate_limit", "quota_exhausted"];
@@ -54,15 +55,28 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 export const PROVIDER_QUOTA_SCOPE_CONTEXT_KEY = "providerQuotaScope";
 const QUOTA_SCOPE_PATTERN = /^[a-z][a-z0-9_]{0,63}$/;
 
-/** The quota scope a run recorded; null is the credential's default quota. */
-export function runProviderQuotaScope(contextSnapshot: unknown): string | null {
+/**
+ * The quota scope a run drew on; null is the credential's default quota. A run
+ * that executed the Antigravity swarm route draws on the CLI's own pool even
+ * when its context lacks the field (runs started before scopes existed, and
+ * their retries), so the executed provider mode in its runner profile decides.
+ */
+export function runProviderQuotaScope(contextSnapshot: unknown, runnerProfileJson?: unknown): string | null {
   const value = contextSnapshot && typeof contextSnapshot === "object"
     ? (contextSnapshot as Record<string, unknown>)[PROVIDER_QUOTA_SCOPE_CONTEXT_KEY] : undefined;
-  return typeof value === "string" && QUOTA_SCOPE_PATTERN.test(value) ? value : null;
+  if (typeof value === "string" && QUOTA_SCOPE_PATTERN.test(value)) return value;
+  const profile = runnerProfileJson && typeof runnerProfileJson === "object" ? runnerProfileJson as Record<string, unknown> : {};
+  const input = profile.nativeExecutionInput && typeof profile.nativeExecutionInput === "object" ? profile.nativeExecutionInput as Record<string, unknown> : {};
+  const provider = input.provider && typeof input.provider === "object" ? input.provider as Record<string, unknown> : {};
+  return provider.kind === "acpx" && provider.agent === "antigravity" && provider.mode === "swarm" ? ANTIGRAVITY_CLI_QUOTA_SCOPE : null;
 }
 
 function quotaScopeEvidenceFilter(scope: string | null) {
-  const recorded = sql`${heartbeatRuns.contextSnapshot} ->> ${PROVIDER_QUOTA_SCOPE_CONTEXT_KEY}`;
+  // The same derivation as runProviderQuotaScope, in SQL, so old swarm evidence holds only swarms.
+  const executed = sql`${heartbeatRuns.runnerProfileJson} -> 'nativeExecutionInput' -> 'provider'`;
+  const recorded = sql`coalesce(${heartbeatRuns.contextSnapshot} ->> ${PROVIDER_QUOTA_SCOPE_CONTEXT_KEY},
+    case when ${executed} ->> 'kind' = 'acpx' and ${executed} ->> 'agent' = 'antigravity' and ${executed} ->> 'mode' = 'swarm'
+      then ${ANTIGRAVITY_CLI_QUOTA_SCOPE} end)`;
   return scope === null ? sql`${recorded} is null` : sql`${recorded} = ${scope}`;
 }
 
@@ -233,7 +247,7 @@ export async function planNativeStartupRetry(input: {
   // Limit evidence only refines the schedule. A failed read must not stop the
   // failure from settling, so the retry falls back to plain backoff.
   const providerCooldownAt = await input.db
-    .select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns)
+    .select({ contextSnapshot: heartbeatRuns.contextSnapshot, runnerProfileJson: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, input.binding.companyId), eq(heartbeatRuns.id, input.binding.runId)))
     .then(([run]) => agentProviderLimitCooldown(input.db, {
       companyId: input.binding.companyId,
@@ -242,7 +256,7 @@ export async function planNativeStartupRetry(input: {
       failure: input.failure,
       // The failure was reported on the account this run started with.
       credential: runProviderLimitCredential(run?.contextSnapshot),
-      quotaScope: runProviderQuotaScope(run?.contextSnapshot),
+      quotaScope: runProviderQuotaScope(run?.contextSnapshot, run?.runnerProfileJson),
       now: input.now,
     })).then((cooldown) => cooldown?.resetAt ?? null, (error: unknown) => {
     logger.warn({ err: error, runId: input.binding.runId }, "native provider limit evidence unavailable");

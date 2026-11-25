@@ -9327,6 +9327,11 @@ function classifyNativeSessionFailure(
   if (error instanceof NativeProviderSideEffectPendingError) return NATIVE_PROVIDER_SIDE_EFFECT_PENDING;
   if (error instanceof NativeProviderTerminalFailure) {
     if (error.providerCode === "approval_required") return "native_provider_approval_required";
+    // A /swarm turn the swarm route failed by its own closed code (no result,
+    // helpers timed out, a blocked escape): each automatic attempt is a full,
+    // billed swarm, so the person decides whether to retry it. Interruptions
+    // (a lost CLI process) keep their own code and still recover on their own.
+    if (/^ANTIGRAVITY_SWARM_[A-Z_]+$/.test(error.providerCode)) return ANTIGRAVITY_SWARM_UNAVAILABLE;
     // Failed terminals retain their security meaning across the provider facade.
     // A stopped process is insufficient evidence to recover an integrity breach.
     if (

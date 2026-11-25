@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AcpRuntimeEvent } from "acpx/runtime";
-import { antigravityCliAccountMatch, openAntigravitySwarmRuntime, type AntigravitySwarmStage } from "./antigravity-swarm-runtime.js";
+import { antigravityCliAccountMatch, antigravitySwarmPaperclipTool, openAntigravitySwarmRuntime, type AntigravitySwarmStage } from "./antigravity-swarm-runtime.js";
 import { antigravityAccountDigest } from "./antigravity-swarm-route.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
-import type { AcpxTerminalSessionFailure } from "./provider-failure.js";
+import { acpxTerminalResult, type AcpxTerminalSessionFailure } from "./provider-failure.js";
 import { nativeSystemInstructions } from "../../backends/runtime-context.js";
 import { buildNativeModelEnvelope, NATIVE_EXECUTION_INPUT_SCHEMA, type NativeExecutionInput } from "../../contracts/native-execution.js";
 import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
@@ -39,6 +39,8 @@ function setup(scenario: string, overrides: Partial<AcpxRuntimePortOpenOptions> 
     permissionPolicy: {}, launchEnvironment: {}, credentialFenceFds: null, activateCredentialFenceOwner: null,
     systemInstructions: "Paperclip instructions",
     mcpServers: [{ name: "paperclip", url: "http://127.0.0.1:9/mcp", bearerToken: "bridge-secret", runnerOwned: true }],
+    // The bridge's admitted names for a swarm turn (runtime-host passes toolBridge.admittedToolNames).
+    paperclipTools: ["get_task_context", "read_document", "paperclip_finish", "paperclip_block"],
     retainFailedAdmissionCleanup: () => {},
     ...overrides,
   } as unknown as AcpxRuntimePortOpenOptions;
@@ -199,6 +201,70 @@ describe("Antigravity CLI swarm runtime", () => {
     expect(run.result).toMatchObject({ status: "completed" });
     expect(run.clientMessages().find(message => message.permissionAnswer)?.permissionAnswer).toEqual({ outcome: { outcome: "selected", optionId: "deny" } });
     expect(run.titles).toEqual(expect.arrayContaining(["Blocked: Write /outside/c.txt", "A helper was blocked from changing something outside the task folder"]));
+  });
+
+  // Live run6 (2026-11-24): the coordinator's first call was Paperclip's own
+  // get_task_context; the handler expected `_meta.mcp.server`, which CLI 1.5.15
+  // never sends, refused it, and the CLI ended the whole turn on the denial.
+  it("approves the run's own Paperclip tools as the pinned CLI really names them, and hands in", async () => {
+    const run = await runTurn("context-read");
+    const answers = run.clientMessages().filter(message => message.permissionAnswer);
+    expect(answers.map(message => [message.tool, message.permissionAnswer.outcome.optionId])).toEqual([["get_task_context", "allow"], ["paperclip_finish", "allow"]]);
+    expect(run.result).toMatchObject({ status: "completed" });
+    expect(run.titles.some(title => /^Blocked:|^A helper was blocked|does not allow/.test(title))).toBe(false);
+  });
+
+  it("refuses a Paperclip tool the swarm does not admit, says so plainly, and fails the turn for the person to retry", async () => {
+    const run = await runTurn("denied-tool");
+    const answers = run.clientMessages().filter(message => message.permissionAnswer);
+    expect(answers.map(message => [message.tool, message.permissionAnswer.outcome.optionId])).toEqual([["create_task", "deny"]]);
+    expect(run.titles).toContain("Paperclip does not allow create_task during a swarm");
+    // Its own denial echoed back by the CLI is not a helper change outside the task folder.
+    expect(run.titles).not.toContain("A helper was blocked from changing something outside the task folder");
+    expect(run.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_NO_RESULT", retryable: false,
+      message: "The swarm stopped because Paperclip blocked an action it may not take during a swarm, so nothing was handed in. Send /swarm again to retry." } });
+  });
+
+  it("fails a swarm that ended without doing any work, plainly, instead of leaving it to automatic recovery", async () => {
+    const run = await runTurn("no-work");
+    expect(run.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_NO_RESULT", retryable: false,
+      message: "The swarm ended without doing any work. Send /swarm again to retry." } });
+    // What the Runner reports: the plain sentence as the provider failure, with Retry left to the person.
+    const terminal = acpxTerminalResult(run.result, "antigravity") as { error: { code: string; providerFailure: { message: string; retryability: string } } };
+    expect(terminal.error.code).toBe("ANTIGRAVITY_SWARM_NO_RESULT");
+    expect(terminal.error.providerFailure).toMatchObject({ message: "The swarm ended without doing any work. Send /swarm again to retry." });
+    expect(terminal.error.providerFailure.retryability).not.toBe("requires_action");
+  });
+
+  it("approves only admitted Paperclip tools, by the CLI's own tool name, and nothing else", () => {
+    const admitted = new Set(["get_task_context", "paperclip_finish"]);
+    const recorded = JSON.parse(readFileSync(new URL("../../../test-fixtures/antigravity-cli/paperclip-mcp-call.recorded.json", import.meta.url), "utf8"));
+    expect(antigravitySwarmPaperclipTool(recorded.requestPermission.params.toolCall, admitted)).toBe("get_task_context");
+    expect(antigravitySwarmPaperclipTool({ name: "mcp_paperclip_paperclip_finish" }, admitted)).toBe("paperclip_finish");
+    for (const toolCall of [
+      { name: "mcp_paperclip_create_task" }, { name: "mcp_other_get_task_context" }, { name: "get_task_context" },
+      { name: "run_command", title: "Run mcp_paperclip_get_task_context" }, { title: "Run mcp_paperclip_get_task_context" },
+      { _meta: { mcp: { server: "paperclip", tool: "get_task_context" } } }, { name: "mcp_paperclip_" },
+    ]) expect(antigravitySwarmPaperclipTool(toolCall, admitted)).toBeNull();
+  });
+
+  it("records whether the CLI's sign-in is the connection account, and why it could not tell", async () => {
+    const unknown = await runTurn("success");
+    expect(unknown.titles).toContain("Paperclip could not confirm which Google account this swarm runs on: this agent's Google connection names no account.");
+    expect(unknown.status.antigravitySwarmReceipt).toMatchObject({ cliAccountMatchesConnection: "unknown", cliAccountUnknownReason: "no_connection_account" });
+    const context = setup("success", { antigravitySwarm: { channel: "provider_default", accountDigest: antigravityAccountDigest("owner@example.test") } });
+    const runtime = await openAntigravitySwarmRuntime(context.options);
+    expect((await runtime.getStatus()).antigravitySwarmReceipt).toMatchObject({ cliAccountMatchesConnection: "unknown", cliAccountUnknownReason: "cli_sign_in_not_found" });
+    await runtime.close({ reason: "done" });
+    const signedIn = setup("success", { antigravitySwarm: { channel: "provider_default", accountDigest: antigravityAccountDigest("owner@example.test") } });
+    writeFileSync(join(signedIn.geminiDirectory, "cli.log"), "I1124 server_oauth.go:221] applyAuthResult: email=Owner@example.test, authMethod=consumer, quotaProject=\n");
+    const matched = await openAntigravitySwarmRuntime(signedIn.options);
+    const turn = matched.startTurn({ text: envelope("two helpers write a.txt and b.txt"), requestId: "run-1:turn-1" });
+    const titles: string[] = [];
+    for await (const event of turn.events) if (event.type === "tool_call" && event.title) titles.push(event.title);
+    await turn.result;
+    await matched.close({ reason: "done" });
+    expect(titles).toContain("This swarm runs on the Google account of this agent's Google connection.");
   });
 
   it("shows what actually changed in the task folder when a helper misreports, and keeps its usage", async () => {

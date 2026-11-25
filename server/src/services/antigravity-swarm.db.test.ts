@@ -171,6 +171,20 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
     await expect(automatic(f, (await insertRun(f, {})).id)).rejects.toMatchObject({ code: "antigravity_swarm_unavailable", message: expect.stringMatching(/three attempts/) });
   });
 
+  it("never starts another swarm automatically after the route failed one; the person's Retry starts it", async () => {
+    const f = await seed();
+    const first = await insertRun(f, {});
+    expect(await automatic(f, first.id)).toMatchObject({ request: expect.any(String) });
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "antigravity_swarm_unavailable" }).where(eq(heartbeatRuns.id, first.id));
+    // Recovery and continuations (which copy the request marker) do not run it again.
+    await expect(automatic(f, (await insertRun(f, {})).id, "issue_recovery_action_restored")).rejects
+      .toMatchObject({ code: "antigravity_swarm_unavailable", message: expect.stringMatching(/did not finish/) });
+    const retryContext = { issueId: f.issue.id, triggeredBy: "board", actorId: USER, responsibleUserId: USER, wakeReason: "task_retry" };
+    const retry = await insertRun(f, {});
+    await userRetry(f, {}, { runId: retry.id });
+    expect(await resolve(f, { runId: retry.id, context: retryContext })).toMatchObject({ request: expect.any(String) });
+  });
+
   it("records the CLI's quota scope on the swarm it selects, and names it before dispatch while the request is unfulfilled", async () => {
     const f = await seed();
     const scope = (runId: string, context: Record<string, unknown> = { issueId: f.issue.id }) =>

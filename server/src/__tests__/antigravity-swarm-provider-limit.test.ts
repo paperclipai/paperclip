@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import { createProviderLimitWait } from "../services/heartbeat/provider-limit-wait.js";
+import { runProviderQuotaScope } from "../services/native-runtime/native-startup-retry.js";
 import { recoveryPostgresSupport, startRecoveryPostgres } from "./helpers/recovery-postgres.js";
 
 const describePostgres = recoveryPostgresSupport.supported ? describe : describe.skip;
@@ -97,5 +98,16 @@ describePostgres("quota-scoped provider limit holds for /swarm", () => {
     const { deferred, deps } = await defer(await seed([rateLimited(5)]), null);
     expect(deferred).toBe(true);
     expect((deps.setRunStatusIfRunning.mock.calls[0] as unknown as [string, string, { error: string }])[2].error).toMatch(/^This agent's provider usage limit/);
+  });
+
+  // Live: a Retry of a swarm started before scopes existed recorded unscoped
+  // evidence, which then held this agent's ordinary work for an hour.
+  it("scopes a swarm's limit by the route it executed, even when its context lacks the scope", async () => {
+    const executedSwarm = { nativeExecutionInput: { provider: { kind: "acpx", agent: "antigravity", model: "gemini-3.8-flash-low", mode: "swarm" } } };
+    expect(runProviderQuotaScope({ issueId: "issue" }, executedSwarm)).toBe("antigravity_cli");
+    expect(runProviderQuotaScope({ issueId: "issue" }, { nativeExecutionInput: { provider: { kind: "acpx", agent: "antigravity" } } })).toBeNull();
+    const oldSwarm = { ...swarmLimited(5), contextSnapshot: { antigravitySwarmCommentId: randomUUID() }, runnerProfileJson: executedSwarm };
+    expect((await defer(await seed([oldSwarm]), null)).deferred).toBe(false);
+    expect((await defer(await seed([oldSwarm]), "antigravity_cli")).deferred).toBe(true);
   });
 });
