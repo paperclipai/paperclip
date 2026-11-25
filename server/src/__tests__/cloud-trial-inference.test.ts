@@ -359,6 +359,7 @@ describe("cloud-trial-inference", () => {
         directEnabled: true,
         browserEnabled: true,
         replayEnabled: false,
+        replayWorkContentEnabled: false,
         cloudTrialInferenceEnabled: false,
       },
       {
