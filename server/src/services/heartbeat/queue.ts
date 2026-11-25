@@ -278,6 +278,22 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
 
 export { DEFERRED_WAKE_CONTEXT_KEY } from "../../lib/queued-comment-context.js";
 
+export function guardMismatchExecutionWaitPayload() {
+  return {
+    reason: "issue_state_guard_mismatch" as const,
+    message: "Waiting for task execution to be enabled. Your message is saved.",
+  };
+}
+
+export async function settleResumedReceiptOnGuardMismatch(
+  db: Db | Parameters<Parameters<Db["transaction"]>[0]>[0],
+  input: { requestId: string; companyId: string },
+  publications?: ActivityPublication[],
+): Promise<void> {
+  await writeDeferredExecutionWait(db as unknown as Db, input, guardMismatchExecutionWaitPayload(),
+    publications ? { publications } : {});
+}
+
 export const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
   "queued",
   "running",
@@ -2113,13 +2129,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     if ((await getSchedulingSuppression()).suppressed) return;
     await resumeExecutionWaitComments(scope);
     const cutoff = await getWorktreeExecutionCutoff();
-    const pendingInterrupts = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
+    const pendingInterrupts = await db.select({
+      id: agentWakeupRequests.id,
+      companyId: agentWakeupRequests.companyId,
+    })
       .from(agentWakeupRequests).innerJoin(companies, eq(companies.id, agentWakeupRequests.companyId))
+      .leftJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
+        sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`))
       .where(and(scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
         scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
         eq(agentWakeupRequests.status, "deferred_issue_execution"),
         eq(companies.status, "active"),
         sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is not null`,
+        sql`${issues.status} is distinct from 'done'`,
+        sql`${issues.status} is distinct from 'cancelled'`,
         lte(agentWakeupRequests.updatedAt, new Date(Date.now() - 30_000)),
         cutoff ? gte(agentWakeupRequests.requestedAt, cutoff) : undefined))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
@@ -3844,6 +3867,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             // A deferred monitor retains its schedule; do not create a receipt
             // that could suppress its next admission attempt.
             if (issueStateGuard.monitorNextCheckAt !== undefined) return { kind: "skipped" as const };
+            if (executionWaitRequestId) {
+              await settleResumedReceiptOnGuardMismatch(tx, {
+                requestId: executionWaitRequestId,
+                companyId: agent.companyId,
+              }, issueActivityPublications);
+              return { kind: "skipped" as const };
+            }
             await tx.insert(agentWakeupRequests).values({
               ...durableReceiptFields,
               companyId: agent.companyId,
