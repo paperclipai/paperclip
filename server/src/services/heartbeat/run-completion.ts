@@ -41,6 +41,7 @@ import { isOwnedAiConnectionSelectionRejection } from "../ai-connection-configur
 import { REVIEWED_CHAT_BINDING_NOT_READY, ReviewedChatBindingNotReadyError, reviewedChatBindingDenialResultJson } from "../reviewed-chat-binding-diagnostics.js";
 import { reportRunFailure } from "../run-failure-report.js";
 import { accountRunCost } from "../run-cost-accounting.js";
+import { forgetSessionsOfDeletedRun } from "../tool-access/connections/run-session-reset.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
@@ -844,6 +845,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         // configuration metadata used for this run. Persist before release,
         // which can make a same-agent successor eligible immediately.
         await persistSessionState(livenessRun);
+        await forgetSessionsOfDeletedRun(db, livenessRun);
         await releaseIssueExecutionAndPromote(livenessRun, { suppressImmediateRecovery: true });
         await settleAgent();
         return;
@@ -1117,6 +1119,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
 
     if (finalizedRun) {
       await persistSessionState(finalizedRun);
+      await forgetSessionsOfDeletedRun(db, finalizedRun);
     }
     await settleAgent();
   }

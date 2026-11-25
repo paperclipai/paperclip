@@ -4,6 +4,7 @@ import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { toConnection } from "./projection.js";
 import { createManagedGoogleAccessRemoval } from "./google-access-removal.js";
+import { contentDeletionActor, deleteGoogleContentWhenAccessEnds } from "./google-content-retention.js";
 import type { PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 import { actorBinding, connectionActorUserId } from "../actor.js";
 import { stageSlackCloudEnrollmentIntent } from "../../chat-channels/slack/cloud-enrollment.js";
@@ -584,6 +585,7 @@ async function removeConnection(
         .where(eq(toolConnections.id, connection.id))
         .returning();
       if (!updatedConnection) throw notFound("Tool connection not found");
+      await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, updatedConnection, "connection_removed", contentDeletionActor(actor));
 
       const remainingConnections = await tx
         .select({ id: toolConnections.id })

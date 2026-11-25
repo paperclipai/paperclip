@@ -1652,6 +1652,7 @@ export type {
   ToolConnectionStoredContentCounts,
   ToolConnectionContentDeletion,
   ToolConnectionContentDeletionCounts,
+  ToolConnectionContentDeletionReason,
   ToolConnectionContentDeletionStatus,
   ConnectionAudienceMember,
   ConnectionGrant,
