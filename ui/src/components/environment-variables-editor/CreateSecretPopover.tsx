@@ -58,8 +58,9 @@ export function SecretPopoverForm({
     const byExact = new Map<string, CompanySecret>();
     const byLower = new Map<string, CompanySecret[]>();
     for (const secret of existingSecrets ?? []) {
-      if (!byExact.has(secret.name)) byExact.set(secret.name, secret);
-      const lowerKey = secret.name.toLowerCase();
+      const secretName = secret.name;
+      if (!byExact.has(secretName)) byExact.set(secretName, secret);
+      const lowerKey = secretName.toLowerCase();
       const bucket = byLower.get(lowerKey);
       if (bucket) {
         bucket.push(secret);
@@ -71,8 +72,11 @@ export function SecretPopoverForm({
   }, [existingSecrets]);
 
   const existingSecretNameSet = useMemo(
-    () => new Set((existingSecretNames ?? []).map((existing) => existing.toLowerCase())),
-    [existingSecretNames],
+    () =>
+      existingSecrets
+        ? new Set<string>()
+        : new Set((existingSecretNames ?? []).map((existing) => existing.toLowerCase())),
+    [existingSecrets, existingSecretNames],
   );
 
   const trimmedName = name.trim();

@@ -601,7 +601,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }
 
   function flushEnvironmentDraft() {
-    return environmentVariablesEditorRef.current?.flushPendingDraft() ?? null;
+    return environmentVariablesEditorRef.current?.flushPendingDraft() ?? { status: "clean" as const };
   }
 
   /**
@@ -665,7 +665,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const bindSecretAsEnvVar = useCallback((binding: BindAsEnvVarRequest) => {
     if (isCreate) return;
-    const flushedEnv = flushEnvironmentDraft();
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const currentEnv = resolveEffectiveAgentEnv(
       overlay.adapterConfig,
       props.agent.adapterConfig as Record<string, unknown> | null | undefined,
@@ -709,7 +711,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const handleSave = useCallback(async () => {
     if (isCreate) return;
-    const flushedEnv = flushEnvironmentDraft();
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const nextOverlay = flushedEnv
       ? {
           ...overlay,
@@ -883,7 +887,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // existing agent's own page fails to save the binding.
   const handleClaudeLoginStoredEdit = async () => {
     if (isCreate) return;
-    const flushedEnv = flushEnvironmentDraft();
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const baseEnv =
       flushedEnv ??
       (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
@@ -912,7 +918,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // secret-reference binding through the normal agent-update patch.
   const handleCodexAccountBindingEdit = async (claim: CodexAccountBindingClaim) => {
     if (isCreate || !claim.companyIdentityDiffers) return;
-    const flushedEnv = flushEnvironmentDraft();
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const baseEnv =
       flushedEnv ??
       (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
@@ -965,7 +973,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // pending editor draft first and keep every unrelated binding.
   const handleApplyStoredClaudeLoginEdit = async () => {
     if (isCreate) return;
-    const flushedEnv = flushEnvironmentDraft();
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const baseEnv =
       flushedEnv ??
       (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
@@ -1069,10 +1079,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     && (runnerAvailability?.defaultRunner === "paperclip" || canQualifyRunnerUpgrade);
   const upgradeRunner = async () => {
     if (isCreate || runnerUpgradePending || upgradeEnvironmentChanged) return;
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const agentId = props.agent.id;
     setRunnerUpgrade({ agentId, status: "pending" });
     try {
-      const flushedEnv = flushEnvironmentDraft();
       const nextOverlay = flushedEnv
         ? { ...overlay, adapterConfig: { ...overlay.adapterConfig, env: flushedEnv } }
         : overlay;
@@ -1321,7 +1333,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       if (!selectedCompanyId) {
         throw new Error("Select an organization to test adapter environment");
       }
-      const flushedEnv = flushEnvironmentDraft();
+      const flushResult = flushEnvironmentDraft();
+      if (flushResult.status === "blocked") {
+        throw new Error(flushResult.reason);
+      }
+      const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
       const adapterConfigPatch = flushedEnv ? { env: flushedEnv } : undefined;
       // Probe where a real run would actually execute: the agent's own
       // environment, else the instance default. Testing the host for an

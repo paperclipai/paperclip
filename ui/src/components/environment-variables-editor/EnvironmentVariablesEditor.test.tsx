@@ -7,6 +7,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import { EnvironmentVariablesEditor, type EnvironmentVariablesEditorHandle } from "./index";
 import { SecretPicker } from "./SecretPicker";
+import { SecretPopoverForm } from "./CreateSecretPopover";
+import { Popover, PopoverContent } from "@/components/ui/popover";
 
 // Radix (DropdownMenu/Popover) relies on Pointer Capture APIs that jsdom omits.
 const OriginalPointerEvent = globalThis.PointerEvent;
@@ -1067,31 +1069,45 @@ describe("EnvironmentVariablesEditor", () => {
     expect(saveButton().disabled).toBe(true);
   });
 
-  it("blocks flushPendingDraft when a secret-shaped token is pasted into Variable name", async () => {
+  it("returns a distinct blocked flush result and stops outer form submission when a secret-shaped token is pasted into Variable name", async () => {
     const onChange = vi.fn();
+    const onFormSubmit = vi.fn((event: React.FormEvent) => event.preventDefault());
     const editorRef = createRef<EnvironmentVariablesEditorHandle>();
     const token = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
     render(
-      <EnvironmentVariablesEditor
-        ref={editorRef}
-        value={{}}
-        secrets={secrets}
-        onChange={onChange}
-        onCreateSecret={async () => secrets[0]}
-      />,
+      <form onSubmit={onFormSubmit}>
+        <EnvironmentVariablesEditor
+          ref={editorRef}
+          value={{ EXISTING_OK: { type: "plain", value: "keep" } }}
+          secrets={secrets}
+          onChange={onChange}
+          onCreateSecret={async () => secrets[0]}
+        />
+      </form>,
     );
+
+    // Clean editor returns { status: "clean" } rather than "blocked".
+    expect(editorRef.current?.flushPendingDraft()).toEqual({ status: "clean" });
+
     const addButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Add variable"))!;
     addButton.click();
     await flush();
 
-    const nameInput = nameInputs()[0]!;
+    const nameInput = nameInputs().at(-1)!;
     const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
     setter.call(nameInput, token);
     nameInput.dispatchEvent(new Event("input", { bubbles: true }));
     await flush();
 
-    expect(editorRef.current?.flushPendingDraft()).toBeNull();
+    const result = editorRef.current?.flushPendingDraft();
+    expect(result?.status).toBe("blocked");
     expect(onChange).not.toHaveBeenCalled();
+
+    // Native form submission must also be blocked so outer saves do not discard pending edits.
+    const form = container.querySelector("form")!;
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+    expect(onFormSubmit).not.toHaveBeenCalled();
   });
 
   it("prefers an exact-case secret match over an earlier case-insensitive secret on collision", async () => {
@@ -1183,5 +1199,91 @@ describe("EnvironmentVariablesEditor", () => {
     expect(onChange).toHaveBeenLastCalledWith({
       GH_TOKEN: { type: "secret_ref", secretId: "s-mixed", version: "latest" },
     });
+  });
+
+  it("keeps SecretPopoverForm collision indexing linear across 300 secrets during typing and ambiguous choice selection", async () => {
+    const SECRET_COUNT = 300;
+    const MAX_NAME_READS = SECRET_COUNT * 2;
+    let nameReads = 0;
+
+    function makeCountedSecret(id: string, secretName: string, latestVersion = 1): CompanySecret {
+      const base = makeSecret(id, { name: secretName, key: id, latestVersion });
+      Object.defineProperty(base, "name", {
+        enumerable: true,
+        get() {
+          nameReads += 1;
+          if (nameReads > MAX_NAME_READS) {
+            throw new Error(`Runaway SecretPopoverForm secret scan: ${nameReads} > ${MAX_NAME_READS}`);
+          }
+          return secretName;
+        },
+      });
+      return base;
+    }
+
+    const largeSecrets: CompanySecret[] = [];
+    for (let i = 0; i < SECRET_COUNT - 4; i += 1) {
+      largeSecrets.push(makeCountedSecret(`s-bulk-${i}`, `service_secret_${i}`));
+    }
+    largeSecrets.push(
+      makeCountedSecret("s-exact-upper", "EXACT_KEY", 3),
+      makeCountedSecret("s-exact-lower", "exact_key", 1),
+      makeCountedSecret("s-ambig-1", "AMBIG_KEY", 2),
+      makeCountedSecret("s-ambig-2", "Ambig_Key", 4),
+    );
+
+    const onSelectExisting = vi.fn();
+    const onRotateExisting = vi.fn(async () => {});
+    const tokenValue = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+
+    render(
+      <Popover open>
+        <PopoverContent>
+          <SecretPopoverForm
+            mode="store"
+            initialName="exact_key"
+            initialValue={tokenValue}
+            existingSecrets={largeSecrets}
+            onCancel={() => {}}
+            onSubmit={async () => {}}
+            onSelectExisting={onSelectExisting}
+            onRotateExisting={onRotateExisting}
+          />
+        </PopoverContent>
+      </Popover>,
+    );
+    await flush();
+
+    // Exact match selected linearly without scanning multiple times.
+    expect(document.body.textContent).toContain("exact_key already exists (v1)");
+    const readsAfterInitialIndex = nameReads;
+    expect(readsAfterInitialIndex).toBeLessThanOrEqual(SECRET_COUNT + 10);
+
+    // Typing keystrokes into the Name field must hit the memoized Maps in O(1) without re-indexing all 300 secrets.
+    const nameInput = document.querySelector<HTMLInputElement>('input[aria-label="Secret name"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    for (const nextName of ["a", "am", "amb", "ambig_key"]) {
+      setter.call(nameInput, nextName);
+      nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    }
+
+    expect(document.body.textContent).toContain("Multiple secrets match");
+    const ambigChoice = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Ambig_Key"),
+    )!;
+    ambigChoice.click();
+    await flush();
+
+    const useExistingBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Use existing secret"),
+    )!;
+    useExistingBtn.click();
+    await flush();
+
+    expect(onSelectExisting).toHaveBeenCalledTimes(1);
+    expect(onSelectExisting.mock.calls[0]?.[0]?.id).toBe("s-ambig-2");
+    // Extra reads across 4 keystrokes + choice selection must be O(1), not O(SECRET_COUNT).
+    expect(nameReads - readsAfterInitialIndex).toBeLessThan(20);
   });
 });

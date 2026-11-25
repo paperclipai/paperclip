@@ -1833,9 +1833,12 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     navigate(ENVIRONMENTS_PATH);
   }
 
-  function flushEnvironmentForm(): EnvironmentFormState {
+  function flushEnvironmentForm(): EnvironmentFormState | null {
     const flushedEnvVars = environmentVariablesEditorRef.current?.flushPendingDraft();
-    return flushedEnvVars ? { ...environmentForm, envVars: flushedEnvVars } : environmentForm;
+    if (flushedEnvVars?.status === "blocked") return null;
+    return flushedEnvVars?.status === "flushed"
+      ? { ...environmentForm, envVars: flushedEnvVars.value }
+      : environmentForm;
   }
 
   const discoveredPluginSandboxProviders = Object.entries(environmentCapabilities?.sandboxProviders ?? {})
@@ -2247,7 +2250,10 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
               Cancel
             </Button>
             <Button
-              onClick={() => managedEnvironmentEnvVarsMutation.mutate(flushEnvironmentForm().envVars)}
+              onClick={() => {
+                const flushed = flushEnvironmentForm();
+                if (flushed) managedEnvironmentEnvVarsMutation.mutate(flushed.envVars);
+              }}
               disabled={managedEnvironmentEnvVarsMutation.isPending}
             >
               {managedEnvironmentEnvVarsMutation.isPending ? "Saving..." : "Save environment variables"}
@@ -2584,7 +2590,10 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
             {environmentForm.driver !== "local" ? (
               <Button
                 variant="outline"
-                onClick={() => draftEnvironmentProbeMutation.mutate(flushEnvironmentForm())}
+                onClick={() => {
+                  const flushed = flushEnvironmentForm();
+                  if (flushed) draftEnvironmentProbeMutation.mutate(flushed);
+                }}
                 disabled={draftEnvironmentProbeMutation.isPending || !environmentFormValid || (environmentForm.driver === "ssh" && environmentForm.sshNetwork === "tailscale")}
                 title={environmentForm.driver === "ssh" && environmentForm.sshNetwork === "tailscale" ? "Save this environment, then test its connection from the list." : undefined}
               >
@@ -2592,7 +2601,10 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
               </Button>
             ) : null}
             <Button
-              onClick={() => environmentMutation.mutate(flushEnvironmentForm())}
+              onClick={() => {
+                const flushed = flushEnvironmentForm();
+                if (flushed) environmentMutation.mutate(flushed);
+              }}
               disabled={environmentMutation.isPending || !environmentFormValid}
             >
               {environmentMutation.isPending

@@ -535,7 +535,6 @@ export function EnvironmentVariableRow({
                 initialName={secretPopover.name}
                 initialValue={secretPopover.value}
                 existingSecrets={secrets}
-                existingSecretNames={secrets.map((s) => s.name)}
                 onCancel={() => setSecretPopover(null)}
                 onSubmit={submitSecretPopover}
                 onSelectExisting={selectExistingSecret}
@@ -546,7 +545,6 @@ export function EnvironmentVariableRow({
                 initialName={secretPopover.name}
                 initialValue={secretPopover.value}
                 existingSecrets={secrets}
-                existingSecretNames={secrets.map((s) => s.name)}
                 onCancel={() => setSecretPopover(null)}
                 onSubmit={submitSecretPopover}
                 onSelectExisting={selectExistingSecret}

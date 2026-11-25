@@ -10,7 +10,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { AlertCircle, KeyRound, Plus, RotateCcw, Save, UserRound } from "lucide-react";
-import type { CompanySecret, EnvBinding, UserSecretDefinition } from "@paperclipai/shared";
+import { SECRET_SHAPED_ENV_NAME_ERROR, type CompanySecret, type EnvBinding, type UserSecretDefinition } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useOptionalToastActions } from "@/context/ToastContext";
@@ -146,12 +146,19 @@ export interface EnvironmentVariablesEditorProps {
   addLabel?: string;
 }
 
+export type FlushPendingDraftResult =
+  | { status: "clean" }
+  | { status: "flushed"; value: Record<string, EnvBinding> }
+  | { status: "blocked"; reason: string };
+
 export interface EnvironmentVariablesEditorHandle {
   /**
    * Promote the editor-local draft into the controlled value before an outer
-   * action reads parent state. Returns the promoted value when a draft existed.
+   * action reads parent state. Returns `{ status: "blocked" }` when a draft row
+   * has a secret-shaped variable name so callers stop outer saves instead of
+   * silently saving stale state.
    */
-  flushPendingDraft: () => Record<string, EnvBinding> | null;
+  flushPendingDraft: () => FlushPendingDraftResult;
 }
 
 export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorHandle, EnvironmentVariablesEditorProps>(function EnvironmentVariablesEditor({
@@ -302,13 +309,17 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     [rows],
   );
 
-  const flushPendingDraft = useCallback(() => {
-    if (disabled || !hasUnsavedChanges || hasSecretShapedName) return null;
+  const flushPendingDraft = useCallback((): FlushPendingDraftResult => {
+    if (disabled) return { status: "clean" };
+    if (hasSecretShapedName) {
+      return { status: "blocked", reason: SECRET_SHAPED_ENV_NAME_ERROR };
+    }
+    if (!hasUnsavedChanges) return { status: "clean" };
     pendingSaveValueKeyRef.current = draftValueKey;
     flushSync(() => {
       onChange(draftValue);
     });
-    return draftValue ?? {};
+    return { status: "flushed", value: draftValue ?? {} };
   }, [disabled, draftValue, draftValueKey, hasSecretShapedName, hasUnsavedChanges, onChange]);
 
   useImperativeHandle(ref, () => ({ flushPendingDraft }), [flushPendingDraft]);
@@ -317,8 +328,11 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     const form = editorRootRef.current?.closest("form");
     if (!form) return;
 
-    function handleSubmit() {
-      flushPendingDraft();
+    function handleSubmit(event: SubmitEvent) {
+      if (flushPendingDraft().status === "blocked") {
+        event.preventDefault();
+        event.stopPropagation();
+      }
     }
 
     form.addEventListener("submit", handleSubmit, true);

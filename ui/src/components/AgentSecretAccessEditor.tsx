@@ -581,7 +581,6 @@ export function AgentSecretAccessEditor({
                               initialName={createRequest.name}
                               initialValue=""
                               existingSecrets={secrets}
-                              existingSecretNames={secrets.map((secret) => secret.name)}
                               onCancel={() => setCreateRequest(null)}
                               onSubmit={async (name, value) => {
                                 const created = await onCreateSecret(name, value);
