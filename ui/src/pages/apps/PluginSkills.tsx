@@ -87,9 +87,9 @@ export function PluginSkills({
   const failed = [
     ...(connectionIds.length > 0 ? [publishedQuery] : []),
     ...(catalogIds.length > 0 ? [catalogQuery, installedQuery] : []),
-  ].filter((query) => query.isError);
+  ].filter((query) => query.error != null && query.data === undefined);
   if (count === 0 && failed.length === 0) return null;
-  const installedKnown = installedQuery.isSuccess;
+  const installedKnown = installedQuery.data !== undefined;
 
   return (
     <section aria-labelledby="plugin-skills-title" className="flex flex-col gap-2">

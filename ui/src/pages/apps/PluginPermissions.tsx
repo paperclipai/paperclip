@@ -163,19 +163,21 @@ function ConnectionPermissions({ companyId, connection }: { companyId: string; c
   const enabledIds = draft?.enabled ?? savedEnabled;
   const askFirstIds = draft?.askFirst ?? savedAskFirst;
 
-  const loadError = catalogQuery.error ?? profilesQuery.error ?? policiesQuery.error ?? installsQuery.error ?? grantsQuery.error;
-  if (loadError) {
-    const queries = [catalogQuery, profilesQuery, policiesQuery, installsQuery, grantsQuery];
+  // A failed read only blocks the section while it has nothing to show; a failed
+  // background refresh keeps the loaded actions on screen.
+  const queries = [catalogQuery, profilesQuery, policiesQuery, installsQuery, grantsQuery];
+  const unloaded = queries.filter((query) => query.error != null && query.data === undefined);
+  if (unloaded.length > 0) {
     return (
       <QueryErrorState
-        error={loadError}
+        error={unloaded[0].error}
         action="load this account’s actions"
-        onRetry={() => queries.filter((query) => query.isError).forEach((query) => void query.refetch())}
-        retrying={queries.some((query) => query.isError && query.isFetching)}
+        onRetry={() => unloaded.forEach((query) => void query.refetch())}
+        retrying={unloaded.some((query) => query.isFetching)}
       />
     );
   }
-  const loaded = catalogQuery.isSuccess && profilesQuery.isSuccess && policiesQuery.isSuccess && installsQuery.isSuccess && grantsQuery.isSuccess;
+  const loaded = queries.every((query) => query.data !== undefined);
   if (!loaded) return <p className={NOTE}>Loading actions…</p>;
   if (reads.length + writes.length === 0) return <p className={NOTE}>This account hasn’t listed any actions yet.</p>;
 
