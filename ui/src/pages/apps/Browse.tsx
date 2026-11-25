@@ -38,6 +38,7 @@ import {
   Trash2,
 } from "lucide-react";
 import type { ComposioAppSnapshot, ToolApplication, ToolConnection } from "@paperclipai/shared";
+import { isConnectionAvailableToAgents } from "./connection-identity";
 import {
   getAppDefinitionForUrl,
   getAppDefinitionForApplicationKey,
@@ -1373,8 +1374,7 @@ export function ConnectorCard({
                       remainingConnectionCount: row.connections.filter(
                         (candidate) =>
                           candidate.id !== connection.id &&
-                          candidate.status === "active" &&
-                          candidate.enabled,
+                          isConnectionAvailableToAgents(candidate),
                       ).length,
                     });
                   }}
