@@ -1,7 +1,9 @@
+import { renderPaperclipWakePrompt } from "./server-utils.js";
 import { describe, expect, it } from "vitest";
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 import {
   boundExecutionContinuationForPrompt,
+  renderedContinuationMessageRevisions,
   CONTINUATION_PROMPT_ACTIONS_MAX_BYTES,
   CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES,
   CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES,
@@ -160,5 +162,17 @@ describe("boundExecutionContinuationForPrompt", () => {
     expect(bounded.messages.map((entry) => entry.id)).toContain("m-1");
     expect(bytes(bounded.messages)).toBeLessThanOrEqual(Math.floor(CONTINUATION_PROMPT_MESSAGES_MAX_BYTES * 32_000 / CONTINUATION_PROMPT_MAX_BYTES));
     expect(bytes(bounded.objective)).toBeLessThan(6_000);
+  });
+
+  it("reads back only the messages a rendered runner prompt delivered whole", () => {
+    const long = "x".repeat(CONTINUATION_PROMPT_MESSAGE_BODY_MAX_CHARS * 2);
+    const messages = [
+      ...Array.from({ length: 6 }, (_, index) => message(`old-${index}`, long)),
+      message("clipped", long), message("whole", "Short and complete <b>."),
+    ];
+    const prompt = renderPaperclipWakePrompt({ executionContinuation: envelope({ messages }) }, { boundContinuationForRunnerTurn: true });
+    const revisions = renderedContinuationMessageRevisions(prompt)!;
+    expect(revisions).toEqual({ whole: "2026-11-24T00:00:00.000Z" });
+    expect(renderedContinuationMessageRevisions("no continuation here")).toBeNull();
   });
 });

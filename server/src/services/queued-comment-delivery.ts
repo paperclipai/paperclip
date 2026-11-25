@@ -41,9 +41,9 @@ export async function deliveredQueuedCommentIds(tx: Pick<Db, "select">, input: {
           or (delivered_run.retry_of_run_id is not null and jsonb_path_exists(delivered_run.context_snapshot, '$.executionContinuation.messages[*] ? (@.id == $id)',
             jsonb_build_object('id', ${issueComments.id}::text))
             /* A native turn bounds its history and keeps the complete envelope
-               on the run. Only a message its sent prompt contains was delivered. */
-            and (delivered_run.runner_profile_json #>> '{nativeExecutionInput,task,prompt}' is null
-              or position(${issueComments.id}::text in delivered_run.runner_profile_json #>> '{nativeExecutionInput,task,prompt}') > 0)
+               on the run. Only a message its sent prompt delivered whole counts. */
+            and (jsonb_typeof(delivered_run.runner_profile_json->'nativeDeliveredContinuationMessages') is distinct from 'object'
+              or delivered_run.runner_profile_json->'nativeDeliveredContinuationMessages' ? ${issueComments.id}::text)
           or jsonb_path_exists(delivered_run.context_snapshot, '$.paperclipWake.messages[*] ? (@.id == $id)',
             jsonb_build_object('id', ${issueComments.id}::text)))))
     or ${firstTurnDeliveredSql(companyId, issueId, input.agentId)}

@@ -87,7 +87,7 @@ import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../chat-control-recovery-st
 import { NATIVE_PREPARATION_FENCING_VERSION } from "../native-runtime/native-active-runs.js";
 import type { issueService } from "../issues.js";
 import { buildPlanReviewContext } from "../plan-review-context.js";
-import { normalizePaperclipWakePayload, selectPaperclipTaskMarkdown } from "@paperclipai/adapter-utils/server-utils";
+import { normalizePaperclipWakePayload, renderedContinuationMessageRevisions, selectPaperclipTaskMarkdown } from "@paperclipai/adapter-utils/server-utils";
 import type { ProviderResourceDisposition } from "../environment-runtime.js";
 import { stageNativeRuntimeSkillAssets, bindStagedNativeRuntimeSkillAssets } from "../native-runtime/runtime-skill-preservation.js";
 import { configuredSecretGuidance } from "../native-runtime/configured-secret-guidance.js";
@@ -1074,6 +1074,11 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
               : {}),
             nativeExecutionInput:
               lockedProfile.nativeExecutionInput ?? nativeExecution,
+            // The continuation messages this turn's bounded prompt delivered
+            // whole. Queued-comment delivery trusts only these for a retry.
+            nativeDeliveredContinuationMessages: lockedProfile.nativeExecutionInput
+              ? lockedProfile.nativeDeliveredContinuationMessages ?? null
+              : renderedContinuationMessageRevisions(String(parseObject(parseObject(nativeExecution).task).prompt ?? "")),
             nativeToolRefreshOnResume: lockedProfile.nativeExecutionInput
               ? lockedProfile.nativeToolRefreshOnResume === true : toolRefreshOnResume === true,
             ...(typeof lockedProfile.inheritedProcessIdentityRunId === "string"

@@ -13,6 +13,7 @@ import {
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import { boundExecutionContinuationForPrompt, continuationPromptOmissionNote } from "./execution-continuation-bounds.js";
+export { renderedContinuationMessageRevisions } from "./execution-continuation-bounds.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,

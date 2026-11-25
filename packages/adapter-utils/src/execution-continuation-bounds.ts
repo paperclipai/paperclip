@@ -243,3 +243,36 @@ export function continuationPromptOmissionNote(omitted: ContinuationPromptOmissi
     + "Retrieve only what the current request needs. An omitted answer still applies to its own question; read it before acting on that question. "
     + "An omitted action or result is still completed: do not repeat it.";
 }
+
+const CONTINUATION_SECTION_HEADING = "## Current request and continuation context";
+const NEWLINE = String.fromCharCode(10);
+
+/**
+ * Revisions of the continuation messages a rendered prompt delivered whole.
+ * The continuation block is fenced JSON; a clipped message carries
+ * bodyTruncated and an omitted one is absent, so neither counts as delivered.
+ * Returns null when the prompt has no continuation block.
+ */
+export function renderedContinuationMessageRevisions(prompt: string): Record<string, string> | null {
+  const start = prompt.indexOf(CONTINUATION_SECTION_HEADING);
+  if (start < 0) return null;
+  const lines = prompt.slice(start).split(NEWLINE);
+  const open = lines.findIndex((line) => /^`{3,}text$/.test(line));
+  if (open < 0) return null;
+  const fence = lines[open]!.slice(0, -"text".length);
+  const close = lines.findIndex((line, index) => index > open && line === fence);
+  if (close < 0) return null;
+  try {
+    const context = JSON.parse(lines.slice(open + 1, close).join(NEWLINE)) as { messages?: unknown };
+    if (!Array.isArray(context.messages)) return null;
+    const revisions: Record<string, string> = {};
+    for (const message of context.messages as Array<Record<string, unknown>>) {
+      if (typeof message?.id !== "string" || typeof message.updatedAt !== "string") continue;
+      if (message.bodyTruncated === true || message.deleted === true) continue;
+      revisions[message.id] = message.updatedAt;
+    }
+    return revisions;
+  } catch {
+    return null;
+  }
+}

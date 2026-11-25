@@ -1,3 +1,4 @@
+import { taskHistoryReadsForRun } from "../queued-comment-delivery.js";
 import * as connectorRuntime from "../connector-runtime.js";
 import * as cloudIdentity from "../cloud-runtime-identity.js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -688,7 +689,8 @@ describe("PaperclipRunnerToolAuthority", () => {
 
   it("pages the complete saved continuation of the run's own task in the full view", async () => {
     const [saved] = await db.select({ contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
-    const messages = Array.from({ length: 120 }, (_, index) => ({ id: `m-${index}`, body: `Message ${index} ${"x".repeat(4_000)}` }));
+    const messages = Array.from({ length: 120 }, (_, index) => ({ id: `m-${index}`, body: `Message ${index} ${"x".repeat(4_000)}`,
+      updatedAt: "2026-11-24T00:00:00.000Z", deleted: false }));
     const continuation = { version: 1, companyId, issueId, messages };
     await db.update(heartbeatRuns).set({ contextSnapshot: { ...(saved?.contextSnapshot ?? {}), executionContinuation: continuation } })
       .where(eq(heartbeatRuns.id, runId));
@@ -706,6 +708,9 @@ describe("PaperclipRunnerToolAuthority", () => {
         offset = page.nextOffset;
       }
       expect(JSON.parse(text).executionContinuation).toEqual(continuation);
+      // Reading the final page records the recovered messages like get_task_history.
+      const reads = await taskHistoryReadsForRun(db, { companyId, runId });
+      expect(reads.map((read) => read.commentId)).toEqual(expect.arrayContaining(["m-0", "m-119"]));
     } finally {
       await db.update(heartbeatRuns).set({ contextSnapshot: saved?.contextSnapshot ?? {} }).where(eq(heartbeatRuns.id, runId));
     }
