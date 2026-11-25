@@ -20284,7 +20284,7 @@ describe("runnerd provider runtime wiring", () => {
       expect(task.mock.calls).toEqual([[{kind:"describe"}]]);
       if (portable) expect(register).toHaveBeenCalledExactlyOnceWith(expect.anything(), {
         companyId: current.binding.companyId, leaseId: "new-lease",
-      }, "account", binding);
+      }, "account", binding, "codex");
       else expect(register).not.toHaveBeenCalled();
     } finally {register.mockRestore(); owner.mockRestore();await rm(home,{recursive:true,force:true});}
   });
