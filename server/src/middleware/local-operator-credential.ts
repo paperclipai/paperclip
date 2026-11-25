@@ -12,28 +12,29 @@ import {
   localOperatorReadCookieValue,
   localOperatorSignInUrl,
   parseLocalOperatorCredentialMode,
-  resolveLocalOperatorKeyPath,
+  LOCAL_OPERATOR_READ_COOKIE_WINDOW_MS,
+  resolveLocalOperatorKeyPathForConfig,
   verifyLocalOperatorBrowserToken,
   verifyLocalOperatorReadCookieValue,
   verifyLocalOperatorSignInLink,
   type LocalOperatorCredentialMode,
 } from "@paperclipai/shared/local-operator-credential";
 import { logger } from "./logger.js";
+import { resolvePaperclipConfigPath } from "../paths.js";
 
-const COOKIE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000;
+const COOKIE_MAX_AGE_MS = 2 * LOCAL_OPERATOR_READ_COOKIE_WINDOW_MS;
 const DEFAULT_MODE: LocalOperatorCredentialMode = "off";
 
 /**
  * Requests the browser makes on its own, without the board page's script:
- * file downloads, images and plugin event streams. Only these accept the
- * read-only cookie.
+ * images and file links, and plugin event streams. Only these accept the
+ * read-only cookie. Downloads the page starts with `fetch` carry the header
+ * token instead and are not listed.
  */
-const DIRECT_BROWSER_READ_PATHS = [
+export const DIRECT_BROWSER_READ_PATHS = [
   /^\/api\/attachments\/[^/]+\/content$/,
   /^\/api\/assets\/[^/]+\/content$/,
   /^\/api\/issues\/[^/]+\/file-resources\/content$/,
-  /^\/api\/heartbeat-runs\/[^/]+\/provider-trace\/download$/,
-  /^\/api\/companies\/[^/]+\/audit\/agent-actions\.csv$/,
   /^\/api\/plugins\/[^/]+\/bridge\/stream\/[^/]+$/,
 ];
 
@@ -76,7 +77,9 @@ export function createLocalOperatorCredential(options: LocalOperatorCredentialOp
   const usedNonces = new Map<string, number>();
 
   function operatorKey(): Buffer {
-    key ??= ensureLocalOperatorKey(options.keyPath ?? resolveLocalOperatorKeyPath());
+    key ??= ensureLocalOperatorKey(
+      options.keyPath ?? resolveLocalOperatorKeyPathForConfig(resolvePaperclipConfigPath()),
+    );
     return key;
   }
 
@@ -124,8 +127,28 @@ export function createLocalOperatorCredential(options: LocalOperatorCredentialOp
     return true;
   }
 
+  function setReadCookie(res: Response) {
+    const operator = operatorKey();
+    res.cookie(localOperatorReadCookieName(operator), localOperatorReadCookieValue(operator), {
+      httpOnly: true,
+      sameSite: "strict",
+      path: "/api",
+      maxAge: COOKIE_MAX_AGE_MS,
+    });
+  }
+
   function signInRoutes() {
     const router = Router();
+    // The board page renews its rotating read cookie with its header token.
+    router.post("/local-operator/read-cookie", (req: Request, res: Response) => {
+      res.setHeader("Cache-Control", "no-store");
+      if (!hasOperatorHeader(req.headers)) {
+        res.status(403).json({ error: "Local operator sign-in required" });
+        return;
+      }
+      setReadCookie(res);
+      res.status(204).end();
+    });
     router.get("/local-operator/sign-in", (req: Request, res: Response) => {
       res.setHeader("Cache-Control", "no-store");
       res.setHeader("Referrer-Policy", "no-referrer");
@@ -142,12 +165,7 @@ export function createLocalOperatorCredential(options: LocalOperatorCredentialOp
         return;
       }
       const operator = operatorKey();
-      res.cookie(localOperatorReadCookieName(operator), localOperatorReadCookieValue(operator), {
-        httpOnly: true,
-        sameSite: "strict",
-        path: "/api",
-        maxAge: COOKIE_MAX_AGE_MS,
-      });
+      setReadCookie(res);
       // The fragment never reaches a server. The board page moves the token
       // into storage that only its own origin can read.
       const fragment = `${LOCAL_OPERATOR_FRAGMENT_KEY}=${encodeURIComponent(localOperatorBrowserToken(operator))}`;

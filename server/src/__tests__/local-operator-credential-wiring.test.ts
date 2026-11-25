@@ -10,20 +10,33 @@ import {
   ensureLocalOperatorKey,
   localOperatorBrowserToken,
   parseLocalOperatorCredentialMode,
-  resolveLocalOperatorKeyPath,
+  localOperatorReadCookieValue,
+  resolveLocalOperatorKeyPathForConfig,
+  verifyLocalOperatorReadCookieValue,
+  LOCAL_OPERATOR_READ_COOKIE_WINDOW_MS,
 } from "@paperclipai/shared/local-operator-credential";
 
 describe("the local operator credential setting", () => {
   it("requires the credential for every value except an explicit off, so a typo keeps the protection", () => {
-    for (const value of ["required", "1", "yes", "true", "on", "requird"]) {
+    for (const value of ["required", "1", "yes", "true", "on", "requird", "", "  "]) {
       expect(parseLocalOperatorCredentialMode(value)?.mode).toBe("required");
     }
     expect(parseLocalOperatorCredentialMode("requird")?.recognized).toBe(false);
     for (const value of ["off", "0", "no", "false"]) {
       expect(parseLocalOperatorCredentialMode(value)?.mode).toBe("off");
     }
-    expect(parseLocalOperatorCredentialMode("")).toBeNull();
     expect(parseLocalOperatorCredentialMode(undefined)).toBeNull();
+  });
+});
+
+describe("the read cookie", () => {
+  it("stops working within two rotation windows, so a copied cookie expires", () => {
+    const key = Buffer.alloc(32, 3);
+    const issued = 1_000 * LOCAL_OPERATOR_READ_COOKIE_WINDOW_MS + 1;
+    const value = localOperatorReadCookieValue(key, issued);
+    expect(verifyLocalOperatorReadCookieValue(key, value, issued)).toBe(true);
+    expect(verifyLocalOperatorReadCookieValue(key, value, issued + LOCAL_OPERATOR_READ_COOKIE_WINDOW_MS)).toBe(true);
+    expect(verifyLocalOperatorReadCookieValue(key, value, issued + 2 * LOCAL_OPERATOR_READ_COOKIE_WINDOW_MS)).toBe(false);
   });
 });
 
@@ -51,6 +64,7 @@ describe.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
       home: process.env.PAPERCLIP_HOME,
       instance: process.env.PAPERCLIP_INSTANCE_ID,
       mode: process.env.PAPERCLIP_LOCAL_OPERATOR_CREDENTIAL,
+      config: process.env.PAPERCLIP_CONFIG,
     };
 
     beforeAll(() => {
@@ -58,7 +72,9 @@ describe.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
       process.env.PAPERCLIP_HOME = home;
       process.env.PAPERCLIP_INSTANCE_ID = "default";
       process.env.PAPERCLIP_LOCAL_OPERATOR_CREDENTIAL = "required";
-      const keyPath = resolveLocalOperatorKeyPath();
+      // The server keeps the key next to the config file it runs from.
+      process.env.PAPERCLIP_CONFIG = path.join(home, "instances", "default", "config.json");
+      const keyPath = resolveLocalOperatorKeyPathForConfig(process.env.PAPERCLIP_CONFIG);
       mkdirSync(path.dirname(keyPath), { recursive: true });
       token = localOperatorBrowserToken(ensureLocalOperatorKey(keyPath));
       vi.resetModules();
@@ -69,6 +85,7 @@ describe.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
         ["PAPERCLIP_HOME", saved.home],
         ["PAPERCLIP_INSTANCE_ID", saved.instance],
         ["PAPERCLIP_LOCAL_OPERATOR_CREDENTIAL", saved.mode],
+        ["PAPERCLIP_CONFIG", saved.config],
       ] as const) {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;

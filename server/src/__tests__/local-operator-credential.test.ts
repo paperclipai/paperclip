@@ -190,13 +190,27 @@ describe.skipIf(!supported)("operator browser sign-in", () => {
       "/api/attachments/a1/content",
       "/api/assets/s1/content",
       "/api/issues/i1/file-resources/content?path=a.txt",
-      "/api/heartbeat-runs/r1/provider-trace/download",
-      "/api/companies/c1/audit/agent-actions.csv",
       "/api/plugins/p1/bridge/stream/updates?companyId=c1",
     ]) {
       const response = await fetch(`${base}${file}`, { headers: { cookie } });
       expect(await response.json()).toEqual({ type: "board", source: "local_implicit" });
     }
+    // The page downloads these with `fetch`, so they need its header token.
+    for (const file of ["/api/heartbeat-runs/r1/provider-trace/download", "/api/companies/c1/audit/agent-actions.csv"]) {
+      const response = await fetch(`${base}${file}`, { headers: { cookie } });
+      expect(await response.json()).toEqual({ type: "none", source: "none" });
+    }
+  });
+
+  it("renews the read cookie only for the board page that holds the header token", async () => {
+    const { token } = await signIn();
+    expect((await fetch(`${base}/api/local-operator/read-cookie`, { method: "POST" })).status).toBe(403);
+    const renewed = await fetch(`${base}/api/local-operator/read-cookie`, {
+      method: "POST",
+      headers: { [LOCAL_OPERATOR_HEADER]: token },
+    });
+    expect(renewed.status).toBe(204);
+    expect(renewed.headers.get("set-cookie")).toMatch(/HttpOnly/i);
   });
 
   it("accepts each sign-in link only once", async () => {

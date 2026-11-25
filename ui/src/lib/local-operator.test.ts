@@ -58,3 +58,20 @@ describe("a board opened on a wildcard address", () => {
     }
   });
 });
+
+describe("the read cookie refresh", () => {
+  it("renews the cookie for a signed-in board and does nothing otherwise", async () => {
+    const calls: string[] = [];
+    const target = {
+      fetch: vi.fn(async (input: RequestInfo | URL) => { calls.push(String(input)); return new Response(null, { status: 204 }); }),
+      setInterval: vi.fn(() => 1),
+      clearInterval: vi.fn(),
+    } as unknown as typeof globalThis;
+    const { startLocalOperatorReadCookieRefresh } = await import("./local-operator");
+    startLocalOperatorReadCookieRefresh(target)();
+    expect(calls).toEqual([]);
+    window.localStorage.setItem("paperclip.localOperatorToken", "v1.token");
+    startLocalOperatorReadCookieRefresh(target)();
+    expect(calls).toEqual(["/api/local-operator/read-cookie"]);
+  });
+});

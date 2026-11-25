@@ -27,6 +27,15 @@ export function resolveLocalOperatorKeyPath(input: { homeDir?: string; instanceI
   return path.resolve(resolvePaperclipInstanceRoot(input), "secrets", "local-operator.key");
 }
 
+/**
+ * The key sits next to the instance's config file, so the server and the CLI
+ * find the same key however the instance was chosen (`--instance`, `--config`,
+ * or the environment). For the standard layout this is the instance root.
+ */
+export function resolveLocalOperatorKeyPathForConfig(configPath: string): string {
+  return path.resolve(path.dirname(configPath), "secrets", "local-operator.key");
+}
+
 function sign(key: Buffer, purpose: string): string {
   return createHmac("sha256", key).update(purpose).digest("base64url");
 }
@@ -83,20 +92,33 @@ export function verifyLocalOperatorBrowserToken(key: Buffer, value: string | nul
 
 /**
  * Cookies are not isolated by port, so any local server the browser visits
- * receives them. The cookie is therefore a separate, read-only credential for
- * the few downloads the browser loads directly. Its name is per instance so
- * two local boards do not sign each other out.
+ * can receive them. The cookie is therefore a separate, read-only credential
+ * for the files the browser loads directly, and it rotates: a value is valid
+ * for one window and the next, so a copied cookie stops working within a day.
+ * The board page refreshes it with its header token. Its name is per instance
+ * so two local boards do not sign each other out.
  */
+export const LOCAL_OPERATOR_READ_COOKIE_WINDOW_MS = 12 * 60 * 60 * 1000;
 export function localOperatorReadCookieName(key: Buffer): string {
   return `paperclip_local_operator_${sign(key, COOKIE_NAME_PURPOSE).replace(/[^A-Za-z0-9]/g, "").slice(0, 10)}`;
 }
 
-export function localOperatorReadCookieValue(key: Buffer): string {
-  return `r1.${sign(key, READ_COOKIE_PURPOSE)}`;
+function readCookieWindow(now: number): number {
+  return Math.floor(now / LOCAL_OPERATOR_READ_COOKIE_WINDOW_MS);
 }
 
-export function verifyLocalOperatorReadCookieValue(key: Buffer, value: string | null | undefined): boolean {
-  return typeof value === "string" && sameValue(value, localOperatorReadCookieValue(key));
+function readCookieForWindow(key: Buffer, window: number): string {
+  return `r2.${window}.${sign(key, `${READ_COOKIE_PURPOSE}:${window}`)}`;
+}
+
+export function localOperatorReadCookieValue(key: Buffer, now = Date.now()): string {
+  return readCookieForWindow(key, readCookieWindow(now));
+}
+
+export function verifyLocalOperatorReadCookieValue(key: Buffer, value: string | null | undefined, now = Date.now()): boolean {
+  if (typeof value !== "string") return false;
+  const current = readCookieWindow(now);
+  return sameValue(value, readCookieForWindow(key, current)) || sameValue(value, readCookieForWindow(key, current - 1));
 }
 
 export interface LocalOperatorSignInLink {
@@ -138,15 +160,16 @@ const REQUIRED_VALUES = new Set(["required", "require", "on", "true", "1", "yes"
 const OFF_VALUES = new Set(["off", "false", "0", "no"]);
 
 /**
- * Reads the setting. An unset value returns null. Any other value that is not
- * an explicit "off" returns "required", so a typo never removes the protection.
+ * Reads the setting. Only an unset variable returns null. Any other value that
+ * is not an explicit "off", including a blank one, returns "required", so a
+ * typo or an empty placeholder never removes the protection.
  */
 export function parseLocalOperatorCredentialMode(value: string | undefined): {
   mode: LocalOperatorCredentialMode;
   recognized: boolean;
 } | null {
-  const normalized = value?.trim().toLowerCase();
-  if (!normalized) return null;
+  if (value === undefined) return null;
+  const normalized = value.trim().toLowerCase();
   if (OFF_VALUES.has(normalized)) return { mode: "off", recognized: true };
   return { mode: "required", recognized: REQUIRED_VALUES.has(normalized) };
 }

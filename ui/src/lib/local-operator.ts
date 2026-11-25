@@ -74,3 +74,19 @@ export function withLocalOperatorSocketToken(url: string): string {
   parsed.searchParams.set(LOCAL_OPERATOR_SOCKET_PARAM, token);
   return parsed.toString();
 }
+
+const READ_COOKIE_REFRESH_MS = 4 * 60 * 60 * 1000;
+
+/**
+ * Keeps the rotating read cookie current for images and file links, which the
+ * browser loads without this page's header. Runs only for a signed-in board.
+ */
+export function startLocalOperatorReadCookieRefresh(target: typeof globalThis = globalThis): () => void {
+  if (!localOperatorToken()) return () => {};
+  const refresh = () => {
+    void target.fetch("/api/local-operator/read-cookie", { method: "POST", credentials: "same-origin" }).catch(() => {});
+  };
+  refresh();
+  const timer = target.setInterval(refresh, READ_COOKIE_REFRESH_MS);
+  return () => target.clearInterval(timer);
+}
