@@ -10,9 +10,9 @@
     }
   ],
   "coverage": {
-    "measured": 1588,
-    "withSetup": 1573,
-    "inventory": 1670
+    "measured": 1676,
+    "withSetup": 1579,
+    "inventory": 1676
   },
   "durations": {
     "server/scripts/build-config.test.mjs": 10828,
@@ -187,7 +187,10 @@
     "server/src/__tests__/chat-channels/discord-modals-and-publications.integration.test.ts": 6507,
     "server/src/__tests__/chat-channels/discord-setup-and-commands.integration.test.ts": 54809,
     "server/src/__tests__/chat-channels/github-retry-and-recovery.integration.test.ts": 41634,
-    "server/src/__tests__/chat-channels/github-review-workflow.integration.test.ts": 171270,
+    "server/src/__tests__/chat-channels/github-review-finding-threads.integration.test.ts": 57428,
+    "server/src/__tests__/chat-channels/github-review-publications.integration.test.ts": 28492,
+    "server/src/__tests__/chat-channels/github-review-response-maintenance.integration.test.ts": 34444,
+    "server/src/__tests__/chat-channels/github-review-workflow.integration.test.ts": 58821,
     "server/src/__tests__/chat-channels/github-setup-and-access.integration.test.ts": 20202,
     "server/src/__tests__/chat-channels/github-webhook-recovery.integration.test.ts": 20859,
     "server/src/__tests__/chat-channels/slack-ingress-and-threads.integration.test.ts": 9836,
@@ -269,7 +272,10 @@
     "server/src/__tests__/connection-grant-resolution.test.ts": 9457,
     "server/src/__tests__/connection-instructions.test.ts": 8609,
     "server/src/__tests__/connection-intents-service.test.ts": 29268,
-    "server/src/__tests__/connection-management.integration.test.ts": 181790,
+    "server/src/__tests__/connection-management-delegated-policy.integration.test.ts": 49742,
+    "server/src/__tests__/connection-management-gateways.integration.test.ts": 64178,
+    "server/src/__tests__/connection-management-providers.integration.test.ts": 36145,
+    "server/src/__tests__/connection-management.integration.test.ts": 31725,
     "server/src/__tests__/connection-profile-configuration.test.ts": 8513,
     "server/src/__tests__/connector-tool-policy.test.ts": 6985,
     "server/src/__tests__/container-init-reaping.test.ts": 774,

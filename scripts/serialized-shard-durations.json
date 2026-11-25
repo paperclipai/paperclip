@@ -10,9 +10,9 @@
     }
   ],
   "coverage": {
-    "measured": 178,
-    "withSetup": 178,
-    "inventory": 181
+    "measured": 183,
+    "withSetup": 180,
+    "inventory": 183
   },
   "durations": {
     "server/src/__tests__/access-routes-hidden-floor.test.ts": 6639,
@@ -131,7 +131,9 @@
     "server/src/__tests__/issue-list-assignee-filter-routes.test.ts": 19013,
     "server/src/__tests__/issue-list-updatedsince-filter-routes.test.ts": 8205,
     "server/src/__tests__/issue-onboarding-first-task-routes.test.ts": 17178,
-    "server/src/__tests__/issue-queued-comments-routes.test.ts": 127744,
+    "server/src/__tests__/issue-queued-comments-dispatch-routes.test.ts": 31375,
+    "server/src/__tests__/issue-queued-comments-routes.test.ts": 42489,
+    "server/src/__tests__/issue-queued-comments-steering-routes.test.ts": 53881,
     "server/src/__tests__/issue-scheduled-retry-routes.test.ts": 37853,
     "server/src/__tests__/issue-stale-execution-lock-routes.test.ts": 10115,
     "server/src/__tests__/issue-stalled-review-decision-routes.test.ts": 9355,
