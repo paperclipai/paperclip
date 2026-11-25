@@ -99,7 +99,7 @@ import { defaultConnectionAgentInstructions, paperclipPeerAgentInstructions, pap
 import { isBrowserUseConnection } from "./browser-use-client.js";
 
 import { COGNEE_STDIO_TEMPLATE } from "./cognee-connection.js";
-import { isCatalogEntryBlocked, isCatalogEntryRemovedByProvider, isRemoteMcpConnectorMethod, type AwsConnectionSetup } from "@paperclipai/shared";
+import { isCatalogEntryBlocked, isCatalogEntryOffered, isCatalogEntryRemovedByProvider, isRemoteMcpConnectorMethod, type AwsConnectionSetup } from "@paperclipai/shared";
 
 import { githubBotRequest } from "./chat-github-client.js";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
@@ -3438,7 +3438,7 @@ export function toolAccessService(
     if (input.access !== "all_agents")
       await assertAgentsInCompany(companyId, input.access.agentIds);
 
-    const entries: CreateToolProfileEntryForProfile[] = enabledRows.map(
+    const entries: CreateToolProfileEntryForProfile[] = enabledRows.filter(isCatalogEntryOffered).map(
       (entry) => ({
         selectorType: "catalog_entry",
         effect: "include",
@@ -3729,7 +3729,7 @@ export function toolAccessService(
         {
           companyId,
           connection,
-          askFirstEntries: askFirstRows,
+          askFirstEntries: askFirstRows.filter(isCatalogEntryOffered),
           disableStale: !input.preserveExistingAccess,
           actor,
         },

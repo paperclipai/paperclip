@@ -613,6 +613,16 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(offered).not.toContain("gmail__list_threads");
       expect(offered).not.toContain("gmail__search_messages");
       expect(offered).not.toContain("gmail__get_draft");
+
+      forgetMcpHttpSessions(f.connectionId);
+      await f.service.refreshCatalog(f.connectionId, f.actor);
+      const relisted = await byName(f.connectionId);
+      expect(relisted.get("gmail__list_threads")?.status).toBe("active");
+      expect(relisted.get("gmail__search_messages")?.status).toBe("active");
+      const offeredAgain = (await f.listed()).map((tool) => tool.upstreamToolName);
+      expect(offeredAgain).toContain("gmail__get_message");
+      expect(offeredAgain).not.toContain("gmail__list_threads");
+      expect(offeredAgain).not.toContain("gmail__search_messages");
     });
 
     it("keeps an action that a switch before this fix held for review held, because the hold replaced the saved REST definition", async () => {
