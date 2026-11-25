@@ -843,6 +843,8 @@ export interface WakeupOptions {
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
+  /** Durable deferred wake request already saved with the triggering domain write. */
+  executionWaitRequestId?: string;
 }
 
 function sanitizeAgentSessionMessageText(value: unknown): string | null {

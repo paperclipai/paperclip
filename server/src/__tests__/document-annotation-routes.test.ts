@@ -237,6 +237,8 @@ describe("document annotation routes", () => {
       },
       changed: true,
       firstAdd: input.present,
+      questionWakeRequestId: input.present && input.reaction === "question" ? "wake-req-1" : null,
+      questionWakeAgentId: input.present && input.reaction === "question" ? "99999999-9999-4999-8999-999999999999" : null,
     }));
     // Cold route transforms belong to fixture setup, not the request timeout.
     await Promise.all([
@@ -492,6 +494,7 @@ describe("document annotation routes", () => {
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(assigneeAgentId, expect.objectContaining({
         reason: "issue_commented",
         allowRunCoalescing: false,
+        executionWaitRequestId: "wake-req-1",
         requestedByActorType: "user",
         requestedByActorId: "board-user",
         contextSnapshot: expect.objectContaining({

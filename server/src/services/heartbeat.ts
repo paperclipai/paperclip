@@ -4621,6 +4621,7 @@ export function heartbeatService(
       }),
 
     wakeup: trackWakeup,
+    resumeDeferredExecutionReceipts: heartbeatQueue.resumeDeferredExecutionReceipts,
     dispatchPendingNativeStatusWakeups,
     triggerIssueMonitor,
 

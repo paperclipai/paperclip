@@ -11550,15 +11550,16 @@ export function issueRoutes(
       });
     }
 
+    const questionWakeAgentId = result.questionWakeAgentId ?? issue.assigneeAgentId;
     if (
       present &&
       result.firstAdd &&
       reactionParsed.data === "question" &&
       actor.actorType === "user" &&
-      issue.assigneeAgentId &&
+      questionWakeAgentId &&
       !isClosedIssueStatus(issue.status)
     ) {
-      await heartbeat.wakeup(issue.assigneeAgentId, {
+      await heartbeat.wakeup(questionWakeAgentId, {
         source: "automation",
         triggerDetail: "system",
         reason: "issue_commented",
@@ -11570,6 +11571,7 @@ export function issueRoutes(
           mutation: "annotation_reaction",
         },
         allowRunCoalescing: false,
+        ...(result.questionWakeRequestId ? { executionWaitRequestId: result.questionWakeRequestId } : {}),
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
         contextSnapshot: {

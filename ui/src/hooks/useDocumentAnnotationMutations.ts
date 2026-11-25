@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { DocumentAnnotationComment, DocumentAnnotationCommentReactionName, DocumentAnnotationCommentReactionSummary, DocumentAnnotationThreadStatus, DocumentAnnotationThreadWithComments } from "@paperclipai/shared";
 import { DOCUMENT_ANNOTATION_COMMENT_REACTIONS } from "@paperclipai/shared";
@@ -116,8 +116,30 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
     onSettled: invalidateAll,
   });
   const reactionWrites = useRef(new Map<string, Promise<DocumentAnnotationComment>>());
-  const pendingReactions = useCallback((commentId: string) => DOCUMENT_ANNOTATION_COMMENT_REACTIONS
-    .filter((name) => reactionWrites.current.has(reactionWriteKey(commentId, name))), []);
+  const pendingCounts = useRef(new Map<string, number>());
+  const pendingChoices = useRef(new Map<string, PendingReactionChoice>());
+  const queryKeyHash = useMemo(() => JSON.stringify(queryKey), [queryKey]);
+
+  useEffect(() => {
+    let reapplying = false;
+    return queryClient.getQueryCache().subscribe((event) => {
+      if (reapplying) return;
+      if (event.type !== "updated" || event.action.type !== "success" || event.action.manual) return;
+      if (pendingChoices.current.size === 0) return;
+      if (JSON.stringify(event.query.queryKey) !== queryKeyHash) return;
+      const current = queryClient.getQueryData<DocumentAnnotationThreadWithComments[]>(queryKey);
+      if (!current) return;
+      const next = applyPendingReactionChoices(current, pendingChoices.current.values());
+      if (next === current) return;
+      reapplying = true;
+      try {
+        queryClient.setQueryData<DocumentAnnotationThreadWithComments[]>(queryKey, next);
+      } finally {
+        reapplying = false;
+      }
+    });
+  }, [queryClient, queryKey, queryKeyHash]);
+
   const updateCommentReactions = useCallback((
     threadId: string,
     commentId: string,
@@ -141,6 +163,9 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
       });
     },
     onMutate: async ({ threadId, commentId, reaction, present }) => {
+      const key = reactionWriteKey(commentId, reaction);
+      pendingCounts.current.set(key, (pendingCounts.current.get(key) ?? 0) + 1);
+      pendingChoices.current.set(key, { threadId, commentId, reaction, present, userId: currentUser.id });
       setMutationError(null);
       await queryClient.cancelQueries({ queryKey });
       let previous: DocumentAnnotationCommentReactionSummary | undefined;
@@ -151,24 +176,75 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
       return { previous };
     },
     onError: (error, { threadId, commentId, reaction }, context) => {
-      if (context) updateCommentReactions(threadId, commentId, (reactions) => replaceReaction(reactions, reaction, context.previous));
+      const key = reactionWriteKey(commentId, reaction);
+      if ((pendingCounts.current.get(key) ?? 0) <= 1 && context) {
+        updateCommentReactions(threadId, commentId, (reactions) => replaceReaction(reactions, reaction, context.previous));
+      }
       setMutationError(messageFor(error, "Failed to update reaction."));
     },
     onSuccess: (comment, { threadId, commentId, reaction }) => {
       setMutationError(null);
-      if (reactionWrites.current.has(reactionWriteKey(commentId, reaction))) return;
-      const pending = pendingReactions(commentId);
-      updateCommentReactions(threadId, commentId, (reactions) => pending.reduce(
-        (merged, name) => replaceReaction(merged, name, reactions.find((entry) => entry.reaction === name)),
+      const key = reactionWriteKey(commentId, reaction);
+      if ((pendingCounts.current.get(key) ?? 0) > 1) return;
+      const otherPending = Array.from(pendingChoices.current.values()).filter(
+        (choice) => choice.commentId === commentId && choice.reaction !== reaction,
+      );
+      updateCommentReactions(threadId, commentId, () => otherPending.reduce(
+        (merged, choice) => applyOptimisticReaction(merged, choice.reaction, choice.present, choice.userId),
         comment.reactions ?? [],
       ));
     },
-    onSettled: (_comment, _error, { commentId }) => {
-      if (pendingReactions(commentId).length > 0) return;
+    onSettled: (_comment, _error, { commentId, reaction }) => {
+      const key = reactionWriteKey(commentId, reaction);
+      const remaining = (pendingCounts.current.get(key) ?? 1) - 1;
+      if (remaining > 0) {
+        pendingCounts.current.set(key, remaining);
+      } else {
+        pendingCounts.current.delete(key);
+        pendingChoices.current.delete(key);
+      }
+      if (pendingCounts.current.size > 0) return;
       return invalidateAll();
     },
   });
   return { createThread, addReply, updateStatus, toggleReaction, mutationError, currentUser };
+}
+
+interface PendingReactionChoice extends ReactionToggle {
+  userId: string | null;
+}
+
+function applyPendingReactionChoices(
+  threads: DocumentAnnotationThreadWithComments[],
+  choices: Iterable<PendingReactionChoice>,
+): DocumentAnnotationThreadWithComments[] {
+  const byComment = new Map<string, PendingReactionChoice[]>();
+  for (const choice of choices) {
+    const list = byComment.get(choice.commentId) ?? [];
+    list.push(choice);
+    byComment.set(choice.commentId, list);
+  }
+  if (byComment.size === 0) return threads;
+  let changed = false;
+  const nextThreads = threads.map((thread) => {
+    let threadChanged = false;
+    const comments = thread.comments.map((comment) => {
+      const pending = byComment.get(comment.id);
+      if (!pending) return comment;
+      const current = comment.reactions ?? [];
+      const merged = pending.reduce(
+        (acc, choice) => applyOptimisticReaction(acc, choice.reaction, choice.present, choice.userId),
+        current,
+      );
+      if (merged === current) return comment;
+      threadChanged = true;
+      return { ...comment, reactions: merged };
+    });
+    if (!threadChanged) return thread;
+    changed = true;
+    return { ...thread, comments };
+  });
+  return changed ? nextThreads : threads;
 }
 
 function reactionWriteKey(commentId: string, reaction: DocumentAnnotationCommentReactionName) {

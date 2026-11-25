@@ -2,7 +2,7 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 import type { DocumentAnnotationThreadWithComments } from "@paperclipai/shared";
 import { ThreadCard } from "@/components/DocumentAnnotationPanel";
@@ -127,6 +127,132 @@ describe("toggleReaction", () => {
     await act(async () => finishQuestion());
     await vi.waitFor(() => expect(invalidate).toHaveBeenCalled());
     expect(reactionsInCache()).toEqual([["done", true], ["question", true]]);
+
+    await act(async () => root.unmount());
+    client.clear();
+  });
+
+  it("preserves a queued reaction removal when a live-update refetch returns the earlier add", async () => {
+    let finishAdd!: () => void;
+    let finishRemove!: () => void;
+    const doneSummary = { reaction: "done" as const, count: 1, reactedByMe: true, actors: [{ actorType: "user" as const, agentId: null, userId: null }] };
+    setReaction
+      .mockReset()
+      .mockImplementationOnce(() => new Promise((resolve) => { finishAdd = () => resolve({ id: "comment-1", reactions: [doneSummary] }); }))
+      .mockImplementationOnce(() => new Promise((resolve) => { finishRemove = () => resolve({ id: "comment-1", reactions: [] }); }));
+
+    const queryKey = ["issues", "document-annotations", "issue-1", "plan", "all"];
+    let serverReactions: Array<typeof doneSummary> = [];
+    const fetchAnnotations = vi.fn(async () => [{ id: "thread-1", comments: [{ id: "comment-1", reactions: serverReactions }] }]);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+
+    let toggle!: ReturnType<typeof useDocumentAnnotationMutations>["toggleReaction"];
+    function Harness() {
+      useQuery({ queryKey, queryFn: fetchAnnotations });
+      toggle = useDocumentAnnotationMutations({
+        target: { kind: "issue", issueId: "issue-1", documentKey: "plan" },
+        baseRevisionId: "rev-1",
+        baseRevisionNumber: 1,
+        pendingAnchor: null,
+        onFocusThread: () => undefined,
+      }).toggleReaction;
+      return null;
+    }
+
+    const reactionsInCache = () =>
+      (client.getQueryData(queryKey) as Array<{ comments: Array<{ reactions: Array<{ reaction: string; reactedByMe: boolean }> }> }>)[0]!
+        .comments[0]!.reactions.map((entry) => [entry.reaction, entry.reactedByMe]);
+
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    await act(async () => root.render(<QueryClientProvider client={client}><Harness /></QueryClientProvider>));
+    await vi.waitFor(() => expect(fetchAnnotations).toHaveBeenCalledTimes(1));
+
+    await act(async () => {
+      toggle.mutate({ threadId: "thread-1", commentId: "comment-1", reaction: "done", present: true });
+      toggle.mutate({ threadId: "thread-1", commentId: "comment-1", reaction: "done", present: false });
+    });
+    await vi.waitFor(() => expect(setReaction).toHaveBeenCalledTimes(1));
+    expect(reactionsInCache()).toEqual([]);
+
+    // Simulate LiveUpdatesProvider invalidating the annotation query right after
+    // the server commits the add, while the queued removal has not run yet.
+    serverReactions = [doneSummary];
+    await act(async () => {
+      await client.invalidateQueries({ queryKey });
+    });
+    await vi.waitFor(() => expect(fetchAnnotations).toHaveBeenCalledTimes(2));
+    expect(reactionsInCache()).toEqual([]);
+
+    await act(async () => finishAdd());
+    await vi.waitFor(() => expect(setReaction).toHaveBeenCalledTimes(2));
+    expect(reactionsInCache()).toEqual([]);
+
+    serverReactions = [];
+    await act(async () => finishRemove());
+    await vi.waitFor(() => expect(fetchAnnotations).toHaveBeenCalledTimes(3));
+    expect(reactionsInCache()).toEqual([]);
+
+    await act(async () => root.unmount());
+    client.clear();
+  });
+
+  it("defers invalidation while a reaction write on another comment is still pending", async () => {
+    let finishFirst!: () => void;
+    let finishSecond!: () => void;
+    const doneSummary = { reaction: "done" as const, count: 1, reactedByMe: true, actors: [{ actorType: "user" as const, agentId: null, userId: null }] };
+    const questionSummary = { reaction: "question" as const, count: 1, reactedByMe: true, actors: [{ actorType: "user" as const, agentId: null, userId: null }] };
+    setReaction
+      .mockReset()
+      .mockImplementationOnce(() => new Promise((resolve) => { finishFirst = () => resolve({ id: "comment-1", reactions: [doneSummary] }); }))
+      .mockImplementationOnce(() => new Promise((resolve) => { finishSecond = () => resolve({ id: "comment-2", reactions: [questionSummary] }); }));
+
+    const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
+    const queryKey = ["issues", "document-annotations", "issue-1", "plan", "all"];
+    client.setQueryData(queryKey, [{
+      id: "thread-1",
+      comments: [
+        { id: "comment-1", reactions: [] },
+        { id: "comment-2", reactions: [] },
+      ],
+    }]);
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    let toggle!: ReturnType<typeof useDocumentAnnotationMutations>["toggleReaction"];
+    function Harness() {
+      toggle = useDocumentAnnotationMutations({
+        target: { kind: "issue", issueId: "issue-1", documentKey: "plan" },
+        baseRevisionId: "rev-1",
+        baseRevisionNumber: 1,
+        pendingAnchor: null,
+        onFocusThread: () => undefined,
+      }).toggleReaction;
+      return null;
+    }
+
+    const commentReactions = (idx: number) =>
+      (client.getQueryData(queryKey) as Array<{ comments: Array<{ reactions: Array<{ reaction: string; reactedByMe: boolean }> }> }>)[0]!
+        .comments[idx]!.reactions.map((entry) => [entry.reaction, entry.reactedByMe]);
+
+    const host = document.createElement("div");
+    const root = createRoot(host);
+    await act(async () => root.render(<QueryClientProvider client={client}><Harness /></QueryClientProvider>));
+
+    await act(async () => {
+      toggle.mutate({ threadId: "thread-1", commentId: "comment-1", reaction: "done", present: true });
+      toggle.mutate({ threadId: "thread-1", commentId: "comment-2", reaction: "question", present: true });
+    });
+    await vi.waitFor(() => expect(setReaction).toHaveBeenCalledTimes(2));
+    invalidate.mockClear();
+
+    await act(async () => finishFirst());
+    expect(invalidate).not.toHaveBeenCalled();
+    expect(commentReactions(0)).toEqual([["done", true]]);
+    expect(commentReactions(1)).toEqual([["question", true]]);
+
+    await act(async () => finishSecond());
+    await vi.waitFor(() => expect(invalidate).toHaveBeenCalled());
+    expect(commentReactions(0)).toEqual([["done", true]]);
+    expect(commentReactions(1)).toEqual([["question", true]]);
 
     await act(async () => root.unmount());
     client.clear();

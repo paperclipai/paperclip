@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import type { Db } from "@paperclipai/db";
 import {
+  agentWakeupRequests,
   documentAnnotationAnchorSnapshots,
   documentAnnotationCommentReactions,
   documentAnnotationComments,
@@ -10,8 +12,11 @@ import {
   caseDocuments,
   issueComments,
   issueDocuments,
+  issues,
   routineDocuments,
 } from "@paperclipai/db";
+import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
+import { deferredWorkIntentWait } from "./work-intent-outbox.js";
 import {
   anchorSnapshotToSelector,
   remapDocumentAnchor,
@@ -939,12 +944,83 @@ export function documentAnnotationService(db: Db) {
             isNull(documentAnnotationCommentReactions.removedAt),
           ))
           .returning({ id: documentAnnotationCommentReactions.id, firstAdd: sql<boolean>`false` });
+      const changed = changedRows.length > 0;
+      const firstAdd = changedRows[0]?.firstAdd === true;
+      let questionWakeRequestId: string | null = null;
+      let questionWakeAgentId: string | null = null;
+      if (
+        input.present &&
+        firstAdd &&
+        input.reaction === "question" &&
+        input.actor.actorType === "user" &&
+        input.target.kind === "issue"
+      ) {
+        const [issue] = await tx
+          .select({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            conversationAgentId: issues.conversationAgentId,
+          })
+          .from(issues)
+          .where(and(eq(issues.companyId, thread.companyId), eq(issues.id, input.target.issueId)));
+        if (
+          issue &&
+          issue.assigneeAgentId &&
+          issue.status !== "done" &&
+          issue.status !== "cancelled" &&
+          (!issue.conversationAgentId || issue.assigneeAgentId === issue.conversationAgentId)
+        ) {
+          const wakeRequestId = randomUUID();
+          await notifyDeferredExecutionWork(tx, {
+            companyId: thread.companyId,
+            requestId: wakeRequestId,
+          });
+          await tx.insert(agentWakeupRequests).values({
+            id: wakeRequestId,
+            companyId: thread.companyId,
+            agentId: issue.assigneeAgentId,
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_commented",
+            status: "deferred_issue_execution",
+            requestedByActorType: "user",
+            requestedByActorId: input.actor.actorId,
+            idempotencyKey: `annotation-question-reaction:${changedRows[0]!.id}`,
+            payload: {
+              issueId: issue.id,
+              annotationCommentId: comment.id,
+              annotationThreadId: thread.id,
+              annotationReaction: "question",
+              mutation: "annotation_reaction",
+              executionWait: deferredWorkIntentWait(
+                "wake_lost",
+                "Waiting to deliver annotation question reaction.",
+              ),
+              _paperclipWakeContext: {
+                issueId: issue.id,
+                taskId: issue.id,
+                annotationCommentId: comment.id,
+                annotationThreadId: thread.id,
+                annotationReaction: "question",
+                annotationReactionUserId: input.actor.actorId,
+                source: "issue.document_annotation_reaction",
+                wakeReason: "issue_commented",
+              },
+            },
+          });
+          questionWakeRequestId = wakeRequestId;
+          questionWakeAgentId = issue.assigneeAgentId;
+        }
+      }
       const [withSummary] = await withReactions([comment], input.actor, tx);
       return {
         thread,
         comment: withSummary!,
-        changed: changedRows.length > 0,
-        firstAdd: changedRows[0]?.firstAdd === true,
+        changed,
+        firstAdd,
+        questionWakeRequestId,
+        questionWakeAgentId,
       };
     }),
 

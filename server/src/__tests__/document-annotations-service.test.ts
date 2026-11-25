@@ -3,7 +3,10 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  agentWakeupRequests,
+  authUsers,
   companies,
+  companyMemberships,
   createDb,
   documentAnnotationAnchorSnapshots,
   documentAnnotationCommentReactions,
@@ -11,6 +14,7 @@ import {
   documentAnnotationThreads,
   documentRevisions,
   documents,
+  heartbeatRuns,
   issueComments,
   issueDocuments,
   issueThreadInteractions,
@@ -20,9 +24,11 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
 import { documentAnnotationService } from "../services/document-annotations.js";
 import { documentService } from "../services/documents.js";
 import { buildPaperclipWakePayload } from "../services/heartbeat.js";
+import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
 import { buildDocumentReviewContext, buildPlanReviewContext, PLAN_REVIEW_CONTEXT_LIMITS } from "../services/plan-review-context.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -67,9 +73,14 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     await db.delete(issueDocuments);
     await db.delete(documents);
     await db.delete(issueComments);
+    await db.update(issues).set({ executionRunId: null });
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(issues);
     await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -749,6 +760,248 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
         reaction: { name: "question", author: { type: "user", id: "board-user" } },
       }),
     ]);
+  });
+
+  async function setupAssignedAnnotatedIssue(opts: { waitingChat?: boolean } = {}) {
+    const created = await createAnnotatedIssue();
+    const agentId = randomUUID();
+    const userId = `user-${randomUUID()}`;
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: userId,
+      name: "Reviewer",
+      email: `${userId}@example.test`,
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companyMemberships).values({
+      companyId: created.companyId,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "owner",
+    });
+    const [agent] = await db.insert(agents).values({
+      id: agentId,
+      companyId: created.companyId,
+      name: "Reviewer Agent",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true } },
+    }).returning();
+    await db.update(issues).set({
+      assigneeAgentId: agentId,
+      ...(opts.waitingChat
+        ? {
+            status: "in_review",
+            conversationAgentId: agentId,
+            conversationUserId: userId,
+            conversationState: "waiting",
+          }
+        : { status: "in_progress" }),
+    }).where(eq(issues.id, created.issueId));
+
+    const deps = createHeartbeatQueueTestDependencies(db);
+    deps.getAgent.mockResolvedValue(agent!);
+    deps.instanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false } as never);
+    deps.issuesSvc.getDependencyReadiness.mockResolvedValue({
+      issueId: created.issueId,
+      isDependencyBlocked: false,
+      unresolvedBlockerCount: 0,
+      unresolvedBlockers: [],
+      blockedBy: [],
+      blocking: [],
+    } as never);
+    const queue = createHeartbeatQueue(db, deps);
+    return { ...created, agentId, userId, queue };
+  }
+
+  it("saves a recoverable wake request with a person's first question and resumes it if immediate wakeup fails", async () => {
+    const { companyId, issueId, thread, comment, agentId, userId, queue } = await setupAssignedAnnotatedIssue();
+    const actor = { actorType: "user" as const, actorId: userId, userId };
+
+    const added = await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comment.id,
+      reaction: "question",
+      present: true,
+      actor,
+    });
+    expect(added.firstAdd).toBe(true);
+    expect(added.questionWakeRequestId).toEqual(expect.any(String));
+
+    // Removing and re-adding must not create a second durable wake request.
+    await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comment.id,
+      reaction: "question",
+      present: false,
+      actor,
+    });
+    const readded = await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comment.id,
+      reaction: "question",
+      present: true,
+      actor,
+    });
+    expect(readded.firstAdd).toBe(false);
+    expect(readded.questionWakeRequestId).toBeNull();
+
+    const savedWakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(savedWakes).toHaveLength(1);
+    expect(savedWakes[0]).toMatchObject({
+      id: added.questionWakeRequestId,
+      agentId,
+      status: "deferred_issue_execution",
+      requestedByActorType: "user",
+      requestedByActorId: userId,
+    });
+
+    // Simulate the route crashing or wakeup failing before dispatch: recovery promotes the saved receipt once.
+    await queue.resumeDeferredExecutionReceipts({ companyId, requestId: added.questionWakeRequestId! });
+    await queue.resumeDeferredExecutionReceipts({ companyId, requestId: added.questionWakeRequestId! });
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    expect(runs).toHaveLength(1);
+    expect(["queued", "running"]).toContain(runs[0]!.status);
+    expect(runs[0]).toMatchObject({
+      agentId,
+      issueId,
+      responsibleUserId: userId,
+      contextSnapshot: expect.objectContaining({
+        issueId,
+        annotationCommentId: comment.id,
+        annotationThreadId: thread.id,
+        annotationReaction: "question",
+        annotationReactionUserId: userId,
+        source: "issue.document_annotation_reaction",
+      }),
+    });
+    const [recoveredReceipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, added.questionWakeRequestId!));
+    expect(recoveredReceipt).toMatchObject({ status: "coalesced", runId: runs[0]!.id });
+  });
+
+  it("wakes an idle waiting agent chat when a person adds a question reaction", async () => {
+    const { companyId, issueId, thread, comment, agentId, userId, queue } = await setupAssignedAnnotatedIssue({ waitingChat: true });
+
+    const added = await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comment.id,
+      reaction: "question",
+      present: true,
+      actor: { actorType: "user", actorId: userId, userId },
+    });
+    expect(added.questionWakeRequestId).toEqual(expect.any(String));
+
+    const run = await queue.trackWakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId,
+        annotationCommentId: comment.id,
+        annotationThreadId: thread.id,
+        annotationReaction: "question",
+        mutation: "annotation_reaction",
+      },
+      allowRunCoalescing: false,
+      executionWaitRequestId: added.questionWakeRequestId!,
+      requestedByActorType: "user",
+      requestedByActorId: userId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        annotationCommentId: comment.id,
+        annotationThreadId: thread.id,
+        annotationReaction: "question",
+        annotationReactionUserId: userId,
+        source: "issue.document_annotation_reaction",
+        wakeReason: "issue_commented",
+      },
+    });
+
+    expect(run).not.toBeNull();
+    expect(run).toMatchObject({
+      agentId,
+      issueId,
+      status: "queued",
+      contextSnapshot: expect.objectContaining({
+        annotationCommentId: comment.id,
+        annotationReaction: "question",
+      }),
+    });
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, added.questionWakeRequestId!));
+    expect(receipt).toMatchObject({ status: "coalesced", runId: run!.id });
+    const allRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    expect(allRuns).toHaveLength(1);
+  });
+
+  it("defers a question reaction behind a running turn without coalescing or duplicating the saved receipt", async () => {
+    const { companyId, issueId, thread, comment, agentId, userId, queue } = await setupAssignedAnnotatedIssue();
+    const activeRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      scopeKind: "issue",
+      issueId,
+      invocationSource: "assignment",
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+    await db.update(issues).set({ executionRunId: activeRunId }).where(eq(issues.id, issueId));
+
+    const added = await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comment.id,
+      reaction: "question",
+      present: true,
+      actor: { actorType: "user", actorId: userId, userId },
+    });
+    const result = await queue.trackWakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId,
+        annotationCommentId: comment.id,
+        annotationThreadId: thread.id,
+        annotationReaction: "question",
+        mutation: "annotation_reaction",
+      },
+      allowRunCoalescing: false,
+      executionWaitRequestId: added.questionWakeRequestId!,
+      requestedByActorType: "user",
+      requestedByActorId: userId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        annotationCommentId: comment.id,
+        annotationThreadId: thread.id,
+        annotationReaction: "question",
+        annotationReactionUserId: userId,
+        source: "issue.document_annotation_reaction",
+        wakeReason: "issue_commented",
+      },
+    });
+
+    expect(result).toBeNull();
+    const deferredRows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(deferredRows).toHaveLength(1);
+    expect(deferredRows[0]).toMatchObject({
+      id: added.questionWakeRequestId,
+      status: "deferred_issue_execution",
+      runId: null,
+    });
+    expect(deferredRows[0]!.payload?.executionWait).toBeUndefined();
   });
 
   it("fails closed when an annotation delta comment id points at a different issue", async () => {
