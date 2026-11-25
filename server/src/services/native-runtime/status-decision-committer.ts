@@ -90,7 +90,7 @@ import {
   publishActivity,
   type ActivityPublication,
 } from "../activity-log.js";
-import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
+import { emitAgentTaskCompleted, emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { materializeNativeAgentBlockerContinuation, materializeNativeEnvironmentBlockerRetry, materializeNativeProviderCapacityRetry,
   materializeNativeToolReceiptLimitContinuation } from "./native-provider-capacity-retry.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE } from "./native-environment-blocker.js";
@@ -1743,6 +1743,7 @@ export async function commitNativeStatusDecision(input: {
   }
   const publications: ActivityPublication[] = [];
   const terminalRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
+  let completedTask: Parameters<typeof emitAgentTaskCompleted>[1] | null = null;
   const committed = await input.db.transaction(async (tx) => {
     const retiredReview = input.requireReassessmentSource?.retiredAutomaticReview;
     if (retiredReview && !await lockCurrentNativeCompletionContract(tx as unknown as Db, {
@@ -1781,6 +1782,7 @@ export async function commitNativeStatusDecision(input: {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!issue) throw new NativeStatusRaceError();
+    completedTask = null;
     const [originRun] = await tx.select({
       agentId: heartbeatRuns.agentId,
       responsibleUserId: heartbeatRuns.responsibleUserId,
@@ -2501,6 +2503,16 @@ export async function commitNativeStatusDecision(input: {
       if (updated.originKind === "routine_execution") {
         await syncRoutineRunStatusForIssue(tx as unknown as Db, input.issueId);
       }
+      if (issue.status !== "done" && updated.status === "done" && originRun?.agentId) {
+        completedTask = {
+          companyId: input.companyId,
+          agentId: originRun.agentId,
+          issueId: input.issueId,
+          taskCreatedByUserId: updated.createdByUserId,
+          taskAssignedByUserId: updated.responsibleUserId,
+          runOwnerUserId: originRun.responsibleUserId,
+        };
+      }
       // Native task completion bypasses the REST issue route. Commit the Studio
       // output with the authoritative task status so restart cannot lose it.
       // The durable test row, not a mutable task mode, identifies the obligation.
@@ -2780,5 +2792,7 @@ export async function commitNativeStatusDecision(input: {
   for (const publication of publications) publishActivity(publication);
   for (const terminalRun of terminalRunsToEmit)
     await emitAgentTaskRun(input.db, terminalRun);
+  if (completedTask && !committed.replayed)
+    void emitAgentTaskCompleted(input.db, completedTask);
   return committed;
 }
