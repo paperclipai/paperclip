@@ -1,47 +1,46 @@
-import { and, eq, isNull } from "drizzle-orm";
-import { companySecrets, connectionGrants, userSecretDefinitions, type Db, type toolConnections } from "@paperclipai/db";
-import type { ManagedGoogleRevocationOutcome } from "@paperclipai/shared";
+import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import {
+  companySecretBindings,
+  companySecrets,
+  connectionGrants,
+  toolConnections,
+  userSecretDeclarations,
+  userSecretDefinitions,
+  type Db,
+} from "@paperclipai/db";
+import { aiConnectionMetadataSchema, type AiSignInRemoval } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
-import { resolveConnectionGrantSecret } from "./connection-credentials.js";
+import { connectionSecretsUsedByOtherConsumers } from "./connection-credentials.js";
 import { quotaCredentialRecovery } from "./quota-credential-recovery.js";
 import type { secretService } from "./secrets.js";
-import {
-  ANTIGRAVITY_REVOCATION_PROFILE,
-  antigravityAccountStillConnected,
-  antigravityRefreshToken,
-  antigravityRevocationSubject,
-  isAntigravitySubscriptionConnection,
-  revokeGoogleRefreshToken,
-  type GoogleTokenRevoker,
-} from "./antigravity-google-revocation.js";
-import { summarizeManagedGoogleAccess, type PreparedGoogleAccessRemoval } from "./tool-access/connections/google-access-removal.js";
-import {
-  isRetryableGoogleRevocationOutcome,
-  queueGoogleRevocationFromSecret,
-  settleQueuedGoogleRevocation,
-} from "./tool-access/connections/google-pending-revocation.js";
-import type { ActorInfo } from "./tool-access/types.js";
 
-export const ANTIGRAVITY_REVOKE_TIMEOUT_MS = 5_000;
+type RemovedGrant = Pick<typeof connectionGrants.$inferSelect, "id" | "kind" | "credentialSecretRefs">;
+type Connection = typeof toolConnections.$inferSelect;
+type Target = { grantId: string; secretId: string; expectedVersion: number; definitionId: string | null };
+type CredentialResult = AiSignInRemoval["savedSignIn"] | "reconnected";
 
-type RemovedGrant = Pick<typeof connectionGrants.$inferSelect,
-  "id" | "companyId" | "connectionId" | "status" | "kind" | "subjectUserId" | "credentialSecretRefs" | "providerTenant">;
+export type PreparedAiSignInRemoval = {
+  send(): Promise<AiSignInRemoval | null>;
+  retainedGrantIds(): string[];
+};
 
-type PrivateSlot = { secretId: string; latestVersion: number; definitionId: string | null };
+export function isAntigravitySubscriptionConnection(connection: Pick<Connection, "connectionPurpose" | "config">): boolean {
+  if (connection.connectionPurpose !== "ai") return false;
+  const metadata = aiConnectionMetadataSchema.safeParse(connection.config?.ai);
+  return metadata.success && metadata.data.provider === "google" && metadata.data.method === "subscription";
+}
 
-type Target = { grant: RemovedGrant; slot: PrivateSlot; refreshToken: string | null };
+export function summarizeAiSignInRemoval(results: AiSignInRemoval["savedSignIn"][]): AiSignInRemoval {
+  const savedSignIn = results.includes("not_deleted") ? "not_deleted"
+    : results.includes("kept_shared") ? "kept_shared"
+      : "deleted";
+  return { provider: "google", savedSignIn, providerSignIn: "still_valid" };
+}
 
-export function createAntigravityAccessRemoval(db: Db, deps: {
-  secrets: Pick<ReturnType<typeof secretService>, "remove" | "removeUserSecretDefinition">;
-  revokeAtGoogle?: GoogleTokenRevoker;
-  timeoutMs?: number;
-  now?: () => number;
+export function createAntigravitySignInRemoval(db: Db, deps: {
+  secrets: Pick<ReturnType<typeof secretService>, "remove">;
 }) {
-  const revokeAtGoogle = deps.revokeAtGoogle ?? revokeGoogleRefreshToken;
-  const timeoutMs = deps.timeoutMs ?? ANTIGRAVITY_REVOKE_TIMEOUT_MS;
-  const now = deps.now ?? Date.now;
-
-  async function privateSlot(companyId: string, grant: RemovedGrant, secretId: string): Promise<PrivateSlot | null> {
+  async function privateSlot(connection: Connection, grant: RemovedGrant, secretId: string): Promise<Target | null> {
     const [row] = await db
       .select({
         id: companySecrets.id,
@@ -53,124 +52,112 @@ export function createAntigravityAccessRemoval(db: Db, deps: {
       })
       .from(companySecrets)
       .leftJoin(userSecretDefinitions, eq(userSecretDefinitions.id, companySecrets.userSecretDefinitionId))
-      .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.id, secretId), isNull(companySecrets.deletedAt)));
+      .where(and(eq(companySecrets.companyId, connection.companyId), eq(companySecrets.id, secretId), isNull(companySecrets.deletedAt)));
     if (!row) return null;
     const personal = grant.kind === "user";
     const owned = personal
       ? row.scope === "user" && row.definitionKey === `ai_${grant.id.replaceAll("-", "_")}`
       : row.scope === "company" && row.name === `ai-${grant.id}`;
     if (!owned) return null;
-    return { secretId: row.id, latestVersion: row.latestVersion, definitionId: personal ? row.definitionId : null };
+    return { grantId: grant.id, secretId: row.id, expectedVersion: row.latestVersion, definitionId: personal ? row.definitionId : null };
   }
 
-  async function retireStoredCredential(connection: typeof toolConnections.$inferSelect, target: Target) {
-    try {
-      if (target.slot.definitionId) await deps.secrets.removeUserSecretDefinition(connection.companyId, target.slot.definitionId);
-      else await deps.secrets.remove(target.slot.secretId);
-      await db.update(connectionGrants)
-        .set({ credentialSecretRefs: [], updatedAt: new Date() })
-        .where(and(eq(connectionGrants.id, target.grant.id), eq(connectionGrants.companyId, connection.companyId)));
-    } catch (error) {
-      logger.warn(
-        { companyId: connection.companyId, connectionId: connection.id, errorName: error instanceof Error ? error.name : typeof error },
-        "Could not delete a disconnected Google sign-in",
-      );
-    }
-    await quotaCredentialRecovery(connection.companyId, target.grant.id).clear().catch(() => undefined);
+  async function usedElsewhere(connection: Connection, target: Target): Promise<boolean> {
+    if ((await connectionSecretsUsedByOtherConsumers(db, [target.secretId])).size > 0) return true;
+    const grants = await db.select({ id: connectionGrants.id, refs: connectionGrants.credentialSecretRefs })
+      .from(connectionGrants)
+      .where(and(eq(connectionGrants.companyId, connection.companyId), ne(connectionGrants.id, target.grantId)));
+    if (grants.some((row) => (row.refs ?? []).some((ref) => ref.secretId === target.secretId))) return true;
+    const connections = await db.select({ refs: toolConnections.credentialRefs, secretRefs: toolConnections.credentialSecretRefs })
+      .from(toolConnections)
+      .where(and(eq(toolConnections.companyId, connection.companyId), ne(toolConnections.id, connection.id)));
+    if (connections.some((row) => [...(row.refs ?? []), ...(row.secretRefs ?? [])].some((ref) => ref.secretId === target.secretId))) return true;
+    const bindings = await db.select({ id: companySecretBindings.id }).from(companySecretBindings)
+      .where(and(
+        eq(companySecretBindings.companyId, connection.companyId),
+        eq(companySecretBindings.secretId, target.secretId),
+        sql`not (${companySecretBindings.targetType} = 'tool_connection' and ${companySecretBindings.targetId} = ${connection.id})`,
+      ))
+      .limit(1);
+    if (bindings.length > 0) return true;
+    if (!target.definitionId) return false;
+    const declarations = await db.select({ id: userSecretDeclarations.id }).from(userSecretDeclarations)
+      .where(and(
+        eq(userSecretDeclarations.userSecretDefinitionId, target.definitionId),
+        sql`not (${userSecretDeclarations.targetType} = 'tool_connection' and ${userSecretDeclarations.targetId} = ${connection.id})`,
+      ))
+      .limit(1);
+    return declarations.length > 0;
   }
 
-  async function revoke(connection: typeof toolConnections.$inferSelect, target: Target, reason: "connection_removed" | "grant_revoked", deadline: number) {
-    if (!target.refreshToken) return { outcome: "credential_unavailable" as const, retrying: false };
-    const subject = antigravityRevocationSubject(target.grant.providerTenant?.name);
-    if (await antigravityAccountStillConnected(db, connection.companyId, subject, [target.grant.id])) {
-      return { outcome: "other_connections_remain" as const, retrying: false };
-    }
-    let pendingId: string | null = null;
-    try {
-      pendingId = await queueGoogleRevocationFromSecret(db, {
-        companyId: connection.companyId, connectionId: connection.id, grantId: target.grant.id, subject,
-        profile: ANTIGRAVITY_REVOCATION_PROFILE, secretId: target.slot.secretId, version: target.slot.latestVersion, reason,
-      });
-    } catch (error) {
-      logger.warn(
-        { companyId: connection.companyId, connectionId: connection.id, errorName: error instanceof Error ? error.name : typeof error },
-        "Could not keep a disconnected Google sign-in for a retry",
-      );
-    }
-    let outcome: ManagedGoogleRevocationOutcome;
-    try {
-      outcome = await revokeAtGoogle(target.refreshToken, Math.max(1, deadline - now()));
-    } catch {
-      outcome = "provider_revocation_failed";
-    }
-    if (!pendingId) return { outcome, retrying: false };
-    try {
-      return { outcome, retrying: await settleQueuedGoogleRevocation(db, connection.companyId, pendingId, outcome) };
-    } catch (error) {
-      logger.warn(
-        { companyId: connection.companyId, connectionId: connection.id, errorName: error instanceof Error ? error.name : typeof error },
-        "Could not record the first attempt to end Google access",
-      );
-      return { outcome, retrying: isRetryableGoogleRevocationOutcome(outcome) };
-    }
+  async function clearRevokedRef(connection: Connection, target: Target) {
+    const [grant] = await db.select({ refs: connectionGrants.credentialSecretRefs }).from(connectionGrants)
+      .where(and(eq(connectionGrants.id, target.grantId), eq(connectionGrants.companyId, connection.companyId), eq(connectionGrants.status, "revoked")));
+    if (!grant) return;
+    const refs = (grant.refs ?? []).filter((ref) => ref.secretId !== target.secretId);
+    await db.update(connectionGrants)
+      .set({ credentialSecretRefs: refs, updatedAt: new Date() })
+      .where(and(eq(connectionGrants.id, target.grantId), eq(connectionGrants.companyId, connection.companyId), eq(connectionGrants.status, "revoked")));
   }
 
-  async function prepare(
-    connection: typeof toolConnections.$inferSelect,
-    grants: RemovedGrant[],
-    actor: ActorInfo | undefined,
-    reason: "connection_removed" | "grant_revoked",
-  ): Promise<PreparedGoogleAccessRemoval | null> {
+  async function stillRevoked(connection: Connection, target: Target) {
+    const [grant] = await db.select({ status: connectionGrants.status }).from(connectionGrants)
+      .where(and(eq(connectionGrants.id, target.grantId), eq(connectionGrants.companyId, connection.companyId)));
+    return grant?.status === "revoked";
+  }
+
+  async function secretStillStored(connection: Connection, target: Target) {
+    const rows = await db.select({ id: companySecrets.id }).from(companySecrets)
+      .where(and(eq(companySecrets.companyId, connection.companyId), eq(companySecrets.id, target.secretId)));
+    return rows.length > 0;
+  }
+
+  async function retire(connection: Connection, target: Target): Promise<CredentialResult> {
+    if (!(await stillRevoked(connection, target))) return "reconnected";
+    if (await usedElsewhere(connection, target)) {
+      await clearRevokedRef(connection, target);
+      return "kept_shared";
+    }
+    const removed = await deps.secrets.remove(target.secretId, { expectedVersion: target.expectedVersion });
+    if (!removed && await secretStillStored(connection, target)) {
+      return (await stillRevoked(connection, target)) ? "not_deleted" : "reconnected";
+    }
+    await clearRevokedRef(connection, target);
+    await quotaCredentialRecovery(connection.companyId, target.grantId).clear().catch(() => undefined);
+    return "deleted";
+  }
+
+  async function prepare(connection: Connection, grants: RemovedGrant[]): Promise<PreparedAiSignInRemoval | null> {
     if (!isAntigravitySubscriptionConnection(connection)) return null;
     const targets: Target[] = [];
     for (const grant of grants) {
       const ref = (grant.credentialSecretRefs ?? []).find((entry) => entry.configPath === "ai.credential");
       if (!ref) continue;
-      const slot = await privateSlot(connection.companyId, grant, ref.secretId);
-      if (!slot) continue;
-      let refreshToken: string | null = null;
-      try {
-        const { value } = await resolveConnectionGrantSecret(db, connection, grant, ref, {
-          consumerType: "tool_connection",
-          consumerId: connection.id,
-          actorType: actor?.actorType ?? "system",
-          actorId: actor?.actorId ?? null,
-        });
-        refreshToken = antigravityRefreshToken(value);
-      } catch {
-        refreshToken = null;
-      }
-      targets.push({ grant, slot, refreshToken });
+      const target = await privateSlot(connection, grant, ref.secretId);
+      if (target) targets.push(target);
     }
     if (targets.length === 0) return null;
+    const retained: string[] = [];
     return {
+      retainedGrantIds: () => [...retained],
       send: async () => {
-        const deadline = now() + timeoutMs;
-        const outcomes: ManagedGoogleRevocationOutcome[] = [];
-        let retrying = 0;
+        const results: AiSignInRemoval["savedSignIn"][] = [];
         for (const target of targets) {
-          let result: { outcome: ManagedGoogleRevocationOutcome; retrying: boolean };
+          let result: CredentialResult;
           try {
-            result = await revoke(connection, target, reason, deadline);
+            result = await retire(connection, target);
           } catch (error) {
             logger.warn(
               { companyId: connection.companyId, connectionId: connection.id, errorName: error instanceof Error ? error.name : typeof error },
-              "Could not end Google access for a disconnected sign-in",
+              "Could not delete a disconnected Google sign-in",
             );
-            result = { outcome: "unexpected_error", retrying: false };
+            result = "not_deleted";
           }
-          outcomes.push(result.outcome);
-          if (result.retrying) retrying += 1;
-          await retireStoredCredential(connection, target);
+          if (result === "reconnected") continue;
+          if (result === "not_deleted") retained.push(target.grantId);
+          results.push(result);
         }
-        const summary = summarizeManagedGoogleAccess(outcomes, retrying);
-        if (summary.result === "not_ended" || summary.result === "retrying") {
-          logger.warn(
-            { companyId: connection.companyId, connectionId: connection.id, result: summary.result, outcomes: summary.outcomes },
-            "Google did not confirm that a disconnected sign-in was revoked",
-          );
-        }
-        return summary;
+        return results.length > 0 ? summarizeAiSignInRemoval(results) : null;
       },
     };
   }

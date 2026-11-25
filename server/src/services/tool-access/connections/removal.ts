@@ -4,7 +4,7 @@ import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
 import { notifyToolConnectionHealth } from "../../tool-connection-health-notifications.js";
 import { toConnection } from "./projection.js";
 import { createManagedGoogleAccessRemoval } from "./google-access-removal.js";
-import { createAntigravityAccessRemoval } from "../../antigravity-access-removal.js";
+import { createAntigravitySignInRemoval } from "../../antigravity-access-removal.js";
 import { publishActivity } from "../../activity-log.js";
 import type { ActivityPublication } from "../../../types/activity-publication.js";
 import { contentDeletionActor, deleteGoogleContentWhenAccessEnds } from "./google-content-retention.js";
@@ -19,7 +19,7 @@ import { chatEndpoints } from "@paperclipai/db";
 import { isBrowserUseConnection } from "../../browser-use-client.js";
 import { browserUseService } from "../../browser-use.js";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
-import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { connectionGrants, connectionTokenIssuances, companySecretBindings, companySecrets, userSecretDefinitions, userSecretDeclarations, toolApplications, toolCatalogEntries, toolConnectionInstalls, toolConnections, toolOauthStates, toolGatewaySessions, toolMcpGateways, toolMcpGatewayTokens, toolProfileBindings, toolProfileEntries, toolProfiles, toolRuntimeSlots } from "@paperclipai/db";
 import type { ToolConnectionRemovalResult, ToolConnectionRemovalSummary } from "@paperclipai/shared";
@@ -94,7 +94,7 @@ type RemovalDependencies = {
 
 export function createConnectionRemoval(db: Db, { options, secrets, runtimeSupervisor, vercelConnect, currentCloudConnector, getConnectionRow }: RemovalDependencies) {
   const managedGoogleAccess = createManagedGoogleAccessRemoval(db, { currentCloudConnector });
-  const antigravityAccess = createAntigravityAccessRemoval(db, { secrets });
+  const antigravitySignIn = createAntigravitySignInRemoval(db, { secrets });
   /**
    * Split the secrets a connection points at into the ones it owns outright and
    * the ones another consumer still depends on.
@@ -297,7 +297,8 @@ async function removeConnection(
       removeSecret: async (secretId, expectedVersion) => {
         if (await secrets.remove(secretId, { expectedVersion })) secretsRevoked += 1;
       },
-    }) ?? await antigravityAccess.prepare(connection, grantRows, actor, "connection_removed");
+    });
+    const signInRemoval = await antigravitySignIn.prepare(connection, grantRows);
     const releasedWaitPublications: ActivityPublication[] = [];
     await db.transaction(async (tx) => {
       if (grantsToRevoke.length > 0) await tx
@@ -629,6 +630,8 @@ async function removeConnection(
     }
 
     const providerAccess = providerAccessRemoval ? await providerAccessRemoval.send() : null;
+    const signIn = signInRemoval ? await signInRemoval.send() : null;
+    const retainedGrantIds = signInRemoval?.retainedGrantIds() ?? [];
 
     // Only now, with every access path closed, revoke the credentials. Each
     // `secrets.remove` marks the row deleted before it calls the provider, so a
@@ -674,6 +677,7 @@ async function removeConnection(
           and(
             eq(connectionGrants.companyId, connection.companyId),
             eq(connectionGrants.connectionId, connection.id),
+            ...(retainedGrantIds.length > 0 ? [notInArray(connectionGrants.id, retainedGrantIds)] : []),
           ),
         );
     }
@@ -699,6 +703,7 @@ async function removeConnection(
         applicationArchived: archived.applicationArchived,
         externalCredentialCleanup,
         ...(providerAccess ? { providerAccess } : {}),
+        ...(signIn ? { signInRemoval: signIn } : {}),
       },
     };
   }

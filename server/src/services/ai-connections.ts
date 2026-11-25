@@ -754,7 +754,9 @@ export function aiConnectionService(db: Db) {
           { userId },
         );
       else if (input.ownership === "personal") {
-        const definition = await secrets.createUserSecretDefinition(
+        const [existingDefinition] = await tx.select({ id: userSecretDefinitions.id }).from(userSecretDefinitions)
+          .where(and(eq(userSecretDefinitions.companyId, companyId), eq(userSecretDefinitions.key, `ai_${grantId.replaceAll("-", "_")}`)));
+        const definition = existingDefinition ?? await secrets.createUserSecretDefinition(
           companyId,
           {
             key: `ai_${grantId.replaceAll("-", "_")}`,

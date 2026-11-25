@@ -18,14 +18,6 @@ import { isPaperclipCloudConnectorStrategy, PaperclipCloudConnectorError, type P
 import { managedConnectorConsentSubject, managedConnectorProfile } from "../oauth/client-settings.js";
 import { oauthConfig } from "../oauth/metadata.js";
 import { deleteGoogleContentWhenAccessEnds } from "./google-content-retention.js";
-import {
-  ANTIGRAVITY_REVOCATION_MAX_ATTEMPTS,
-  ANTIGRAVITY_REVOCATION_PROFILE,
-  antigravityAccountStillConnected,
-  antigravityRefreshToken,
-  revokeGoogleRefreshToken,
-  type GoogleTokenRevoker,
-} from "../../antigravity-google-revocation.js";
 
 export const GOOGLE_REVOCATION_FIRST_RETRY_MS = 60_000;
 export const GOOGLE_REVOCATION_MAX_RETRY_MS = 6 * 60 * 60_000;
@@ -189,13 +181,11 @@ export async function queueCompanyGoogleRevocations(tx: Db, companyId: string, r
 
 export function createGooglePendingRevocation(db: Db, deps: {
   currentCloudConnector: () => PaperclipCloudConnector | null;
-  revokeAtGoogle?: GoogleTokenRevoker;
   now?: () => number;
   timeoutMs?: number;
 }) {
   const now = deps.now ?? Date.now;
   const timeoutMs = deps.timeoutMs ?? GOOGLE_REVOCATION_TIMEOUT_MS;
-  const revokeAtGoogle = deps.revokeAtGoogle ?? revokeGoogleRefreshToken;
 
   async function heldByLiveSecret(row: PendingRow) {
     if (row.reason === "instance_removed") return false;
@@ -257,23 +247,6 @@ export function createGooglePendingRevocation(db: Db, deps: {
       .where(and(eq(googlePendingRevocations.id, row.id), eq(googlePendingRevocations.nextAttemptAt, row.nextAttemptAt)));
   }
 
-  async function attemptAtGoogle(row: PendingRow, credential: string) {
-    const refreshToken = antigravityRefreshToken(credential);
-    if (!refreshToken) return finish(row, "not_ended", "credential_unavailable");
-    let outcome: ManagedGoogleRevocationOutcome;
-    try {
-      outcome = await revokeAtGoogle(refreshToken, timeoutMs);
-    } catch {
-      outcome = "provider_revocation_failed";
-    }
-    if (isRetryableGoogleRevocationOutcome(outcome)) {
-      if (row.attempts >= ANTIGRAVITY_REVOCATION_MAX_ATTEMPTS) return finish(row, "gave_up", outcome);
-      return reschedule(row, outcome);
-    }
-    if (outcome === "revoked") return finish(row, "ended", outcome);
-    return finish(row, "not_ended", outcome);
-  }
-
   async function attempt(due: PendingRow) {
     const [row] = await db.update(googlePendingRevocations).set({
       attempts: sql`${googlePendingRevocations.attempts} + 1`,
@@ -283,19 +256,13 @@ export function createGooglePendingRevocation(db: Db, deps: {
       .returning();
     if (!row) return;
     if (now() >= row.giveUpAt.getTime()) return finish(row, "gave_up", row.lastOutcome);
-    const direct = row.profile === ANTIGRAVITY_REVOCATION_PROFILE;
-    if (direct && row.attempts > ANTIGRAVITY_REVOCATION_MAX_ATTEMPTS) return finish(row, "gave_up", row.lastOutcome);
     if (await heldByLiveSecret(row)) return finish(row, "other_connections_remain", null);
-    if (direct && await antigravityAccountStillConnected(db, row.companyId, row.subject)) {
-      return finish(row, "other_connections_remain", null);
-    }
     let token: string;
     try {
       token = createLocalEncryptedCipher("read").decrypt(row.tokenMaterial);
     } catch {
       return reschedule(row, "credential_unavailable");
     }
-    if (direct) return attemptAtGoogle(row, token);
     let connector: PaperclipCloudConnector | null = null;
     try {
       connector = deps.currentCloudConnector();
