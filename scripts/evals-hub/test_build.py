@@ -1,5 +1,10 @@
 import copy
+import pathlib
+import sys
 import unittest
+
+# Ensure local build.py is imported rather than any site-packages build
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from build import SYSTEMS, display_date, public_report, summarize
 
@@ -93,6 +98,11 @@ class HistorySummaryTests(unittest.TestCase):
         for path in (
             "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/../../secret.json",
             "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/run-1/..",
+            "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/%2e%2e/secret.json",
+            "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/%2E%2E/secret.json",
+            "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/..%2fsecret.json",
+            "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/..\\secret.json",
+            "https://d1p6rlowie26tp.cloudfront.net/runner-protocol-evals/campaigns/%2e%2e",
         ):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 public_report(path, "runner-protocol-evals")

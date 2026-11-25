@@ -5,8 +5,9 @@ from datetime import datetime, timezone
 import html
 import json
 from pathlib import Path
+import posixpath
 from string import Template
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, unquote, urlsplit
 from urllib.request import urlopen
 
 ORIGIN = "https://d1p6rlowie26tp.cloudfront.net"
@@ -38,10 +39,14 @@ def public_report(url, prefix):
     if not isinstance(url, str):
         raise ValueError("Unexpected public report URL")
     parsed = urlsplit(url)
+    allowed_prefix = f"/{prefix}/campaigns/"
     if (parsed.scheme != "https" or parsed.netloc != urlsplit(ORIGIN).netloc
-            or not parsed.path.startswith(f"/{prefix}/campaigns/")
-            or "/../" in parsed.path or parsed.path.endswith("/..")
+            or not parsed.path.startswith(allowed_prefix)
             or parsed.query or parsed.fragment):
+        raise ValueError("Unexpected public report URL")
+    decoded_path = unquote(parsed.path).replace("\\", "/")
+    if ("/../" in decoded_path or decoded_path.endswith("/..")
+            or not posixpath.normpath(decoded_path).startswith(allowed_prefix.rstrip("/"))):
         raise ValueError("Unexpected public report URL")
     return html.escape(url, quote=True)
 
