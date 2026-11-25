@@ -40,7 +40,7 @@ describe.skipIf(process.platform !== "linux")("artifact filesystem installation"
     }
   });
 
-  it.each(["../escape", "/tmp/escape", "a/../escape", "a//escape", "a\\escape", ".paperclip/state", ".git/config", ".paperclip-artifact-owned"])("rejects destination %s before dispatch", async destination => {
+  it.each(["../escape", "/tmp/escape", "a/../escape", "a//escape", "a\\escape", ".paperclip/state", ".git/config", ".paperclip-artifact-owned", ".paperclip-inbound/section-removal.png", ".PAPERCLIP-INBOUND/run/file.png", "docs/.paperclip-inbound/file.png"])("rejects destination %s before dispatch", async destination => {
     const runner = { execute: vi.fn(execute) };
     await expect(createArtifactInstaller(root, runner)({ ...request(), destination })).rejects.toThrow("path_denied");
     expect(runner.execute).not.toHaveBeenCalled();
