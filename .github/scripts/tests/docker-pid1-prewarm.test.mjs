@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { imageMetadata } from "../../../scripts/docker-image-metadata.mjs";
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "../../..");
 const workflow = readFileSync(path.join(root, ".github/workflows/docker.yml"), "utf8");
@@ -38,6 +39,7 @@ test("docker.yml gates base-layer pre-warm to AWS master builds and cleans up be
 
   const cleanup = step("Stop background base-layer pre-warm if still running");
   assert.match(cleanup, /if: always\(\)/);
+  assert.match(cleanup, /continue-on-error: true/);
   assert.match(cleanup, /run: bash scripts\/docker-pid1-prewarm\.sh stop 0/);
   assert.ok(order("Upload digest") < order("Stop background base-layer pre-warm if still running"));
 });
@@ -53,6 +55,20 @@ test("docker-pid1-prewarm.sh finds the newest published ancestor image, pulls in
 
     const sha1 = "1".repeat(40);
     const sha2 = "2".repeat(40);
+    const publishedMetadata = imageMetadata({
+      repository: "paperclipai/paperclip",
+      sha: sha2,
+      ref: "refs/heads/master",
+      event: "push",
+      lastMigration: "0000_fixture.sql",
+      migrationCount: "1",
+      created: "2000-01-01T00:00:00.000Z",
+    });
+    const expectedTag = `ghcr.io/paperclipai/paperclip:sha-${sha2}`;
+    assert.ok(
+      publishedMetadata.tags.includes(expectedTag),
+      `docker-image-metadata.mjs must publish ${expectedTag} for master pushes`,
+    );
     writeExecutable(path.join(bin, "git"), `#!/usr/bin/env bash
 case "$3" in
   HEAD~1^{commit}) echo "${sha1}" ;;

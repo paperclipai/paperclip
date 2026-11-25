@@ -556,6 +556,7 @@ jobs:
 
       - name: Stop background base-layer pre-warm if still running
         if: always()
+        continue-on-error: true
         env:
           PID_FILE: ${{ runner.temp }}/pid1-prewarm.pid
         run: bash scripts/docker-pid1-prewarm.sh stop 0
