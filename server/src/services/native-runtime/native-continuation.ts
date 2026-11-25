@@ -97,7 +97,9 @@ export function buildNativeContinuationPrompt(input: {
   if (!events.messages.length && !humanResponses.length && !wake.childIssueSummaries.length && !Object.keys(taskChanges).length && !input.workflowCase) return null;
   const compact = JSON.stringify(events);
   // One turn travels in a ~510 KiB PRP command. A delta too large for it uses
-  // the bootstrap prompt instead, whose continuation history is bounded.
-  if (Buffer.byteLength(compact, "utf8") > NATIVE_CONTINUATION_PROMPT_MAX_BYTES) return null;
+  // the bootstrap prompt instead, whose continuation history is bounded. The
+  // delta is serialized twice more (model envelope, then the PRP command), and
+  // each layer escapes quotes and backslashes again, so measure that form.
+  if (Buffer.byteLength(JSON.stringify(JSON.stringify(compact)), "utf8") > NATIVE_CONTINUATION_PROMPT_MAX_BYTES) return null;
   return compact;
 }

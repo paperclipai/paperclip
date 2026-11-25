@@ -30,3 +30,10 @@ it("uses the bounded bootstrap prompt when a resume delta is too large for one r
   expect(Buffer.byteLength(JSON.stringify(large))).toBeGreaterThan(NATIVE_CONTINUATION_PROMPT_MAX_BYTES);
   expect(prompt(large)).toBeNull();
 });
+
+it("measures the resume delta as the runner command serializes it", () => {
+  // About 140 KB as compact JSON, but every quote doubles twice in the envelope and command.
+  const quoted = [message("m-1", '"'.repeat(70_000))];
+  expect(Buffer.byteLength(JSON.stringify(quoted))).toBeLessThan(NATIVE_CONTINUATION_PROMPT_MAX_BYTES);
+  expect(prompt(quoted)).toBeNull();
+});
