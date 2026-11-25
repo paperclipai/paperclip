@@ -304,6 +304,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     companyId: selectedCompanyId,
     connectionId,
     connection,
+    catalog,
     onError: error => pushToast({ title: "Couldn't save that", body: describeError(error).body, tone: "error" }),
   });
   const profile = useMemo(

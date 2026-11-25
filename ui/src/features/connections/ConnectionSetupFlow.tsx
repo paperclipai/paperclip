@@ -104,6 +104,7 @@ import {
   vercelConnectSourceHref,
 } from "@/pages/apps/app-connect-policy";
 import { parseGoogleSheetIds } from "@/pages/apps/google-sheets";
+import { withoutUnavailableActions } from "@/pages/apps/app-detail/action-permissions";
 import { connectionNameForGrantKind } from "@/pages/apps/connection-identity";
 import {
   defaultGenericMcpName,
@@ -2068,12 +2069,13 @@ function StandardConnectionSetupFlow({
   const finishMutation = useMutation({
     mutationFn: async (input: { result: ConnectToolAppResult; enabled: Record<string, boolean> }) => {
       const { result: connected, enabled: enabledMap } = input;
-      const enabledIds = Object.entries(enabledMap)
-        .filter(([, on]) => on)
-        .map(([id]) => id);
+      const enabledIds = withoutUnavailableActions(
+        Object.entries(enabledMap).filter(([, on]) => on).map(([id]) => id),
+        connected.catalog,
+      );
       const askFirstIds = askFirstCatalogEntryIdsFor(
         connected,
-        (catalogEntryId) => Boolean(enabledMap[catalogEntryId]),
+        (catalogEntryId) => enabledIds.includes(catalogEntryId),
       );
       if (requiredAgentId && installChoice !== "all" && !installAgentIds.has(requiredAgentId)) {
         throw new Error("Include the requesting agent or choose all agents to continue this task.");
