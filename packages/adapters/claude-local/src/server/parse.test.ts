@@ -149,7 +149,18 @@ describe("detectClaudeLoginRequired", () => {
     ).toBe(false);
   });
 
-  it("classifies a login prompt in the parsed result as login required", () => {
+  it("does not classify a successful result whose answer text mentions 401 Unauthorized", () => {
+    const parsed = {
+      is_error: false,
+      subtype: "success",
+      result: "The endpoint returns 401 Unauthorized when the token is missing.",
+    };
+    expect(
+      detectClaudeLoginRequired({ parsed, stdout: "", stderr: "" }).requiresLogin,
+    ).toBe(false);
+  });
+
+  it("still classifies a failed result that says Not logged in as login required", () => {
     const parsed = {
       is_error: true,
       subtype: "success",
