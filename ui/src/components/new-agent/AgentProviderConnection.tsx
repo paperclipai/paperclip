@@ -74,12 +74,18 @@ export function AgentProviderConnection({
     onComplete: (result: { connectionId: string; grantId: string; method: "subscription" | "api_key" }) => void;
   };
 }) {
-  const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: localEnvironment });
+  const needsHealth = localEnvironment || adapterType === "antigravity_runtime";
+  const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: needsHealth });
   // Read health through the shared view: a transient failure keeps the saved
-  // local-login path usable,anda no-data failure shows readable copy.
+  // local-login path usable, and a no-data failure shows readable copy.
 
   const healthView = useQueryView(health);
-  const canUseLocalLogin = localEnvironment && (health.data?.localAiLoginSupported ?? health.data?.deploymentMode === "local_trusted");
+  const localAiLoginSupported = Boolean(health.data?.localAiLoginSupported ?? health.data?.deploymentMode === "local_trusted");
+  const hostedGoogleAiLoginSupported = Boolean(health.data?.hostedGoogleAiLoginSupported);
+  const canUseLocalLogin = adapterType === "antigravity_runtime"
+    ? (hostedGoogleAiLoginSupported || (localEnvironment && localAiLoginSupported))
+    : (localEnvironment && localAiLoginSupported);
+  const useHostedGoogleRedirect = adapterType === "antigravity_runtime" && !localAiLoginSupported && hostedGoogleAiLoginSupported;
   const epoch = useRef(0);
   useEffect(
     () => () => {
@@ -416,7 +422,7 @@ export function AgentProviderConnection({
                 }}
               />
             ) : savedSubscription ? null : canUseLocalLogin && !storedLogin.data ? (
-              <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }} />
+              <LocalProviderLoginInstructions adapterType={adapterType} hostedRedirect={useHostedGoogleRedirect} login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }} />
             ) : (
               <p className="text-sm text-muted-foreground">
                 {storedLogin.data
@@ -439,7 +445,7 @@ export function AgentProviderConnection({
           {testError ?? error}
         </p>
       )}
-      {localEnvironment && healthView.kind === "error" && (
+      {needsHealth && healthView.kind === "error" && (
         <p role="alert" className="mt-4 text-sm text-destructive">Could not prepare sign-in. Reload this page to try again.</p>
       )}
       <FooterNav
@@ -464,7 +470,7 @@ export function AgentProviderConnection({
         primaryDisabled={
           managedAccount?.disabled ||
           (Boolean(managedAccount) && method === "subscription" && !canLogin && !canUseLocalLogin) ||
-          (localEnvironment && health.isPending) || localLogin.preparing || Boolean(localLogin.error) ||
+          (needsHealth && health.isPending) || localLogin.preparing || Boolean(localLogin.error) ||
           (method === "subscription" && canUseLocalLogin && !savedSubscription && !storedLogin.data && localLogin.status !== "ready") ||
           (!managedAccount && adapterType !== "antigravity_runtime" && auth.isPending) ||
           savedKeys.loading ||

@@ -103,6 +103,18 @@ describe("isSecretSensitiveHttpRequest", () => {
       ),
     ).toBe(false);
   });
+
+  it("protects local AI login code and hosted redirect submission endpoints", () => {
+    for (const method of ["POST", "PUT", "GET"]) {
+      for (const path of [
+        "/api/companies/company-1/ai-connections/local/attempts/session-1/code",
+        "https://paperclip.test/API/COMPANIES/company-1/AI-CONNECTIONS/LOCAL/ATTEMPTS/session-1/CODE?code=canary",
+      ]) {
+        expect(isSecretSensitiveHttpRequest(method, path)).toBe(true);
+      }
+    }
+    expect(isSecretSensitiveHttpRequest("POST", "/api/companies/company-1/ai-connections/local/attempts")).toBe(false);
+  });
 });
 
 describe("shouldSilenceHttpSuccessLog", () => {
