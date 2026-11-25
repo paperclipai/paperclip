@@ -17,7 +17,7 @@ change in fix 2, the deploy order is app first, then broker (see fix 10).
 
 | # | Fix | Size | Blocks submission | Status |
 | --- | --- | --- | --- | --- |
-| 1 | Data-use disclosure in the picker | Small | Yes | Done, [#21998](https://github.com/paperclipai/paperclip/pull/21998) |
+| 1 | Data-use disclosure in the picker | Small | Yes | Done, [#21998](https://github.com/paperclipai/paperclip/pull/21998); removed Nov 24 by owner decision |
 | 2 | Lock the managed scope set to 14 | Small to medium | Yes | Done in the app, [#22001](https://github.com/paperclipai/paperclip/pull/22001) |
 | 3 | Take `gmail.modify` off the Paperclip-managed client | Small | Yes | Done, [#22001](https://github.com/paperclipai/paperclip/pull/22001) |
 | 4 | Confirm injection screening on Google results | Check, then small | Yes | Done, [#21999](https://github.com/paperclipai/paperclip/pull/21999) |
@@ -35,6 +35,9 @@ Every Google Workspace sign-in start now goes through the picker, including
 four sign-in paths on the app page. The Gmail read & write line says Google's
 screen also mentions sending and that Paperclip does not send. The plan below
 is kept for reference.
+
+**Removed** (Nov 24) by owner decision. The picker keeps only the privacy
+policy link, which names Google's Limited Use requirements.
 
 **Confirmed gap.** `ServicePicker` in
 `ui/src/features/connections/GoogleWorkspaceServices.tsx` shows three service

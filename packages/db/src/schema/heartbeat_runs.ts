@@ -264,6 +264,16 @@ export const heartbeatRuns = pgTable(
       table.companyId,
       table.createdAt.desc(),
     ),
+    // Inbox recovery checks look for a newer successful or running attempt on the same task.
+    attentionResumedIdx: index("heartbeat_runs_attention_resumed_idx")
+      .on(table.companyId, sql`coalesce(${table.issueId}::text, ${table.nativeIssueId}::text,
+        ${table.contextSnapshot}->>'issueId', ${table.contextSnapshot}->>'taskId')`, table.createdAt)
+      .where(sql`${table.status} in ('running', 'succeeded')`)
+      .concurrently(),
+    attentionHistoryIdx: index("heartbeat_runs_attention_history_idx")
+      .on(table.companyId, table.createdAt.desc(), table.id.desc())
+      .where(sql`${table.status} in ('failed', 'timed_out') or ${table.errorCode} = 'provider_limit_wait'`)
+      .concurrently(),
     companyCtxIssueCreatedIdx: index("heartbeat_runs_company_ctx_issue_created_idx").on(
       table.companyId,
       sql`(${table.contextSnapshot} ->> 'issueId')`,

@@ -62,11 +62,40 @@ test("ordinary app PRs skip canary dry run, runner support, docker context and r
 });
 
 test("canary dry run, runner support, chat, docker and test-only edits select their exact owners", () => {
-  for (const file of ["scripts/release.sh", "package.json", "server/package.json", "cli/esbuild.config.mjs",
-    "server/scripts/bundle-runtime.mjs", "packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs",
-    "packages/paperclip-runner/release-runner-targets.json"]) {
+  for (const file of ["scripts/release.sh", "scripts/release-lib.sh", "scripts/release-package-manifest.json",
+    "scripts/release-package-map.mjs", "scripts/build-npm.sh", "scripts/build-standalone-public-packages.mjs",
+    "scripts/cli-bundled-npm-dependencies.mjs", "scripts/link-plugin-dev-sdk.mjs", "scripts/prefetch-child.mjs",
+    "scripts/stage-bundled-packages.mjs", "scripts/pack-staged-packages.mjs",
+    "scripts/prepare-bundled-package.mjs", "scripts/prepare-server-ui-dist.sh",
+    "scripts/generate-npm-package-json.mjs", "scripts/prepare-npm-readme.mjs"]) {
     assert.equal(selected(plan([file]), "canary_dry_run"), true, `canary: ${file}`);
   }
+  const canaryQueue = ["scripts/release.sh", "scripts/build-npm.sh"];
+  const canarySeen = new Set(canaryQueue);
+  while (canaryQueue.length) {
+    const entry = canaryQueue.shift();
+    const content = readFileSync(new URL(entry, root), "utf8");
+    for (const [, rawTarget] of content.matchAll(/(?:^|[^a-zA-Z0-9._/-])((?:\.\.?\/|scripts\/)[a-zA-Z0-9._/-]+\.(?:sh|mjs|js|json))/g)) {
+      const target = rawTarget.startsWith(".") ? path.posix.normalize(path.posix.join(path.posix.dirname(entry), rawTarget)) : rawTarget;
+      if (!target.startsWith("scripts/") || target === "scripts/stage-release-runner-binaries.mjs") continue;
+      if (canarySeen.has(target)) continue;
+      let exists = false;
+      try { readFileSync(new URL(target, root)); exists = true; } catch {}
+      if (!exists) continue;
+      canarySeen.add(target);
+      canaryQueue.push(target);
+      assert.equal(selected(plan([target]), "canary_dry_run"), true, `${entry} transitively depends on ${target}`);
+    }
+  }
+  for (const file of ["package.json", "server/package.json", "packages/shared/package.json",
+    "packages/shared/src/constants.ts", "pnpm-lock.yaml", "README.md", "scripts/run-vitest-stable.mjs",
+    "cli/esbuild.config.mjs", "server/scripts/bundle-runtime.mjs",
+    "packages/paperclip-runner/scripts/stage-release-runner-binaries.mjs",
+    "packages/paperclip-runner/release-runner-targets.json", ".github/workflows/pr-trusted.yml"]) {
+    assert.equal(selected(plan([file]), "canary_dry_run"), false, `non-canary: ${file}`);
+  }
+  assert.equal(selected(plan(["package.json"], { forceReason: "Full suite requested by label" }), "canary_dry_run"), true);
+  assert.equal(selected(plan(["packages/shared/src/constants.ts"], { mode: "full" }), "canary_dry_run"), true);
   for (const file of ["tests/runner-e2e/catalog.test.ts", "packages/paperclip-runner/src/index.ts",
     "packages/plugins/sdk/src/index.ts", "packages/adapters/codex-local/src/index.ts",
     "packages/shared/src/constants.ts", "server/src/services/native-runtime/canonical.ts",
@@ -100,7 +129,12 @@ test("PR workflow keeps Build fast and passes PR-mode context to typecheck and V
   assert.ok(!build.includes("node scripts/verify-grok-npm-install.mjs"), "PR Build must not run the 4-min public npm install verifier");
   assert.ok(!build.includes("warm-public-install-npm-cache.mjs"), "PR Build must not warm the unused public npm install cache");
   assert.ok(build.includes("pnpm --filter @paperclipai/server build:runtime"), "PR Build still verifies production runtime bundle");
+  assert.match(build, /PAPERCLIP_TSC_EMIT_ONLY: \$\{\{ !\(contains\(github\.event\.pull_request\.labels\.\*\.name, 'full-ci'\) \|\| vars\.CI_INCREMENTAL_MODE == 'full'\) && '1' \|\| '' \}\}\n\s+run: pnpm build/, "ordinary PR Build should use emit-only server compile while full-ci and CI_INCREMENTAL_MODE=full clear PAPERCLIP_TSC_EMIT_ONLY");
   assert.match(build, /if \[ "\$\{PAPERCLIP_CI_FULL:-\}" = "1" \]; then\n\s+scripts\/server-boot-smoke\.sh/);
+  const runnerSupport = workflow.split("\n  verify_runner_e2e_support:\n")[1].split("\n  verify:\n")[0];
+  assert.match(runnerSupport, /--shard-index \$\{\{ matrix\.shard_index \}\} --shard-count \$\{\{ matrix\.shard_count \}\}/);
+  assert.equal(lanes.verify_runner_e2e_support.length, 4, "Runner support suite should be 4-way sharded");
+  assert.equal(lanes.e2e_shards.length, 12, "E2E should be 12-way sharded");
   const typecheck = workflow.split("\n  typecheck_release_registry:\n")[1].split("\n  general_tests:\n")[0];
   assert.match(typecheck, /fetch-depth: 2/);
   assert.match(typecheck, /CI_PLAN: \$\{\{ needs\.gate\.outputs\.plan \}\}/);
@@ -114,12 +148,25 @@ test("PR workflow keeps Build fast and passes PR-mode context to typecheck and V
   const e2e = workflow.split("\n  e2e_shards:\n")[1].split("\n  e2e:\n")[0];
   const releaseVerify = readFileSync(new URL(".github/workflows/release-verify.yml", root), "utf8");
   const releaseBuild = releaseVerify.split("\n  build:\n")[1].split("\n  runner_binary_targets:\n")[0];
-  const prKey = e2e.match(/key: (e2e-ui-dist-v1-.+)/)?.[1];
-  const releaseKey = releaseBuild.match(/key: (e2e-ui-dist-v1-.+)/)?.[1];
+  const prKey = e2e.match(/key: (e2e-ui-dist-v2-.+)/)?.[1];
+  const releaseKey = releaseBuild.match(/key: (e2e-ui-dist-v2-.+)/)?.[1];
   assert.ok(prKey && releaseKey, "both pr-trusted.yml and release-verify.yml must define the E2E UI dist cache key");
   assert.equal(prKey, releaseKey, "E2E UI dist reader and writer keys must match exactly");
   assert.doesNotMatch(e2e.split("Restore prebuilt UI assets")[1].split("Run e2e tests")[0], /restore-keys:/);
   assert.match(e2e, /PAPERCLIP_E2E_SKIP_UI_BUILD: \$\{\{ steps\.e2e_ui_dist\.outputs\.cache-hit == 'true' && '1' \|\| '' \}\}/);
+
+  // Exact reader/writer key parity for prebuilt Runner dist and incremental typecheck caches.
+  const prRunnerDistKey = typecheck.match(/key: (runner-dist-v1-.+)/)?.[1];
+  const releaseRunnerDistKey = releaseBuild.match(/key: (runner-dist-v1-.+)/)?.[1];
+  assert.ok(prRunnerDistKey && releaseRunnerDistKey, "both pr-trusted.yml and release-verify.yml must define runner-dist-v1 cache key");
+  assert.equal(prRunnerDistKey, releaseRunnerDistKey, "runner-dist-v1 reader and writer keys must match exactly");
+  assert.doesNotMatch(typecheck.split("Restore prebuilt Runner dist")[1].split("Restore incremental typecheck")[0], /restore-keys:/);
+
+  const prIncPrefix = typecheck.match(/key: (typecheck-incremental-v1-.+)-\$\{\{ github\.event\.pull_request\.base\.sha \}\}/)?.[1];
+  const releaseIncPrefix = releaseBuild.match(/key: (typecheck-incremental-v1-.+)-\$\{\{ github\.sha \}\}/)?.[1];
+  assert.ok(prIncPrefix && releaseIncPrefix, "both pr-trusted.yml and release-verify.yml must define typecheck-incremental-v1 prefix");
+  assert.equal(prIncPrefix, releaseIncPrefix, "typecheck-incremental-v1 reader and writer prefixes must match exactly");
+  assert.doesNotMatch(workflow, /actions\/cache\/save@/, "pr-trusted.yml must never save caches");
 });
 
 test("source inspected across package boundaries selects its consumers", () => {
@@ -169,7 +216,10 @@ test("shared contracts, runtime prompts, protocol inputs and fixtures reach cons
   assert.ok(selectedTasks(plan(["server/src/onboarding-assets/default/AGENTS.md"])).has("ci:runner-vitest"));
   assert.ok(selectedTasks(plan(["packages/paperclip-runner/protocol/schema.json"])).has("ci:runner-rust"));
   for (const file of ["tests/runner-e2e/fixtures/prompt.md", "scripts/run-vitest-stable.mjs", "pnpm-lock.yaml"]) {
-    assert.ok(Object.values(plan([file]).jobs).every((job) => job.selected === job.total), file);
+    const result = plan([file]);
+    assert.equal(selected(result, "canary_dry_run"), false, `${file} must not trigger canary_dry_run`);
+    assert.ok(Object.entries(result.jobs).filter(([name]) => name !== "canary_dry_run")
+      .every(([, job]) => job.selected === job.total), file);
   }
 });
 
@@ -235,7 +285,9 @@ test("cache-affecting definition changes force execution across successive PR pu
     for (const paths of [[file], [file, "packages/db/src/schema/issues.ts"]]) {
       const result = plan(paths);
       assert.match(result.forceReason, /Global CI input changed/);
-      assert.ok(Object.values(result.jobs).every((job) => job.selected === job.total));
+      assert.equal(selected(result, "canary_dry_run"), false, `${file} must not trigger canary_dry_run`);
+      assert.ok(Object.entries(result.jobs).filter(([name]) => name !== "canary_dry_run")
+        .every(([, job]) => job.selected === job.total));
     }
   }
   const workflow = readFileSync(new URL(".github/workflows/pr-trusted.yml", root), "utf8");
@@ -374,7 +426,7 @@ else process.exit(3);
       else {
         assert.notEqual(value, "plan=", `${JSON.stringify(overrides)}: ${result.stderr}`);
         const resultPlan = JSON.parse(value.slice("plan=".length));
-        assert.equal(resultPlan.jobs.general_tests.selected, overrides.PROFILE_CI || overrides.STACK_JSON ? 29 : 2);
+        assert.equal(resultPlan.jobs.general_tests.selected, overrides.PROFILE_CI || overrides.STACK_JSON ? 27 : 2);
         assert.equal(resultPlan.diff.base, base);
         assert.deepEqual(resultPlan.changed, ["ui/src/components/Sidebar.tsx"]);
       }
@@ -386,18 +438,36 @@ else process.exit(3);
 test("audited prose does not widen source selection, but guidance still runs its uncached guard", () => {
   const source = "ui/src/components/Sidebar.tsx";
   const sourcePlan = plan([source]);
-  for (const doc of ["doc/DEVELOPING.md", "doc/DATABASE.md", "doc/plans/2026-10-30-example.md"]) {
+  for (const doc of [
+    "doc/DEVELOPING.md",
+    "doc/DATABASE.md",
+    "doc/connections/GOOGLE-WORKSPACE.md",
+    "docs/guides/board-operator/importing-and-exporting.md",
+    "doc/plans/2026-10-30-example.md",
+    "doc/logs/2026-11-01-verify.md",
+  ]) {
     const mixed = plan([source, doc]);
-    assert.equal(mixed.forceReason, null);
-    assert.deepEqual(mixed.jobs, sourcePlan.jobs);
-    assert.deepEqual(mixed.documentation, [doc]);
+    assert.equal(mixed.forceReason, null, doc);
+    assert.deepEqual(mixed.jobs, sourcePlan.jobs, doc);
+    assert.deepEqual(mixed.documentation, [doc], doc);
   }
   const guidance = plan(["doc/DEVELOPING.md"]);
   assert.deepEqual([...selectedTasks(guidance)], ["ci:typecheck"]);
   assert.equal(config.tasks["//#ci:typecheck"].cache, false);
+  assert.deepEqual([...selectedTasks(plan(["doc/connections/GOOGLE-WORKSPACE.md"]))], ["ci:typecheck"]);
+  assert.equal(selected(plan(["doc/connections/GOOGLE-WORKSPACE.md"]), "canary_dry_run"), false);
+  assert.equal(selected(plan(["doc/connections/GOOGLE-WORKSPACE.md"]), "verify_paperclip_runner"), false);
   assert.deepEqual([...selectedTasks(plan(["doc/plans/2026-10-30-example.md"]))], []);
-  for (const file of ["docs/api/issues.md", "doc/unknown.md", "doc/plans/tool.sh", "skills/paperclip/SKILL.md",
-    "server/src/onboarding-assets/default/AGENTS.md", "tests/fixtures/example.md"]) {
+  assert.deepEqual([...selectedTasks(plan(["doc/logs/2026-11-01-verify.md"]))], []);
+  for (const file of [
+    "docs/api/issues.md",
+    "doc/connections/tool-method-permission-reviews.json",
+    "doc/unknown.md",
+    "doc/plans/tool.sh",
+    "skills/paperclip/SKILL.md",
+    "server/src/onboarding-assets/default/AGENTS.md",
+    "tests/fixtures/example.md",
+  ]) {
     assert.ok(selectedTasks(plan([source, file])).has("ci:server"), file);
   }
 });

@@ -406,6 +406,31 @@ describe("a Google Antigravity session saved by the pending candidate", () => {
   });
 });
 
+describe("a Google Antigravity swarm and the task's ordinary session", () => {
+  // A swarm runs on the Antigravity CLI in a fresh session every time; the
+  // ordinary route cannot reopen the CLI's conversation, nor the CLI the
+  // ordinary one. Neither direction resumes: the next run starts fresh in the same workspace.
+  const antigravity = (runId: string, swarmRequest?: string) => buildNativeExecutionInput({
+    companyId, runId,
+    issue: { id: issueId, identifier: "DOT-2", title: "Test", description: null, workMode: "standard" },
+    taskPrompt: "Only the current turn", agentId,
+    workspace: { id: runId, cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+    normalizedSessionId, provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-low",
+    acpxPermissionMode: "approve-all", completionContract: execution(runId).completionContract,
+    runtimeContext: nativeRuntimeContextFixture(),
+    ...(swarmRequest === undefined ? {} : { antigravitySwarmRequest: swarmRequest }),
+  });
+  const savedBy = (saved: ReturnType<typeof antigravity>) =>
+    ({ ...previousRun(), runnerProfileJson: { ...previousRun().runnerProfileJson, nativeExecutionInput: saved } });
+
+  it("starts a swarm in a fresh session after an ordinary run, and an ordinary run fresh after a swarm", () => {
+    expect(rebindNativeSessionCheckpoint({ previousRun: savedBy(antigravity(previousRunId)), currentExecution: antigravity(currentRunId) })).not.toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: savedBy(antigravity(previousRunId)), currentExecution: antigravity(currentRunId, "write a.txt") })).toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: savedBy(antigravity(previousRunId, "write a.txt")), currentExecution: antigravity(currentRunId) })).toBeNull();
+    expect(rebindNativeSessionCheckpoint({ previousRun: savedBy(antigravity(previousRunId, "write a.txt")), currentExecution: antigravity(currentRunId, "write b.txt") })).toBeNull();
+  });
+});
+
 describe("a source whose provider state was not saved after its result was accepted", () => {
   const unsaved = { [NATIVE_PROVIDER_STATE_UNSAVED_KEY]: { code: NATIVE_PROVIDER_STATE_INCOMPATIBLE,
     reason: "harness_backup_not_saved", recordedAt: "2026-11-11T00:00:00.000Z" } };

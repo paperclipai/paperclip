@@ -1,12 +1,20 @@
+import { availableParallelism } from "node:os";
 import { fileURLToPath } from "node:url";
 import { configDefaults, defineConfig } from "vitest/config";
 
 const pendingDependabotLock = process.env.PAPERCLIP_CI_PR_AUTHOR === "dependabot[bot]";
+// Thread workers reuse the main process and V8 compile cache across the 699
+// support test files while keeping strict per-file isolation (`isolate: true`)
+// for the 100+ suites using `vi.mock`. Scale to 4 workers on 4-core runners
+// (vs Vitest's default `cpus - 1 = 3` forks) and 7 workers on 8-core runners.
+const maxWorkers = Math.min(7, Math.max(1, availableParallelism()));
 
 export default defineConfig({
   root: import.meta.dirname,
   test: {
     name: "runner-e2e-support",
+    pool: "threads",
+    maxWorkers,
     // CI profiling records per-test timings, like the root and Runner package configs.
     ...(process.env.PAPERCLIP_CI_PROFILE === "true"
       ? { reporters: [...configDefaults.reporters, fileURLToPath(new URL("../../scripts/ci-profile/vitest-reporter.mjs", import.meta.url))] }

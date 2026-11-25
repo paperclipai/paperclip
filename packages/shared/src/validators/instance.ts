@@ -101,6 +101,8 @@ export const instanceExperimentalSettingsSchema = z.object({
   // MCP Tasks (io.modelcontextprotocol/tasks): durable long provider calls.
   // Off: Paperclip never declares the extension, so servers never return tasks.
   enableMcpTasks: z.boolean().default(false),
+  // Trusted /swarm for Google Antigravity agents (Antigravity CLI route). Default off.
+  enableAntigravitySwarm: z.boolean().default(false),
   // Deprecated compatibility key. Runner ingress follows enableNativeRunner;
   // this remains accepted so older stored rows and managed configs keep loading.
   enableRunnerPreviewIngress: z.boolean().default(false),

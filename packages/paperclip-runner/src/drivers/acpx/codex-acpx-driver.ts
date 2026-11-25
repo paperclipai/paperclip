@@ -1521,8 +1521,11 @@ class CodexAcpxSession implements HarnessSession {
       const trackSubagents = this.#agent === "claude"
         ? createClaudeSubagentLineageTracker<AcpRuntimeEvent>(activity.toolExecutionId ?? ((id) => id))
         : (event: AcpRuntimeEvent) => event;
-      for await (const event of turn.events) {
-        toolEvidence?.tool(event);
+      const projectToolEvent = activity.createToolEventProjection?.() ?? ((event: AcpRuntimeEvent) => event);
+      for await (const raw of turn.events) {
+        toolEvidence?.tool(raw);
+        const event = projectToolEvent(raw);
+        if (!event) continue;
         const projected = activity.toolExecutionId && event.type === "tool_call" && typeof event.toolCallId === "string"
           ? { ...event, toolCallId: activity.toolExecutionId(event.toolCallId) } : event;
         this.#mapRuntimeEvent(normalizeMessage(trackSubagents(normalizeToolEvent(projected))), turnId, ++index);

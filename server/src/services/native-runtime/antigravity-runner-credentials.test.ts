@@ -3,7 +3,8 @@ import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { antigravityCredentialTurn, bindAntigravityCredentialTurn, bindAntigravityTransportRetirement, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
+import { antigravityAccountDigest, antigravityCredentialTurn, antigravitySwarmChannel, bindAntigravityCredentialTurn, bindAntigravityTransportRetirement, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
+import { sanitizeAntigravityCredential } from "../../vendor/paperclip-runner/index.js";
 import { completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
 import type { NativeSession, createRunnerdCodexTransport } from "../../vendor/paperclip-runner/index.js";
 import { bindRetainedGoogleCredentialHome } from "../retained-google-credential-cleanup.js";
@@ -99,12 +100,34 @@ describe("Antigravity managed Runner credentials", () => {
       GOOGLE_CLOUD_ACCESS_TOKEN: "ambient", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "spoofed",
     } })).toEqual({ home: null, environment: { GEMINI_API_KEY: "fixture-selected" } });
   });
+  it("binds the deployment's swarm channel and only a digest of the connection account to the credential", async () => {
+    const managedHome = await home();
+    await writeFile(join(managedHome, "antigravity-acp", "acp_token.json"), credential("fixture-selected"), { mode: 0o600 });
+    const previous = process.env.PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL;
+    process.env.PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL = "stable";
+    try {
+      const { environment } = await prepareAntigravityRunnerCredentials({ remote: false, managedHome, environment: {}, accountEmail: "Owner@Example.test" });
+      const secret = environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET!;
+      expect(JSON.parse(secret).paperclip).toEqual({ swarmChannel: "stable", accountSha256: antigravityAccountDigest("owner@example.test") });
+      expect(secret).not.toMatch(/example\.test/i);
+      // Pinned: the Runner's antigravityAccountDigest pins the same value for the CLI's sign-in.
+      expect(antigravityAccountDigest("OWNER@example.test")).toBe("0fde1d32467703827f511884b66298187e2944f4bfe260303f893a0af908f81e");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL; else process.env.PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL = previous;
+    }
+    expect(antigravitySwarmChannel({})).toBe("provider_default");
+    expect(antigravitySwarmChannel({ PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL: "daily" })).toBe("provider_default");
+  });
   it("projects only the selected private token and rejects remote subscription delivery", async () => {
     const managedHome = await home();
     await writeFile(join(managedHome, "antigravity-acp", "acp_token.json"), credential("fixture-selected"), { mode: 0o600 });
-    expect(await prepareAntigravityRunnerCredentials({ remote: false, managedHome, environment: { GEMINI_HOME: "/untrusted" } })).toEqual({
-      home: managedHome, credential: credential("fixture-selected"), environment: { PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: credential("fixture-selected") },
-    });
+    const projected = await prepareAntigravityRunnerCredentials({ remote: false, managedHome, environment: { GEMINI_HOME: "/untrusted" } });
+    expect(projected).toMatchObject({ home: managedHome, credential: credential("fixture-selected") });
+    expect(Object.keys(projected.environment)).toEqual(["PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET"]);
+    // The selected token, plus the swarm route's run facts, which the Runner's sanitizer drops before any write.
+    expect(JSON.parse(projected.environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET!)).toEqual({
+      ...JSON.parse(credential("fixture-selected")), paperclip: { swarmChannel: "provider_default" } });
+    expect(sanitizeAntigravityCredential(projected.environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET!)).toBe(credential("fixture-selected"));
     for (const [input, code] of [[{ remote: true, environment: {} }, "antigravity_remote_sign_in_unsupported"],
       [{ remote: false, lifecycleMode: "warm" as const, environment: {} }, "antigravity_warm_unsupported"],
       [{ remote: false, lifecycleMode: "warm" as const, environment: { GEMINI_API_KEY: "fixture-selected" } }, "antigravity_warm_unsupported"]] as const) {

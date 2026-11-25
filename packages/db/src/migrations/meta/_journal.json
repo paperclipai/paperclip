@@ -3522,6 +3522,34 @@
       "when": 1795469468402,
       "tag": "0504_lucky_pepper_potts",
       "breakpoints": true
+    },
+    {
+      "idx": 505,
+      "version": "7",
+      "when": 1795544784796,
+      "tag": "0505_nice_rawhide_kid",
+      "breakpoints": true
+    },
+    {
+      "idx": 506,
+      "version": "7",
+      "when": 1795560008849,
+      "tag": "0506_nappy_agent_brand",
+      "breakpoints": true
+    },
+    {
+      "idx": 507,
+      "version": "7",
+      "when": 1795561452000,
+      "tag": "0507_special_kang",
+      "breakpoints": true
+    },
+    {
+      "idx": 508,
+      "version": "7",
+      "when": 1795572002132,
+      "tag": "0508_normal_riptide",
+      "breakpoints": true
     }
   ]
 }

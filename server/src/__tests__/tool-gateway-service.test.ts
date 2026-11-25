@@ -3458,7 +3458,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
       parameters: {},
     })).rejects.toMatchObject({
       reasonCode: "tool_error",
-      message: expect.stringContaining("enroll the signed-in Workspace account and this OAuth client's Google Cloud project"),
+      message: expect.stringContaining("accept only an OAuth client marked \"Use this client for an AI-powered agent\""),
     });
   });
 

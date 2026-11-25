@@ -816,6 +816,7 @@ export const toolInvocations = pgTable(
     index("tool_invocations_run_idx").on(table.companyId, table.runId),
     index("tool_invocations_issue_idx").on(table.companyId, table.issueId),
     index("tool_invocations_gateway_idx").on(table.companyId, table.gatewayId),
+    index("tool_invocations_connection_error_idx").on(table.connectionId, table.createdAt).where(sql`${table.errorMessage} is not null`),
     uniqueIndex("tool_invocations_company_idempotency_uq").on(table.companyId, table.idempotencyKey),
   ],
 );
@@ -1142,6 +1143,7 @@ export const toolCallEvents = pgTable(
     index("tool_call_events_issue_idx").on(table.companyId, table.issueId),
     index("tool_call_events_invocation_idx").on(table.invocationId),
     index("tool_call_events_gateway_idx").on(table.companyId, table.gatewayId),
+    index("tool_call_events_connection_error_idx").on(table.connectionId, table.createdAt).where(sql`${table.errorMessage} is not null`),
   ],
 );
 
