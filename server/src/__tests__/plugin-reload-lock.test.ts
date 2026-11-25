@@ -278,10 +278,17 @@ describe("per-plugin reload lock", () => {
     } as unknown as PluginLoader;
     const routeLifecycle = pluginLifecycleManager({} as never, { loader: routeLoader, workerManager });
 
-    const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("deadlocked")), 2_000));
-    await expect(Promise.race([routeLifecycle.enable("plugin-a"), timeout])).resolves.toMatchObject({
-      status: "ready",
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise((_, reject) => {
+      deadline = setTimeout(() => reject(new Error("deadlocked")), 2_000);
     });
+    try {
+      await expect(Promise.race([routeLifecycle.enable("plugin-a"), timeout])).resolves.toMatchObject({
+        status: "ready",
+      });
+    } finally {
+      clearTimeout(deadline);
+    }
     expect(routeLoader.loadSingle).toHaveBeenCalledWith("plugin-a");
   });
 });
