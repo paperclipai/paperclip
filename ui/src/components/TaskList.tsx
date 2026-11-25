@@ -8,6 +8,7 @@ import { defaultTaskListColumns, defaultTaskListSort, isTaskListColumnSort, task
 import { sortIssues } from "../lib/issue-sort";
 import { timeAgo } from "../lib/timeAgo";
 import { IssueRow, type IssueRowArchiveAction, type IssueRowDensity } from "./IssueRow";
+import { InboxIssueMetaLeading } from "./IssueColumns";
 import { IssueGroupHeader } from "./IssueGroupHeader";
 import { TaskListColumnHeader, TaskListColumnSettings, TaskListViewport } from "./TaskListColumns";
 import { TaskRowGroup } from "./TaskRowGroup";
@@ -21,6 +22,7 @@ import { useTaskListColumnPreferences } from "../hooks/useTaskListColumnPreferen
 import { usePreloadTaskChats } from "../hooks/usePreloadTaskChats";
 import { CHAT_BOOTSTRAP_PRELOAD_LIMIT } from "../lib/issue-chat-bootstrap";
 import type { TaskCollectionPreferenceLocation } from "../lib/task-collection-preferences";
+import { issueWaitingOf } from "../lib/liveIssueIds";
 
 export type TaskListItem = {
   issue: Issue;
@@ -69,9 +71,10 @@ function TaskChatPreload({ companyId, refs }: { companyId: string; refs: readonl
 }
 
 /** Opt-in collection built from the reviewed row, hierarchy and column primitives. */
-export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey, preferenceLocation, sort: controlledSort, onSortChange, preloadCompanyId, getArchiveAction }: {
+export function TaskList({ items, allItems = items, liveIssueIds, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey, preferenceLocation, sort: controlledSort, onSortChange, preloadCompanyId, getArchiveAction }: {
   items: readonly TaskListItem[];
   allItems?: readonly TaskListItem[];
+  liveIssueIds?: ReadonlySet<string>;
   initialColumns?: readonly TaskListColumnId[];
   density?: IssueRowDensity;
   collapsedIds?: ReadonlySet<string>;
@@ -134,6 +137,10 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
           issue={issue} presentation="task" appearance="refreshed" density={density} issueLinkState={issueLinkState}
           archiveAction={getArchiveAction?.(issue)}
           unreadState={item.unread ? "visible" : "hidden"}
+          metadata={liveIssueIds?.has(issue.id) ? (
+            <InboxIssueMetaLeading issue={issue} isLive waiting={issueWaitingOf(liveIssueIds, issue.id)}
+              showStatus={false} showIdentifier={false} />
+          ) : undefined}
           treeGuides={depth} chevronInGuide={depth > 0 && children.length > 0}
           leadingControl={children.length ? (
             <Button variant="ghost" size="icon-xs" className="task-row-disclosure" aria-label={`${expanded ? "Collapse" : "Expand"} ${issue.title}`} aria-expanded={expanded} onClick={() => {

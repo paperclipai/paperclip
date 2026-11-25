@@ -406,6 +406,9 @@ export function IssueRow({
               >
                 {issue.title}{titleSuffix}
               </span>}
+              {refreshed && columnValues && metadata ? (
+                <span data-slot="task-row-metadata" className="shrink-0">{metadata}</span>
+              ) : null}
               {stableLayout && recoveryIndicator ? (
                 <span data-slot="task-row-recovery">
                   <span className="hidden sm:inline">{recoveryIndicator}</span>
