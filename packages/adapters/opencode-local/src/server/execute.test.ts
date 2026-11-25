@@ -112,6 +112,12 @@ describe("OpenCode local skill injection", () => {
     const failed = await run();
     expect(failed.exitCode).toBe(1);
     expect(failed.resultJson?.finalResponse).toBeUndefined();
+
+    runProcessMock.mockReset();
+    runProcessMock.mockResolvedValue(probeResult({ stdout, exitCode: null, signal: "SIGTERM" }));
+    const signalled = await run();
+    expect(signalled.signal).toBe("SIGTERM");
+    expect(signalled.resultJson?.finalResponse).toBeUndefined();
   });
 
   it("delivers assignment context on an ordinary task turn and rebuilds it after resume fallback", async () => {

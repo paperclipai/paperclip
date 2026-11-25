@@ -795,7 +795,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
             adapterExecutionTimeout,
             stdout: attempt.proc.stdout,
             stderr: attempt.proc.stderr,
-            ...((synthesizedExitCode ?? 0) === 0 && attempt.parsed.finalResponseText
+            ...(synthesizedExitCode === 0 && !attempt.proc.signal && attempt.parsed.finalResponseText
               ? { finalResponse: { disposition: "final", text: attempt.parsed.finalResponseText } }
               : {}),
           },
