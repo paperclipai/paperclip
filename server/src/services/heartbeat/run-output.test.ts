@@ -6,10 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import type { Db, heartbeatRuns } from "@paperclipai/db";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDurableRunLogStore } from "../run-log-store.js";
 import type { StorageProvider } from "../../storage/types.js";
-import { createHeartbeatRunOutput, isNewRunLog } from "./run-output.js";
+import { ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS, createHeartbeatRunOutput, isNewRunLog } from "./run-output.js";
 import { createAgentIdentityRedactor, secretEnvironmentValues } from "../agent-identity-redaction.js";
 import { formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import { generateKeyPairSync } from "node:crypto";
@@ -482,9 +482,14 @@ describe("run output progress write failures", () => {
     const row = { ...newRunRow };
     const base = createRunRowDb(row);
     let databaseDown = true;
+    let progressAttempts = 0;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-25T00:00:00Z"));
+    onTestFinished(() => { vi.useRealTimers(); });
     const db = {
       ...base,
       async transaction<T>(write: (tx: Db) => Promise<T>): Promise<T> {
+        progressAttempts += 1;
         if (databaseDown) {
           throw Object.assign(new Error("the database system is shutting down"), { code: "57P03" });
         }
@@ -520,10 +525,16 @@ describe("run output progress write failures", () => {
     expect(row.lastOutputSeq).toBe(0);
     expect(events).toHaveBeenCalledWith(expect.objectContaining({ id: row.id }),
       expect.objectContaining({ level: "warn", message: "Run log persistence is incomplete" }));
+    expect(progressAttempts).toBe(1);
+
+    vi.setSystemTime(new Date(Date.now() + ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS));
+    await expect(handlers.onLog("stdout", "third\n")).resolves.toBeUndefined();
+    expect(progressAttempts).toBe(2);
 
     databaseDown = false;
     await output.flushOutputProgress({ force: true });
-    expect(row).toMatchObject({ lastOutputSeq: 2, lastOutputBytes: 13, lastOutputStream: "stderr" });
+    expect(progressAttempts).toBe(3);
+    expect(row).toMatchObject({ lastOutputSeq: 3, lastOutputBytes: 19, lastOutputStream: "stdout" });
     expect(output.outputProgressState.pending).toBeNull();
   });
 });

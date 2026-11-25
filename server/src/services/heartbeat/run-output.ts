@@ -87,6 +87,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
   let progressWrite: Promise<void> | null = null;
   let recordingFailureReported = false;
   let progressFailureStreak = false;
+  let progressRetryNotBefore: number | null = null;
   let deferredLogRecovery: Promise<void> | null = null;
   const flushOutputProgress = async (opts?: { force?: boolean }) => {
     if (progressWrite) {
@@ -102,6 +103,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       pendingOutputProgress.at.getTime() - lastOutputFlushAt.getTime() >=
         ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS;
     if (!shouldFlush) return;
+    if (opts?.force !== true && progressRetryNotBefore !== null && Date.now() < progressRetryNotBefore) return;
     progressWrite = db.transaction(async tx => {
       await notifyActiveRunSilence(tx, { companyId: run.companyId, runId: run.id });
       await tx.update(heartbeatRuns)
@@ -115,9 +117,13 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       .where(eq(heartbeatRuns.id, run.id));
     })
       .then(() => {
+        progressRetryNotBefore = null;
         lastOutputFlushAt = pendingOutputProgress.at;
         if (outputProgressState.pending === pendingOutputProgress)
           outputProgressState.pending = null;
+      }, (error: unknown) => {
+        progressRetryNotBefore = Date.now() + ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS;
+        throw error;
       })
       .finally(() => {
         progressWrite = null;
@@ -208,9 +214,6 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
           stream,
           bytes: persistedLogBytes,
         };
-        // The chunk is already committed. A failed throttled progress write
-        // must not reject onLog: the progress stays pending, and the next
-        // chunk or the forced flush at finalization writes it.
         await flushOutputProgress().then(
           () => {
             progressFailureStreak = false;
