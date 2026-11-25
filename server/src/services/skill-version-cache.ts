@@ -101,16 +101,22 @@ export async function lastUsedAt(filename: string): Promise<number | null> {
   }
 }
 
-export function skillRunNeedsFilesSql() {
+export function skillRunNeedsFilesSql(options: { releaseBlockedFailures?: boolean } = {}) {
   const unstartedAdmission = and(
     inArray(heartbeatRuns.status, ["queued", "scheduled_retry"]), noRetainedExecutionPredicate(),
     isNull(heartbeatRuns.finishedAt), isNull(heartbeatRuns.runnerInstanceId),
     isNull(heartbeatRuns.nativePhase), isNull(heartbeatRuns.nativePhaseUpdatedAt),
     sql`not (coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) ?| array['skillVersions', 'skillSelectionSnapshot'])`,
   );
-  // A blocked terminal failure is a recorded dead end: Retry and fresh
-  // continuation start new runs that select skills again. Only a same-run
-  // resume, a scheduled attempt, or a lease holder reads its pins again.
+  // For version pins, a blocked terminal failure is a recorded dead end: Retry
+  // and fresh continuation start new runs that select skills again. Only a
+  // same-run resume, a scheduled attempt, or a lease holder reads its pins again.
+  // Runtime asset preservation keeps its broader retention.
+  const blockedFailureSettled = options.releaseBlockedFailures ? sql`and not (f.phase = 'terminal_failure'
+          and f.recovery_state is not distinct from 'blocked' and f.lease_owner is null and f.next_attempt_at is null
+          and not exists (select 1 from ${issueRecoveryActions} a
+            where a.company_id = f.company_id and a.source_issue_id = f.issue_id and a.status in ('active', 'escalated')
+            and a.wake_policy->>'kind' = 'resume_native_run' and a.wake_policy->>'runId' = f.run_id::text))` : sql``;
   return sql`not (${unstartedAdmission}) and (
       ${heartbeatRuns.status} not in ('succeeded', 'failed', 'timed_out', 'cancelled', 'interrupted')
       or ${heartbeatRuns.finishedAt} is null
@@ -118,11 +124,7 @@ export function skillRunNeedsFilesSql() {
       or exists (select 1 from ${nativeRunFinalizations} f
         where f.company_id = ${heartbeatRuns.companyId} and f.run_id = ${heartbeatRuns.id}
         and (f.phase <> 'committed' or f.lease_owner is not null or f.recovery_state is not null)
-        and not (f.phase = 'terminal_failure' and f.recovery_state is not distinct from 'blocked'
-          and f.lease_owner is null and f.next_attempt_at is null
-          and not exists (select 1 from ${issueRecoveryActions} a
-            where a.company_id = f.company_id and a.source_issue_id = f.issue_id and a.status in ('active', 'escalated')
-            and a.wake_policy->>'kind' = 'resume_native_run' and a.wake_policy->>'runId' = f.run_id::text)))
+        ${blockedFailureSettled})
       or exists (select 1 from ${environmentLeases} l
         where l.company_id = ${heartbeatRuns.companyId} and l.heartbeat_run_id = ${heartbeatRuns.id}
         and (l.status = 'pending_cleanup' or l.cleanup_status = 'failed'
@@ -147,7 +149,7 @@ export async function protectedVersions(db: Db, companyId: string, targetSkill?:
       and not coalesce(${heartbeatRuns.contextSnapshot} ? 'skillVersions', false)
       then ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput' end`,
   })
-    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), skillRunNeedsFilesSql()));
+    .from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), skillRunNeedsFilesSql({ releaseBlockedFailures: true })));
   const versions = new Set<string>();
   const leaseDeadlines = new Map<string, number>();
   const unknown = () => ({ versions: null, leaseDeadlines });
