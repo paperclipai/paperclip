@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { agents, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
+import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker, setExternalConversationAdapter } from "./conversation-continuation.js";
 import { deliverExecutionStatuses } from "./execution-status-delivery.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -41,6 +41,42 @@ describePostgres("execution identity query contracts", () => {
     const matches = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
       .where(and(eq(issueRecoveryActions.companyId, f.companyId), conversationRecoveryActionPredicate()));
     expect(matches).toEqual([{ id: actions[0].id }]);
+  });
+  it("matches external conversation adapters when opted in", async () => {
+    const f = await fixture();
+    const [row] = await db.insert(heartbeatRuns).values({
+      companyId: f.companyId,
+      agentId: f.agentId,
+      status: "failed",
+      errorCode: "process_lost",
+      runtimeMode: "legacy",
+      contextSnapshot: { issueId: f.issueId },
+      runnerProfileJson: { adapterDispatch: { adapterType: "devin_local" } },
+    }).returning();
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId: f.companyId,
+      sourceIssueId: f.issueId,
+      kind: "active_run_watchdog",
+      status: "resolved",
+      ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: "devin-lost-1",
+      evidence: { runId: row.id },
+      nextAction: "Devin",
+    }).returning();
+
+    setExternalConversationAdapter("devin_local", false);
+    const beforeOptIn = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, f.companyId), eq(issueRecoveryActions.id, action.id), conversationRecoveryActionPredicate()));
+    expect(beforeOptIn).toHaveLength(0);
+
+    setExternalConversationAdapter("devin_local", true);
+    const afterOptIn = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.companyId, f.companyId), eq(issueRecoveryActions.id, action.id), conversationRecoveryActionPredicate()));
+    expect(afterOptIn).toHaveLength(1);
+    expect(afterOptIn[0].id).toBe(action.id);
+
+    setExternalConversationAdapter("devin_local", false);
   });
   it("preserves native issue precedence and does not broaden legacy spellings", async () => {
     const f = await fixture();
