@@ -23,7 +23,7 @@ import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
-import { agents, agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, chatPublications, companies, companySkills, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, environmentLeases, workspaceOperations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatMessageLinks, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, chatPublications, companies, companySkills, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, environmentLeases, workspaceOperations } from "@paperclipai/db";
 import type { Thread } from "chat";
 // Opt-in private physical candidate; normal CI uses the staged pinned package.
 vi.mock("@chat-adapter/telegram", async (importOriginal) => {
@@ -405,6 +405,29 @@ describeEmbeddedPostgres("chat channels: github review workflow", () => {
         expect(wait).toBeGreaterThanOrEqual(3_590_000);
         expect(wait).toBeLessThanOrEqual(3_660_000);
       }
+    });
+    it("settles a coalesced GitHub request whose comment was deleted without blocking the reply", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const thread = makeThread({ channelId: "paperclipai/paperclip", id: f.conversation.externalThreadId }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread,
+        trigger: "mention", message: makeMessage({ id: "41802", text: "And this one", userId: "42", userName: "octocat", mentioned: true }) });
+      await githubResponseCommentService(db, f.providerFetch).processPending();
+      const inbound = await db.select({ commentId: chatMessageLinks.commentId, deliveryId: chatMessageLinks.deliveryId })
+        .from(chatMessageLinks).where(and(eq(chatMessageLinks.conversationId, f.conversation.id), eq(chatMessageLinks.direction, "inbound")))
+        .orderBy(asc(chatMessageLinks.createdAt));
+      expect(inbound).toHaveLength(2);
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
+      await db.update(heartbeatRuns).set({ contextSnapshot: { ...run.contextSnapshot,
+        wakeCommentIds: inbound.map(link => link.commentId) } }).where(eq(heartbeatRuns.id, f.run.id));
+      const [sibling] = await db.select().from(chatActions).where(and(eq(chatActions.deliveryId, inbound[1]!.deliveryId!),
+        eq(chatActions.kind, "github_response_comment")));
+      expect(sibling.result?.id).toBeTruthy();
+      f.responseComments.delete(Number(sibling.result!.id));
+      await githubChatReviewService(db, f.providerFetch).execute(f.session, "comment",
+        { body: "Answered both requests", idempotencyKey: "coalesced-reply" });
+      expect([...f.responseComments.values()].some(comment => comment.body.includes("Answered both requests"))).toBe(true);
+      expect((await readChatActionsById(sibling.id))[0]).toMatchObject({ status: "cancelled",
+        result: { final: true, code: "response_deleted" } });
     });
     it("settles a GitHub request whose posted comment was deleted instead of retrying it", async () => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");

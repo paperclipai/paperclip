@@ -43,6 +43,11 @@ const legacyStatusBodies = new Set(["Work is paused. Your request is saved. See 
 /** A reply or review the agent published, as opposed to a placeholder or a Paperclip status notice. */
 export const holdsPublishedResponse = (body: string | undefined) => !!body?.includes("<!-- paperclip-response-state:final -->") &&
   !body.includes(statusMarker) && !legacyStatusBodies.has(body.split("\n\n<!-- paperclip-")[0]!.trim());
+/** A 404 when reading the request's own posted comment: it was deleted on GitHub. */
+const responseCommentDeleted = (error: unknown) => {
+  const details = error instanceof HttpError ? error.details as { code?: string; providerStatus?: number } | undefined : undefined;
+  return details?.code === "github_response_deleted";
+};
 const responseMarker = (source: Source) => isMainPullResponse(source) ? pullResponseMarker(source) : requestResponseMarker(source);
 
 async function findResponseComment(source: Source, api: Api, legacyMarkers: string[] = []): Promise<Comment | null> {
@@ -380,7 +385,8 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         }, async () => { await assertCurrent(); await context(link.deliveryId!); });
       } catch (error) {
         const details = error instanceof HttpError ? error.details as { code?: string; providerStatus?: number } | undefined : undefined;
-        if (!response.result?.id || details?.code !== "github_bot_operation_failed" || details.providerStatus !== 404) throw error;
+        const deleted = responseCommentDeleted(error) || (details?.code === "github_bot_operation_failed" && details.providerStatus === 404);
+        if (!response.result?.id || !deleted) throw error;
         // A human can delete an earlier working comment while the coalesced
         // review runs. Settle that exact receipt without recreating the comment
         // or blocking the current response and check publication.
@@ -481,7 +487,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       const attempts = Number(row.result?.attempts ?? 0) + 1;
       const denied = error instanceof Error && "status" in error && error.status === 403;
       const details = error instanceof HttpError ? error.details as { code?: string; retryable?: boolean } | undefined : undefined;
-      if (row.result?.id && details?.code === "github_response_deleted") {
+      if (row.result?.id && responseCommentDeleted(error)) {
         // Someone deleted the posted comment. Settle the request without
         // recreating it, as finishRun does for coalesced requests.
         await db.transaction(async tx => {
