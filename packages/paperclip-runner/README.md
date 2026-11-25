@@ -1115,7 +1115,7 @@ stops working:
   refreshes when `last_refresh` is older than about eight days, or after a
   request is refused. OpenAI's guidance is one `auth.json` per runner or per
   serialized job stream, and never one file shared across concurrent jobs or
-  machines ([Codex CI/CD authentication](https://developers.openai.com/codex/auth/ci-cd-auth)).
+  machines ([Codex CI/CD authentication](https://learn.chatgpt.com/docs/auth/ci-cd-auth)).
 - Grok Build expects xAI's identity provider to accept a rotated refresh token
   for about a minute at most, then to refuse it (`invalid_grant`). Presenting a
   rotated token can also make the identity provider revoke the newer token that
