@@ -16,6 +16,8 @@ import {
   agentWakeupRequests,
   agents,
   companies,
+  completionContracts,
+  nativeRunResults,
   createDb,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -505,8 +507,29 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
       contextSnapshot: { paperclipIssue: { description: task.description } },
     }).where(eq(heartbeatRuns.id, seed.settledRun.id));
 
+    const [issue] = await db.insert(issues).values({ companyId: seed.company.id, title: "Native answer" }).returning();
+    const [contract] = await db.insert(completionContracts).values({
+      companyId: seed.company.id, issueId: issue!.id, revision: 1, schemaVersion: "v1", policyVersion: "v1", risk: "low",
+      completionAuthority: "agent", incompleteCriteriaPolicy: "block", contractJson: {}, canonicalSha256: "contract-hash",
+      createdByActorType: "user", createdByActorId: "board-user",
+    }).returning();
+    await db.update(heartbeatRuns).set({ issueId: issue!.id, nativeIssueId: issue!.id, completionContractId: contract!.id })
+      .where(eq(heartbeatRuns.id, seed.settledRun.id));
+    const terminal = { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded", turnTerminalState: "completed", reportedWorkDisposition: "done" };
+    const [nativeResult] = await db.insert(nativeRunResults).values({
+      companyId: seed.company.id, issueId: issue!.id, runId: seed.settledRun.id, completionContractId: contract!.id,
+      serverFingerprint: "server-fingerprint", schemaStatus: "accepted", canonicalSha256: "result-hash",
+      resultJson: { result: answer, terminal, normalizationDiagnostics: { ignoredAttentionRequests: [] } },
+    }).returning();
+
     await service.request(seed.connection, { actorType: "user", actorId: "board-user" });
     await drain(service);
+
+    const [storedResult] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, nativeResult!.id));
+    expect(JSON.stringify(storedResult!.resultJson)).not.toContain(SECRET);
+    expect(JSON.stringify(storedResult!.resultJson)).not.toContain("board-notes");
+    expect(storedResult!.resultJson).toMatchObject({ terminal, result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: DELETED_TEXT } });
+    expect(validatePrpStructuredRunResult((storedResult!.resultJson as { result: unknown }).result)).toMatchObject({ ok: true });
 
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.settledRun.id));
     for (const value of [run!.resultJson, run!.runnerProfileJson]) {

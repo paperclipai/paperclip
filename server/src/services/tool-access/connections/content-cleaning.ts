@@ -45,7 +45,8 @@ export function withoutResultText(value: Record<string, unknown> | null): { valu
   return { value: changed ? next : value, changed };
 }
 
-const STRUCTURAL_KEYS = new Set(["schema", "kind", "status", "type", "outcome", "state", "version", "code", "id"]);
+const STRUCTURAL_KEYS = new Set(["schema", "kind", "status", "type", "outcome", "state", "version", "code", "id", "reportedWorkDisposition"]);
+const TERMINAL_SCHEMA = "paperclip.prp.terminal.v1";
 export const DELETED_TEXT = "Removed because the connection data was deleted.";
 export const CHECKPOINT_CONTENT_DELETED_MARKER = "contentDeletedAt";
 const RUN_RESULT_SCHEMA = "paperclip.run_result.v1";
@@ -106,6 +107,7 @@ export function withoutFreeText(value: unknown, key = ""): unknown {
   if (Array.isArray(value)) return value.map((entry) => withoutFreeText(entry, key));
   if (isRecord(value)) {
     if (value.schema === RUN_RESULT_SCHEMA) return withoutRunResultText(value);
+    if (value.schema === TERMINAL_SCHEMA) return value;
     return Object.fromEntries(Object.entries(value).map(([entryKey, entry]) => [entryKey, withoutFreeText(entry, entryKey)]));
   }
   return value;
