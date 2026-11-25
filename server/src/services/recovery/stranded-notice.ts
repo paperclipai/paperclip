@@ -236,6 +236,22 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       tone: "danger",
     };
   }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "dot_subscription_expired") {
+    return {
+      title: "Dot event subscription expired",
+      body: "Paperclip stopped before starting the run because this Dot's event subscription expired. Event subscriptions last up to 24 hours; the existing pairing is still valid.",
+      nextAction: "Ask the Dot to subscribe to paperclip.dot.mailbox_updated again (no new pairing is needed), then press Retry.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "dot_pairing_required") {
+    return {
+      title: "Dot connection needs pairing",
+      body: "Paperclip stopped before starting the run because this Dot is not paired with a verified event subscription and completed event test. Automatic retries cannot repair a missing connection.",
+      nextAction: "Pair the Dot and complete the event test in the agent's connection settings, then press Retry.",
+      tone: "danger",
+    };
+  }
   if (readNonEmptyStringField(configurationIncomplete, "reason") === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON) {
     const pluginKey = readNonEmptyStringField(configurationIncomplete, "pluginKey") ?? "the sandbox provider plugin";
     const pluginStatus = readNonEmptyStringField(configurationIncomplete, "pluginStatus") ?? "not ready";

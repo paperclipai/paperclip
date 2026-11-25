@@ -623,6 +623,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   // A refused /swarm waits for the user; every automatic attempt would refuse again.
   ANTIGRAVITY_SWARM_UNAVAILABLE,
   "project_access_denied",
+  "configuration_incomplete",
   "native_provider_model_rejected",
   "provider_tool_definition_invalid",
   NATIVE_SANDBOX_DISK_FULL,
@@ -680,7 +681,7 @@ export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = PROVIDER_LIMIT_DEFAULT
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
-  /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
+  /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable)|dot must be paired with a verified event subscription|dot(?:'|’)s event subscription expired)/i;
 
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }

@@ -13,7 +13,8 @@ import {
   type buildPaperclipWakePayload,
   type createHeartbeatRunPreparation,
 } from "./run-preparation.js";
-import { dotRunnerBroker } from "../dot-runner-broker.js";
+import { dotRunnerBroker, isDotBindingUnavailableReason } from "../dot-runner-broker.js";
+import { McpOAuthError } from "../public-mcp/oauth.js";
 import { isAgentDirectoryCopy } from "../agent-directory-working-copies.js";
 import { isConversation } from "../agent-conversations.js";
 import { renewLegacyControllerLease } from "../legacy-controller-lease.js";
@@ -780,8 +781,26 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       const pinnedPlanMarkdown = pinnedPlan?.body ?? "";
       const museBinding = nativeRuntimeResolution.profile.backend === "muse_external"
         ? await museRunnerBroker(db).snapshot(agent.companyId, agent.id, String(parseObject(agent.adapterConfig).museBindingId ?? "")) : undefined;
-      const dotBinding = ["openai_dot_mcp", "grok_bot_mcp"].includes(nativeRuntimeResolution.profile.backend)
-        ? await dotRunnerBroker(db).snapshot(agent.companyId, agent.id, String(parseObject(agent.adapterConfig)[nativeRuntimeResolution.profile.backend === "grok_bot_mcp" ? "externalBindingId" : "dotBindingId"] ?? "")) : undefined;
+      let dotBinding;
+      if (["openai_dot_mcp", "grok_bot_mcp"].includes(nativeRuntimeResolution.profile.backend)) {
+        const bindingKey = nativeRuntimeResolution.profile.backend === "grok_bot_mcp" ? "externalBindingId" : "dotBindingId";
+        try {
+          dotBinding = await dotRunnerBroker(db).snapshot(agent.companyId, agent.id, String(parseObject(agent.adapterConfig)[bindingKey] ?? ""));
+        } catch (error) {
+          if (error instanceof McpOAuthError && isDotBindingUnavailableReason(error.reason)) {
+            throw new ConfigurationIncompleteFailure(error.message, {
+              configurationIncomplete: {
+                reason: error.reason,
+                companyId: agent.companyId,
+                agentId: agent.id,
+                actionUrl: `/agents/${agent.id}/configuration`,
+                fingerprint: `${error.reason}:${agent.id}`,
+              },
+            });
+          }
+          throw error;
+        }
+      }
       const nativeRuntimeContext = await measureRunPhase("runtime_selection.runtime_context", () => buildNativeRuntimeContext({
         db,
         agent,

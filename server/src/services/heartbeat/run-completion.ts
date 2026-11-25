@@ -17,6 +17,7 @@ import { measureRunPhase } from "../execution-preparation-timing.js";
 import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-access-denial.js";
 import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "../antigravity-swarm-refusal.js";
 import { PaperclipRunnerProviderProfileError } from "../native-runtime/provider-profile.js";
+import { NativeRuntimeEligibilityError } from "../native-runtime/runtime-mode.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
@@ -334,6 +335,32 @@ function isConfigurationIncompleteFailure(
   error: unknown,
 ): error is ConfigurationIncompleteFailure {
   return error instanceof ConfigurationIncompleteFailure;
+}
+
+const DOT_CONFIGURATION_INCOMPLETE_CODES = new Set([
+  "paperclip_runner_dot_config_invalid",
+  "paperclip_runner_dot_disabled",
+]);
+
+function dotConfigIncompleteFailure(
+  error: unknown,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "companyId" | "agentId">,
+): ConfigurationIncompleteFailure | null {
+  const isDotConfigError =
+    (error instanceof PaperclipRunnerProviderProfileError || error instanceof NativeRuntimeEligibilityError) &&
+    DOT_CONFIGURATION_INCOMPLETE_CODES.has(error.code);
+  if (!isDotConfigError) {
+    return null;
+  }
+  return new ConfigurationIncompleteFailure(error.message, {
+    configurationIncomplete: {
+      reason: "dot_pairing_required",
+      companyId: run.companyId,
+      agentId: run.agentId,
+      actionUrl: `/agents/${run.agentId}/configuration`,
+      fingerprint: `dot_pairing_required:${run.agentId}`,
+    },
+  });
 }
 
 export function isConfigurationIncompleteFailedRun(
@@ -1294,7 +1321,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       err,
     )
       ? err
-      : null;
+      : dotConfigIncompleteFailure(err, run);
     const recordedResponsibleUserDenialCode =
       normalizeResponsibleUserDenialCode(
         (await getRun(run.id).catch(() => null))?.errorCode,
@@ -1637,7 +1664,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ? outerErr
       : null;
     const configurationIncompleteSetupFailure =
-      isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
+      isConfigurationIncompleteFailure(outerErr) ? outerErr : dotConfigIncompleteFailure(outerErr, run);
     const unresolvedBaseRefSetupFailure = isUnresolvedWorkspaceBaseRefError(
       outerErr,
     )
