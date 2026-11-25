@@ -1,4 +1,6 @@
 import { recoverNativePoolAttribution } from "../heartbeat/run-completion.js";
+import { hasReviewPoolAllocation } from "../heartbeat/pool-allocation-affinity.js";
+import { readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { effectiveAiConnectionInput } from "@paperclipai/shared";
 import { NATIVE_POOL_FAILURE_CODES, nativePoolFailureKind } from "./native-pool-failure.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
@@ -365,7 +367,15 @@ async function replacementHistoryReady(db: Db, run: typeof heartbeatRuns.$inferS
   try {
     const continuation = await buildExecutionContinuation({ db, companyId: run.companyId, issueId,
       agentId: run.agentId, context: record(run.contextSnapshot), summary: null, exposeLowTrustRaw: false });
-    return continuation.unresolvedInteractionIds.length === 0;
+    const unresolved = continuation.unresolvedInteractionIds;
+    if (unresolved.length === 0) return true;
+    const review = readNativeReviewAssignmentContext(run.contextSnapshot);
+    const taskKey = run.contextSnapshot?.aiRouterTaskKey;
+    // The approved reviewer still needs to answer its own pending interaction.
+    // Every other unresolved interaction remains a continuation blocker.
+    return nativePoolFailureKind(run.errorCode) !== null && typeof taskKey === "string" &&
+      unresolved.length === 1 && unresolved[0] === review?.nativeReviewInteractionId &&
+      await hasReviewPoolAllocation(db, run, taskKey, { pendingOnly: true });
   } catch (error) {
     let cause: unknown = error;
     for (let depth = 0; retryDatabaseErrors && depth < 4 && cause && typeof cause === "object"; depth++) {
@@ -501,6 +511,10 @@ export async function reconcileSafeNativeReplacements(
   let scheduled = 0, pendingFailures = 0;
   for (const { run, coordinator } of candidates) {
     const poolFailure = nativePoolFailureKind(coordinator.failureCode);
+    const reviewAllocationKey = run.contextSnapshot?.aiRouterTaskKey;
+    const isPendingPoolReview = (tx: Db) => Boolean(poolFailure) && typeof reviewAllocationKey === "string"
+      ? hasReviewPoolAllocation(tx, run, reviewAllocationKey, { pendingOnly: true })
+      : Promise.resolve(false);
     const holdQuotaForOperator = async (cause: string, nextAction: string) => {
         await db.transaction(async tx => {
           const [task] = await tx.select().from(issues).where(and(
@@ -515,10 +529,11 @@ export async function reconcileSafeNativeReplacements(
           await tx.update(nativeRunFinalizations).set({ nextAttemptAt: null, updatedAt: now,
             failureDetail: { ...current.failureDetail, replacementWaitingForCleanup: false, replacementDenied: cause, nextAction },
           }).where(eq(nativeRunFinalizations.runId, run.id));
-          if (!task || task.assigneeAgentId !== run.agentId || ["done", "cancelled"].includes(task.status)) return;
+          if (!task || ["done", "cancelled"].includes(task.status) ||
+              (task.assigneeAgentId !== run.agentId && !await isPendingPoolReview(tx as unknown as Db))) return;
           await issueRecoveryActionService(tx as unknown as Db).upsertSourceScoped({
             companyId: run.companyId, sourceIssueId: task.id, kind: "active_run_watchdog",
-            ownerType: "board", ownerAgentId: null, returnOwnerAgentId: run.agentId,
+            ownerType: "board", ownerAgentId: null, returnOwnerAgentId: task.assigneeAgentId,
             cause, fingerprint: `native-replacement:${run.id}`, evidence: { runId: run.id, attempts: current.attempt },
             nextAction, wakePolicy: null, maxAttempts: 3, supersedeOnIdentityChange: true,
           });
@@ -941,9 +956,10 @@ export async function reconcileSafeNativeReplacements(
           .from(nativeRunFinalizations)
           .where(eq(nativeRunFinalizations.runId, run.id))
           .for("update");
+        const poolReview = task?.status === "in_review" && await isPendingPoolReview(tx as unknown as Db);
         if (
           !task ||
-          task.assigneeAgentId !== run.agentId ||
+          (task.assigneeAgentId !== run.agentId && !poolReview) ||
           !["todo", "in_progress", "in_review", "blocked"].includes(task.status) ||
           (task.executionRunId !== null && task.executionRunId !== run.id) ||
           (task.checkoutRunId !== null && task.checkoutRunId !== run.id) ||
@@ -1019,7 +1035,7 @@ export async function reconcileSafeNativeReplacements(
           const taskKey = context.aiRouterTaskKey;
           const poolId = selection.poolId;
           if (run.scopeKind !== "issue" || run.issueId !== task.id ||
-              typeof taskKey !== "string" || (taskKey !== task.id && taskKey !== task.identifier) ||
+              typeof taskKey !== "string" || (!poolReview && taskKey !== task.id && taskKey !== task.identifier) ||
               typeof poolId !== "string" || typeof selection.memberId !== "string" ||
               typeof binding.connectionId !== "string" || typeof binding.grantId !== "string") return false;
           const [receipt] = await tx.select().from(heartbeatRunEvents).where(and(
@@ -1078,7 +1094,8 @@ export async function reconcileSafeNativeReplacements(
             expectedSelection: selection as unknown as AiConnectionRouterSelection,
             userId: run.responsibleUserId, adapterType: agent.adapterType, attemptedMemberIds,
             failureKind: poolFailure!,
-            sourceAdapterConfig: { ...record(agent.adapterConfig), ...record(record(task.assigneeAdapterOverrides).adapterConfig) },
+            requirePaperclipRunner: poolReview,
+            sourceAdapterConfig: poolReview ? record(agent.adapterConfig) : { ...record(agent.adapterConfig), ...record(record(task.assigneeAdapterOverrides).adapterConfig) },
           };
           let transition = await router.transitionQuotaPin(transitionInput);
           if (transition.kind !== "selected") {
@@ -1294,7 +1311,8 @@ export async function reconcileSafeNativeReplacements(
           .where(
             and(
               eq(issues.id, task.id),
-              eq(issues.assigneeAgentId, run.agentId),
+              eq(issues.companyId, run.companyId),
+              poolReview ? undefined : eq(issues.assigneeAgentId, run.agentId),
             ),
           );
         return true;

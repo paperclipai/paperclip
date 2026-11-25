@@ -50,6 +50,10 @@ import {
   documentRevisions,
   issues,
   nativeRunFinalizations,
+  completionContracts,
+  nativeRunResults,
+  workAssessments,
+  statusDecisions,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -157,6 +161,33 @@ const support = externalDatabaseUrl
         failureDetail: { originalFailureCode: "fixture_checkpoint_unusable" },
       });
       return { companyId, agentId, issueId, runId };
+    }
+    async function seedReview(source: Awaited<ReturnType<typeof seed>>) {
+      const { companyId, issueId, agentId } = source;
+      const worker = randomUUID(), workerRunId = randomUUID(), contractId = randomUUID();
+      const resultId = randomUUID(), assessmentId = randomUUID(), decisionId = randomUUID(), interactionId = randomUUID();
+      await db.insert(agents).values({ id: worker, companyId, name: "Task worker", adapterType: "paperclip_runner" });
+      await db.insert(completionContracts).values({ id: contractId, companyId, issueId, revision: 1,
+        schemaVersion: "fixture", policyVersion: "fixture", risk: "low", completionAuthority: "agent_review",
+        incompleteCriteriaPolicy: "block", contractJson: {}, canonicalSha256: "fixture", createdByActorType: "system", createdByActorId: "fixture" });
+      await db.insert(heartbeatRuns).values({ id: workerRunId, companyId, agentId: worker, scopeKind: "issue", issueId,
+        nativeIssueId: issueId, completionContractId: contractId, status: "succeeded", runtimeMode: "native" });
+      await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId: workerRunId,
+        completionContractId: contractId, serverFingerprint: "fixture", schemaStatus: "valid", resultJson: {}, canonicalSha256: "fixture" });
+      await db.insert(workAssessments).values({ id: assessmentId, companyId, issueId, runId: workerRunId, resultId, contractId,
+        triggerKind: "run_result", triggerActorCompanyId: companyId, priorIssueStatus: "in_progress", priorStatusVersion: 0,
+        policyVersion: "fixture", assessmentJson: {}, inputDigest: "fixture" });
+      await db.insert(statusDecisions).values({ id: decisionId, companyId, issueId, runId: workerRunId, assessmentId,
+        decisionVersion: 1, policyVersion: "fixture", fromStatus: "in_progress", toStatus: "in_review",
+        reasonCode: "fixture", decisionJson: { projectedStatusVersion: 1 }, decisionDigest: "fixture", applicationState: "applied" });
+      await db.update(issues).set({ assigneeAgentId: worker, status: "in_review", statusVersion: 1, lastStatusDecisionId: decisionId,
+        executionRunId: source.runId, checkoutRunId: source.runId }).where(eq(issues.id, issueId));
+      await db.insert(issueThreadInteractions).values({ id: interactionId, companyId, issueId, kind: "request_confirmation",
+        sourceRunId: workerRunId, createdByAgentId: worker, addresseeAgentId: agentId,
+        payload: { version: 1, prompt: "Review the work", acceptLabel: "Approve", rejectLabel: "Decline", allowDeclineReason: true,
+          target: { type: "custom", key: "native_completion_review", revisionId: decisionId } } });
+      return { worker, context: { nativeReviewInteractionId: interactionId, nativeReviewDecisionId: decisionId },
+        taskKey: `native-review:${interactionId}` };
     }
     it("holds an invalid admitted attribution once without recurring replacement work", async () => {
       const source = await seed();
@@ -384,8 +415,12 @@ const support = externalDatabaseUrl
       { scenario: "requalification with a newer task run", blocked: "uncertain_provider_action" },
       { scenario: "requalification with a changed workspace", blocked: "uncertain_provider_action" },
       { scenario: "requalification superseded by an operator hold", blocked: "uncertain_provider_action" },
+      { scenario: "failed task history read on completion review", blocked: null },
+      { scenario: "failed task history read on superseded review", blocked: "continuation_evidence_incomplete" },
     ])("checks $scenario before Claude-to-Codex failover", async ({ scenario, blocked }) => {
       const source = await seed();
+      const review = scenario.includes("review") ? await seedReview(source) : null;
+      const taskKey = review?.taskKey ?? source.issueId;
       const userId = `quota-${randomUUID()}`;
       await db.insert(authUsers).values({ id: userId, name: "Quota", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
       await db.insert(companyMemberships).values({ companyId: source.companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
@@ -406,7 +441,7 @@ const support = externalDatabaseUrl
       await db.update(agents).set({ runtimeConfig: { harnessPool: { poolId: pool.id } } }).where(eq(agents.id, source.agentId));
       const router = aiConnectionRouterService(db);
       const selection = await router.resolve({ companyId: source.companyId, poolId: pool.id, agentId: source.agentId,
-        userId, adapterType: "paperclip_runner", taskKey: source.issueId, skipUsageProbe: true });
+        userId, adapterType: "paperclip_runner", taskKey, skipUsageProbe: true });
       expect(selection.memberId).toBe(claudeId);
       const runtime = await prepareManagedAiRuntime(db, { companyId: source.companyId, agentId: source.agentId,
         responsibleUserId: userId, adapterType: "paperclip_runner", config: selection.runtimeConfig, binding: selection.binding });
@@ -415,12 +450,15 @@ const support = externalDatabaseUrl
         errorCode: "native_provider_usage_limit",
         resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "turn",
           category: "quota_exhausted", message: "Quota exhausted", retryability: "requires_action" } },
-        contextSnapshot: { issueId: source.issueId, aiRouterTaskKey: source.issueId, aiRouterSelection: selection },
+        contextSnapshot: { issueId: source.issueId, aiRouterTaskKey: taskKey, aiRouterSelection: selection, ...review?.context },
       }).where(eq(heartbeatRuns.id, source.runId));
       await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_usage_limit" }).where(eq(nativeRunFinalizations.runId, source.runId));
       expect(await recordVerifiedRouterQuotaCooldown(db, { runId: source.runId, companyId: source.companyId,
         agentId: source.agentId, credentialIdentity: runtime.sessionIdentity,
         retryNotBefore: new Date(Date.now() + 60 * 60_000).toISOString() })).toBe(true);
+      if (scenario.includes("superseded review")) {
+        await db.update(issues).set({ statusVersion: 2 }).where(eq(issues.id, source.issueId));
+      }
       const callId = "fixture-call";
       const [failedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.runId));
       if (scenario.includes("API")) {
@@ -580,6 +618,11 @@ const support = externalDatabaseUrl
         expect(await runReplacement()).toMatchObject({ scanned: 0, scheduled: 0 });
       }
       const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
+      if (review) {
+        expect(successor?.contextSnapshot).toMatchObject(review.context);
+        const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+        expect(task).toMatchObject({ assigneeAgentId: review.worker, status: "in_review", executionRunId: null, checkoutRunId: null });
+      }
       expect(successor).toMatchObject({ issueId: source.issueId, status: "scheduled_retry", scheduledRetryAt: now,
         contextSnapshot: { forceFreshSession: true, aiRouterSelection: { memberId: codexId, binding: { provider: "openai" } },
           aiPoolFailover: { sourceRunId: source.runId, reason: "quota" } } });

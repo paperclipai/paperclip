@@ -110,7 +110,7 @@ export async function resolveHarnessPoolExecution(input: { db: Db; run: typeof h
   const [session] = await db.select().from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, agent.companyId), eq(agentTaskSessions.agentId, agent.id),
     eq(agentTaskSessions.adapterType, existingPin?.selection.adapterType ?? "paperclip_runner"), eq(agentTaskSessions.taskKey, taskKey))).limit(1);
   const identity = session?.sessionParamsJson?.paperclipAiCredentialIdentity;
-  const overrides = parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig);
+  const overrides = review ? {} : parseObject(parseObject(task?.assigneeAdapterOverrides).adapterConfig);
   const environmentId = await harnessPoolEnvironmentScope(db, agent, task, run);
   const sourceAdapterConfig = { ...agent.adapterConfig, ...overrides };
   if (!review && existingPin) await switchFreshRetryQuotaPin({ db, run, agent, userId, pin: existingPin, environmentId, sourceAdapterConfig });

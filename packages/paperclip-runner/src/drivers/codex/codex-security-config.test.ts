@@ -37,7 +37,7 @@ describe("Codex security configuration", () => {
     const command = resolvePinnedCodexCommand();
     expect(evalProviderTransportOptions("codex").codexCommand).toBe(command);
     expect(execFileSync(command, ["--version"], { env: { PATH: dirname(process.execPath) },
-      encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 }).trim()).toBe(process.platform === "win32" ? "codex-cli 0.166.0" : "codex-cli 0.170.0");
+      encoding: "utf8", timeout: 30_000, maxBuffer: 16 * 1024 }).trim()).toBe("codex-cli 0.170.0");
   });
 
   it.skipIf(process.platform === "win32")("resolves usable installed Codex commands and an absent-package PATH fallback while rejecting malformed or escaped dependencies", () => {

@@ -12,6 +12,7 @@ import { listAdapterOptions } from "../adapters/metadata";
 import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { cn } from "../lib/utils";
+import { useCloudHarnessPolicy } from "../hooks/useCloudHarnessPolicy";
 
 export function AdapterTypeDropdown({
   value,
@@ -34,15 +35,16 @@ export function AdapterTypeDropdown({
   poolEligible?: boolean;
   allowedTypes?: ReadonlySet<string>;
 }) {
+  const harnessPolicy = useCloudHarnessPolicy();
   const selectedDisplay = getAdapterDisplay(value);
   const adapterList = useMemo(() =>
     [...listAdapterOptions(type => adapterLabels[type] ?? getAdapterLabel(type)),
       ...(openAiDotEnabled ? [{ value: "openai_dot", label: "OpenAI Dot", experimental: true, comingSoon: false }] : []),
       ...(poolEnabled && poolEligible && nativeRunnerEnabled && !disabledTypes.has("paperclip_runner") ? [{ value: "pool", label: "Pool", experimental: true, comingSoon: false }] : []),
       ...(museEnabled ? [{ value: "muse", label: "Muse — Personal agent", experimental: true, comingSoon: false }] : []),
-    ].filter(item => !item.comingSoon && (item.value !== "paperclip_runner" || (nativeRunnerEnabled && !poolEnabled)) && !disabledTypes.has(item.value) && (!allowedTypes || allowedTypes.has(item.value)))
+    ].filter(item => harnessPolicy.isCloudHarnessAllowed(item.value) && !item.comingSoon && (item.value !== "paperclip_runner" || (nativeRunnerEnabled && !poolEnabled)) && !disabledTypes.has(item.value) && (!allowedTypes || allowedTypes.has(item.value)))
       .sort((a, b) => Number(a.value === "paperclip_runner") - Number(b.value === "paperclip_runner")),
-    [disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled, poolEnabled, poolEligible, allowedTypes]);
+    [harnessPolicy, disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled, poolEnabled, poolEligible, allowedTypes]);
   return <SelectPopover aria-label="Harness" value={value} onValueChange={onChange}
     displayValue={<span className="inline-flex min-w-0 items-center gap-1.5">
       <span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={value} className="size-4" /></span>

@@ -1064,7 +1064,7 @@ describe("native provider startup retry", () => {
     await failStartup(seeded, sessionOpenFailure());
     const state = await read(seeded);
     expect(state.coordinator.failureDetail).toMatchObject({ providerCooldownAt: expected.toISOString() });
-    expect(await agentProviderLimitCooldown(db, { companyId, agentId, now: new Date() }))
+    expect(await agentProviderLimitCooldown(db, { companyId, agentId, credential: { kind: "host" }, now: new Date() }))
       .toMatchObject({ resetAt: expected, resetReported: true });
   });
 

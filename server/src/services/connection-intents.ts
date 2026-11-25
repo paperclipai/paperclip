@@ -38,7 +38,6 @@ import {
   heartbeatRunEvents,
   heartbeatRuns,
   nativeRunFinalizations,
-  heartbeatRunEvents,
   issueThreadInteractions,
   issueComments,
   issues,

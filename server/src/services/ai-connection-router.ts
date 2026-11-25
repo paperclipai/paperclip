@@ -20,6 +20,7 @@ import { resolvePaperclipRunnerProviderProfile, resolvePaperclipRunnerNativeProv
 import { findActiveServerAdapter } from "../adapters/index.js";
 import { parseObject } from "../adapters/utils.js";
 import { assertPoolExecutionPlatform, resolvePoolExecutionPlatform } from "./ai-connection-pool-platform.js";
+import { confinePoolCodexCli } from "./pool-codex-sandbox.js";
 
 const usageCache = new Map<string, { expires: number; value: AiConnectionUsage }>();
 const usageInFlight = new Map<string, Promise<AiConnectionUsage | undefined>>();
@@ -115,6 +116,22 @@ export function assertPoolAdapterPolicyCompatible(config: Record<string, unknown
   if (config.opencodePermissionMode != null && config.opencodePermissionMode !== "allow") refuse();
   if (config.codexPermissionMode != null && config.codexPermissionMode !== "never") refuse();
 }
+function usesNativeCodexPoolSandbox(sourceAdapterType: string | undefined, source: Record<string, unknown>, selection: AiConnectionRouterSelection) {
+  return selection.runnerScope !== undefined && sourceAdapterType === "paperclip_runner" &&
+    (source.provider == null || source.provider === "codex") && (selection.adapterType ?? sourceAdapterType) !== "paperclip_runner";
+}
+
+function nativeCodexPoolSandbox(source: Record<string, unknown>, selection: AiConnectionRouterSelection) {
+  const target = selection.runtimeConfig;
+  if (selection.adapterType !== "codex_local" || (target.engine != null && target.engine !== "cli") ||
+      (source.codexPermissionMode != null && source.codexPermissionMode !== "never") ||
+      ["dangerouslyBypassApprovalsAndSandbox", "dangerouslyBypassSandbox", "alwaysApprove"].some(key => target[key] === true) ||
+      ["networkScope", "networkAllowlist", "filesystemScope"].some(key => target[key] !== undefined && !isDeepStrictEqual(target[key], source[key]))) {
+    throw unprocessable("Cannot preserve the native Codex execution sandbox with this pool member.", { code: "pool_execution_policy_incompatible" });
+  }
+  return confinePoolCodexCli({ ...source, ...target });
+}
+
 export function applyAiConnectionRouterTaskSettings(config: Record<string, unknown>, selection: AiConnectionRouterSelection, configuredAdapterType?: string, sourcePolicyConfig = config): Record<string, unknown> {
   const targetAdapter = selection.adapterType ?? configuredAdapterType;
   if (!selection.adapterType && configuredAdapterType && LOCAL_POOL_ADAPTERS.includes(configuredAdapterType) &&
@@ -129,7 +146,12 @@ export function applyAiConnectionRouterTaskSettings(config: Record<string, unkno
   // off keeps it off: native Codex disables hosted search only from this false.
   const searchDisabled = sourcePolicyConfig.search === false;
   assertPoolSearchPolicyCompatible(sourcePolicyConfig, selection.runtimeConfig);
-  return { ...Object.fromEntries(Object.entries(config).filter(([key]) => !routedRuntimeKeys.has(key) && !(switchingHarness && harnessCommandKeys.has(key)))), ...retainedEngine, ...(searchDisabled ? { search: false } : {}), ...selection.runtimeConfig };
+  const runtime = { ...Object.fromEntries(Object.entries(config).filter(([key]) => !routedRuntimeKeys.has(key) && !(switchingHarness && harnessCommandKeys.has(key)))), ...retainedEngine, ...(searchDisabled ? { search: false } : {}), ...selection.runtimeConfig };
+  if (!usesNativeCodexPoolSandbox(configuredAdapterType, sourcePolicyConfig, selection)) return runtime;
+  const sandbox = nativeCodexPoolSandbox(sourcePolicyConfig, selection);
+  // These are the only translated fields. Do not reintroduce filtered provider settings.
+  const { engine, command, args, extraArgs, filesystemScope, dangerouslyBypassApprovalsAndSandbox, dangerouslyBypassSandbox } = sandbox;
+  return { ...runtime, engine, command, args, extraArgs, filesystemScope, dangerouslyBypassApprovalsAndSandbox, dangerouslyBypassSandbox };
 }
 export class AiConnectionPoolExhausted extends Error {
   readonly code = "ai_connection_pool_exhausted";
@@ -436,6 +458,9 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       if (input.taskless && effectiveAdapter === "paperclip_runner") throw unprocessable("This pool member requires a task; select a Legacy runner for agent runs without a task", { code: "pool_task_required" });
       assertPoolExecutionPlatform(platform, effectiveAdapter, selection.runtimeConfig);
       assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effectiveAdapter, selection.runtimeConfig);
+      if (!input.taskless && usesNativeCodexPoolSandbox(input.adapterType, input.sourceAdapterConfig ?? {}, selection)) {
+        nativeCodexPoolSandbox(input.sourceAdapterConfig ?? {}, selection);
+      }
       return aiConnectionService(client).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId, adapterType: effectiveAdapter, binding: selection.binding, model: selection.runtimeConfig.model, runnerProvider: selection.runtimeConfig.provider, acpxAgent: selection.runtimeConfig.acpxAgent });
     };
     if (input.persisted) {
@@ -598,6 +623,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
     attemptedMemberIds: string[];
     failureKind?: "quota" | "auth" | "runner";
     allowCoolingSelection?: boolean;
+    requirePaperclipRunner?: boolean;
     requireSourceQuotaCooldown?: boolean;
     sourceAdapterConfig?: Record<string, unknown>;
     environmentId?: string | null;
@@ -641,6 +667,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       try {
         const effective = poolMemberRuntimeConfig(member, input.adapterType);
         if (input.taskless && effective.adapterType === "paperclip_runner") continue;
+        if (input.requirePaperclipRunner && effective.adapterType !== "paperclip_runner") continue;
         assertPoolExecutionPlatform(platform, effective.adapterType, effective.config);
         assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effective.adapterType, effective.config, sourceSelection);
         const authorized = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,
@@ -693,6 +720,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       try {
         effective = poolMemberRuntimeConfig(member, input.adapterType);
         if (input.taskless && effective.adapterType === "paperclip_runner") continue;
+        if (input.requirePaperclipRunner && effective.adapterType !== "paperclip_runner") continue;
         assertPoolExecutionPlatform(platform, effective.adapterType, effective.config);
         assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effective.adapterType, effective.config, sourceSelection);
         const authorized = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,

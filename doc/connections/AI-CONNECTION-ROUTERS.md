@@ -267,7 +267,10 @@ runs; choose a Legacy member for unscoped manual runs and heartbeats. A chat
 backed by a conversation task can use a qualified native member.
 Older members without an explicit runner retain their existing compatibility
 behavior. Native-only permission restrictions that cannot be preserved by the
-selected path cause an explicit policy error. Existing task pins retain their
+selected path cause an explicit policy error. A task that starts from the
+native Codex policy can use a Legacy Codex CLI member with confined workspace
+access and shell networking disabled. Other Legacy members are skipped when
+they cannot preserve that policy. Existing task pins retain their
 recorded adapter, settings and private session boundary after pool edits.
 The selected execution environment must support the chosen execution path.
 On Windows x64, native Codex is supported; native ACPX harnesses remain

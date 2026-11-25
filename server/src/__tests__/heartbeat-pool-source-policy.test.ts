@@ -37,11 +37,15 @@ it.each([
   { name: "CLI sandbox restriction", memberConfig: { engine: "cli", dangerouslySkipPermissions: false } },
   { name: "ACP deny-all policy", memberConfig: { engine: "acp", permissionMode: "deny-all" } },
 ] as const)("dispatches the admitted $name without treating it as a native source restriction", async ({ memberConfig }) => {
-  await dispatch(memberConfig, {}, true);
+  await dispatch(memberConfig, { provider: "acpx", acpxAgent: "claude" }, true);
 }, 90000);
 
 it("still refuses a selected member that conflicts with the saved native source policy", async () => {
-  await dispatch({ engine: "cli", dangerouslySkipPermissions: true }, { dangerouslySkipPermissions: false }, false);
+  await dispatch({ engine: "cli", dangerouslySkipPermissions: true }, { provider: "acpx", acpxAgent: "claude", dangerouslySkipPermissions: false }, false);
+}, 90000);
+
+it.each(["cli", "acp"] as const)("keeps Legacy Claude %s outside a native Codex task sandbox", async engine => {
+  await dispatch({ engine }, { provider: "codex" }, false);
 }, 90000);
 
 async function dispatch(memberConfig: { engine: "cli" | "acp"; dangerouslySkipPermissions?: boolean; permissionMode?: "deny-all" }, sourcePolicy: Record<string, unknown>, permitted: boolean) {

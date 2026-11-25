@@ -1,3 +1,4 @@
+import { heartbeatService } from "../../services/heartbeat.js";
 import { chatInboundWakeNoticeWork } from "../../services/chat-inbound-wake-notice-work.js";
 import { idleWorkSnapshot } from "../../services/task-admission.js";
 import { reconcileTaskChatRetryReceipts } from "../../services/task-retry.js";
