@@ -29,34 +29,11 @@ import {
   antigravityUsesRunScopedState,
   assertAntigravityExecutionAdmissible,
 } from "./antigravity-release.js";
-import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { nativeSessionFailureDisposition, nativeSessionFailureSourceCode, retireNeverOpenedCandidateRunRoot, scopedRunnerdStateRoot } from "./native-session-executor.js";
 import { NATIVE_PROVIDER_STATE_INCOMPATIBLE } from "./native-session-resume.js";
-import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+import { ANTIGRAVITY_FIXTURE_COMPANY_ID as companyId, ANTIGRAVITY_FIXTURE_MODEL as model, antigravityExecution } from "./antigravity.test-fixture.js";
 
-const companyId = "10000000-0000-4000-8000-000000000001";
-const model = "gemini-3.8-flash-low";
-const localHost = process.platform === "darwin" && process.arch === "arm64";
 const distributions = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/antigravity-distributions.json", import.meta.url), "utf8"));
-
-function antigravityExecution(input: { runId?: string; issueId?: string; workspaceId?: string; sessionId?: string } = {}) {
-  const runId = input.runId ?? "40000000-0000-4000-8000-000000000004";
-  const execution = buildNativeExecutionInput({
-    companyId, runId, agentId: "30000000-0000-4000-8000-000000000003",
-    issue: { id: input.issueId ?? "20000000-0000-4000-8000-000000000002", identifier: "AG-1", title: "Test", description: null, workMode: "standard" },
-    taskPrompt: "Only the current turn",
-    workspace: { id: input.workspaceId ?? "90000000-0000-4000-8000-000000000009", cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
-    normalizedSessionId: input.sessionId ?? "60000000-0000-4000-8000-000000000006",
-    provider: "acpx", acpxAgent: "antigravity", model, acpxPermissionMode: "approve-all",
-    completionContract: { id: "70000000-0000-4000-8000-000000000007", sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1",
-      contract: { revision: "1", objective: "Test", criteria: [{ id: "objective", requirement: "Answer" }] } },
-    runtimeContext: nativeRuntimeContextFixture(),
-  }) as NativeExecutionInput;
-  // The execution input binds the profile version the running release declares.
-  (execution.provider as { profile: { agentProfileVersion: number } }).profile.agentProfileVersion =
-    QUALIFIED_ACPX_PROFILES.antigravity.agentProfileVersion;
-  return execution;
-}
 
 const candidateGrant = (target = "darwin-arm64", changes: Record<string, unknown> = {}) => {
   const [platform, architecture] = target.split("-");
