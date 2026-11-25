@@ -477,7 +477,10 @@ impl CommandExecutor for NativeProviderCommandExecutor {
                 | "turn.stop"
                 | "run.cancel"
         ) {
-            self.credentials.poll(true)?;
+            // Catch a refresh before the provider exits, but never let a failed
+            // write-back keep the provider running: the poll after the command
+            // retries the copy and reports a failure once the provider stopped.
+            let _ = self.credentials.poll(true);
         }
         let mut result = self
             .selected
