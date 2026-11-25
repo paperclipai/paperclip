@@ -242,6 +242,17 @@ export function buildContinuationSummaryMarkdown(input: {
   return truncateText(body, ISSUE_CONTINUATION_SUMMARY_MAX_BODY_CHARS);
 }
 
+const LEGACY_RUN_LINE = /^- (?:Last updated by run: \S+|Heartbeat run `[^`\n]+` invoked adapter `[^`\n]*`\.|Detailed shell\/tool commands remain in the run log and transcript\.)$/;
+const LEGACY_RUN_STATUS_LINE = /^- Run `[^`\n]+` finished with status /;
+
+export function withoutLegacyRunLines(body: string): string {
+  return body.split("\n")
+    .filter((line) => !LEGACY_RUN_LINE.test(line))
+    .map((line) => line.replace(LEGACY_RUN_STATUS_LINE, "- The latest run finished with status "))
+    .join("\n")
+    .replace(/^## Commands Run\n\n\n(?=## )/m, "");
+}
+
 export async function getIssueContinuationSummaryDocument(
   db: Db,
   issueId: string,
@@ -265,7 +276,7 @@ export async function getIssueContinuationSummaryDocument(
   return {
     key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
     title: row.title,
-    body: row.body,
+    body: withoutLegacyRunLines(row.body),
     latestRevisionId: row.latestRevisionId,
     latestRevisionNumber: row.latestRevisionNumber,
     sourceTrust: row.sourceTrust ?? null,

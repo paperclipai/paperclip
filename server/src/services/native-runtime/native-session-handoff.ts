@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, isNull, lte, or, sql, type SQL } from "drizzle-orm";
 import { documents, heartbeatRunEvents, heartbeatRuns, issueComments, issueDocuments, issues, issueThreadInteractions, type Db } from "@paperclipai/db";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, withoutLegacyRunLines } from "../issue-continuation-summary.js";
 import { buildLowTrustSourceTrust, redactQuarantinedBodyForHigherTrust, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
 import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
 import { fastResponseHistoryBody } from "@paperclipai/shared";
@@ -161,7 +162,8 @@ export async function buildNativeSessionHandoff(input: {
     const sourceTrust = historicalTrust(row.runId, executionPolicy);
     entries.push({ ...sanitizeQuarantinedCommentForHigherTrust({ ...entry, sourceTrust }), kind: "agent_reply" });
   }
-  savedDocuments.slice(0, 3).forEach(row => entries.push({ ...redactQuarantinedBodyForHigherTrust(row), kind: "document",
+  savedDocuments.slice(0, 3).forEach(row => entries.push({ ...redactQuarantinedBodyForHigherTrust(
+    row.key === ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY ? { ...row, body: withoutLegacyRunLines(row.body) } : row), kind: "document",
     ...(row.key === "workflow" ? { readPath: `/api/issues/${issueId}/documents/workflow` } : {}),
   }));
   for (const row of runSummaries.slice(0, 2)) {
