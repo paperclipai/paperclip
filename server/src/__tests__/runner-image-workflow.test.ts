@@ -282,8 +282,6 @@ describe("Runner image workflow", () => {
     }
   });
 
-  // The cloud-release-32 runner group does not admit this workflow: master
-  // amd64 jobs routed there queued forever and blocked Core image publishing.
   it("builds and caches on the standard GitHub-hosted matrix runners", () => {
     for (const job of [jobs.build, jobs.cache]) {
       expect(/^ {4}runs-on: (.+)$/m.exec(job)?.[1]).toBe("${{ matrix.runner }}");
