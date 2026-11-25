@@ -1902,7 +1902,11 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     }
   }
 
-  async function recordInvocation(input: ToolAccessDecisionInput, accessDecision: ToolAccessDecision) {
+  async function recordInvocation(
+    input: ToolAccessDecisionInput,
+    accessDecision: ToolAccessDecision,
+    recordOptions?: { claimIdempotencyKey?: boolean },
+  ) {
     const loaded = await loadContext(input);
     if (!loaded.ok) throw new Error("Cannot record invocation for invalid tool access context");
     const { ctx, redaction } = loaded;
@@ -1991,7 +1995,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
           : "denied";
     const [invocation] = await db.insert(toolInvocations).values({
       companyId: ctx.companyId,
-      idempotencyKey,
+      idempotencyKey: recordOptions?.claimIdempotencyKey === false ? null : idempotencyKey,
       actorType: ctx.actorType,
       actorId: ctx.actorId,
       agentId: ctx.agentId,
