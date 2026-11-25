@@ -4,7 +4,7 @@ import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { buildLowTrustSourceTrust, redactQuarantinedBodyForHigherTrust, sanitizeQuarantinedCommentForHigherTrust } from "../source-trust.js";
 import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
 import { fastResponseHistoryBody } from "@paperclipai/shared";
-import { withoutModelHiddenRunIds } from "@paperclipai/adapter-utils/model-facing-history";
+import { modelFacingObject, type ModelFacingObject } from "@paperclipai/adapter-utils/model-facing-history";
 
 export const NATIVE_HANDOFF_MAX_BYTES = 24_000;
 const ENTRY_MAX_CHARS = 4_000;
@@ -21,7 +21,7 @@ export function createNativeSessionHandoffLoader(input: Parameters<typeof buildN
 export function renderNativeSessionHandoff(input: {
   issueId: string; generation: number | null; entries: HandoffEntry[]; omittedEntriesAtLeast: number;
 }): string {
-  const entries: Array<Omit<HandoffEntry, "id"> & { id?: string }> = [];
+  const entries: ModelFacingObject[] = [];
   let omitted = input.omittedEntriesAtLeast;
   let truncated = omitted > 0;
   const render = () => [
@@ -34,11 +34,11 @@ export function renderNativeSessionHandoff(input: {
     const clipped = entry.body.length > ENTRY_MAX_CHARS;
     // Preserve both the start and latest direction in exceptionally long messages.
     const body = clipped ? `${entry.body.slice(0, 2_900)}\n[content omitted]\n${entry.body.slice(-900)}` : entry.body;
-    const { id, ...modelEntry } = withoutModelHiddenRunIds(entry);
+    const { id, ...modelEntry } = modelFacingObject(entry);
     const retrievable = entry.kind !== "run_summary" && entry.kind !== "agent_reply";
-    const bounded = { ...(retrievable ? { id } : {}), ...modelEntry, body, truncated: entry.truncated === true || clipped };
-    entries.push(bounded);
-    truncated ||= bounded.truncated;
+    const entryTruncated = entry.truncated === true || clipped;
+    entries.push({ ...(retrievable ? { id } : {}), ...modelEntry, body, truncated: entryTruncated });
+    truncated ||= entryTruncated;
     // Leave space for the final omission count, including multi-byte Unicode.
     if (Buffer.byteLength(render(), "utf8") > NATIVE_HANDOFF_MAX_BYTES - 128) {
       entries.pop();

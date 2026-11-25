@@ -12,7 +12,7 @@ const modelFacingHistorySources = [
 ];
 
 describe("model-facing history run ids", () => {
-  it("decides every run-id field in the sources that feed model-facing history", () => {
+  it("decides every run-id field in the sources that feed the continuation and fresh-session history", () => {
     const names = new Set(modelFacingHistorySources.flatMap((source) =>
       readFileSync(new URL(source, import.meta.url), "utf8").match(/\b(?:runId|[a-z][A-Za-z]*RunId)\b/g) ?? []));
     expect([...names].filter((name) => !MODEL_HIDDEN_RUN_ID_KEYS.has(name)).sort()).toEqual([]);
