@@ -48,6 +48,18 @@ describe("PluginSkills", () => {
     await view.unmount();
   });
 
+  it("ignores a failed read that this plugin does not use", async () => {
+    api.catalog.mockRejectedValue(new Error("boom"));
+    api.installed.mockRejectedValue(new Error("boom"));
+    const github = await render("github", []);
+    expect(github.host.textContent).toContain("Skills");
+    await github.unmount();
+    api.published.mockResolvedValue([]);
+    const linear = await render("linear", ["connection-1"]);
+    expect(linear.host.textContent).toBe("");
+    await linear.unmount();
+  });
+
   it("does not offer Add skill while the installed list failed to load", async () => {
     api.catalog.mockResolvedValue([{ id: "paperclipai:bundled:software-development:github-pr-workflow", key: "github-pr-workflow", name: "github-pr-workflow", description: "Prepare a pull request." }]);
     api.installed.mockRejectedValue(new Error("boom"));

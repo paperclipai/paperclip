@@ -83,7 +83,11 @@ export function PluginSkills({
   const count = (builtIn ? 1 : 0) + published.length + catalog.length;
   // A failed read is not an empty result: say so and offer a retry, and never
   // show a skill as addable while its installed state is unknown.
-  const failed = [publishedQuery, catalogQuery, installedQuery].filter((query) => query.isError);
+  // Only reads this plugin actually uses count: a disabled query can still hold another plugin's cached error.
+  const failed = [
+    ...(connectionIds.length > 0 ? [publishedQuery] : []),
+    ...(catalogIds.length > 0 ? [catalogQuery, installedQuery] : []),
+  ].filter((query) => query.isError);
   if (count === 0 && failed.length === 0) return null;
   const installedKnown = installedQuery.isSuccess;
 

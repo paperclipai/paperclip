@@ -4,6 +4,7 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 import type { ToolCatalogEntry, ToolConnection } from "@paperclipai/shared";
 import { toolsApi } from "@/api/tools";
 import { describeError } from "@/api/errors";
+import { QueryErrorState } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -162,15 +163,19 @@ function ConnectionPermissions({ companyId, connection }: { companyId: string; c
   const enabledIds = draft?.enabled ?? savedEnabled;
   const askFirstIds = draft?.askFirst ?? savedAskFirst;
 
-  const loadError = catalogQuery.error ?? profilesQuery.error ?? policiesQuery.error ?? installsQuery.error;
+  const loadError = catalogQuery.error ?? profilesQuery.error ?? policiesQuery.error ?? installsQuery.error ?? grantsQuery.error;
   if (loadError) {
+    const queries = [catalogQuery, profilesQuery, policiesQuery, installsQuery, grantsQuery];
     return (
-      <p role="alert" className={NOTE}>
-        Couldn’t load this account’s actions. {describeError(loadError).body}
-      </p>
+      <QueryErrorState
+        error={loadError}
+        action="load this account’s actions"
+        onRetry={() => queries.filter((query) => query.isError).forEach((query) => void query.refetch())}
+        retrying={queries.some((query) => query.isError && query.isFetching)}
+      />
     );
   }
-  const loaded = catalogQuery.isSuccess && profilesQuery.isSuccess && policiesQuery.isSuccess && installsQuery.isSuccess;
+  const loaded = catalogQuery.isSuccess && profilesQuery.isSuccess && policiesQuery.isSuccess && installsQuery.isSuccess && grantsQuery.isSuccess;
   if (!loaded) return <p className={NOTE}>Loading actions…</p>;
   if (reads.length + writes.length === 0) return <p className={NOTE}>This account hasn’t listed any actions yet.</p>;
 
