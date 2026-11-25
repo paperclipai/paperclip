@@ -13,7 +13,8 @@ export type LocalBrowserLoginState = {
   outcome?: "success" | "failure";
   error?: string;
   submitCode?: (code: string) => void;
-  abort: () => void;
+  submitRedirect?: (rawRedirectUrl: string) => Promise<void>;
+  abort: () => void | Promise<void>;
 };
 
 // Node has no built-in PTY API. Python's standard-library pty module supplies
