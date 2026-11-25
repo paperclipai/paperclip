@@ -1,9 +1,10 @@
 // Simulate provider outcomes inside the isolated local inbox dev database.
 import { readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { requestAgentHireInTransaction } from "../src/services/agent-lifecycle.js";
 import { and, eq } from "drizzle-orm";
 import { agents, agentRuntimeState, approvals, closeRegisteredClients, companies, companyMemberships, createDb, getPostgresDataDirectory,
-  heartbeatRunEvents, heartbeatRuns, inboxDismissals, issueRecoveryActions, issues } from "@paperclipai/db";
+  type Db, heartbeatRunEvents, heartbeatRuns, inboxDismissals, issueRecoveryActions, issues } from "@paperclipai/db";
 
 const phase = process.argv[2] ?? "reset";
 const chainPhases = ["chains", "chains-repeat", "chains-exhausted", "chains-recovered"];
@@ -20,6 +21,17 @@ const userId = "local-board";
 const titles = ["Review the launch checklist", "Draft release notes", "Check help links", "Prepare the handoff", "Summarize test results"];
 try {
   await db.transaction(async tx => {
+    async function ensurePausedAgent(ownerId: string, agentId: string, name: string) {
+      const [existing] = await tx.select({ companyId: agents.companyId }).from(agents).where(eq(agents.id, agentId));
+      if (existing) {
+        if (existing.companyId !== ownerId) throw new Error("Fixture agent belongs to another company");
+        return;
+      }
+      await requestAgentHireInTransaction(tx as unknown as Db, [], ownerId, {
+        id: agentId, name, status: "paused", adapterType: "process", adapterConfig: { command: "echo" },
+        runtimeConfig: { heartbeat: { enabled: false } },
+      }, { createdByUserId: userId });
+    }
     if (chainPhases.includes(phase)) {
       const demoId = id(1000);
       const [demo] = await tx.select().from(companies).where(eq(companies.id, demoId));
@@ -30,8 +42,7 @@ try {
       await tx.insert(companyMemberships).values({ companyId: demoId, principalType: "user", principalId: userId,
         membershipRole: "owner" }).onConflictDoNothing();
       const agentId = id(1001);
-      await tx.insert(agents).values({ id: agentId, companyId: demoId, name: "Reviewer", status: "paused",
-        runtimeConfig: { heartbeat: { enabled: false } } }).onConflictDoNothing();
+      await ensurePausedAgent(demoId, agentId, "Reviewer");
       if (phase === "chains") await tx.delete(inboxDismissals).where(and(eq(inboxDismissals.companyId, demoId), eq(inboxDismissals.userId, userId)));
       for (let n = 1; n <= 3; n++) {
         const issueId = id(1010 + n);
@@ -86,8 +97,7 @@ try {
       const manual = phase === "one-left" && n === 4;
       const resumed = recovered && n === 1;
       const taskStatus = resumed ? "in_progress" : recovered ? "done" : "blocked";
-      await tx.insert(agents).values({ id: agentId, companyId, name: n % 2 ? "Editor" : "Reviewer", status: "paused",
-        runtimeConfig: { heartbeat: { enabled: false } } }).onConflictDoNothing();
+      await ensurePausedAgent(companyId, agentId, n % 2 ? "Editor" : "Reviewer");
       await tx.insert(issues).values({ id: issueId, companyId, issueNumber:n, identifier:`IBX-${n}`, title: titles[n-1]!,
         createdByUserId: userId, responsibleUserId: userId, assigneeAgentId: agentId, status: taskStatus })
         .onConflictDoUpdate({ target: issues.id, set: { status: taskStatus, hiddenAt: null, updatedAt: now } });
@@ -123,7 +133,9 @@ try {
       // The agent status and its last failed run describe the same incident.
       const agentId = id(10);
       const error = "Five-hour usage limit reached";
-      await tx.update(agents).set({ status: "error", errorReason: error }).where(and(eq(agents.companyId,companyId),eq(agents.id,agentId)));
+      await tx.update(agents).set({ status: "error", errorReason: error }).where(and(
+        eq(agents.companyId, companyId), eq(agents.id, agentId), eq(agents.lifecycleState, "ready"),
+      ));
       await tx.insert(agentRuntimeState).values({ agentId, companyId, adapterType:"process", lastRunId:id(353),
         lastRunStatus:"failed", lastError:error }).onConflictDoUpdate({target:agentRuntimeState.agentId,
         set:{lastRunId:id(353),lastRunStatus:"failed",lastError:error}});
