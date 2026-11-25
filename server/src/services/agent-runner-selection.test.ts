@@ -18,7 +18,7 @@ vi.mock("./environment-config.js", async () => ({
 }));
 vi.mock("./plugin-registry.js", () => ({ pluginRegistryService: () => ({ getByKey: state.pluginByKey }) }));
 vi.mock("@paperclipai/adapter-utils/ssh", () => ({ runSshCommand: state.ssh }));
-import { AGENT_RUNNER_SSH_PLATFORM_COMMAND, agentRunnerAvailability, resolveAgentRunnerTaskDriverForCompany, resolveAgentRunnerTargetForCompany, resolveNewAgentRunner, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
+import { AGENT_RUNNER_SSH_PLATFORM_COMMAND, agentRunnerAvailability, assertRunnerTaskEnvironmentSupportsHarness, resolveAgentRunnerTaskDriverForCompany, resolveAgentRunnerTargetForCompany, resolveNewAgentRunner, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 import { buildCodexAcpConfig, resolveCodexExecutionEngine } from "@paperclipai/adapter-codex-local/server";
 import { secretService } from "./secrets.js";
 import * as localPlatform from "../lib/agent-runner-platform.js";
@@ -778,6 +778,9 @@ describe("Runner-only plugin environments", () => {
     expect(target).toEqual({ driver: "plugin", runnerTasks: true, supportedAdapters: ["claude_local", "copilot_runtime"] });
     expect(agentRunnerAvailability("claude_local", target)).toEqual({ supportedRunners: ["paperclip"], defaultRunner: "paperclip" });
     expect(agentRunnerAvailability("grok_local", target)).toEqual({ supportedRunners: [], defaultRunner: "legacy" });
+    // The wrapper stays offered for its listed choices, such as Copilot, and only an empty list removes it.
+    expect(agentRunnerAvailability("paperclip_runner", { ...target, supportedAdapters: ["copilot_runtime"] }).supportedRunners).not.toEqual([]);
+    expect(agentRunnerAvailability("paperclip_runner", { ...target, supportedAdapters: [] })).toEqual({ supportedRunners: [], defaultRunner: "legacy" });
     const copilot = { provider: "acpx", acpxAgent: "copilot", model: "gpt-5" };
     await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "paperclip_runner", adapterConfig: copilot, defaultEnvironmentId: "computer" }))
       .resolves.toMatchObject({ adapterType: "paperclip_runner" });
@@ -810,6 +813,15 @@ describe("Runner-only plugin environments", () => {
     workers.getWorker.mockReturnValue(undefined);
     expect(await resolveAgentRunnerTargetForCompany({} as never, "company", "computer", undefined, workers))
       .toMatchObject({ supportedAdapters: ["claude_local", "codex_local"] });
+  });
+  it("saves a Cursor Cloud agent whose inherited default environment lists other adapters", async () => {
+    state.pluginByKey.mockResolvedValue(plugin({ supportsTasks: true, supportsLoginPty: true, creationOperationVersion: 1,
+      supportedAdapters: ["claude_local"] }));
+    state.settings = { defaultEnvironmentId: "computer" };
+    await expect(assertRunnerTaskEnvironmentSupportsHarness({} as never, "company", { adapterType: "paperclip_runner",
+      adapterConfig: { provider: "cursor_cloud" }, defaultEnvironmentId: null })).resolves.toBeUndefined();
+    await expect(assertRunnerTaskEnvironmentSupportsHarness({} as never, "company", { adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex" }, defaultEnvironmentId: null })).rejects.toMatchObject({ details: { harness: "codex_local" } });
   });
   it("checks no harness against a driver that predates the list", async () => {
     await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "paperclip_runner",

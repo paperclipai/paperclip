@@ -67,7 +67,10 @@ export function agentRunnerAvailability(harness: string, target: RunnerTarget = 
       defaultRunner: legacy || !supported ? "legacy" : "paperclip" };
   }
   if (target.driver === "unavailable") return { supportedRunners: [], defaultRunner: "legacy" };
-  if (target.runnerTasks && target.supportedAdapters && !target.supportedAdapters.includes(harness)) {
+  // The paperclip_runner wrapper carries the ACPX choices that have no adapter
+  // of their own, such as Copilot. Each choice checks the list itself.
+  if (target.runnerTasks && target.supportedAdapters && (harness === "paperclip_runner"
+    ? target.supportedAdapters.length === 0 : !target.supportedAdapters.includes(harness))) {
     return { supportedRunners: [], defaultRunner: "legacy" };
   }
   if (target.runnerTasks || target.managedCloudImage) {
@@ -392,6 +395,9 @@ export async function assertRunnerTaskEnvironmentSupportsHarness(db: Db, company
   pluginWorkers?: PluginRunnerTaskWorkers;
 }) {
   if (input.adapterType !== "paperclip_runner") return;
+  const harness = agentHarnessName(input.adapterType, input.adapterConfig ?? {});
+  // Cursor Cloud runs through its provider API placement, never on the environment.
+  if (harness === "cursor_cloud") return;
   // Read only the saved environment. Forced execution modes run elsewhere, and
   // their own environment resolution stays with the run.
   const { instanceSettingsService } = await import("./instance-settings.js");
@@ -402,7 +408,6 @@ export async function assertRunnerTaskEnvironmentSupportsHarness(db: Db, company
   const environment = environmentId ? await environmentService(db).getById(environmentId) : null;
   if (environment?.driver !== "plugin") return;
   const driver = await pluginEnvironmentRunnerTaskDriver(db, environment, input.pluginWorkers);
-  const harness = agentHarnessName(input.adapterType, input.adapterConfig ?? {});
   if (driver?.supportedAdapters && !driver.supportedAdapters.includes(harness)) {
     throw unsupportedHarness(harness);
   }

@@ -88,12 +88,14 @@ export function AgentBasicsDialog({
   const adaptersView = useQueryView(adaptersQuery);
   const adapters = adaptersView.data;
   const nativeRunner = adapters?.find(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled && adapter.supportedRunners?.length !== 0);
-  const copilotAvailable = (!cloud || harnessPolicy.isCloudRunnerProviderAllowed("copilot")) && Boolean(nativeRunner) && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "copilot" && profile.qualified);
-  const kimiAvailable = (!cloud || harnessPolicy.isCloudRunnerProviderAllowed("kimi")) && Boolean(nativeRunner) && experimental.data?.enableNativeRunner === true
+  // A Runner task driver that lists its adapters offers only those wrapper choices.
+  const wrapperSupports = (harness: string) => Boolean(nativeRunner) && (!nativeRunner?.supportedAdapters || nativeRunner.supportedAdapters.includes(harness));
+  const copilotAvailable = (!cloud || harnessPolicy.isCloudRunnerProviderAllowed("copilot")) && wrapperSupports("copilot_runtime") && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "copilot" && profile.qualified);
+  const kimiAvailable = (!cloud || harnessPolicy.isCloudRunnerProviderAllowed("kimi")) && wrapperSupports("kimi_local") && experimental.data?.enableNativeRunner === true
     && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "kimi" && profile.qualified);
   const antigravityQualified = PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "antigravity" && profile.qualified);
   const antigravityCandidate = nativeRunner?.candidateHarnesses?.some(candidate => candidate.agent === "antigravity");
-  const antigravityAvailable = (!cloud || harnessPolicy.isCloudRunnerProviderAllowed("antigravity")) && Boolean(nativeRunner);
+  const antigravityAvailable = (!cloud || harnessPolicy.isCloudRunnerProviderAllowed("antigravity")) && wrapperSupports("antigravity_runtime");
   const choices = [...(adapters ?? []).filter(
     (adapter) =>
       adapter.loaded &&
