@@ -1,9 +1,11 @@
+import { attachProviderRetryChains, groupProviderLimits, recoveredProviderRuns, scheduledProviderWaits, providerHoldRuns, providerLimitForHold } from "./attention-provider-limits.js";
 import { recoveryActionAttentionCondition, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, loadNewestSettledConfirmationAt, readRunIssueId, listFailedRunsWithNewerRun, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
 import { and, asc, desc, eq, inArray, isNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agentRuntimeState,
   agents,
   approvals,
   assets,
@@ -1358,7 +1360,7 @@ export function resolveAttentionAudience(
 /** Whether a resolved audience belongs in the requested view (PAP-749 plan §1, Rule 3). */
 export function audienceMatchesView(
   audience: AttentionAudience,
-  view: AttentionFeedView,
+  view: Exclude<AttentionFeedView, "waiting">,
   userId: string | null | undefined,
 ): boolean {
   switch (view) {
@@ -2105,19 +2107,36 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           recoveryActionAttentionCondition(),
         ))
         .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id));
-      const [recoveryIssueMap, recoveryImageMap] = await Promise.all([
+      const [recoveryIssueMap, recoveryImageMap, holdRuns, scheduled] = await Promise.all([
         loadIssues(recoveryRows.flatMap((row) => [row.sourceIssueId, row.recoveryIssueId])),
         loadImages(db, companyId, recoveryRows.map((row) => row.sourceIssueId), readCondition),
+        providerHoldRuns(db, companyId, recoveryRows.flatMap(row =>
+          row.cause === "native_provider_usage_limit" && typeof row.evidence?.runId === "string"
+          && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(row.evidence.runId) ? [row.evidence.runId] : [])),
+        scheduledProviderWaits(db, companyId),
       ]);
+      const scheduledByRun = new Map(scheduled.map(run => [run.id, run.limit]));
 
       for (const recovery of recoveryRows) {
         const sourceIssue = recoveryIssueMap.get(recovery.sourceIssueId) ?? null;
         if (!sourceIssue) continue;
+        const isProviderLimit = recovery.cause === "native_provider_usage_limit";
+        if (isProviderLimit && ["done", "cancelled"].includes(sourceIssue.status)) continue;
+        const run = isProviderLimit ? holdRuns.get(String(recovery.evidence?.runId)) : undefined;
+        if (run?.taskId === sourceIssue.id && run.resumed) continue;
+        const providerLimit = run?.taskId === sourceIssue.id
+          ? providerLimitForHold(run, recovery.evidence, recovery.nextAction) : undefined;
+        const queuedRetry = run && scheduledByRun.get(run.runId);
+        if (providerLimit && queuedRetry) {
+          providerLimit.state = queuedRetry.state;
+          providerLimit.retryAt = queuedRetry.retryAt;
+        }
         const recoveryIssue = recovery.recoveryIssueId ? recoveryIssueMap.get(recovery.recoveryIssueId) ?? null : null;
         const dedupKey = `recovery:${recovery.kind}:${recovery.sourceIssueId}:${recovery.cause}:${recovery.fingerprint}`;
         add(createItem({
           companyId,
           sourceKind: "recovery_action",
+          providerLimit,
           subject: {
             kind: "recovery_action",
             id: recovery.id,
@@ -2158,7 +2177,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }), {
           issueId: recovery.sourceIssueId,
           ownerUserId: recovery.ownerType === "user" ? recovery.ownerUserId : null,
-          companyScoped: recovery.ownerType === "board",
+          companyScoped: recovery.ownerType === "board" && !providerLimit,
         }, {
           // Escalation and a new next action are important; retry attempts
           // that only move `updatedAt` are not.
@@ -2448,8 +2467,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           : null);
       }
 
-      const failedRows = await listAttentionExhaustedRuns(db, companyId);
-      const failedIssueIds = failedRows.map((row) => readRunIssueId(row.contextSnapshot));
+      const exhausted = await listAttentionExhaustedRuns(db, companyId);
+      const failedRows = [...exhausted, ...scheduled];
+      const failedIssueIds = failedRows.map((row) => row.boundTaskId ?? readRunIssueId(row.contextSnapshot));
       const [failedIssueMap, failedImageMap, failedRunsWithNewerRun] = await Promise.all([
         loadIssues(failedIssueIds),
         loadImages(db, companyId, failedIssueIds, readCondition),
@@ -2461,15 +2481,21 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }))),
       ]);
       for (const run of failedRows) {
-        const issueId = readRunIssueId(run.contextSnapshot);
-        if (failedRunsWithNewerRun.has(run.id)) continue;
+        const issueId = run.boundTaskId ?? readRunIssueId(run.contextSnapshot);
+        const scheduledLimit = scheduledByRun.get(run.id);
+        if (!scheduledLimit && (failedRunsWithNewerRun.has(run.id) || ("providerResumed" in run && run.providerLimited && run.providerResumed))) continue;
 
         const issue = issueId ? failedIssueMap.get(issueId) ?? null : null;
-        if (issueId && !issue) continue;
+        if (issueId && (!issue || ["done", "cancelled"].includes(issue.status))) continue;
+        if (holdRuns.has(run.id) || ("settledProviderHold" in run && run.settledProviderHold)) continue;
+        const providerLimit = scheduledLimit ?? ("providerRetryAt" in run && issueId && run.providerLimited
+          ? providerLimitForHold({ runId: run.id, agentId: run.agentId, agentName: run.agentName, account: run.account, taskId: issueId },
+            { providerLimitResetAt: run.providerRetryAt }, "") : undefined);
         const dedupKey = `run:${run.id}`;
         add(createItem({
           companyId,
           sourceKind: "failed_run",
+          providerLimit,
           subject: {
             kind: "run",
             id: run.id,
@@ -2516,12 +2542,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             failureReasonExcerpt: excerpt((run.error ? withoutSqlStatementText(run.error) : null) ?? run.exhaustionMessage ?? run.errorCode),
             images: issueImages(failedImageMap, issueId),
           },
-        }), { issueId, companyScoped: true }, {
+        }), { issueId, companyScoped: !providerLimit }, {
           // Each failed run is its own card; nothing about it changes later.
           content: null,
           since: run.finishedAt ?? run.updatedAt ?? run.createdAt,
           // Rule 11: a failed run joins the card for the task it blocks, if any.
-        }, issueId ? { key: `blocked:${issueId}`, anchor: false } : null);
+        }, issueId && !providerLimit ? { key: `blocked:${issueId}`, anchor: false } : null);
       }
 
       // A count reads the open incidents of the budget overview without the
@@ -2604,14 +2630,23 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           role: agents.role,
           status: agents.status,
           errorReason: agents.errorReason,
+          lastRunId: agentRuntimeState.lastRunId,
+          lastError: agentRuntimeState.lastError,
           createdAt: agents.createdAt,
           updatedAt: agents.updatedAt,
         })
         .from(agents)
+        .leftJoin(agentRuntimeState, and(eq(agentRuntimeState.agentId, agents.id), eq(agentRuntimeState.companyId, companyId)))
         .where(and(eq(agents.companyId, companyId), eq(agents.status, ATTENTION_AGENT_ERROR_STATUS)))
         .orderBy(desc(agents.updatedAt), desc(agents.id));
 
+      const knownLimitRuns = new Set(collected.flatMap(item => item.providerLimit ? [item.providerLimit.runId] : []));
+      const unresolvedErrors = erroredAgents.flatMap(agent => agent.lastRunId && !knownLimitRuns.has(agent.lastRunId)
+        ? [agent.lastRunId] : []);
+      for (const run of await recoveredProviderRuns(db, companyId, unresolvedErrors, readCondition)) knownLimitRuns.add(run.id);
       for (const agent of erroredAgents) {
+        if (agent.lastRunId && knownLimitRuns.has(agent.lastRunId) && agent.lastError && agent.errorReason
+          && (agent.errorReason === agent.lastError || agent.errorReason === agent.lastError.slice(0, 499) + "…")) continue;
         const dedupKey = `agent_error:${agent.id}`;
         add(createItem({
           companyId,
@@ -2655,8 +2690,13 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       }
 
+      const providerTasks = new Set(collected.flatMap(item => item.providerLimit && item.relatedIssue ? [item.relatedIssue.id] : []));
       const deduped = new Map<string, AttentionItem>();
       for (const item of collected) {
+        // The active hold already explains this terminal task's stalled path. An
+        // explicit unblock request has its own key and stays independently actionable.
+        if (item.sourceKind === "blocker_attention" && item.dedupKey === `blocker:${item.subject.id}`
+          && providerTasks.has(item.subject.id)) continue;
         const current = deduped.get(item.dedupKey);
         deduped.set(item.dedupKey, current ? betterDuplicate(current, item) : item);
       }
@@ -2710,13 +2750,15 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       // Rule 11: one card for each obligation. Members share one placement, so
       // the fingerprint below reads the obligation's audience.
       assignAttentionObligations(currentItems, obligationHintByDedupKey);
+      const legacyLimitDismissals = await attachProviderRetryChains(db, companyId, currentItems, dismissals);
+      groupProviderLimits(currentItems, legacyLimitDismissals);
       for (const item of currentItems) {
         // A count reads a fingerprint only to compare it with a dismissal.
         if (summaryOnly && !dismissals.has(item.dismissalKey)) continue;
         const change = changeBasisByDedupKey.get(item.dedupKey) ?? { content: null, since: item.createdAt };
         item.changeFingerprint = attentionChangeFingerprint({
-          sourceKind: item.sourceKind,
-          content: change.content,
+          sourceKind: item.providerLimit ? "recovery_action" : item.sourceKind,
+          content: item.providerLimit ? { needsRetry: item.providerLimit.state === "needs_retry" } : change.content,
           forViewer: item.audience.kind === "user" && item.audience.userId != null
             && item.audience.userId === options.userId,
         });
@@ -2749,17 +2791,19 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const enrichedById = new Map(enrichedItems.map((item) => [item.id, item]));
       const obligationLeadOf = (item: AttentionItem) =>
         isObligationEvidence(item) ? enrichedById.get(item.obligationLeadId!) ?? item : item;
+      const automatic = (item: AttentionItem) => Boolean(item.providerLimit && item.providerLimit.state !== "needs_retry");
+      const waitingForViewer = (item: AttentionItem) => hiddenForViewer(item)
+        ? item.dismissal?.kind === "snooze"
+        : automatic(item) && (item.audience.kind !== "user" || item.audience.userId === options.userId);
       const visibleItems = enrichedItems.filter((member) => {
         const item = obligationLeadOf(member);
-        if (view === "archived") {
-          // The person's own Archived view (PAP-749 plan §3): open cards they
-          // archived or snoozed, and nothing else.
+        if (view === "waiting") {
+          if (!waitingForViewer(item)) return false;
+        } else if (view === "archived") {
           if (!hiddenForViewer(item)) return false;
         } else {
-          // `all` (the default) keeps the pre-PAP-749 superset; the other views
-          // partition by resolved audience (PAP-749 plan §1, Rule 3).
           if (view !== "all" && !audienceMatchesView(item.audience, view, options.userId)) return false;
-          if (!includeDismissed && hiddenForViewer(item)) return false;
+          if (!includeDismissed && (hiddenForViewer(item) || automatic(item))) return false;
         }
         if (options.archived === true ? !item.archivedAt : Boolean(item.archivedAt)) return false;
         if (!includeDismissed && item.snoozedUntil && timestamp(item.snoozedUntil) > now) return false;
@@ -2778,22 +2822,29 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       // three audience views and Everyone skip the cards this person archived
       // or snoozed; the Archived tab counts exactly those (plan §3). Only For
       // you is the badge. Each obligation counts once, as its lead (Rule 11).
+      let waitingCount = 0;
+      let nextSnoozeAt: string | null = null;
       const viewCounts: AttentionViewCounts = { mine: 0, unassigned: 0, company: 0, archived: 0, all: 0 };
       for (const item of enrichedItems) {
         if (obligationLeadOf(item) !== item) continue;
         if (item.archivedAt) continue;
         if (item.snoozedUntil && timestamp(item.snoozedUntil) > now) continue;
+        if (waitingForViewer(item)) waitingCount++;
         if (hiddenForViewer(item)) {
           viewCounts.archived += 1;
+          const until = item.dismissal?.snoozedUntil;
+          if (until && (!nextSnoozeAt || until < nextSnoozeAt)) nextSnoozeAt = until;
           continue;
         }
+        if (automatic(item)) continue;
         for (const countedView of ATTENTION_PERSONAL_VIEWS) {
           if (countedView === "archived") continue;
           if (audienceMatchesView(item.audience, countedView, options.userId)) viewCounts[countedView] += 1;
         }
       }
 
-      const summary: AttentionSummary = { companyId, generatedAt: new Date().toISOString(), totalCount: visibleItems.length, deskBadgeCount: viewCounts.mine, viewCounts, countsBySourceKind };
+      const waiting = { ...(waitingCount ? { waitingCount } : {}), ...(nextSnoozeAt ? { nextSnoozeAt } : {}) };
+      const summary: AttentionSummary = { companyId, ...waiting, generatedAt: new Date().toISOString(), totalCount: visibleItems.length, deskBadgeCount: viewCounts.mine, viewCounts, countsBySourceKind };
       if (summaryOnly) return { ...summary, nextCursor: null, items: visibleItems };
 
       const sort = options.sort ?? "activity";
@@ -2871,6 +2922,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         companyId,
         generatedAt: new Date().toISOString(),
         totalCount: rankedItems.length,
+        ...waiting,
         // The badge is the "For you" count. It has no day boundary: an open
         // card stays in it until a person answers it.
         deskBadgeCount: viewCounts.mine,
@@ -3019,7 +3071,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         throw unprocessable("This card cannot be hidden.", { code: "attention_close_mode_unsupported", closeModes: item.closeModes });
       }
       // The version the person saw; the card returns when its content differs.
-      const fingerprint = item.id === requested?.id ? input.fingerprint ?? item.changeFingerprint : item.changeFingerprint;
+      const fingerprint = item.providerLimit || item.id === requested?.id
+        ? input.fingerprint ?? item.changeFingerprint : item.changeFingerprint;
       const dismissals = inboxDismissalService(db);
       const dismissal = input.mode === "snooze"
         ? await dismissals.snooze(companyId, input.userId, item.dismissalKey, new Date(input.until!), new Date(), fingerprint)

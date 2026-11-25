@@ -9,6 +9,7 @@ import {
 } from "@paperclipai/db";
 import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
 import { HttpError } from "../../errors.js";
+import { persistActivity, publishActivity } from "../activity-log.js";
 import { logger } from "../../middleware/logger.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
@@ -165,11 +166,20 @@ type Outcome =
   | { requested: false; reason: string };
 
 async function settle(db: Db, actionId: string, state: Record<string, unknown>, nextAction?: string) {
-  await db.update(issueRecoveryActions).set({
-    evidence: sql`coalesce(${issueRecoveryActions.evidence}, '{}'::jsonb) || jsonb_build_object('providerLimitResume', ${JSON.stringify(state)}::jsonb)`,
-    ...(nextAction ? { nextAction } : {}),
-    updatedAt: new Date(),
-  }).where(and(eq(issueRecoveryActions.id, actionId), sql`${issueRecoveryActions.evidence}->'providerLimitResume' is null`));
+  const publication = await db.transaction(async tx => {
+    const [changed] = await tx.update(issueRecoveryActions).set({
+      evidence: sql`coalesce(${issueRecoveryActions.evidence}, '{}'::jsonb) || jsonb_build_object('providerLimitResume', ${JSON.stringify(state)}::jsonb)`,
+      ...(nextAction ? { nextAction } : {}),
+      updatedAt: new Date(),
+    }).where(and(eq(issueRecoveryActions.id, actionId), sql`${issueRecoveryActions.evidence}->'providerLimitResume' is null`))
+      .returning({ companyId: issueRecoveryActions.companyId, taskId: issueRecoveryActions.sourceIssueId });
+    if (!changed) return null;
+    const result = await persistActivity(tx as unknown as Db, { companyId: changed.companyId, actorType: "system",
+      actorId: "recovery", action: "issue.provider_limit_retry_settled", entityType: "issue", entityId: changed.taskId,
+      details: { state: state.state, reason: state.reason ?? null } });
+    return result.publication;
+  });
+  if (publication) publishActivity(publication);
 }
 
 /** Why Paperclip did not retry after a reset it announced; the Retry stays.
@@ -220,7 +230,7 @@ export async function requestProviderLimitResumeRetry(db: Db, input: {
     // Retry to the user; it never promised an automatic one.
     await db.update(issueRecoveryActions).set({
       nextAction: providerLimitNextAction({ automatic: false, resetAt: reset.resetAt }),
-      evidence: sql`coalesce(${issueRecoveryActions.evidence}, '{}'::jsonb) || jsonb_build_object('providerLimitResetAt', ${reset.resetAt.toISOString()}::text)`,
+      evidence: sql`coalesce(${issueRecoveryActions.evidence}, '{}'::jsonb) || jsonb_build_object('providerLimitResetAt', ${reset.resetAt.toISOString()}::text, 'providerLimitAutomatic', false)`,
       updatedAt: now,
     }).where(and(eq(issueRecoveryActions.id, action.id), eq(issueRecoveryActions.status, "active")));
     await settle(db, action.id, { state: "not_requested", reason: "reset_beyond_wait", resetAt: reset.resetAt.toISOString(),
@@ -235,7 +245,7 @@ export async function requestProviderLimitResumeRetry(db: Db, input: {
         nextAction: providerLimitNextAction(actorId
           ? { automatic: true, resetAt: reset.resetAt, actorId, estimated: reset.estimated }
           : { automatic: false, resetAt: reset.resetAt, estimated: reset.estimated }),
-        evidence: sql`coalesce(${issueRecoveryActions.evidence}, '{}'::jsonb) || jsonb_build_object('providerLimitResetAt', ${reset.resetAt.toISOString()}::text)`,
+        evidence: sql`coalesce(${issueRecoveryActions.evidence}, '{}'::jsonb) || jsonb_build_object('providerLimitResetAt', ${reset.resetAt.toISOString()}::text, 'providerLimitAutomatic', ${!!actorId}::boolean, 'providerLimitEstimated', ${!!reset.estimated}::boolean)`,
         updatedAt: now,
       }).where(and(eq(issueRecoveryActions.id, action.id), eq(issueRecoveryActions.status, "active")));
     }

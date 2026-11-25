@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
+import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
+import { createProviderFailure } from "../provider-failure.js";
 import { ANTIGRAVITY_CLI_DISTRIBUTION } from "./antigravity-cli-pins.js";
+import { GENERATED_ANTIGRAVITY_SWARM_PROVIDER_MODE, type GeneratedAntigravitySwarmChannel } from "./generated-sidecar-contract.js";
 
 /**
  * Google Antigravity CLI route (`agy acp`), used only for a turn the signed-in
@@ -17,7 +20,7 @@ import { ANTIGRAVITY_CLI_DISTRIBUTION } from "./antigravity-cli-pins.js";
  * - none of those change later in the session;
  * - helpers share the task workspace (`inherit`); `share` and `branch` are refused.
  */
-export const ANTIGRAVITY_SWARM_MODE = "swarm";
+export const ANTIGRAVITY_SWARM_MODE = GENERATED_ANTIGRAVITY_SWARM_PROVIDER_MODE;
 export const ANTIGRAVITY_CLI_AGENT_NAME = "Antigravity ACP Server";
 export const ANTIGRAVITY_CLI_SESSION_MODE = "auto";
 /** Google's stable endpoint; the CLI's default is the daily one. */
@@ -29,16 +32,78 @@ export type AntigravitySwarmErrorCode =
   | "ANTIGRAVITY_SWARM_SIGN_IN_REQUIRED"
   | "ANTIGRAVITY_SWARM_RECEIPT_MISMATCH"
   | "ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE"
-  | "ANTIGRAVITY_SWARM_HELPERS_TIMEOUT";
+  | "ANTIGRAVITY_SWARM_HELPERS_TIMEOUT"
+  /** The swarm turn ended without handing in (no helpers ran, or Paperclip blocked an action). */
+  | "ANTIGRAVITY_SWARM_NO_RESULT";
 
-/** `message` is written for the person who asked for the swarm. */
+const CATEGORY: Record<AntigravitySwarmErrorCode, ProviderFailure["category"]> = {
+  // Each of these needs the person to change something; a plain Retry meets the same refusal.
+  ANTIGRAVITY_SWARM_UNAVAILABLE: "invalid_request",
+  ANTIGRAVITY_SWARM_SIGN_IN_REQUIRED: "authentication",
+  ANTIGRAVITY_SWARM_RECEIPT_MISMATCH: "unknown",
+  ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE: "unknown",
+  ANTIGRAVITY_SWARM_HELPERS_TIMEOUT: "timeout",
+  ANTIGRAVITY_SWARM_NO_RESULT: "unknown",
+};
+
+/**
+ * `message` is written for the person who asked for the swarm. `diagnostic` is
+ * operator evidence (for example the models the CLI offered); it travels as the
+ * sidecar's rejection message, never in the user's provider failure.
+ */
 export class AntigravitySwarmError extends Error {
   readonly retryable = false;
-  constructor(readonly code: AntigravitySwarmErrorCode, message: string) {
+  /** Lets the sidecar hand this plain message to the user instead of a generic open failure. */
+  readonly providerFailure: ProviderFailure | null;
+  readonly diagnostic: string | null;
+  constructor(readonly code: AntigravitySwarmErrorCode, message: string,
+    options: { category?: ProviderFailure["category"]; diagnostic?: string } = {}) {
     super(message);
     this.name = "AntigravitySwarmError";
+    this.diagnostic = options.diagnostic ?? null;
+    // No providerCode: the code travels as the sidecar error code, and people never see it.
+    this.providerFailure = createProviderFailure({ provider: "antigravity", phase: "startup", message,
+      category: options.category ?? CATEGORY[code] });
   }
 }
+
+const LEVEL_NAMES: Record<string, string> = {
+  minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", extra_high: "Extra high", max: "Max",
+};
+
+/** A readable name for a `<family>-<level>` id the CLI did not list (so it has no name of its own). */
+export function antigravitySwarmModelName(id: string): string {
+  const cut = id.lastIndexOf("-");
+  const level = cut > 0 ? LEVEL_NAMES[id.slice(cut + 1)] : undefined;
+  const words: string[] = [];
+  for (const token of (level ? id.slice(0, cut) : id).split("-").filter(Boolean)) {
+    if (/^\d+$/.test(token) && /^\d+(?:\.\d+)*$/.test(words.at(-1) ?? "")) words[words.length - 1] += `.${token}`;
+    else words.push(/^[a-z]/.test(token) ? token[0]!.toUpperCase() + token.slice(1) : token);
+  }
+  const family = words.join(" ");
+  return level ? `${family} (${level})` : family;
+}
+
+/** The models a `session/new` result offers, as `{ id, name }`. */
+function offeredModels(value: Json): Array<{ id: string; name: string }> {
+  const available = record(value.models).availableModels;
+  return Array.isArray(available) ? available.flatMap(entry => {
+    const model = record(entry);
+    return typeof model.modelId === "string" && model.modelId
+      ? [{ id: model.modelId, name: typeof model.name === "string" && model.name.trim() ? model.name.trim() : antigravitySwarmModelName(model.modelId) }] : [];
+  }) : [];
+}
+
+/** The CLI's default family, by its own name, as a suggestion. */
+function defaultFamilyName(value: Json): string | null {
+  const options = record(value).configOptions;
+  const model = Array.isArray(options) ? options.map(record).find(option => option.id === "model") : undefined;
+  const choices = Array.isArray(model?.options) ? model.options.map(record) : [];
+  const current = choices.find(choice => choice.value === model?.currentValue) ?? choices[0];
+  return typeof current?.name === "string" && current.name.trim() ? current.name.trim() : null;
+}
+
+const MAX_DIAGNOSTIC_MODELS = 40;
 
 const mismatch = (detail: string): never => {
   throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_RECEIPT_MISMATCH",
@@ -48,11 +113,14 @@ const mismatch = (detail: string): never => {
 /** What the driver verified in place of the registry server's admission receipt. */
 export interface AntigravitySwarmReceipt {
   agentName: string;
+  /** The pinned CLI version the CLI itself reported in `initialize`. */
   agentVersion: string;
   sessionId: string;
   workspace: string;
   mode: typeof ANTIGRAVITY_CLI_SESSION_MODE;
   model: string;
+  /** The CLI's own name for the confirmed model, for people. */
+  modelName: string;
   modelFamily: string;
   thoughtLevel: string | null;
   instructionDigest: string;
@@ -61,6 +129,8 @@ export interface AntigravitySwarmReceipt {
 
 export interface AntigravitySwarmGuardOptions {
   model: string;
+  /** The Google channel the CLI was launched on; a refusal on `stable` names the fix. */
+  channel?: GeneratedAntigravitySwarmChannel;
   instructions: string;
   workspace: string;
 }
@@ -92,7 +162,7 @@ export function createAntigravitySwarmGuard(options: AntigravitySwarmGuardOption
   const instructionDigest = antigravitySwarmInstructionDigest(options.instructions);
   const state = {
     agentName: "", agentVersion: "", sessionId: "", modeBound: false, modelBound: false,
-    selections: new Map<string, string>(), commands: null as string[] | null, mcpServers: [] as string[],
+    selections: new Map<string, string>(), commands: null as string[] | null, mcpServers: [] as string[], modelName: "",
   };
   const assertStable = (next: Map<string, string>) => {
     for (const [id, value] of next) {
@@ -138,10 +208,21 @@ export function createAntigravitySwarmGuard(options: AntigravitySwarmGuardOption
         throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE",
           "Swarm is not available with this Google connection: helpers can only change files in Antigravity's auto mode, which this sign-in does not offer.");
       }
-      const available = record(value.models).availableModels;
-      if (!Array.isArray(available) || !available.some(entry => record(entry).modelId === model)) {
-        mismatch(`the model ${model} is not offered to this sign-in`);
+      const offered = offeredModels(value);
+      const selected = offered.find(entry => entry.id === model);
+      if (!selected) {
+        // The CLI lists each model as `<family>-<level>`, the same spelling as the agent's
+        // model, so a missing entry means the CLI does not serve it (seen live: Google's
+        // stable endpoint, which this route uses, offers no Gemini 4 Neon).
+        const suggestion = defaultFamilyName(value);
+        const another = `choose another model for this agent${suggestion ? `, such as ${suggestion},` : ""} and send /swarm again`;
+        throw new AntigravitySwarmError("ANTIGRAVITY_SWARM_UNAVAILABLE", options.channel === "stable"
+          ? `Swarm is not available with ${antigravitySwarmModelName(model)} on Google's stable channel, so nothing was changed: an admin can switch swarms to Google's default channel, or ${another}.`
+          : `Swarm is not available with ${antigravitySwarmModelName(model)} yet, so nothing was changed: ${another}.`,
+          { category: "model_unavailable",
+            diagnostic: `The Antigravity CLI offered ${offered.length} models and not ${model}: ${offered.slice(0, MAX_DIAGNOSTIC_MODELS).map(entry => entry.id).join(", ") || "none"}` });
       }
+      state.modelName = selected.name;
       state.sessionId = value.sessionId as string;
       assertStable(antigravitySelections(value));
       return state.sessionId;
@@ -183,7 +264,7 @@ export function createAntigravitySwarmGuard(options: AntigravitySwarmGuardOption
       const family = state.selections.get("model")!;
       return {
         agentName: state.agentName, agentVersion: state.agentVersion, sessionId: state.sessionId,
-        workspace: options.workspace, mode: ANTIGRAVITY_CLI_SESSION_MODE, model, modelFamily: family,
+        workspace: options.workspace, mode: ANTIGRAVITY_CLI_SESSION_MODE, model, modelName: state.modelName, modelFamily: family,
         thoughtLevel: family === model ? null : state.selections.get("thought_level") ?? null,
         instructionDigest, mcpServers: [...state.mcpServers],
       };

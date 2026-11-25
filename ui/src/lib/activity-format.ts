@@ -148,6 +148,7 @@ const ACTIVITY_ROW_VERBS: Record<string, string> = {
   "tool_connection.grant_delegated": "delegated credentials for",
   "tool_connection.grant_delegation_revoked": "revoked credential delegation for",
   "tool_connection.content_deletion_requested": "asked to delete stored content from",
+  "tool_connection.content_deletion_started": "started deleting stored content from",
   "tool_connection.content_deleted": "deleted stored content from",
   "issue.connection_content_deleted": "deleted connected app content from",
   "issue.connection_content_deletion_incomplete": "partly deleted connected app content from",

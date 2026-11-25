@@ -1,4 +1,5 @@
 import { wakeWaitersOfStalledIssues, type BlockerStallWakeup } from "./blocker-stall-wakeups.js";
+import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "../antigravity-swarm-refusal.js";
 import { DEPENDENCY_WAKE_REPEATED_FAILURE_STREAK, readDependencyWakeCircuit } from "./dependency-wake-circuit-breaker.js";
 import { INTERACTION_DELIVERY_DENIED, isInteractionDeliveryDeniedRun } from "../agent-interaction-delivery.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
@@ -619,6 +620,8 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   INTERACTION_DELIVERY_DENIED,
+  // A refused /swarm waits for the user; every automatic attempt would refuse again.
+  ANTIGRAVITY_SWARM_UNAVAILABLE,
   "project_access_denied",
   "native_provider_model_rejected",
   "provider_tool_definition_invalid",

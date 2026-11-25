@@ -17,6 +17,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notific
 import { isPaperclipCloudConnectorStrategy, PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 import { managedConnectorConsentSubject, managedConnectorProfile } from "../oauth/client-settings.js";
 import { oauthConfig } from "../oauth/metadata.js";
+import { deleteGoogleContentWhenAccessEnds } from "./google-content-retention.js";
 
 export const GOOGLE_REVOCATION_FIRST_RETRY_MS = 60_000;
 export const GOOGLE_REVOCATION_MAX_RETRY_MS = 6 * 60 * 60_000;
@@ -322,6 +323,13 @@ export async function revokeGoogleAccessForRemovedInstance(db: Db, removeSecret:
     const all: Array<{ companyId: string; secretId: string; version: number }> = [];
     for (const { companyId } of owners) {
       for (const entry of await queueCompanyGoogleRevocations(tx as unknown as Db, companyId, "instance_removed")) all.push({ companyId, ...entry });
+    }
+    const connections = await tx.select({ id: toolConnections.id, companyId: toolConnections.companyId, config: toolConnections.config })
+      .from(toolConnections)
+      .where(eq(toolConnections.authKind, "oauth"));
+    for (const connection of connections) {
+      if (!isPaperclipCloudConnectorStrategy(oauthConfig(connection).strategy)) continue;
+      await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, connection, "instance_removed");
     }
     return all;
   });

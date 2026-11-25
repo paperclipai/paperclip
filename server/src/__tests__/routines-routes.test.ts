@@ -174,11 +174,16 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(actor: Record<string, unknown>) {
+async function loadRouteModules() {
   // Load the route after its mocks are installed. Concurrent importActual
   // calls through the middleware barrel can cache unmocked dependencies.
   const { errorHandler } = await import("../middleware/error-handler.js");
   const { routineRoutes } = await import("../routes/routines.js");
+  return { errorHandler, routineRoutes };
+}
+
+async function createApp(actor: Record<string, unknown>) {
+  const { errorHandler, routineRoutes } = await loadRouteModules();
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
   app.use((req, _res, next) => {
@@ -203,7 +208,7 @@ describe("routine routes", () => {
     }));
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
@@ -327,6 +332,7 @@ describe("routine routes", () => {
       status: "resolved",
     });
     mockAnnotationService.remapOpenThreadsForRoutineDocument.mockResolvedValue([]);
+    await loadRouteModules();
   });
 
   it("passes project filters to the routine list service", async () => {
