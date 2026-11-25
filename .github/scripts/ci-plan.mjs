@@ -18,9 +18,11 @@ export const HOSTED_SHARD_COUNTS = {
   "ci:e2e": 4,
   "ci:runner-e2e-support": 2,
   "ci:runner-package": 3,
+  "ci:runner-vitest": 1,
 };
 
 const packageLanePattern = /--package-lane=\d+\/\d+/;
+const nativeServerLanePattern = /--native-server=\d+\/\d+/;
 const labelFractionPattern = /\(\d+\/\d+\)/;
 
 export function compactHostedEntries(entries, hostedShardCounts = HOSTED_SHARD_COUNTS) {
@@ -29,14 +31,16 @@ export function compactHostedEntries(entries, hostedShardCounts = HOSTED_SHARD_C
   for (const entry of entries) {
     const isSharded = Number.isInteger(entry.shard_count) && entry.shard_count > 1;
     const isPackageLane = !isSharded && typeof entry.command === "string" && packageLanePattern.test(entry.command);
-    if (!isSharded && !isPackageLane) {
+    const isNativeServerLane = !isSharded && !isPackageLane && typeof entry.command === "string" && nativeServerLanePattern.test(entry.command);
+    if (!isSharded && !isPackageLane && !isNativeServerLane) {
       segments.push({ kind: "single", entry });
       continue;
     }
-    const key = isSharded ? `shard:${entry.task}:${entry.group ?? ""}` : `package-lane:${entry.task}`;
+    const kind = isSharded ? "shard" : isPackageLane ? "package-lane" : "native-server-lane";
+    const key = isSharded ? `shard:${entry.task}:${entry.group ?? ""}` : `${kind}:${entry.task}`;
     let segment = byKey.get(key);
     if (!segment) {
-      segment = { kind: isSharded ? "shard" : "package-lane", task: entry.task, entries: [] };
+      segment = { kind, task: entry.task, entries: [] };
       byKey.set(key, segment);
       segments.push(segment);
     }
@@ -60,9 +64,18 @@ export function compactHostedEntries(entries, hostedShardCounts = HOSTED_SHARD_C
         entry.shard_count = hostedCount;
         if (entry.shard_label) entry.shard_label = `${index + 1}/${hostedCount}`;
         if (entry.group_label) entry.group_label = entry.group_label.replace(labelFractionPattern, `(${index + 1}/${hostedCount})`);
-      } else {
+      } else if (segment.kind === "package-lane") {
         entry.command = entry.command.replace(packageLanePattern, `--package-lane=${index + 1}/${hostedCount}`);
         if (entry.lane_label) entry.lane_label = entry.lane_label.replace(labelFractionPattern, `(${index + 1}/${hostedCount})`);
+      } else {
+        entry.command = hostedCount === 1
+          ? entry.command.replace(nativeServerLanePattern, "--native-server")
+          : entry.command.replace(nativeServerLanePattern, `--native-server=${index + 1}/${hostedCount}`);
+        if (entry.lane_label) {
+          entry.lane_label = hostedCount === 1
+            ? entry.lane_label.replace(/\s*\(\d+\/\d+\)$/, "")
+            : entry.lane_label.replace(labelFractionPattern, `(${index + 1}/${hostedCount})`);
+        }
       }
       compact.push(entry);
     }

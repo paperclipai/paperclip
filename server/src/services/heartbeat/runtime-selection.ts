@@ -781,7 +781,13 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       const museBinding = nativeRuntimeResolution.profile.backend === "muse_external"
         ? await museRunnerBroker(db).snapshot(agent.companyId, agent.id, String(parseObject(agent.adapterConfig).museBindingId ?? "")) : undefined;
       const dotBinding = ["openai_dot_mcp", "grok_bot_mcp"].includes(nativeRuntimeResolution.profile.backend)
-        ? await dotRunnerBroker(db).snapshot(agent.companyId, agent.id, String(parseObject(agent.adapterConfig)[nativeRuntimeResolution.profile.backend === "grok_bot_mcp" ? "externalBindingId" : "dotBindingId"] ?? "")) : undefined;
+        ? await dotRunnerBroker(db).snapshot(
+            agent.companyId,
+            agent.id,
+            String(parseObject(agent.adapterConfig)[nativeRuntimeResolution.profile.backend === "grok_bot_mcp" ? "externalBindingId" : "dotBindingId"] ?? ""),
+            nativeRuntimeResolution.profile.backend === "grok_bot_mcp" ? "grok_bot" : "openai_dot",
+          )
+        : undefined;
       const nativeRuntimeContext = await measureRunPhase("runtime_selection.runtime_context", () => buildNativeRuntimeContext({
         db,
         agent,

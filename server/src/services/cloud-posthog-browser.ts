@@ -54,6 +54,7 @@ export function posthogUiHost(ingestHost: string): string | null {
 export function resolveBrowserAnalyticsConfig(
   env: CloudInstanceEnv = process.env,
   headers: RequestHeaders = {},
+  options?: { cloudTrialInferenceEnabled?: boolean },
 ): BrowserAnalyticsConfig | null {
   const config = resolveBrowserPostHogConfig(env);
   if (!config) return null;
@@ -74,5 +75,9 @@ export function resolveBrowserAnalyticsConfig(
     stackId: config.stackId,
     replayEnabled: config.replayEnabled,
     consentRequired: resolveAnalyticsConsentRequired(env, headers),
+    cloudTrialInferenceEnabled:
+      typeof options?.cloudTrialInferenceEnabled === "boolean"
+        ? options.cloudTrialInferenceEnabled
+        : config.cloudTrialInferenceEnabled,
   };
 }

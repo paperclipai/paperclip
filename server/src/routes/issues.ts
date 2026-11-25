@@ -127,6 +127,7 @@ import {
   checkoutIssueSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
+  documentAnnotationCommentReactionSchema,
   createChildIssueSchema,
   createIssueSchema,
   resolveCreateIssueStatusDefault,
@@ -4824,6 +4825,11 @@ export function issueRoutes(
     };
   }
 
+  function annotationReactionViewer(req: Request) {
+    const actor = getActorInfo(req);
+    return { actorType: actor.actorType, actorId: actor.actorId };
+  }
+
   async function canonicalizePaperclipArtifactMetadata(input: {
     issue: { id: string; companyId: string };
     metadata: Record<string, unknown> | null | undefined;
@@ -8855,6 +8861,7 @@ export function issueRoutes(
     const assigneeAgentFilterRaw = req.query.assigneeAgentId;
     let assigneeAgentId: string | null | undefined;
     const rawUpdatedSince = req.query.updatedSince as string | undefined;
+    const rawUpdatedBefore = req.query.updatedBefore as string | undefined;
 
     if (
       assigneeUserFilterRaw === "me" &&
@@ -8977,6 +8984,15 @@ export function issueRoutes(
       });
       return;
     }
+    if (
+      rawUpdatedBefore !== undefined &&
+      !Number.isFinite(new Date(rawUpdatedBefore).getTime())
+    ) {
+      res.status(400).json({
+        error: "updatedBefore must be a valid ISO 8601 timestamp when provided",
+      });
+      return;
+    }
     const uuidQuery = parseIssueListUuidQueryParams(req.query);
     if (!uuidQuery.ok) {
       res.status(422).json({ error: uuidQuery.error });
@@ -9040,6 +9056,7 @@ export function issueRoutes(
       afterId: req.query.afterId as string | undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
+      updatedBefore: rawUpdatedBefore,
     };
     // readCondition is a Drizzle SQL object with cyclic internal references;
     // actor identity already scopes the coordinator key, so only serializable
@@ -11205,6 +11222,7 @@ export function issueRoutes(
         {
           status: "open",
           includeComments: shouldIncludeDocumentAnnotationComments(req),
+          viewer: annotationReactionViewer(req),
         },
       );
     res.json({ ...doc, annotations });
@@ -11242,6 +11260,7 @@ export function issueRoutes(
       {
         status,
         includeComments: parseBooleanQuery(req.query.includeComments),
+        viewer: annotationReactionViewer(req),
       },
     );
     res.json(threads);
@@ -11361,6 +11380,7 @@ export function issueRoutes(
         issue.id,
         keyParsed.data,
         req.params.threadId as string,
+        annotationReactionViewer(req),
       );
       if (!thread) {
         res.status(404).json({ error: "Annotation thread not found" });
@@ -11504,6 +11524,135 @@ export function issueRoutes(
       });
       res.json(thread);
     },
+  );
+
+  async function setIssueAnnotationCommentReaction(
+    req: Request,
+    res: Response,
+    present: boolean,
+  ) {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      svc.getById(id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    const keyParsed = issueDocumentKeySchema.safeParse(
+      String(req.params.key ?? "")
+        .trim()
+        .toLowerCase(),
+    );
+    if (!keyParsed.success) {
+      res.status(400).json({
+        error: "Invalid document key",
+        details: keyParsed.error.issues,
+      });
+      return;
+    }
+    const reactionParsed = documentAnnotationCommentReactionSchema.safeParse(
+      req.params.reaction,
+    );
+    if (!reactionParsed.success) {
+      res.status(400).json({
+        error: "Invalid reaction",
+        details: reactionParsed.error.issues,
+      });
+      return;
+    }
+
+    const { actor, annotationActor } = annotationActorInput(req);
+    const result = await documentAnnotationsSvc.setCommentReaction({
+      target: { kind: "issue", issueId: issue.id, key: keyParsed.data },
+      threadId: req.params.threadId as string,
+      commentId: req.params.commentId as string,
+      reaction: reactionParsed.data,
+      present,
+      actor: annotationActor,
+    });
+    if (result.changed) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: present
+          ? "issue.document_annotation_comment_reaction_added"
+          : "issue.document_annotation_comment_reaction_removed",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: keyParsed.data,
+          documentKey: keyParsed.data,
+          documentId: result.thread.documentId,
+          threadId: result.thread.id,
+          commentId: result.comment.id,
+          reaction: reactionParsed.data,
+        },
+      });
+    }
+
+    const questionWakeAgentId = result.questionWakeAgentId ?? issue.assigneeAgentId;
+    const chatOwnerAllowed =
+      !issue.conversationAgentId || issue.conversationUserId === actor.actorId;
+    if (
+      present &&
+      result.firstAdd &&
+      !result.questionWakeSuppressed &&
+      reactionParsed.data === "question" &&
+      actor.actorType === "user" &&
+      questionWakeAgentId &&
+      chatOwnerAllowed &&
+      !isClosedIssueStatus(issue.status)
+    ) {
+      await heartbeat.wakeup(questionWakeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: {
+          issueId: issue.id,
+          annotationCommentId: result.comment.id,
+          annotationThreadId: result.thread.id,
+          annotationReaction: "question",
+          mutation: "annotation_reaction",
+        },
+        allowRunCoalescing: false,
+        ...(result.questionWakeRequestId ? { executionWaitRequestId: result.questionWakeRequestId } : {}),
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          annotationCommentId: result.comment.id,
+          annotationThreadId: result.thread.id,
+          annotationReaction: "question",
+          annotationReactionUserId: actor.actorId,
+          source: "issue.document_annotation_reaction",
+          wakeReason: "issue_commented",
+        },
+      }).catch((err: unknown) => {
+        logger.warn(
+          { err, issueId: issue.id, annotationCommentId: result.comment.id },
+          "failed to wake assignee for an annotation question reaction",
+        );
+      });
+    }
+
+    res.json(result.comment);
+  }
+
+  router.put(
+    "/issues/:id/documents/:key/annotations/:threadId/comments/:commentId/reactions/:reaction",
+    async (req, res) => setIssueAnnotationCommentReaction(req, res, true),
+  );
+
+  router.delete(
+    "/issues/:id/documents/:key/annotations/:threadId/comments/:commentId/reactions/:reaction",
+    async (req, res) => setIssueAnnotationCommentReaction(req, res, false),
   );
 
   router.put(
@@ -15852,6 +16001,12 @@ export function issueRoutes(
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            if (agentCommentUpdate && existing.conversationAgentId && existing.conversationAgentId !== actor.agentId) {
+              // Acquire the company privacy-tree lock before assertAgentInteraction
+              // locks the destination conversation row so concurrent peer PATCH and
+              // POST comment requests follow the same global lock order.
+              await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${existing.companyId}`}, 0))`);
+            }
             if (agentCommentUpdate) await assertAgentInteraction(tx, {
               companyId: existing.companyId, actorAgentId: actor.agentId,
               operation: "comment", issueId: id, texts: [commentBody], lock: true,
@@ -19541,8 +19696,8 @@ export function issueRoutes(
           issue.companyId,
           req.body.body,
         ));
-      const reopenRequested = req.body.reopen === true;
-      const resumeRequested = req.body.resume === true;
+      const reopenRequested = req.body.reopen === true && !isConversation(issue);
+      const resumeRequested = req.body.resume === true && !isConversation(issue);
       const interruptRequested = req.body.interrupt === true;
       const isClosed = isClosedIssueStatus(issue.status);
       const isBlocked = issue.status === "blocked";

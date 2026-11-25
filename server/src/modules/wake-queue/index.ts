@@ -4,6 +4,7 @@ import {
   createIssueWakePreflightReader,
   createPostgresIssueWakeAdmission,
   createPostgresWakeQueueAdapter,
+  FreshIssueAdmissionRollbackError,
   type IssueAdmissionDbTransaction,
   type IssueAdmissionRow,
   type IssueAdmissionTarget,
@@ -138,7 +139,9 @@ export function createWakeQueue(db: Db, deps: WakeQueueDeps) {
             if (input.issue.id !== issueId || input.contextSnapshot.issueId !== issueId) {
               throw new Error("wake-queue: admission does not match the locked issue");
             }
-            return admitFresh(input);
+            const run = await admitFresh(input);
+            if (!run && input.explicitContinuationRunId) throw new FreshIssueAdmissionRollbackError();
+            return run;
           }, deferBlockedWake),
         });
       }), effects);

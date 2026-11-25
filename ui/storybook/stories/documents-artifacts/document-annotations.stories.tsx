@@ -107,6 +107,13 @@ function makeThread(
         authorAgentId: "agent-uxdesigner",
         authorUserId: null,
         createdByRunId: "run-1",
+        reactions: [
+          { reaction: "thumbs_up", count: 2, reactedByMe: true, actors: [
+            { actorType: "user", agentId: null, userId: "user-1" },
+            { actorType: "agent", agentId: "agent-uxdesigner", userId: null },
+          ] },
+          { reaction: "question", count: 1, reactedByMe: true, actors: [{ actorType: "user", agentId: null, userId: "user-1" }] },
+        ],
         createdAt: new Date("2026-05-12T10:01:00Z"),
         updatedAt: new Date("2026-05-12T10:01:00Z"),
       },

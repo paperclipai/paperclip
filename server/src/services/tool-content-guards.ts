@@ -1,3 +1,4 @@
+import { containsSigV4PresignedUrl } from "@paperclipai/adapter-utils/command-redaction";
 import type { PromptInjectionModelOutcome, PromptInjectionDetectorMetadata } from "@paperclipai/shared";
 import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes, timingSafeEqual } from "node:crypto";
 import { redactEventPayload, redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
@@ -114,7 +115,14 @@ function containsSensitiveToolArguments(canonicalArguments: string) {
     const value: unknown = JSON.parse(canonicalArguments);
     // Wrapping preserves recursive redaction for root arrays and strings too.
     const redacted = redactEventPayload({ value })?.value;
-    return redactSensitiveText(stableSerialize(redacted)) !== stableSerialize(value);
+    const serialized = stableSerialize(value);
+    // Keep SigV4 presigned URLs classified as sensitive for request identity
+    // hashing and approval encryption so side-effect idempotency keys stay
+    // stable across display-redaction changes and bearer URLs stay encrypted.
+    return (
+      containsSigV4PresignedUrl(serialized) ||
+      redactSensitiveText(stableSerialize(redacted)) !== serialized
+    );
   } catch {
     // Canonical arguments normally come from canonicalToolArguments. Never
     // persist an unparseable caller-supplied string as an unencrypted fallback.

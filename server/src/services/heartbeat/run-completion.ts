@@ -8,7 +8,8 @@ import { PREDECESSOR_RETIREMENT_FALLBACK_KEY, readPredecessorRetirementFallback,
 import { releaseUnchangedFallbackWorkspace } from "./predecessor-retirement-fallback.js";
 import { hasNativeExecutionStartEvidence } from "../native-runtime/native-restart-recovery.js";
 import { isSandboxProviderDiskFullError, NATIVE_SANDBOX_DISK_FULL } from "../native-runtime/native-sandbox-disk-full.js";
-import { withoutSqlStatementText } from "@paperclipai/shared";
+import { CLOUD_TRIAL_EXHAUSTED_ERROR_CODE, withoutSqlStatementText } from "@paperclipai/shared";
+import { isCloudTrialExhaustedError } from "../cloud-trial-inference.js";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
 import { boundOriginalMessage, describeRefusedExactResume, interruptedExactResumeCause } from "../native-runtime/native-exact-resume-failure.js";
 import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
@@ -17,6 +18,9 @@ import { measureRunPhase } from "../execution-preparation-timing.js";
 import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-access-denial.js";
 import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "../antigravity-swarm-refusal.js";
 import { PaperclipRunnerProviderProfileError } from "../native-runtime/provider-profile.js";
+import { NativeRuntimeEligibilityError } from "../native-runtime/runtime-mode.js";
+import { isDotBindingUnavailableReason } from "../dot-runner-broker.js";
+import { McpOAuthError } from "../public-mcp/oauth.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
@@ -29,6 +33,7 @@ import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE, findEnvironmentProviderUnavailab
 import { REPOSITORY_CATALOG_UNAVAILABLE_CODE, findRepositoryCatalogUnavailableError } from "../repository-catalog-unavailable-error.js";
 import { findWorkspaceProviderFailure } from "../workspace-provider-failure.js";
 import { isRunnerRevisionMismatch, RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
+import { readPluginTaskError } from "../environment-task-runtime.js";
 import { isStorageUnavailableError, STORAGE_CREDENTIALS_REJECTED_MESSAGE, STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY, storageUnavailableHeldMessage, storageUnavailableMessage } from "../../storage/storage-unavailable.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
@@ -334,6 +339,41 @@ function isConfigurationIncompleteFailure(
   error: unknown,
 ): error is ConfigurationIncompleteFailure {
   return error instanceof ConfigurationIncompleteFailure;
+}
+
+type DotConfigurationIncompleteReason =
+  | "dot_subscription_expired"
+  | "dot_pairing_required"
+  | "dot_disabled"
+  | "dot_config_invalid";
+
+function dotConfigIncompleteFailure(
+  error: unknown,
+  run: Pick<typeof heartbeatRuns.$inferSelect, "companyId" | "agentId">,
+): ConfigurationIncompleteFailure | null {
+  let reason: DotConfigurationIncompleteReason | null = null;
+  if (error instanceof McpOAuthError && isDotBindingUnavailableReason(error.reason)) {
+    reason = error.reason;
+  } else if (error instanceof PaperclipRunnerProviderProfileError || error instanceof NativeRuntimeEligibilityError) {
+    if (error.code === "paperclip_runner_dot_disabled") {
+      reason = "dot_disabled";
+    } else if (error.code === "paperclip_runner_dot_config_invalid") {
+      reason = error.detailReason === "dot_pairing_required" ? "dot_pairing_required" : "dot_config_invalid";
+    }
+  }
+  if (!reason) return null;
+  const actionUrl = reason === "dot_disabled"
+    ? "/instance/settings/experimental"
+    : `/agents/${run.agentId}/configuration`;
+  return new ConfigurationIncompleteFailure(error instanceof Error ? error.message : "Dot configuration is incomplete.", {
+    configurationIncomplete: {
+      reason,
+      companyId: run.companyId,
+      agentId: run.agentId,
+      actionUrl,
+      fingerprint: `${reason}:${run.agentId}`,
+    },
+  });
 }
 
 export function isConfigurationIncompleteFailedRun(
@@ -1294,7 +1334,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       err,
     )
       ? err
-      : null;
+      : dotConfigIncompleteFailure(err, run);
     const recordedResponsibleUserDenialCode =
       normalizeResponsibleUserDenialCode(
         (await getRun(run.id).catch(() => null))?.errorCode,
@@ -1391,6 +1431,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const stoppedDuringFailure = signal.aborted;
     const stopSnapshot = stoppedDuringFailure ? await getRun(run.id) : null;
     const failureOutcome = stoppedDuringFailure ? "cancelled" : "failed";
+    const pluginTaskError = !stoppedDuringFailure ? readPluginTaskError(err) : null;
     const nativePreDispatchFailure = !stoppedDuringFailure && nativeTerminalFailureCode === null
       ? await nativePreDispatchFailureResult(run.id, nativeDispatchMayHaveStarted) : null;
     const failedRunWrite = await measureRunPhase("completion.terminal_write", () => setRunStatusIfRunning(run.id, failureOutcome, {
@@ -1403,6 +1444,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         resultJson: {
           ...parseObject(stopSnapshot?.resultJson),
           ...(failureCause && !stoppedDuringFailure ? { failureCause } : {}),
+          ...(pluginTaskError ? { pluginTaskError } : {}),
           ...(providerFailure ? { providerFailure: { ...providerFailure,
             message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
           ...(interruptedExactResume ? { nativeExactResumeRefusal: {
@@ -1637,7 +1679,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       ? outerErr
       : null;
     const configurationIncompleteSetupFailure =
-      isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
+      isConfigurationIncompleteFailure(outerErr)
+        ? outerErr
+        : dotConfigIncompleteFailure(outerErr, run);
     const unresolvedBaseRefSetupFailure = isUnresolvedWorkspaceBaseRefError(
       outerErr,
     )
@@ -1696,6 +1740,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const ownedAiSelectionRejection = isOwnedAiConnectionSelectionRejection(
       configurationIncompleteSetupFailure?.resultJson.configurationIncomplete);
     const setupFailureErrorCode =
+      (isCloudTrialExhaustedError(outerErr) ? CLOUD_TRIAL_EXHAUSTED_ERROR_CODE : null) ??
       (controllerLeaseLost && !ownedAiSelectionRejection ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
       (storageUnavailable ? STORAGE_UNAVAILABLE_CODE : null) ??
       remoteWorkspacePreparationTimeout?.code ??

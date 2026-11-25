@@ -287,10 +287,30 @@ jobs:
         if: steps.published.outputs.exists != 'true'
         run: |
           set -euo pipefail
-          sudo apt-get clean || true
-          sudo rm -rf /usr/share/dotnet /usr/share/swift /usr/local/lib/android /usr/local/share/boost \
-            /usr/local/share/powershell /opt/ghc /opt/hostedtoolcache/CodeQL /opt/hostedtoolcache/PyPy /opt/hostedtoolcache/Ruby || true
-          docker system prune -af || true
+          avail_kb="$(df -Pk / | awk 'NR==2 {print $4}')"
+          if [ "${avail_kb:-0}" -ge 52428800 ]; then
+            echo "Root filesystem already has >= 50 GiB free; skipping cleanup."
+            df -h
+            exit 0
+          fi
+          pids=()
+          (sudo apt-get clean || true) & pids+=("$!")
+          (docker system prune -af || true) & pids+=("$!")
+          for dir in \
+            /usr/share/dotnet \
+            /usr/share/swift \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /usr/local/share/powershell \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /opt/hostedtoolcache/PyPy \
+            /opt/hostedtoolcache/Ruby; do
+            (sudo rm -rf "$dir" || true) & pids+=("$!")
+          done
+          for pid in "${pids[@]}"; do
+            wait "$pid" || true
+          done
           df -h
 
       - name: Set up Docker Buildx
@@ -348,10 +368,17 @@ jobs:
         timeout-minutes: 10
         run: |
           set -euo pipefail
+          pids=()
           for variant in full slim; do
             node scripts/runner-image-oci.mjs unpack "$RUNNER_TEMP/runner-image/$variant.oci.tar" \
-              --out "$RUNNER_TEMP/runner-image/$variant"
+              --out "$RUNNER_TEMP/runner-image/$variant" &
+            pids+=("$!")
           done
+          status=0
+          for pid in "${pids[@]}"; do
+            wait "$pid" || status=1
+          done
+          exit "$status"
 
       # Against each unpacked tree, bound to this run: the digest the identity
       # job resolved, this commit and this leg's architecture. Checks every
@@ -365,13 +392,20 @@ jobs:
         timeout-minutes: 10
         run: |
           set -euo pipefail
+          pids=()
           for variant in full slim; do
             node scripts/runner-image-layout.mjs check "$RUNNER_TEMP/runner-image/$variant" \
               --variant "$variant" \
               --expect-inputs-digest "$DIGEST" \
               --expect-source-revision "$GITHUB_SHA" \
-              --expect-architecture "$ARCH"
+              --expect-architecture "$ARCH" &
+            pids+=("$!")
           done
+          status=0
+          for pid in "${pids[@]}"; do
+            wait "$pid" || status=1
+          done
+          exit "$status"
 
       # The full image must be the slim image's layers, as the same blobs,
       # then the transport layers, with nothing else in them. No file may be
@@ -390,16 +424,23 @@ jobs:
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
       # On the slim tree: the daemon is in a layer both variants share, so
-      # one run covers both, and the slim tree is the smaller one to load.
-      # This command has one export, a few small files.
+      # one run covers both. Stage only the daemon binary for the smoke context
+      # (Dockerfile.smoke copies only /paperclip-runnerd) so BuildKit does not
+      # stream the ~1.5 GB provider pack. This command has one export, a few
+      # small files.
       - name: Run the daemon on every consumer base image
         if: steps.published.outputs.exists != 'true'
         timeout-minutes: 20
         run: |
+          set -euo pipefail
+          smoke_context="$RUNNER_TEMP/runner-image/smoke-context"
+          rm -rf "$smoke_context"
+          mkdir -p "$smoke_context"
+          cp -p "$RUNNER_TEMP/runner-image/slim/paperclip-runnerd" "$smoke_context/paperclip-runnerd"
           docker buildx build \
             --file docker/runner-image/Dockerfile.smoke \
             --platform "$PLATFORM" \
-            --build-context "runner-artifacts=$RUNNER_TEMP/runner-image/slim" \
+            --build-context "runner-artifacts=$smoke_context" \
             --output "type=local,dest=$RUNNER_TEMP/runner-image/smoke" \
             docker/runner-image
           ls -l "$RUNNER_TEMP/runner-image/smoke"
