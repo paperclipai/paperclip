@@ -435,7 +435,7 @@ for (const [name, vars, github, expected = "ubuntu-latest"] of reviewPlacementCa
 test("GitHub-hosted PR runs queue at most four jobs per matrix", () => {
   const trusted = readFileSync(new URL("../../workflows/pr-trusted.yml", import.meta.url), "utf8");
   const strategies = trusted.match(/^ {4}strategy:\n(?: {6}.*\n)+/gm) ?? [];
-  assert.equal(strategies.length, 4);
+  assert.equal(strategies.length, 5);
   for (const strategy of strategies) {
     const expression = strategy.match(/^ {6}max-parallel: \$\{\{ (.+) \}\}$/m)?.[1];
     assert.ok(expression, "every PR matrix must bound its GitHub-hosted fan-out");

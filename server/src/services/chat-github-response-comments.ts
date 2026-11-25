@@ -246,7 +246,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
           companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
           agentId: source.endpoint.assignedAgentId!, issueId: source.conversation.issueId!, deliveryId,
           sourceMessageId: source.sourceMessageId, issueStatus: source.issueStatus,
-          deliveryCreatedAt: source.delivery.createdAt,
+          deliveryCreatedAt: source.delivery.createdAt, threadId: source.conversation.externalThreadId,
         });
         if (execution.reply === "unsettled") {
           // An acknowledged request waits for its reply to settle without

@@ -199,13 +199,14 @@ test("repository skill directory links preserve reuse while target edits invalid
   assert.notEqual(snapshot(f.root, f.env).hash, before.hash);
 });
 
-test("local chat selection schedules exactly six single-worker partitions", { timeout: 120_000 }, async t => {
+test("local chat selection schedules affected split chat suites through general-chat", { timeout: 120_000 }, async t => {
   const f = fixture(t);
   f.write("ui/src/leaf.ts", "export const value = 1;\n");
   f.write("vitest.config.mjs", 'export default {test:{projects:["server"]}};');
   f.write("server/vitest.config.mjs", 'export default {test:{name:"@paperclipai/server",include:["src/**/*.test.ts"]}};');
   f.write("server/src/leaf.ts", "export const value = 1;\n");
-  f.write("server/src/__tests__/chat-channels.integration.test.ts", 'import {test,expect} from "vitest"; import {value} from "../leaf"; test("chat selection",()=>expect(value).toBeGreaterThan(0));');
+  f.write("server/src/__tests__/chat-channels/sample.integration.test.ts", 'import {test,expect} from "vitest"; import {value} from "../../leaf"; test("chat selection",()=>expect(value).toBeGreaterThan(0));');
+  f.write("server/src/__tests__/chat-channels/unrelated.integration.test.ts", 'import {test,expect} from "vitest"; test("unrelated chat",()=>expect(1).toBe(1));');
   f.write(".github/ci-task-matrix.json", JSON.stringify({ general_tests: [
     { task: "ci:server", group: "general-server-without-chat" }, { task: "ci:chat", group: "general-chat" },
   ] }));
@@ -214,10 +215,10 @@ test("local chat selection schedules exactly six single-worker partitions", { ti
   f.write("server/src/leaf.ts", "export const value = 2;\n");
   const plan = await planVerification({ root: f.root, env: f.env, diff: comparison(f.root, base) });
   assert.equal(plan.kind, "selected", plan.reason);
-  const shards = plan.jobs.flatMap(job => JSON.parse(execFileSync(process.execPath,
-    [path.join(f.root, "scripts/run-vitest-stable.mjs"), ...job.args, "--dry-run"],
-    { cwd: f.root, env: f.env, encoding: "utf8" })).chatVitestShards);
-  assert.deepEqual(shards, Array.from({ length: 6 }, (_, index) => ({ index, count: 6 })));
+  assert.deepEqual(plan.selectedFiles, ["server/src/__tests__/chat-channels/sample.integration.test.ts"]);
+  assert.deepEqual(plan.manifest.lanes["general-chat"].shards, [
+    { "@paperclipai/server": ["server/src/__tests__/chat-channels/sample.integration.test.ts"] },
+  ]);
 });
 
 for (const [group, task, primary, directory] of [

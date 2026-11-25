@@ -826,11 +826,24 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     const retry = await request(app).post(`/api/issues/${f.issueId}/retry`)
       .send({ idempotencyKey: randomUUID(), observedRunId: f.retryRunId });
     const retryNow = await request(app).post(`/api/issues/${f.issueId}/scheduled-retry/retry-now`).send({});
+    // The banner's Check now starts the same retry, so it needs the same access.
+    const checkNow = await request(app).post(`/api/issues/${f.issueId}/monitor/check-now`).send({});
 
     expect(retry.status, JSON.stringify(retry.body)).toBe(404);
     expect(retryNow.status, JSON.stringify(retryNow.body)).toBe(404);
+    expect(checkNow.status, JSON.stringify(checkNow.body)).toBe(404);
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
     expect(run!.status).toBe("scheduled_retry");
+  });
+
+  it("starts the waiting retry from Check now for a member who can see the task", async () => {
+    const f = await seedIssueWithRetry();
+    const app = createApp(boardActor(f.companyId));
+    const checkNow = await request(app).post(`/api/issues/${f.issueId}/monitor/check-now`).send({});
+    expect(checkNow.status, JSON.stringify(checkNow.body)).toBe(200);
+    expect(checkNow.body).toMatchObject({ ok: true, outcome: "promoted" });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.retryRunId));
+    expect(run!.status).toBe("queued");
   });
 
   it("promotes the existing scheduled retry and treats duplicate clicks as idempotent", async () => {

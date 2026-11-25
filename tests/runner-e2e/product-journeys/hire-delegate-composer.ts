@@ -36,6 +36,18 @@ export async function sendHireHandoffMessage(page: Page, text: string, reference
     await expect(chip).toBeVisible({ timeout: timeout() });
     if (await chip.getAttribute("href") !== token.href) throw new JourneyError("failed", "hire_handoff_mention_mismatch");
     await page.evaluate(() => new Promise<void>(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))));
+    // Mention insertion leaves the caret after one editor-added space. Remove
+    // that space through the normal keyboard path; the next source slice owns
+    // its exact whitespace (including punctuation directly after a mention).
+    const hasInsertedSpace = await editable.evaluate(element => {
+      const selection = element.ownerDocument.getSelection();
+      const node = selection?.anchorNode;
+      return Boolean(selection?.isCollapsed && node?.nodeType === Node.TEXT_NODE
+        && element.contains(node) && selection.anchorOffset > 0
+        && node.textContent?.slice(selection.anchorOffset - 1, selection.anchorOffset) === " ");
+    });
+    if (!hasInsertedSpace) throw new JourneyError("failed", "hire_handoff_caret_mismatch");
+    await editable.press("Backspace");
     offset = token.at + token.markdown.length;
   }
   const suffix = text.slice(offset);

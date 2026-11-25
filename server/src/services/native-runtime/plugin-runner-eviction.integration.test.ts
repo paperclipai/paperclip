@@ -311,7 +311,7 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
       const a = await execute(execution, leaseA); expect(a).toMatchObject({ exitCode: 0, timedOut: false });
       await waitForCondition("automatic release A", () => releases.length === 1);
       expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId)))[0]).toMatchObject({ schemaStatus: "accepted", resultJson: { result: { reportedWorkDisposition: "done" } } });
-      expect(await proof()).toMatchObject({ source: releases[0], taskId: taskA });
+      expect(await proof()).toBeUndefined();
       const providerSessionId = (await supervisor()).snapshot.providerSessionId;
       expect(providerSessionId).toEqual(expect.any(String));
       if (detached) await new Promise(done => setTimeout(done, detachedIdleTimeoutMs + 200));
@@ -401,7 +401,7 @@ describeEmbeddedPostgres("plugin Runner eviction through the Core execution entr
       const runB = await admitNext();
       if (denied || mode === "bare unavailable") return;
       await waitForCondition("automatic release B", () => releases.length === 2);
-      expect(await proof()).toMatchObject({ source: releases[1], taskId: taskB });
+      expect(await proof()).toBeUndefined();
       expect((await supervisor()).snapshot.providerSessionId).toBe(providerSessionId);
       const methods = (await readFile(calls, "utf8")).trim().split(/\r?\n/);
       expect(submissions).toBe(2);
