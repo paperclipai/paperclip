@@ -118,14 +118,19 @@ const nativeRunnerSuites = [
   "server/src/services/native-runtime/native-runner-restart-lease-renewal.integration.test.ts",
   "server/src/services/native-runtime/native-runner-restart-preparation.integration.test.ts",
   "server/src/services/native-runtime/native-runner-restart-checkpoint-cost.integration.test.ts",
-  "server/src/services/native-runtime/native-runner-restart-diskless.integration.test.ts",
+  "server/src/services/native-runtime/native-runner-restart-diskless-direct.integration.test.ts",
+  "server/src/services/native-runtime/native-runner-restart-diskless-prepared-task.integration.test.ts",
   "server/src/services/native-runtime/native-cut-turn-start-retry.integration.test.ts",
   "server/src/services/native-runtime/native-usage-delivery.integration.test.ts",
   "server/src/services/native-runtime/native-warm-checkpoint-ownership.integration.test.ts",
   "server/src/services/native-runtime/native-warm-successor-runner-release.integration.test.ts",
   "server/src/services/native-runtime/plugin-runner-task-warm.integration.test.ts",
-  "server/src/services/native-runtime/plugin-runner-release-resume.integration.test.ts",
-  "server/src/services/native-runtime/plugin-runner-eviction.integration.test.ts",
+  "server/src/services/native-runtime/plugin-runner-release-resume-cached.integration.test.ts",
+  "server/src/services/native-runtime/plugin-runner-release-resume-adopted.integration.test.ts",
+  "server/src/services/native-runtime/plugin-runner-eviction-codex-retired.integration.test.ts",
+  "server/src/services/native-runtime/plugin-runner-eviction-codex-abrupt.integration.test.ts",
+  "server/src/services/native-runtime/plugin-runner-eviction-claude-retired.integration.test.ts",
+  "server/src/services/native-runtime/plugin-runner-eviction-claude-abrupt.integration.test.ts",
 ];
 // In the PR workflow (pr.yml, the caller of pr-trusted.yml — reusable
 // workflows inherit the caller's GITHUB_WORKFLOW), the last Verify Paperclip
