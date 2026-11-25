@@ -3,53 +3,90 @@ import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-const assets = vi.hoisted(() => ({ root: "" }));
-vi.mock("./provider-assets-root.js", () => ({ resolveRunnerProviderAssetsRoot: () => assets.root }));
-import { antigravityNativeDistributionSpec, antigravityRuntimeCachePath } from "./antigravity-installation.js";
+const setup = vi.hoisted(() => ({ assets: "", verify: vi.fn() }));
+vi.mock("./provider-assets-root.js", () => ({ resolveRunnerProviderAssetsRoot: () => setup.assets }));
+vi.mock("./installation-integrity.js", async original => ({
+  ...await original<typeof import("./installation-integrity.js")>(), verifyNativeAcpxInstallation: setup.verify,
+}));
+import { startAntigravityBrowserLogin } from "./antigravity-auth.js";
+import { antigravityNativeDistributionSpec, antigravityProviderPackRoot, antigravityRuntimeCachePath, verifyAntigravityInstallation } from "./antigravity-installation.js";
+import { discoverAntigravityModels } from "./antigravity-models.js";
+import { AntigravityRuntimeUnavailableError } from "./antigravity-runtime-unavailable.js";
 import { ANTIGRAVITY_DISTRIBUTION_PINS } from "./generated-profiles.js";
+import { QUALIFIED_ACPX_PROFILES } from "./qualified-profiles.js";
 
+const PACK_ENV = "PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH";
+const target = `${process.platform}-${process.arch}`;
+const pinned = Object.hasOwn(ANTIGRAVITY_DISTRIBUTION_PINS, target);
 const roots: string[] = [];
-afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => {
+  vi.unstubAllEnvs(); vi.clearAllMocks();
+  await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
+});
 
 async function layout() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "paperclip-antigravity-installation-"))); roots.push(root);
-  assets.root = join(root, "server-vendor", "provider-assets", "antigravity");
+  setup.assets = join(root, "server-vendor", "provider-assets", "antigravity");
   const pack = join(root, "provider-pack");
-  return { root, pack, packed: join(pack, "provider-assets", "antigravity", "linux-x64") };
+  return { root, pack, packed: (key: string) => join(pack, "provider-assets", "antigravity", key) };
 }
 
 describe("Antigravity runtime resolution", () => {
-  it("uses the build-owned provider pack when the server package carries no packaged runtime", async () => {
+  it("uses the deployment's build-owned provider pack when the server package carries no packaged runtime", async () => {
     const { pack, packed } = await layout();
-    await mkdir(packed, { recursive: true });
-    const spec = antigravityNativeDistributionSpec("linux", "x64", { providerPackRoot: pack });
-    expect(spec.distributionRoot).toBe(packed);
-    expect(spec.manifestPath).toBe(join(packed, ".paperclip-antigravity-closure.json"));
+    await mkdir(packed("linux-x64"), { recursive: true });
+    vi.stubEnv(PACK_ENV, ` ${pack}/ `);
+    const spec = antigravityNativeDistributionSpec("linux", "x64");
+    expect(spec.distributionRoot).toBe(packed("linux-x64"));
+    expect(spec.manifestPath).toBe(join(packed("linux-x64"), ".paperclip-antigravity-closure.json"));
     expect(spec.expectedClosureSha256).toBe(ANTIGRAVITY_DISTRIBUTION_PINS["linux-x64"].closureSha256);
   });
 
   it("prefers the packaged runtime over the provider pack", async () => {
     const { pack, packed } = await layout();
-    await mkdir(packed, { recursive: true });
-    await mkdir(join(assets.root, "linux-x64"), { recursive: true });
-    expect(antigravityNativeDistributionSpec("linux", "x64", { providerPackRoot: pack }).distributionRoot).toBe(join(assets.root, "linux-x64"));
+    await mkdir(packed("linux-x64"), { recursive: true });
+    await mkdir(join(setup.assets, "linux-x64"), { recursive: true });
+    vi.stubEnv(PACK_ENV, pack);
+    expect(antigravityNativeDistributionSpec("linux", "x64").distributionRoot).toBe(join(setup.assets, "linux-x64"));
   });
 
-  it("falls back to the account runtime cache when the provider pack has no runtime for this target", async () => {
+  it("falls back to the account runtime cache when no provider pack carries this target", async () => {
     const { pack } = await layout();
     await mkdir(pack, { recursive: true });
     const cache = antigravityRuntimeCachePath(ANTIGRAVITY_DISTRIBUTION_PINS["linux-x64"].closureSha256, "linux", "x64", userInfo().homedir);
-    expect(antigravityNativeDistributionSpec("linux", "x64", { providerPackRoot: pack }).distributionRoot).toBe(cache);
+    vi.stubEnv(PACK_ENV, pack);
+    expect(antigravityNativeDistributionSpec("linux", "x64").distributionRoot).toBe(cache);
+    vi.stubEnv(PACK_ENV, "");
     expect(antigravityNativeDistributionSpec("linux", "x64").distributionRoot).toBe(cache);
   });
 
   it("refuses a provider pack runtime reached through a link or a relative root", async () => {
     const { root, pack } = await layout();
-    const elsewhere = join(root, "elsewhere", "linux-x64");
-    await mkdir(elsewhere, { recursive: true });
+    await mkdir(join(root, "elsewhere", "linux-x64"), { recursive: true });
     await mkdir(join(pack, "provider-assets"), { recursive: true });
     await symlink(join(root, "elsewhere"), join(pack, "provider-assets", "antigravity"));
-    expect(() => antigravityNativeDistributionSpec("linux", "x64", { providerPackRoot: pack })).toThrow(/real directories/);
-    expect(() => antigravityNativeDistributionSpec("linux", "x64", { providerPackRoot: "provider-pack" })).toThrow(/normalized absolute path/);
+    vi.stubEnv(PACK_ENV, pack);
+    expect(() => antigravityNativeDistributionSpec("linux", "x64")).toThrow(/real directories/);
+    expect(() => antigravityProviderPackRoot({ [PACK_ENV]: "provider-pack" })).toThrow(/absolute path/);
+    expect(antigravityProviderPackRoot({})).toBeUndefined();
+  });
+
+  it.runIf(pinned)("binds sign-in, model discovery and installation verification to the same provider pack", async () => {
+    const { root, pack, packed } = await layout();
+    await mkdir(packed(target), { recursive: true });
+    vi.stubEnv(PACK_ENV, pack);
+    const resolved: string[] = [];
+    setup.verify.mockImplementation(async (spec: { distributionRoot: string }) => { resolved.push(spec.distributionRoot); throw new Error("fixture closure absent"); });
+    const home = join(root, "home");
+    await mkdir(home, { mode: 0o700 });
+
+    const onFailure = vi.fn();
+    const login = startAntigravityBrowserLogin(home, { onFailure });
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5_000 });
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith("runtime_unavailable");
+    await expect(discoverAntigravityModels(home)).rejects.toBeInstanceOf(AntigravityRuntimeUnavailableError);
+    await expect(verifyAntigravityInstallation({ ...QUALIFIED_ACPX_PROFILES.antigravity, qualificationModel: "fixture-model", reportedModelId: "fixture-model" }))
+      .rejects.toThrow("fixture closure absent");
+    expect(resolved).toEqual([packed(target), packed(target), packed(target)]);
   });
 });

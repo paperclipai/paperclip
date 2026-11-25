@@ -27,8 +27,16 @@ function realDirectoryExists(path: string, message: string): boolean {
   }
 }
 
+const ANTIGRAVITY_PROVIDER_PACK_ENV = "PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH";
+
+export function antigravityProviderPackRoot(environment: NodeJS.ProcessEnv = process.env): string | undefined {
+  const configured = environment[ANTIGRAVITY_PROVIDER_PACK_ENV]?.trim();
+  if (!configured) return undefined;
+  if (!isAbsolute(configured) || configured.includes("\0")) throw new Error("Antigravity provider pack root must be an absolute path");
+  return resolve(configured);
+}
+
 function providerPackDistribution(pack: string, key: string): string | undefined {
-  if (!isAbsolute(pack) || pack.includes("\0") || resolve(pack) !== pack) throw new Error("Antigravity provider pack root must be a normalized absolute path");
   let directory = pack;
   for (const part of ["", "provider-assets", "antigravity", key]) {
     directory = join(directory, part);
@@ -37,15 +45,15 @@ function providerPackDistribution(pack: string, key: string): string | undefined
   return directory;
 }
 
-export function antigravityNativeDistributionSpec(platform: NodeJS.Platform = process.platform, architecture: string = process.arch,
-  options: { providerPackRoot?: string } = {}): NativeAcpxDistributionInput {
+export function antigravityNativeDistributionSpec(platform: NodeJS.Platform = process.platform, architecture: string = process.arch): NativeAcpxDistributionInput {
   const key = `${platform}-${architecture}`;
   if (!Object.hasOwn(ANTIGRAVITY_DISTRIBUTION_PINS, key)) throw new Error(`Antigravity has no admitted complete runtime closure for ${key}`);
   const pin = ANTIGRAVITY_DISTRIBUTION_PINS[key as keyof typeof ANTIGRAVITY_DISTRIBUTION_PINS];
   const packaged = join(resolveRunnerProviderAssetsRoot(import.meta.url, "antigravity"), key);
   let distributionRoot = packaged;
   if (!realDirectoryExists(packaged, "Antigravity packaged runtime must be a real directory")) {
-    distributionRoot = (options.providerPackRoot === undefined ? undefined : providerPackDistribution(options.providerPackRoot, key))
+    const pack = antigravityProviderPackRoot();
+    distributionRoot = (pack === undefined ? undefined : providerPackDistribution(pack, key))
       ?? antigravityRuntimeCachePath(pin.closureSha256, platform, architecture);
   }
   return { distributionRoot, manifestPath: join(distributionRoot, ".paperclip-antigravity-closure.json"), expectedClosureSha256: pin.closureSha256,

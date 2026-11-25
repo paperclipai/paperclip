@@ -194,9 +194,10 @@ describe("Antigravity setup-only Google authentication", () => {
   it("reports a missing server runtime plainly instead of an unfinished sign-in", async () => {
     const home = await fixture(); const fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
     setup.verify.mockRejectedValueOnce(Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" }));
-    const login = startAntigravityBrowserLogin(home, { providerPackRoot: "/opt/paperclip-runner/provider-pack" });
+    const onFailure = vi.fn();
+    const login = startAntigravityBrowserLogin(home, { onFailure });
     await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5_000 });
-    expect(setup.spec).toHaveBeenCalledWith(process.platform, process.arch, { providerPackRoot: "/opt/paperclip-runner/provider-pack" });
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith("runtime_unavailable");
     expect(login.error).toBe("This server does not have the current Google Antigravity runtime, so Google sign-in cannot start. Use a Google API key instead, or update Paperclip on this server.");
     expect(login.authorizationUrl).toBeUndefined();
     expect(setup.spawn).not.toHaveBeenCalled();
@@ -208,11 +209,43 @@ describe("Antigravity setup-only Google authentication", () => {
     setup.spawn.mockImplementationOnce((_args, options) => {
       const child = spawn(process.execPath, ["-e", "process.exit(1)"], { ...options, detached: true }); children.push(child); return child;
     });
-    const login = startAntigravityBrowserLogin(home);
+    const onFailure = vi.fn();
+    const login = startAntigravityBrowserLogin(home, { onFailure });
     await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5_000 });
     await vi.waitFor(() => expect(setup.close).toHaveBeenCalledOnce(), { timeout: 5_000 });
     expect(login.error).toBe("Google sign-in could not start on this server. Start sign-in again.");
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith("start_failed");
     expect(login.authorizationUrl).toBeUndefined();
+  });
+
+  it("reports a resolver failure as an unavailable runtime", async () => {
+    const home = await fixture(); vi.stubGlobal("fetch", vi.fn());
+    setup.spec.mockImplementationOnce(() => { throw new Error("Antigravity has no admitted complete runtime closure for fixture"); });
+    const onFailure = vi.fn();
+    const login = startAntigravityBrowserLogin(home, { onFailure });
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5_000 });
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith("runtime_unavailable");
+    expect(login.error).toContain("does not have the current Google Antigravity runtime");
+    expect(login.error).not.toContain("Start sign-in again");
+  });
+
+  it("reports a failure after the runtime starts as an incomplete sign-in", async () => {
+    const home = await fixture("error"); vi.stubGlobal("fetch", vi.fn());
+    const onFailure = vi.fn();
+    const login = startAntigravityBrowserLogin(home, { onFailure });
+    await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5_000 });
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith("login_incomplete");
+    expect(login.error).toBe("Google sign-in did not complete. Start sign-in again.");
+  });
+
+  it("reports a cancelled attempt as aborted", async () => {
+    const home = await fixture("blocked"); vi.stubGlobal("fetch", vi.fn());
+    const onFailure = vi.fn();
+    const login = startAntigravityBrowserLogin(home, { onFailure });
+    await vi.waitFor(() => expect(login.authorizationUrl).toBeDefined());
+    await login.abort();
+    expect(onFailure).toHaveBeenCalledExactlyOnceWith("aborted");
+    expect(login.outcome).toBe("failure");
   });
 
   it("requires the pinned OAuth client and token destination and strips unrelated native fields", () => {
