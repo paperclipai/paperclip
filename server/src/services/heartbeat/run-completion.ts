@@ -1348,8 +1348,15 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       : !storageUnavailable ? thrownMessage
         : failureErrorCode === STORAGE_UNAVAILABLE_CODE ? storageUnavailableMessage(err) : storageUnavailableHeldMessage(err);
     const failureCause = GENERIC_RUN_FAILURE_CODES.has(failureErrorCode) ? thrownFailureCause : null;
-    logger.error({ err: identityRedactor.redact({ message: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack : undefined }), runId,
-      errorCode: failureErrorCode, failureCause: thrownFailureCause }, "heartbeat execution failed");
+    const redactedThrownError = () => identityRedactor.redact({
+      message: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+    });
+    // Log the error line only once the terminal write shows that this run
+    // failed. A run that was stopped, or that another path already moved out
+    // of `running`, did not fail, so it gets a warn line instead.
+    const logLiveFailure = (errorCode: string) => logger.error({ err: redactedThrownError(), runId, agentId: agent.id,
+      errorCode, failureCause: thrownFailureCause }, "heartbeat execution failed");
 
     let logSummary: {
       bytes: number | null;
@@ -1383,9 +1390,10 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const failureOutcome = stoppedDuringFailure ? "cancelled" : "failed";
     const nativePreDispatchFailure = !stoppedDuringFailure && nativeTerminalFailureCode === null
       ? await nativePreDispatchFailureResult(run.id, nativeDispatchMayHaveStarted) : null;
+    const writtenErrorCode = stopSnapshot?.errorCode ?? failureErrorCode;
     const failedRunWrite = await measureRunPhase("completion.terminal_write", () => setRunStatusIfRunning(run.id, failureOutcome, {
       error: message,
-      errorCode: stopSnapshot?.errorCode ?? failureErrorCode,
+      errorCode: writtenErrorCode,
       finishedAt: new Date(),
       resultJson: mergeRunStopMetadataForAgent(agent, failureOutcome, {
         errorCode: failureErrorCode,
@@ -1422,7 +1430,18 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       logBytes: logSummary?.bytes,
       logSha256: logSummary?.sha256,
       logCompressed: logSummary?.compressed ?? false,
-    }, { error: err, phase: "execute", secretValues: readFailureReportSecrets() }));
+    }, { error: err, phase: "execute", secretValues: readFailureReportSecrets() })).catch((writeErr: unknown) => {
+      // The write could not tell whether the run was still live.
+      logLiveFailure(writtenErrorCode);
+      throw writeErr;
+    });
+    const ownNativeTerminalFailure = Boolean(nativeTerminalFailureCode) && failedRunWrite.run?.status === "failed";
+    if ((failedRunWrite.updated && failedRunWrite.run?.status === "failed") || (!failedRunWrite.updated && ownNativeTerminalFailure)) {
+      logLiveFailure(failedRunWrite.run?.errorCode ?? writtenErrorCode);
+    } else {
+      logger.warn({ runId, agentId: agent.id, status: failedRunWrite.run?.status ?? null, errorCode: failureErrorCode,
+        failureCause: thrownFailureCause }, "heartbeat adapter failed after the run left running state");
+    }
     if (
       !failedRunWrite.updated &&
       !(
