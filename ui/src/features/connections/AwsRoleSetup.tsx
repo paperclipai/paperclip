@@ -111,6 +111,8 @@ export function AwsRoleSetup({
   const promptReady = !companyId || Boolean(agentProgress.handoff) || Boolean(agentProgress.error);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [roleArn, setRoleArn] = useState("");
+  // Set once the person types in the field: the agent's ARN then never replaces their value.
+  const [roleArnEdited, setRoleArnEdited] = useState(false);
   const [byHandOpen, setByHandOpen] = useState(false);
 
   useEffect(() => {
@@ -134,8 +136,8 @@ export function AwsRoleSetup({
   const agentFinished = agentProgress.progress?.status === "done";
   const reportedArn = ready && agentFinished ? roleArnFromAgentSummary(agentProgress.progress?.summary, ready.roleName) : null;
   useEffect(() => {
-    if (reportedArn) setRoleArn(reportedArn);
-  }, [reportedArn]);
+    if (reportedArn && !roleArnEdited) setRoleArn(reportedArn);
+  }, [reportedArn, roleArnEdited]);
   // The field is under "Or do it by hand"; open it whenever the person has to see or fix the ARN.
   const needsArnByHand = Boolean(error) || arnInvalid || (agentFinished && !reportedArn);
   useEffect(() => {
@@ -290,7 +292,7 @@ export function AwsRoleSetup({
                 <Input
                   id="aws-role-arn"
                   value={roleArn}
-                  onChange={(event) => setRoleArn(event.target.value)}
+                  onChange={(event) => { setRoleArnEdited(true); setRoleArn(event.target.value); }}
                   placeholder={`arn:aws:iam::<account ID>:role/${ready.roleName}`}
                   aria-invalid={arnInvalid || undefined}
                   className="font-mono text-base md:text-xs"

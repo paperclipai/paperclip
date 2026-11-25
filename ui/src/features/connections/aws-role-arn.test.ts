@@ -15,6 +15,8 @@ describe("roleArnFromAgentSummary", () => {
   it("never accepts another role, a longer name, or a malformed account", () => {
     expect(roleArnFromAgentSummary("Role ARN: arn:aws:iam::123456789012:role/admin", roleName)).toBeNull();
     expect(roleArnFromAgentSummary(`Role ARN: ${arn}-copy`, roleName)).toBeNull();
+    expect(roleArnFromAgentSummary(`Role ARN: ${arn}/other`, roleName)).toBeNull();
+    expect(roleArnFromAgentSummary(`Role ARN: ${arn}./other`, roleName)).toBeNull();
     expect(roleArnFromAgentSummary(`Role ARN: arn:aws:iam::12345:role/${roleName}`, roleName)).toBeNull();
     expect(roleArnFromAgentSummary("Stopped: no permission to create the role.", roleName)).toBeNull();
     expect(roleArnFromAgentSummary(null, roleName)).toBeNull();
