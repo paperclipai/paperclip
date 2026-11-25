@@ -42,6 +42,7 @@ import { REVIEWED_CHAT_BINDING_NOT_READY, ReviewedChatBindingNotReadyError, revi
 import { reportRunFailure } from "../run-failure-report.js";
 import { accountRunCost } from "../run-cost-accounting.js";
 import { forgetSessionsOfDeletedRun } from "../tool-access/connections/run-session-reset.js";
+import { forgetHandoffAfterDeletedRuns } from "../tool-access/connections/run-copies.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
@@ -846,6 +847,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         // which can make a same-agent successor eligible immediately.
         await persistSessionState(livenessRun);
         await forgetSessionsOfDeletedRun(db, livenessRun);
+        await forgetHandoffAfterDeletedRuns(db, livenessRun);
         await releaseIssueExecutionAndPromote(livenessRun, { suppressImmediateRecovery: true });
         await settleAgent();
         return;
@@ -1120,6 +1122,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     if (finalizedRun) {
       await persistSessionState(finalizedRun);
       await forgetSessionsOfDeletedRun(db, finalizedRun);
+      await forgetHandoffAfterDeletedRuns(db, finalizedRun);
     }
     await settleAgent();
   }
