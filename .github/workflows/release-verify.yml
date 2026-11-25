@@ -329,8 +329,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - lane: protocol
-            checks: check:eval-kernel check:protocol
+          - lane: protocol-static
+            checks: check:eval-kernel check:protocol-without-vitest
+          - lane: protocol (1/4)
+            vitest_lane: 1/4
+          - lane: protocol (2/4)
+            vitest_lane: 2/4
+          - lane: protocol (3/4)
+            vitest_lane: 3/4
+          - lane: protocol (4/4)
+            vitest_lane: 4/4
           - lane: rust
             checks: check:runner check:api-authority
           - lane: server-integration
@@ -431,7 +439,7 @@ jobs:
         run: pnpm test:run:general -- --group general-server-native-runner
 
       - name: Verify Paperclip Runner
-        if: ${{ matrix.lane != 'server-integration' }}
+        if: ${{ matrix.lane != 'server-integration' && matrix.vitest_lane == '' }}
         env:
           RUNNER_CHECKS: ${{ matrix.checks }}
         run: |
@@ -439,6 +447,13 @@ jobs:
           for check in $RUNNER_CHECKS; do
             pnpm --filter @paperclipai/paperclip-runner "$check"
           done
+
+      - name: Run Paperclip Runner package Vitest lane
+        if: ${{ matrix.vitest_lane != '' }}
+        env:
+          RUNNER_VITEST_LANE: ${{ matrix.vitest_lane }}
+        # Do not insert `--`: pnpm forwards it literally to run-pr-vitest-lane.mjs.
+        run: pnpm --filter @paperclipai/paperclip-runner test:typescript:vitest "--package-lane=$RUNNER_VITEST_LANE"
 
       - name: Compute the Runner debug crate cache key
         id: runner_debug_crate_key
