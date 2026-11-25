@@ -220,6 +220,24 @@ export function isIndividuallyToggleableResource(
   );
 }
 
+/** One line of non-secret GitHub identifiers for a policy-filtered delivery. */
+export function activityGitHubContextLine(item: ChatActivityItem): string | null {
+  const github = item.github;
+  if (!github) return null;
+  const target = github.pullNumber
+    ? `${github.repository}#${github.pullNumber}`
+    : github.issueNumber
+      ? `${github.repository} issue #${github.issueNumber}`
+      : github.repository;
+  return [
+    `Delivery ${github.deliveryId}`,
+    target,
+    github.headSha ? `head ${github.headSha.slice(0, 12)}` : null,
+    `event ${github.event}`,
+    `reason ${github.reason.replaceAll("_", " ")}`,
+  ].filter(Boolean).join(" · ");
+}
+
 function activityDetailLabel(item: ChatActivityItem): string {
   return replayableFailureStates.has(item.status) ? "Reason" : "Details";
 }
@@ -1258,6 +1276,11 @@ function Activity({
                     <p className="mt-1 text-xs text-muted-foreground">
                       {item.fileTransfer.filename} —{" "}
                       {item.fileTransfer.phase.replaceAll("_", " ")}
+                    </p>
+                  )}
+                  {item.github && (
+                    <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
+                      {activityGitHubContextLine(item)}
                     </p>
                   )}
                   {item.detail && (

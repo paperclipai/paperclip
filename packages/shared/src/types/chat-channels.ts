@@ -511,6 +511,18 @@ export interface ChatActivityItem {
   replayable?: boolean;
   resolutionActions?: Array<"mark_delivered" | "retry_anyway" | "cancel">;
   fileTransfer?: ChatFileTransferSummary;
+  /** Non-secret GitHub context for a delivery that the bot policy filtered. */
+  github?: ChatActivityGitHubContext;
+}
+
+export interface ChatActivityGitHubContext {
+  deliveryId: string;
+  event: string;
+  repository: string;
+  pullNumber?: number;
+  issueNumber?: number;
+  headSha?: string;
+  reason: string;
 }
 
 export interface ExternalChannelBindingSummary {
