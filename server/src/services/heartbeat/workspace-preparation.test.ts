@@ -2027,7 +2027,6 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         environmentDrivers: [{ driverKey: "tasks", supportsTasks: true, displayName: "Agent Computer", configSchema: { type: "object", properties: {} } }],
       },
     }).where(eq(plugins.id, storage.pluginId));
-    // Simulate a task moved to a plugin-storage project while retaining its Core-storage workspace source.
     const [pluginProject] = await db.insert(projects).values({
       companyId: input.agent.companyId,
       name: "Plugin-storage project",
@@ -2074,14 +2073,12 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(acquire).not.toHaveBeenCalled();
     expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, input.agent.companyId))).toHaveLength(0);
 
-    // Negative safety case 1: a disabled storage plugin cannot confirm storage ownership; keep the original refusal.
     await db.update(plugins).set({ status: "disabled" }).where(eq(plugins.id, storage.pluginId));
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
       code: "workspace_validation_failed",
       resultJson: { reason: "plugin_workspace_strategy_unsupported" },
     });
 
-    // Negative safety case 2: a project-less task requesting git_worktree has no Core project source; keep the original refusal.
     await db.update(plugins).set({ status: "ready" }).where(eq(plugins.id, storage.pluginId));
     await db.update(issues).set({ projectId: null, projectWorkspaceId: null, workspaceSelection: null }).where(eq(issues.id, issue.id));
     input.task.issueRef = { ...issue, projectId: null, projectWorkspaceId: null };
