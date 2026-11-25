@@ -509,13 +509,14 @@ the person chose to disconnect that identity.
 - Connection state (November 25): when a refresh marks a grant
   `needs_reauthorization` and no grant on the connection is still active, the
   connection gets the existing expired-sign-in state: `health_status` `error`,
-  `last_error` `oauth_reauthorization_required` and the message "OAuth
-  authorization expired. Reconnect this app to continue." Its status and
+  `last_error` `oauth_reauthorization_required` and the message "Access to
+  this app ended. Reconnect to continue." Its status and
   enabled flag do not change, so the app list shows "Needs attention" (not
   "Paused") and a reconnect keeps the chosen tools. The tool gateway does not
   offer a connection's tools while it has a `needs_reauthorization` grant and
   no active grant. A successful reconnect refreshes the catalog and sets
-  health back to `ok`.
+  health back to `ok`. The removal message and dialog count only connections
+  that are on and do not need attention as "available to agents".
 - Kept on purpose: the task description and prompt copies
   (`contextSnapshot.paperclipIssue.description`,
   `runnerProfileJson.nativeExecutionInput.task`), which are the user's text,

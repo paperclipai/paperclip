@@ -658,7 +658,7 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
 
       const [ended] = await db.select().from(toolConnections).where(eq(toolConnections.id, fixture.connectionId));
       expect(ended).toMatchObject({ status: "active", enabled: true, healthStatus: "error", lastError: "oauth_reauthorization_required" });
-      expect(ended!.healthMessage).toMatch(/Reconnect/);
+      expect(ended!.healthMessage).toBe("Access to this app ended. Reconnect to continue.");
       expect(await offered()).toBe(0);
 
       const started = await fixture.service.startOAuth(fixture.company.id, fixture.connectionId, {

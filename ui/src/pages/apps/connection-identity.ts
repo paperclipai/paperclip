@@ -1,9 +1,11 @@
-import type {
-  ConnectionGrantKind,
-  ConnectionAudienceMember,
-  ConnectionGrant,
-  ConnectionGrantStatus,
-  ToolConnectionCredentialPolicy,
+import {
+  isToolConnectionAttentionHealth,
+  type ConnectionGrantKind,
+  type ConnectionAudienceMember,
+  type ConnectionGrant,
+  type ConnectionGrantStatus,
+  type ToolConnection,
+  type ToolConnectionCredentialPolicy,
 } from "@paperclipai/shared";
 
 /**
@@ -159,4 +161,9 @@ export function memberLabel(
   const match = members.find((member) => member.userId === userId);
   if (!match) return null;
   return match.name?.trim() || match.email?.trim() || null;
+}
+
+/** Counted as available to agents only when it is on and does not need attention, such as a new sign-in. */
+export function isConnectionAvailableToAgents(connection: Pick<ToolConnection, "status" | "enabled" | "healthStatus">): boolean {
+  return connection.status === "active" && connection.enabled && !isToolConnectionAttentionHealth(connection.healthStatus);
 }

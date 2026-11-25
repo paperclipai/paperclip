@@ -54,7 +54,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
       .update(toolConnections)
       .set({
         healthStatus: "error",
-        healthMessage: "OAuth authorization expired. Reconnect this app to continue.",
+        healthMessage: "Access to this app ended. Reconnect to continue.",
         lastError: "oauth_reauthorization_required",
         updatedAt: now(),
       })

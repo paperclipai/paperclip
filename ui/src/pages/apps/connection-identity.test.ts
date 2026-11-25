@@ -3,6 +3,7 @@ import {
   connectionNameForCredentialPolicy,
   connectionNameForGrantKind,
   connectionTypeLabel,
+  isConnectionAvailableToAgents,
 } from "./connection-identity";
 
 describe("connectionTypeLabel", () => {
@@ -60,5 +61,14 @@ describe("connectionNameForCredentialPolicy", () => {
   it("carries the legacy-suffix handling through to the connections list", () => {
     expect(connectionNameForCredentialPolicy("Notion for the company", "shared"))
       .toBe("Notion for the organization");
+  });
+});
+
+describe("isConnectionAvailableToAgents", () => {
+  it("does not count a connection that must be signed in again", () => {
+    expect(isConnectionAvailableToAgents({ status: "active", enabled: true, healthStatus: "ok" })).toBe(true);
+    expect(isConnectionAvailableToAgents({ status: "active", enabled: true, healthStatus: "error" })).toBe(false);
+    expect(isConnectionAvailableToAgents({ status: "active", enabled: false, healthStatus: "ok" })).toBe(false);
+    expect(isConnectionAvailableToAgents({ status: "draft", enabled: true, healthStatus: "ok" })).toBe(false);
   });
 });
