@@ -44,7 +44,11 @@ import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 // One runner turn travels in a ~510 KiB PRP command. Keep the task prompt below
 // 400 KB, reserve room for the rest of the wake, and give history what remains.
 const RUNNER_TURN_PROMPT_MAX_BYTES = 400_000;
-const RUNNER_TURN_WAKE_RESERVE_BYTES = 48_000;
+// The rest of the wake includes the inline wake comments, which run
+// preparation caps at 8 comments and 12,000 characters in total
+// (MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS). Even at 6 bytes per character
+// after escaping they need 72 KB; the remainder covers the other wake text.
+const RUNNER_TURN_WAKE_RESERVE_BYTES = 96_000;
 const RUNNER_TURN_HISTORY_MIN_BYTES = 32_000;
 
 const NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE = [
