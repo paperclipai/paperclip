@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
+import { readNestedWorkspaceGitSourceRoots, readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
 import { workspaceSourceIdentities } from "./workspace-source-lock.js";
 import { localWorkspaceSourcePaths } from "./execution-workspace-source-roots.js";
 import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -25,6 +25,54 @@ async function repository(name = "repository") {
   return cwd;
 }
 describe("Git physical source roots", () => {
+  it("keeps a plain workspace usable after a provider creates an empty protected Git directory", async () => {
+    const cwd = path.join(root, "plain-codex-task");
+    await fs.mkdir(cwd);
+    await fs.mkdir(path.join(cwd, ".git"), { mode: 0o555 });
+    await fs.writeFile(path.join(cwd, "result.json"), "{}\n");
+    expect(await readWorkspaceGitSourceRoots(cwd)).toBeNull();
+    expect(await readNestedWorkspaceGitSourceRoots(cwd)).toEqual([]);
+  });
+  it.each(["empty", "ignore-only"])("still discovers nested repositories below a %s Git fragment", async fragment => {
+    const cwd = path.join(root, "container");
+    const nested = await repository("container/nested");
+    const marker = path.join(cwd, ".git");
+    await fs.mkdir(marker);
+    if (fragment === "ignore-only") {
+      await fs.mkdir(path.join(marker, "info"));
+      await fs.writeFile(path.join(marker, "info", "exclude"), "/.paperclip-repositories/\n");
+    }
+    expect((await readNestedWorkspaceGitSourceRoots(cwd)).map(source => source.root)).toEqual([nested]);
+    await fs.writeFile(path.join(marker, "HEAD"), "ref: refs/heads/main\n");
+    await expect(readNestedWorkspaceGitSourceRoots(cwd)).rejects.toThrow("workspace_git_source_unproven");
+  });
+  it("refuses a symbolic Git directory even when its target is empty", async () => {
+    const cwd = path.join(root, "symbolic-fragment"), target = path.join(root, "empty-target");
+    await fs.mkdir(cwd); await fs.mkdir(target);
+    await fs.symlink(target, path.join(cwd, ".git"), "junction");
+    await expect(readWorkspaceGitSourceRoots(cwd)).rejects.toThrow("workspace_git_source_unproven");
+    await expect(readNestedWorkspaceGitSourceRoots(cwd)).rejects.toThrow("workspace_git_source_unproven");
+  });
+  it.each(["empty", "ignore-only"])("does not let a %s fragment hide a bare object store", async fragment => {
+    const cwd = path.join(root, "bare-fragment"); await fs.mkdir(cwd);
+    await git(cwd, "init", "--bare");
+    const marker = path.join(cwd, ".git"); await fs.mkdir(marker);
+    if (fragment === "ignore-only") {
+      await fs.mkdir(path.join(marker, "info"));
+      await fs.writeFile(path.join(marker, "info", "exclude"), "ignored\n");
+    }
+    await expect(readWorkspaceGitSourceRoots(cwd)).rejects.toThrow("workspace_git_source_unproven");
+    await expect(readNestedWorkspaceGitSourceRoots(cwd)).rejects.toThrow("workspace_git_source_unproven");
+  });
+  it.each(["empty", "ignore-only"])("does not let a %s fragment hide a real ancestor repository", async fragment => {
+    const ancestor = await repository(), cwd = path.join(ancestor, "child");
+    const marker = path.join(cwd, ".git"); await fs.mkdir(marker, { recursive: true });
+    if (fragment === "ignore-only") {
+      await fs.mkdir(path.join(marker, "info"));
+      await fs.writeFile(path.join(marker, "info", "exclude"), "ignored\n");
+    }
+    expect((await readWorkspaceGitSourceRoots(cwd, { ancestors: true }))?.root).toBe(ancestor);
+  });
   it("distinguishes an ignore-only fragment from Git source metadata", async () => {
     const cwd = path.join(root, "plain-task"), marker = path.join(cwd, ".git");
     await fs.mkdir(path.join(marker, "info"), { recursive: true });

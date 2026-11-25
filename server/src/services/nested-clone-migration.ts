@@ -10,7 +10,7 @@ import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { PROJECT_REPOSITORIES_DIR } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { acquireGitExpirationLocks, recoverGitExpirationLocks, type GitExpirationLockLocation } from "./git-workspace-expiration-locks.js";
 import { allocatedBytes, withAnonymousGitFallback, type GitExpirationFailure } from "./git-workspace-expiration.js";
-import { GIT_CACHE_RESTORATION_KEY, readGitCacheRestoration, type GitCacheRestoration } from "./git-workspace-restoration.js";
+import { assertReproducibleLocalGitConfig, GIT_CACHE_RESTORATION_KEY, readGitCacheRestoration, type GitCacheRestoration } from "./git-workspace-restoration.js";
 import { readManagedCheckoutContents, selectRestoredProjectRepositories } from "./git-workspace-contents.js";
 import { applyRestorePoint, captureRestorePoint, currentRestorePointSnapshot, importRestorePoint } from "./git-restore-point.js";
 import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
@@ -26,7 +26,6 @@ const OPEN_STATUSES = ["active", "idle", "in_review"];
 const CHECKOUT_NAME = /^[A-Za-z0-9_-]+-[a-f0-9]{12}$/;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const STAGING_SUFFIXES = { worktree: ".clone-migrating", aside: ".clone-standalone", trash: ".clone-trash" } as const;
-const LOCAL_CONFIG = /^(core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode)|remote\.origin\.(url|fetch)|branch\..+\.(remote|merge))$/;
 const UNSUPPORTED_GIT_STATE = ["shallow", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-apply", "rebase-merge", "sequencer",
   "info/sparse-checkout", "info/attributes", "refs/replace", "modules", "lfs"];
 const FETCH_TIMEOUT_MS = 10 * 60 * 1000;
@@ -210,8 +209,7 @@ async function inspectStandaloneClone(checkout: string, repoUrl: string, base: s
     throw new Error("unproven_managed_checkout");
   }
   if (await git(real, ["config", "--local", "--null", "--get-all", "remote.origin.url"], { signal }).catch(() => "") !== `${repoUrl}\0`) throw new Error("foreign_origin");
-  const keys = (await git(real, ["config", "--local", "--name-only", "--list"], { signal })).split("\n").map(key => key.trim()).filter(Boolean);
-  if (keys.some(key => !LOCAL_CONFIG.test(key))) throw new Error("unsupported_local_git_config");
+  await assertReproducibleLocalGitConfig(real, signal, base);
   if ((await git(real, ["worktree", "list", "--porcelain"], { signal })).split("\n").filter(line => line.startsWith("worktree ")).length !== 1) {
     throw new Error("nested_clone_has_worktrees");
   }
@@ -481,6 +479,7 @@ export async function migrateNestedRepositoryClone(db: Db, snapshot: Workspace, 
           }
           await hooks?.beforeWorktreeAdd?.({ from: inspected.checkout, to: paths.worktree });
           await assertSafeBaseConfig(base, signal);
+          await assertReproducibleLocalGitConfig(inspected.checkout, signal, base);
           await git(base, ["worktree", "add", "--quiet", ...(result.branchName ? [paths.worktree, result.branchName] : ["--detach", paths.worktree, inspected.head])],
             { signal, timeout: FETCH_TIMEOUT_MS });
           const staged = await canonicalPath(paths.worktree);
@@ -512,6 +511,7 @@ export async function migrateNestedRepositoryClone(db: Db, snapshot: Workspace, 
           const [current] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, row!.id));
           if (!current || current.updatedAt.getTime() !== row!.updatedAt.getTime() || current.cwd !== row!.cwd) throw new Error("workspace_changed");
           if (!await workspaceMoveEligible(tx, current)) throw new Error("live_or_unresolved_consumer");
+          await assertReproducibleLocalGitConfig(inspected.checkout, signal, base);
           pending.phase = "swap";
           await writePending(db, row!.id, name, pending);
           await fs.rename(inspected.checkout, paths.aside);

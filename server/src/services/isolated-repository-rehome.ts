@@ -12,7 +12,7 @@ import { IsolatedRepositorySourceBusy, isolatedRemoteSourcePath, verifiedRecorde
 import { retainCurrentWorkspaceSource, withWorkspaceSourceLocks } from "./workspace-source-lock.js";
 import { acquireGitExpirationLocks, recoverGitExpirationLocks, type GitExpirationLockLocation } from "./git-workspace-expiration-locks.js";
 import { allocatedBytes, describeGitExpirationFailure, expirationScope, gitExpirationSkipReason, withAnonymousGitFallback, type GitExpirationFailure } from "./git-workspace-expiration.js";
-import { finishGitCacheTrash, hasCommitsMissingUpstream, managedSourcePaths, readGitCacheExpiration, readGitCacheRestoration, verifiedGitCacheSource,
+import { assertGitLongPathsSupported, assertGitLongPathsPreserved, finishGitCacheTrash, hasCommitsMissingUpstream, managedSourcePaths, readGitCacheExpiration, readGitCacheRestoration, verifiedGitCacheSource,
   GIT_CACHE_RESTORATION_KEY, type GitCacheRestoration } from "./git-workspace-restoration.js";
 import { applyRestorePoint, captureRestorePoint, currentRestorePointSnapshot, importRestorePoint, restorePointSavesIgnoredFile,
   RestorePointRestoreFailure, RestorePointSkip, type RestorePointLimits, type RestorePointSnapshot } from "./git-restore-point.js";
@@ -170,6 +170,15 @@ export async function assertSafeBaseConfig(base: string, signal?: AbortSignal) {
   const keys = (await git(base, ["config", "--local", "--name-only", "--list"], { signal })).split("\n").map(key => key.trim().toLowerCase()).filter(Boolean);
   if (keys.some(key => UNSAFE_BASE_CONFIG.test(key))) throw new Error("unsupported_base_git_config");
   if (await exists(path.join(base, ".git", "info", "attributes"))) throw new Error("unsupported_base_git_config");
+}
+
+export async function assertRehomeGitConfig(source: string, base: string, signal?: AbortSignal) {
+  await assertSafeBaseConfig(base, signal);
+  const marker = await fs.lstat(path.join(source, ".git")).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null; throw error;
+  });
+  if (marker) await assertGitLongPathsPreserved(source, base, signal);
+  else if (process.platform === "win32") await assertGitLongPathsSupported(base, signal);
 }
 
 async function inspectWorktree(workspace: Workspace, clone: string, signal?: AbortSignal) {
@@ -414,7 +423,7 @@ export async function rehomeIsolatedRepositoryWorkspace(db: Db, snapshot: Worksp
         await writePending(db, row.id, null);
       }
       const target = await targetWorktree(tx, row, base, branch, options.signal);
-      await assertSafeBaseConfig(base, options.signal);
+      await assertRehomeGitConfig(old.cwd, base, options.signal);
       const previousTip = (await git(base, ["rev-parse", "--verify", "-q", `${branchRef}^{commit}`], { signal: options.signal }).catch(() => "")).trim() || null;
       if (previousTip && !await git(old.cwd, ["merge-base", "--is-ancestor", previousTip, "HEAD"], { signal: options.signal }).then(() => true, () => false)) {
         throw new Error("base_branch_diverged");
@@ -454,6 +463,7 @@ export async function rehomeIsolatedRepositoryWorkspace(db: Db, snapshot: Worksp
         await fs.mkdir(path.dirname(target), { recursive: true });
         await assertSafeBaseConfig(base, options.signal);
         await options.hooks?.beforeWorktreeAdd?.({ from: old.cwd, to: target });
+        await assertRehomeGitConfig(old.cwd, base, options.signal);
         if (await exists(target)) throw new Error("target_worktree_exists");
         await git(base, ["worktree", "add", target, branch], { signal: options.signal, timeout: 15 * 60_000 });
         ownsTarget = true;
@@ -480,6 +490,7 @@ export async function rehomeIsolatedRepositoryWorkspace(db: Db, snapshot: Worksp
           const [current] = await updateTx.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, row.id)).for("update");
           if (!current || current.updatedAt.getTime() !== row.updatedAt.getTime()) throw new Error("workspace_changed");
           if (!await workspaceMoveEligible(updateTx, current)) throw new Error("live_or_unresolved_consumer");
+          await assertRehomeGitConfig(old.cwd, base, options.signal);
           const metadata: Record<string, unknown> = { ...current.metadata };
           delete metadata.isolatedRemoteSource;
           delete metadata.gitCacheExpiration;
@@ -694,10 +705,12 @@ export async function rehomeExpiredIsolatedRestoration(db: Db, snapshot: Workspa
       const present = await presentCommits(base, manifest.prerequisites);
       if (manifest.prerequisites.some(sha => !present.has(sha))) return snapshot;
     }
+    await assertRehomeGitConfig(recipe.sourcePath, base);
     await finishGitCacheTrash(snapshot);
     return await withExecutionWorkspaceLifecycleLock(db, snapshot.id, async tx => {
       const [row] = await tx.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, snapshot.id)).for("update");
       if (!row || row.updatedAt.getTime() !== snapshot.updatedAt.getTime()) return row ?? snapshot;
+      await assertRehomeGitConfig(recipe.sourcePath, base);
       const metadata: Record<string, unknown> = { ...row.metadata };
       delete metadata.isolatedRemoteSource;
       delete metadata.gitCacheExpiration;

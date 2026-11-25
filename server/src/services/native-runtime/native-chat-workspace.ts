@@ -1,4 +1,5 @@
 import { lstat, mkdir, realpath } from "node:fs/promises";
+import { isolatedSeedDirectory, readIsolatedTaskPath, resolveIsolatedTaskDirectory } from "../isolated-task-paths.js";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { chatConversations, issues, executionWorkspaces, projectWorkspaces, type Db } from "@paperclipai/db";
@@ -81,6 +82,9 @@ export async function findNativeChatWorkspaceScope(
   );
   const projectId = issue.boundWorkspaceId ? issue.boundProjectId : issue.selection?.selection.kind === "task_directory"
     ? null : issue.configuredProjectId ?? (issue.hasConfiguredDefault ? issue.projectId : null);
+  const freshRoot = input.freshAttemptId ? await resolveIsolatedTaskDirectory(instanceRoot, {
+    companyId: input.companyId, issueId: issue.id, attemptId: input.freshAttemptId,
+  }) : null;
   return {
     companyId: input.companyId,
     agentId: input.agentId,
@@ -91,8 +95,7 @@ export async function findNativeChatWorkspaceScope(
     // This must be a sibling of agent homes, not a child readable by an old
     // provider thread whose immutable permission root is the entire agent home.
     taskRoot: input.freshAttemptId
-      ? path.join(instanceRoot, "isolated-workspace-attempts", segment(input.companyId), segment(issue.id),
-        segment(input.freshAttemptId), ...(projectId ? ["workspace"] : []))
+      ? projectId ? isolatedSeedDirectory(instanceRoot, freshRoot!) : freshRoot!
       : issue.boundSourceIssueId === issue.id && issue.boundCwd
       ? issue.boundCwd : input.admittedCwd ?? path.join(instanceRoot, "isolated-workspaces", segment(input.companyId), segment(issue.id)),
   };
@@ -113,10 +116,11 @@ function isNativeChatTaskRoot(scope: NativeChatWorkspaceScope): boolean {
   const relative = path.relative(scope.instanceRoot, scope.taskRoot);
   const allowedTask = path.join("isolated-workspaces", segment(scope.companyId), segment(scope.issueId));
   const legacyParts = relative.split(path.sep);
-  const attempt = relative.split(path.sep);
-  const isolatedAttempt = (attempt.length === 4 || (attempt.length === 5 && attempt[4] === "workspace")) &&
-    attempt[0] === "isolated-workspace-attempts" && attempt[1] === scope.companyId &&
-    attempt[2] === scope.issueId && /^[0-9a-f-]{36}$/i.test(attempt[3]!);
+  const attempt = readIsolatedTaskPath(scope.instanceRoot, scope.taskRoot);
+  const isolatedAttempt = attempt?.attemptId && /^[0-9a-f-]{36}$/i.test(attempt.attemptId) &&
+    (!scope.freshAttemptId || attempt.attemptId === scope.freshAttemptId) &&
+    attempt.companyId === scope.companyId && attempt.issueId === scope.issueId &&
+    (attempt.rest.length === 0 || attempt.rest.length === 1 && attempt.rest[0] === (attempt.compact ? "w" : "workspace"));
   return relative === allowedTask || isolatedAttempt || (
     legacyParts.length === 4 && legacyParts[0] === "chat-workspaces" &&
     legacyParts[1] === scope.companyId && /^[a-zA-Z0-9_-]+$/.test(legacyParts[2]!) && legacyParts[3] === scope.issueId
