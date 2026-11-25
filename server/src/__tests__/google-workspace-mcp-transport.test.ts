@@ -625,6 +625,34 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(offeredAgain).not.toContain("gmail__search_messages");
     });
 
+    it("does not keep a removed action on when a save keeps the existing access", async () => {
+      const f = await savedOnRest();
+      vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockReturnValue([]);
+      UNLISTED.add("list_threads");
+      try {
+        await backOnGoogle(f);
+      } finally {
+        vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockRestore();
+        UNLISTED.clear();
+      }
+      const rows = await savedRows(f.connectionId);
+      const removed = rows.filter((row) => row.quarantineReason === "mcp_tool_removed");
+      expect(names(removed)).toEqual(["gmail__list_threads"]);
+      const held = rows.filter((row) => row.status === "quarantined");
+      await f.service.finishGalleryAppConnection(f.company.id, f.connectionId, {
+        enabledCatalogEntryIds: held.map((row) => row.id), askFirstCatalogEntryIds: [],
+        reviewedCatalogEntryIds: [...held, ...removed].map((row) => row.id), access: { agentIds: [f.agent.id] },
+        preserveExistingAccess: true,
+      }, f.actor);
+
+      forgetMcpHttpSessions(f.connectionId);
+      await f.service.refreshCatalog(f.connectionId, f.actor);
+      expect((await byName(f.connectionId)).get("gmail__list_threads")?.status).toBe("active");
+      const offered = (await f.listed()).map((tool) => tool.upstreamToolName);
+      expect(offered).toContain("gmail__get_message");
+      expect(offered).not.toContain("gmail__list_threads");
+    });
+
     it("keeps an action that a switch before this fix held for review held, because the hold replaced the saved REST definition", async () => {
       const f = await savedOnRest();
       await expect(f.call("gmail__get_message", { messageId: "msg1" })).resolves.toMatchObject({ status: "completed" });

@@ -3540,8 +3540,19 @@ export function toolAccessService(
                 priority: prior.priority,
                 metadata: prior.metadata,
               });
+          const priorCatalogEntryIds = [...new Set(priorEntries.flatMap((prior) => prior.catalogEntryId ? [prior.catalogEntryId] : []))];
+          const removedPriorCatalogEntryIds = new Set(
+            (priorCatalogEntryIds.length > 0
+              ? await tx
+                  .select({ id: toolCatalogEntries.id, status: toolCatalogEntries.status, quarantineReason: toolCatalogEntries.quarantineReason })
+                  .from(toolCatalogEntries)
+                  .where(and(eq(toolCatalogEntries.companyId, companyId), inArray(toolCatalogEntries.id, priorCatalogEntryIds)))
+              : []
+            ).filter(isCatalogEntryRemovedByProvider).map((entry) => entry.id),
+          );
           for (const prior of priorEntries)
             if (
+              !(prior.catalogEntryId && removedPriorCatalogEntryIds.has(prior.catalogEntryId)) &&
               !entries.some(
                 (entry) =>
                   entry.catalogEntryId &&
