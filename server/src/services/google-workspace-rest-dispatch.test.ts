@@ -1,7 +1,10 @@
 import { GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames } from "@paperclipai/shared";
+import { readFileSync } from "node:fs";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { stableHash } from "./tool-catalog-hash.js";
 import {
   callGoogleWorkspaceRest,
+  googleWorkspaceRestShippedSchemaHashes,
   googleWorkspaceRestToolDefinition,
   googleWorkspaceCatalogToolTitle,
   googleWorkspaceMcpPreflightRefusal,
@@ -47,6 +50,33 @@ describe("googleWorkspaceRestToolDefinition", () => {
     } finally {
       GOOGLE_WORKSPACE_TOOL_TRANSPORT.docs = saved;
     }
+  });
+});
+
+describe("googleWorkspaceRestShippedSchemaHashes", () => {
+  const services = ["gmail", "calendar", "drive", "docs", "slides", "sheets"] as const;
+  const schemas22634: Record<string, Record<string, unknown>> = JSON.parse(
+    readFileSync(new URL("../google-workspace-rest-tools/fixtures/input-schemas-22634.json", import.meta.url), "utf8"));
+
+  it("lists the input schema of every REST tool as it ships now, so a saved row from this build is recognised after a switch", () => {
+    for (const service of services) {
+      for (const tool of listGoogleWorkspaceRest(service)) {
+        expect(googleWorkspaceRestShippedSchemaHashes(`${service}__${tool.name}`), `${service}__${tool.name}`).toContain(stableHash(tool.inputSchema));
+      }
+    }
+  });
+
+  it("lists the input schemas the first REST launch (#22634) saved", () => {
+    expect(Object.keys(schemas22634)).toHaveLength(36);
+    for (const [name, schema] of Object.entries(schemas22634)) {
+      expect(googleWorkspaceRestShippedSchemaHashes(name), name).toContain(stableHash(schema));
+    }
+  });
+
+  it("lists nothing for a tool with no REST definition", () => {
+    expect(googleWorkspaceRestShippedSchemaHashes("chat__list_messages")).toEqual([]);
+    expect(googleWorkspaceRestShippedSchemaHashes("gmail__send_message")).toEqual([]);
+    expect(googleWorkspaceRestShippedSchemaHashes("update_doc")).toEqual([]);
   });
 });
 

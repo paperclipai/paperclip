@@ -334,11 +334,27 @@ A connection whose catalog was refreshed while its services were on
 `paperclip_rest` has this folder's definitions saved. After the switch back,
 agents see those saved definitions until the next catalog refresh, and the
 argument checks use them. That refresh saves Google's definitions. It does not
-hold an action for review when the saved row is this folder's definition
-(`formerPaperclipDefinedTool` in
+hold an action for review when the saved row's schema hash is one of this
+folder's shipped definitions (`shippedPaperclipSchemaHashes` in
 `server/src/services/connectors/paperclip-defined-tools.ts` and the hold rule
-in `server/src/services/tool-access/catalog/publication.ts`), and it keeps Off
-and Ask first. An action that Google's server does not list (for example Gmail
+in `server/src/services/tool-access/catalog/publication.ts`), and it keeps Off,
+Ask first and the review fields.
+
+`shipped-schema-hashes.ts` lists the input schema hash of every revision of
+every tool that a connection could have saved: the first launch (#22634) and
+the strict-argument revision (#22706). `fixtures/input-schemas-22634.json`
+holds the #22634 schemas. A test fails when a tool's current schema is not in
+the list, so add the new hash whenever a schema changes.
+
+The first switch-back refresh on builds before this list held each action
+whose row carried the #22634 schemas (`quarantined`, `pending_review`). That
+hold replaced the saved definition with Google's, so the row no longer shows
+the REST definition. A later refresh releases such an action only when the
+connection's calls show it ran on a shipped REST definition: at least one call
+of that action was recorded after the last successful refresh before the hold,
+and every such call recorded a shipped REST schema hash. Google's definition
+must also be unchanged since the hold. An action with no such call stays held
+for a person to review. An action that Google's server does not list (for example Gmail
 `get_draft`, `list_threads` or `search_messages`, if Google does not have
 them) is removed by that refresh.
 

@@ -115,6 +115,7 @@ What Paperclip still does before it sends a call to Google's MCP server:
 - A confirmation question from Google (MCP elicitation) goes on the task's
   question card for a person. Skipping it sends "decline"; until it is
   answered, the call stops again and nothing is changed.
+- Switch-back fix (Nov 25, `fix/google-mcp-adopt-saved-rest-definitions`): #22815 recognised only the current REST schemas, so rows saved by #22634 (before the #22706 strict schemas) were held for review on the staging tester (34 of 36). A refresh now adopts Google's definition for any shipped REST schema hash (`shipped-schema-hashes.ts`) and releases an already-held action when its calls since the last refresh before the hold all recorded a shipped REST schema hash; actions with no such call stay held.
 
 What only the REST tools did, and does not happen on MCP:
 
