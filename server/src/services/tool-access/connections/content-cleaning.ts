@@ -45,12 +45,29 @@ export function withoutResultText(value: Record<string, unknown> | null): { valu
   return { value: changed ? next : value, changed };
 }
 
-const STRUCTURAL_KEYS = new Set(["schema", "kind", "status", "type", "outcome", "state", "version", "code", "id", "reportedWorkDisposition", "reasonCode", "ownerClass", "scope", "contractRevision", "handoffId"]);
-const HASHED_KEYS = new Set(["idempotencyKey"]);
+const STRUCTURAL_KEYS = new Set(["schema", "kind", "status", "type", "outcome", "state", "version", "code", "id"]);
 export const DELETED_TEXT = "Removed because the connection data was deleted.";
 export const CHECKPOINT_CONTENT_DELETED_MARKER = "contentDeletedAt";
 const RUN_RESULT_SCHEMA = "paperclip.run_result.v1";
 const HASHED_FINGERPRINT = /^sha256:[a-f0-9]{64}$/;
+const RUN_RESULT_KEPT_PATHS = new Set([
+  "schema",
+  "reportedWorkDisposition",
+  "completionClaim.contractRevision",
+  "completionClaim.criteria.status",
+  "verification.status",
+  "verification.reasonCode",
+  "blocker.owner.kind",
+  "blocker.scope",
+  "attentionRequests.ownerClass",
+  "continuation.kind",
+]);
+const RUN_RESULT_HASHED_PATHS = new Set([
+  "completionClaim.criteria.criterionId",
+  "attentionRequests.targetAgentId",
+  "continuation.idempotencyKey",
+  "continuation.handoffId",
+]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -60,15 +77,36 @@ function hashedText(value: string): string {
   return HASHED_FINGERPRINT.test(value) ? value : `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
 }
 
-export function withoutFreeText(value: unknown, key = ""): unknown {
+function deletedText(value: string): string {
+  return value === "" ? value : DELETED_TEXT;
+}
+
+function withoutRunResultText(value: unknown, path = ""): unknown {
   if (typeof value === "string") {
-    if (STRUCTURAL_KEYS.has(key) || /(Id|At)$/.test(key)) return value;
-    if (HASHED_KEYS.has(key)) return hashedText(value);
-    return value === "" ? value : DELETED_TEXT;
+    if (RUN_RESULT_KEPT_PATHS.has(path)) return value;
+    if (RUN_RESULT_HASHED_PATHS.has(path)) return hashedText(value);
+    return deletedText(value);
   }
+  if (Array.isArray(value)) return value.map((entry) => withoutRunResultText(entry, path));
+  if (isRecord(value)) {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, withoutRunResultText(entry, path ? `${path}.${key}` : key)]));
+  }
+  return value;
+}
+
+export function withoutAllText(value: unknown, key = ""): unknown {
+  if (typeof value === "string") return /At$/.test(key) ? value : deletedText(value);
+  if (Array.isArray(value)) return value.map((entry) => withoutAllText(entry, key));
+  if (isRecord(value)) return Object.fromEntries(Object.entries(value).map(([entryKey, entry]) => [entryKey, withoutAllText(entry, entryKey)]));
+  return value;
+}
+
+export function withoutFreeText(value: unknown, key = ""): unknown {
+  if (typeof value === "string") return STRUCTURAL_KEYS.has(key) || /(Id|At)$/.test(key) ? value : deletedText(value);
   if (Array.isArray(value)) return value.map((entry) => withoutFreeText(entry, key));
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([entryKey, entry]) => [entryKey, withoutFreeText(entry, entryKey)]));
+  if (isRecord(value)) {
+    if (value.schema === RUN_RESULT_SCHEMA) return withoutRunResultText(value);
+    return Object.fromEntries(Object.entries(value).map(([entryKey, entry]) => [entryKey, withoutFreeText(entry, entryKey)]));
   }
   return value;
 }
@@ -82,7 +120,7 @@ export function withoutRunAnswers(value: Record<string, unknown> | null): { valu
   const walk = (node: unknown): unknown => {
     if (Array.isArray(node)) return node.map(walk);
     if (!isRecord(node)) return node;
-    if (node.schema === RUN_RESULT_SCHEMA) return withoutFreeText(node);
+    if (node.schema === RUN_RESULT_SCHEMA) return withoutRunResultText(node);
     return Object.fromEntries(Object.entries(node).map(([key, entry]) => [key, walk(entry)]));
   };
   const next = walk(value) as Record<string, unknown>;
@@ -102,7 +140,7 @@ export function withoutCheckpointAnswers(profile: Record<string, unknown> | null
   }
   if (isRecord(nextCheckpoint.governedWait) && isRecord(nextCheckpoint.governedWait.sourceEvent)) {
     const sourceEvent = nextCheckpoint.governedWait.sourceEvent;
-    nextCheckpoint.governedWait = { ...nextCheckpoint.governedWait, sourceEvent: { ...sourceEvent, payload: withoutFreeText(sourceEvent.payload) } };
+    nextCheckpoint.governedWait = { ...nextCheckpoint.governedWait, sourceEvent: { ...sourceEvent, payload: withoutAllText(sourceEvent.payload) } };
   }
   if (typeof nextCheckpoint[CHECKPOINT_CONTENT_DELETED_MARKER] !== "string") nextCheckpoint[CHECKPOINT_CONTENT_DELETED_MARKER] = new Date().toISOString();
   if (canonicalNativeJson(nextCheckpoint) === canonicalNativeJson(checkpoint)) return { value: profile, changed: false };

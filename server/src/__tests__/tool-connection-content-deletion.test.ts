@@ -485,7 +485,7 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
       evidence: [{ kind: "url", ref: link }],
       verification: [{ commandOrCheck: `Read ${link}`, status: "passed", detail: SECRET }],
       completionClaim: { contractRevision: "rev-1", objectiveSatisfied: true, criteria: [{ criterionId: "c1", status: "satisfied", evidenceRefs: [link], explanation: SECRET }], remainingWork: [] },
-      artifacts: [{ kind: "document", ref: link, title: SECRET }],
+      artifacts: [{ kind: `${SECRET} kind`, ref: link, title: SECRET }],
       continuation: { kind: "response_wake", summary: SECRET, idempotencyKey: "wake-1" },
     };
     expect(validatePrpStructuredRunResult(answer).issues).toEqual([]);
@@ -518,21 +518,21 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
       executionRecovery: { kind: "none" },
       nativeTerminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded" },
       nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done",
-        verification: [{ status: "passed" }], completionClaim: { contractRevision: "rev-1", objectiveSatisfied: true, criteria: [{ criterionId: "c1", status: "satisfied" }] },
+        verification: [{ status: "passed" }], completionClaim: { contractRevision: "rev-1", objectiveSatisfied: true, criteria: [{ criterionId: expect.stringMatching(/^sha256:[a-f0-9]{64}$/), status: "satisfied" }] },
         continuation: { kind: "response_wake", idempotencyKey: expect.stringMatching(/^sha256:[a-f0-9]{64}$/), summary: DELETED_TEXT } },
     });
     expect(hasAcceptedSemanticResult(run!.resultJson)).toBe(true);
     const cleanedAnswer = (run!.resultJson as { nativeResult: unknown }).nativeResult;
     expect(validatePrpStructuredRunResult(cleanedAnswer)).toMatchObject({ ok: true });
-    expect(cleanedAnswer).toMatchObject({ summary: DELETED_TEXT, evidence: [{ kind: "url", ref: DELETED_TEXT }],
-      verification: [{ commandOrCheck: DELETED_TEXT, detail: DELETED_TEXT }], artifacts: [{ ref: DELETED_TEXT, title: DELETED_TEXT }] });
+    expect(cleanedAnswer).toMatchObject({ summary: DELETED_TEXT, evidence: [{ kind: DELETED_TEXT, ref: DELETED_TEXT }],
+      verification: [{ commandOrCheck: DELETED_TEXT, detail: DELETED_TEXT }], artifacts: [{ kind: DELETED_TEXT, ref: DELETED_TEXT, title: DELETED_TEXT }] });
     const saved = run!.runnerProfileJson as typeof profile;
     expect(saved.nativeExecutionInput).toEqual({ task });
     expect(run!.contextSnapshot).toEqual({ paperclipIssue: { description: task.description } });
     expect(saved.sessionCheckpoint).toMatchObject({
       driverKind: "codex_app_server", identity: { runId: seed.settledRun.id },
       semanticResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: DELETED_TEXT, completionClaim: { contractRevision: "rev-1" },
-        evidence: [{ kind: "url", ref: DELETED_TEXT }], verification: [{ status: "passed", detail: DELETED_TEXT }] },
+        evidence: [{ kind: DELETED_TEXT, ref: DELETED_TEXT }], verification: [{ status: "passed", detail: DELETED_TEXT }] },
       governedWait: { sourceEvent: { type: "tool.execution.completed", payload: { output: DELETED_TEXT } }, result: { schema: "paperclip.run_result.v1", summary: DELETED_TEXT } },
       terminalTurns: [{ turnId: "turn-1" }],
       contentDeletedAt: expect.any(String),
