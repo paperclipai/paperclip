@@ -1293,6 +1293,18 @@ describe("mapFinalResultForTest", () => {
     expect(hasHermesGatewayTerminalStopProof({
       connectionFailure: { provider: "hermes_gateway", operation: "configuration" },
     })).toBe(true);
+    expect(hasHermesGatewayTerminalStopProof({
+      connectionFailure: { provider: "hermes_gateway", operation: "create_run", reason: "rate_limited" },
+    })).toBe(true);
+    expect(hasHermesGatewayTerminalStopProof({
+      connectionFailure: { provider: "hermes_gateway", operation: "create_run", reason: "connection_refused" },
+    })).toBe(true);
+    expect(hasHermesGatewayTerminalStopProof({
+      connectionFailure: { provider: "hermes_gateway", operation: "create_run", reason: "connection_timeout" },
+    })).toBe(false);
+    expect(hasHermesGatewayTerminalStopProof({
+      connectionFailure: { provider: "hermes_gateway", operation: "create_run", reason: "connection_reset" },
+    })).toBe(false);
     expect(hasHermesGatewayTerminalStopProof({ status: "timeout" })).toBe(false);
     expect(hasHermesGatewayTerminalStopProof({
       connectionFailure: { provider: "hermes_gateway", operation: "stream" },
