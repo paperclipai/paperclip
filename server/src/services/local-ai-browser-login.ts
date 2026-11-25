@@ -6,6 +6,7 @@ import { runSetupTokenLogin } from "@paperclipai/adapter-claude-local/server";
 import { runDeviceLogin } from "@paperclipai/adapter-codex-local/server";
 import { ensureCommandResolvable, resolveCommandForLogs } from "@paperclipai/adapter-utils/server-utils";
 import { resolveCodexCommand, startAntigravityBrowserLogin } from "../vendor/paperclip-runner/index.js";
+import { logger } from "../middleware/logger.js";
 
 export type LocalBrowserLoginState = {
   authorizationUrl?: string;
@@ -47,20 +48,14 @@ _, status = os.waitpid(pid, 0)
 sys.exit(os.waitstatus_to_exitcode(status))
 `;
 
-function configuredRemoteProviderPackRoot(): string | undefined {
-  const raw = process.env.PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH?.trim();
-  if (!raw || raw.includes("\0") || !path.isAbsolute(raw)) return undefined;
-  const trimmed = raw.replace(/\/+$/, "") || "/";
-  return path.resolve(trimmed) === trimmed ? trimmed : undefined;
-}
-
 /** Run the same browser-code login used by sandbox connections on the local host. */
 export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "google", home: string): LocalBrowserLoginState {
   if (provider === "google") {
-    const providerPackageRoot = configuredRemoteProviderPackRoot();
-    return providerPackageRoot
-      ? startAntigravityBrowserLogin(home, { providerPackageRoot })
-      : startAntigravityBrowserLogin(home);
+    return startAntigravityBrowserLogin(home, {
+      onFailure: (reason) => {
+        if (reason !== "aborted") logger.warn({ code: `ANTIGRAVITY_SIGN_IN_${reason.toUpperCase()}` }, "Google Antigravity sign-in failed");
+      },
+    });
   }
   const controller = new AbortController();
   const state: LocalBrowserLoginState = { abort: () => controller.abort() };

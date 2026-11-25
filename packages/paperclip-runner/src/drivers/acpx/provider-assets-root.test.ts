@@ -141,7 +141,8 @@ it("resolves explicit providerPackageRoot for bundled server runtimes and Antigr
   await mkdir(join(pack, "provider-assets/antigravity/linux-x64"), { recursive: true });
   expect(resolveRunnerProviderAssetsRoot("file:///app/server/dist-runtime/index.mjs", "antigravity", { providerPackageRoot: pack }))
     .toBe(join(pack, "provider-assets/antigravity"));
-  expect(antigravityNativeDistributionSpec("linux", "x64", { providerPackageRoot: pack }).distributionRoot)
+  vi.stubEnv("PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH", pack);
+  expect(antigravityNativeDistributionSpec("linux", "x64").distributionRoot)
     .toBe(join(pack, "provider-assets/antigravity/linux-x64"));
   // Explicit invalid roots fail closed instead of falling back to process.env.
   vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", pack);
