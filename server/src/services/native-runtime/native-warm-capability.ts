@@ -22,11 +22,58 @@ export function supportsNativeWarmFiles(profile: WarmProviderSelection): boolean
     (profile.backend === "acpx_runtime" && profile.acpxAgent === "copilot");
 }
 
-/** Google Antigravity runs turn by turn with any credential, as Kimi does with a
- * managed key. A warm owner needs its own proof that a credential change retires
- * it and refreshes its native home on attach, so no choice selects warm yet. */
+const PER_TURN_ONLY_BACKENDS: ReadonlySet<PaperclipRunnerProviderProfile["backend"]> = new Set([
+  "openai_dot_mcp",
+  "grok_bot_mcp",
+  "muse_external",
+  "cursor_cloud_api",
+]);
+
+const DECLARED_PROVIDER_BACKENDS: ReadonlyMap<string, PaperclipRunnerProviderProfile["backend"]> = new Map([
+  ["openai_dot", "openai_dot_mcp"],
+  ["grok_bot", "grok_bot_mcp"],
+  ["muse", "muse_external"],
+  ["cursor_cloud", "cursor_cloud_api"],
+]);
+
+function resolveDeclaredWarmProviderSelection(adapterConfig: unknown): WarmProviderSelection | null {
+  if (typeof adapterConfig !== "object" || adapterConfig === null || Array.isArray(adapterConfig)) return null;
+  const config = adapterConfig as Record<string, unknown>;
+  if (config.provider === "acpx") {
+    return { backend: "acpx_runtime", acpxAgent: config.acpxAgent ?? "claude" };
+  }
+  const backend = typeof config.provider === "string" ? DECLARED_PROVIDER_BACKENDS.get(config.provider) : undefined;
+  return backend ? { backend } : null;
+}
+
+/**
+ * Harnesses whose native sessions must always run per-turn (never warm), shared
+ * by both the heartbeat native session policy and the run-scoped environment
+ * lifecycle view (plugin task and sandbox lease retention):
+ * - Google Antigravity (`acpx_runtime` / `antigravity`): runs turn by turn with
+ *   any credential, as Kimi does with a managed key; a warm owner needs its own
+ *   proof that a credential change retires it and refreshes its native home on
+ *   attach, so no choice selects warm yet.
+ * - `openai_dot_mcp`, `grok_bot_mcp`, `muse_external`, and `cursor_cloud_api`:
+ *   external/cloud-hosted backends whose configuration validators accept only a
+ *   per-turn lifecycle.
+ */
 export function requiresPerTurnNativeSession(profile: WarmProviderSelection): boolean {
-  return profile.backend === "acpx_runtime" && profile.acpxAgent === "antigravity";
+  return (profile.backend === "acpx_runtime" && profile.acpxAgent === "antigravity")
+    || PER_TURN_ONLY_BACKENDS.has(profile.backend);
+}
+
+/**
+ * True when an adapter configuration targets a per-turn-only harness, including
+ * when full provider-profile resolution refuses the configuration (for example,
+ * a pending Antigravity rollout without a company grant, or an incomplete/invalid
+ * external backend config). Keeps plugin task and sandbox lease retention aligned
+ * with `requiresPerTurnNativeSession`.
+ */
+export function requiresPerTurnNativeSessionForConfig(adapterConfig: unknown, companyId?: string): boolean {
+  const profile = resolveWarmProviderSelection(adapterConfig, companyId)
+    ?? resolveDeclaredWarmProviderSelection(adapterConfig);
+  return profile !== null && requiresPerTurnNativeSession(profile);
 }
 
 /** Copilot carries a token in its fenced session environment, not a temporary auth file.

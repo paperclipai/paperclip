@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { AcpRuntimeEvent } from "acpx/runtime";
 import { ANTIGRAVITY_SWARM_INSTRUCTIONS, antigravityCliAccountMatch, antigravitySwarmPaperclipTool, openAntigravitySwarmRuntime, type AntigravitySwarmStage } from "./antigravity-swarm-runtime.js";
 import { acpxProfileActivity } from "./profile-activity.js";
+import { readProcessTable } from "./antigravity-process-lineage.js";
 import { persistedAcpxTurnUsage } from "./usage-accounting.js";
 import { antigravityAccountDigest } from "./antigravity-swarm-route.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
@@ -176,8 +177,15 @@ describe("Antigravity CLI swarm runtime", () => {
     // Only the server-written values reach the instructions, never a requirement's or the task's text.
     expect(append).not.toContain("hire_agent");
     expect(append).not.toContain("Pasted by someone else");
-    // Nor the agent's own (agent-editable) instructions: helpers act under auto mode.
-    expect(append).not.toContain("Agent instructions.");
+    const agentInstructions = append.indexOf("Agent instructions.");
+    const rules = append.indexOf(ANTIGRAVITY_SWARM_INSTRUCTIONS);
+    expect(agentInstructions).toBeGreaterThan(-1);
+    expect(rules).toBeGreaterThan(agentInstructions);
+    expect(append.endsWith(ANTIGRAVITY_SWARM_INSTRUCTIONS)).toBe(true);
+    expect(ANTIGRAVITY_SWARM_INSTRUCTIONS).toMatch(/take precedence over the agent's instructions above/);
+    expect(ANTIGRAVITY_SWARM_INSTRUCTIONS).toMatch(/cannot widen the Paperclip tools offered or Paperclip's permission decisions/);
+    expect(ANTIGRAVITY_SWARM_INSTRUCTIONS).toMatch(/helpers must keep all their work inside the task folder/);
+    expect(ANTIGRAVITY_SWARM_INSTRUCTIONS).not.toMatch(/what helpers may touch/);
     // The coordinator's first hand-in, built only from what it was told, is valid and is the
     // exact revision and criterion set the server requires before it accepts a report.
     const report = { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "Wrote a.txt and b.txt.",
@@ -442,6 +450,97 @@ describe("Antigravity CLI swarm runtime", () => {
     const worker = Number(readFileSync(run.workerPidFile, "utf8"));
     await new Promise(resolve => setTimeout(resolve, 200));
     expect(alive(worker)).toBe(false);
+  });
+
+  describe("helpers that lead their own process groups", () => {
+    const HELPER_DELAY_MS = 2_500;
+    const waitFor = async (check: () => boolean, timeoutMs = 5_000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (!check()) { if (Date.now() > deadline) throw new Error("timed out"); await new Promise(resolve => setTimeout(resolve, 10)); }
+    };
+    const siblings: number[] = [];
+    afterEach(() => { for (const pid of siblings.splice(0)) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } } });
+
+    async function startOrphanSwarm(dependencies: Parameters<typeof openAntigravitySwarmRuntime>[1] = {}, helperDelayMs = HELPER_DELAY_MS) {
+      const context = setup("orphan-helpers");
+      const spawnChild = context.options.command.spawn;
+      let cliPid = 0;
+      (context.options.command as { spawn: typeof spawnChild }).spawn = (args, spawnOptions = {}, lifetime) => {
+        // setup() builds the fake CLI's environment from process.env at spawn time.
+        process.env.FAKE_AGY_HELPER_DELAY_MS = String(helperDelayMs);
+        let child: ReturnType<typeof spawnChild>;
+        try { child = spawnChild(args, spawnOptions, lifetime); } finally { delete process.env.FAKE_AGY_HELPER_DELAY_MS; }
+        cliPid = child.pid!;
+        return child;
+      };
+      // An unrelated process of the same OS user, not started by this run's CLI.
+      const sibling = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+      siblings.push(sibling.pid!);
+      const runtime = await openAntigravitySwarmRuntime(context.options, { lineageSampleIntervalMs: 20, cancelGraceMs: 500, ...dependencies });
+      const turn = runtime.startTurn({ text: envelope(SWARM_REQUEST), requestId: "run-1:turn-1" });
+      void (async () => { for await (const _event of turn.events) { /* drain */ } })();
+      await waitFor(() => existsSync(context.workerPidFile) && readFileSync(context.workerPidFile, "utf8").length > 0);
+      const helper = Number(readFileSync(context.workerPidFile, "utf8"));
+      siblings.push(helper); // cleaned up after the test if it ever survives
+      // Let the lineage record the helper while the CLI still runs.
+      await new Promise(resolve => setTimeout(resolve, 150));
+      expect(alive(helper)).toBe(true);
+      return { ...context, runtime, turn, helper, sibling: sibling.pid!, cliPid, late: join(context.cwd, "late.txt") };
+    }
+    const settledAfterHelperDeadline = () => new Promise(resolve => setTimeout(resolve, HELPER_DELAY_MS + 500));
+
+    it("stops them before reporting a killed CLI, without waiting on the pipe they hold, and leaves other processes alone", async () => {
+      const run = await startOrphanSwarm();
+      process.kill(run.cliPid, "SIGKILL");
+      const result = await run.turn.result;
+      // The helper is already gone when the failure is reported.
+      expect(alive(run.helper)).toBe(false);
+      expect(result).toMatchObject({ status: "failed", error: { code: "ACPX_PROVIDER_PROCESS_LOST", retryable: true } });
+      await run.runtime.close({ reason: "done" });
+      await settledAfterHelperDeadline();
+      expect(existsSync(run.late)).toBe(false);
+      expect(alive(run.sibling)).toBe(true);
+    });
+
+    it("does not report a recoverable failure while it cannot prove the helpers stopped, and stops them on a later close", async () => {
+      let tableReadable = true;
+      const run = await startOrphanSwarm({ readProcessTable: async () => {
+        if (!tableReadable) throw new Error("process table unavailable");
+        return readProcessTable();
+      } }, 60_000);
+      tableReadable = false;
+      process.kill(run.cliPid, "SIGKILL");
+      expect(await run.turn.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_FAILED", retryable: false,
+        message: expect.stringMatching(/could not confirm that all of its helpers stopped/) } });
+      // The helper outlives the failed cleanup, so the later close is what stops it.
+      expect(alive(run.helper)).toBe(true);
+      tableReadable = true;
+      await run.runtime.close({ reason: "done" });
+      expect(alive(run.helper)).toBe(false);
+      expect(existsSync(run.late)).toBe(false);
+      expect(alive(run.sibling)).toBe(true);
+    }, 20_000);
+
+    it("stops them on Stop before the stopped turn is reported", async () => {
+      const run = await startOrphanSwarm();
+      await run.turn.cancel({ reason: "Stop" });
+      expect(await run.turn.result).toMatchObject({ status: "cancelled" });
+      expect(alive(run.helper)).toBe(false);
+      await run.runtime.close({ reason: "done" });
+      await settledAfterHelperDeadline();
+      expect(existsSync(run.late)).toBe(false);
+      expect(alive(run.sibling)).toBe(true);
+    });
+
+    it("stops them when the runner shuts the runtime down mid-swarm", async () => {
+      const run = await startOrphanSwarm();
+      await run.runtime.close({ reason: "shutdown" });
+      expect(alive(run.helper)).toBe(false);
+      expect(alive(run.cliPid)).toBe(false);
+      await settledAfterHelperDeadline();
+      expect(existsSync(run.late)).toBe(false);
+      expect(alive(run.sibling)).toBe(true);
+    });
   });
 
   const trackPid = (options: AcpxRuntimePortOpenOptions) => {

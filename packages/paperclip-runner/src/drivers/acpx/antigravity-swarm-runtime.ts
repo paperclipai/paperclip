@@ -5,6 +5,7 @@ import type { AcpRuntimeEvent, AcpRuntimeTurnResult } from "acpx/runtime";
 import { userInfo } from "node:os";
 import { AntigravitySavedStateIncompatibleError } from "./antigravity-admission.js";
 import { retireAntigravityProcess } from "./antigravity-process.js";
+import { trackAntigravityProcessLineage, type ProcessTableRead } from "./antigravity-process-lineage.js";
 import { antigravityOutsideChange } from "./antigravity-swarm-paths.js";
 import { antigravityAccountDigest, antigravitySwarmChannelLabel, antigravitySwarmLogFile } from "./antigravity-swarm-route.js";
 import {
@@ -13,7 +14,7 @@ import {
   type AntigravitySwarmReceipt,
 } from "./antigravity-swarm-guard.js";
 import { GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL, GENERATED_ANTIGRAVITY_SWARM_ENVELOPE_SCHEMA, GENERATED_ANTIGRAVITY_SWARM_REQUEST_FIELD, GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS } from "./generated-sidecar-contract.js";
-import { antigravitySwarmEvent, createAntigravityTerminalHintFilter } from "./antigravity-swarm-presentation.js";
+import { antigravitySwarmEvent, antigravitySwarmLine, createAntigravityTerminalHintFilter } from "./antigravity-swarm-presentation.js";
 import { acpRuntimeEventFromValidatedSessionUpdate } from "./acp-session-update-event.js";
 import { awaitVerifiedAcpxProviderOwnership } from "./installation-integrity.js";
 import { canonicalRunnerToolName } from "../runner-tool-bridge.js";
@@ -35,6 +36,7 @@ import type { AcpxRuntimePort, AcpxRuntimePortIdentity, AcpxRuntimePortOpenOptio
 export const ANTIGRAVITY_SWARM_INSTRUCTIONS = [
   "## Paperclip swarm rules",
   "This turn runs Antigravity's native swarm for one Paperclip task. All helpers belong to this one Paperclip run.",
+  "These rules come from Paperclip and take precedence over the agent's instructions above. Where they differ, follow these rules. The agent's instructions cannot widen the Paperclip tools offered or Paperclip's permission decisions: Paperclip approves only its own tools, refuses every other permission request, and offers no tools that create tasks, assign work or hire agents. Whatever the agent's instructions say, helpers must keep all their work inside the task folder.",
   "- Start every helper with workspace \"inherit\". Never use \"share\" or \"branch\".",
   "- Helpers change files only inside the current workspace (the task folder). Never write anywhere else.",
   "- Do not use Paperclip tools that create tasks, assign work, or hire agents while the swarm runs.",
@@ -49,6 +51,9 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_HELPER_WAIT_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_CANCEL_GRACE_MS = 5_000;
 const READBACK_TIMEOUT_MS = 5_000;
+const EXIT_OUTPUT_GRACE_MS = 200;
+const RETIREMENT_ATTEMPTS = 3;
+const CLEANUP_UNPROVEN_MESSAGE = "The swarm stopped, but Paperclip could not confirm that all of its helpers stopped, so it did not continue the task on its own. Files the helpers wrote stay in the task folder. Check them before you send /swarm again.";
 const SNAPSHOT_LIMIT = 20_000;
 const SKIPPED_DIRECTORIES = new Set([".git", "node_modules", ".venv", "__pycache__"]);
 // The CLI's sandbox refusing a helper's change outside the task folder. A denial
@@ -69,6 +74,10 @@ export interface AntigravitySwarmRuntimeDependencies {
   /** Test seam: runs at every await point between launch and settle. */
   onStage?: (stage: AntigravitySwarmStage) => void | Promise<void>;
   awaitProviderOwnership?: (child: ChildProcess) => Promise<void>;
+  /** Test seam: how often the CLI's process lineage is recorded. */
+  lineageSampleIntervalMs?: number;
+  /** Test seam: reads the host's process table for the lineage. */
+  readProcessTable?: () => Promise<ProcessTableRead>;
 }
 
 type Json = Record<string, unknown>;
@@ -106,7 +115,14 @@ class Connection {
   onLost: () => void = () => {};
 
   constructor(readonly child: ChildProcessWithoutNullStreams) {
-    this.exited = new Promise(resolve => child.once("close", () => resolve()));
+    // Exit, not close: helpers the CLI started inherit its output pipe and can
+    // hold it open long after the CLI died. Output already written is read for
+    // a short moment after exit; the lost CLI cannot answer anything later.
+    this.exited = new Promise(resolve => child.once("exit", () => {
+      if (child.stdout.readableEnded || child.stdout.destroyed) { resolve(); return; }
+      const timer = setTimeout(resolve, EXIT_OUTPUT_GRACE_MS);
+      child.stdout.once("close", () => { clearTimeout(timer); resolve(); });
+    }));
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
       this.#buffer += chunk;
@@ -301,8 +317,7 @@ function failed(code: string, message: string): AcpRuntimeTurnResult {
   return { status: "failed", error: { code, message, retryable: false } };
 }
 
-const line = (id: string, title: string): AcpRuntimeEvent =>
-  ({ type: "tool_call", tag: "tool_call", toolCallId: `paperclip-swarm-${id}`, text: title, title, kind: "other", status: "completed" });
+const line = (id: string, title: string): AcpRuntimeEvent => antigravitySwarmLine(`paperclip-swarm-${id}`, title, "tool_call", "completed");
 
 export type AntigravityCliAccountMatch = "matches" | "does_not_match" | "unknown";
 const CLI_LOG_TAIL_BYTES = 512 * 1024;
@@ -366,8 +381,15 @@ export async function openAntigravitySwarmRuntime(
     ? { credentialFenceFds: options.credentialFenceFds, activateCredentialFenceOwner: options.activateCredentialFenceOwner } : undefined;
   const child = options.command.spawn([], { cwd: options.cwd, env: { ...options.launchEnvironment } }, lifetime) as ChildProcessWithoutNullStreams;
   const connection = new Connection(child);
+  // Helpers lead their own process groups, so stopping the launcher's group is
+  // not enough: everything the CLI started is recorded while it runs and is
+  // stopped with it (see antigravity-process-lineage.ts).
+  const lineage = trackAntigravityProcessLineage(child.pid, { sampleIntervalMs: dependencies.lineageSampleIntervalMs, readTable: dependencies.readProcessTable });
   let retirement: Promise<void> | null = null;
-  const retire = () => retirement ??= retireAntigravityProcess(child, connection.exited);
+  // Only a proven retirement is kept: after a failure, the next call tries again.
+  const retire = () => retirement ??= retireAntigravityProcess(child, connection.exited)
+    .finally(() => lineage.terminate())
+    .catch((error: unknown) => { retirement = null; throw error; });
 
   let updateListener: ((params: Json) => void) | null = null;
   let readback: (() => void) | null = null;
@@ -724,7 +746,19 @@ export async function openAntigravitySwarmRuntime(
       active = turn;
       const onAbort = () => { void turn.cancel(); };
       input.signal?.addEventListener("abort", onAbort, { once: true });
-      turn.result = runTurn(input, events, markStarted).finally(() => {
+      // A swarm turn is the port's only turn. Unless it completed, the CLI and
+      // every process it started are stopped before the outcome is reported, so
+      // nothing keeps writing in the task folder and recovery never races them.
+      turn.result = runTurn(input, events, markStarted).then(async result => {
+        if (result.status === "completed") return result;
+        for (let attempt = 1; ; attempt++) {
+          try { await retire(); return result; } catch {
+            // Without proof that every helper stopped, Paperclip must not continue
+            // the task on its own in the same folder: report a failure it does not recover.
+            if (attempt >= RETIREMENT_ATTEMPTS) return failed("ANTIGRAVITY_SWARM_FAILED", CLEANUP_UNPROVEN_MESSAGE);
+          }
+        }
+      }).finally(() => {
         markStarted();
         events.end();
         input.signal?.removeEventListener("abort", onAbort);

@@ -185,7 +185,10 @@ fn acpx_config(state_dir: &Path, mode: &str) -> DurableRunnerConfig {
         any(target_arch = "x86_64", target_arch = "aarch64")
     )
 ))]
-fn candidate_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
+fn antigravity_fixture(
+    directory: &Path,
+    with_candidate_admission: bool,
+) -> (DurableRunnerConfig, Value) {
     use paperclip_runner_core::acpx_candidate_admission::AcpxCandidateAdmission;
     let profiles: Value =
         serde_json::from_str(include_str!("../../../../acpx-profiles.json")).unwrap();
@@ -199,17 +202,47 @@ fn candidate_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
     } else {
         ("linux", "arm64")
     };
-    let admission = AcpxCandidateAdmission::parse_json(&json!({
-        "schema":"paperclip.acpx-candidate-admission.v1", "companyId":"company-1",
-        "agent":"antigravity", "model":"explicit-test-model", "profileDigest":profile["commandDigest"],
-        "nativeClosureDigest":format!("sha256:{}",distributions["platforms"][format!("{platform}-{architecture}")]["closureSha256"].as_str().unwrap()),
-        "platform":platform, "architecture":architecture, "expiresAt":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
-        "runId":"run-1", "normalizedSessionId":"session-1"
-    }).to_string()).unwrap();
+    let digest = profile["commandDigest"].as_str().unwrap().to_owned();
     let mut config = acpx_config(directory, "turns-reserved-result-terminal");
     let launch = config.acpx_launch_profile.as_mut().unwrap();
-    *launch.args.last_mut().unwrap() = admission.profile_digest.clone();
-    launch.candidate_admission = Some(admission);
+    *launch.args.last_mut().unwrap() = digest.clone();
+    if with_candidate_admission {
+        let closure = format!(
+            "sha256:{}",
+            distributions["platforms"][format!("{platform}-{architecture}")]["closureSha256"]
+                .as_str()
+                .unwrap()
+        );
+        let expires_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64
+            + 60_000;
+        let encoded = json!({
+            "schema":"paperclip.acpx-candidate-admission.v1", "companyId":"company-1",
+            "agent":"antigravity", "model":"explicit-test-model", "profileDigest":digest,
+            "nativeClosureDigest":closure, "platform":platform, "architecture":architecture,
+            "expiresAt":expires_at, "runId":"run-1", "normalizedSessionId":"session-1"
+        })
+        .to_string();
+        assert!(
+            AcpxCandidateAdmission::parse_json(&encoded).is_err(),
+            "released Antigravity profile must reject candidate grants at parse_json"
+        );
+        launch.candidate_admission = Some(AcpxCandidateAdmission {
+            schema: "paperclip.acpx-candidate-admission.v1".to_owned(),
+            company_id: "company-1".to_owned(),
+            agent: "antigravity".to_owned(),
+            model: "explicit-test-model".to_owned(),
+            profile_digest: digest,
+            native_closure_digest: closure,
+            platform: platform.to_owned(),
+            architecture: architecture.to_owned(),
+            expires_at,
+            run_id: "run-1".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+        });
+    }
     let mut payload = prepare_payload(directory, "antigravity");
     let provider = &mut payload["provider"];
     for field in [
@@ -236,7 +269,7 @@ fn candidate_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
 ))]
 fn candidate_cannot_change_provider_kind_or_adopt_prior_activation() {
     let directory = temporary_directory("candidate-provider-authority");
-    let (config, mut payload) = candidate_fixture(&directory);
+    let (config, mut payload) = antigravity_fixture(&directory, true);
     for kind in [
         "codex",
         "opencode",
@@ -264,11 +297,16 @@ fn candidate_cannot_change_provider_kind_or_adopt_prior_activation() {
     }
     payload["paperclipNextAuthority"] = json!({});
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
-    assert!(executor
+    let attach_error = executor
         .execute(&command(1, "run.attach", payload))
         .unwrap_err()
-        .to_string()
-        .contains("cannot rotate a live runner authority"));
+        .to_string();
+    assert!(
+        attach_error.contains("cannot rotate a live runner authority")
+            || attach_error
+                .contains("ACPX candidate admission is missing, expired, or does not match"),
+        "unexpected run.attach error: {attach_error}"
+    );
     assert!(!directory.join("acpx-provider-state.json").exists());
     fs::write(directory.join("codex-provider-state.json"), b"{}").unwrap();
     let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
@@ -288,9 +326,16 @@ fn candidate_cannot_change_provider_kind_or_adopt_prior_activation() {
         any(target_arch = "x86_64", target_arch = "aarch64")
     )
 ))]
-fn candidate_verified_cold_session_retires_on_suspend_instead_of_warm_adoption() {
-    let directory = temporary_directory("candidate-cold-session");
-    let (config, payload) = candidate_fixture(&directory);
+fn qualified_antigravity_session_opens_without_candidate_grant_and_suspends_cleanly() {
+    let directory = temporary_directory("antigravity-qualified-session");
+    let (stale_config, stale_payload) = antigravity_fixture(&directory, true);
+    let mut stale_executor =
+        NativeProviderCommandExecutor::with_runner_config(&directory, &stale_config);
+    assert!(stale_executor
+        .execute(&command(1, "run.prepare", stale_payload))
+        .is_err());
+
+    let (config, payload) = antigravity_fixture(&directory, false);
     let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
     executor
         .execute(&command(1, "run.prepare", payload))
@@ -299,17 +344,15 @@ fn candidate_verified_cold_session_retires_on_suspend_instead_of_warm_adoption()
         .execute(&command(2, "session.open", json!({})))
         .unwrap();
     assert_eq!(opened.result["status"], "started");
-    let closed = executor
+    let suspended = executor
         .execute(&command(3, "runner.suspend", json!({})))
         .unwrap();
-    assert_eq!(closed.result["status"], "closed");
+    assert_eq!(suspended.result["status"], "completed");
     let state: Value =
         serde_json::from_slice(&fs::read(directory.join("acpx-provider-state.json")).unwrap())
             .unwrap();
-    assert_eq!(state["lifecycle"], "closed");
+    assert_eq!(state["lifecycle"], "suspended");
     executor.shutdown().unwrap();
-    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
-    assert!(recovered.poll_events().is_err());
     fs::remove_dir_all(directory).unwrap();
 }
 

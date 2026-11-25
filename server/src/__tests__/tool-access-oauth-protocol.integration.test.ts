@@ -354,7 +354,9 @@ describe("tool OAuth over local HTTP", () => {
       // Restore this fixture's original authorization metadata to exercise
       // manual replacement separately. The recovery worker is already stopped.
       await db.update(toolConnections).set({ status: beforeReauthConnection.status,
-        enabled: beforeReauthConnection.enabled, credentialRefs: beforeReauthConnection.credentialRefs,
+        enabled: beforeReauthConnection.enabled, healthStatus: beforeReauthConnection.healthStatus,
+        healthMessage: beforeReauthConnection.healthMessage, lastError: beforeReauthConnection.lastError,
+        credentialRefs: beforeReauthConnection.credentialRefs,
         credentialSecretRefs: beforeReauthConnection.credentialSecretRefs,
       }).where(eq(toolConnections.id, connection.id));
       await db.update(connectionGrants).set({ status: "active", credentialSecretRefs: beforeReauthGrant.credentialSecretRefs,

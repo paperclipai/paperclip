@@ -21,6 +21,12 @@ export interface AcpxToolEvidenceBinding {
 /** Provider-owned identity and diagnostic projection; never permission authority. */
 export interface AcpxActivityAdapter {
   toolIdentity?(nativeId: string): string;
+  /**
+   * One turn's display identity for raw ACP tool updates, for a provider that
+   * names no tool: each event with `paperclipToolDetail` added, or null when the
+   * call is the provider's own bookkeeping and is not shown. Display only.
+   */
+  createToolEventProjection?(): <T extends { type: string }>(event: T) => T | null;
   toolExecutionId?(nativeId: string): string;
   inputToolIdentity?(input: AcpxExtensionInput): string | undefined;
   createToolEvidence?(binding: AcpxToolEvidenceBinding): AcpxToolEvidence;

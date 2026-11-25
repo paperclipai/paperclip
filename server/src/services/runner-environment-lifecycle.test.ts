@@ -93,3 +93,72 @@ describe("remote-sandbox warm default", () => {
   });
 });
 
+describe("per-turn-only harnesses on a warm environment", () => {
+  const antigravity = { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-high" };
+  const dot = { provider: "openai_dot", dotBindingId: "00000000-0000-4000-8000-000000000001", allowUnmeteredProvider: true };
+  const grokBot = { provider: "grok_bot", externalBindingId: "00000000-0000-4000-8000-000000000002", allowUnmeteredProvider: true };
+  const muse = { provider: "muse", museBindingId: "00000000-0000-4000-8000-000000000003", allowUnmeteredProvider: true };
+  const cursorCloud = { provider: "cursor_cloud", model: "claude-4.5-sonnet", repoUrl: "https://github.com/paperclipai/paperclip" };
+  const pluginWarm = { driver: "plugin" as const, config: { pluginKey: "fixture", driverKey: "tasks", driverConfig: {}, runnerLifecycleMode: "warm" } };
+  const sandboxWarm = { driver: "sandbox" as const, config: { provider: "daytona", runnerLifecycleMode: "warm" } };
+  const sandboxWarmReusable = { driver: "sandbox" as const, config: { provider: "daytona", runnerLifecycleMode: "warm", reuseLease: true } };
+
+  const perTurnHarnesses = [
+    ["Google Antigravity", antigravity],
+    ["Google Antigravity with the agent set to warm", { ...antigravity, lifecycleMode: "warm" }],
+    ["Dot", dot],
+    ["Grok Bot", grokBot],
+    ["Muse", muse],
+    ["Cursor Cloud", cursorCloud],
+    // Even if profile validation refuses the config (for example missing binding or lifecycleMode: "warm"),
+    // the environment view still keeps it per-turn rather than falling through to warm.
+    ["refused Dot config", { provider: "openai_dot", lifecycleMode: "warm" }],
+    ["refused Grok Bot config", { provider: "grok_bot", lifecycleMode: "warm" }],
+    ["refused Muse config", { provider: "muse", lifecycleMode: "warm" }],
+    ["refused Cursor Cloud config", { provider: "cursor_cloud", lifecycleMode: "warm" }],
+  ] as const;
+
+  it.each(perTurnHarnesses)(
+    "%s keeps a per-turn plugin task", (_name, adapterConfig) => {
+      expect(resolveRunnerEnvironmentForRun(pluginWarm, "paperclip_runner", adapterConfig, undefined, "account:generation"))
+        .toMatchObject({ config: { runnerLifecycleMode: "per_turn" } });
+      expect(resolveRunnerEnvironmentForRun({ ...pluginWarm, config: { ...pluginWarm.config, runnerLifecycleMode: undefined } },
+        "paperclip_runner", adapterConfig, undefined, "account:generation")).toMatchObject({ config: { runnerLifecycleMode: "per_turn" } });
+      expect(pluginWarm.config.runnerLifecycleMode).toBe("warm");
+    });
+
+  it.each(perTurnHarnesses)(
+    "%s keeps an ephemeral sandbox lease even when the environment sets reuseLease: true", (_name, adapterConfig) => {
+      const resolved = resolveRunnerEnvironmentForRun(sandboxWarm, "paperclip_runner", adapterConfig, undefined, "account:generation", { reusableLeaseSupported: true });
+      expect(resolved).toBe(sandboxWarm);
+      expect(resolved.config).not.toHaveProperty("reuseLease");
+
+      const resolvedReusable = resolveRunnerEnvironmentForRun(sandboxWarmReusable, "paperclip_runner", adapterConfig, undefined, "account:generation", { reusableLeaseSupported: true });
+      expect(resolvedReusable.config.reuseLease).toBe(false);
+      // The shared environment itself is never rewritten.
+      expect(sandboxWarmReusable.config.reuseLease).toBe(true);
+
+      expect(resolveWarmRunnerIdleTimeoutMsForRun(sandboxWarmReusable, "paperclip_runner", { ...adapterConfig, lifecycleMode: "warm" })).toBeUndefined();
+      expect(runnerLifecycleDefaultNeedsLeaseProbe({ driver: "sandbox", config: { provider: "daytona" } }, "paperclip_runner", adapterConfig)).toBe(false);
+    });
+
+  it.each(perTurnHarnesses)(
+    "%s overrides a persisted warm admission to per-turn on plugin and sandbox environments", (_name, adapterConfig) => {
+      expect(resolveRunnerEnvironmentForRun(pluginWarm, "paperclip_runner", adapterConfig, "warm", "account:generation"))
+        .toMatchObject({ config: { runnerLifecycleMode: "per_turn" } });
+      expect(resolveRunnerEnvironmentForRun(sandboxWarmReusable, "paperclip_runner", adapterConfig, "warm", "account:generation", { reusableLeaseSupported: true }).config.reuseLease)
+        .toBe(false);
+      expect(resolveWarmRunnerIdleTimeoutMsForRun(sandboxWarmReusable, "paperclip_runner", adapterConfig, "warm"))
+        .toBeUndefined();
+    });
+
+  it("still lets other harnesses use the environment's warm setting and admitted warm recovery", () => {
+    expect(resolveRunnerEnvironmentForRun(pluginWarm, "paperclip_runner", { provider: "codex" }, undefined, "account:generation"))
+      .toMatchObject({ config: { runnerLifecycleMode: "warm" } });
+    expect(resolveRunnerEnvironmentForRun(pluginWarm, "paperclip_runner", { provider: "codex" }, "warm"))
+      .toMatchObject({ config: { runnerLifecycleMode: "warm" } });
+    expect(resolveRunnerEnvironmentForRun(sandboxWarm, "paperclip_runner", { provider: "codex" }).config).toMatchObject({ reuseLease: true });
+    expect(resolveRunnerEnvironmentForRun(sandboxWarmReusable, "paperclip_runner", { provider: "codex" }, "warm").config).toMatchObject({ reuseLease: true });
+  });
+});
+

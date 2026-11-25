@@ -353,7 +353,12 @@ function readAcceptedSemanticSummary(resultJson: Record<string, unknown>) {
   return null;
 }
 
-function semanticResultCandidates(resultJson: Record<string, unknown>) {
+export function isCommittedToolReceiptResult(result: unknown): boolean {
+  const disposition = record(result).disposition;
+  return disposition === "applied" || disposition === "duplicate";
+}
+
+export function semanticResultCandidates(resultJson: Record<string, unknown>) {
   return [
     record(resultJson.nativeResult),
     record(resultJson.acceptedResult),
@@ -782,7 +787,7 @@ export function findHeartbeatRunCompletionComment<T extends { id: string; presen
       receiptRecord.operationId === "register_deliverable" &&
       typeof receiptResult.attachmentId === "string" &&
       receiptResult.commandId === `deliverable-prepared:${receiptResult.attachmentId}` &&
-      ["applied", "duplicate"].includes(String(receiptResult.disposition)) &&
+      isCommittedToolReceiptResult(receiptResult) &&
       Array.isArray(receiptResult.entityRefs)
     ) {
       // File preparation binds an attachment to a generated comment. That

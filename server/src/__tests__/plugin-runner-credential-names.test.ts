@@ -22,6 +22,9 @@ describe("plugin Runner provider credential names", () => {
   it("reads the Runner's Rust allowlists", () => {
     expect(rustAcpxCredentialNames("copilot")).toContain("COPILOT_GITHUB_TOKEN");
     expect(rustCandidateAgents).toContain("copilot");
+    expect(rustAcpxCredentialNames("antigravity")).toContain("GEMINI_API_KEY");
+    expect(rustAcpxCredentialNames("antigravity")).toContain("PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET");
+    expect(rustCandidateAgents).toContain("antigravity");
     expect(rustOpenCodeNames).toContain("OPENROUTER_API_KEY");
   });
 
@@ -45,7 +48,27 @@ describe("plugin Runner provider credential names", () => {
       expect(ACPX_CREDENTIAL_NAMES[agent], `${name} is an ACPX ${agent} credential`).toContain(name);
       expect(rustAcpxCredentialNames(agent), `${name} reaches the ACPX sidecar from the Runner process`).toContain(name);
       expect(host[name], `${name} survives sidecar admission`).toBe(environment[name]);
-      expect(spawned[name], `${name} reaches the ${agent} process`).toBe(environment[name]);
+      if (agent === "antigravity" && name === "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET") {
+        expect(spawned[name], `${name} is staged as a private token file, never the ${agent} process environment`).toBeUndefined();
+      } else {
+        expect(spawned[name], `${name} reaches the ${agent} process`).toBe(environment[name]);
+      }
+    }
+  });
+
+  it("still strips Google and Gemini routing variables from the Antigravity process", () => {
+    const routing = { GOOGLE_API_KEY: "fixture-google", GOOGLE_APPLICATION_CREDENTIALS: "/controller/private/adc.json",
+      GOOGLE_CLOUD_PROJECT: "fixture-project", GOOGLE_GEMINI_BASE_URL: "https://router.example.test", GEMINI_HOME: "/controller/private/gemini" };
+    const environment = { GEMINI_API_KEY: "fixture-gemini", ...routing, PAPERCLIP_CONFIGURED_ENV_KEYS: JSON.stringify(Object.keys(routing)) };
+    const binding = createAcpxCredentialBinding(environment, "antigravity", "session");
+    const host = createAcpxSidecarHostEnvironment({ ...environment, [ACPX_CREDENTIAL_BINDING_ENV]: binding }, "antigravity", "session");
+    const spawned = createSanitizedAcpxSpawnInput(host, "antigravity").env;
+    expect(JSON.parse(binding!).names).toEqual(["GEMINI_API_KEY"]);
+    expect(host.GEMINI_API_KEY).toBe("fixture-gemini");
+    expect(spawned.GEMINI_API_KEY).toBe("fixture-gemini");
+    for (const name of Object.keys(routing)) {
+      expect(host[name], `${name} is removed at sidecar admission`).toBeUndefined();
+      expect(spawned[name], `${name} never reaches the Antigravity process`).toBeUndefined();
     }
   });
 });

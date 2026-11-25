@@ -16,6 +16,7 @@ import { openRunnerWorkspaceFile } from "./runner-api-files.js";
 import type { NativeSession, createRunnerdCodexTransport } from "../../vendor/paperclip-runner/index.js";
 import { bindManagedNativeCredentialTurn } from "./managed-native-credentials.js";
 import { AntigravityConnectionConfigurationError, antigravityConnectionRefusal } from "./antigravity-connection-policy.js";
+import { antigravityReleasePending } from "./antigravity-release.js";
 
 const AUTH_SECRET = "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET";
 const TOKEN_FILE = "acp_token.json";
@@ -67,13 +68,25 @@ export async function prepareAntigravityRunnerCredentials(input: {
   accountEmail?: string;
 }): Promise<{ environment: NodeJS.ProcessEnv; home: string | null; credential?: string }> {
   const environment = { ...input.environment };
-  for (const key of [AUTH_SECRET, "GEMINI_HOME", "GOOGLE_API_KEY", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_ACCESS_TOKEN"]) delete environment[key];
   const apiKey = Boolean(environment.GEMINI_API_KEY?.trim());
+  for (const key of Object.keys(environment)) {
+    if (key === AUTH_SECRET || key.startsWith("GOOGLE_") || (key.startsWith("GEMINI_") && !(apiKey && key === "GEMINI_API_KEY"))) {
+      delete environment[key];
+    }
+  }
+  const releasePending = antigravityReleasePending();
   // Save and Test refuse these choices first; this is the run-time defense.
-  const refusal = antigravityConnectionRefusal({ apiKey, remote: input.remote, lifecycleMode: input.lifecycleMode, releasePending: false });
+  // While pending, assertAntigravityExecutionAdmissible enforces the operator's
+  // cloud grant separately; remote sign-in remains refused until released.
+  const refusal = antigravityConnectionRefusal({
+    apiKey,
+    remote: input.remote,
+    lifecycleMode: input.lifecycleMode,
+    releasePending,
+    remoteCandidateAdmitted: releasePending && input.remote,
+  });
   if (refusal) throw new AntigravityConnectionConfigurationError(refusal);
   if (apiKey) return { environment, home: null };
-  delete environment.GEMINI_API_KEY;
   const home = input.managedHome?.trim();
   if (!home) throw new Error("Google Antigravity requires a selected managed Google account or Google API key.");
   await reconcileRetainedGoogleCleanupForHome(home);
@@ -82,6 +95,10 @@ export async function prepareAntigravityRunnerCredentials(input: {
     credential = sanitizeAntigravityCredential(await readLocalAiCredentialFile(join(home, "antigravity-acp", TOKEN_FILE)));
   } catch {
     throw new Error("The selected Google Antigravity account is unavailable. Reconnect the Google account, then retry.");
+  }
+  if (input.remote) {
+    environment[AUTH_SECRET] = credential;
+    return { environment, home, credential };
   }
   // Run facts bound to this credential for the swarm route (channel, account
   // digest). The Runner's credential sanitizer drops them before any write, so
@@ -92,6 +109,10 @@ export async function prepareAntigravityRunnerCredentials(input: {
   if (!facts) throw new Error("Antigravity swarm credential facts do not match the sidecar contract");
   environment[AUTH_SECRET] = JSON.stringify({ ...JSON.parse(credential) as Record<string, unknown>, [GENERATED_ANTIGRAVITY_SWARM_CREDENTIAL_FACTS_FIELD]: facts });
   return { environment, home, credential };
+}
+
+export class AntigravityAccountMismatchError extends Error {
+  constructor() { super("The refreshed Google account does not match the selected connection."); }
 }
 
 /** A changed refresh token must prove the same saved Google identity before
@@ -109,7 +130,7 @@ export async function prepareAntigravityCredentialWriteback(input: {
   if (!input.accountEmail) throw new Error("The Google account identity is unavailable for credential refresh. Reconnect the account.");
   const verified = await verifyAntigravityCredential(input.managedHome);
   if (verified.accountEmail.toLowerCase() !== input.accountEmail.toLowerCase()) {
-    throw new Error("The refreshed Google account does not match the selected connection.");
+    throw new AntigravityAccountMismatchError();
   }
   return verified.credential;
 }
@@ -157,6 +178,8 @@ export function antigravityCredentialTurn(input: {
   managedHome: string;
   runtimeHome: string;
   credential: string;
+  /** Remote Core sandbox runs export and scrub rotated tokens over the sandbox runner. */
+  runtimeStore?: { read: () => Promise<string>; remove: () => Promise<void> };
 }) {
   const runtimeDirectory = join(input.runtimeHome, "antigravity-acp");
   const destination = join(input.managedHome, "antigravity-acp", TOKEN_FILE);
@@ -165,10 +188,14 @@ export function antigravityCredentialTurn(input: {
     copyBack: async () => {
       let serialized: string;
       try {
-        try { serialized = await readLocalAiCredentialFile(join(runtimeDirectory, TOKEN_FILE)); }
-        catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-          serialized = await readLocalAiCredentialFile(join(runtimeDirectory, REFRESH_FILE));
+        if (input.runtimeStore) {
+          serialized = await input.runtimeStore.read();
+        } else {
+          try { serialized = await readLocalAiCredentialFile(join(runtimeDirectory, TOKEN_FILE)); }
+          catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+            serialized = await readLocalAiCredentialFile(join(runtimeDirectory, REFRESH_FILE));
+          }
         }
       } catch (error) {
         // A provider that never started has no refresh to preserve.
@@ -313,6 +340,10 @@ export function antigravityCredentialTurn(input: {
       });
     },
     remove: async () => {
+      if (input.runtimeStore) {
+        await input.runtimeStore.remove();
+        return;
+      }
       const directory = await openRunnerWorkspaceFile(runtimeDirectory, constants.O_RDONLY | constants.O_DIRECTORY)
         .catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
       if (!directory) return;

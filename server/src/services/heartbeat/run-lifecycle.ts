@@ -3174,9 +3174,16 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
           return null;
         })
       : null;
+    const githubConnectionRequest = !authRepair?.interactionId && (run.status === "failed" || run.status === "succeeded")
+      ? await connectionIntentService(db).requestForRunGitHubAuthFailure(run.id, resultJson).catch(() => {
+          logger.warn({ runId: run.id }, "Could not attach GitHub connection request after unconfigured git auth failure");
+          return null;
+        })
+      : null;
     const classification = classifyRunLiveness({
       ...await buildRunLivenessInput(run, resultJson),
       authenticationRepairRequested: Boolean(authRepair?.interactionId),
+      githubConnectionRequested: Boolean(githubConnectionRequest?.interactionId),
     });
     return db
       .update(heartbeatRuns)

@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -37,6 +37,82 @@ describe("plugin Runner selected credentials", () => {
   it("does not read a controller credential when the provider owns the account", async () => {
     expect(await preparePluginRunnerCredentials({ provider: "codex", home: "/must/not/read", environment: {} })).toEqual({});
     await expect(preparePluginRunnerCredentials({ provider: "cursor", identity: "revision", environment: { CURSOR_API_KEY: "fixture-key" } })).rejects.toThrow("credential provider");
+  });
+});
+
+describe("plugin Runner Google Antigravity credentials", () => {
+  const signIn = (extra: Record<string, unknown> = {}) => JSON.stringify({
+    client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com", client_secret: "fixture-client-secret",
+    refresh_token: "fixture-refresh", token_uri: "https://oauth2.googleapis.com/token",
+    scopes: ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/aicode"],
+    ...extra,
+  });
+  async function googleHome(contents: string) {
+    const directory = await mkdtemp(join(tmpdir(), "plugin-runner-google-")); homes.push(directory);
+    await mkdir(join(directory, "antigravity-acp"), { mode: 0o700 });
+    await writeFile(join(directory, "antigravity-acp", "acp_token.json"), contents, { mode: 0o600 });
+    return directory;
+  }
+  const blankManagedEnvironment = { GEMINI_API_KEY: "", GOOGLE_API_KEY: "", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "",
+    GEMINI_HOME: "/controller/private/provider", HOME: "/controller/private", OTHER_SECRET: "fixture-unrelated" };
+  it("transfers only the selected Gemini API key", async () => {
+    const transfer = await preparePluginRunnerCredentials({ provider: "antigravity", identity: "revision", accountIdentity: "account",
+      environment: { GEMINI_API_KEY: "fixture-gemini", GOOGLE_API_KEY: "fixture-google", GOOGLE_APPLICATION_CREDENTIALS: "/controller/private/adc.json",
+        GOOGLE_GEMINI_BASE_URL: "https://router.example.test", GEMINI_HOME: "/controller/private/gemini", XAI_API_KEY: "fixture-xai",
+        HOME: "/controller/private", OTHER_SECRET: "fixture-unrelated" } });
+    expect(transfer).toEqual({ accountIdentity: "account", credential: { type: "provider-env", provider: "antigravity", environment: { GEMINI_API_KEY: "fixture-gemini" } } });
+    expect(transfer.needsWriteback).toBeUndefined();
+    expect(transfer.onCredentials).toBeUndefined();
+  });
+  it.each([
+    ["the required scopes", signIn()],
+    ["the optional project and OpenID scope", signIn({ project_id: "fixture-project",
+      scopes: ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/aicode", "openid"] })],
+  ])("transfers the saved Google sign-in with %s exactly as the sanitizer outputs it", async (_name, saved) => {
+    const directory = await googleHome(JSON.stringify({ ...JSON.parse(saved), access_token: "fixture-access", expiry: "2020-01-01T00:00:00Z", email: "alice@example.test" }));
+    const transfer = await preparePluginRunnerCredentials({ provider: "antigravity", identity: "revision", accountIdentity: "account",
+      home: directory, environment: blankManagedEnvironment });
+    expect(transfer).toEqual({ accountIdentity: "account", needsWriteback: true,
+      credential: { type: "provider-env", provider: "antigravity", environment: { PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: saved } } });
+    const delivered = transfer.credential!.type === "provider-env" ? transfer.credential!.environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET : "";
+    expect(delivered).not.toContain("fixture-access");
+    expect(delivered).not.toContain("alice@example.test");
+    expect(transfer.onCredentials).toBeUndefined();
+  });
+  it("prefers a selected Gemini API key over a managed home", async () => {
+    const directory = await googleHome(signIn());
+    const transfer = await preparePluginRunnerCredentials({ provider: "antigravity", identity: "revision", home: directory,
+      environment: { ...blankManagedEnvironment, GEMINI_API_KEY: "fixture-gemini" } });
+    expect(transfer.credential).toEqual({ type: "provider-env", provider: "antigravity", environment: { GEMINI_API_KEY: "fixture-gemini" } });
+    expect(transfer.needsWriteback).toBeUndefined();
+  });
+  it.each([
+    ["a sign-in supplied through the environment", { PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "{\"refresh_token\":\"fixture-refresh\"}" }, "selected credential unavailable"],
+    ["a sign-in beside a Gemini API key", { GEMINI_API_KEY: "fixture-gemini", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "{\"refresh_token\":\"fixture-refresh\"}" }, "selected credential unavailable"],
+    ["no key and no saved sign-in", {}, "Gemini API key or a saved Google sign-in"],
+    ["a blank key and no saved sign-in", { GEMINI_API_KEY: "   " }, "Gemini API key or a saved Google sign-in"],
+    ["only a Google API key", { GOOGLE_API_KEY: "fixture-google" }, "Gemini API key or a saved Google sign-in"],
+  ] as const)("refuses %s", async (_name, environment, message) => {
+    const result = preparePluginRunnerCredentials({ provider: "antigravity", identity: "revision", environment });
+    await expect(result).rejects.toThrow(message);
+    await result.catch((error: Error) => expect(error.message).not.toContain("fixture"));
+  });
+  it.each([
+    ["a missing token file", null],
+    ["a token for another OAuth client", JSON.stringify({ ...JSON.parse(signIn()), client_id: "fixture-other-client" })],
+    ["a token without the required scopes", JSON.stringify({ ...JSON.parse(signIn()), scopes: [] })],
+    ["unreadable JSON", "{fixture-refresh"],
+  ])("refuses %s in plain words without echoing it", async (_name, contents) => {
+    const directory = contents === null ? await mkdtemp(join(tmpdir(), "plugin-runner-google-")) : await googleHome(contents);
+    if (contents === null) homes.push(directory);
+    const result = preparePluginRunnerCredentials({ provider: "antigravity", identity: "revision", home: directory, environment: blankManagedEnvironment });
+    await expect(result).rejects.toThrow("The selected Google Antigravity account is unavailable. Reconnect the Google account, then retry.");
+    await result.catch((error: Error) => expect(error.message).not.toContain("fixture"));
+  });
+  it("fails closed for an invalid Gemini API key without echoing it", async () => {
+    const result = preparePluginRunnerCredentials({ provider: "antigravity", identity: "revision", environment: { GEMINI_API_KEY: "fixture\0gemini" } });
+    await expect(result).rejects.toThrow("Plugin Runner selected credential unavailable");
+    await result.catch((error: Error) => expect(error.message).not.toContain("fixture"));
   });
 });
 
