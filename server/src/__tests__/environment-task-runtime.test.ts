@@ -678,6 +678,27 @@ describe("plugin-provided Runner execution", () => {
     expect(JSON.stringify({ ...error, message: error.message })).not.toContain("never-leak-variable");
     expect(error.cause).toBeUndefined();
   });
+  it("resumes a warm task only while its saved harness is still supported", async () => {
+    const login = ["environmentAcquireLease", "environmentInspectLease", "environmentReleaseLease", "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose", "loginPtyReadCredential"];
+    Object.assign(state.plugin.manifestJson.environmentDrivers[0], { supportsLoginPty: true, creationOperationVersion: 1, supportedAdapters: ["codex_local"] });
+    const identity = { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId: "run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+    const operation = { kind: "resume" as const, identity, bootstrapTicket: "transient-test-ticket" };
+    const result = { kind: "resume", taskId: "attempt-1", outcome: "resumed" };
+    const resume = (saved: Record<string, unknown>, methods = ["environmentTask", ...login]) => {
+      const value = row(); value.lease.status = "retained"; value.run!.status = "succeeded";
+      Object.assign(value.lease.metadata, saved);
+      const workers = worker(result); workers.getWorker.mockReturnValue({ supportedMethods: methods });
+      return { workers, result: executeEnvironmentTask(database(value).db, workers as never, { companyId: "company", leaseId, operation }) };
+    };
+    await expect(resume({ runnerTaskHarness: "codex" }).result).resolves.toEqual(result);
+    // A lease saved before the harness was recorded keeps resuming.
+    await expect(resume({}).result).resolves.toEqual(result);
+    for (const [saved, methods] of [[{ runnerTaskHarness: "grok" }, undefined], [{ runnerTaskHarness: "codex" }, ["environmentTask"]]] as const) {
+      const { workers, result: resumed } = resume(saved, methods ? [...methods] : undefined);
+      await expect(resumed).rejects.toThrow("harness is unavailable");
+      expect(workers.call).not.toHaveBeenCalled();
+    }
+  });
   it("rejects wrong task receipts and sanitizes worker errors", async () => {
     await expect(executeEnvironmentTask(database().db, worker({ kind: "accepted", taskId: "other" }) as never, { companyId: "company", leaseId, operation: submit })).rejects.toThrow("reconcile the same task");
     const workers = worker(); workers.call.mockRejectedValue(new Error("private-credential"));

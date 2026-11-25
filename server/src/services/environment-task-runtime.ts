@@ -295,11 +295,16 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
       JSON.stringify([...proof.projectIds].sort()) !== JSON.stringify([...operation.projectIds].sort()))
       throw new Error("Plugin Runner file scope unavailable");
   }
-  if (operation.kind === "submit" && driver.supportedAdapters) {
-    // A listed adapter runs only while the worker can also finish its sign-in.
-    const harness = operation.runner.harness;
-    const adapter = agentHarnessName("paperclip_runner", ["codex", "opencode"].includes(harness)
-      ? { provider: harness } : { provider: "acpx", acpxAgent: harness });
+  // A listed adapter runs only while the worker can also finish its sign-in.
+  // A resumed warm task starts new work too, so it is checked by the harness
+  // its submit saved. A lease saved before the harness was recorded keeps its
+  // earlier behaviour.
+  const gatedHarness = operation.kind === "submit" ? operation.runner.harness
+    : operation.kind === "resume" ? [metadata.runnerTaskHarness, savedIdentity?.harness].find(value => typeof value === "string") as string | undefined
+    : undefined;
+  if (gatedHarness && driver.supportedAdapters) {
+    const adapter = agentHarnessName("paperclip_runner", ["codex", "opencode"].includes(gatedHarness)
+      ? { provider: gatedHarness } : { provider: "acpx", acpxAgent: gatedHarness });
     if (!pluginDriverSupportedAdapters(driver, worker.supportedMethods)?.includes(adapter)) {
       throw new Error("Plugin Runner harness is unavailable on this environment");
     }
@@ -336,6 +341,7 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
       runnerTaskExecutionStopped: false, runnerTaskSessionRetained: false,
       ...(operation.kind === "submit" ? {
         runnerTaskIdentity: operation.runner,
+        runnerTaskHarness: operation.runner.harness,
         runnerTaskResumeFrom: operation.resumeFrom ?? null,
         runnerTaskAccountIdentity: operation.accountIdentity,
       } : {}),
