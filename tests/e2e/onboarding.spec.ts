@@ -749,7 +749,7 @@ test.describe("Onboarding wizard", () => {
 
     expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
   });
-  test("name-only setup saves the advanced Grok ACPX adapter on the same record", async ({ page }) => {
+  test("name-only setup saves the Grok Build Paperclip Runner adapter on the same record without an advanced picker", async ({ page }) => {
     const previous = await (await page.request.get("/api/instance/settings/experimental")).json();
     await page.request.patch("/api/instance/settings/experimental", { data: { enableNativeRunner: true } });
     try {
@@ -763,9 +763,9 @@ test.describe("Onboarding wizard", () => {
         && result.url().endsWith(`/api/companies/${company.id}/agents`));
       await page.getByRole("button", { name: "Choose adapter", exact: true }).click();
       const setup = await (await setupResponse).json();
-      await page.locator("summary").filter({ hasText: "Advanced" }).click();
-      await page.getByRole("button", { name: "Experimental harness", exact: true }).click();
-      await page.getByRole("option", { name: "Grok Build (Paperclip Runner)", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "Choose an adapter", exact: true })).toBeVisible();
+      await expect(page.getByRole("dialog").locator("summary").filter({ hasText: "Advanced" })).toHaveCount(0);
+      await page.locator("label").filter({ has: page.locator('input[name="new-agent-adapter"][value="grok_local"]') }).click();
       await page.getByRole("button", { name: "Configure agent", exact: true }).click();
       await expect(page.getByRole("heading", { name: "Connect a model", exact: true })).toBeVisible();
       expect(new URL(page.url()).searchParams.get("setupAgentId")).toBe(setup.id);
