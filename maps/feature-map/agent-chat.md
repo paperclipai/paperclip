@@ -61,7 +61,7 @@ uses real app APIs and a deterministic process agent to verify first-chat discov
 unread state across reloads, source navigation and follow-up context. It does not
 qualify live PR retrieval or a model's editorial choices.
 
-Automated: [composer picker](../../ui/src/components/task-chat/ComposerRunSettingsPicker.test.tsx) covers fixed-agent model/effort selection on desktop and mobile; [composer](../../ui/src/components/task-chat/TaskChatComposer.test.tsx) covers Coordinator gating and settings submission without reassignment. (Mocked `IssueDetail` UI tests for canonical first/existing-chat IDs and settings-before-comment ordering were removed; verify those page-level flows manually.) These tests mock the API and do not prove provider execution with the chosen model.
+Automated: [composer](../../ui/src/components/task-chat/TaskChatComposer.test.tsx) covers Coordinator gating and settings submission without reassignment. (Mocked `ComposerRunSettingsPicker` and `IssueDetail` UI tests for model/effort selection, canonical first/existing-chat IDs, and settings-before-comment ordering were removed; verify those UI flows manually.) These tests mock the API and do not prove provider execution with the chosen model.
 
 Automated: [thread and composer](../../ui/src/components/TaskChatThread.test.tsx)
 keeps an in-flight attachment through first-chat creation on desktop and mobile,
@@ -81,15 +81,14 @@ inaccessible saved conversation; verify no cross-user or cross-company history a
 
 ### `project-handoff`
 
-Automated: [chat project tools](../../server/src/__tests__/chat-project-tools.test.ts) checks tool contracts; live model choice and UI handoff require a manual run.
+Automated: [agent conversations](../../server/src/__tests__/agent-conversations.test.ts) and [agent chat messages](../../server/src/__tests__/agent-chat-messages.test.ts) cover canonical agent-chat contracts; live model choice and UI handoff require a manual run.
 
-Automated: [Coordinator handoffs](../../server/src/__tests__/coordinator-handoff.test.ts)
-checks that a suggested task remains a proposal until acceptance, that its task,
-initial plan and source-chat audience are saved atomically, and that retries do
+Note: a suggested task remains a proposal until acceptance, its task,
+initial plan and source-chat audience are saved atomically, and retries do
 not create another task. A conversation is a privacy/provenance source rather
-than a structural task parent. The same tests cover compact canonical decision
-receipts, exact uploaded-artifact bindings, current task access, reset-session
-boundaries, and pagination of older handoffs.
+than a structural task parent. Expected contract boundaries also include compact
+canonical decision receipts, exact uploaded-artifact bindings, current task access,
+reset-session boundaries, and pagination of older handoffs.
 Explicit live evals: [chat feature journeys](../../tests/runner-e2e/CHAT-FEATURES.md)
 send natural requests to save a backlog task or delegate an announcement. They
 check project/assignee, execution or non-execution, saved output, return to chat,

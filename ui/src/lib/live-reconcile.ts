@@ -21,6 +21,9 @@ export const LIVE_EVENT_FREE_QUERY_KEYS: readonly QueryKey[] = [
   queryKeys.plugins.uiContributions,
   ["workspace-preferences"],
   ["sidebar-preferences"],
+  // A setup checklist's prompt token and URLs: created once per setup, never changed by an event
+  // (the checklist's progress has its own key and does reconcile).
+  ["agent-setup-progress-handoff"],
 ];
 
 /** How long the reads above stay fresh. A window-focus refetch runs at most this often. */

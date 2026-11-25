@@ -6,6 +6,9 @@ import {
   type PluginEnvironmentTaskCredential, type PluginEnvironmentTaskCredentialProvider,
 } from "@paperclipai/plugin-sdk";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
+import { sanitizeAntigravityCredential } from "../../vendor/paperclip-runner/index.js";
+
+const ANTIGRAVITY_SIGN_IN_ENV = "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET";
 
 interface PreparedPluginRunnerCredentials {
   githubBroker?: { url: string; token: string };
@@ -51,13 +54,27 @@ export async function preparePluginRunnerCredentials(input: {
       .flatMap(key => input.environment[key] ? [[key, input.environment[key]]] : []));
     return { ...github, accountIdentity, credential: environmentTaskCredentialSchema.parse({ type: "claude-env", environment }) };
   }
-  if (input.provider === "grok" || input.provider === "copilot" || input.provider === "opencode") {
+  if (input.provider === "grok" || input.provider === "copilot" || input.provider === "opencode" || input.provider === "antigravity") {
     const provider: PluginEnvironmentTaskCredentialProvider = input.provider;
     if (provider === "grok") {
       if (input.environment.XAI_BASE_URL) throw new Error("Plugin Runner does not support the selected provider routing");
       if (!input.environment.XAI_API_KEY) throw new Error("Plugin Runner supports Grok only with an xAI API key. Grok subscription login is not supported.");
     }
-    const names = new Set(ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS[provider].flat());
+    if (provider === "antigravity") {
+      if (input.environment[ANTIGRAVITY_SIGN_IN_ENV]?.trim()) throw new Error("Plugin Runner selected credential unavailable");
+      if (!input.environment.GEMINI_API_KEY?.trim()) {
+        if (!input.home) throw new Error("Google Antigravity needs a Gemini API key or a saved Google sign-in.");
+        let authJson: string;
+        try {
+          authJson = sanitizeAntigravityCredential(await readLocalAiCredentialFile(join(await realpath(input.home), "antigravity-acp", "acp_token.json")));
+        } catch {
+          throw new Error("The selected Google Antigravity account is unavailable. Reconnect the Google account, then retry.");
+        }
+        const credential = environmentTaskCredentialSchema.parse({ type: "provider-env", provider, environment: { [ANTIGRAVITY_SIGN_IN_ENV]: authJson } });
+        return { ...github, accountIdentity, credential, needsWriteback: true };
+      }
+    }
+    const names = new Set(provider === "antigravity" ? ["GEMINI_API_KEY"] : ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS[provider].flat());
     const environment = Object.fromEntries([...names]
       .flatMap(key => input.environment[key] ? [[key, input.environment[key]]] : []));
     const credential = environmentTaskCredentialSchema.safeParse({ type: "provider-env", provider, environment });

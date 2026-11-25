@@ -226,3 +226,67 @@ export async function useVerifiedPreinstalledRemoteProviderPack(input: {
   }
   return false;
 }
+
+const ADMISSION_DIGEST_RE = /^sha256:[a-f0-9]{64}$/;
+const ADMISSION_REVISION_RE = /^[a-f0-9]{40}$/;
+const ADMISSION_EPOCH_RE = /^[a-f0-9-]{36}$/;
+const ADMISSION_RECEIPT_KEYS = new Set([
+  "schema", "stage", "authority", "companyId", "agentId", "runId", "sessionId", "runnerInstanceId",
+  "runnerEnvironmentLeaseId", "providerPackDigest", "opencodeProxySha256", "sourceRevision", "inheritedFromRunId",
+]);
+
+/**
+ * Validates a DB-persisted provider-pack admission receipt and its verified
+ * state against the exact execution identity so ephemeral controllers can
+ * re-pin an immutable image pack after losing local authority files.
+ */
+export function verifiedProviderPackAdmissionReceipt(input: {
+  receipt: unknown;
+  state: unknown;
+  companyId: string;
+  agentId: string;
+  runId: string;
+  sessionId: string;
+  runnerInstanceId: string;
+  environmentLeaseId: string;
+}): { providerPackDigest: string; opencodeProxySha256: string; sourceRevision: string } | null {
+  if (!input.state || typeof input.state !== "object" || Array.isArray(input.state)) return null;
+  const state = input.state as Record<string, unknown>;
+  if (Object.keys(state).sort().join(",") !== "admissionEpoch,schema,state"
+    || state.schema !== "paperclip.native-provider-pack-admission-state.v1"
+    || state.state !== "verified"
+    || typeof state.admissionEpoch !== "string" || !ADMISSION_EPOCH_RE.test(state.admissionEpoch)) {
+    return null;
+  }
+  if (!input.receipt || typeof input.receipt !== "object" || Array.isArray(input.receipt)) return null;
+  const receipt = input.receipt as Record<string, unknown>;
+  if (Object.keys(receipt).some(key => !ADMISSION_RECEIPT_KEYS.has(key))
+    || receipt.schema !== "paperclip.native-provider-pack-admission.v1"
+    || receipt.stage !== "session_admitted"
+    || receipt.authority !== "core_verified_selection"
+    || receipt.companyId !== input.companyId
+    || receipt.agentId !== input.agentId
+    || receipt.runId !== input.runId
+    || receipt.sessionId !== input.sessionId
+    || receipt.runnerInstanceId !== input.runnerInstanceId
+    || receipt.runnerEnvironmentLeaseId !== input.environmentLeaseId
+    || typeof receipt.providerPackDigest !== "string" || !ADMISSION_DIGEST_RE.test(receipt.providerPackDigest)
+    || typeof receipt.opencodeProxySha256 !== "string" || !ADMISSION_DIGEST_RE.test(receipt.opencodeProxySha256)
+    || typeof receipt.sourceRevision !== "string" || !ADMISSION_REVISION_RE.test(receipt.sourceRevision)
+    || (receipt.inheritedFromRunId !== undefined && (typeof receipt.inheritedFromRunId !== "string" || !receipt.inheritedFromRunId))) {
+    return null;
+  }
+  return {
+    providerPackDigest: receipt.providerPackDigest,
+    opencodeProxySha256: receipt.opencodeProxySha256,
+    sourceRevision: receipt.sourceRevision,
+  };
+}
+
+/** True only when pack verification failed because the staged pack's node executable was absent (exitCode=127). */
+export function isMissingProviderPackBinaryError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return error.message.startsWith("runner_remote_provider_artifact_incompatible:")
+    && nativeRunFailureCheck(error) === "pack_verifier_failed"
+    && error.message.includes("exitCode=127;");
+}

@@ -479,9 +479,18 @@ export interface ToolConnectionContentDeletionCounts {
 
 export type ToolConnectionContentDeletionStatus = "pending" | "completed";
 
+export type ToolConnectionContentDeletionReason =
+  | "requested"
+  | "connection_removed"
+  | "access_revoked"
+  | "provider_access_ended"
+  | "member_removed"
+  | "instance_removed";
+
 export interface ToolConnectionContentDeletion {
   id: string;
   status: ToolConnectionContentDeletionStatus;
+  reason: ToolConnectionContentDeletionReason;
   requestedAt: string;
   completedAt: string | null;
   retrying: boolean;

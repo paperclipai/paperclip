@@ -161,6 +161,17 @@
         "server/src/routes/sidebar-preferences.ts",
         "server/src/services/sidebar-preferences.ts"
       ]
+    },
+    {
+      "path": "rules/test-budget.mdc",
+      "description": "CI test budget: prevent unbudgeted real-clock sleeps >1s, historical SQL migration test sprawl, brittle static prose-grep tests, and tiny standalone embedded-Postgres files while keeping core invariants on PRs.",
+      "scope": [
+        "packages/db/src/**/*.test.ts",
+        "server/src/**/*.test.ts",
+        "ui/src/**/*.test.ts",
+        "ui/src/**/*.test.tsx",
+        "tests/e2e/**/*.spec.ts"
+      ]
     }
   ]
 }

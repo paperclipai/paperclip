@@ -573,7 +573,7 @@ jobs:
         with:
           lookup-only: true
           path: server/ui-dist
-          key: e2e-ui-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'ui/package.json', 'ui/index.html', 'ui/vite.config.*', 'ui/tsconfig*.json', 'ui/src/**', 'ui/public/**', 'packages/shared/src/**', 'packages/adapter-utils/src/**', 'packages/adapters/*/src/**', 'packages/plugins/sdk/src/**') }}
+          key: e2e-ui-dist-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'ui/package.json', 'ui/index.html', 'ui/vite.config.*', 'ui/tsconfig*.json', 'ui/src/**', 'ui/public/**', 'packages/shared/package.json', 'packages/shared/src/**', 'packages/adapter-utils/package.json', 'packages/adapter-utils/src/**', 'packages/adapters/*/package.json', 'packages/adapters/*/src/**', 'packages/plugins/sdk/package.json', 'packages/plugins/sdk/src/**', 'announcements/examples/animated/**') }}
 
       - name: Stage prebuilt UI assets for E2E cache
         if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha && steps.e2e_ui_dist.outputs.cache-hit != 'true' }}
@@ -584,7 +584,60 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: server/ui-dist
-          key: e2e-ui-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'ui/package.json', 'ui/index.html', 'ui/vite.config.*', 'ui/tsconfig*.json', 'ui/src/**', 'ui/public/**', 'packages/shared/src/**', 'packages/adapter-utils/src/**', 'packages/adapters/*/src/**', 'packages/plugins/sdk/src/**') }}
+          key: e2e-ui-dist-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'ui/package.json', 'ui/index.html', 'ui/vite.config.*', 'ui/tsconfig*.json', 'ui/src/**', 'ui/public/**', 'packages/shared/package.json', 'packages/shared/src/**', 'packages/adapter-utils/package.json', 'packages/adapter-utils/src/**', 'packages/adapters/*/package.json', 'packages/adapters/*/src/**', 'packages/plugins/sdk/package.json', 'packages/plugins/sdk/src/**', 'announcements/examples/animated/**') }}
+
+      # Exact-key master cache for prebuilt Runner dist (read-only restore in
+      # pr-trusted.yml typecheck_release_registry). Only canonical master pushes write.
+      - name: Check for prebuilt Runner dist cache
+        id: runner_dist
+        if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          lookup-only: true
+          path: |
+            packages/paperclip-runner/dist
+            packages/paperclip-runner/node_modules/.cache/paperclip-runner-build-inputs.json
+            packages/paperclip-eval-kernel/dist
+          key: runner-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.base.json', 'patches/**', 'packages/shared/src/**', 'packages/adapter-utils/src/**', 'packages/plugins/sdk/src/**', 'packages/paperclip-runner/package.json', 'packages/paperclip-runner/tsconfig*.json', 'packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/cursor-*.json', 'packages/paperclip-runner/src/**', 'packages/paperclip-runner/scripts/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/spec/**', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'packages/paperclip-eval-kernel/package.json', 'packages/paperclip-eval-kernel/tsconfig*.json', 'packages/paperclip-eval-kernel/src/**') }}
+
+      - name: Save prebuilt Runner dist for PR typecheck
+        if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha && steps.runner_dist.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            packages/paperclip-runner/dist
+            packages/paperclip-runner/node_modules/.cache/paperclip-runner-build-inputs.json
+            packages/paperclip-eval-kernel/dist
+          key: runner-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.base.json', 'patches/**', 'packages/shared/src/**', 'packages/adapter-utils/src/**', 'packages/plugins/sdk/src/**', 'packages/paperclip-runner/package.json', 'packages/paperclip-runner/tsconfig*.json', 'packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/cursor-*.json', 'packages/paperclip-runner/src/**', 'packages/paperclip-runner/scripts/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/spec/**', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'packages/paperclip-eval-kernel/package.json', 'packages/paperclip-eval-kernel/tsconfig*.json', 'packages/paperclip-eval-kernel/src/**') }}
+
+      # Incremental TS 7 .tsbuildinfo + server dts cache for PR typecheck
+      # (read-only prefix restore in pr-trusted.yml). Only canonical master pushes write.
+      - name: Check for incremental typecheck cache
+        id: typecheck_incremental
+        if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          lookup-only: true
+          path: |
+            server/node_modules/.cache/paperclip-typecheck
+            ui/node_modules/.cache/paperclip-ui.tsbuildinfo
+          key: typecheck-incremental-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig.base.json', 'server/tsconfig.json', 'server/src/__tests__/tsconfig.json', 'server/scripts/typecheck-layers.mjs', 'ui/tsconfig.json') }}-${{ github.sha }}
+
+      - name: Warm incremental typecheck cache
+        if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha && steps.typecheck_incremental.outputs.cache-hit != 'true' }}
+        run: |
+          node server/scripts/typecheck-layers.mjs --checkers 4
+          node scripts/storybook-catalog.mjs
+          node scripts/run-tsc.mjs -p ui/tsconfig.json --incremental --tsBuildInfoFile ui/node_modules/.cache/paperclip-ui.tsbuildinfo
+
+      - name: Save incremental typecheck cache for PR typecheck
+        if: ${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' && inputs.ref == github.sha && steps.typecheck_incremental.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            server/node_modules/.cache/paperclip-typecheck
+            ui/node_modules/.cache/paperclip-ui.tsbuildinfo
+          key: typecheck-incremental-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig.base.json', 'server/tsconfig.json', 'server/src/__tests__/tsconfig.json', 'server/scripts/typecheck-layers.mjs', 'ui/tsconfig.json') }}-${{ github.sha }}
 
   runner_binary_targets:
     if: inputs.runner_binaries_only

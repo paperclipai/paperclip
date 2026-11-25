@@ -60,7 +60,7 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
   );
 
   return (
-    <section aria-label="My secrets" className="flex flex-col gap-4">
+    <section aria-label="My secrets" className="flex flex-1 flex-col gap-4">
       <p className="max-w-xl text-sm text-muted-foreground">
         Values only you provide. Agents use them when they work for you.
         {missingCount > 0 ? (
@@ -79,7 +79,7 @@ export function MyUserSecretsTab({ companyId }: { companyId: string }) {
           retrying={mySecretsView.isFetching}
         />
       ) : entries.length === 0 && !mySecretsQuery.isPending && mySecretsView.kind !== "reconnecting" ? (
-        <EmptyState
+        <EmptyState placement="upper"
           icon={KeyRound}
           message="Nothing is asked of you yet. An admin decides which secrets each member provides."
         />

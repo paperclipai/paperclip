@@ -46,6 +46,7 @@ import {
   toolCallEvents,
   toolCatalogEntries,
   toolConnectionInstalls,
+  toolConnectionContentDeletions,
   toolConnections,
   toolOauthStates,
   toolInvocations,
@@ -15195,6 +15196,8 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(
       reauthorizationRequired.credentialRefs.map((ref) => ref.name),
     ).not.toContain("oauth.access_token");
+    expect(await db.select().from(toolConnectionContentDeletions)
+      .where(eq(toolConnectionContentDeletions.connectionId, connect.connectionId))).toEqual([]);
   });
 
   it("does not disable a connection when invalid_grant used a superseded refresh-token version", async () => {

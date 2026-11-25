@@ -1,21 +1,33 @@
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import type { ToolConnection, ToolPolicy, ToolProfileConfiguration } from "@paperclipai/shared";
+import type { ToolCatalogEntry, ToolConnection, ToolPolicy, ToolProfileConfiguration } from "@paperclipai/shared";
 import { toolsApi } from "@/api/tools";
 import { queryKeys } from "@/lib/queryKeys";
+import { withoutUnavailableActions } from "./action-permissions";
 import type { AccessDraft } from "./types";
 
-interface PermissionDraft {
+export interface PermissionDraft {
   enabled: Set<string>;
   askFirst: Set<string>;
   access: AccessDraft;
   reviewed?: Set<string>;
 }
 
-export function useConnectionPermissionSave({ companyId, connectionId, connection, onError }: {
+export function finishAppPermissions(next: PermissionDraft, catalog: ReadonlyArray<Pick<ToolCatalogEntry, "id" | "status" | "quarantineReason">>) {
+  const enabled = new Set(withoutUnavailableActions(next.enabled, catalog));
+  return {
+    enabledCatalogEntryIds: [...enabled],
+    askFirstCatalogEntryIds: [...next.askFirst].filter(id => enabled.has(id)),
+    ...(next.reviewed ? { reviewedCatalogEntryIds: [...next.reviewed] } : {}),
+    access: next.access.mode === "all" ? "all_agents" as const : { agentIds: [...next.access.agentIds] },
+  };
+}
+
+export function useConnectionPermissionSave({ companyId, connectionId, connection, catalog, onError }: {
   companyId: string | null;
   connectionId: string;
   connection: ToolConnection | undefined;
+  catalog: ReadonlyArray<Pick<ToolCatalogEntry, "id" | "status" | "quarantineReason">>;
   onError: (error: Error) => void;
 }) {
   const client = useQueryClient();
@@ -25,12 +37,7 @@ export function useConnectionPermissionSave({ companyId, connectionId, connectio
       ? toolsApi.putConnectionInstalls(connectionId, next.access.mode === "all"
         ? [{ targetType: "company", targetId: companyId! }]
         : [...next.access.agentIds].map(targetId => ({ targetType: "agent" as const, targetId })))
-      : toolsApi.finishApp(companyId!, connectionId, {
-        enabledCatalogEntryIds: [...next.enabled],
-        askFirstCatalogEntryIds: [...next.askFirst].filter(id => next.enabled.has(id)),
-        ...(next.reviewed ? { reviewedCatalogEntryIds: [...next.reviewed] } : {}),
-        access: next.access.mode === "all" ? "all_agents" : { agentIds: [...next.access.agentIds] },
-      }),
+      : toolsApi.finishApp(companyId!, connectionId, finishAppPermissions(next, catalog)),
     onMutate: async (next) => {
       setDraft(next);
       await Promise.all([

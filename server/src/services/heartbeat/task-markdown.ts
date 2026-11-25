@@ -7,6 +7,9 @@ import { TASK_QUESTION_GUIDANCE } from "../issue-question-context.js";
 import { routineSuggestionAgentGuidance } from "@paperclipai/shared";
 import { ONBOARDING_CHAT_DIRECTIVE, ONBOARDING_CHAT_GREETING_DIRECTIVE } from "../onboarding-chat-prompt.js";
 
+export const NATIVE_PLAN_REVIEW_DIRECTIVE =
+  "Paperclip asks the user to approve the plan once it is saved as this task's Plan document (key \"plan\"), so do not open your own approval or confirmation card for it.";
+
 export function buildPaperclipTaskMarkdown(input: {
   companyPrefix?: string | null;
   onboardingChat?: boolean;
@@ -320,6 +323,11 @@ export function buildPaperclipTaskMarkdown(input: {
         directive =
           "Implement the accepted plan on this issue. Follow any task assignments explicitly included in the approved plan. Plan acceptance alone does not require subtasks.";
       }
+      if (!acceptedPlanContinuation && input.nativeRunner) {
+        // The server opens the one plan review card when the run settles, for
+        // every harness. An agent-opened card would be a second card.
+        directive += ` ${NATIVE_PLAN_REVIEW_DIRECTIVE}`;
+      }
       lines.push(
         `- Work mode: ${quoteTaskScalar("planning")}`,
         "",
@@ -399,10 +407,11 @@ export function buildPaperclipTaskMarkdown(input: {
       "Follow-up directive:",
       "Apply the latest wake comment to the current task. Later direction replaces conflicting scope; preserve other requirements and approval gates. Clarification is not approval. Reuse completed work rather than repeating it.",
       "",
-      "Latest wake comment:",
       ...(renderWakeCommentBodies
-        ? [fenceTaskText(effectiveWakeComments[0]!.body)]
-        : []),
+        ? ["Latest wake comment:", fenceTaskText(effectiveWakeComments[0]!.body)]
+        : effectiveWakeComments[0]!.body
+          ? [`Latest wake comment: ${quoteTaskScalar(effectiveWakeComments[0]!.id)}, shown in the wake payload.`]
+          : [`Latest wake comment: ${quoteTaskScalar(effectiveWakeComments[0]!.id)} has attachments only; see the attachment directive.`]),
     );
     appendWakeAttachments(effectiveWakeComments[0]!);
   } else if (effectiveWakeComments.length > 1) {

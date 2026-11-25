@@ -6,6 +6,8 @@ import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embed
 import { agentProviderLimitCooldown, planNativeStartupRetry } from "./native-startup-retry.js";
 
 const HOUR_MS = 60 * 60_000;
+/** These agents sign in with the host's own account. */
+const HOST = { kind: "host" } as const;
 const DAY_MS = 24 * HOUR_MS;
 
 /** Claude ACP wording for an exhausted weekly allowance, such as "resets Nov 10, 3pm (UTC)". */
@@ -71,7 +73,7 @@ describe("native provider limit cooldown", () => {
   it("holds an agent until a dated weekly-limit reset instead of the one-hour default", async () => {
     const resetAt = new Date(Math.ceil((Date.now() + 20 * HOUR_MS) / HOUR_MS) * HOUR_MS);
     const agentId = await limitedAgent(resetAt);
-    expect(await agentProviderLimitCooldown(db, { companyId, agentId, now: new Date() }))
+    expect(await agentProviderLimitCooldown(db, { companyId, agentId, credential: HOST, now: new Date() }))
       .toMatchObject({ resetAt, resetReported: true, category: "quota_exhausted" });
   });
 
@@ -85,7 +87,7 @@ describe("native provider limit cooldown", () => {
         category: "quota_exhausted", providerCode: "insufficient_quota",
         message: "Check your plan and billing details.", retryability: "requires_action",
       } } });
-    expect(await agentProviderLimitCooldown(db, { companyId, agentId, now: new Date() })).toBeNull();
+    expect(await agentProviderLimitCooldown(db, { companyId, agentId, credential: HOST, now: new Date() })).toBeNull();
   });
 
   it("keeps the default cooldown for a rate limit without a reset", async () => {
@@ -94,7 +96,7 @@ describe("native provider limit cooldown", () => {
       schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
       category: "rate_limit", message: "Try again later.", retryability: "unknown",
     } } }).where(eq(heartbeatRuns.agentId, agentId));
-    expect(await agentProviderLimitCooldown(db, { companyId, agentId, now: new Date() }))
+    expect(await agentProviderLimitCooldown(db, { companyId, agentId, credential: HOST, now: new Date() }))
       .toMatchObject({ resetReported: false, category: "rate_limit" });
   });
 
@@ -111,7 +113,7 @@ describe("native provider limit cooldown", () => {
   it("re-checks a dated reset days away within one day", async () => {
     const agentId = await limitedAgent(new Date(Math.ceil((Date.now() + 3 * DAY_MS) / HOUR_MS) * HOUR_MS));
     const now = new Date();
-    const cooldown = await agentProviderLimitCooldown(db, { companyId, agentId, now });
+    const cooldown = await agentProviderLimitCooldown(db, { companyId, agentId, credential: HOST, now });
     expect(cooldown).toMatchObject({ resetReported: true });
     expect(cooldown!.resetAt.getTime()).toBe(now.getTime() + DAY_MS);
   });
