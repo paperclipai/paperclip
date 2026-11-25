@@ -296,7 +296,9 @@ always masked.
     of them, in any status, is Google (Gmail, Drive, Calendar, Docs and the
     other Workspace services), Slack, an aggregator (Composio, Arcade,
     Executor) or an app that reaches Google or Slack through another service
-    (Zapier, Make, GSC Wizard, Windsor.ai, by slug or server host). Slack chat
+    (Zapier, Make, GSC Wizard, Windsor.ai). Aggregators and these apps are
+    found by catalog slug, by server host and by name, because "Connect your
+    own MCP server" saves a URL and a free name with no slug. Slack chat
     channels are found by `config.provider`, because a removed channel's
     endpoint is archived (and leaves the endpoint list) while its connection
     row stays with a custom name.
@@ -308,6 +310,14 @@ always masked.
     `hiddenCount`. A hidden row can be Google or Slack, so the check counts
     only a list with `hiddenCount: 0`. An older server sends no count, which
     also keeps work content masked.
+  - The flag is the selected company's answer, so it applies only to that
+    company's content. The selection follows the URL in an effect after the
+    page renders, and a manual switch delays it, so the check also needs the
+    URL's company prefix to be the selected company's (`routeShowsCompany`).
+    A task preview loads a task by id and can show another company's task:
+    `IssueQuicklookCard` uses the work content marker only when the task's
+    `companyId` is the selected company (`workContentClassForCompany`), and
+    masks any other.
   - Loading, a failed latest fetch (even with an older answer cached), a list
     that waits on a refresh, no company and replay off all keep work content
     masked. The check keeps its own query keys (`replayWorkContentQueryKeys`)
@@ -339,9 +349,11 @@ always masked.
     long mixed-case random tokens. rrweb records one text node at a time, so
     the function also reads the text before the node on its line: a bold
     label, a value in inline code, a value with bold or italic text inside it
-    and a value split across syntax-highlight spans are masked. A value runs
-    to its closing quote or the end of its line inside the element it starts
-    in, so the sentence after an inline `KEY=value` still shows. It is a best
+    and a value split across syntax-highlight spans are masked. A private key
+    that the file viewer or a highlighter renders line by line is masked on
+    every line up to its closing marker. A value runs to its closing quote or
+    the end of its line inside the element it starts in, so the sentence
+    after an inline `KEY=value` still shows. It is a best
     effort. Labels are matched in English. It does not catch a secret with no
     label and no known format (a short password in a sentence, a lowercase
     hex key), a value on a different line from its label, or a value in a

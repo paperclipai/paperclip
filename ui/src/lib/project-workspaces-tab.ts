@@ -3,6 +3,8 @@ import type { ExecutionWorkspace, Issue, Project } from "@paperclipai/shared";
 type ProjectWorkspaceLike = Pick<Project, "workspaces" | "primaryWorkspace">;
 
 export type ProjectWorkspaceLinkedIssue = Pick<Issue, "id" | "identifier" | "title" | "updatedAt"> & {
+  /** Read by the task preview's session replay rule (`IssueQuicklookCard`). */
+  companyId?: string | null;
   status: string;
   priority: string;
   description?: string | null;

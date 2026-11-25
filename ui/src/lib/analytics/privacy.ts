@@ -46,6 +46,20 @@ export const ANALYTICS_WORK_CONTENT_CLASS = "ph-work-content";
 /** `<html>` attribute that shows work content in replays when set to `"visible"`. */
 export const REPLAY_WORK_CONTENT_ATTRIBUTE = "data-replay-work-content";
 
+/**
+ * The marker for work content that is loaded by id and so may belong to
+ * another company than the selected one (a task preview on a link). The
+ * page's visible flag is the selected company's answer, so only that
+ * company's content may use the work content marker. Content of another
+ * company, or of an unknown one, is customer content and always masks.
+ */
+export function workContentClassForCompany(
+  contentCompanyId: string | null | undefined,
+  selectedCompanyId: string | null | undefined,
+): string {
+  return contentCompanyId && contentCompanyId === selectedCompanyId ? ANALYTICS_WORK_CONTENT_CLASS : ANALYTICS_MASK_CLASS;
+}
+
 /** Markers that always mask, wherever they sit. */
 const STRICT_MASK_SELECTOR = [
   ...ANALYTICS_MASK_CLASS.split(" "),
@@ -194,7 +208,7 @@ const KNOWN_TOKEN = new RegExp(
     String.raw`\bAIza[0-9A-Za-z_-]{30,}`,
     String.raw`\bya29\.[0-9A-Za-z_-]{20,}`,
     String.raw`\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}`,
-    String.raw`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)`,
+    String.raw`-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|$)`,
   ].join("|"),
   "g",
 );
@@ -350,6 +364,116 @@ function lineBefore(node: Text, root: Element): LineBefore {
 }
 
 /**
+ * Lookups that hold for one synchronous run of the recorder (a full snapshot,
+ * or one batch of mutations). The DOM cannot change inside such a run, so
+ * each parent's text children are indexed once and each key-block answer is
+ * reused by the next line. A microtask drops them before the page can change.
+ */
+type RecordingPass = {
+  textChildren: WeakMap<Element, Map<string, Text[]>>;
+  inPrivateKey: WeakMap<Text, boolean>;
+};
+
+let recordingPass: RecordingPass | null = null;
+
+function currentRecordingPass(): RecordingPass {
+  if (!recordingPass) {
+    recordingPass = { textChildren: new WeakMap(), inPrivateKey: new WeakMap() };
+    queueMicrotask(() => {
+      recordingPass = null;
+    });
+  }
+  return recordingPass;
+}
+
+/**
+ * The child text nodes of `parent` that hold exactly `text`. rrweb passes the
+ * text and its parent element, not the node. The index is built once per
+ * parent and pass, so a paragraph with thousands of text children stays
+ * linear.
+ */
+function textChildrenWith(parent: Element, text: string): Text[] {
+  const pass = currentRecordingPass();
+  let byText = pass.textChildren.get(parent);
+  if (!byText) {
+    byText = new Map();
+    for (let child = parent.firstChild; child; child = child.nextSibling) {
+      if (child.nodeType !== TEXT_NODE) continue;
+      const data = (child as Text).data;
+      const same = byText.get(data);
+      if (same) same.push(child as Text);
+      else byText.set(data, [child as Text]);
+    }
+    pass.textChildren.set(parent, byText);
+  }
+  return byText.get(text) ?? [];
+}
+
+/** The end of an opening or closing marker (`-----BEGIN RSA PRIVATE KEY-----`, PGP's `PRIVATE KEY BLOCK-----`). */
+const PRIVATE_KEY_MARKER = /PRIVATE KEY(?: BLOCK)?-----/;
+const PRIVATE_KEY_END = /-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/;
+
+/** Text that can be part of a private key body: base64 and line breaks only. */
+const KEY_BODY_TEXT = /^[A-Za-z0-9+/=\s]+$/;
+
+/** A PEM header line between the opening marker and the body. */
+const KEY_HEADER_LINE = /^[A-Za-z-]+: \S+$/;
+
+/** A key body is at most a few dozen lines; each line is one or two nodes. */
+const PRIVATE_KEY_MAX_NODES = 200;
+
+/** Zero-width spaces stand in for empty lines in the file viewer. */
+function visibleText(data: string): string {
+  return data.replace(/\u200b/g, "").trim();
+}
+
+/**
+ * The length of the start of `text` that can be the rest of a private key
+ * body: everything before a closing marker, or all of it, when that part is
+ * base64 only. Zero when the text cannot continue a key.
+ */
+function keyBodyPrefixLength(text: string): number {
+  const end = text.search(PRIVATE_KEY_END);
+  const body = end >= 0 ? text.slice(0, end) : text;
+  return visibleText(body) && KEY_BODY_TEXT.test(body) ? body.length : 0;
+}
+
+/**
+ * True when `node` sits inside a private key block that opened in an earlier
+ * node of `root`. The file viewer and syntax highlighting put each line of a
+ * key in its own node, so only the opening line matches the key format by
+ * itself. Reads back through key body text, header lines and blank lines to
+ * the nearest marker, and stops at anything else.
+ */
+function insidePrivateKeyBlock(node: Text, root: Element): boolean {
+  const pass = currentRecordingPass();
+  const walker = root.ownerDocument.createTreeWalker(root, 4 /* NodeFilter.SHOW_TEXT */);
+  walker.currentNode = node;
+  let inside = false;
+  for (let visited = 0; visited < PRIVATE_KEY_MAX_NODES; visited += 1) {
+    const previous = walker.previousNode() as Text | null;
+    if (!previous) break;
+    if (previous.parentElement && isHiddenFromText(previous.parentElement)) continue;
+    const data = previous.data;
+    if (PRIVATE_KEY_MARKER.test(data)) {
+      inside = data.lastIndexOf("-----BEGIN ") > data.lastIndexOf("-----END ");
+      break;
+    }
+    const line = visibleText(data);
+    if (!line) continue;
+    // The line before was answered in this pass: the same answer holds here.
+    const known = pass.inPrivateKey.get(previous);
+    if (known !== undefined) {
+      inside = known;
+      break;
+    }
+    if (!KEY_BODY_TEXT.test(line) && !KEY_HEADER_LINE.test(line)) break;
+  }
+  pass.inPrivateKey.set(node, inside);
+  return inside;
+}
+
+/**
  * Redacts the text of a shown work content node with its line context.
  * rrweb passes the text and its parent element, not the node, so every child
  * text node with this text is a candidate and a character is masked when any
@@ -359,14 +483,16 @@ function redactWorkContentText(text: string, parent: HTMLElement, root: Element)
   if (!/\S/.test(text)) return text;
   // Preformatted text: a line is one statement, so a value runs to its end.
   const preformatted = parent.closest("pre") !== null;
+  const keyBodyLength = keyBodyPrefixLength(text);
   let result = redactReplaySecrets(text);
-  let candidates = 0;
-  for (const child of Array.from(parent.childNodes)) {
-    if (child.nodeType !== TEXT_NODE || (child as Text).data !== text) continue;
-    candidates += 1;
-    // Many identical siblings: stop reading context and mask the text instead.
-    if (candidates > MAX_CONTEXT_CANDIDATES) return maskCharacters(text);
-    const line = lineBefore(child as Text, root);
+  const candidates = textChildrenWith(parent, text);
+  // Many identical siblings: do not read context for each, mask the text.
+  if (candidates.length > MAX_CONTEXT_CANDIDATES) return maskCharacters(text);
+  for (const child of candidates) {
+    if (keyBodyLength > 0 && insidePrivateKeyBlock(child, root)) {
+      result = mergeMasks(text, result, maskCharacters(text.slice(0, keyBodyLength)) + text.slice(keyBodyLength));
+    }
+    const line = lineBefore(child, root);
     if (!line.text) continue;
     // Elsewhere a value runs on only inside the element it starts in.
     const continues = (offset: number) => preformatted

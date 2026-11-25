@@ -16,7 +16,9 @@ import { authApi } from "@/api/auth";
 import { chatEndpointsApi, type ChatEndpoint } from "@/api/chatEndpoints";
 import { toolsApi } from "@/api/tools";
 import { useCompany } from "@/context/CompanyContext";
+import { extractCompanyPrefixFromPath } from "@/lib/company-routes";
 import { queryKeys } from "@/lib/queryKeys";
+import { useLocation } from "@/lib/router";
 import { REPLAY_WORK_CONTENT_ATTRIBUTE } from "./privacy";
 import { refreshSessionReplay } from "./product-analytics";
 
@@ -30,17 +32,27 @@ const CONNECTED_ACCOUNT_PATTERN = /google|gmail|slack/i;
  */
 const ROUTER_SOURCE_SLUGS = new Set(["zapier", "make", "gsc-wizard", "windsor-ai"]);
 
-/** The same apps added by hand, matched by the host of the server URL. */
-const ROUTER_SOURCE_HOSTS = ["zapier.com", "make.com", "gscwizard.com", "windsor.ai"];
+/**
+ * The server hosts of the aggregators and router apps. "Connect your own MCP
+ * server" saves a URL and a free name with no catalog slug, so a gateway
+ * added that way is found by its host.
+ */
+const GATEWAY_SOURCE_HOSTS = [
+  "composio.dev", "arcade.dev", "executor.sh",
+  "zapier.com", "make.com", "gscwizard.com", "windsor.ai",
+];
 
-function isRouterSourceUrl(value: string): boolean {
+/** The same services by the name a person is likely to give the connection. */
+const GATEWAY_SOURCE_NAME = /\b(?:composio|arcade|executor|zapier|make|windsor(?:\.ai)?|gsc wizard)\b/i;
+
+function isGatewaySourceUrl(value: string): boolean {
   let host: string;
   try {
     host = new URL(value).hostname.toLowerCase();
   } catch {
     return false;
   }
-  return ROUTER_SOURCE_HOSTS.some((routerHost) => host === routerHost || host.endsWith(`.${routerHost}`));
+  return GATEWAY_SOURCE_HOSTS.some((gatewayHost) => host === gatewayHost || host.endsWith(`.${gatewayHost}`));
 }
 
 function stringValue(value: unknown): string {
@@ -60,7 +72,8 @@ export function connectionCarriesConnectedAccountData(
   const slug = connectionSourceSlug(connection);
   if (slug && (isAppAggregator(slug) || ROUTER_SOURCE_SLUGS.has(slug))) return true;
   const transport = connection.transportConfig ?? {};
-  if (isRouterSourceUrl(stringValue(transport.url)) || isRouterSourceUrl(stringValue(transport.serverUrl))) return true;
+  if (isGatewaySourceUrl(stringValue(transport.url)) || isGatewaySourceUrl(stringValue(transport.serverUrl))) return true;
+  if (GATEWAY_SOURCE_NAME.test(connection.name)) return true;
   const haystack = [
     slug ?? "",
     connection.name,
@@ -98,6 +111,20 @@ export function companyAllowsReplayWorkContent(
   if (connectionList.connections.some(connectionCarriesConnectedAccountData)) return false;
   if (chatEndpoints.some((endpoint) => endpoint.provider === "slack")) return false;
   return true;
+}
+
+/**
+ * True when the page at `pathname` belongs to the company with this issue
+ * prefix, or to no company. The visible flag is the selected company's
+ * answer, but the selection follows the URL in an effect after the page
+ * renders, and a manual switch delays it. In between, the page can show
+ * another company's task under the selected company's flag, so a company
+ * page counts only when its prefix is the selected company's.
+ */
+export function routeShowsCompany(pathname: string, issuePrefix: string | null | undefined): boolean {
+  const routePrefix = extractCompanyPrefixFromPath(pathname);
+  if (!routePrefix) return true;
+  return !!issuePrefix && routePrefix.toUpperCase() === issuePrefix.toUpperCase();
 }
 
 function setReplayWorkContent(visible: boolean) {
@@ -195,7 +222,8 @@ function isCurrentAnswer(query: { status: string; isStale: boolean }): boolean {
  * extra requests.
  */
 export function ReplayWorkContentVisibility() {
-  const { selectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany } = useCompany();
+  const { pathname } = useLocation();
   const { data: session } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -215,9 +243,11 @@ export function ReplayWorkContentVisibility() {
     enabled: !!companyId,
   });
   // Only a confirmed answer counts: while loading, after a reset, while a
-  // refresh is pending and when the latest fetch failed (even with older data
-  // cached), work content stays masked.
+  // refresh is pending, when the latest fetch failed (even with older data
+  // cached) and while the page shows another company, work content stays
+  // masked.
   const visible = !!companyId
+    && routeShowsCompany(pathname, selectedCompany?.issuePrefix)
     && isCurrentAnswer(connections)
     && isCurrentAnswer(chatEndpoints)
     && companyAllowsReplayWorkContent(connections.data, chatEndpoints.data);

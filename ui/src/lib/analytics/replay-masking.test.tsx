@@ -29,6 +29,7 @@ import {
   REPLAY_WORK_CONTENT_ATTRIBUTE,
   maskReplayText,
   redactReplaySecrets,
+  workContentClassForCompany,
 } from "./privacy";
 import { isBlockedFromReplay, replayLeaks } from "./replay-recording.test-utils";
 
@@ -494,6 +495,45 @@ describe("session replay text masking", () => {
       expect(redactReplaySecrets("plain words", { before: "note: ", continues: () => false })).toBe("plain words");
     });
 
+    it("masks every line of a private key that the file viewer renders line by line", () => withVisibleWorkContent(() => {
+      // `FileContentViewer`: one <div> per line, a gutter number and a <code>.
+      const lines = [
+        "notes for the deploy", "-----BEGIN RSA PRIVATE KEY-----", "Proc-Type: 4,ENCRYPTED", "\u200b",
+        "abcdefghijklmnop", "QRSTUVWX", "tail12==", "-----END RSA PRIVATE KEY-----", "done", "abcdefghijklmnop",
+      ];
+      document.body.innerHTML = work(`<pre>${lines.map((line, index) => `<div><span aria-hidden="true">${index + 1}</span><code>${line}</code></div>`).join("")}</pre>`);
+      const recorded = Array.from(document.querySelectorAll("code")).map((code) => recordedText(code.firstChild as Text));
+      expect(recorded).toEqual([
+        "notes for the deploy", stars("-----BEGIN RSA PRIVATE KEY-----"), "Proc-Type: 4,ENCRYPTED", "\u200b",
+        "****************", "********", "********", "-----END RSA PRIVATE KEY-----", "done", "abcdefghijklmnop",
+      ]);
+    }));
+
+    it("masks a PGP private key block line by line", () => withVisibleWorkContent(() => {
+      const lines = ["-----BEGIN PGP PRIVATE KEY BLOCK-----", "Version: 2", "\u200b", "abcdefghijkl", "=AbCd", "-----END PGP PRIVATE KEY BLOCK-----", "after"];
+      document.body.innerHTML = work(`<pre>${lines.map((line) => `<div><code>${line}</code></div>`).join("")}</pre>`);
+      const recorded = Array.from(document.querySelectorAll("code")).map((code) => recordedText(code.firstChild as Text));
+      expect(recorded).toEqual([stars(lines[0]!), "Version: 2", "\u200b", "************", "*****", lines[5], "after"]);
+    }));
+
+    it("masks the rest of a private key that ends inside a later node", () => withVisibleWorkContent(() => {
+      const html = work("<pre><code><span>-----BEGIN PRIVATE KEY-----\n</span><span>abcdefgh\n</span><span>ijkl==\n-----END PRIVATE KEY-----\nsafe words</span></code></pre>");
+      expect(recordedTextOf(html, "abcdefgh")).toBe("********\n");
+      expect(recordedTextOf(html, "ijkl")).toBe("******\n-----END PRIVATE KEY-----\nsafe words");
+    }));
+
+    it("stays fast on a long paragraph of prose between inline elements", () => withVisibleWorkContent(() => {
+      // Every text child of the <p> differs, so each one is its own candidate.
+      const parts = Array.from({ length: 6_000 }, (_unused, index) => `prose number ${index} goes on <b>bold ${index}</b> `).join("");
+      document.body.innerHTML = work(`<p>${parts}</p>`);
+      const texts: Text[] = [];
+      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) texts.push(walker.currentNode as Text);
+      const started = performance.now();
+      for (const node of texts) recordedText(node);
+      expect(performance.now() - started).toBeLessThan(1_500);
+    }));
+
     it("stays fast on a long highlighted line", () => withVisibleWorkContent(() => {
       const spans = Array.from({ length: 3_000 }, (_unused, index) => `<span>part${index}</span> `).join("");
       document.body.innerHTML = work(`<pre><code>${spans}</code></pre>`);
@@ -535,6 +575,18 @@ describe("session replay text masking", () => {
     "Next step: run pnpm verify --full",
   ])("redactReplaySecrets leaves ordinary text alone: %s", (input) => {
     expect(redactReplaySecrets(input)).toBe(input);
+  });
+
+  it("shows a task preview as work content only for the selected company's own task", () => {
+    // A preview loads a task by id, so it can belong to another company than
+    // the one whose source check set the page's visible flag.
+    expect(workContentClassForCompany("co-1", "co-1")).toBe(ANALYTICS_WORK_CONTENT_CLASS);
+    expect(workContentClassForCompany("co-2", "co-1")).toBe(ANALYTICS_MASK_CLASS);
+    expect(workContentClassForCompany(undefined, "co-1")).toBe(ANALYTICS_MASK_CLASS);
+    expect(workContentClassForCompany("co-1", null)).toBe(ANALYTICS_MASK_CLASS);
+    expect(workContentClassForCompany(null, null)).toBe(ANALYTICS_MASK_CLASS);
+    const quicklook = readFileSync(join(UI_SRC, "components/IssueLinkQuicklook.tsx"), "utf8");
+    expect(quicklook).toContain("workContentClassForCompany(issue.companyId, selectedCompanyId)");
   });
 
   it("sends the marker selector and the work content mask function to session replay", () => {
@@ -667,7 +719,8 @@ describe("session replay text masking", () => {
     expect(index, `content not found in ${file}`).toBeGreaterThanOrEqual(0);
     const contentTag = source.startsWith("<", index) ? source.slice(index, tagEnd(source, index + 1) + 1) : "";
     const elements = [...openElementsAt(source, index), contentTag];
-    expect(elements.some((tag) => tag.includes("ANALYTICS_WORK_CONTENT_CLASS"))).toBe(true);
+    // `workContentClassForCompany` picks the work marker for the selected company's own content.
+    expect(elements.some((tag) => tag.includes("ANALYTICS_WORK_CONTENT_CLASS") || tag.includes("workContentClassForCompany("))).toBe(true);
   });
 
   it("finds the portaled content of connection and account surfaces", () => {

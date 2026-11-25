@@ -16,7 +16,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { StatusGlyph } from "@/components/StatusGlyph";
 import { ProjectTile } from "@/components/ProjectTile";
 import { useFlyoutAppearance } from "@/components/ui/flyout-appearance";
-import { ANALYTICS_WORK_CONTENT_CLASS } from "@/lib/analytics/privacy";
+import { workContentClassForCompany } from "@/lib/analytics/privacy";
+import { useOptionalCompany } from "@/context/CompanyContext";
 
 /* ------------------------------------------------------------------ */
 /*  Single-flight quicklook store                                      */
@@ -96,6 +97,8 @@ export function quicklookAlignOffset(align: "start" | "center" | "end" = "start"
 }
 
 export type IssueQuicklookIssue = Pick<Issue, "id" | "title" | "updatedAt"> & {
+  /** The task's company. Session replay shows the description only for the selected company's own task. */
+  companyId?: string | null;
   identifier?: string | null;
   status: string;
   priority: string;
@@ -172,6 +175,7 @@ export function IssueQuicklookCard({
   compact?: boolean;
 }) {
   const appearance = useFlyoutAppearance();
+  const selectedCompanyId = useOptionalCompany()?.selectedCompanyId;
   const description = useMemo(() => summarizeIssueDescription(issue.description), [issue.description]);
   const projectName = issue.project?.name;
 
@@ -212,7 +216,12 @@ export function IssueQuicklookCard({
       </RouterDom.Link>
 
       {description ? (
-        <p data-slot="task-preview-description" className={cn("text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] overflow-hidden", ANALYTICS_WORK_CONTENT_CLASS)}>
+        <p data-slot="task-preview-description" className={cn("text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] overflow-hidden", 
+          // A preview loads a task by id, so it can show another company's task
+          // than the selected one. Only the selected company's own task is work
+          // content in session replay; any other always masks.
+          workContentClassForCompany(issue.companyId, selectedCompanyId),
+        )}>
           {description}
         </p>
       ) : null}

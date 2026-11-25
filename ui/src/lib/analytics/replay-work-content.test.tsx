@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   companyId: "co-1" as string | null,
+  companyPrefix: "ACME" as string | null,
+  pathname: "/ACME/issues/ACME-1",
   session: { browserAnalytics: { replayEnabled: true } } as unknown,
   connections: vi.fn(),
   chatEndpoints: vi.fn(),
@@ -14,8 +16,12 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
-  useCompany: () => ({ selectedCompanyId: mocks.companyId }),
+  useCompany: () => ({
+    selectedCompanyId: mocks.companyId,
+    selectedCompany: mocks.companyId && mocks.companyPrefix ? { id: mocks.companyId, issuePrefix: mocks.companyPrefix } : null,
+  }),
 }));
+vi.mock("@/lib/router", () => ({ useLocation: () => ({ pathname: mocks.pathname }) }));
 vi.mock("@/api/auth", () => ({ authApi: { getSession: async () => mocks.session } }));
 vi.mock("@/api/tools", () => ({ toolsApi: { listConnections: (id: string) => mocks.connections(id) } }));
 vi.mock("@/api/chatEndpoints", () => ({ chatEndpointsApi: { list: (id: string) => mocks.chatEndpoints(id) } }));
@@ -28,6 +34,7 @@ import {
   connectionCarriesConnectedAccountData,
   isReplayWorkContentSourceChange,
   replayWorkContentQueryKeys,
+  routeShowsCompany,
 } from "./replay-work-content";
 
 vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
@@ -70,6 +77,21 @@ describe("connectionCarriesConnectedAccountData", () => {
     expect(connectionCarriesConnectedAccountData(connection({ name: "Notes", transportConfig: { url: "not a url" } }))).toBe(false);
   });
 
+  it("flags a known gateway added through the generic setup, with no catalog slug", () => {
+    // "Connect your own MCP server" saves the URL and a free name, no slug.
+    for (const url of [
+      "https://mcp.composio.dev/partner/mcp", "https://connect.composio.dev/mcp", "https://backend.composio.dev/v3/mcp/abc",
+      "https://api.arcade.dev/mcp/gateway", "https://executor.sh/mcp",
+    ]) {
+      expect(connectionCarriesConnectedAccountData(connection({ name: "Team tools", transportConfig: { url } }))).toBe(true);
+      expect(connectionCarriesConnectedAccountData(connection({ name: "Team tools", transportConfig: { serverUrl: url } }))).toBe(true);
+    }
+    for (const name of ["Composio", "Arcade gateway", "Executor", "Zapier", "Make", "Windsor.ai", "GSC Wizard"]) {
+      expect(connectionCarriesConnectedAccountData(connection({ name, transportConfig: { url: "https://mcp.internal.example/mcp" } }))).toBe(true);
+    }
+    expect(connectionCarriesConnectedAccountData(connection({ name: "Maker space", transportConfig: { url: "https://decomposio.example/mcp" } }))).toBe(false);
+  });
+
   it("leaves other connections alone", () => {
     expect(connectionCarriesConnectedAccountData(connection({ config: { sourceTemplateKey: "linear" } }))).toBe(false);
     expect(connectionCarriesConnectedAccountData(connection({ name: "GitHub", transportConfig: { url: "https://api.githubcopilot.com/mcp" } }))).toBe(false);
@@ -93,6 +115,21 @@ describe("companyAllowsReplayWorkContent", () => {
     expect(companyAllowsReplayWorkContent(connectionList([connection()], 2), [])).toBe(false);
     // An older server sends no count.
     expect(companyAllowsReplayWorkContent({ connections: [] }, [])).toBe(false);
+  });
+});
+
+describe("routeShowsCompany", () => {
+  it("accepts the selected company's own pages and pages with no company", () => {
+    expect(routeShowsCompany("/ACME/issues/ACME-1", "ACME")).toBe(true);
+    expect(routeShowsCompany("/acme/dashboard", "ACME")).toBe(true);
+    expect(routeShowsCompany("/", "ACME")).toBe(true);
+    expect(routeShowsCompany("/instance/settings", "ACME")).toBe(true);
+  });
+
+  it("rejects a page of another company, or any company page with no selected company", () => {
+    expect(routeShowsCompany("/OTHER/issues/OTHER-1", "ACME")).toBe(false);
+    expect(routeShowsCompany("/OTHER/issues/OTHER-1", null)).toBe(false);
+    expect(routeShowsCompany("/OTHER/issues/OTHER-1", undefined)).toBe(false);
   });
 });
 
@@ -160,6 +197,8 @@ describe("ReplayWorkContentVisibility", () => {
 
   beforeEach(() => {
     mocks.companyId = "co-1";
+    mocks.companyPrefix = "ACME";
+    mocks.pathname = "/ACME/issues/ACME-1";
     mocks.session = { browserAnalytics: { replayEnabled: true } };
     mocks.connections.mockReset().mockResolvedValue(connectionList());
     mocks.chatEndpoints.mockReset().mockResolvedValue([]);
@@ -241,6 +280,20 @@ describe("ReplayWorkContentVisibility", () => {
     expect(mocks.connections).toHaveBeenCalledTimes(2);
   });
 
+  it("masks while the page shows another company than the selected one", async () => {
+    // The selection follows the URL in an effect after the page renders, and
+    // a manual switch delays it, so another company's task can render first.
+    await render();
+    expect(visible()).toBe("visible");
+    mocks.pathname = "/OTHER/issues/OTHER-7";
+    await render();
+    expect(visible()).toBeNull();
+    mocks.pathname = "/ACME/issues/ACME-1";
+    await render();
+    expect(visible()).toBe("visible");
+    expect(mocks.refresh).toHaveBeenCalledTimes(1);
+  });
+
   it("masks while an invalidated list refreshes, and shows again without another snapshot", async () => {
     // `LiveUpdatesProvider` invalidates every active query when the tab
     // returns or the socket reopens, because it missed events meanwhile.
@@ -263,10 +316,14 @@ describe("ReplayWorkContentVisibility", () => {
     await render();
     expect(visible()).toBe("visible");
     mocks.companyId = "co-2";
+    mocks.companyPrefix = "OTHER";
+    mocks.pathname = "/OTHER/dashboard";
     mocks.connections.mockResolvedValue(connectionList([connection({ config: { sourceTemplateKey: "gmail" } })]));
     await render();
     expect(visible()).toBeNull();
     mocks.companyId = "co-1";
+    mocks.companyPrefix = "ACME";
+    mocks.pathname = "/ACME/dashboard";
     let finishReload: (value: unknown) => void = () => {};
     mocks.connections.mockImplementation(() => new Promise((resolve) => { finishReload = resolve; }));
     await render();
