@@ -101,7 +101,7 @@ import {
   isKnownNativeSessionRootEntry,
 } from "./native-session-root-entries.js";
 import { createRunPreparationTiming } from "../execution-preparation-timing.js";
-import { noteRunStartupSessionResumed } from "../run-startup-stage.js";
+import { endRunStartup, noteRunStartupSessionResumed } from "../run-startup-stage.js";
 import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
 import { parseProviderPerformanceSpans } from "../../vendor/paperclip-runner/index.js";
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
@@ -12096,6 +12096,9 @@ async function executePaperclipNativeSessionAttempt(
             endedAtMs: milestoneAtMs,
           });
         }
+        // Agent output means the turn is under way, even for an attempt that
+        // reattached to a turn whose start was saved before a restart.
+        if (firstMeaningfulAgentEventKind(event)) endRunStartup(input.execution.binding.runId);
         if (!firstAgentEventRecorded && turnStartedAtMs !== null) {
           const kind = firstMeaningfulAgentEventKind(event);
           if (kind) {
@@ -12244,6 +12247,11 @@ async function executePaperclipNativeSessionAttempt(
         );
       },
       onDuplicateEvent: async (event, cursor) => {
+        // A replayed turn start or agent output, after a restart, shows the
+        // turn was already under way, so the run is past startup.
+        if (event.eventType === "turn.submitted" || event.eventType === "turn.started" || firstMeaningfulAgentEventKind(event)) {
+          endRunStartup(input.execution.binding.runId);
+        }
         await input.onPersistedNativeLog?.(cursor, formatNativeRunLogEvent(event));
         if (!firstTokenRecorded) observeDeliverableText(event);
         await observeAccountingEvent(event);
