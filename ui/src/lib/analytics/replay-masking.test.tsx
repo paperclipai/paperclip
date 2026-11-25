@@ -522,27 +522,46 @@ describe("session replay text masking", () => {
       expect(recordedTextOf(html, "ijkl")).toBe("******\n-----END PRIVATE KEY-----\nsafe words");
     }));
 
-    it("stays fast on a long paragraph of prose between inline elements", () => withVisibleWorkContent(() => {
-      // Every text child of the <p> differs, so each one is its own candidate.
-      const parts = Array.from({ length: 6_000 }, (_unused, index) => `prose number ${index} goes on <b>bold ${index}</b> `).join("");
-      document.body.innerHTML = work(`<p>${parts}</p>`);
+    // rrweb calls the mask function for every text node, so its work per node
+    // must not grow with the page. A wall-clock bound depends on the machine,
+    // so these count how often the function reads the text of a node: to scan
+    // siblings again for every node it would have to read each of them again.
+    function textReadsWhileRecording(html: string): { reads: number; nodes: number } {
+      document.body.innerHTML = html;
       const texts: Text[] = [];
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
       while (walker.nextNode()) texts.push(walker.currentNode as Text);
-      const started = performance.now();
-      for (const node of texts) recordedText(node);
-      expect(performance.now() - started).toBeLessThan(1_500);
+      const readData = Object.getOwnPropertyDescriptor(CharacterData.prototype, "data")!.get!;
+      let reads = 0;
+      const spy = vi.spyOn(CharacterData.prototype, "data", "get").mockImplementation(function (this: CharacterData) {
+        reads += 1;
+        return readData.call(this);
+      });
+      try {
+        for (const node of texts) recordedText(node);
+      } finally {
+        spy.mockRestore();
+      }
+      return { reads, nodes: texts.length };
+    }
+
+    // The line context reads at most 64 earlier nodes for one node.
+    const MAX_TEXT_READS_PER_NODE = 100;
+
+    it("does linear work on a long paragraph of prose between inline elements", () => withVisibleWorkContent(() => {
+      // Every text child of the <p> differs, so each one is its own candidate.
+      const parts = Array.from({ length: 1_500 }, (_unused, index) => `prose number ${index} goes on <b>bold ${index}</b> `).join("");
+      const { reads, nodes } = textReadsWhileRecording(work(`<p>${parts}</p>`));
+      // 1,500 prose nodes, 1,500 bold nodes and the space after the last one.
+      expect(nodes).toBe(3_001);
+      expect(reads).toBeLessThan(nodes * MAX_TEXT_READS_PER_NODE);
     }));
 
-    it("stays fast on a long highlighted line", () => withVisibleWorkContent(() => {
-      const spans = Array.from({ length: 3_000 }, (_unused, index) => `<span>part${index}</span> `).join("");
-      document.body.innerHTML = work(`<pre><code>${spans}</code></pre>`);
-      const texts: Text[] = [];
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      while (walker.nextNode()) texts.push(walker.currentNode as Text);
-      const started = performance.now();
-      for (const node of texts) recordedText(node);
-      expect(performance.now() - started).toBeLessThan(1_000);
+    it("does linear work on a long highlighted line", () => withVisibleWorkContent(() => {
+      const spans = Array.from({ length: 1_000 }, (_unused, index) => `<span>part${index}</span> `).join("");
+      const { reads, nodes } = textReadsWhileRecording(work(`<pre><code>${spans}</code></pre>`));
+      expect(nodes).toBe(2_000);
+      expect(reads).toBeLessThan(nodes * MAX_TEXT_READS_PER_NODE);
     }));
   });
 
