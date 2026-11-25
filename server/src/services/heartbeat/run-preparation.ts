@@ -858,6 +858,7 @@ function sanitizeAgentSessionMessageText(value: unknown): string | null {
 type ManagedMcpGatewayRunConfig = {
   version: 1;
   managedMcpOnly: boolean;
+  apiBaseUrl?: string;
   gateways: Array<{
     id: string;
     name: string;
@@ -1264,7 +1265,7 @@ export function createAdapterRuntimeToolAccess(input: {
   });
 }
 
-const MANAGED_MCP_LOCAL_ADAPTERS = new Set(["codex_local"]);
+const MANAGED_MCP_LOCAL_ADAPTERS = new Set(["codex_local", "opencode_local", "hermes_local"]);
 
 function adapterSupportsManagedMcpConfig(adapterType: string): boolean {
   return MANAGED_MCP_LOCAL_ADAPTERS.has(adapterType);
@@ -1394,6 +1395,7 @@ export async function createManagedMcpRunConfig(input: {
 }): Promise<ManagedMcpGatewayRunConfig | null> {
   if (!adapterSupportsManagedMcpConfig(input.agent.adapterType)) return null;
   if (input.config.managedMcpOnly === false) return null;
+  if (input.agent.adapterType !== "codex_local" && input.config.managedMcpOnly !== true) return null;
 
   const rows = await input.db
     .select()
@@ -1511,8 +1513,19 @@ export async function createManagedMcpRunConfig(input: {
         ),
     )
     .map(({ gateway }) => gateway);
-  if (gateways.length === 0) return null;
+  if (gateways.length === 0) {
+    return input.agent.adapterType === "codex_local" ? null : { version: 1, managedMcpOnly: true, gateways: [] };
+  }
 
+  const apiBaseUrl = input.agent.adapterType === "codex_local" ? undefined : paperclipApiBaseUrl();
+  if (apiBaseUrl) {
+    try {
+      const url = new URL(apiBaseUrl);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error();
+    } catch {
+      throw new Error("A valid PAPERCLIP_API_URL is required to deliver managed runtime MCP servers");
+    }
+  }
   const service = createToolGatewayService(input.db);
   const expiresAt = new Date(Date.now() + 60 * 60 * 1000);
   const managedGateways: ManagedMcpGatewayRunConfig["gateways"] = [];
@@ -1545,6 +1558,7 @@ export async function createManagedMcpRunConfig(input: {
   return {
     version: 1,
     managedMcpOnly: true,
+    ...(apiBaseUrl ? { apiBaseUrl } : {}),
     gateways: managedGateways,
   };
 }

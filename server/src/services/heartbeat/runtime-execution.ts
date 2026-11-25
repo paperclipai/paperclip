@@ -888,6 +888,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         issueId: issueRef?.id ?? null,
       }));
       if (managedMcpConfig) {
+        identityRedactor.addSecretValues(managedMcpConfig.gateways.map((gateway) => gateway.bearerToken));
         adapterContext.paperclipManagedMcp = managedMcpConfig;
       }
       const guardedDispatch =

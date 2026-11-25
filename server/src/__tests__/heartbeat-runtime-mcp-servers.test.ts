@@ -193,6 +193,15 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       }),
     ).resolves.toEqual([]);
     expect(await db.select().from(toolMcpGatewayTokens)).toHaveLength(2);
+    for (const adapterType of ["opencode_local", "hermes_local"]) {
+      const candidate = { ...agent!, adapterType };
+      await expect(createManagedMcpRunConfig({ db, agent: candidate, runId: randomUUID(),
+        config: {}, projectId: null, issueId: null })).resolves.toBeNull();
+      await expect(createManagedMcpRunConfig({ db, agent: candidate, runId: randomUUID(),
+        config: { managedMcpOnly: true }, projectId: null, issueId: null }))
+        .resolves.toEqual({ version: 1, managedMcpOnly: true, gateways: [] });
+    }
+    expect(await db.select().from(toolMcpGatewayTokens)).toHaveLength(2);
     await expect(
       createManagedMcpRunConfig({
         db,
@@ -806,6 +815,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
   });
 
   it("injects only managed gateways whose profile connections are installed for the agent", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip.example.test/api";
     const [company] = await db.insert(companies).values({
       name: `Managed gateway installs ${randomUUID()}`,
       issuePrefix: `MG${randomUUID().slice(0, 5).toUpperCase()}`,
@@ -871,21 +881,54 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       targetId: agent!.id,
     });
 
-    const config = await createManagedMcpRunConfig({
-      db,
-      agent: agent!,
-      runId: randomUUID(),
-      config: {},
-      projectId: null,
-      issueId: null,
-    });
+    const originalBase = process.env.PAPERCLIP_BASE_URL;
+    delete process.env.PAPERCLIP_API_URL;
+    delete process.env.PAPERCLIP_BASE_URL;
+    try {
+      for (const adapterType of ["opencode_local", "hermes_local"]) {
+        let failed = false;
+        try {
+          await createManagedMcpRunConfig({ db, agent: { ...agent!, adapterType }, runId: randomUUID(),
+            config: { managedMcpOnly: true, env: { PAPERCLIP_API_URL: "https://forged.example" } }, projectId: null, issueId: null });
+        } catch (error) {
+          failed = error instanceof Error && error.message.includes("PAPERCLIP_API_URL");
+        }
+        expect(failed).toBe(true);
+      }
+      expect(await db.select().from(toolMcpGatewayTokens)).toHaveLength(0);
+      const codex = await createManagedMcpRunConfig({ db, agent: agent!, runId: randomUUID(), config: {}, projectId: null, issueId: null });
+      expect(codex?.gateways).toHaveLength(1);
+      expect(codex?.apiBaseUrl).toBeUndefined();
+    } finally {
+      if (originalBase === undefined) delete process.env.PAPERCLIP_BASE_URL;
+      else process.env.PAPERCLIP_BASE_URL = originalBase;
+      process.env.PAPERCLIP_API_URL = "https://paperclip.example.test/api";
+    }
 
-    expect(config?.gateways).toHaveLength(1);
-    expect(config?.gateways[0]).toMatchObject({
-      id: gateways[0]!.id,
-      name: gateways[0]!.name,
-      endpointPath: `/mcp/gateways/${gateways[0]!.gatewayPublicId}`,
-    });
-    expect(config?.gateways.some((gateway) => gateway.id === gateways[1]!.id)).toBe(false);
+    for (const adapterType of ["codex_local", "opencode_local", "hermes_local"]) {
+      const candidate = { ...agent!, adapterType };
+      for (const managedMcpOnly of adapterType === "codex_local" ? [false] : [undefined, false]) {
+        const before = await db.select().from(toolMcpGatewayTokens);
+        await expect(createManagedMcpRunConfig({
+          db, agent: candidate, runId: randomUUID(), config: { managedMcpOnly }, projectId: null, issueId: null,
+        })).resolves.toBeNull();
+        expect(await db.select().from(toolMcpGatewayTokens)).toHaveLength(before.length);
+      }
+      const runId = randomUUID();
+      const config = await createManagedMcpRunConfig({
+        db, agent: candidate, runId, config: adapterType === "codex_local" ? {} : { managedMcpOnly: true },
+        projectId: null, issueId: null,
+      });
+      expect(config?.gateways).toHaveLength(1);
+      if (adapterType !== "codex_local") expect(config?.apiBaseUrl).toBe("https://paperclip.example.test");
+      expect(config?.gateways[0]).toMatchObject({
+        id: gateways[0]!.id,
+        name: gateways[0]!.name,
+        endpointPath: `/mcp/gateways/${gateways[0]!.gatewayPublicId}`,
+      });
+      expect(config?.gateways.some((gateway) => gateway.id === gateways[1]!.id)).toBe(false);
+      const tokens = await db.select().from(toolMcpGatewayTokens);
+      expect(tokens.some((token) => token.subjectType === "heartbeat_run" && token.subjectId === runId)).toBe(true);
+    }
   });
 });
