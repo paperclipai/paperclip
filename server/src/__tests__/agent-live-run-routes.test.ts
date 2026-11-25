@@ -1116,6 +1116,25 @@ describe("agent live run routes", () => {
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(routeAgentId, expect.objectContaining({ manualUserWake: true }));
   });
 
+  it("reports task_required when a taskless wakeup for a Paperclip Runner agent is skipped", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: routeAgentId,
+      companyId: "company-1",
+      adapterType: "paperclip_runner",
+      status: "active",
+    });
+    mockHeartbeatService.wakeup.mockResolvedValueOnce(null);
+    const res = await requestApp(await createApp(), url => request(url)
+      .post(`/api/agents/${routeAgentId}/wakeup`)
+      .send({ source: "on_demand", triggerDetail: "manual" }));
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(res.body).toMatchObject({
+      status: "skipped",
+      reason: "task_required",
+      message: expect.stringContaining("Paperclip Runner requires a task"),
+    });
+  });
+
   describe("exact native model-rejected review retry", () => {
     const reviewContext = {
       nativeReviewInteractionId: "55555555-5555-4555-8555-555555555555",

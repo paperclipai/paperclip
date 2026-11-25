@@ -563,6 +563,46 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(runRows).toHaveLength(0);
   });
 
+  it("skips manual taskless on_demand wakes for Paperclip Runner agents with a task_required receipt instead of failing a run", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    await db
+      .update(agents)
+      .set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } })
+      .where(eq(agents.id, agentId));
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      manualUserWake: true,
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    expect(run).toBeNull();
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const [wakeup] = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    const runRows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
+
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.task_required",
+    });
+    expect(wakeup?.payload).toMatchObject({
+      heartbeatSkip: {
+        reason: expect.stringContaining("Paperclip Runner requires a task"),
+      },
+    });
+    expect(runRows).toHaveLength(0);
+  });
+
   it("checks guarded issue status and assignee under the enqueue lock", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const parkedIssueId = randomUUID();

@@ -1,4 +1,5 @@
 import { resolveLoginEnvironmentTarget } from "../services/login-environment.js";
+import { supportsUnscopedHeartbeat } from "../services/heartbeat-policy.js";
 import { checkAgentProtectedEnvironmentKeys } from "../services/protected-environment-keys.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
@@ -1763,6 +1764,17 @@ export function agentRoutes(
   ) {
     const issueId = typeof payload?.issueId === "string" && payload.issueId.trim() ? payload.issueId : null;
     if (!issueId) {
+      if (!supportsUnscopedHeartbeat(agent)) {
+        return {
+          status: "skipped" as const,
+          reason: "task_required",
+          message: "Paperclip Runner requires a task to run. Assign or open a task for this agent instead of starting a standalone heartbeat.",
+          issueId: null,
+          executionRunId: null,
+          executionAgentId: null,
+          executionAgentName: null,
+        };
+      }
       return {
         status: "skipped" as const,
         reason: "wakeup_skipped",

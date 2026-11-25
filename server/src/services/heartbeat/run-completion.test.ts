@@ -1118,6 +1118,19 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       expect(failed).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: refusal });
       expect(failed.resultJson).not.toHaveProperty("nativeExactResumeRefusal");
     });
+
+    it("persists safe closed-enum pluginTaskError metadata on failed runs without leaking worker text", async () => {
+      const f = await fixture({ runtimeMode: "native" });
+      const err = Object.assign(
+        new Error("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying"),
+        { pluginTaskError: { operation: "read_state", rpcErrorCode: "timeout", errorCode: "runner_revision_mismatch" } },
+      );
+      await f.completion.failRun(f.failure(err));
+      const failed = await read(f.run.id);
+      expect(failed.resultJson).toMatchObject({
+        pluginTaskError: { operation: "read_state", rpcErrorCode: "timeout", errorCode: "runner_revision_mismatch" },
+      });
+    });
   });
 
   it("persists a project denial without provider work or an automatic retry", async () => {

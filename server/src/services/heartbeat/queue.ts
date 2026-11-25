@@ -200,7 +200,7 @@ import {
   shouldCancelRunsForNonInvokableAgent,
   type AgentOrgRow,
 } from "../agent-invokability.js";
-import { supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
+import { supportsUnscopedHeartbeat, supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
 import { ISSUE_BLOCKER_STALLED_WAKE_REASON, isUuidLike } from "@paperclipai/shared";
 import { retryChatControlAdmission } from "../chat-control-admission-retry.js";
 
@@ -3258,15 +3258,24 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
     const effectiveTaskKey =
       readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
-    const genericTimerWake =
-      source === "timer" &&
+    const unscopedWake =
       !issueId &&
       !wakeCommentId &&
       !readNonEmptyString(enrichedContextSnapshot.taskId) &&
       !effectiveTaskKey;
+    const genericTimerWake = source === "timer" && unscopedWake;
     // Old or direct timer producers cannot create a doomed taskless Runner
     // run. Explicit session restoration above can supply a real task scope.
     if (genericTimerWake && !supportsUnscopedTimerHeartbeat(agent)) return null;
+    if (unscopedWake && !supportsUnscopedHeartbeat(agent)) {
+      await writeSkippedHeartbeatRequest("heartbeat.task_required", {
+        reason:
+          "Paperclip Runner requires a task to run. Assign or open a task for this agent instead of starting a standalone heartbeat.",
+        adapterType: agent.adapterType,
+        source,
+      });
+      return null;
+    }
     const resolveSessionBefore = async (tx: Pick<Db, "select">) =>
       explicitResumeSession?.sessionDisplayId ??
       resolveSessionBeforeForWakeup(agent, effectiveTaskKey, tx);

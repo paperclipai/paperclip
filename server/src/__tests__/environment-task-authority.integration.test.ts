@@ -290,7 +290,10 @@ databaseSuite("environment task lease authority", () => {
     const inspect = () => runtime.task({ companyId, leaseId: nextLeaseId, operation: {
       kind: "read_state", identity: checkpointIdentity, resumeFrom: "old-task",
     } });
-    await expect(inspect()).rejects.toThrow(refused("checkpoint_status_unconfirmed"));
+    const unconfirmed = await inspect().catch(caught => caught);
+    expect(unconfirmed).toBeInstanceOf(Error);
+    expect(unconfirmed.message).toContain(refused("checkpoint_status_unconfirmed"));
+    expect(unconfirmed.pluginTaskCheckpointStatus).toEqual({ executionStopped: true, sessionStateAvailable: false });
     await expect(authorize()).rejects.toThrow(refused("predecessor_candidate_missing"));
     // Discovery cannot launch, and cannot bypass the original termination receipt.
     await expect(runtime.task({ companyId, leaseId: nextLeaseId, operation: {
