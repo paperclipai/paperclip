@@ -2119,10 +2119,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
 
       for (const recovery of recoveryRows) {
         const sourceIssue = recoveryIssueMap.get(recovery.sourceIssueId) ?? null;
-        if (!sourceIssue || ["done", "cancelled"].includes(sourceIssue.status)) continue;
-        const run = holdRuns.get(String(recovery.evidence?.runId));
+        if (!sourceIssue) continue;
+        const isProviderLimit = recovery.cause === "native_provider_usage_limit";
+        if (isProviderLimit && ["done", "cancelled"].includes(sourceIssue.status)) continue;
+        const run = isProviderLimit ? holdRuns.get(String(recovery.evidence?.runId)) : undefined;
         if (run?.taskId === sourceIssue.id && run.resumed) continue;
-        const providerLimit = run && run.taskId === sourceIssue.id && recovery.cause === "native_provider_usage_limit"
+        const providerLimit = run?.taskId === sourceIssue.id
           ? providerLimitForHold(run, recovery.evidence, recovery.nextAction) : undefined;
         const queuedRetry = run && scheduledByRun.get(run.runId);
         if (providerLimit && queuedRetry) {

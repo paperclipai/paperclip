@@ -1,7 +1,16 @@
 import type { ReactNode } from "react";
-import type { AttentionItem } from "@paperclipai/shared";
+import type { AttentionItem, AttentionProviderLimit } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
+import { formatDateTime } from "@/lib/utils";
+
+function RetryStatus({ limit }: { limit: AttentionProviderLimit }) {
+  if (limit.state === "needs_retry") return "Needs retry";
+  if (limit.state === "retry_requested") return "Retry requested";
+  return <>Retry scheduled
+    {limit.retryAt && <> for <time dateTime={limit.retryAt}>{formatDateTime(limit.retryAt)}</time></>}
+  </>;
+}
 
 /** This disclosure has no dismissal or retry action. Both belong to the child cards. */
 export function InboxLimitCards({ items, renderCard }: {
@@ -28,11 +37,9 @@ export function InboxProviderLimit({ item, evidence }: { item: AttentionItem; ev
     const task = item.relatedIssue;
     return <div className="space-y-2">
       <h2><Link to={task.href!}>{task.identifier} {task.title}</Link></h2>
-      <p className="text-sm">{state.state === "needs_retry" ? "Needs retry" : state.state === "retry_requested" ? "Retry requested" : "Retry scheduled"}
-        {state.state === "scheduled" && state.retryAt && <> for <time dateTime={state.retryAt}>{new Date(state.retryAt).toLocaleString()}</time></>}
-      </p>
+      <p className="text-sm"><RetryStatus limit={state} /></p>
       <p className="text-sm text-muted-foreground">{state.attempts} {state.attempts === 1 ? "attempt" : "attempts"} · {state.resetAt
-        ? <>Provider reset at <time dateTime={state.resetAt}>{new Date(state.resetAt).toLocaleString()}</time></>
+        ? <>Provider reset at <time dateTime={state.resetAt}>{formatDateTime(state.resetAt)}</time></>
         : "Reset time unknown"}</p>
       <div className="flex flex-wrap items-center gap-3">
         {state.state === "needs_retry" && <Button size="sm" asChild><Link to={task.href!}>Open task to retry</Link></Button>}
@@ -48,9 +55,14 @@ export function InboxProviderLimit({ item, evidence }: { item: AttentionItem; ev
     : `${tasks.length} ${tasks.length === 1 ? "task paused" : "tasks paused"} by the provider usage limit`;
   const taskLabel = (count: number) => count === 1 ? "task" : "tasks";
   const scheduled = tasks.filter(task => task.providerLimit!.state === "scheduled");
+  const firstRetry = scheduled[0]?.providerLimit?.retryAt;
+  const sharedRetryAt = firstRetry && scheduled.every(task => task.providerLimit!.retryAt === firstRetry) ? firstRetry : null;
   return <div className="space-y-3">
     <h2>{title}</h2>
-    {scheduled.length > 0 && state.resetAt && <p className="text-sm text-muted-foreground">Paperclip will retry {scheduled.length} {taskLabel(scheduled.length)} at <time dateTime={state.resetAt}>{new Date(state.resetAt).toLocaleString()}</time>.</p>}
+    {state.resetAt && <p className="text-sm text-muted-foreground">Provider reset at <time dateTime={state.resetAt}>{formatDateTime(state.resetAt)}</time>.</p>}
+    {scheduled.length > 0 && <p className="text-sm text-muted-foreground">Retry scheduled for {scheduled.length} {taskLabel(scheduled.length)}
+      {sharedRetryAt && <> at <time dateTime={sharedRetryAt}>{formatDateTime(sharedRetryAt)}</time></>}.
+    </p>}
     {!scheduled.length && !manual.length && <p className="text-sm text-muted-foreground">Retry requested. Waiting for work to resume.</p>}
     {manual.length > 0 && <p className="text-sm text-muted-foreground">Open the affected task to retry it when capacity is available.</p>}
     <details><summary className="cursor-pointer text-sm">View {tasks.length} {taskLabel(tasks.length)}</summary>
@@ -59,7 +71,7 @@ export function InboxProviderLimit({ item, evidence }: { item: AttentionItem; ev
         const limit = member.providerLimit!;
         return <li key={task.id} className="flex flex-wrap items-center gap-2 text-sm">
           <Link to={task.href!} className="underline">{task.identifier} {task.title}</Link>
-          <span>{limit.agentName} · {limit.state === "needs_retry" ? "Needs retry" : limit.state === "scheduled" ? "Retry scheduled" : "Retry requested"}</span>
+          <span>{limit.agentName} · <RetryStatus limit={limit} /></span>
           <Link to={`/agents/${limit.agentId}/runs/${limit.runId}`} className="underline">Run log</Link>
         </li>;
       })}</ul>

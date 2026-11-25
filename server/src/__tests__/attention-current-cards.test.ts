@@ -14,6 +14,7 @@ import {
   createDb,
   issueApprovals,
   issueComments,
+  issueRecoveryActions,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -231,6 +232,22 @@ describeEmbeddedPostgres("attention current cards (PAP-749 task 2a)", () => {
   async function list(companyId: string, userId: string, view?: AttentionFeedView) {
     return (await attentionService(db).list(companyId, { userId, view })).items;
   }
+
+  it.each(["done", "cancelled"])("keeps unresolved ownership recovery visible when a task is %s", async (status) => {
+    const { companyId } = await seedCompany();
+    const task = await insertIssue({ companyId, status, createdByUserId: SCOTT });
+    const limitedTask = await insertIssue({ companyId, status, createdByUserId: SCOTT });
+    const [ownership] = await db.insert(issueRecoveryActions).values([
+      { companyId, sourceIssueId: task, kind: "active_run_watchdog", ownerType: "board",
+        cause: "ownership_owner_unprovable", fingerprint: "owner", nextAction: "Confirm the previous server stopped." },
+      { companyId, sourceIssueId: limitedTask, kind: "active_run_watchdog", ownerType: "board",
+        cause: "native_provider_usage_limit", fingerprint: "limit", nextAction: "Retry after restoring capacity." },
+    ]).returning();
+    const cards = (await list(companyId, SCOTT, "company")).filter(item => item.sourceKind === "recovery_action");
+    expect(cards.map(item => item.subject.id)).toEqual([ownership!.id]);
+    const summary = await attentionService(db).summary(companyId, { userId: SCOTT });
+    expect(summary.countsBySourceKind.recovery_action).toBe(1);
+  });
 
   it("clears an agent's last provider error when the task finishes without another run", async () => {
     const { companyId, workerId } = await seedCompany();
