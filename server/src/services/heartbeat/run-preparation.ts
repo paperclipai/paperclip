@@ -2314,6 +2314,15 @@ export async function buildPaperclipWakePayload(input: {
   const annotationCommentId = readNonEmptyString(
     input.contextSnapshot.annotationCommentId,
   );
+  const annotationReaction = readNonEmptyString(
+    input.contextSnapshot.annotationReaction,
+  );
+  const annotationReactionUserId = readNonEmptyString(
+    input.contextSnapshot.annotationReactionUserId,
+  );
+  const annotationReactionAuthor = annotationReactionUserId
+    ? { type: "user", id: annotationReactionUserId }
+    : null;
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const conversationMode = input.contextSnapshot.conversationMode === true;
   const continuationSummary = conversationMode ? null : input.continuationSummary ?? null;
@@ -2571,6 +2580,9 @@ export async function buildPaperclipWakePayload(input: {
                 : row.authorUserId
                   ? { type: "user", id: row.authorUserId }
                   : { type: row.authorType, id: null },
+              reaction: annotationReaction
+                ? { name: annotationReaction, author: annotationReactionAuthor }
+                : null,
             })),
           )
       : [];

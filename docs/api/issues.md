@@ -456,6 +456,47 @@ DELETE /api/issues/{issueId}/documents/{key}
 
 Delete is board-only in the current implementation.
 
+### Comment Reactions
+
+Each annotation comment on a document can carry four fixed reactions: `done`, `check`, `thumbs_up` and `question`. Each person or agent can add each reaction once per comment.
+
+```
+PUT    /api/issues/{issueId}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+DELETE /api/issues/{issueId}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+```
+
+Rules:
+
+- `PUT` adds the reaction and `DELETE` removes it. Both calls are safe to repeat. A repeated call changes nothing and logs no activity.
+- An unknown reaction name returns `400`. A thread or comment that is not on this document returns `404`.
+- The response is the comment with its `reactions` array.
+- Annotation comments returned by the annotation list, thread read and document read (`includeAnnotationComments=true`) include the same `reactions` array.
+- A `question` reaction that a person adds wakes the issue assignee once, in its own follow-up run, to answer in that annotation thread. It does not wake an agent on a `done` or `cancelled` issue. Only the first `question` from each person on a comment wakes the assignee; removing it and adding it again does not. `done`, `check` and `thumbs_up`, agent reactions and repeated calls start no agent work.
+- Resolving a thread stays a separate action. A `done` reaction does not resolve the thread.
+
+Each entry in `reactions`:
+
+```json
+{
+  "reaction": "question",
+  "count": 2,
+  "reactedByMe": true,
+  "actors": [
+    { "actorType": "user", "agentId": null, "userId": "user-1" },
+    { "actorType": "agent", "agentId": "agent-1", "userId": null }
+  ]
+}
+```
+
+`reactedByMe` is true when the caller added that reaction. Entries with a zero count are omitted, and entries come in the order `done`, `check`, `thumbs_up`, `question`.
+
+Routine descriptions and case documents use the same contract at these paths. These reactions do not wake an agent:
+
+```
+PUT|DELETE /api/routines/{routineId}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+PUT|DELETE /api/cases/{caseId}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+```
+
 ## Attachments
 
 ### Upload
