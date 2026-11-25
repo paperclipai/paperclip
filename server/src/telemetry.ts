@@ -11,16 +11,27 @@ import {
 import { resolvePaperclipInstanceRoot } from "./home-paths.js";
 import { serverVersion } from "./version.js";
 import { getCloudStackContext } from "./services/cloud-instance.js";
-import { isPostHogDirectDeliveryEnabled, resolveCloudPostHogConfig } from "./services/cloud-posthog-config.js";
+import {
+  resetResolvedCloudTrialInferenceEnabledForTests,
+  setResolvedCloudTrialInferenceEnabled,
+} from "./services/cloud-posthog-cohort.js";
+import {
+  CLOUD_TRIAL_INFERENCE_FLAG_KEY,
+  cloudTrialInferenceCohort,
+  isPostHogDirectDeliveryEnabled,
+  resolveCloudPostHogConfig,
+} from "./services/cloud-posthog-config.js";
 import {
   createPostHogDirectTransport,
   type PostHogDirectTransport,
+  type PostHogEventContext,
   type PostHogNodeFactory,
 } from "./services/posthog-direct/index.js";
 
 let client: TelemetryClient | null = null;
 let directTransport: PostHogDirectTransport | null = null;
 let initializationFailed = false;
+const exposedTrialActors = new Set<string>();
 
 export type InitTelemetryOptions = {
   env?: Record<string, string | undefined>;
@@ -105,6 +116,87 @@ export function isPostHogDirectTelemetryActive(): boolean {
   return directTransport !== null;
 }
 
+/**
+ * Emits a Cloud-only direct PostHog event (never sent through the self-hosted
+ * collector). Fire-and-forget; never throws to callers.
+ */
+export function trackCloudPostHogEvent(
+  event: string,
+  properties?: Record<string, unknown>,
+  contextOverride?: {
+    userId?: string | null;
+    companyId?: string | null;
+    sessionId?: string | null;
+    windowId?: string | null;
+  },
+): void {
+  const transport = directTransport;
+  if (!transport) return;
+  const normalizedContext: Partial<PostHogEventContext> | undefined = contextOverride
+    ? {
+        ...(contextOverride.userId ? { userId: contextOverride.userId } : {}),
+        ...(contextOverride.companyId ? { companyId: contextOverride.companyId } : {}),
+        ...(contextOverride.sessionId ? { sessionId: contextOverride.sessionId } : {}),
+        ...(contextOverride.windowId ? { windowId: contextOverride.windowId } : {}),
+      }
+    : undefined;
+  void transport
+    .captureCloudEvent({
+      event,
+      properties,
+      contextOverride: normalizedContext,
+    })
+    .catch(() => {
+      // Best-effort analytics must never break product flows.
+    });
+}
+
+/**
+ * Emits PostHog's `$feature_flag_called` exposure event once per actor per
+ * process when a Cloud user enters onboarding (both treatment and control),
+ * establishing an exact denominator for A/B experiment funnels.
+ */
+export function trackCloudTrialExposure(input: {
+  surface: "onboarding_wizard" | "onboarding_seed";
+  userId?: string | null;
+  companyId?: string | null;
+  enabledOverride?: boolean;
+}): void {
+  const transport = directTransport;
+  if (!transport) return;
+  const dedupeKey = `${input.userId ?? "workspace"}:${input.companyId ?? ""}`;
+  if (exposedTrialActors.has(dedupeKey)) return;
+  exposedTrialActors.add(dedupeKey);
+  const enabled =
+    typeof input.enabledOverride === "boolean"
+      ? input.enabledOverride
+      : transport.cloudTrialInferenceEnabled;
+  if (typeof input.enabledOverride === "boolean") {
+    setResolvedCloudTrialInferenceEnabled(input.enabledOverride);
+    transport.setCloudTrialInferenceEnabled(input.enabledOverride);
+  }
+  const cohort = cloudTrialInferenceCohort(enabled);
+  void transport
+    .captureCloudEvent({
+      event: "$feature_flag_called",
+      properties: {
+        $feature_flag: CLOUD_TRIAL_INFERENCE_FLAG_KEY,
+        $feature_flag_response: cohort,
+        surface: input.surface,
+      },
+      contextOverride: {
+        ...(input.userId ? { userId: input.userId } : {}),
+        ...(input.companyId ? { companyId: input.companyId } : {}),
+      },
+      setOncePersonProperties: {
+        cloud_trial_inference_cohort: cohort,
+      },
+    })
+    .catch(() => {
+      // Best-effort analytics must never break product flows.
+    });
+}
+
 /** Stops timers, sends queued events, then closes the PostHog client if any. */
 export async function shutdownTelemetry(): Promise<void> {
   const current = client;
@@ -123,4 +215,6 @@ export function resetTelemetryForTests(): void {
   client = null;
   directTransport = null;
   initializationFailed = false;
+  exposedTrialActors.clear();
+  resetResolvedCloudTrialInferenceEnabledForTests();
 }

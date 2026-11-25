@@ -3165,3 +3165,4 @@ export * from "./mcp-skills.js";
 export type { TailscaleConnection, TailscaleDeviceLogin } from "./types/tailscale.js";
 export * from "./agent-setup-progress.js";
 export { antigravitySwarmAvailable, antigravitySwarmWorkModeAllows, isAntigravityAgent, parseLeadingUserCommand, SWARM_REQUEST_MAX_CHARS, type LeadingUserCommand } from "./leading-user-command.js";
+export * from "./cloud-inference.js";

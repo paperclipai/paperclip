@@ -354,6 +354,99 @@ export function createConnectionInstalls(db: Db, { now, getConnectionRow, assert
           connection.companyId,
         ),
       };
-    }
+    },
+    ensureAgentConnectionInstalls: async (
+      connectionId: string,
+      agentIds: readonly string[],
+      actor?: ActorInfo,
+    ): Promise<ToolConnectionInstallSnapshot> => {
+      await actor?.managementContext?.reauthorize();
+      const connection = await getConnectionRow(connectionId);
+      const uniqueAgentIds = [...new Set(agentIds)];
+      for (const agentId of uniqueAgentIds) {
+        await assertOptionalAgent(
+          connection.companyId,
+          agentId,
+          "Tool connection install agent",
+        );
+      }
+      if (uniqueAgentIds.length > 0) {
+        await db.transaction(async (tx) => {
+          await lockToolConnectionRuntimeInputs(tx, connection.companyId, connection.id);
+          const existing = await tx
+            .select()
+            .from(toolConnectionInstalls)
+            .where(
+              and(
+                eq(toolConnectionInstalls.companyId, connection.companyId),
+                eq(toolConnectionInstalls.connectionId, connection.id),
+              ),
+            );
+          const hasCompanyInstall = existing.some(
+            (install) =>
+              install.targetType === "company" && install.targetId === connection.companyId,
+          );
+          if (hasCompanyInstall) return;
+          const existingAgentIds = new Set(
+            existing
+              .filter((install) => install.targetType === "agent")
+              .map((install) => install.targetId),
+          );
+          const additions = uniqueAgentIds
+            .filter((agentId) => !existingAgentIds.has(agentId))
+            .map((agentId) => ({ targetType: "agent" as const, targetId: agentId }));
+          if (additions.length === 0) return;
+          const sourceAgentId =
+            actor?.managementContext?.actor.type === "agent"
+              ? actor.managementContext.actor.agentId
+              : actor?.actorType === "agent"
+                ? actor.actorId
+                : null;
+          await lockToolAssignmentAgents(
+            tx,
+            connection.companyId,
+            [...existing, ...additions],
+            sourceAgentId,
+          );
+          await assertAgentToolAssignmentInteractions(
+            tx as unknown as Db,
+            sourceAgentId,
+            connection.companyId,
+            additions.map((install) => install.targetId),
+            false,
+          );
+          await tx.insert(toolConnectionInstalls).values(
+            additions.map((install) => ({
+              companyId: connection.companyId,
+              connectionId: connection.id,
+              targetType: install.targetType,
+              targetId: install.targetId,
+              createdByAgentId:
+                actor?.actorType === "agent" ? (actor.actorId ?? null) : null,
+              createdByUserId: connectionActorUserId(actor),
+            })),
+          );
+          await logActivity(tx as unknown as Db, {
+            companyId: connection.companyId,
+            actorType: actor?.actorType ?? "system",
+            actorId: actor?.actorId ?? "system",
+            action: "tool_connection.installs_updated",
+            entityType: "tool_connection",
+            entityId: connection.id,
+            details: {
+              added: additions,
+              removed: [],
+            },
+          });
+        });
+      }
+      return {
+        connectionId: connection.id,
+        installs: await listConnectionInstalls(
+          connection.id,
+          connection.companyId,
+        ),
+      };
+    },
   };
 }

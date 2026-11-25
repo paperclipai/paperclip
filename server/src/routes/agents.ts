@@ -26,6 +26,7 @@ import { agentIdentityService } from "../services/agent-identity.js";
 import { aiConnectionRouterService, poolMemberRuntimeConfig } from "../services/ai-connection-router.js";
 import { connectionIntentService } from "../services/connection-intents.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { assertCloudTrialInferenceEligible } from "../services/cloud-trial-inference.js";
 import { dotRunnerBroker } from "../services/dot-runner-broker.js";
 import { publicMcpConfig } from "../services/public-mcp/oauth.js";
 import { connectionIntentDeliveryService } from "../services/connection-intent-delivery.js";
@@ -293,7 +294,7 @@ import {
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
 import { buildOnboardingFirstAgentInstructionsBundle } from "../services/onboarding-first-task-assets.js";
-import { getTelemetryClient } from "../telemetry.js";
+import { getTelemetryClient, trackCloudPostHogEvent } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
@@ -4765,6 +4766,9 @@ export function agentRoutes(
       const requiresApproval = company.requireBoardApprovalForNewAgents;
       const status = requiresApproval ? "pending_approval" : "idle";
       const managedHireBinding = normalizedHireInput.runtimeConfig?.aiConnection ? aiRuntimeConnectionBindingSchema.parse(normalizedHireInput.runtimeConfig.aiConnection) : undefined;
+      if ((normalizedHireInput.runtimeConfig as Record<string, unknown> | undefined)?.cloudTrialInference === true) {
+        await assertCloudTrialInferenceEligible(db, companyId);
+      }
       const managedHireConnection = managedHireBinding ? await validateManagedAgentBinding(req, companyId, hiredAgentId, normalizedHireInput.adapterType, normalizedHireInput.adapterConfig, managedHireBinding, normalizedHireInput.defaultEnvironmentId, "none", true) : undefined;
       const createdAgent = await svcLifecycle.requestHire(
         companyId,
@@ -4901,6 +4905,17 @@ export function agentRoutes(
       if (telemetryClient) {
         trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
       }
+      if ((agent.runtimeConfig as Record<string, unknown> | null)?.cloudTrialInference === true) {
+        const rawModel = (agent.adapterConfig as Record<string, unknown> | null)?.model;
+        trackCloudPostHogEvent(
+          "cloud_trial.started",
+          {
+            source: "onboarding_wizard",
+            ...(typeof rawModel === "string" && rawModel.trim() ? { model: rawModel.trim() } : {}),
+          },
+          { userId: actor.actorType === "user" ? actor.actorId : null, companyId },
+        );
+      }
 
       await applyDefaultAgentTaskAssignGrant(
         companyId,
@@ -4981,6 +4996,9 @@ export function agentRoutes(
     } = req.body;
     const agentId = setupId ?? randomUUID();
     const requestedCreateConfig = (createInput.adapterConfig ?? {}) as Record<string, unknown>;
+    if ((createInput.runtimeConfig as Record<string, unknown> | undefined)?.cloudTrialInference === true) {
+      await assertCloudTrialInferenceEligible(db, companyId);
+    }
     assertProviderTraceSettingTransition(req, createInput.runtimeConfig);
     assertNoAgentAdapterConfigMutation(req, requestedCreateConfig);
     assertNoAgentLocalAdapterHostCommandMutation(req, createInput.adapterType ?? "process", requestedCreateConfig, await callerUsesAiConnectionPool(req, companyId));
@@ -5749,6 +5767,10 @@ export function agentRoutes(
         existing.runtimeConfig,
       );
       requestedRuntimeConfig = req.actor.source === "mcp_oauth" ? { ...existing.runtimeConfig, ...runtimeConfig } : runtimeConfig;
+      const wasCloudTrial = (existing.runtimeConfig as Record<string, unknown> | null)?.cloudTrialInference === true;
+      if (requestedRuntimeConfig.cloudTrialInference === true && !wasCloudTrial) {
+        await assertCloudTrialInferenceEligible(db, existing.companyId);
+      }
     }
     const touchesAdapterConfiguration =
       hasOwn(patchData, "adapterType") ||
