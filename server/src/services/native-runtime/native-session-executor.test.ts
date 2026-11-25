@@ -344,11 +344,11 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => {
   const original = await importOriginal<
     typeof import("../../vendor/paperclip-runner/index.js")
   >();
-  // Antigravity's release state is stubbed per test (pending today, qualified after the flip).
-  const { qualificationStatus: _antigravityPending, ...antigravityReleased } = original.QUALIFIED_ACPX_PROFILES.antigravity;
+  // Antigravity's release state is stubbed per test (qualified by default, pending for historical checks).
+  const antigravityPending = { ...original.QUALIFIED_ACPX_PROFILES.antigravity, qualificationStatus: "pending" as const };
   const profiles = { ...original.QUALIFIED_ACPX_PROFILES };
   Object.defineProperty(profiles, "antigravity", { enumerable: true,
-    get: () => antigravityPack.released ? antigravityReleased : original.QUALIFIED_ACPX_PROFILES.antigravity });
+    get: () => antigravityPack.released ? original.QUALIFIED_ACPX_PROFILES.antigravity : antigravityPending });
   return {
     ...original,
     QUALIFIED_ACPX_PROFILES: profiles,

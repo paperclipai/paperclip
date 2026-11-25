@@ -8,11 +8,11 @@ const mocks = vi.hoisted(() => ({ probe: vi.fn(), pluginProbe: vi.fn(), admissio
 vi.mock("../middleware/logger.js", () => ({ logger: { warn: mocks.warn } }));
 vi.mock("../vendor/paperclip-runner/index.js", async importOriginal => {
   const original = await importOriginal<typeof import("../vendor/paperclip-runner/index.js")>();
-  // Pending today; the flip removes qualificationStatus and bumps the profile.
-  const { qualificationStatus: _pending, ...released } = original.QUALIFIED_ACPX_PROFILES.antigravity;
+  // Tests keep mocks.released = false for the pending-candidate suite and flip mocks.released = true for the qualified release suite.
+  const pending = { ...original.QUALIFIED_ACPX_PROFILES.antigravity, qualificationStatus: "pending" as const };
   const profiles = { ...original.QUALIFIED_ACPX_PROFILES };
   Object.defineProperty(profiles, "antigravity", { enumerable: true,
-    get: () => mocks.released ? released : original.QUALIFIED_ACPX_PROFILES.antigravity });
+    get: () => mocks.released ? original.QUALIFIED_ACPX_PROFILES.antigravity : pending });
   return { ...original, QUALIFIED_ACPX_PROFILES: profiles, probeNativeRunnerEnvironment: mocks.probe };
 });
 vi.mock("@paperclipai/adapter-utils/execution-target", async importOriginal => ({
