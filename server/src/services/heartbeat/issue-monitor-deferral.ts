@@ -1,7 +1,6 @@
 import { issueRecoveryActions, issues, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import { and, eq, inArray, or, sql } from "drizzle-orm";
-import { executionBlockerPredicate } from "../execution-blocker.js";
 
 export const ISSUE_MONITOR_DEFERRAL_BASE_DELAY_MS = 30_000;
 export const ISSUE_MONITOR_DEFERRAL_MAX_DELAY_MS = 60 * 60_000;
@@ -139,41 +138,65 @@ export function monitorDeferralExecutionStateSql(deferral: IssueMonitorDeferralS
   )`;
 }
 
+const UUID_REGEX = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
+const ISO_TS_REGEX = "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})$";
+
 function deferralMatchesMonitorSql() {
   return sql`coalesce((jsonb_typeof(${issues.executionState}->'monitorDeferral') = 'object'
-    and (${issues.executionState}->'monitorDeferral'->>'nextCheckAt') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
-    and (${issues.executionState}->'monitorDeferral'->>'nextCheckAt')::timestamptz = ${issues.monitorNextCheckAt}), false)`;
+    and (case
+      when (${issues.executionState}->'monitorDeferral'->>'nextCheckAt') ~ ${ISO_TS_REGEX}
+      then (${issues.executionState}->'monitorDeferral'->>'nextCheckAt')::timestamptz
+      else null
+    end) = ${issues.monitorNextCheckAt}), false)`;
 }
 
 /**
- * Matches any recovery action that still blocks execution admission: open
- * (`active`/`escalated`) holds as well as resolved holds that remain effective
- * blockers (such as `automaticRecovery.replay = 'blocked'` or unreconciled
- * native workspace exports).
+ * Single-row predicate matching recovery actions that remain effective holds:
+ * open (`active`/`escalated`) rows as well as resolved rows that still block
+ * execution (`automaticRecovery.replay = 'blocked'` or unreconciled native
+ * workspace exports). Admission (`getExecutionBlocker`) already validated this
+ * action before parking, so checking the row directly uses the primary-key
+ * index without nested `heartbeat_runs` subqueries.
  */
 export function parkableRecoveryHoldCondition() {
   return or(
     inArray(issueRecoveryActions.status, ["active", "escalated"]),
-    executionBlockerPredicate(),
+    sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+    and(
+      eq(issueRecoveryActions.status, "resolved"),
+      eq(issueRecoveryActions.resolutionNote, "new_source_execution_path"),
+      sql`${issueRecoveryActions.evidence}->'executionReconciliation'->'workspaceReconstruction' is null`,
+    ),
+    and(
+      eq(issueRecoveryActions.status, "resolved"),
+      sql`${issueRecoveryActions.evidence}->'executionReconciliation'->'workspaceReconstruction'->>'schema' = 'paperclip.workspace-reconstruction.v1'`,
+      sql`${issueRecoveryActions.evidence}->>'continuationDelivery' = 'pending'`,
+    ),
   )!;
 }
 
 function parkedOnUnchangedRecoveryHoldSql() {
   return sql`coalesce((${deferralMatchesMonitorSql()}
-    and (${issues.executionState}->'monitorDeferral'->>'recoveryActionId') ~ '^[0-9a-fA-F-]{36}$'
-    and (${issues.executionState}->'monitorDeferral'->>'recoveryActionUpdatedAt') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
     and exists (select 1 from ${issueRecoveryActions}
-      where ${issueRecoveryActions.companyId} = ${issues.companyId}
+      where ${issueRecoveryActions.id} = (case
+          when (${issues.executionState}->'monitorDeferral'->>'recoveryActionId') ~ ${UUID_REGEX}
+          then (${issues.executionState}->'monitorDeferral'->>'recoveryActionId')::uuid
+          else null
+        end)
+        and ${issueRecoveryActions.companyId} = ${issues.companyId}
         and ${issueRecoveryActions.sourceIssueId} = ${issues.id}
-        and ${issueRecoveryActions.id}::text = (${issues.executionState}->'monitorDeferral'->>'recoveryActionId')
         and (${parkableRecoveryHoldCondition()})
-        and ${issueRecoveryActions.updatedAt} <= (${issues.executionState}->'monitorDeferral'->>'recoveryActionUpdatedAt')::timestamptz)), false)`;
+        and ${issueRecoveryActions.updatedAt} <= (case
+          when (${issues.executionState}->'monitorDeferral'->>'recoveryActionUpdatedAt') ~ ${ISO_TS_REGEX}
+          then (${issues.executionState}->'monitorDeferral'->>'recoveryActionUpdatedAt')::timestamptz
+          else null
+        end))), false)`;
 }
 
 function nonWakeOwnerTimeoutAtSql() {
   return sql`(case
     when coalesce(${issues.executionPolicy}->'monitor'->>'recoveryPolicy', 'wake_owner') in ('escalate_to_board', 'create_recovery_issue')
-      and (${issues.executionPolicy}->'monitor'->>'timeoutAt') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+      and (${issues.executionPolicy}->'monitor'->>'timeoutAt') ~ ${ISO_TS_REGEX}
     then (${issues.executionPolicy}->'monitor'->>'timeoutAt')::timestamptz
     else null
   end)`;
@@ -182,7 +205,7 @@ function nonWakeOwnerTimeoutAtSql() {
 function matchingDeferredRetryAtSql() {
   return sql`(case
     when ${deferralMatchesMonitorSql()}
-      and (${issues.executionState}->'monitorDeferral'->>'retryAt') ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+      and (${issues.executionState}->'monitorDeferral'->>'retryAt') ~ ${ISO_TS_REGEX}
     then (${issues.executionState}->'monitorDeferral'->>'retryAt')::timestamptz
     else null
   end)`;
