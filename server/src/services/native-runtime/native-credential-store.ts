@@ -37,13 +37,13 @@ try {
 }`;
 
 export function createNativeCredentialStore(input: {
-  provider: "codex" | "grok";
+  provider: "codex" | "grok" | "antigravity";
   localHome: string;
   remoteHome?: string;
   runner?: Pick<CommandManagedRuntimeRunner, "execute">;
 }) {
   if (Boolean(input.remoteHome) !== Boolean(input.runner)) throw new Error("native_credential_store_target_unavailable");
-  const names = ["auth.json", "auth-refresh.json"];
+  const names = input.provider === "antigravity" ? ["acp_token.json", "auth-refresh.json"] : ["auth.json", "auth-refresh.json"];
   const read = async (name: string): Promise<string> => {
     if (!input.runner || !input.remoteHome) return readLocalAiCredentialFile(join(input.localHome, name));
     // Remote isolated-home preparation already requires Node. Read only on a refresh or retirement.

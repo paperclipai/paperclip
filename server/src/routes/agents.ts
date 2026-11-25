@@ -1239,14 +1239,16 @@ export function agentRoutes(
     if (adapterType !== "paperclip_runner" || config?.provider !== "acpx" || config.acpxAgent !== "antigravity"
       || !antigravityReleasePending() || typeof config.model !== "string" || !config.model.trim()) return;
     const effectiveEnvironmentId = await resolveAdapterTestEnvironmentId(companyId, environmentId);
-    const driver = effectiveEnvironmentId ? (await environmentsSvc.getById(effectiveEnvironmentId))?.driver : "local";
-    const remote = driver !== undefined && driver !== "local";
+    const environment = effectiveEnvironmentId ? await environmentsSvc.getById(effectiveEnvironmentId) : null;
+    const driver = environment?.driver ?? "local";
+    const remote = driver !== "local";
+    const candidateEligibleRemote = driver === "sandbox" || driver === "ssh";
     const model = config.model;
     const granted = (cloud: boolean) => {
       try { return Boolean(resolveAntigravityCandidateAdmission({ companyId, model, target: antigravityCandidateTarget(cloud) })); }
       catch { return false; }
     };
-    if (remote && !granted(true)) {
+    if (remote && (!candidateEligibleRemote || !granted(true))) {
       const refusal = antigravityConnectionRefusal({ apiKey: true, remote: true, releasePending: true, remoteCandidateAdmitted: false })!;
       throw unprocessable(refusal.message, { code: refusal.code });
     }
@@ -1936,9 +1938,10 @@ export function agentRoutes(
     if (adapterType === "paperclip_runner") {
       const experimental = await instanceSettings.getExperimental();
       const selected = asRecord(config);
+      const antigravityPending = antigravityReleasePending();
       let antigravityCandidate: ReturnType<typeof resolveAntigravityCandidateAdmission>;
       if (companyId && selected?.provider === "acpx" && selected.acpxAgent === "antigravity"
-        && typeof selected.model === "string" && selected.model.trim()) {
+        && antigravityPending && typeof selected.model === "string" && selected.model.trim()) {
         try { antigravityCandidate = resolveAntigravityCandidateAdmission({ companyId, model: selected.model }); }
         catch { throw unprocessable("This Google Antigravity candidate requires the exact enabled model and a current operator authorization.", { code: "paperclip_runner_antigravity_candidate_invalid" }); }
       }
@@ -1957,7 +1960,7 @@ export function agentRoutes(
       } else if (asRecord(config)?.provider === "grok_bot" && (experimental.enableGrokBot !== true || experimental.enableNativeRunner !== true)) {
         throw unprocessable("Enable Grok Bot and Paperclip Runner before connecting this agent.", { code: "paperclip_runner_grok_disabled" });
       } else if (!([undefined, "codex", "opencode"].includes(asRecord(config)?.provider as string | undefined)) &&
-        !(asRecord(config)?.provider === "acpx" && asRecord(config)?.acpxAgent === "copilot") &&
+        !(asRecord(config)?.provider === "acpx" && (asRecord(config)?.acpxAgent === "copilot" || (asRecord(config)?.acpxAgent === "antigravity" && !antigravityPending))) &&
         !["claude_local", "pi_local", "grok_local"].includes(agentHarnessType("paperclip_runner", asRecord(config) ?? {})) &&
         experimental.enableNativeRunner !== true && !antigravityCandidate && !kimiCandidate) {
         throw unprocessable(
@@ -3170,16 +3173,17 @@ export function agentRoutes(
         catch { throw unprocessable("Invalid AI connection binding"); }
       }
       if (binding.provider !== "google") throw unprocessable("Select a Google runtime connection");
-      // A Gemini API key's catalog is the same on every environment; only
-      // Google sign-in reads an account catalog on the Paperclip host.
+      // While pending, Google sign-in is local-only; once released, account
+      // model discovery runs on the tenant host for remote environments too.
       const accountCatalog = binding.method !== "api_key";
-      if (accountCatalog && environment && environment.driver !== "local") throw unprocessable("Google Antigravity account model discovery requires the Paperclip host.");
+      const localOnlySignIn = accountCatalog && antigravityReleasePending();
+      if (localOnlySignIn && environment && environment.driver !== "local") throw unprocessable("Google Antigravity account model discovery requires the Paperclip host.");
       const modelAgentId = asNonEmptyString(req.query.agentId);
       if (modelAgentId) {
         const modelAgent = await svc.getById(modelAgentId);
         if (!modelAgent || modelAgent.companyId !== companyId) throw notFound("Agent not found");
         await assertCanUpdateAgent(req, modelAgent);
-        if (accountCatalog && modelAgent.defaultEnvironmentId && !environmentId) {
+        if (localOnlySignIn && modelAgent.defaultEnvironmentId && !environmentId) {
           const target = await environmentsSvc.getById(modelAgent.defaultEnvironmentId);
           if (!target || target.driver !== "local") throw unprocessable("Google Antigravity account model discovery requires the Paperclip host.");
         }
@@ -3294,11 +3298,13 @@ export function agentRoutes(
     if (adapterType === "paperclip_runner" && config.provider === "acpx" && config.acpxAgent === "antigravity") {
       // Refuse a connection its environment cannot run here, not as a failed run.
       const effectiveEnvironmentId = await resolveAdapterTestEnvironmentId(companyId, environmentId);
-      const driver = effectiveEnvironmentId ? (await environmentsSvc.getById(effectiveEnvironmentId))?.driver : "local";
-      const remote = driver !== undefined && driver !== "local";
+      const environment = effectiveEnvironmentId ? await environmentsSvc.getById(effectiveEnvironmentId) : null;
+      const driver = environment?.driver ?? "local";
+      const remote = driver !== "local";
+      const candidateEligibleRemote = driver === "sandbox" || driver === "ssh";
       const releasePending = antigravityReleasePending();
       const refusal = antigravityConnectionRefusal({ apiKey: selection.attribution.method === "api_key", remote, releasePending,
-        remoteCandidateAdmitted: remote && releasePending && antigravityRemoteCandidateAdmitted({ companyId,
+        remoteCandidateAdmitted: candidateEligibleRemote && releasePending && antigravityRemoteCandidateAdmitted({ companyId,
           model: typeof config.model === "string" ? config.model : undefined }) });
       if (refusal) throw unprocessable(refusal.message, { code: refusal.code });
     }

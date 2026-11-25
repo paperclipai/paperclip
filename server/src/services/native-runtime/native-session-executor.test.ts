@@ -140,6 +140,8 @@ import * as providerArtifactStorage from "./native-provider-artifacts.js";
 import * as providerArtifactCapture from "./native-provider-artifact-capture.js";
 import * as nativeCredentialEvents from "./native-credential-updates.js";
 import * as nativeCredentialStores from "./native-credential-store.js";
+import * as antigravityRelease from "./antigravity-release.js";
+import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256 } from "./remote-provider-pack.js";
 import * as managedCredentialWriteback from "../managed-ai-credential-writeback.js";
 import { completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
 import * as nativeExecutionDriver from "./native-runner-execution-driver.js";
@@ -5308,18 +5310,21 @@ describe("split durable provider checkpoint identity", () => {
 });
 
 describe("remote provider checkpoint snapshots", () => {
-  it.each(["codex", "grok"] as const)("excludes %s credentials and handoffs from real checkpoint copies while retaining sessions", async provider => {
+  it.each(["codex", "grok", "antigravity"] as const)("excludes %s credentials and handoffs from real checkpoint copies while retaining sessions", async provider => {
     const root = await mkdtemp(join(tmpdir(), `${provider}-checkpoint-`));
     try {
       const source = join(root, "source");
       const target = join(root, "backup");
       const sessionDirectory = acpxRuntimeSessionDirectoryName("session");
-      const relativeHome = join("acpx", sessionDirectory, `${provider}-home`);
+      const relativeHome = provider === "antigravity"
+        ? join("acpx", sessionDirectory, "antigravity-home", "antigravity-acp")
+        : join("acpx", sessionDirectory, `${provider}-home`);
+      const primaryToken = provider === "antigravity" ? "acp_token.json" : "auth.json";
       const home = join(source, relativeHome);
       await mkdir(join(home, "logs"), { recursive: true });
       await mkdir(join(home, "sessions"));
       await writeFile(join(home, "logs", "unified.jsonl"), "AUTH_SENTINEL");
-      await writeFile(join(home, "auth.json"), "AUTH_SENTINEL");
+      await writeFile(join(home, primaryToken), "AUTH_SENTINEL");
       await writeFile(join(home, "auth-refresh.json"), "AUTH_SENTINEL");
       await writeFile(join(home, "auth-refresh.json.tmp"), "AUTH_SENTINEL");
       await writeFile(join(home, "sessions", "session.json"), "resume-state");
@@ -5337,7 +5342,7 @@ describe("remote provider checkpoint snapshots", () => {
       await syncRemoteRunnerDirectoryOut({ runner: { execute, syncOut } as never,
         sourcePath: source, targetPath: target, mode: 0o700,
         excludeEntries: profile.directories.find(directory => directory.name === "acpx")!.excludeEntries });
-      for (const entry of ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp", ...(provider === "grok" ? ["logs"] : [])])
+      for (const entry of [primaryToken, "auth-refresh.json", "auth-refresh.json.tmp", ...(provider === "grok" || provider === "antigravity" ? ["logs"] : [])])
         await expect(access(join(target, relativeHome, entry))).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(join(target, relativeHome, "sessions", "session.json"), "utf8")).toBe("resume-state");
       expect(await readFile(join(home, "logs", "unified.jsonl"), "utf8")).toBe("AUTH_SENTINEL");
@@ -18600,6 +18605,110 @@ describe("runnerd provider runtime wiring", () => {
       expect(await readFile(managedToken, "utf8")).toBe(credential("resolved-project"));
       for (const name of ["acp_token.json", "auth-refresh.json", "auth-refresh.json.tmp"]) await expect(access(join(runtimeHome, name))).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
+      if (priorHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = priorHome;
+    }
+  });
+
+  it("projects the selected Antigravity subscription onto a Core remote sandbox and writes back rotated refreshes over the remote store", async () => {
+    const priorHome = process.env.PAPERCLIP_HOME;
+    const privateRoot = await realpath(isolatedStateDirectory);
+    process.env.PAPERCLIP_HOME = privateRoot;
+    const managedHome = join(privateRoot, "antigravity-remote-managed-home");
+    await mkdir(join(managedHome, "antigravity-acp"), { recursive: true, mode: 0o700 });
+    const credential = (project?: string) => JSON.stringify({
+      client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com", client_secret: "fixture-client-secret",
+      refresh_token: "fixture-google-refresh", token_uri: "https://oauth2.googleapis.com/token", scopes: ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/aicode"],
+      ...(project ? { project_id: project } : {}),
+    });
+    const managedToken = join(managedHome, "antigravity-acp", "acp_token.json");
+    await writeFile(managedToken, credential(), { mode: 0o600 });
+    const current = { ...execution,
+      provider: { kind: "acpx", agent: "antigravity", model: "caller-selected-model", permissionMode: "deny-all" },
+      session: { ...execution.session, driverKind: "acpx_runtime" },
+    } as unknown as NativeExecutionInputV1;
+    const order: string[] = [];
+    const transportClose = vi.fn(async () => { order.push("transport-close"); });
+    const nativeTransport = { close: transportClose };
+    state.createTransport.mockReturnValueOnce({ transport: nativeTransport } as never);
+    const close = vi.fn(async () => { order.push("session-close"); await nativeTransport.close(); });
+    state.createBackend.mockReturnValueOnce({ kind: "test", openSession: async () => ({ close }) } as never);
+    const remoteStore = {
+      read: vi.fn(async () => { order.push("remote-read"); return credential("rotated-remote-project"); }),
+      remove: vi.fn(async () => { order.push("remote-remove"); }),
+    };
+    const releaseSpy = vi.spyOn(antigravityRelease, "antigravityReleasePending").mockReturnValue(false);
+    const storeSpy = vi.spyOn(nativeCredentialStores, "createNativeCredentialStore").mockReturnValueOnce(remoteStore);
+    const prepareRemoteSpy = vi.spyOn(nativeExecutionDriver, "prepareNativeRemoteRunner").mockResolvedValueOnce(undefined);
+    const execute = vi.fn(async () => ({ exitCode: 0, timedOut: false, stdout: "", stderr: "", signal: null, pid: null, startedAt: null }));
+    const packRoot = join(privateRoot, "antigravity-remote-pack");
+    await mkdir(packRoot, { recursive: true, mode: 0o700 });
+    const digest = "sha256:" + "a".repeat(64);
+    const canonical = (value: unknown): string => Array.isArray(value)
+      ? `[${value.map(canonical).join(",")}]`
+      : value && typeof value === "object"
+        ? `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`
+        : JSON.stringify(value);
+    const artifacts = Object.fromEntries(Object.entries({
+      grokLauncher: "dist/providers/grok/launcher.cjs", nodeCommand: "node_modules/node/bin/node",
+      productionLock: "pnpm-lock.yaml", opencodeCommand: "node_modules/.bin/opencode",
+      opencodeExecutable: "node_modules/opencode-ai/bin/opencode.exe",
+      opencodeProxy: "dist/cli/opencode-app-server-proxy.cjs", acpxSidecar: "dist/cli/acpx-runtime-sidecar.cjs",
+    }).map(([key, path]) => [key, { path, sha256: digest }]));
+    const payload = {
+      compatibility: { opencode: 1, acpx: 1 }, contractDigest: digest,
+      target: { platform: "linux", architecture: "x64" }, runnerSourceRevision: "a".repeat(40),
+      pins: { nodeMinimum: "24.11.0", codex: QUALIFIED_ACPX_PROFILES.codex.agentRuntimeVersion,
+        opencode: "1.18.34", acpx: "0.22.0", grok: QUALIFIED_ACPX_PROFILES.grok.agentRuntimeVersion,
+        claudeAcp: QUALIFIED_ACPX_PROFILES.claude.agentServerVersion, codexAcp: QUALIFIED_ACPX_PROFILES.codex.agentServerVersion },
+      acpxProfileDigests: Object.fromEntries(["grok", "claude", "codex"].map(agent =>
+        [agent, QUALIFIED_ACPX_PROFILES[agent as "grok" | "claude" | "codex"].commandDigest])),
+      distDigest: digest, artifacts,
+      bridgeDigest: "sha256:" + createHash("sha256").update(digest + "\n" + digest + "\n" + digest).digest("hex"),
+      providers: {
+        antigravity: {
+          version: QUALIFIED_ACPX_PROFILES.antigravity.agentServerVersion,
+          profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest,
+          closureDigest: `sha256:${ANTIGRAVITY_PATCHED_CLOSURE_SHA256["linux-x64"]}`,
+          qualification: "qualified",
+          path: "provider-assets/antigravity/linux-x64",
+          sha256: digest,
+        },
+      },
+    };
+    const manifest = { schema: "paperclip-runner/remote-provider-pack/v1", payload,
+      digest: "sha256:" + createHash("sha256").update(canonical(payload)).digest("hex") };
+    const previousPackPath = state.bundledPackManifestPath;
+    const previousRunnerBinary = state.bundledRunnerBinary;
+    state.bundledPackManifestPath = join(packRoot, "provider-pack.json");
+    state.bundledRunnerBinary = join(packRoot, "linux-paperclip-runnerd");
+    await writeFile(state.bundledPackManifestPath, JSON.stringify(manifest));
+    const daemon = Buffer.alloc(64); daemon.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); daemon.writeUInt16LE(62, 18);
+    await writeFile(state.bundledRunnerBinary, daemon);
+    try {
+      const backend = await createRunnerdBackend({ db: leaseDb(current), execution: current,
+        runnerInstanceId: "antigravity-remote-credential-close", managedAiCredentialHome: managedHome,
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runner: { execute } },
+        runnerEnvironment: { GEMINI_HOME: "/ambient", GOOGLE_API_KEY: "ambient-key", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "spoofed" } });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const transport = state.createTransport.mock.calls.at(-1)![0];
+      expect(transport.environment!.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET).toBe(credential());
+      expect(transport.environment?.GEMINI_HOME).toBeUndefined();
+      expect(transport.environment?.GOOGLE_API_KEY).toBeUndefined();
+      const session = await backend.openSession({} as never);
+      expect(storeSpy).toHaveBeenCalledWith(expect.objectContaining({
+        provider: "antigravity",
+        remoteHome: expect.stringMatching(/\/acpx\/acpx\/[^/]+\/antigravity-home\/antigravity-acp$/),
+      }));
+      await session.close({ reason: "completed" });
+      expect(order).toEqual(["session-close", "transport-close", "remote-read", "remote-remove"]);
+      expect(await readFile(managedToken, "utf8")).toBe(credential("rotated-remote-project"));
+    } finally {
+      state.bundledPackManifestPath = previousPackPath;
+      state.bundledRunnerBinary = previousRunnerBinary;
+      releaseSpy.mockRestore();
+      storeSpy.mockRestore();
+      prepareRemoteSpy.mockRestore();
       if (priorHome === undefined) delete process.env.PAPERCLIP_HOME;
       else process.env.PAPERCLIP_HOME = priorHome;
     }

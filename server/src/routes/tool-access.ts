@@ -2113,7 +2113,7 @@ function connectorEnrollmentPrincipal(req: Request): string {
       action: "tool_connection.grant_revoked",
       entityType: "connection_grant",
       entityId: grant.id,
-      details: { connectionId: connection.id, kind: grant.kind, ...(grant.providerAccess ? { providerAccess: grant.providerAccess } : {}) },
+      details: { connectionId: connection.id, kind: grant.kind, ...(grant.providerAccess ? { providerAccess: grant.providerAccess } : {}), ...(grant.signInRemoval ? { signInRemoval: grant.signInRemoval } : {}) },
     });
     res.json(grant);
   });
