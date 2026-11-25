@@ -19,5 +19,6 @@ export {
   googleWorkspaceArgumentRefusal,
   type GoogleCalendarEventRead,
   type GoogleWorkspaceArgumentCheck,
+  type GoogleWorkspaceRefusal,
 } from "./argument-guards.js";
 export { GOOGLE_WORKSPACE_REST_SHIPPED_SCHEMA_HASHES } from "./shipped-schema-hashes.js";

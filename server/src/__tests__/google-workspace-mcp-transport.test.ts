@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents, companies, companyMemberships, createDb, heartbeatRuns, issues, issueThreadInteractions,
-  toolAccessAuditEvents, toolActionRequests, toolCatalogEntries, toolInvocations,
+  toolAccessAuditEvents, toolActionRequests, toolCallEvents, toolCatalogEntries, toolInvocations,
 } from "@paperclipai/db";
 import {
   GOOGLE_WORKSPACE_DEFAULT_SELECTION, GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames,
@@ -16,6 +16,9 @@ import { issueThreadInteractionService } from "../services/issue-thread-interact
 import { forgetMcpHttpSessions, MCP_MODERN_PROTOCOL_VERSION } from "../services/mcp-http.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
+import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
+import { assignedToolName, createAssignedMcpTools } from "../services/native-runtime/assigned-mcp-tools.js";
+import { resolveNativeRuntimeMcpSnapshot } from "../services/native-runtime/runtime-context.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
 import type { PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
@@ -50,6 +53,7 @@ const SCHEMAS: Record<string, Record<string, unknown>> = {
   list_threads: { type: "object", properties: { pageSize: { type: "integer" }, pageToken: { type: "string" }, query: { type: "string" }, labelIds: { type: "array", items: { type: "string" } } } },
   create_draft: { type: "object", properties: { to: { type: "array", items: { type: "string" } }, subject: { type: "string" }, body: { type: "string" } } },
   get_file_metadata: { type: "object", properties: { fileId: { type: "string" } }, required: ["fileId"] },
+  list_calendars: { type: "object", properties: { pageSize: { type: "integer" }, pageToken: { type: "string" } } },
   update_doc: {
     type: "object",
     properties: {
@@ -73,6 +77,9 @@ const SCHEMAS_22634: Record<string, Record<string, unknown>> = JSON.parse(
 const names = (catalog: Array<{ toolName: string }>) => catalog.map((entry) => entry.toolName).sort();
 
 type Confirmation = "none" | "legacy" | "modern";
+
+const GOOGLE_ORGANIZER_ERROR = JSON.stringify({ error: { code: 403, status: "PERMISSION_DENIED",
+  message: "The organizer cannot respond to their own event." } });
 
 interface Recorded { host: string; method: string; name?: string; body: Record<string, any> }
 
@@ -156,6 +163,9 @@ function fakeGoogle(options: { confirm?: Confirmation } = {}) {
           : { id: eventId, summary: "Lunch" };
       return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: JSON.stringify(event) }], structuredContent: event } });
     }
+    if (body.params.name === "respond_to_event" && body.params.arguments?.eventId === "own1") {
+      return Response.json({ jsonrpc: "2.0", id: body.id, result: { isError: true, content: [{ type: "text", text: GOOGLE_ORGANIZER_ERROR }] } });
+    }
     return Response.json({ jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: `ok from Google MCP ${body.params.name}` }] } });
   };
   return {
@@ -180,6 +190,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await database?.cleanup();
   });
   afterEach(() => {
+    vi.unstubAllEnvs();
     Object.assign(GOOGLE_WORKSPACE_TOOL_TRANSPORT, savedTransport);
     vi.mocked(restDispatch.callGoogleWorkspaceRest).mockClear();
     vi.mocked(restDispatch.probeGoogleWorkspaceRest).mockClear();
@@ -249,9 +260,23 @@ const support = await getEmbeddedPostgresTestSupport();
     const call = async (name: string, parameters: unknown) =>
       gateway.executeTool({ sessionToken: session.token, tool: (await toolNamed(name)).name, parameters, timeoutMs: 5_000 });
     const interactions = issueThreadInteractionService(db);
+    const runnerCall = async (name: string, parameters: unknown) => {
+      vi.stubEnv("PAPERCLIP_API_URL", "http://127.0.0.1:3100");
+      const snapshot = await resolveNativeRuntimeMcpSnapshot({ db, agent: agent!, runId: run!.id });
+      const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: run!.id, expectedAssignmentDigest: snapshot.digest });
+      const assigned = await createAssignedMcpTools({ gateway, companyId: company!.id,
+        gatewayPublicId: server!.url.split("/").at(-1)!, bearerToken: server!.token });
+      try {
+        return await assigned.execute({ tool: assignedToolName((await toolNamed(name)).name), arguments: parameters });
+      } finally {
+        assigned.close();
+      }
+    };
     return {
       company: company!, actor, agent: agent!, issue: issue!, service, gateway, connectionId: connected.connectionId, catalog: completed.catalog,
-      google, listed, toolNamed, call,
+      google, listed, toolNamed, call, runnerCall,
+      failedEvents: () => db.select().from(toolCallEvents)
+        .where(and(eq(toolCallEvents.companyId, company!.id), eq(toolCallEvents.eventType, "call_failed"))),
       cards: () => db.select().from(issueThreadInteractions)
         .where(and(eq(issueThreadInteractions.companyId, company!.id), eq(issueThreadInteractions.issueId, issue!.id))),
       skip: (cardId: string) => interactions.skipInteraction({ id: issue!.id, companyId: company!.id }, cardId, {}, { userId }),
@@ -374,6 +399,45 @@ const support = await getEmbeddedPostgresTestSupport();
       await expect(f.call("drive__get_file_metadata", { fileId: "file_1-A" })).resolves.toMatchObject({ status: "completed" });
       expect(f.google.calls()).toEqual(["docsmcp.googleapis.com update_doc", "drivemcp.googleapis.com get_file_metadata"]);
       expect(f.google.requests.find((request) => request.name === "update_doc")!.body.params.arguments).toEqual(edit);
+    });
+  });
+
+  describe("what an agent on the Paperclip Runner sees when a call fails", () => {
+    it("sees Paperclip's own refusal of an unknown argument, with a stable code, and nothing goes to Google", async () => {
+      const f = await connectWorkspace();
+      await expect(f.runnerCall("calendar__list_calendars", { bogus: 1 })).rejects.toMatchObject({
+        status: 422, reasonCode: "tool_error",
+        message: "unknown_argument: Invalid arguments for list_calendars: unknown argument \"bogus\". Accepted arguments: pageSize, pageToken. Nothing was sent to Google.",
+      });
+      expect(f.google.calls()).toEqual([]);
+      const [event] = await f.failedEvents();
+      expect(event).toMatchObject({ errorCode: "unknown_argument", errorMessage: expect.stringContaining("unknown argument \"bogus\"") });
+      expect(JSON.stringify(event!.metadata)).toContain("\"dispatched\":false");
+    });
+
+    it("is told to pass one occurrence when it deletes a whole recurring series", async () => {
+      const f = await connectWorkspace();
+      await expect(f.runnerCall("calendar__delete_event", { calendarId: "primary", eventId: "series1" })).rejects.toMatchObject({
+        status: 422, reasonCode: "tool_error",
+        message: expect.stringMatching(/^recurring_series_delete_refused: This ID is a whole recurring series\..*Pass one occurrence's ID \(from list_events\)\. Nothing was deleted\.$/),
+      });
+      expect(f.google.calls()).toEqual(["calendarmcp.googleapis.com get_event"]);
+      const [event] = await f.failedEvents();
+      expect(event).toMatchObject({ errorCode: "recurring_series_delete_refused" });
+      expect(JSON.stringify(event!.metadata)).toContain("\"dispatched\":false");
+    });
+
+    it("sees a stable code from Google's structured error, never Google's own text, and the activity log records the code", async () => {
+      const f = await connectWorkspace();
+      const failure = await f.runnerCall("calendar__respond_to_event", { calendarId: "primary", eventId: "own1", responseStatus: "accepted" })
+        .then(() => null, (error: unknown) => error as Error & { status: number });
+      expect(failure).toMatchObject({ status: 422, reasonCode: "tool_error", message: "google_permission_denied: The connected tool reported an error." });
+      expect(failure!.message).not.toContain("organizer");
+      expect(f.google.calls()).toEqual(["calendarmcp.googleapis.com respond_to_event"]);
+      const [event] = await f.failedEvents();
+      expect(event).toMatchObject({ errorCode: "google_permission_denied", errorMessage: GOOGLE_ORGANIZER_ERROR });
+      const [invocation] = (await f.invocations()).filter((row) => row.status === "failed");
+      expect(invocation).toMatchObject({ errorCode: "tool_error", errorMessage: GOOGLE_ORGANIZER_ERROR });
     });
   });
 

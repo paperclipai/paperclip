@@ -19,10 +19,12 @@ import {
   probeGoogleWorkspaceRestService,
   type GoogleAuthFailure,
   type GoogleFetch,
+  type GoogleWorkspaceRefusal,
   type GoogleWorkspaceRestService,
 } from "../google-workspace-rest-tools/index.js";
 
 export type GoogleWorkspaceRestAuthFailure = GoogleAuthFailure;
+export type { GoogleWorkspaceRefusal };
 
 export interface GoogleWorkspaceRestContext {
   service: GoogleWorkspaceService;
@@ -103,7 +105,7 @@ export interface GoogleWorkspaceMcpPreflight {
   callTool: (toolName: string, args: Record<string, unknown>) => Promise<unknown | null>;
 }
 
-export async function googleWorkspaceMcpPreflightRefusal(input: GoogleWorkspaceMcpPreflight): Promise<string | null> {
+export async function googleWorkspaceMcpPreflightRefusal(input: GoogleWorkspaceMcpPreflight): Promise<GoogleWorkspaceRefusal | null> {
   const target = googleWorkspaceToolTarget(input.toolName);
   if (!target || !isGoogleWorkspaceRestService(target.service)) return null;
   const refusal = googleWorkspaceArgumentRefusal({ service: target.service, toolName: target.leaf, arguments: input.arguments, inputSchema: input.inputSchema });
@@ -117,6 +119,56 @@ export async function googleWorkspaceMcpPreflightRefusal(input: GoogleWorkspaceM
     structuredContent: record.data?.structuredContent ?? null,
     text: typeof record.content === "string" ? record.content : null,
   });
+}
+
+const GOOGLE_STATUSES = ["INVALID_ARGUMENT", "FAILED_PRECONDITION", "OUT_OF_RANGE", "UNAUTHENTICATED", "PERMISSION_DENIED", "NOT_FOUND",
+  "ABORTED", "ALREADY_EXISTS", "RESOURCE_EXHAUSTED", "CANCELLED", "DATA_LOSS", "UNKNOWN", "INTERNAL", "NOT_IMPLEMENTED", "UNAVAILABLE",
+  "DEADLINE_EXCEEDED"] as const;
+const GOOGLE_HTTP_STATUSES: Readonly<Record<number, (typeof GOOGLE_STATUSES)[number]>> = {
+  400: "INVALID_ARGUMENT", 401: "UNAUTHENTICATED", 403: "PERMISSION_DENIED", 404: "NOT_FOUND", 409: "ABORTED", 412: "FAILED_PRECONDITION",
+  429: "RESOURCE_EXHAUSTED", 499: "CANCELLED", 500: "INTERNAL", 501: "NOT_IMPLEMENTED", 503: "UNAVAILABLE", 504: "DEADLINE_EXCEEDED",
+};
+const GOOGLE_RETRYABLE_STATUSES = new Set(["RESOURCE_EXHAUSTED", "UNAVAILABLE", "DEADLINE_EXCEEDED"]);
+const GOOGLE_STATUS_TEXT = new RegExp(`\\b(${GOOGLE_STATUSES.join("|")})\\b`);
+const GOOGLE_HTTP_STATUS_TEXT = /\b(?:HTTP|status|code)\b["']?\s*[:=]?\s*([45]\d\d)\b/i;
+
+function googleStatusOf(value: unknown, depth = 0): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value) || depth > 3) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record.status === "string" && (GOOGLE_STATUSES as readonly string[]).includes(record.status)) return record.status;
+  for (const key of ["code", "status"]) {
+    const http = record[key];
+    if (typeof http === "number" && GOOGLE_HTTP_STATUSES[http]) return GOOGLE_HTTP_STATUSES[http]!;
+  }
+  return googleStatusOf(record.error, depth + 1);
+}
+
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+function googleStatusInText(text: string): string | null {
+  const parsed = googleStatusOf(parseJson(text));
+  if (parsed) return parsed;
+  const named = GOOGLE_STATUS_TEXT.exec(text)?.[1];
+  if (named) return named;
+  const http = Number(GOOGLE_HTTP_STATUS_TEXT.exec(text)?.[1]);
+  return GOOGLE_HTTP_STATUSES[http] ?? null;
+}
+
+export function googleWorkspaceMcpErrorDetails(result: unknown): { toolCode: string; retryable?: true } {
+  const record = (result && typeof result === "object" ? result : {}) as { content?: unknown; structuredContent?: unknown };
+  const texts = Array.isArray(record.content)
+    ? record.content.flatMap((item) => item && typeof item === "object" && typeof (item as { text?: unknown }).text === "string"
+      ? [(item as { text: string }).text] : [])
+    : [];
+  const status = googleStatusOf(record.structuredContent) ?? texts.map(googleStatusInText).find(Boolean) ?? null;
+  if (!status) return { toolCode: "google_error" };
+  return { toolCode: `google_${status.toLowerCase()}`, ...(GOOGLE_RETRYABLE_STATUSES.has(status) ? { retryable: true as const } : {}) };
 }
 
 export async function callGoogleWorkspaceRest(

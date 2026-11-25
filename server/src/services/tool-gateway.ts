@@ -34,7 +34,7 @@ import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notificatio
 import { measureToolDiscovery, measureRunPhase, recordConnectionCatalogCounts } from "./execution-preparation-timing.js";
 import { nativeProviderCatalogFor } from "./native-provider-catalogs.js";
 import {
-  callGoogleWorkspaceRest, googleWorkspaceCatalogToolTitle, googleWorkspaceMcpPreflightRefusal, googleWorkspaceRestAuditEndpoint,
+  callGoogleWorkspaceRest, googleWorkspaceCatalogToolTitle, googleWorkspaceMcpErrorDetails, googleWorkspaceMcpPreflightRefusal, googleWorkspaceRestAuditEndpoint,
 } from "./google-workspace-rest-dispatch.js";
 import { currentConnectionToolDefinition } from "./connectors/paperclip-defined-tools.js";
 import { composeConnectionInstructions } from "./connection-instructions.js";
@@ -534,6 +534,10 @@ export function toolResultErrorDetails(result: Record<string, unknown>): { toolC
   return { ...(toolCode ? { toolCode } : {}), ...(retryable ? { retryable: true as const } : {}) };
 }
 
+function connectedToolErrorDetails(execution: { errorDetails?: ConnectedToolErrorDetails } | null | undefined, result: Record<string, unknown>) {
+  return execution?.errorDetails ?? toolResultErrorDetails(result);
+}
+
 export class ToolGatewayHttpError extends Error {
   constructor(
     public readonly status: number,
@@ -630,8 +634,11 @@ type HeaderPolicySummary = {
   collisionRules: Array<{ header: string; source: string; action: string }>;
 };
 
+type ConnectedToolErrorDetails = { toolCode?: string; retryable?: true; paperclipRefusal?: string };
+
 type RemoteHttpExecutionResult = {
   result: unknown;
+  errorDetails?: ConnectedToolErrorDetails;
   failureInstructions?: string;
   headerSummary?: HeaderPolicySummary;
   execution?: RemoteHttpExecutionAudit;
@@ -2826,6 +2833,8 @@ export function createToolGatewayService(
     detectorMetadata?: PromptInjectionDetectorMetadata;
     metadata?: Record<string, unknown> | null;
     tool?: ToolGatewayDescriptor | null;
+    errorCode?: string | null;
+    errorMessage?: string | null;
   }) {
     const metadata = input.tool ? toolAuditMetadata(input.tool) : {};
     await retryTransientLockContention(() => db.insert(toolCallEvents).values({
@@ -2856,6 +2865,8 @@ export function createToolGatewayService(
       resultHash: input.resultSummary?.sha256 ?? null,
       resultSummary: input.resultSummary ?? null,
       resultSizeBytes: input.resultSummary?.sizeBytes ?? null,
+      errorCode: input.errorCode ?? null,
+      errorMessage: input.errorMessage ?? null,
       metadata:
         Object.keys(metadata).length > 0 ||
         input.metadata || input.detectorMetadata ||
@@ -8448,7 +8459,10 @@ export function createToolGatewayService(
         });
         if (refusal) {
           execution.request.dispatched = false;
-          return { result: normalizeMcpToolResult({ isError: true, content: [{ type: "text", text: refusal }] }, "mcp_http", false, sourceTemplateKey), headerSummary, execution };
+          return {
+            result: normalizeMcpToolResult({ isError: true, content: [{ type: "text", text: refusal.message }] }, "mcp_http", false, sourceTemplateKey),
+            errorDetails: { toolCode: refusal.code, paperclipRefusal: refusal.message }, headerSummary, execution,
+          };
         }
       }
       if (workspaceTarget?.transport === "paperclip_rest") {
@@ -9100,7 +9114,8 @@ export function createToolGatewayService(
           "ok",
           "Remote MCP server responded to tools/call.",
         );
-        return { result, failureInstructions, headerSummary, execution };
+        const errorDetails = workspaceTarget?.transport === "google_mcp" && result.data.isError ? googleWorkspaceMcpErrorDetails(callResult) : undefined;
+        return { result, ...(errorDetails ? { errorDetails } : {}), failureInstructions, headerSummary, execution };
       }
     } catch (error) {
       // The app never got the answers this call carried: the next identical call sends them.
@@ -10292,7 +10307,7 @@ export function createToolGatewayService(
         throw new ToolGatewayHttpError(providerResult.errorCode === "github_access_denied" ? 403 : 502,
           toolResultErrorMessage(providerResult, connectedMcpExecution.failureInstructions),
           providerResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error",
-          { execution: connectedMcpExecution.execution, ...toolResultErrorDetails(providerResult) });
+          { execution: connectedMcpExecution.execution, ...connectedToolErrorDetails(connectedMcpExecution, providerResult) });
       }
     } catch (err) {
       const status = err instanceof ToolGatewayHttpError ? err.status : 502;
@@ -11179,7 +11194,7 @@ export function createToolGatewayService(
           resultRecord.errorCode === "github_access_denied" ? 403 : 502,
           toolResultErrorMessage(resultRecord, connectedMcpExecution?.failureInstructions),
           resultRecord.errorCode === "github_access_denied" ? "github_access_denied" : "tool_execution_failed",
-          toolResultErrorDetails(resultRecord),
+          connectedToolErrorDetails(connectedMcpExecution, resultRecord),
         );
       const now = new Date();
       await db
@@ -14195,7 +14210,7 @@ export function createToolGatewayService(
             validatedMcpResult.errorCode === "github_access_denied" ? 403 : 502,
             toolResultErrorMessage(validatedMcpResult, connectedMcpExecution?.failureInstructions),
             validatedMcpResult.errorCode === "github_access_denied" ? "github_access_denied" : "tool_error",
-            { execution: connectedMcpExecution?.execution, ...toolResultErrorDetails(validatedMcpResult) },
+            { execution: connectedMcpExecution?.execution, ...connectedToolErrorDetails(connectedMcpExecution, validatedMcpResult) },
           );
         }
         await db
@@ -14389,6 +14404,9 @@ export function createToolGatewayService(
           toolName: tool.name,
           policyDecision: isDeferred ? "defer_runtime" : "deny",
           reasonCode,
+          errorCode: normalizedError instanceof ToolGatewayHttpError && typeof normalizedError.details.toolCode === "string"
+            ? normalizedError.details.toolCode : reasonCode,
+          errorMessage: message,
           argumentsSummary: effectiveArgumentsSummary,
           metadata: {
             ...(virtualToolName

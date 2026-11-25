@@ -269,6 +269,17 @@ reaches the agent. The REST `delete_event` makes the same read. A whole recurrin
 refused, as on REST. If the read does not return the event, nothing is
 deleted.
 
+Each refusal has a stable code: `unknown_argument`, `invalid_arguments`,
+`invalid_file_id`, `request_kind_refused`, `recurring_series_delete_refused`
+or `delete_target_unverified`. Paperclip wrote the refusal text, so an agent
+on the Paperclip Runner sees the code and the full text. For an error that
+Google returns, the agent sees only a code that
+`googleWorkspaceMcpErrorDetails` takes from Google's status name or HTTP
+status (for example `google_permission_denied`), or `google_error`. Google's
+own text is not sent to the agent. The failed call event records the code in
+`errorCode`, and the text in `errorMessage`, which the 30-day Google Technical
+Information sweep clears.
+
 The REST tools' other checks describe a REST limit or a stricter REST rule, so
 they do not run on MCP: mandatory `requiredRevisionId`, the Sheets comment and
 data-source refusals, the result size budget, and the Drive search query
