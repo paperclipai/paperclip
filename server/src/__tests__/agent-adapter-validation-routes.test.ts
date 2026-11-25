@@ -491,7 +491,7 @@ describe("agent routes adapter validation", () => {
     expect(mockAntigravityModels).not.toHaveBeenCalled();
   });
 
-  it("lists Antigravity models for a Gemini API key on a cloud environment, but keeps account discovery on the host", async () => {
+  it("lists Antigravity models for both Gemini API keys and Google sign-in on a cloud environment once qualified", async () => {
     const environments = await import("../services/environments.js");
     const cloud = { id: "env-cloud", companyId: "company-1", driver: "daytona" };
     vi.spyOn(environments, "environmentService").mockReturnValue({ getById: vi.fn(async () => cloud),
@@ -508,9 +508,10 @@ describe("agent routes adapter validation", () => {
       binding: { provider: "google", method: "api_key", mode: "responsible_user" } }));
     mockAntigravityModels.mockClear();
     const signIn = await requestApp(app, base => request(base).get(url("subscription")));
-    expect(signIn.status).toBe(422);
-    expect(signIn.body.error).toContain("requires the Paperclip host");
-    expect(mockAntigravityModels).not.toHaveBeenCalled();
+    expect(signIn.status, JSON.stringify(signIn.body)).toBe(200);
+    expect(signIn.body).toEqual(catalog);
+    expect(mockAntigravityModels).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+      binding: { provider: "google", method: "subscription", mode: "responsible_user" } }));
   });
 
   it.each(["create", "hire", "edit"])("admits qualified Antigravity %s without an operator candidate grant", async action => {
