@@ -3531,10 +3531,31 @@
       "breakpoints": true
     },
     {
-      "idx": 515,
+      "idx": 506,
       "version": "7",
-      "when": 1795552269147,
-      "tag": "0515_claude_project_trust",
+      "when": 1795560008849,
+      "tag": "0506_nappy_agent_brand",
+      "breakpoints": true
+    },
+    {
+      "idx": 507,
+      "version": "7",
+      "when": 1795561452000,
+      "tag": "0507_special_kang",
+      "breakpoints": true
+    },
+    {
+      "idx": 508,
+      "version": "7",
+      "when": 1795572002132,
+      "tag": "0508_normal_riptide",
+      "breakpoints": true
+    },
+    {
+      "idx": 507,
+      "version": "7",
+      "when": 1795572002133,
+      "tag": "0509_claude_project_trust",
       "breakpoints": true
     }
   ]

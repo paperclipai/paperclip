@@ -1630,7 +1630,8 @@ impl AcpxCommandExecutor {
             let incompatible = recovering && saved_state_reload_refused(&error);
             let failure =
                 DurableRunnerError::invalid(format!("failed to start ACPX provider: {error}"))
-                    .with_provider_failure(error.provider_failure());
+                    .with_provider_failure(error.provider_failure())
+                    .with_sidecar_rejection(error.sidecar_rejection());
             if incompatible {
                 failure.with_classification(crate::durable::PROVIDER_STATE_INCOMPATIBLE)
             } else {

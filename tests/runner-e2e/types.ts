@@ -30,6 +30,7 @@ export type RunnerTaskFlow =
   | "provider_connection"
   | "github_review_journey"
   | "antigravity_agent_journey"
+  | "antigravity_swarm_journey"
   | "plan_task_guidance"
   | "blocker_guidance"
   | "public_mcp"

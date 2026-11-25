@@ -4288,12 +4288,12 @@ export function readPaperclipSkillSyncPreference(
   };
 }
 
-function canonicalizeDesiredPaperclipSkillReference(
+export function resolvePaperclipSkillReference(
   reference: string,
-  availableEntries: Array<{ key: string; runtimeName?: string | null }>,
-): string {
-  const normalizedReference = reference.trim().toLowerCase();
-  if (!normalizedReference) return "";
+  availableEntries: ReadonlyArray<{ key: string; runtimeName?: string | null }>,
+): string | null {
+  const normalizedReference = reference.trim().toLowerCase().replace(/^\//, "");
+  if (!normalizedReference) return null;
 
   const exactKey = availableEntries.find(
     (entry) => entry.key.trim().toLowerCase() === normalizedReference,
@@ -4313,7 +4313,15 @@ function canonicalizeDesiredPaperclipSkillReference(
   );
   if (slugMatches.length === 1) return slugMatches[0]!.key;
 
-  return normalizedReference;
+  return null;
+}
+
+function canonicalizeDesiredPaperclipSkillReference(
+  reference: string,
+  availableEntries: Array<{ key: string; runtimeName?: string | null }>,
+): string {
+  return resolvePaperclipSkillReference(reference, availableEntries)
+    ?? reference.trim().toLowerCase();
 }
 
 export function resolvePaperclipDesiredSkillNames(

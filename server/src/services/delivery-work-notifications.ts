@@ -81,6 +81,7 @@ export const DELIVERY_QUEUES = {
   toolConnectionHealth: "tool-connection-health",
   toolConnectionContentDeletion: "tool-connection-content-deletion",
   googlePendingRevocation: "google-pending-revocation",
+  googleTechnicalInformation: "google-technical-information",
   toolReviewProjection: "tool-review-projection",
   toolReviewInterruption: "tool-review-interruption",
   toolReviewRecovery: "tool-review-recovery",
