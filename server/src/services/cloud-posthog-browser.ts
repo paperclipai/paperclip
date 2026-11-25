@@ -73,6 +73,7 @@ export function resolveBrowserAnalyticsConfig(
     environment: config.environment ?? (isCloudStagingInstance(env) ? "staging" : "production"),
     stackId: config.stackId,
     replayEnabled: config.replayEnabled,
+    replayWorkContentEnabled: config.replayWorkContentEnabled,
     consentRequired: resolveAnalyticsConsentRequired(env, headers),
   };
 }

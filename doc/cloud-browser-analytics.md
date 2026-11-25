@@ -31,6 +31,7 @@ extensions posthog-js loads at run time (recorder, web vitals).
 | `PAPERCLIP_POSTHOG_ENVIRONMENT` | — | `staging` or `production`. Added to every event as `environment`. |
 | `PAPERCLIP_POSTHOG_BROWSER_ENABLED` | off | `1` turns browser analytics on for this stack. Leave it unset to keep it off. |
 | `PAPERCLIP_POSTHOG_REPLAY_ENABLED` | on (when browser analytics is on) | `0` turns session replay off for this stack and keeps the other browser analytics. |
+| `PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED` | off | `1` allows task descriptions, document bodies and artifact contents in replays for eligible companies. Browser analytics and replay must also be on. Unset, `0` and all other values keep work content masked. |
 | `PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT` | `1024` | Proxy requests in flight for the whole server. See [Proxy limits](#proxy-limits). |
 | `PAPERCLIP_POSTHOG_PROXY_MAX_IN_FLIGHT_PER_CLIENT` | `128` | Proxy requests in flight from one public client address. See [Proxy limits](#proxy-limits). |
 | `PAPERCLIP_POSTHOG_COUNTRY_HEADER` | — | Name of a request header that the platform edge sets to the visitor's two-letter country code (for example `CF-IPCountry` behind a proxied Cloudflare zone). Leave it unset unless the edge sets the header and drops a value from the client. See [Consent](#consent). |
@@ -41,6 +42,29 @@ For a customer whose contract forbids recording, set
 `PAPERCLIP_POSTHOG_REPLAY_ENABLED=0` on that stack. To turn off all browser
 analytics for a stack, unset `PAPERCLIP_POSTHOG_BROWSER_ENABLED`. Both take
 effect on the next server restart.
+
+### Work content opt-in
+
+Work content stays masked by default, even when session replay is on. Hosts
+can opt in through the deployment environment:
+
+```sh
+PAPERCLIP_POSTHOG_BROWSER_ENABLED=1
+PAPERCLIP_POSTHOG_REPLAY_ENABLED=1
+PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED=1
+```
+
+The existing Cloud instance and project-token requirements still apply. The
+server sends the effective setting as
+`browserAnalytics.replayWorkContentEnabled` in the authenticated session.
+An older server that omits this field keeps work content masked. The UI makes
+no work-content source requests unless both replay and this setting are on.
+
+The opt-in allows the company checks below to run; it does not bypass them or
+secret masking. To keep replay on with work content masked, remove
+`PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED` or set it to `0`. Restart the
+server and reload open board tabs to pick up deployment changes. Previously
+recorded content is not changed by this setting.
 
 ## Consent
 
@@ -257,8 +281,8 @@ organization-naming steps have no `step` value. No event carries free text.
 
 Session replay shows text by default, the way PostHog normally works. Text is
 masked only inside marked customer content, and inside work content unless the
-company holds no Google or Slack data. Input values and attribute values are
-always masked.
+deployment opts in and the company holds no Google or Slack data. Input values
+and attribute values are always masked.
 
 - Session replay masks every input value (`maskAllInputs`).
 - Replay masks text only inside these markers (`ANALYTICS_MASK_TEXT_SELECTOR`
@@ -282,9 +306,10 @@ always masked.
   element references (`id`, `for`, `aria-labelledby`) are always masked, so
   images record as empty boxes and link targets (for example download links
   with file paths) never leave.
-- Work content shows in replays only for a company that holds no Google or
-  Slack data. Work content is the task description (task page and the first
-  bubble of the task chat), the task preview description, document bodies,
+- Work content shows in replays only when the deployment sets
+  `PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED=1` and the company holds no
+  Google or Slack data. Work content is the task description (task page and the
+  first bubble of the task chat), the task preview description, document bodies,
   attachment and artifact previews (text, tables, patches, markdown) and the
   file viewer. Task titles, artifact titles and file names were already
   recorded as they are. Comments, chat messages, run output and every
@@ -318,9 +343,10 @@ always masked.
     `IssueQuicklookCard` uses the work content marker only when the task's
     `companyId` is the selected company (`workContentClassForCompany`), and
     masks any other.
-  - Loading, a failed latest fetch (even with an older answer cached), a list
-    that waits on a refresh, no company and replay off all keep work content
-    masked. The check keeps its own query keys (`replayWorkContentQueryKeys`)
+  - A missing or disabled deployment opt-in, loading, a failed latest fetch
+    (even with an older answer cached), a list that waits on a refresh, no
+    company and replay off all keep work content masked. The check keeps its
+    own query keys (`replayWorkContentQueryKeys`)
     and drops an answer when the company changes.
   - `LiveUpdatesProvider` resets the check on every activity in a connection
     family (`tool_connection.*`, `tool_app.*`, `tool_example.*`,
@@ -369,7 +395,8 @@ always masked.
 - The masking options in `posthog.init` take precedence over the PostHog
   project's "Privacy and masking" settings (posthog-js 1.450). posthog-js
   ignores the project setting and logs a warning when the two differ. Keep the
-  project masking settings empty, and change masking only in `privacy.ts`. The
+  project masking settings empty. Use deployment configuration for work
+  content visibility and `privacy.ts` for the masking rules. The
   `ph-mask` class is also the posthog-js default `maskTextClass`.
 - `ANALYTICS_NO_CAPTURE_CLASS` replaces secrets with a blank box in replays:
   every password-type `Input`, environment variable values, new secret

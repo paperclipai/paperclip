@@ -228,8 +228,9 @@ export function ReplayWorkContentVisibility() {
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
-  const replayEnabled = session?.browserAnalytics?.replayEnabled === true;
-  const companyId = replayEnabled ? selectedCompanyId : null;
+  const workContentEnabled = session?.browserAnalytics?.replayEnabled === true
+    && session.browserAnalytics.replayWorkContentEnabled === true;
+  const companyId = workContentEnabled ? selectedCompanyId : null;
   const connections = useQuery({
     ...SOURCE_LIST_OPTIONS,
     queryKey: replayWorkContentQueryKeys.connections(companyId ?? ""),

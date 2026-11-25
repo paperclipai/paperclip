@@ -102,6 +102,24 @@ describe("currentUserProfileSchema", () => {
 });
 
 describe("authSessionSchema", () => {
+  it.each([undefined, false, true])("preserves the replay work content setting across session parsing: %s", (enabled) => {
+    const result = authSessionSchema.parse({
+      session: { id: "s1", userId: "u1" },
+      user: { id: "u1", email: "a@b.com", name: "Jane", image: null },
+      sentryDsn: null,
+      browserAnalytics: {
+        token: "phc_test",
+        apiHost: "/_ph",
+        uiHost: null,
+        environment: "test",
+        stackId: "stack-1",
+        replayEnabled: true,
+        ...(enabled === undefined ? {} : { replayWorkContentEnabled: enabled }),
+      },
+    });
+    expect(result.browserAnalytics?.replayWorkContentEnabled).toBe(enabled);
+  });
+
   it("parses a session where user name is empty string (identity provider without a name)", () => {
     const result = authSessionSchema.safeParse({
       session: { id: "s1", userId: "u1" },

@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   companyId: "co-1" as string | null,
   companyPrefix: "ACME" as string | null,
   pathname: "/ACME/issues/ACME-1",
-  session: { browserAnalytics: { replayEnabled: true } } as unknown,
+  session: { browserAnalytics: { replayEnabled: true, replayWorkContentEnabled: true } } as unknown,
   connections: vi.fn(),
   chatEndpoints: vi.fn(),
   refresh: vi.fn(),
@@ -28,6 +28,7 @@ vi.mock("@/api/chatEndpoints", () => ({ chatEndpointsApi: { list: (id: string) =
 vi.mock("./product-analytics", () => ({ refreshSessionReplay: () => mocks.refresh() }));
 
 import { REPLAY_WORK_CONTENT_ATTRIBUTE } from "./privacy";
+import { queryKeys } from "@/lib/queryKeys";
 import {
   ReplayWorkContentVisibility,
   companyAllowsReplayWorkContent,
@@ -199,7 +200,7 @@ describe("ReplayWorkContentVisibility", () => {
     mocks.companyId = "co-1";
     mocks.companyPrefix = "ACME";
     mocks.pathname = "/ACME/issues/ACME-1";
-    mocks.session = { browserAnalytics: { replayEnabled: true } };
+    mocks.session = { browserAnalytics: { replayEnabled: true, replayWorkContentEnabled: true } };
     mocks.connections.mockReset().mockResolvedValue(connectionList());
     mocks.chatEndpoints.mockReset().mockResolvedValue([]);
     mocks.refresh.mockReset();
@@ -262,6 +263,36 @@ describe("ReplayWorkContentVisibility", () => {
     expect(visible()).toBeNull();
     expect(mocks.connections).not.toHaveBeenCalled();
     expect(mocks.chatEndpoints).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    null,
+    { browserAnalytics: null },
+    { browserAnalytics: { replayEnabled: false, replayWorkContentEnabled: true } },
+    { browserAnalytics: { replayEnabled: true } },
+    { browserAnalytics: { replayEnabled: true, replayWorkContentEnabled: false } },
+  ])("makes no source requests and stays masked without both deployment switches: %j", async (session) => {
+    mocks.session = session;
+    await render();
+    expect(visible()).toBeNull();
+    expect(mocks.connections).not.toHaveBeenCalled();
+    expect(mocks.chatEndpoints).not.toHaveBeenCalled();
+    expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it("masks cached eligible content when the deployment opt-in is withdrawn", async () => {
+    await render();
+    expect(visible()).toBe("visible");
+    await act(async () => {
+      queryClient.setQueryData(queryKeys.auth.session, {
+        browserAnalytics: { replayEnabled: true, replayWorkContentEnabled: false },
+      });
+    });
+    await settle();
+    expect(visible()).toBeNull();
+    expect(mocks.connections).toHaveBeenCalledTimes(1);
+    expect(mocks.chatEndpoints).toHaveBeenCalledTimes(1);
+    expect(mocks.refresh).toHaveBeenCalledTimes(1);
   });
 
   it("masks again as soon as a source change resets the check, and stays masked for a new Google connection", async () => {
