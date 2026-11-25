@@ -501,17 +501,9 @@ const support = await getEmbeddedPostgresTestSupport();
       }
     });
 
-    it("releases an action that the switch held when its calls show it ran on a Paperclip REST definition since the last refresh", async () => {
-      const f = await savedOnRest({ off: ["gmail__search_threads"] });
-      await expect(f.call("gmail__get_thread", { threadId: "t1" })).rejects.toBeTruthy();
-      forgetMcpHttpSessions(f.connectionId);
-      await f.service.refreshCatalog(f.connectionId, f.actor);
+    it("keeps an action that a switch before this fix held for review held, because the hold replaced the saved REST definition", async () => {
+      const f = await savedOnRest();
       await expect(f.call("gmail__get_message", { messageId: "msg1" })).resolves.toMatchObject({ status: "completed" });
-      const ranOnRest = await byName(f.connectionId);
-      expect((await f.invocations()).map((invocation) => [invocation.upstreamToolName, invocation.catalogSchemaHash]).sort()).toEqual([
-        ["gmail__get_message", ranOnRest.get("gmail__get_message")?.schemaHash], ["gmail__get_thread", ranOnRest.get("gmail__get_thread")?.schemaHash],
-      ]);
-
       vi.mocked(restDispatch.googleWorkspaceRestShippedSchemaHashes).mockReturnValue([]);
       try {
         const held = await backOnGoogle(f);
@@ -521,18 +513,11 @@ const support = await getEmbeddedPostgresTestSupport();
       }
 
       forgetMcpHttpSessions(f.connectionId);
-      const repaired = await f.service.refreshCatalog(f.connectionId, f.actor);
-      expect(repaired.quarantinedCount).toBe(0);
-      const refreshes = (await f.audit("tool_connection.catalog_refresh")).filter((event) => event.outcome === "success")
-        .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime());
-      expect(refreshes.at(-1)?.details).toMatchObject({ quarantinedCount: 0, releasedCount: 1 });
-      expect(repaired.catalog.filter((entry) => entry.status === "active").map((entry) => entry.toolName)).toEqual(["gmail__get_message"]);
-      const saved = await byName(f.connectionId);
-      expect(saved.get("gmail__get_message")).toMatchObject({ status: "active", quarantinedAt: null, quarantineReason: null });
-      expect(saved.get("gmail__get_thread")).toMatchObject({ status: "quarantined", quarantineReason: "pending_review" });
-      expect(saved.get("gmail__search_threads")).toMatchObject({ status: "quarantined", quarantineReason: "pending_review" });
-      expect((await f.listed()).map((tool) => tool.upstreamToolName)).toEqual(["gmail__get_message"]);
-      await expect(f.call("gmail__get_message", { messageId: "msg1" })).resolves.toMatchObject({ status: "completed" });
+      const later = await f.service.refreshCatalog(f.connectionId, f.actor);
+      expect(later.quarantinedCount).toBe(0);
+      expect(later.catalog.filter((entry) => entry.status === "active")).toEqual([]);
+      expect((await byName(f.connectionId)).get("gmail__get_message")).toMatchObject({ status: "quarantined", quarantineReason: "pending_review" });
+      expect(await f.listed()).toEqual([]);
     });
   });
 });

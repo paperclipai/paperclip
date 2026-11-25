@@ -348,13 +348,11 @@ the list, so add the new hash whenever a schema changes.
 
 The first switch-back refresh on builds before this list held each action
 whose row carried the #22634 schemas (`quarantined`, `pending_review`). That
-hold replaced the saved definition with Google's, so the row no longer shows
-the REST definition. A later refresh releases such an action only when the
-connection's calls show it ran on a shipped REST definition: at least one call
-of that action was recorded after the last successful refresh before the hold,
-and every such call recorded a shipped REST schema hash. Google's definition
-must also be unchanged since the hold. An action with no such call stays held
-for a person to review. An action that Google's server does not list (for example Gmail
+hold replaced the saved definition with Google's. No record keeps the earlier
+definition: a refresh can save rows and stop before it writes its audit event,
+so neither the audit history nor the call records prove which definition a row
+had just before the hold. A refresh does not release such an action. A person
+reviews it. An action that Google's server does not list (for example Gmail
 `get_draft`, `list_threads` or `search_messages`, if Google does not have
 them) is removed by that refresh.
 

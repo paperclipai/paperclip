@@ -16,9 +16,9 @@ import { paperclipDefinedTool, shippedPaperclipSchemaHashes } from "../../connec
 import { googleWorkspaceToolTarget, googleWorkspaceGrantedScopes, isGoogleWorkspaceToolGranted } from "@paperclipai/shared";
 import { retainMcpConnectionFailure } from "../../mcp-connection-failure.js";
 import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
-import { and, eq, gt, inArray, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { connectionGrants, toolAccessAuditEvents, toolApplications, toolCatalogEntries, toolConnections, toolInvocations, toolRuntimeSlots } from "@paperclipai/db";
+import { connectionGrants, toolApplications, toolCatalogEntries, toolConnections, toolRuntimeSlots } from "@paperclipai/db";
 import type { ToolCatalogRefreshResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition, isGoogleWorkspaceConnectorProfileId } from "@paperclipai/shared";
 import { isGoogleWorkspaceConnection } from "../connections/google-content-retention.js";
@@ -73,34 +73,6 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
     } catch (error) {
       logger.warn({ err: error, connectionId: connection.id }, "Could not refresh the skills this app publishes");
     }
-  }
-
-  async function heldAfterLeavingPaperclipDefinitions(
-    connection: typeof toolConnections.$inferSelect,
-    existingRows: Array<typeof toolCatalogEntries.$inferSelect>,
-  ): Promise<Set<string>> {
-    const held = existingRows.flatMap((row) => row.status === "quarantined" && row.quarantineReason === "pending_review" && row.quarantinedAt
-      && paperclipDefinedTool(connection, row.toolName) === null && shippedPaperclipSchemaHashes(connection, row.toolName).length > 0
-      ? [{ row, heldAt: row.quarantinedAt.getTime() }] : []);
-    if (held.length === 0) return new Set();
-    const latestHold = new Date(Math.max(...held.map((entry) => entry.heldAt)));
-    const refreshes = (await db.select({ at: toolAccessAuditEvents.createdAt }).from(toolAccessAuditEvents).where(and(
-      eq(toolAccessAuditEvents.companyId, connection.companyId), eq(toolAccessAuditEvents.connectionId, connection.id),
-      eq(toolAccessAuditEvents.action, "tool_connection.catalog_refresh"), eq(toolAccessAuditEvents.outcome, "success"),
-      lt(toolAccessAuditEvents.createdAt, latestHold),
-    ))).map((event) => event.at.getTime());
-    const windows = held.map(({ row, heldAt }) => ({ row, heldAt, since: Math.max(0, ...refreshes.filter((at) => at < heldAt)) }));
-    const calls = await db.select({ entryId: toolInvocations.catalogEntryId, schemaHash: toolInvocations.catalogSchemaHash, at: toolInvocations.createdAt })
-      .from(toolInvocations).where(and(
-        eq(toolInvocations.companyId, connection.companyId), eq(toolInvocations.connectionId, connection.id),
-        inArray(toolInvocations.catalogEntryId, held.map(({ row }) => row.id)),
-        gt(toolInvocations.createdAt, new Date(Math.min(...windows.map((window) => window.since)))), lt(toolInvocations.createdAt, latestHold),
-      ));
-    return new Set(windows.filter(({ row, heldAt, since }) => {
-      const shipped = shippedPaperclipSchemaHashes(connection, row.toolName);
-      const inWindow = calls.filter((call) => call.entryId === row.id && call.at.getTime() > since && call.at.getTime() < heldAt);
-      return inWindow.length > 0 && inWindow.every((call) => call.schemaHash !== null && shipped.includes(call.schemaHash));
-    }).map(({ row }) => row.toolName));
   }
 
   async function refreshCatalog(
@@ -250,8 +222,6 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         sourceTemplateKey === "posthog" ||
         refreshOptions.quarantineManagedOAuthDraft === true);
     const safeDefault = asRecord(connection.config).safeDefault === true;
-    let releasedCount = 0;
-    const heldAfterLeaving = quarantineOnRefresh ? await heldAfterLeavingPaperclipDefinitions(connection, existingRows) : new Set<string>();
     for (const descriptor of descriptors) {
       // A plugin-served connection's tools carry the risk its plugin declared
       // (statically, or per connection from its worker). Other transports keep
@@ -270,11 +240,6 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       if (paperclipDefined && existing?.status === "quarantined") releasedNames.add(descriptor.name);
       const leavingPaperclipDefinition = Boolean(!paperclipDefined && existing?.schemaHash
         && shippedPaperclipSchemaHashes(connection, descriptor.name).includes(existing.schemaHash));
-      const releaseHeld = heldAfterLeaving.has(descriptor.name) && !changed;
-      if (releaseHeld) {
-        releasedNames.add(descriptor.name);
-        releasedCount += 1;
-      }
       const shouldQuarantine =
         quarantineOnRefresh &&
         !paperclipDefined &&
@@ -292,7 +257,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
           ? "quarantined"
           : existing?.status === "disabled" && existing.quarantineReason !== "mcp_tool_removed"
             ? "disabled"
-            : quarantineOnRefresh && existing?.status === "quarantined" && !paperclipDefined && !releaseHeld
+            : quarantineOnRefresh && existing?.status === "quarantined" && !paperclipDefined
               ? "quarantined"
               : "active";
       if (shouldQuarantine && !providerPermanentlyBlocked) quarantinedCount += 1;
@@ -408,7 +373,7 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
       connectionId: connection.id,
       action: "tool_connection.catalog_refresh",
       outcome: "success",
-      details: { discoveredCount: descriptors.length, quarantinedCount, ...(releasedCount > 0 ? { releasedCount } : {}) },
+      details: { discoveredCount: descriptors.length, quarantinedCount },
       actor,
     });
 
