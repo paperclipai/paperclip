@@ -815,7 +815,7 @@ describe("durable, authorized connection routing", () => {
     const workdir = path.join(home, `continuation-${randomUUID()}`);
     await mkdir(workdir, { recursive: true });
     const [agent] = await db.insert(agents).values({ companyId, name: "Claude to Codex lifecycle", adapterType: versioned ? "paperclip_runner" : "claude_local",
-      adapterConfig: { cwd: workdir, ...(versioned ? {} : { engine: "cli", model: "claude-sonnet-5" }) },
+      adapterConfig: { cwd: workdir, ...(versioned ? { provider: "acpx", acpxAgent: "claude" } : { engine: "cli", model: "claude-sonnet-5" }) },
       runtimeConfig: { ...(versioned ? { harnessPool: { poolId: pool.id } } : { aiConnection: { mode: "router", connectionId: pool.id } }), heartbeat: { enabled: false } } }).returning();
     const [issue] = await db.insert(issues).values({ companyId, title: "Keep completed file and continue remaining work", description: "Keep the completed marker; finish the remaining work.", status: "todo", assigneeAgentId: agent!.id, responsibleUserId: "alice", createdByUserId: "alice" }).returning();
     let sourceRunId: string | undefined;

@@ -23,3 +23,11 @@ export function assertPoolExecutionPlatform(
     });
   }
 }
+
+/** The CLI workspace wrapper is available only on a local Linux execution target. */
+export function assertPoolLocalProcessSandbox(target: ReturnType<typeof localAgentRunnerTarget> | null) {
+  if (target?.platform === "linux") return;
+  throw unprocessable("This pool member cannot preserve the native Codex sandbox on this execution platform. Choose a native backup.", {
+    code: "pool_execution_platform_incompatible",
+  });
+}

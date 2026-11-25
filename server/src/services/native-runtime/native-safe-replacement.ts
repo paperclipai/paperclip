@@ -366,7 +366,7 @@ export function invalidateNativeReplacementDiscovery(db: Db) {
 async function replacementHistoryReady(db: Db, run: typeof heartbeatRuns.$inferSelect, issueId: string, retryDatabaseErrors = false) {
   try {
     const continuation = await buildExecutionContinuation({ db, companyId: run.companyId, issueId,
-      agentId: run.agentId, context: record(run.contextSnapshot), summary: null, exposeLowTrustRaw: false });
+      agentId: run.agentId, runId: run.id, context: record(run.contextSnapshot), summary: null, exposeLowTrustRaw: false });
     const unresolved = continuation.unresolvedInteractionIds;
     if (unresolved.length === 0) return true;
     const review = readNativeReviewAssignmentContext(run.contextSnapshot);

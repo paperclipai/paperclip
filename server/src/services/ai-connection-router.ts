@@ -19,7 +19,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { resolvePaperclipRunnerProviderProfile, resolvePaperclipRunnerNativeProviderInput } from "./native-runtime/provider-profile.js";
 import { findActiveServerAdapter } from "../adapters/index.js";
 import { parseObject } from "../adapters/utils.js";
-import { assertPoolExecutionPlatform, resolvePoolExecutionPlatform } from "./ai-connection-pool-platform.js";
+import { assertPoolExecutionPlatform, assertPoolLocalProcessSandbox, resolvePoolExecutionPlatform } from "./ai-connection-pool-platform.js";
 import { confinePoolCodexCli } from "./pool-codex-sandbox.js";
 
 const usageCache = new Map<string, { expires: number; value: AiConnectionUsage }>();
@@ -460,6 +460,7 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effectiveAdapter, selection.runtimeConfig);
       if (!input.taskless && usesNativeCodexPoolSandbox(input.adapterType, input.sourceAdapterConfig ?? {}, selection)) {
         nativeCodexPoolSandbox(input.sourceAdapterConfig ?? {}, selection);
+        assertPoolLocalProcessSandbox(platform);
       }
       return aiConnectionService(client).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId, adapterType: effectiveAdapter, binding: selection.binding, model: selection.runtimeConfig.model, runnerProvider: selection.runtimeConfig.provider, acpxAgent: selection.runtimeConfig.acpxAgent });
     };
@@ -668,6 +669,12 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
         const effective = poolMemberRuntimeConfig(member, input.adapterType);
         if (input.taskless && effective.adapterType === "paperclip_runner") continue;
         if (input.requirePaperclipRunner && effective.adapterType !== "paperclip_runner") continue;
+        const sourcePolicy = input.sourceAdapterConfig ?? {};
+        const target = { ...input.expectedSelection, adapterType: effective.adapterType, runtimeConfig: effective.config };
+        if (!input.taskless && usesNativeCodexPoolSandbox(input.adapterType, sourcePolicy, target)) {
+          nativeCodexPoolSandbox(sourcePolicy, target);
+          assertPoolLocalProcessSandbox(platform);
+        }
         assertPoolExecutionPlatform(platform, effective.adapterType, effective.config);
         assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effective.adapterType, effective.config, sourceSelection);
         const authorized = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,
@@ -721,6 +728,12 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
         effective = poolMemberRuntimeConfig(member, input.adapterType);
         if (input.taskless && effective.adapterType === "paperclip_runner") continue;
         if (input.requirePaperclipRunner && effective.adapterType !== "paperclip_runner") continue;
+        const sourcePolicy = input.sourceAdapterConfig ?? {};
+        const target = { ...input.expectedSelection, adapterType: effective.adapterType, runtimeConfig: effective.config };
+        if (!input.taskless && usesNativeCodexPoolSandbox(input.adapterType, sourcePolicy, target)) {
+          nativeCodexPoolSandbox(sourcePolicy, target);
+          assertPoolLocalProcessSandbox(platform);
+        }
         assertPoolExecutionPlatform(platform, effective.adapterType, effective.config);
         assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effective.adapterType, effective.config, sourceSelection);
         const authorized = await aiConnectionService(db).select({ companyId: input.companyId, agentId: input.agentId, userId: input.userId,

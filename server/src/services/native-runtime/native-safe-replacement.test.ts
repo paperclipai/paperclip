@@ -555,6 +555,7 @@ const support = externalDatabaseUrl
       const verifyStoppedSession = async () => ({ evidence: {}, retire: () => true });
       const runReplacement = () => reconcileSafeNativeReplacements(db, now, {
         verifyStoppedSession,
+        ...(review ? { failpoint: () => {} } : {}),
         ...(requalify ? { requalifyQuotaFailure: { companyId: source.companyId, runIds: [source.runId] } } : {}),
       });
       if (requalify) {
@@ -605,7 +606,9 @@ const support = externalDatabaseUrl
         }
         return;
       }
-      expect(await runReplacement()).toMatchObject({ scheduled: 1 });
+      const replacement = await runReplacement();
+      const [decision] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(replacement, JSON.stringify(decision?.failureDetail)).toMatchObject({ scheduled: 1 });
       if (requalify) {
         const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.fingerprint, `native-replacement:${source.runId}`));
         const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));

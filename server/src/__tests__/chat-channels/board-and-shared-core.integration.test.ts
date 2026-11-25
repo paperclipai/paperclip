@@ -457,7 +457,8 @@ describeEmbeddedPostgres("chat channels: board and shared core", () => {
         if (current.status === "failed") break;
         const retryAt = Date.parse(String(current.result?.retryAt));
         expect(Number.isFinite(retryAt)).toBe(true);
-        while (Date.now() < retryAt) await new Promise(resolve => setTimeout(resolve, Math.max(1, retryAt - Date.now())));
+        await db.update(chatActions).set({ result: { ...current.result, retryAt: new Date(Date.now() - 1).toISOString() } })
+          .where(eq(chatActions.id, current.id));
         await f.service.processFailedChatRunRetries();
       }
       const [failed] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));

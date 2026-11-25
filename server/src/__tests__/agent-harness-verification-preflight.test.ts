@@ -238,7 +238,8 @@ describePostgres("saved harness account preflight", () => {
         ],
       } }, userId);
       [agent] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: {
-        provider: "codex", cwd: home, instructionsFilePath: "/fixture/AGENTS.md", env: { FIXTURE_AUTHORITY: "retained" },
+        ...(runner === "legacy" ? { provider: "acpx", acpxAgent: "claude" } : { provider: "codex" }),
+        cwd: home, instructionsFilePath: "/fixture/AGENTS.md", env: { FIXTURE_AUTHORITY: "retained" },
       }, defaultEnvironmentId: null, runtimeConfig: { harnessPool: { poolId: pool.id } },
         lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 },
       }).where(eq(agents.id, agent.id)).returning();
