@@ -536,8 +536,8 @@ export function pluginDatabaseService(db: PluginDatabaseRootClient) {
             continue;
           }
 
-          const statements = splitSqlStatements(content);
           try {
+            const statements = splitSqlStatements(content);
             if (statements.length === 0) {
               throw new Error(`Plugin migration ${migrationKey} is empty`);
             }

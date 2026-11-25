@@ -776,6 +776,26 @@ describeEmbeddedPostgres("plugin database namespaces", () => {
     expect(migration?.status).toBe("failed");
   });
 
+  it("records a failed migration when the SQL cannot be split", async () => {
+    const pluginManifest = manifest("paperclip.unterminated");
+    const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
+    const packageRoot = await createPluginPackage(
+      pluginManifest,
+      `CREATE TABLE ${namespace}.rows (id uuid PRIMARY KEY); /* never closed`,
+    );
+    const pluginId = await installPluginRecord(pluginManifest);
+
+    await expect(
+      pluginDatabaseService(db).applyMigrations(pluginId, pluginManifest, packageRoot),
+    ).rejects.toThrow(/unterminated/i);
+
+    const [migration] = await db
+      .select()
+      .from(pluginMigrations)
+      .where(eq(pluginMigrations.pluginId, pluginId));
+    expect(migration?.status).toBe("failed");
+  });
+
   it("rolls back plugin install when migration validation fails", async () => {
     const pluginManifest = manifest("paperclip.escape");
     const namespace = derivePluginDatabaseNamespace(pluginManifest.id);
