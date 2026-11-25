@@ -648,13 +648,16 @@ const support = await getEmbeddedPostgresTestSupport();
         .where(eq(toolProfileEntries.catalogEntryId, draftRow!.id)).returning();
       expect(excluded).toHaveLength(1);
       await f.service.finishGalleryAppConnection(f.company.id, f.connectionId, {
-        enabledCatalogEntryIds: held.map((row) => row.id), askFirstCatalogEntryIds: [],
+        enabledCatalogEntryIds: held.map((row) => row.id), askFirstCatalogEntryIds: [removed[0]!.id],
         reviewedCatalogEntryIds: [...held, ...removed].map((row) => row.id), access: { agentIds: [f.agent.id] },
         preserveExistingAccess: true,
       }, f.actor);
       const kept = await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, excluded[0]!.profileId));
       expect(kept.filter((entry) => entry.catalogEntryId === draftRow!.id).map((entry) => entry.effect)).toEqual(["exclude"]);
       expect(kept.some((entry) => entry.catalogEntryId === removed[0]!.id)).toBe(false);
+      const askFirstPolicies = (await db.select().from(toolPolicies).where(eq(toolPolicies.companyId, f.company.id)))
+        .filter((policy) => policy.enabled && policy.policyType === "require_approval");
+      expect(askFirstPolicies.map((policy) => (policy.selectors as { catalogEntryId?: string }).catalogEntryId)).not.toContain(removed[0]!.id);
 
       forgetMcpHttpSessions(f.connectionId);
       await f.service.refreshCatalog(f.connectionId, f.actor);
