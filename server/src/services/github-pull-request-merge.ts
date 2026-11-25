@@ -14,6 +14,7 @@ export type PullRequestMergeDetails = {
   state: PullRequestMergeState;
   headRef: string | null;
   headSha: string | null;
+  retryAtMs?: number;
   workProductState?: "open" | "draft" | "merged" | "closed";
   draft?: boolean;
   baseRef?: string | null;
@@ -33,6 +34,13 @@ export type PullRequestMergeDetailsResolver = (
   reference: GitHubPullRequestReference,
   signal?: AbortSignal,
 ) => Promise<PullRequestMergeDetails>;
+
+export class MergeConfirmationProviderUnavailableError extends Error {
+  constructor(readonly retryAtMs?: number) {
+    super("Merge confirmation provider state is unavailable");
+    this.name = "MergeConfirmationProviderUnavailableError";
+  }
+}
 
 export const PULL_REQUEST_CACHE_MAX_ENTRIES = 1_000;
 
@@ -102,7 +110,18 @@ export function createPullRequestMergeDetailsResolver(db: Db, options?: GitHubEx
         sanitizedCanonicalUrl: `https://github.com/${reference.owner}/${reference.repo}/pull/${reference.number}`,
       } as never,
     });
-    if (!result.ok) return { state: "unknown", headRef: null, headSha: null };
+    if (!result.ok) {
+      const retryAfter = result.retryAfterSeconds;
+      return {
+        state: "unknown",
+        headRef: null,
+        headSha: null,
+        ...(result.errorCode === "github_rate_limited" &&
+          typeof retryAfter === "number" && Number.isSafeInteger(retryAfter * 1000)
+          ? { retryAtMs: Date.now() + Math.max(1000, retryAfter * 1000) }
+          : {}),
+      };
+    }
     const data = readRecord(result.snapshot.data);
     const statusKey = result.snapshot.statusKey;
     const workProductState = statusKey === "open" || statusKey === "draft" || statusKey === "merged" || statusKey === "closed"
