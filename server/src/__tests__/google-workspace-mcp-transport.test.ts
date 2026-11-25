@@ -4,7 +4,7 @@ import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents, companies, companyMemberships, createDb, heartbeatRuns, issues, issueThreadInteractions,
-  toolAccessAuditEvents, toolActionRequests, toolCallEvents, toolCatalogEntries, toolInvocations,
+  toolAccessAuditEvents, toolActionRequests, toolCallEvents, toolCatalogEntries, toolInvocations, toolPolicies, toolProfileEntries,
 } from "@paperclipai/db";
 import {
   GOOGLE_WORKSPACE_DEFAULT_SELECTION, GOOGLE_WORKSPACE_TOOL_TRANSPORT, googleWorkspaceServiceToolNames,
@@ -596,16 +596,19 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(removed.every((row) => row.status === "disabled")).toBe(true);
       const held = rows.filter((row) => row.status === "quarantined");
       expect(held.length).toBeGreaterThan(0);
-      const choices = (enabled: string[]) => f.service.finishGalleryAppConnection(f.company.id, f.connectionId, {
-        enabledCatalogEntryIds: enabled, askFirstCatalogEntryIds: [],
+      const choices = (enabled: string[], askFirst: string[] = []) => f.service.finishGalleryAppConnection(f.company.id, f.connectionId, {
+        enabledCatalogEntryIds: enabled, askFirstCatalogEntryIds: askFirst,
         reviewedCatalogEntryIds: [...held, ...removed].map((row) => row.id), access: { agentIds: [f.agent.id] },
       }, f.actor);
 
       await expect(choices([...held, blocked!].map((row) => row.id)))
         .rejects.toMatchObject({ status: 400, message: "Disabled actions cannot be enabled" });
 
-      await choices([...held, ...removed].map((row) => row.id));
+      await choices([...held, removed[0]!].map((row) => row.id), [removed[1]!.id]);
       const after = await byName(f.connectionId);
+      const askFirstPolicies = (await db.select().from(toolPolicies).where(eq(toolPolicies.companyId, f.company.id)))
+        .filter((policy) => policy.enabled && policy.policyType === "require_approval");
+      expect(askFirstPolicies.map((policy) => (policy.selectors as { catalogEntryId?: string }).catalogEntryId)).not.toContain(removed[1]!.id);
       expect(after.get("gmail__list_threads")).toMatchObject({ status: "disabled", quarantineReason: "mcp_tool_removed" });
       expect(after.get("gmail__search_messages")).toMatchObject({ status: "disabled", quarantineReason: "mcp_tool_removed" });
       const offered = (await f.listed()).map((tool) => tool.upstreamToolName);
@@ -639,11 +642,19 @@ const support = await getEmbeddedPostgresTestSupport();
       const removed = rows.filter((row) => row.quarantineReason === "mcp_tool_removed");
       expect(names(removed)).toEqual(["gmail__list_threads"]);
       const held = rows.filter((row) => row.status === "quarantined");
+      const [draftRow] = rows.filter((row) => row.toolName === "gmail__get_draft");
+      await db.update(toolCatalogEntries).set({ status: "disabled", quarantineReason: "mcp_tool_removed" }).where(eq(toolCatalogEntries.id, draftRow!.id));
+      const excluded = await db.update(toolProfileEntries).set({ effect: "exclude" })
+        .where(eq(toolProfileEntries.catalogEntryId, draftRow!.id)).returning();
+      expect(excluded).toHaveLength(1);
       await f.service.finishGalleryAppConnection(f.company.id, f.connectionId, {
         enabledCatalogEntryIds: held.map((row) => row.id), askFirstCatalogEntryIds: [],
         reviewedCatalogEntryIds: [...held, ...removed].map((row) => row.id), access: { agentIds: [f.agent.id] },
         preserveExistingAccess: true,
       }, f.actor);
+      const kept = await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, excluded[0]!.profileId));
+      expect(kept.filter((entry) => entry.catalogEntryId === draftRow!.id).map((entry) => entry.effect)).toEqual(["exclude"]);
+      expect(kept.some((entry) => entry.catalogEntryId === removed[0]!.id)).toBe(false);
 
       forgetMcpHttpSessions(f.connectionId);
       await f.service.refreshCatalog(f.connectionId, f.actor);

@@ -3552,7 +3552,7 @@ export function toolAccessService(
           );
           for (const prior of priorEntries)
             if (
-              !(prior.catalogEntryId && removedPriorCatalogEntryIds.has(prior.catalogEntryId)) &&
+              !(prior.effect === "include" && prior.catalogEntryId && removedPriorCatalogEntryIds.has(prior.catalogEntryId)) &&
               !entries.some(
                 (entry) =>
                   entry.catalogEntryId &&
