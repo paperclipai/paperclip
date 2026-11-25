@@ -20,16 +20,19 @@ function receipt() {
 
 describe("Kimi native child fault contract", () => {
   it("uses compiled production loader, module guard and native bootstrap bytes", () => {
-    const contract = kimiFaultRuntimeContract("linux-x64"), distribution = "/tmp/paperclip-acpx-native-test/distribution";
+    const contract = kimiFaultRuntimeContract("linux-x64"), launch = "/tmp/paperclip-acpx-native-test/launch";
+    const distribution = `/tmp/paperclip-verified-native-501/${contract.closureSha256}/distribution`;
     expect(contract.guardLoaderSha256).toMatch(/^sha256:[a-f0-9]{64}$/u);
     expect(contract.closureSha256).toMatch(/^[a-f0-9]{64}$/u);
-    const bootstrap = expectedNativeBootstrap(distribution, contract.nodeSha256);
+    const bootstrap = expectedNativeBootstrap(launch, distribution, contract.nodeSha256);
     expect(bootstrap).toContain(`const executable="${distribution}/node/bin/node"`);
-    expect(bootstrap).toContain(`"${distribution}/${KIMI_FAULT_ENTRY}","acp"`);
+    expect(bootstrap).toContain(`["--require","${launch}/.paperclip-native-module-guard.cjs","${distribution}/${KIMI_FAULT_ENTRY}","acp"]`);
+    // The spawned Node descriptor is hashed against its pin, never trusted from a recorded store identity.
+    expect(bootstrap).toContain(`executableHash.digest("hex")!==${JSON.stringify(contract.nodeSha256.slice("sha256:".length))}`);
     expect(bootstrap).toContain('const childExecutable=process.platform==="linux"?"/proc/self/fd/"+stdio.length:executable');
     expect(expectedNativeModuleGuard(distribution, [{ path: KIMI_FAULT_ENTRY, sha256: "a".repeat(64) }]))
       .toContain(`const digests={"${distribution}/${KIMI_FAULT_ENTRY}":"${"a".repeat(64)}"};`);
-    expect(() => expectedNativeBootstrap(distribution, "invalid")).toThrow("node_digest");
+    expect(() => expectedNativeBootstrap(launch, distribution, "invalid")).toThrow("node_digest");
   });
 
   it("accepts the exact child and rejects misleading or incomplete receipts", () => {
@@ -63,7 +66,7 @@ describe("Kimi native child fault contract", () => {
     expect(result.error).toBeUndefined();
     expect(result.signal).toBeNull();
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stderr).toContain("Ran 25 tests");
+    expect(result.stderr).toContain("Ran 27 tests");
     if (process.platform === "linux") expect(result.stderr).not.toContain("skipped");
     else expect(result.stderr).toContain("skipped=1");
   }, 35_000);

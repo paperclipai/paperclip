@@ -1,5 +1,13 @@
 # Runner E2E fixture authoring
 
+The deployment-targeted [saved skill journey](product-journeys/saved-skill-use.md)
+creates and assigns one campaign-owned synthetic skill by key through public APIs, then
+creates the measured task through the browser. The saved outcome must come from
+one native run. Setup never supplies the output document or its native read
+receipt. The ordinary Latest assignment, immutable created version and admitted
+run version must agree. Skill ownership is journaled before creation and cleaned by the target
+provider with the other owned resources.
+
 [Chat feature evals](CHAT-FEATURES.md) load two authored YAML requests and seed
 only company, agents and project context through public APIs. Both agents use
 production role instructions; evaluator outcomes are never injected. Real browser
@@ -60,6 +68,16 @@ prompts derive from shared task definitions there. Earlier three-cell results
 retain their original definition and do not qualify the added Plan cell.
 
 ## Suites and matrices
+
+`onboarding-approval-history` uses the existing first-task fixture registry path
+with the production wizard and native Codex/ACPX Claude profiles. Its explicit
+`interview-hire-execute` case has seven expected work turns, one attempt, a $5
+company task budget, twelve total run records, and a fifteen-minute deadline.
+The model creates its plan, approval cards, writer, child task, and saved output
+through production tools; the harness answers the interview and clicks normal
+approval controls. Fixture code does not insert approval rows or hire the writer.
+The ordinary first-task cleanup owns the complete disposable company, including
+the new writer. See [the journey contract](README.md#first-task-onboarding).
 
 A `RunnerSuiteFixture` declares one durable testing purpose: stable ID, label,
 description, profiles, environments, cases, expected size, and definition or

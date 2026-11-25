@@ -55,6 +55,8 @@ function makeCompany(id: string): Company {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     defaultResponsibleUserId: null,
+    defaultDecisionOwnerUserId: null,
+    budgetOwnerUserId: null,
     requireBoardApprovalForNewAgents: false,
     interactionResolverGovernance: {},
     feedbackDataSharingEnabled: false,
@@ -221,7 +223,7 @@ describe("CompanyProvider", () => {
     root = createRoot(container);
     queryClient = new QueryClient({
       defaultOptions: {
-        queries: { retry: false },
+        queries: { retry: false, retryDelay: 0 },
       },
     });
     mockAuthApi.getSession.mockResolvedValue(null);
@@ -506,8 +508,8 @@ describe("CompanyProvider", () => {
       });
       await flushReact();
       // Past the bounded retries, so the failure has actually settled.
-      await act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      await vi.waitFor(() => {
+        expect(captured?.companyListUnavailable).toBe(true);
       });
       await flushReact();
 
@@ -547,13 +549,12 @@ describe("CompanyProvider", () => {
         queryClient.setQueryData(queryKeys.auth.session, sessionFor("user-2"));
       });
       await flushReact();
-      await act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      await vi.waitFor(() => {
+        expect(seen).toEqual([null, "company-1", null, "company-2"]);
       });
       await flushReact();
 
       expect(captured?.companyListUnavailable).toBe(false);
-      expect(seen).toEqual([null, "company-1", null, "company-2"]);
     });
 
     // The failure flag must not outlive the failure. A later success — a focus
@@ -569,12 +570,10 @@ describe("CompanyProvider", () => {
         queryClient.setQueryData(queryKeys.auth.session, sessionFor("user-2"));
       });
       await flushReact();
-      await act(async () => {
-        await new Promise((resolve) => window.setTimeout(resolve, 1200));
+      await vi.waitFor(() => {
+        expect(captured?.companyListUnavailable).toBe(true);
       });
       await flushReact();
-
-      expect(captured?.companyListUnavailable).toBe(true);
 
       // This account genuinely owns no companies, and the request says so.
       mockCompaniesApi.list.mockResolvedValue([]);

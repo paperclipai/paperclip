@@ -5,12 +5,11 @@ import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-lo
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import {
   type Db,
   authUsers,
   adapterAuthSessions,
-  aiConnectionDefaults,
   aiProviderDefaults,
   agents,
   heartbeatRuns,
@@ -50,6 +49,7 @@ import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { probeAiConnectionUsage } from "./ai-connection-usage.js";
 import { probeAiAccountIdentity } from "./ai-account-identity.js";
+import { emitModelConnectedAfterCommit } from "./product-telemetry.js";
 
 /** Same human audience displayed by the existing Connections identity controls. */
 function canUseCredential(
@@ -174,13 +174,14 @@ export function aiConnectionService(db: Db) {
                   : ("connected" as const),
         },
       ];
-    });
+    }).sort((a, b) => a.id.localeCompare(b.id) || a.grantId.localeCompare(b.grantId));
   }
   async function setDefault(
     companyId: string,
     userId: string,
     grantId: string,
   ) {
+    /** The grant that was the default before this change, if any. */
     return db.transaction(async (tx) => {
       const [row] = await tx
         .select({ connection: toolConnections, grant: connectionGrants })
@@ -211,19 +212,17 @@ export function aiConnectionService(db: Db) {
         );
       const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
       if (metadata.routing) throw unprocessable("Custom providers use an explicit connection selection on the agent.");
-      // Keep old servers' method preferences intact during an additive rollout.
-      await tx.insert(aiConnectionDefaults)
-        .values({ companyId, userId, ...metadata, grantId })
-        .onConflictDoUpdate({
-          target: [aiConnectionDefaults.companyId, aiConnectionDefaults.userId, aiConnectionDefaults.provider, aiConnectionDefaults.method],
-          set: { grantId, updatedAt: new Date() },
-        });
+      const [previous] = await tx.select({ grantId: aiProviderDefaults.grantId }).from(aiProviderDefaults).where(and(
+        eq(aiProviderDefaults.companyId, companyId), eq(aiProviderDefaults.userId, userId),
+        eq(aiProviderDefaults.provider, metadata.provider),
+      ));
       await tx.insert(aiProviderDefaults)
         .values({ companyId, userId, provider: metadata.provider, grantId })
         .onConflictDoUpdate({
           target: [aiProviderDefaults.companyId, aiProviderDefaults.userId, aiProviderDefaults.provider],
           set: { grantId, updatedAt: new Date() },
         });
+      return { previousGrantId: previous?.grantId ?? null };
     });
   }
   async function readableAccount(companyId: string, userId: string, connectionId: string, grantId?: string) {
@@ -263,7 +262,7 @@ export function aiConnectionService(db: Db) {
         errorCode: "connection_unavailable", message: "Reconnect or enable this connection to check its account details." };
     }
     // Unsupported methods must not open their credentials just to report this limit.
-    const value = metadata.provider === "anthropic" && metadata.method === "subscription" && !metadata.routing
+    const value = ["anthropic", "openai"].includes(metadata.provider) && metadata.method === "subscription" && !metadata.routing
       ? await credential(row, 0, { actorType: "user", actorId: userId, ...audit, responsibleUserId: userId }) : "";
     return { ...identity, ...await probeAiAccountIdentity(metadata, value) };
   }
@@ -281,6 +280,10 @@ export function aiConnectionService(db: Db) {
     binding: AiConnectionBinding;
   }) {
     const { companyId, userId, agentId, binding } = input;
+    // The grant-kind checks below cover only these three modes. Callers parse
+    // the binding first, but an unknown mode must never skip those checks.
+    if (binding.mode !== "responsible_user" && binding.mode !== "shared" && binding.mode !== "delegated")
+      throw aiConnectionConfigurationFailure("ai_connection_incompatible", "Select a supported AI connection mode");
     if (
       !isAiConnectionCompatible(
         binding,
@@ -452,6 +455,42 @@ export function aiConnectionService(db: Db) {
     }
     return { ...row, provider };
   }
+  /**
+   * A native run's image tool reuses the exact AI connection the run was
+   * admitted with. Recheck the same permissions as runtime selection on every
+   * call: an OpenAI API key sent directly to OpenAI, active and healthy, shared
+   * with the responsible user and installed for this agent.
+   */
+  async function selectImageGeneration(input: {
+    companyId: string; connectionId: string; grantId: string;
+    userId: string | null; agentId: string;
+  }) {
+    const [row] = await db.select({ connection: toolConnections, grant: connectionGrants })
+      .from(toolConnections).innerJoin(connectionGrants, and(
+        eq(connectionGrants.connectionId, toolConnections.id), eq(connectionGrants.companyId, toolConnections.companyId),
+      )).where(and(eq(toolConnections.companyId, input.companyId), eq(toolConnections.id, input.connectionId),
+        eq(connectionGrants.id, input.grantId), eq(toolConnections.connectionPurpose, "ai"))).limit(1);
+    if (!row) throw unprocessable("AI connection unavailable", { code: "connection_unavailable" });
+    const metadata = aiConnectionMetadataSchema.safeParse(row.connection.config.ai);
+    if (!metadata.success || metadata.data.provider !== "openai" || metadata.data.method !== "api_key" || metadata.data.routing)
+      throw unprocessable("Image generation needs an OpenAI API-key connection", { code: "incompatible_connection" });
+    if (row.grant.status !== "active" || !row.connection.enabled || row.connection.status !== "active" || row.connection.healthStatus !== "ok")
+      throw unprocessable("Reconnect or enable this connection", { code: "connection_unavailable" });
+    if (!input.userId || !(await membership(input.companyId, input.userId))) throw forbidden("Active responsible user required");
+    if (row.grant.kind === "user" && !(await membership(input.companyId, row.grant.subjectUserId)))
+      throw forbidden("The account owner is no longer an active company member");
+    const audience = await db.select().from(connectionGrantMembers).where(and(
+      eq(connectionGrantMembers.companyId, input.companyId), eq(connectionGrantMembers.grantId, input.grantId),
+    ));
+    if (!canUseCredential(row.grant, input.userId, audience)) throw forbidden("Connection is not shared with this user");
+    const [install] = await db.select({ id: toolConnectionInstalls.id }).from(toolConnectionInstalls).where(and(
+      eq(toolConnectionInstalls.companyId, input.companyId), eq(toolConnectionInstalls.connectionId, input.connectionId),
+      or(and(eq(toolConnectionInstalls.targetType, "company"), eq(toolConnectionInstalls.targetId, input.companyId)),
+        and(eq(toolConnectionInstalls.targetType, "agent"), eq(toolConnectionInstalls.targetId, input.agentId))),
+    )).limit(1);
+    if (!install) throw forbidden("Connection is not permitted for this agent");
+    return row;
+  }
   /** Internal fast-response use has its own capability check, never a pretend CLI harness. */
   async function selectFastResponse(input: {
     companyId: string; connectionId: string; grantId: string;
@@ -575,11 +614,12 @@ export function aiConnectionService(db: Db) {
     } else {
       value = await secrets.resolveSecretValue(row.connection.companyId, secret.id, "latest", context);
     }
-    // Resolution records lastResolvedAt and can wait behind a rotating writer.
-    // Re-read after that wait instead of handing a run the pre-rotation token.
+    // Wait behind a rotating writer (the share lock), then re-read instead of
+    // handing a run the pre-rotation token. A lock takes no new row version,
+    // so it never aborts a concurrent REPEATABLE READ admission.
     const [latest] = await db.select().from(companySecrets).where(and(
       eq(companySecrets.id, secret.id), eq(companySecrets.companyId, row.connection.companyId),
-    ));
+    )).for("share");
     if (!latest || latest.status !== "active") throw unprocessable("Reconnect this AI account");
     if (latest.latestVersion !== secret.latestVersion) {
       if (retry >= 2) throw unprocessable("AI credentials are changing. Retry this execution.", { code: "ai_connection_busy" });
@@ -882,16 +922,6 @@ export function aiConnectionService(db: Db) {
         .where(eq(toolConnections.id, id));
       await syncConnectionCredentialBindings(tx, savedConnection, refs);
       if (input.ownership === "personal" && !routing) {
-        await tx
-          .insert(aiConnectionDefaults)
-          .values({
-            companyId,
-            userId,
-            provider: input.provider,
-            method: input.method,
-            grantId,
-          })
-          .onConflictDoNothing();
         await tx.insert(aiProviderDefaults).values({ companyId, userId, provider: input.provider, grantId }).onConflictDoNothing();
       }
       if (!reconnect) {
@@ -936,6 +966,22 @@ export function aiConnectionService(db: Db) {
         entityId: id,
         details: { provider: input.provider, method: input.method, grantId },
       });
+      if (!reconnect) {
+        const [earlierModel] = await tx
+          .select({ id: toolConnections.id })
+          .from(toolConnections)
+          .where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.connectionPurpose, "ai"), ne(toolConnections.id, id)))
+          .limit(1);
+        emitModelConnectedAfterCommit({
+          companyId,
+          provider: input.provider,
+          method: input.method,
+          ownership: input.ownership,
+          routingKind: routing?.kind,
+          firstForCompany: !earlierModel,
+          ownerUserId: userId,
+        });
+      }
       return { connectionId: id, grantId };
     }));
     // Quota refresh can hold this lock through a 60-second token exchange.
@@ -1229,5 +1275,5 @@ export function aiConnectionService(db: Db) {
       return [{ ...row, summary }];
     });
   }
-  return { list, selectDecision, selectFastResponse, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, selectFastResponse, selectImageGeneration, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
 }

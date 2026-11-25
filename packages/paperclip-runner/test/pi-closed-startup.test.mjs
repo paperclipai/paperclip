@@ -55,10 +55,11 @@ if (process.argv[2] === "--pi-no-key-probe") {
       const report = JSON.parse(await readFile(join(root, "report.json"), "utf8"));
       assert.equal(report.closeError, null, report.closeError);
       assert.match(report.error, /session\.open failed/);
-      assert.match(report.commandFailure?.result?.message ?? "", /retryable=false, classification=session_ensure_failed/);
+      assert.match(report.commandFailure?.result?.message ?? "", /retryable=false, classification=provider_authentication/);
       assert.equal(report.commandFailure?.result?.providerFailure?.schema, "paperclip.provider-failure.v1");
       assert.equal(report.commandFailure.result.providerFailure.provider, "pi");
       assert.equal(report.commandFailure.result.providerFailure.phase, "startup");
+      assert.equal(report.commandFailure.result.providerFailure.category, "authentication");
       assert.doesNotMatch(report.error, /timed out/);
       assert.ok(report.settledMs < 60_000, `session.open took ${report.settledMs} ms`);
       assert.ok(report.evidence.some(item => item.runnerExited === true && item.runnerExitCode === 0));

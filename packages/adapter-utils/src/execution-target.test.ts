@@ -1,5 +1,7 @@
+import os from "node:os";
+import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { access, readFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ssh from "./ssh.js";
 import * as serverUtils from "./server-utils.js";
@@ -7,8 +9,11 @@ import {
   cleanupGitHubOperationLaunchers,
   prepareGitHubOperationLaunchers,
   adapterExecutionTargetUsesManagedHome,
+  adapterExecutionTargetSessionIdentity,
+  normalizeAdapterExecutionTargetSessionIdentity,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
   ensureAdapterExecutionTargetDirectory,
+  ensureAdapterExecutionTargetLocalWorkspace,
   ensureAdapterExecutionTargetCommandResolvable,
   isAdapterExecutionTargetUnavailableError,
   resolveAdapterExecutionTargetCwd,
@@ -34,6 +39,23 @@ function sshExecutionTarget(): AdapterSshExecutionTarget {
     },
   };
 }
+
+describe("persisted execution target identities", () => {
+  it("retains SSH session guards without persisting connection credentials or socket paths", () => {
+    const target = sshExecutionTarget();
+    target.spec.useHostAuth = false;
+    const identity = adapterExecutionTargetSessionIdentity(target)!;
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, privateKey: "credential canary", tailscaleSocket: "/private/socket", unexpected: { secret: "canary" } })).toEqual(identity);
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, port: "22" })).toBeNull();
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, host: {} })).toBeNull();
+  });
+  it("retains sandbox lease guards and rejects unknown transports", () => {
+    const target = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", providerKey: "fixture", environmentId: "environment", leaseId: "lease" };
+    const identity = adapterExecutionTargetSessionIdentity(target)!;
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, credential: "canary" })).toEqual(identity);
+    expect(normalizeAdapterExecutionTargetSessionIdentity({ ...identity, transport: "unknown" })).toBeNull();
+  });
+});
 
 describe("execution target validation failures", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -188,6 +210,20 @@ describe("runAdapterExecutionTargetShellCommand", () => {
     expect(onLog).toHaveBeenCalledWith("stderr", "partial stderr");
   });
 
+  it("returns a timedOut result for the rejection runSshCommand gives when its timeout kills ssh", async () => {
+    vi.spyOn(ssh, "runSshCommand").mockRejectedValue(Object.assign(new Error("Process exited with code -1"), {
+      code: null,
+      signal: "SIGTERM",
+      killed: true,
+      stdout: "",
+      stderr: "",
+    }));
+
+    const result = await runAdapterExecutionTargetShellCommand("run-2b", sshExecutionTarget(), "sleep 10", { cwd: "/tmp/local", env: {} });
+
+    expect(result).toMatchObject({ exitCode: null, signal: "SIGTERM", timedOut: true });
+  });
+
   it("returns the SSH process exit code for non-zero remote command failures", async () => {
     vi.spyOn(ssh, "runSshCommand").mockRejectedValue(Object.assign(new Error("non-zero exit"), {
       code: 17,
@@ -236,6 +272,14 @@ describe("runAdapterExecutionTargetShellCommand", () => {
         strictHostKeyChecking: true,
       },
     })).toBe(false);
+  });
+
+  it("uses a managed home on SSH when the agent has a configured AI connection", () => {
+    const target = sshExecutionTarget();
+    expect(adapterExecutionTargetUsesManagedHome(target, true)).toBe(false);
+    expect(adapterExecutionTargetUsesManagedHome({ ...target, spec: { ...target.spec, useHostAuth: false } }, true)).toBe(true);
+    expect(adapterExecutionTargetUsesManagedHome({ ...target, spec: { ...target.spec, useHostAuth: true } }, true)).toBe(false);
+    expect(adapterExecutionTargetUsesManagedHome(null, true)).toBe(false);
   });
 });
 
@@ -442,5 +486,23 @@ describe("GitHub launcher lifecycle", () => {
       cwd: "/remote/workspace", timeoutMs: 5_000 });
     await expect(cleanupGitHubOperationLaunchers({ runId: "../other", target })).rejects.toThrow("Invalid GitHub launcher run ID");
     expect(runner.execute).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe("controller workspace preparation", () => {
+  it.each(["local", "copy", "in_place"] as const)("keeps %s workspace access on its owning filesystem", async mode => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-path-"));
+    try {
+      const mount = path.join(root, "remote-filesystem");
+      await writeFile(mount, "Not a controller directory");
+      const cwd = path.join(mount, "workspace");
+      const target = mode === "local" ? null : { ...sshExecutionTarget(), remoteCwd: cwd,
+        workspaceRealization: { mode, authoritativeRoot: cwd, pathAliases: [], outboundRestorePaths: [] } };
+      const prepare = ensureAdapterExecutionTargetLocalWorkspace(target, cwd);
+      if (mode === "in_place") await expect(prepare).resolves.toBeUndefined();
+      else await expect(prepare).rejects.toMatchObject({ code: "ENOTDIR" });
+      expect(await readFile(mount, "utf8")).toBe("Not a controller directory");
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 });

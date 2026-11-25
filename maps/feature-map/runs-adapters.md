@@ -44,7 +44,8 @@ For latency diagnosis with an operator OTLP endpoint, search the hashed run ID
 without restricting the root span name. Compare workspace preparation with its
 `workspace_<step>` intervals. Measure controller readiness separately through
 `controller.startup.<phase>`. A recovery pause or deployment drain is not model
-execution time. See the [tracing contract](../../doc/observability.md#controller-preparation-phases).
+execution time. See the spans in
+[`execution-preparation-timing.ts`](../../server/src/services/execution-preparation-timing.ts).
 These source-level diagnostics do not establish a live response-time budget.
 `task.time_to_first_token` measures accepted ingress through the first committed
 text that the task transcript can show, including thinking and completed
@@ -61,9 +62,9 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Reco
 
 Automated: [actual-auth connection integration](../../server/src/__tests__/connection-management.integration.test.ts)
 exercises account/pool persistence, responsible-user ownership, agent attribution,
-saved local-login access and native secret-response protection with provider fixtures.
-[Saved handoff UI tests](../../ui/src/pages/apps/AppsConnect.test.tsx)
-exercise setup routing with mocked APIs. Neither establishes live provider sign-in.
+saved local-login access and native secret-response protection with provider fixtures
+(mocked `AppsConnect` UI tests for setup routing were removed; verify setup routing
+manually). This does not establish live provider sign-in.
 
 Manual: Start delegated managed-account setup, reload the exact saved human
 handoff, finish the required login, and inspect the saved account and original
@@ -129,7 +130,8 @@ own login keys must remain unavailable. Verify the same delivery without an
 agent identity. Shell-policy metadata must contain names rather than values.
 
 Choose Codex as the harness; the UI displays its name/icon for both runners.
-Advanced identifies the automatic default and offers Paperclip Runner or Legacy.
+Setup selects the runner automatically, and edits preserve saved execution.
+The UI has no runner dropdown; Advanced appears only when other settings remain.
 New Codex agents default to the native runner on supported macOS or GNU/Linux
 targets; the [shared selection contract](../../packages/shared/src/agent-runner.ts)
 and [runtime prerequisites](../../packages/paperclip-runner/README.md) define the

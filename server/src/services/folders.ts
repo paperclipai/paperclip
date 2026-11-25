@@ -544,14 +544,23 @@ export function folderService(db: Db, mutationLockHeld = false) {
     throw conflict("Could not create project skill folder");
   }
 
+  async function findCurrentBundledCategory(companyId: string, systemKey: string, name: string) {
+    const rows = await getRows(companyId, "skill");
+    const existing = rows.find((row) => row.systemKey === systemKey);
+    if (!existing || existing.name !== name || !rows.some((row) => row.systemKey === "bundled")) return null;
+    return buildFolderViews(rows).get(existing.id) ?? null;
+  }
+
   async function ensureBundledCategory(companyId: string, category: string): Promise<Folder> {
-    if (!mutationLockHeld) {
-      return withCompanyFolderLock(companyId, (lockedDb) => folderService(lockedDb, true).ensureBundledCategory(companyId, category));
-    }
-    const root = await ensureContainer(companyId, "bundled", "Bundled");
     const name = normalizeName(category);
     const slug = normalizeFolderSlug(category);
     const systemKey = `bundled:${slug}`;
+    if (!mutationLockHeld) {
+      const current = await findCurrentBundledCategory(companyId, systemKey, name);
+      if (current) return current;
+      return withCompanyFolderLock(companyId, (lockedDb) => folderService(lockedDb, true).ensureBundledCategory(companyId, category));
+    }
+    const root = await ensureContainer(companyId, "bundled", "Bundled");
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const resolved = await uniqueSystemSlug(companyId, root.id, slug, systemKey, "bundled");
       if (resolved.id) {
@@ -576,16 +585,15 @@ export function folderService(db: Db, mutationLockHeld = false) {
     throw conflict("Could not create bundled skill folder");
   }
 
-  async function pruneEmptyBundledCategories(companyId: string, retainedCategories: string[]): Promise<void> {
-    if (!mutationLockHeld) {
-      return withCompanyFolderLock(companyId, (lockedDb) => folderService(lockedDb, true).pruneEmptyBundledCategories(companyId, retainedCategories));
-    }
-    const root = await findSystemFolder(companyId, "bundled");
-    if (!root) return;
-    const rows = await getRows(companyId, "skill");
+  async function emptyBundledCategoryIds(companyId: string, retainedCategories: string[], rows: FolderRow[]) {
+    const root = rows.find((row) => row.kind === "skill" && row.systemKey === "bundled");
+    if (!root) return [];
     const retainedSystemKeys = new Set(
       retainedCategories.map((category) => `bundled:${normalizeFolderSlug(category)}`),
     );
+    const candidates = rows.filter((row) => row.parentId === root.id && row.systemKey?.startsWith("bundled:")
+      && !retainedSystemKeys.has(row.systemKey));
+    if (candidates.length === 0) return [];
     const usedFolderIds = new Set(
       await db
         .select({ folderId: companySkills.folderId })
@@ -594,10 +602,16 @@ export function folderService(db: Db, mutationLockHeld = false) {
         .then((skills) => skills.flatMap((skill) => skill.folderId ? [skill.folderId] : [])),
     );
     const parentIds = new Set(rows.flatMap((row) => row.parentId ? [row.parentId] : []));
-    for (const row of rows) {
-      if (row.parentId !== root.id || !row.systemKey?.startsWith("bundled:")) continue;
-      if (retainedSystemKeys.has(row.systemKey) || usedFolderIds.has(row.id) || parentIds.has(row.id)) continue;
-      await db.delete(folders).where(and(eq(folders.companyId, companyId), eq(folders.id, row.id)));
+    return candidates.filter((row) => !usedFolderIds.has(row.id) && !parentIds.has(row.id)).map((row) => row.id);
+  }
+
+  async function pruneEmptyBundledCategories(companyId: string, retainedCategories: string[]): Promise<void> {
+    if (!mutationLockHeld) {
+      if ((await emptyBundledCategoryIds(companyId, retainedCategories, await getRows(companyId, "skill"))).length === 0) return;
+      return withCompanyFolderLock(companyId, (lockedDb) => folderService(lockedDb, true).pruneEmptyBundledCategories(companyId, retainedCategories));
+    }
+    for (const id of await emptyBundledCategoryIds(companyId, retainedCategories, await getRows(companyId, "skill"))) {
+      await db.delete(folders).where(and(eq(folders.companyId, companyId), eq(folders.id, id)));
     }
   }
 

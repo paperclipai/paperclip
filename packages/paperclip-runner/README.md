@@ -76,6 +76,7 @@ retrieval instructions. Reads and excerpts are bounded; the handoff has a
 reset boundaries, deleted messages, source quarantine, and secret redaction
 apply before model submission. Successful recovery does not fetch or replay the
 handoff.
+
 Legacy adapters advertise `supportsToolRefreshOnResume` for their selected
 harness: Claude and Codex CLI/ACP, Grok CLI, Gemini/Kimi CLI/ACP, and
 Cursor/OpenCode/Pi CLI. CLI adapters using environment tool delivery start each
@@ -192,11 +193,23 @@ and terminal settlement at the process boundary. Copilot and Pi remain gated.
 Verified distributions are build-owned; no provider accepts an arbitrary executable.
 See [the rich ACP capability report](../../doc/architecture/runner-rich-acp-capabilities.md).
 
+On stdin EOF, SIGTERM, SIGINT, or an internal shutdown request, the sidecar emits
+`sidecar_shutdown_requested` once through `runtime.diagnostic` and stderr before
+cleanup removes pending calls. The JSON message gives the shutdown reason,
+pending tool/input/permission counts, completion-normalization count, and at most
+16 oldest tool calls with elapsed milliseconds and SHA-256 call IDs. Hash a
+`runtime.tool_called` call ID to correlate it with this snapshot. Arguments,
+results, operation names, and raw call IDs are excluded. This diagnostic records
+the local trigger; stdin EOF alone does not identify why the controller stopped.
+A broken output pipe can prevent event delivery; consult retained stderr too.
+It does not change retries, cancellation, or tool authorization. No saved session
+shape changes; sessions from the previous release retain their existing behavior.
+
 If the controller sends assigned MCP tools in the PRP catalog, the sidecar uses
 its authenticated tool bridge.
 Isolated provider admission accepts this route without a separate native MCP endpoint.
-Direct runtime-host callers must supply the native gateway binding unless they select
-PRP tool delivery and supply the semantic tool bridge.
+When the runtime context names an assigned MCP binding, direct runtime-host callers
+must select PRP tool delivery and supply the semantic tool bridge.
 PRP delivery keeps the controller's exact operation names, including compact MCP catalog tools.
 The selected permission and read-only policies still apply.
 
@@ -294,20 +307,60 @@ blocks new imports rather than resetting the budget. See the
 [local qualification record](../../doc/plans/2026-10-28-cursor-cloud-native-runner.md)
 for runnable acceptance cells and the remaining live qualification gates.
 
-Google Antigravity is an **unqualified, pending** native ACPX integration. The
-explicit `paperclipai runtime setup antigravity` command installs the verified
-Antigravity ACP 1.4.3 distribution and its owned admission patch on macOS ARM64.
-It verifies both the official vendor closure and the separately pinned patched
-closure; npm installation downloads no Antigravity runtime. This setup installs
-assets only. Global release qualification remains pending and normal execution
-admission stays closed. An isolated operator can admit one company, exact model,
-local platform and pinned native closure/profile until a fixed expiry through
-trusted server startup authority. The candidate supports a managed saved Google
-subscription; the recorded acceptance reused the same owner's personal default
-grant and `gemini-3.8-flash-low` on macOS ARM64. This does not qualify fresh Google
-consent or the separate API-key route. Google Workspace OAuth does not substitute
-for a runtime credential. See the
-[integration contract and evidence](../../doc/plans/2026-10-28-antigravity-integration.md).
+Google Antigravity is an **unqualified, pending** native ACPX integration on
+Google's official ACP server 1.5.2 with Paperclip's owned admission patch
+(`1.5.2-paperclip.2`). The explicit `paperclipai runtime setup antigravity`
+command installs it on macOS ARM64, Linux x64 and Linux ARM64; macOS Intel stays
+inventory-only (no native host). Setup verifies both the official vendor closure
+and the separately pinned patched closure; npm installation downloads no
+Antigravity runtime. The Daytona image and remote provider pack carry the Linux
+x64 closure only when built with `--candidate-providers=antigravity`; while the
+profile is pending it is listed under `candidateProviders`.
+
+Two connection routes exist: a Gemini API key (`gemini-api-key`, locally and in
+a cloud environment once released) and personal Google sign-in (Paperclip host
+only, one turn at a time). Agent save and Test refuse any other combination in
+plain language. Models are the server's own catalog. The 1.5.2 catalog lists
+Gemini 4 families only for Agent Platform, but patch `1.5.2-paperclip.2` admits
+an exact requested model ID under an API key, so Gemini 4 (Neon included) runs
+on the API-key route with a paid key; a refused model is named with its fix. Global release qualification remains pending and normal execution
+admission stays closed: an isolated operator can admit one company, exact
+model, execution platform (this host, or linux-x64 for a cloud environment with
+an API key) and pinned patched closure/profile, per-turn only, until a fixed
+expiry through trusted server startup authority. Live acceptance on 1.5.2 (API key, Linux,
+Daytona, the model lineups) has not passed yet. Google Workspace OAuth does not
+substitute for a runtime credential. See the
+[current qualification plan](../../doc/plans/2026-11-22-antigravity-qualification.md)
+and the [October integration record](../../doc/plans/2026-10-28-antigravity-integration.md).
+
+### Antigravity CLI route (experimental)
+
+`antigravity-cli-distributions.json` pins Google's Antigravity CLI (`agy`)
+1.5.15 for darwin-arm64, linux-x64 and linux-arm64. Each pin has the archive URL,
+size, SHA-512 and SHA-256, plus the extracted executable's digests.
+`paperclipai runtime setup antigravity-cli` downloads the archive from Google,
+verifies it, and installs `agy` under `~/.paperclip/runtimes/antigravity-cli/`.
+A mismatch installs nothing. Re-running setup verifies the installed copy and
+replaces it if it was changed. The binary is never packed into npm, the
+provider pack or an image.
+
+A driver gets a launch from one call:
+
+```ts
+resolveAntigravityCliLaunch(options?: {
+  arguments?: readonly string[];  // driver flags, appended after the pinned `acp`
+  platform?: NodeJS.Platform; architecture?: string; home?: string;
+}): Promise<AntigravityCliLaunch>
+```
+
+The result has `version`, `build`, `target`, `commandDigest`, the exact
+`arguments`, the pinned `environment` (`AGY_CLI_DISABLE_AUTO_UPDATE=1`),
+`environmentFor(base)`, which merges the pins over a driver environment, and
+`installation`. `installation.openCommand()` admits the sealed verified store
+copy, and each spawn re-hashes the executable it runs. The call fails with
+`AntigravityCliRuntimeError` (`ANTIGRAVITY_CLI_UNSUPPORTED_PLATFORM` or
+`ANTIGRAVITY_CLI_RUNTIME_MISSING`, both permanent). The endpoint, modes,
+`--gemini-dir` and route selection are the driver's choices.
 
 A release includes all four platform daemons and the Linux provider-pack identity
 from its matching Daytona image. Run `stage:release-binaries` with a manifest that
@@ -403,7 +456,9 @@ and both must succeed before artifact metadata and source-bound hashes are
 recorded. Run Docker and native qualification on hosted CI rather than a local
 developer machine.
 
-Pi cold provider admission has an absolute 60-second budget. Warm run attachment
+Pi and Claude cold provider admission have an absolute 60-second budget, and
+the runner's ACPX sidecar and the sidecar's provider session handshake bound their `session.open` at 60 seconds too. A cold
+Claude `session.open` timed out at the earlier 30-second bound on a loaded host. Warm run attachment
 checkpoints the old ACPX sidecar and starts a new one, so it uses that same budget
 while retaining the existing Runner authority. Live adoption and ordinary
 commands retain their 30-second bounds. Closing the transport cancels admission;
@@ -726,6 +781,29 @@ actual shell discovery, successful durable activity recording, and denial of unr
 Runner state, descriptor writes and ambient secrets. The normal suite covers
 bounded framing, concurrent publishers, fixed-path cleanup and attachment fencing.
 
+Codex receives write access to Runner's private activity-channel directory, with
+the lock file explicitly read-only. The FIFO itself must not be a writable
+filesystem root: Codex adds protected metadata children to writable roots, which
+cannot exist beneath a FIFO. The helper and discovery descriptor remain read-only;
+the activity grant does not expose Runner state or change workspace/network policy.
+
+To check restrictive Plan mode without credentials or a model call, run the
+actual channel/policy producer against the pinned Linux Codex sandbox:
+
+```sh
+CODEX_NOTIFICATION_SANDBOX_COMMAND=/absolute/path/to/pinned/codex \
+CODEX_NOTIFICATION_SANDBOX_RESOURCES=/absolute/path/to/pinned/executable/resources \
+cargo test --manifest-path runner/Cargo.toml --locked -p paperclip-runner-core --lib \
+  read_only_codex_opens_with_runtime_activity -- --ignored
+```
+
+This checks instruction reads, FIFO writes, and denial of workspace writes,
+unrelated Runner-state reads, descriptor writes, and lock writes/removal. An
+isolated non-Linux host can instead set `CODEX_NOTIFICATION_FIXTURE_EXPORT` to a
+JSON file and omit `CODEX_NOTIFICATION_SANDBOX_COMMAND`; that only exports a
+synthetic producer fixture for a separately controlled Linux sandbox. Exporting
+the fixture does not execute or verify the sandbox.
+
 ## Direct live protocol qualification
 
 The canonical direct live protocol suite lives in the separate
@@ -990,7 +1068,11 @@ rewrite user configuration in this mode. Providers can still refresh credentials
 and update their own metadata. Runner still supplies the requested
 model, task instructions, and its internal task/completion tools. Claude session
 loads and resumes receive the same native session options as session creation,
-including allowed tools and the selected settings sources. Local permission
+including allowed tools and the selected settings sources. Runner does not write
+a configured Claude effort into the user settings. A new Claude process can
+report the settings default when it loads or resumes the session, so ACPX sends
+the selected effort again on that connection. Runner admits no prompt until
+Claude acknowledges that effort. Local permission
 rules and hooks apply. Native Codex tools can read and modify the execution home
 (read-only for planning); credentials in that home are not isolated from tools.
 Native Codex separately denies Runner-owned protocol state; ACPX Claude retains
@@ -1020,8 +1102,8 @@ qualification before this mode can be enabled for them.
 
 ## Assigned local MCP servers
 
-An execution host can assign local stdio MCP servers alongside the existing
-`PAPERCLIP_NATIVE_MCP_NAME` / `URL` / `TOKEN` HTTP gateway. This is general transport
+An execution host can assign local stdio MCP servers. Assigned gateway tools reach
+the provider through the controller's PRP relay, not as a server here. This is general transport
 support for local MCP implementations that satisfy the executable-verification
 and private Unix socket requirements below. Runner uses each server's own tool
 schemas and responses. Set
@@ -1038,7 +1120,7 @@ with the ownership and path requirements below.
 Set `PAPERCLIP_NATIVE_MCP_PROXY` to the assigned Runner executable. These are
 execution-host inputs, excluded from configurable task environment and provider
 shell inheritance. Names use letters, digits, underscores or hyphens and cannot
-replace the internal task server or gateway. Commands are verified against their
+replace the internal task server. Commands are verified against their
 assigned digest before execution. The backend receives only its assigned environment.
 
 Runner supplies these session-local bindings to native Codex and through the

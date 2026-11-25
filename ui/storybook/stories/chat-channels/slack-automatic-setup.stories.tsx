@@ -63,6 +63,7 @@ export const AvatarUploadFailed: Story = { name: "Recovery · Avatar upload fail
 export const WelcomeFailed: Story = { name: "Recovery · Welcome DM failed", args: { scenario: "welcome_failed" } };
 export const Mobile: Story = { name: "Mobile · App configuration access token", args: { scenario: "create" }, globals: { viewport: { value: "mobile1", isRotated: false } } };
 
+export const AlreadyConnected: Story = { ...Success, name: "04 · Already connected", args: { scenario: "complete" } };
 export const SuccessMobile: Story = { name: "Mobile · Success", args: { scenario: "success" }, globals: { viewport: { value: "mobile1", isRotated: false } } };
 
 export const ChooseConnectionMobile: Story = {

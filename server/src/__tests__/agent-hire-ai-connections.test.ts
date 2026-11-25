@@ -9,7 +9,7 @@ import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, authUsers, companies, companyMemberships, createDb, closeRegisteredClients, environments, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnectionInstalls } from "@paperclipai/db";
+import { activityLog, agents, authUsers, companies, companyMemberships, createDb, closeRegisteredClients, environments, heartbeatRuns, issues, plugins, principalPermissionGrants, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
 import { type AiConnectionBinding, type AiConnectionPoolMember, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentRoutes } from "../routes/agents.js";
@@ -92,6 +92,11 @@ async function fixture(provider: "anthropic" | "openai", method: "api_key" | "su
 function hired(response: request.Response) {
   expect(response.status, JSON.stringify(response.body)).toBe(201);
   return response.body.agent ?? response.body;
+}
+
+async function markLegacyAdoption(connectionId: string) {
+  const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId));
+  await db.update(toolConnections).set({ config: { ...connection.config, aiLegacyAdoption: true } }).where(eq(toolConnections.id, connectionId));
 }
 
 async function poolFixture(f: Awaited<ReturnType<typeof fixture>>, extraMembers: AiConnectionPoolMember[] = []) {
@@ -257,8 +262,10 @@ describe("agent-created hires use managed AI connections", () => {
     } finally { unregisterServerAdapter(adapterType); }
   });
 
-  it.each(["model", "engine", "environment", "harness", "connection"] as const)("probes a changed %s selection and preserves the saved configuration on failure", async (selection) => {
+  it.each((["model", "engine", "environment", "harness", "connection"] as const).flatMap(selection =>
+    [false, true].map(legacy => ({ selection, legacy }))))("checks a changed $selection selection (legacy: $legacy)", async ({ selection, legacy }) => {
     const f = await fixture("openai");
+    if (legacy) await markLegacyAdoption(f.account.connectionId);
     await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
     const [environment] = await db.select().from(environments).where(eq(environments.driver, "local"));
     const adapterType = selection === "harness" ? "paperclip_runner" : f.adapterType;
@@ -273,11 +280,15 @@ describe("agent-created hires use managed AI connections", () => {
         : { adapterConfig: { [selection]: selection === "model" ? "changed-model" : "cli" } };
     try {
       const response = await request(f.app).patch(`/api/agents/${f.agentId}`).send(patch);
-      expect(response.status, JSON.stringify(response.body)).toBe(422);
-      expect(probe).toHaveBeenCalledOnce();
+      expect(response.status, JSON.stringify(response.body)).toBe(legacy ? 422 : 200);
+      expect(probe).toHaveBeenCalledTimes(legacy ? 1 : 0);
       const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId));
-      expect(saved).toMatchObject({ adapterType: f.adapterType, adapterConfig: {}, defaultEnvironmentId: null,
-        runtimeConfig: { aiConnection: f.binding } });
+      if (legacy) {
+        expect(saved).toMatchObject({ adapterType: f.adapterType, adapterConfig: {}, defaultEnvironmentId: null,
+          runtimeConfig: { aiConnection: f.binding } });
+      } else {
+        expect(saved).toMatchObject(patch);
+      }
     } finally { unregisterServerAdapter(adapterType); }
   });
 
@@ -286,7 +297,7 @@ describe("agent-created hires use managed AI connections", () => {
     const otherOwner = `other-${f.companyId}`;
     await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: otherOwner, membershipRole: "member", status: "active" });
     const account = await aiConnectionService(db).save(f.companyId, otherOwner, { provider: "openai", method: "api_key", ownership: "shared", name: "Shared credential, restricted installation", apiKey: "fixture", agentIds: [f.agentId], allAgents: false }, "fixture");
-    await toolAccessService(db).replaceConnectionGrantMembers(account.connectionId, account.grantId, [f.userId], { userId: otherOwner });
+    await toolAccessService(db).replaceConnectionGrantMembers(account.connectionId, account.grantId, [f.userId], { actorType: "user", actorId: otherOwner });
     const member: AiConnectionPoolMember = { id: randomUUID(), binding: { ...account, provider: "openai", method: "api_key", mode: "shared" }, profile: { provider: "codex", model: "gpt-5.6-sol" } };
     const p = await poolFixture(f, [member]);
     const agent = hired(await request(f.app).post(`/api/companies/${f.companyId}/agents`).send({ name: "Restricted pool teammate", role: "engineer", adapterType: f.adapterType, runtimeConfig: { aiConnection: p.binding } }));
@@ -315,8 +326,9 @@ describe("agent-created hires use managed AI connections", () => {
   });
 
   for (const operation of ["test", "save"] as const) {
-    it.each([401, 403, 429, 503, null])(`${operation} changes API-key health only for a provider rejection (status: %s)`, async (status) => {
+    it.each([401, 403, 429, 503, null])(`${operation} changes API-key health only for a provider rejection (legacy save; status: %s)`, async (status) => {
       const f = await fixture("anthropic", "api_key");
+      if (operation === "save") await markLegacyAdoption(f.account.connectionId);
       await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
       const original = getServerAdapter(f.adapterType);
       registerServerAdapter({ ...original, testEnvironment: async () => ({ adapterType: f.adapterType, status: "pass", checks: [], testedAt: new Date().toISOString() }) });
@@ -334,8 +346,9 @@ describe("agent-created hires use managed AI connections", () => {
     });
   }
 
-  it.each(["test", "save"] as const)("%s marks a hello-test authentication rejection as needing attention and reconnect repairs the same default", async (operation) => {
+  it.each(["test", "save"] as const)("%s marks a hello-test authentication rejection as needing attention and reconnect repairs the same default (legacy save)", async (operation) => {
     const f = await fixture("anthropic", "subscription");
+    if (operation === "save") await markLegacyAdoption(f.account.connectionId);
     await db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.userId, permissionKey: "agents:configure" });
     const original = getServerAdapter(f.adapterType);
     registerServerAdapter({ ...original, testEnvironment: async () => ({

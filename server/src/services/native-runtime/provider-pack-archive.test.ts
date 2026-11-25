@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { readProviderPackArchive, stageProviderPackArchive } from "./provider-pack-archive.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
+import { providerPackReusePlan } from "./provider-pack-layers.js";
 // @ts-expect-error Build-time script has no TypeScript declaration.
 import { createProviderPackArchive, createProviderPackLayers } from "../../../../scripts/create-provider-pack-archive.mjs";
 
@@ -66,6 +67,45 @@ it("keeps historical/source packs without an archive on the existing path", asyn
   expect(await readProviderPackArchive("/does-not-exist/provider-pack", digest)).toBeNull();
 });
 
+it.each(["v1", "v2"])("cancels a real %s archive hash after its first read chunk", async version => {
+  const { pack } = version === "v2" ? await layeredFixture() : await fixture();
+  const archivePath = version === "v2" ? `${pack}.archives/overlay.tar.zst` : `${pack}.tar.zst`;
+  await fs.utimes(archivePath, new Date(), new Date(Date.now() + 60_000));
+  const controller = new AbortController();
+  const handle = await fs.open(archivePath, "r");
+  const prototype = Object.getPrototypeOf(handle) as typeof handle;
+  await handle.close();
+  const originalStream = prototype.createReadStream;
+  const streaming = vi.spyOn(prototype, "createReadStream").mockImplementation(function(this: typeof handle, options) {
+    const stream = originalStream.call(this, options);
+    stream.once("data", () => controller.abort(new Error("owned archive read stopped")));
+    return stream;
+  });
+  try {
+    await expect(readProviderPackArchive(pack, digest, controller.signal)).rejects.toThrow(/abort|owned archive read stopped/i);
+    expect(controller.signal.aborted).toBe(true);
+  } finally { streaming.mockRestore(); }
+});
+
+it("hashes an unchanged verified archive once per server process and again after it changes", async () => {
+  const { pack } = await fixture();
+  const archivePath = `${pack}.tar.zst`;
+  const handle = await fs.open(archivePath, "r");
+  const prototype = Object.getPrototypeOf(handle) as typeof handle;
+  await handle.close();
+  const streaming = vi.spyOn(prototype, "createReadStream");
+  try {
+    await expect(readProviderPackArchive(pack, digest)).resolves.toMatchObject({ sourcePath: archivePath });
+    expect(streaming).not.toHaveBeenCalled();
+    const original = await fs.readFile(archivePath);
+    const corrupted = Buffer.from(original);
+    corrupted[corrupted.length - 1] ^= 0xff;
+    await fs.writeFile(archivePath, corrupted);
+    await expect(readProviderPackArchive(pack, digest)).rejects.toThrow("sha256_mismatch");
+    expect(streaming).toHaveBeenCalledOnce();
+  } finally { streaming.mockRestore(); }
+});
+
 async function layeredFixture() {
   const { root, pack } = await fixture();
   await fs.writeFile(path.join(pack, "bin", "large"), Buffer.alloc(1024 * 1024, 42), { mode: 0o755 });
@@ -74,6 +114,143 @@ async function layeredFixture() {
   if (!("kind" in archive)) throw Error("Expected layered archive");
   return { root, pack, receipt, archive };
 }
+
+const toolPath = "node_modules/.pnpm/tool@1.0.0/node_modules/tool/bin/tool";
+const twinPath = "node_modules/.pnpm/tool-baseline@1.0.0/node_modules/tool-baseline/bin/tool";
+const otherTwinPath = "provider-assets/kimi/linux-x64/runtime/node/bin/tool";
+
+/** A pack that repeats one large binary under three paths, like the OpenCode
+ * binary in a release pack, with an older image that has it under one path. */
+async function repeatedBytesFixture(modes: Record<string, number> = {}) {
+  const { root, pack } = await fixture();
+  for (const relative of [toolPath, twinPath, otherTwinPath]) {
+    await fs.mkdir(path.dirname(path.join(pack, relative)), { recursive: true });
+    await fs.writeFile(path.join(pack, relative), Buffer.alloc(2 * 1024 * 1024, 9));
+    await fs.chmod(path.join(pack, relative), modes[relative] ?? 0o755);
+  }
+  await createProviderPackLayers(pack);
+  const archive = (await readProviderPackArchive(pack, digest))!;
+  if (!("kind" in archive)) throw Error("Expected layered archive");
+  const image = path.join(root, "image");
+  await fs.cp(pack, image, { recursive: true, verbatimSymlinks: true });
+  for (const relative of [twinPath, otherTwinPath]) await fs.rm(path.join(image, relative));
+  return { root, pack, image, archive };
+}
+
+it.skipIf(!tar || !hasZstd)("stores repeated bytes once, from an image file under another path, without transferring them", async () => {
+  const { root, pack, image, archive } = await repeatedBytesFixture();
+  const remote = await runner(root);
+  const targetPath = path.join(root, "fresh");
+  const before = (await fs.readdir(image, { recursive: true })).sort();
+  expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [image] })).toBe(true);
+  const staged = await Promise.all([toolPath, twinPath, otherTwinPath].map(relative => fs.lstat(path.join(targetPath, relative))));
+  // Physical files inside the pack, sharing one private inode that is not the image's.
+  for (const stat of staged) expect(stat.isFile()).toBe(true);
+  expect(new Set(staged.map(stat => stat.ino)).size).toBe(1);
+  expect(staged[0]!.ino).not.toBe((await fs.stat(path.join(image, toolPath))).ino);
+  expect(staged[0]!.nlink).toBe(3);
+  for (const relative of [toolPath, twinPath, otherTwinPath]) {
+    expect(await fs.readFile(path.join(targetPath, relative))).toEqual(await fs.readFile(path.join(pack, relative)));
+    expect((await fs.stat(path.join(targetPath, relative))).mode & 0o777).toBe(0o755);
+  }
+  // Only the small-file overlay crosses the network, and the image is unchanged.
+  expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes);
+  expect((await fs.readdir(image, { recursive: true })).sort()).toEqual(before);
+}, 60_000);
+
+it("plans one private copy per digest and mode, with same-bytes twins as copy sources", () => {
+  const a = "a".repeat(64), b = "b".repeat(64);
+  expect(providerPackReusePlan([
+    { path: "one", sha256: a, mode: 0o755 },
+    { path: "two", sha256: a, mode: 0o644 },
+    { path: "three", sha256: a, mode: 0o755 },
+    { path: "four", sha256: a, mode: 0o644 },
+    { path: "other", sha256: b, mode: 0o755 },
+  ])).toEqual([
+    { sources: ["one", "two", "three", "four"], group: 0 },
+    { sources: ["two", "one", "three", "four"], group: 1 },
+    { sources: ["three", "one", "two", "four"], group: 0 },
+    { sources: ["four", "one", "two", "three"], group: 1 },
+    { sources: ["other"], group: 2 },
+  ]);
+});
+
+it.skipIf(!tar || !hasZstd)("keeps one private copy per mode when the same bytes repeat with different modes", async () => {
+  const { root, pack, image, archive } = await repeatedBytesFixture({ [twinPath]: 0o644 });
+  const remote = await runner(root);
+  const targetPath = path.join(root, "fresh");
+  expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [image] })).toBe(true);
+  const [tool, twin, other] = await Promise.all([toolPath, twinPath, otherTwinPath].map(relative => fs.lstat(path.join(targetPath, relative))));
+  expect(other!.ino).toBe(tool!.ino);
+  expect(twin!.ino).not.toBe(tool!.ino);
+  expect(twin!.mode & 0o777).toBe(0o644);
+  expect(tool!.mode & 0o777).toBe(0o755);
+  expect(await fs.readFile(path.join(targetPath, twinPath))).toEqual(await fs.readFile(path.join(pack, twinPath)));
+  expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes);
+});
+
+it.skipIf(!tar || !hasZstd)("transfers repeated bytes when no image has them, and does not reuse a changed twin", async () => {
+  const { root, pack, image, archive } = await repeatedBytesFixture();
+  await fs.writeFile(path.join(image, toolPath), Buffer.alloc(2 * 1024 * 1024, 10));
+  const remote = await runner(root);
+  const targetPath = path.join(root, "fresh");
+  expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, reuseRoots: [image] })).toBe(true);
+  for (const relative of [toolPath, twinPath, otherTwinPath]) {
+    expect(await fs.readFile(path.join(targetPath, relative))).toEqual(await fs.readFile(path.join(pack, relative)));
+  }
+  const layers = archive.files.reduce((sum, file) => sum + file.archive.bytes, 0);
+  expect((await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred).toBe(archive.overlay.bytes + layers);
+}, 60_000);
+
+it("writes the same archive for the same file every time, with nothing after the frame", async () => {
+  // Ending the compressor while its last chunk was still queued made Node
+  // finish the zstd stream twice, and about half the archives got an empty
+  // frame at their end. An image layer of these archives then never repeated.
+  const emptyFrame = Buffer.from("28b52ffd2000010000", "hex");
+  const seen = new Set<string>();
+  for (let trial = 0; trial < 12; trial += 1) {
+    const { pack } = await fixture();
+    const large = path.join(pack, "bin", "large");
+    await fs.writeFile(large, Buffer.alloc(1024 * 1024, 42), { mode: 0o755 });
+    await fs.utimes(large, 0, 0);
+    const receipt = await createProviderPackLayers(pack);
+    seen.add(receipt.files[0].archive.sha256);
+    for (const name of ["0.tar.zst", "overlay.tar.zst"]) {
+      const bytes = await fs.readFile(path.join(`${pack}.archives`, name));
+      expect(bytes.subarray(-emptyFrame.length).equals(emptyFrame), name).toBe(false);
+    }
+  }
+  expect([...seen]).toHaveLength(1);
+});
+
+it("names the archives of dependency files without regard to the Runner's own large files", async () => {
+  // Archive N holds file N of the receipt. `dist` sorts before `node_modules`,
+  // so in path order one more large file in the Runner's build output renamed
+  // the archive of every dependency file.
+  const large = Buffer.alloc(1024 * 1024, 42);
+  const receiptOf = async (own: string[]) => {
+    const { pack } = await fixture();
+    for (const file of ["node_modules/dependency/tool", "bin/large", ...own]) {
+      await fs.mkdir(path.dirname(path.join(pack, file)), { recursive: true });
+      await fs.writeFile(path.join(pack, file), large, { mode: 0o755 });
+      await fs.utimes(path.join(pack, file), 0, 0);
+    }
+    const receipt = await createProviderPackLayers(pack);
+    const archive = (await readProviderPackArchive(pack, digest))!;
+    if (!("kind" in archive)) throw Error("Expected layered archive");
+    // What a reader pairs: file N of the receipt with N.tar.zst.
+    const paired = await Promise.all(archive.files.map(async (file: { path: string; archive: { sha256: string } }, index: number) =>
+      [file.path, `${index}.tar.zst`, createHash("sha256").update(await fs.readFile(path.join(`${pack}.archives`, `${index}.tar.zst`))).digest("hex") === file.archive.sha256]));
+    return { paths: receipt.files.map((file: { path: string }) => file.path), paired };
+  };
+  const before = await receiptOf(["dist/cli/one.js"]);
+  const after = await receiptOf(["dist/cli/one.js", "dist/a-new-large-file.js", "dist/cli/two.js"]);
+  expect(before.paths).toEqual(["bin/large", "node_modules/dependency/tool", "dist/cli/one.js"]);
+  expect(after.paths).toEqual(["bin/large", "node_modules/dependency/tool", "dist/a-new-large-file.js", "dist/cli/one.js", "dist/cli/two.js"]);
+  // The dependency files keep their archive names, and every pairing a reader makes still holds.
+  expect(after.paired.slice(0, 2)).toEqual(before.paired.slice(0, 2));
+  expect(after.paired.every(([, , matches]) => matches)).toBe(true);
+});
 
 it.skipIf(!tar || !hasZstd)("reuses only byte-matched image files, keeps modes, and never shares writable hardlinks", async () => {
   const { root, pack, archive } = await layeredFixture();
@@ -148,7 +325,9 @@ it.skipIf(!tar || !hasZstd)("rejects a corrupt missing layer before transfer and
   expect((await fs.readdir(root)).some(name => name.includes(".upload-"))).toBe(false);
   await fs.appendFile(`${pack}.archives/0.tar.zst`, "corrupt");
   remote.syncIn.mockClear();
-  await expect(stageProviderPackArchive({ archive, runner: remote, targetPath: `${targetPath}-2` })).rejects.toThrow("runner_remote_provider_archive_invalid");
+  await expect(stageProviderPackArchive({ archive, runner: remote, targetPath: `${targetPath}-2` })).rejects.toThrow("runner_remote_provider_archive_invalid: size_mismatch");
+  await fs.unlink(`${pack}.archives/0.tar.zst`);
+  await expect(stageProviderPackArchive({ archive, runner: remote, targetPath: `${targetPath}-3` })).rejects.toThrow("runner_remote_provider_archive_invalid: archive_unreadable");
   expect(remote.syncIn).not.toHaveBeenCalled();
 });
 
@@ -248,7 +427,7 @@ it.skipIf(!tar || !hasZstd).each(["v1", "v2"])("installs verified %s archive byt
     expect(await fs.readFile(path.join(targetPath, "bin/tool"))).toEqual(expected);
     expect(JSON.parse(await fs.readFile(path.join(targetPath, "provider-pack.json"), "utf8")).digest).toBe(digest);
   });
-  await uploadVerifiedProviderPack({ root: pack, expectedDigest: digest, runner: remote, cwd: root,
+  await uploadVerifiedProviderPack({ root: pack, sourceDigest: digest, expectedDigest: digest, runner: remote, cwd: root,
     targetPath, reuseRoots: [], verifyDirectory, stageDirectory, verifyUploaded });
   expect(verifyDirectory).not.toHaveBeenCalled();
   expect(stageDirectory).not.toHaveBeenCalled();
@@ -263,7 +442,7 @@ it.each(["absent", "unsupported"])("verifies directory bytes before fallback whe
   remote.execute.mockResolvedValueOnce({ exitCode: 0, timedOut: false });
   remote.execute.mockResolvedValue({ exitCode: 127, timedOut: false });
   const stageDirectory = vi.fn(), verifyUploaded = vi.fn();
-  await expect(uploadVerifiedProviderPack({ root: pack, expectedDigest: digest, runner: remote, cwd: root,
+  await expect(uploadVerifiedProviderPack({ root: pack, sourceDigest: digest, expectedDigest: digest, runner: remote, cwd: root,
     targetPath: path.join(root, "uploaded"), reuseRoots: [], verifyDirectory: () => { throw Error("directory_digest_mismatch"); },
     stageDirectory, verifyUploaded })).rejects.toThrow("directory_digest_mismatch");
   expect(remote.syncIn).not.toHaveBeenCalled();
@@ -271,11 +450,46 @@ it.each(["absent", "unsupported"])("verifies directory bytes before fallback whe
   expect(verifyUploaded).not.toHaveBeenCalled();
 });
 
+// A retained continuation can select a pack from an earlier release. The
+// controller's build-time archives then carry a different identity. That is an
+// artifact incompatibility, not archive corruption, and it must not clear the
+// remote pack or upload the controller's different pack.
+it.each(["v1", "v2", "directory"])("refuses a selected pack this controller does not ship (%s source)", async source => {
+  const { root, pack } = source === "v2" ? await layeredFixture() : await fixture();
+  if (source === "directory") await fs.unlink(`${pack}.archive.json`);
+  const retained = `sha256:${"b".repeat(64)}`;
+  const remote = { syncIn: vi.fn(), execute: vi.fn().mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "", stderr: "" }) };
+  const verifyDirectory = vi.fn(), stageDirectory = vi.fn(), verifyUploaded = vi.fn();
+  const upload = uploadVerifiedProviderPack({ root: pack, sourceDigest: digest, expectedDigest: retained, runner: remote, cwd: root,
+    targetPath: path.join(root, "uploaded"), reuseRoots: [], verifyDirectory, stageDirectory, verifyUploaded });
+  await expect(upload).rejects.toThrow(
+    `runner_remote_provider_artifact_incompatible: selected provider pack ${"b".repeat(12)} is not the controller's pack ${"a".repeat(12)}`);
+  expect(remote.execute).not.toHaveBeenCalled();
+  expect(remote.syncIn).not.toHaveBeenCalled();
+  for (const step of [verifyDirectory, stageDirectory, verifyUploaded]) expect(step).not.toHaveBeenCalled();
+});
+
+it.skipIf(!tar || !hasZstd).each(["v1", "v2"])("names the failed %s archive check in the run-visible error", async version => {
+  const { pack } = version === "v1" ? await fixture() : await layeredFixture();
+  const archive = version === "v1" ? `${pack}.tar.zst` : `${pack}.archives/overlay.tar.zst`;
+  const bytes = await fs.readFile(archive);
+  await fs.appendFile(archive, "x");
+  await expect(readProviderPackArchive(pack, digest)).rejects.toThrow("runner_remote_provider_archive_invalid: size_mismatch");
+  bytes[bytes.length - 1] ^= 1;
+  await fs.writeFile(archive, bytes);
+  await expect(readProviderPackArchive(pack, digest)).rejects.toThrow("runner_remote_provider_archive_invalid: sha256_mismatch");
+  const receipt = JSON.parse(await fs.readFile(`${pack}.archive.json`, "utf8"));
+  await fs.writeFile(`${pack}.archive.json`, JSON.stringify({ ...receipt, providerPackDigest: `sha256:${"c".repeat(64)}` }));
+  await expect(readProviderPackArchive(pack, digest)).rejects.toThrow("runner_remote_provider_archive_invalid: receipt_identity_mismatch");
+  await fs.writeFile(`${pack}.archive.json`, "{");
+  await expect(readProviderPackArchive(pack, digest)).rejects.toThrow("runner_remote_provider_archive_invalid: receipt_unreadable");
+});
+
 it.skipIf(!tar || !hasZstd)("rejects an installed pack that fails final verification", async () => {
   const { root, pack } = await fixture();
   const remote = await runner(root), targetPath = path.join(root, "uploaded");
   const verifyUploaded = vi.fn(async () => { throw Error("installed_digest_mismatch"); });
-  await expect(uploadVerifiedProviderPack({ root: pack, expectedDigest: digest, runner: remote, cwd: root,
+  await expect(uploadVerifiedProviderPack({ root: pack, sourceDigest: digest, expectedDigest: digest, runner: remote, cwd: root,
     targetPath, reuseRoots: [], verifyDirectory: () => {}, stageDirectory: async () => {}, verifyUploaded }))
     .rejects.toThrow("installed_digest_mismatch");
   expect(remote.syncIn).toHaveBeenCalledOnce();

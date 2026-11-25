@@ -11,8 +11,10 @@ import {
   type PaperclipRunnerProvider,
 } from "@paperclipai/adapter-utils";
 import {
+  codexCliVersionAtLeast,
   codexLocalReasoningEffortsForModel,
   isCodexLocalKnownModel,
+  minimumCodexCliVersionForModel,
 } from "@paperclipai/adapter-codex-local";
 import {
   AGENTCORE_QUALIFIED_MODEL,
@@ -20,6 +22,11 @@ import {
 } from "../provider-profile-qualification.js";
 import { resolveAcpxQualification, resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission, type AcpxQualificationCandidate } from "./acpx-qualification.js";
 import { compatibleCodexModel } from "./codex-model-fallback.js";
+import {
+  claudeCliVersionAtLeast,
+  claudeCodeVersionForAgentSdk,
+  minimumClaudeCliVersionForModel,
+} from "@paperclipai/adapter-claude-local/server";
 import { parseNativeCursorCloudConfig, type NativeCursorCloudConfig } from "../../vendor/paperclip-runner/index.js";
 
 export const QUALIFIED_OPENCODE_RUNNER_VERSION = "1.18.34" as const;
@@ -182,7 +189,7 @@ export function resolvePaperclipRunnerCursorCloudConfig(config: Record<string, u
       throw new PaperclipRunnerProviderProfileError("paperclip_runner_cursor_cloud_config_invalid", `Choose one matching value for ${current} and ${legacy}.`);
     }
   }
-  const unsupported = ["codexPermissionMode", "opencodePermissionMode", "acpxPermissionMode", "acpxSessionMode", "command", "extraArgs", "promptTemplate", "bootstrapPromptTemplate", "modelReasoningEffort", "reasoningEffort", "effort", "modelParams"]
+  const unsupported = ["codexPermissionMode", "opencodePermissionMode", "acpxPermissionMode", "acpxSessionMode", "command", "extraArgs", "promptTemplate", "bootstrapPromptTemplate", "modelReasoningEffort", "reasoningEffort", "effort", "modelParams", "executionPlacement", "providerApiPlacement", "controllerPlacement", "apiOnly", "cwd", "workspaceRuntime", "workspaceStrategy"]
     .filter(key => config[key] !== undefined && config[key] !== "" && !(Array.isArray(config[key]) && config[key].length === 0));
   if (config.lifecycleMode !== undefined && config.lifecycleMode !== "per_turn") unsupported.push("lifecycleMode");
   if (config.homeMode === "preconfigured") unsupported.push("homeMode");
@@ -448,7 +455,11 @@ export function claudeRunnerUnsupportedSettings(config: Record<string, unknown>)
  */
 export function resolvePaperclipRunnerProviderProfile(
   adapterConfig: unknown,
-  context: { companyId?: string } = {},
+  context: {
+    companyId?: string;
+    /** The execution target's platform, when known: a pending Antigravity grant must name it. */
+    candidateTarget?: { platform: string; architecture: string };
+  } = {},
 ): PaperclipRunnerProviderProfile {
   const config = asRecord(adapterConfig);
   const candidate = config.provider ?? "codex";
@@ -480,7 +491,7 @@ export function resolvePaperclipRunnerProviderProfile(
   if (candidate === "acpx" && agentHarnessType("paperclip_runner", config) === "claude_local") {
     const unsupported = claudeRunnerUnsupportedSettings(config);
     if (unsupported.length) throw new PaperclipRunnerProviderProfileError("agent_runner_config_incompatible",
-      `Paperclip Runner cannot honor these settings: ${unsupported.join(", ")}. Remove them or select Legacy runner in Advanced.`);
+      `Paperclip Runner cannot honor these settings: ${unsupported.join(", ")}. Remove them before retrying.`);
   }
   assertPermissionMode(candidate, config);
   try {
@@ -601,7 +612,7 @@ export function resolvePaperclipRunnerProviderProfile(
     if (!model) throw new PaperclipRunnerProviderProfileError("paperclip_runner_acpx_model_required", `${pendingAcpxProfile.label} requires an explicit model ID; there is no default model.`);
     if (pendingAcpxProfile.value === "antigravity") {
       try {
-        if (resolveAntigravityCandidateAdmission({ companyId: context.companyId, model }, process.env)) {
+        if (resolveAntigravityCandidateAdmission({ companyId: context.companyId, model, target: context.candidateTarget }, process.env)) {
           return { provider: "acpx", backend: "acpx_runtime", model, acpxAgent: "antigravity" };
         }
       } catch {
@@ -642,13 +653,37 @@ export function resolvePaperclipRunnerProviderProfile(
   const selectedModel = acpxAgent === "grok" && model === "grok-build"
     ? DEFAULT_ACPX_RUNNER_MODELS.grok
     : model || DEFAULT_ACPX_RUNNER_MODELS[acpxAgent] || "";
+  let qualifiedProfile: ReturnType<typeof resolveQualifiedAcpxProfile>;
   try {
-    resolveQualifiedAcpxProfile(acpxAgent, selectedModel);
+    qualifiedProfile = resolveQualifiedAcpxProfile(acpxAgent, selectedModel);
   } catch (error) {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_acpx_model_unqualified",
       error instanceof Error ? error.message : "Paperclip Runner ACPX requires an admitted model.",
     );
+  }
+  if (acpxAgent === "claude") {
+    // The provider pack runs the Claude Code its Agent SDK bundles; name the gap instead of
+    // letting an older CLI fail the turn with an opaque backend error.
+    const minimum = minimumClaudeCliVersionForModel(selectedModel);
+    const bundled = claudeCodeVersionForAgentSdk(qualifiedProfile.agentRuntimeVersion);
+    if (minimum && bundled && !claudeCliVersionAtLeast(bundled, minimum)) {
+      throw new PaperclipRunnerProviderProfileError(
+        "paperclip_runner_claude_cli_version_incompatible",
+        `${selectedModel} requires Claude Code ${minimum} or newer; this Paperclip Runner bundles Claude Code ${bundled}. Choose another model or use the legacy Claude runner until the Runner is updated.`,
+      );
+    }
+  }
+  if (acpxAgent === "codex") {
+    // ACPX Codex runs the qualified runtime pin, so the backend would reject a newer model.
+    const minimum = minimumCodexCliVersionForModel(selectedModel);
+    const bundled = qualifiedProfile.agentRuntimeVersion;
+    if (minimum && bundled && !codexCliVersionAtLeast(bundled, minimum)) {
+      throw new PaperclipRunnerProviderProfileError(
+        "paperclip_runner_codex_cli_version_incompatible",
+        `${selectedModel} requires Codex ${minimum} or newer; this Paperclip Runner bundles Codex ${bundled}. Choose another model or use the legacy Codex runner until the Runner is updated.`,
+      );
+    }
   }
   return {
     provider: "acpx",
@@ -656,6 +691,13 @@ export function resolvePaperclipRunnerProviderProfile(
     model: selectedModel,
     acpxAgent,
   };
+}
+
+export function supportsPaperclipRunnerPreconfiguredHome(adapterConfig: unknown, options: { companyId?: string } = {}): boolean {
+  const config = asRecord(adapterConfig);
+  const profile = resolvePaperclipRunnerProviderProfile(config, options);
+  return profile.provider === "codex" || (profile.provider === "acpx" && profile.acpxAgent === "claude"
+    && (config.acpxPermissionMode === undefined || config.acpxPermissionMode === "approve-all"));
 }
 
 /**

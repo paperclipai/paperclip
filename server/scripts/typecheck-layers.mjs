@@ -11,6 +11,7 @@
 //   cycle  the largest import cycle, reading `below` as declarations
 //   above  files that depend on the cycle, reading both as declarations
 //   tests  test files, reading all three as declarations
+//   test-tree-N  src/__tests__, in shards, reading the source layers as declarations
 //
 // The layers come from the import graph on every run, so nothing has to move
 // and no list can go stale. The import scan does not have to be perfect: if it
@@ -22,21 +23,26 @@
 //
 // Projects outside the server read the source layers as declarations through a
 // `tsconfig.layers.json` that references tsconfig.declarations.json in the output
-// directory. --declarations-only builds those layers and skips the tests layer.
+// directory. --declarations-only builds those layers and skips the test layers.
 //
-// Usage: node scripts/typecheck-layers.mjs [--declarations-only]
+// Usage: node scripts/typecheck-layers.mjs [--declarations-only | --layer <name>] [--checkers <n>] [--clean]
 
-import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { crc32 } from "node:zlib";
 import { runTsc } from "../../scripts/run-tsc.mjs";
 
 const IMPORT_SPECIFIER = /(?:from\s+|import\s*\(\s*|import\s+)["'](\.[^"']+)["']/g;
 const OUTPUT_DIRECTORY = path.join("node_modules", ".cache", "paperclip-typecheck");
+// One program over this tree peaks at 3.9 GiB on one thread. Three peak at 2.5 GiB.
+const TEST_TREE_SHARDS = 3;
 
 export const isTestFile = (file) => /\.test\.tsx?$/.test(file) || file.split("/").includes("__tests__");
-// tsconfig.json excludes this tree. A test reaches its helpers through imports.
-const isExcludedFromProgram = (file) => file.startsWith("src/__tests__/");
+// tsconfig.json excludes this tree, so the test-tree layers check it.
+const isTestTreeFile = (file) => file.startsWith("src/__tests__/");
+// Test layers emit nothing, so other projects cannot read them as declarations.
+const emitsDeclarations = (layer) => layer.name !== "tests" && !layer.testTree;
 
 export function listSourceFiles(serverRoot) {
   const files = [];
@@ -174,7 +180,12 @@ export function planLayers(files) {
   const dependents = reachableFrom(cycle, reversed);
   const above = [...dependents].filter((file) => !cycle.has(file));
   const below = [...graph.keys()].filter((file) => !dependents.has(file));
-  const tests = [...candidates.keys()].filter((file) => isTestFile(file) && !isExcludedFromProgram(file));
+  const tests = [...candidates.keys()].filter((file) => isTestFile(file) && !isTestTreeFile(file));
+  // A hash keeps each file in its shard when other files are added or removed.
+  const testTree = Array.from({ length: TEST_TREE_SHARDS }, () => []);
+  for (const file of candidates.keys()) {
+    if (isTestTreeFile(file)) testTree[crc32(file) % TEST_TREE_SHARDS].push(file);
+  }
 
   const layer = (name, members, references) => {
     const sorted = [...members].sort();
@@ -186,6 +197,10 @@ export function planLayers(files) {
     layer("cycle", cycle, ["below"]),
     layer("above", above, ["below", "cycle"]),
     layer("tests", tests, ["below", "cycle", "above"]),
+    ...testTree.map((shard, index) => ({
+      ...layer(`test-tree-${index}`, shard, ["below", "cycle", "above"]),
+      testTree: true,
+    })),
   ].filter((candidate) => candidate.sourceFiles.length > 0);
 }
 
@@ -195,9 +210,30 @@ export function layerConfig(layer, { emptyLayers = new Set() } = {}) {
   const references = layer.references
     .filter((name) => !emptyLayers.has(name))
     .map((name) => ({ path: `./tsconfig.${name}.json` }));
+  // Editors read the same options from this file.
+  if (layer.testTree) {
+    return {
+      extends: fromOutput("src/__tests__/tsconfig.json"),
+      compilerOptions: {
+        incremental: true,
+        tsBuildInfoFile: `./${layer.name}.tsbuildinfo`,
+      },
+      files: layer.files.map(fromOutput),
+      include: [],
+      references,
+    };
+  }
   const output =
     layer.name === "tests"
-      ? { composite: false, declaration: false, declarationMap: false, sourceMap: false, noEmit: true }
+      ? {
+          composite: false,
+          incremental: true,
+          tsBuildInfoFile: `./${layer.name}.tsbuildinfo`,
+          declaration: false,
+          declarationMap: false,
+          sourceMap: false,
+          noEmit: true,
+        }
       : {
           composite: true,
           declaration: true,
@@ -222,49 +258,181 @@ export function declarationsConfig(layers) {
     compilerOptions: { composite: true },
     files: [],
     references: layers
-      .filter((layer) => layer.name !== "tests")
+      .filter(emitsDeclarations)
       .map((layer) => ({ path: `./tsconfig.${layer.name}.json` })),
   };
+}
+
+function planServerLayers(serverRoot) {
+  const sourceFiles = listSourceFiles(serverRoot);
+  return planLayers(new Map(sourceFiles.map((file) => [file, readFileSync(path.join(serverRoot, file), "utf8")])));
+}
+
+export function listLayers(serverRoot) {
+  return planServerLayers(serverRoot).map((layer) => ({ name: layer.name, emitsDeclarations: emitsDeclarations(layer) }));
+}
+
+function checkerTscArgs(checkers) {
+  return Number.isInteger(checkers) && checkers >= 1 ? ["--checkers", String(checkers)] : [];
+}
+
+function checkOneLayer({ serverRoot, name, checkers, run, log, logError }) {
+  const config = path.join(OUTPUT_DIRECTORY, `tsconfig.${name}.json`);
+  if (!existsSync(path.join(serverRoot, config))) {
+    logError(`typecheck:layers: ${config} does not exist. Run typecheck-layers.mjs --declarations-only first.`);
+    return 2;
+  }
+  log(`typecheck:layers: ${name}`);
+  const { status, signal } = run(["-p", config, ...checkerTscArgs(checkers)], { cwd: serverRoot });
+  if (signal) {
+    logError(`typecheck:layers: ${name}: compiler terminated by ${signal} (tsc -p ${config}, cwd: ${serverRoot})`);
+    return status || 1;
+  }
+  return status;
+}
+
+function writeIfChanged(filePath, content) {
+  try {
+    if (existsSync(filePath) && readFileSync(filePath, "utf8") === content) return false;
+  } catch {}
+  writeFileSync(filePath, content);
+  return true;
+}
+
+function sourceToDtsRelative(sourceFile) {
+  return sourceFile.replace(/^src\//, "").replace(/\.tsx?$/, ".d.ts");
+}
+
+function pruneStaleDeclarations(dtsRoot, expectedDts) {
+  if (!existsSync(dtsRoot)) return;
+  const walk = (directory, relativePrefix) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const fullPath = path.join(directory, entry.name);
+      const relative = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        walk(fullPath, relative);
+        try {
+          if (readdirSync(fullPath).length === 0) rmSync(fullPath, { recursive: true, force: true });
+        } catch {}
+      } else if (!expectedDts.has(relative)) {
+        rmSync(fullPath, { force: true });
+      }
+    }
+  };
+  walk(dtsRoot, "");
+}
+
+function syncOutputDirectory({ outputRoot, layers, emptyLayers, clean }) {
+  const layerMapPath = path.join(outputRoot, "layer-map.json");
+  const dtsRoot = path.join(outputRoot, "dts");
+  let previousLayerMap = null;
+
+  if (clean) {
+    rmSync(outputRoot, { recursive: true, force: true });
+  } else if (existsSync(outputRoot)) {
+    try {
+      previousLayerMap = JSON.parse(readFileSync(layerMapPath, "utf8"));
+      if (!previousLayerMap || typeof previousLayerMap !== "object" || Array.isArray(previousLayerMap)) {
+        previousLayerMap = null;
+      }
+    } catch {
+      previousLayerMap = null;
+    }
+    // Untracked/corrupt cache without a valid layer map starts clean to prevent stale .d.ts reuse.
+    if (previousLayerMap === null && existsSync(dtsRoot)) {
+      rmSync(outputRoot, { recursive: true, force: true });
+    }
+  }
+
+  mkdirSync(outputRoot, { recursive: true });
+
+  const currentLayerMap = {};
+  const expectedDts = new Set();
+  for (const layer of layers) {
+    if (!emitsDeclarations(layer)) continue;
+    for (const sourceFile of layer.sourceFiles) {
+      currentLayerMap[sourceFile] = layer.name;
+      expectedDts.add(sourceToDtsRelative(sourceFile));
+    }
+  }
+
+  // Invalidate any layer whose file ownership shifted, and remove stale .d.ts files for deleted/moved sources.
+  if (previousLayerMap) {
+    const invalidatedLayers = new Set();
+    for (const [sourceFile, prevLayer] of Object.entries(previousLayerMap)) {
+      const nextLayer = currentLayerMap[sourceFile];
+      if (nextLayer !== prevLayer) {
+        rmSync(path.join(dtsRoot, sourceToDtsRelative(sourceFile)), { force: true });
+        invalidatedLayers.add(prevLayer);
+        if (nextLayer) invalidatedLayers.add(nextLayer);
+      }
+    }
+    for (const layerName of invalidatedLayers) {
+      rmSync(path.join(outputRoot, `${layerName}.tsbuildinfo`), { force: true });
+    }
+  }
+  pruneStaleDeclarations(dtsRoot, expectedDts);
+
+  // Remove stale configs/tsbuildinfo for layers that no longer exist.
+  const planned = new Set(layers.map((layer) => layer.name));
+  for (const entry of readdirSync(outputRoot, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const configMatch = entry.name.match(/^tsconfig\.(.+)\.json$/);
+    if (configMatch && configMatch[1] !== "declarations" && !planned.has(configMatch[1])) {
+      rmSync(path.join(outputRoot, entry.name), { force: true });
+      continue;
+    }
+    const buildInfoMatch = entry.name.match(/^(.+)\.tsbuildinfo$/);
+    if (buildInfoMatch && !planned.has(buildInfoMatch[1])) {
+      rmSync(path.join(outputRoot, entry.name), { force: true });
+    }
+  }
+
+  // Without this, the path under node_modules would make the declarations CommonJS.
+  writeIfChanged(path.join(outputRoot, "package.json"), `${JSON.stringify({ type: "module" })}\n`);
+  for (const layer of layers) {
+    writeIfChanged(
+      path.join(outputRoot, `tsconfig.${layer.name}.json`),
+      `${JSON.stringify(layerConfig(layer, { emptyLayers }), null, 2)}\n`,
+    );
+  }
+  writeIfChanged(
+    path.join(outputRoot, "tsconfig.declarations.json"),
+    `${JSON.stringify(declarationsConfig(layers), null, 2)}\n`,
+  );
+  writeIfChanged(layerMapPath, `${JSON.stringify(currentLayerMap, null, 2)}\n`);
 }
 
 export function typecheckLayers({
   serverRoot,
   declarationsOnly = false,
+  layer: only,
+  checkers,
+  clean = false,
   run = runTsc,
   log = console.log,
+  logError = console.error,
 }) {
-  const sourceFiles = listSourceFiles(serverRoot);
-  const layers = planLayers(
-    new Map(sourceFiles.map((file) => [file, readFileSync(path.join(serverRoot, file), "utf8")])),
-  );
+  if (only) return checkOneLayer({ serverRoot, name: only, checkers, run, log, logError });
+  const layers = planServerLayers(serverRoot);
   const planned = new Set(layers.map((layer) => layer.name));
   const emptyLayers = new Set(["below", "cycle", "above", "tests"].filter((name) => !planned.has(name)));
 
   const outputRoot = path.join(serverRoot, OUTPUT_DIRECTORY);
-  rmSync(outputRoot, { recursive: true, force: true });
-  mkdirSync(outputRoot, { recursive: true });
-  // Without this, the path under node_modules would make the declarations CommonJS.
-  writeFileSync(path.join(outputRoot, "package.json"), `${JSON.stringify({ type: "module" })}\n`);
-  for (const layer of layers) {
-    writeFileSync(
-      path.join(outputRoot, `tsconfig.${layer.name}.json`),
-      `${JSON.stringify(layerConfig(layer, { emptyLayers }), null, 2)}\n`,
-    );
-  }
+  syncOutputDirectory({ outputRoot, layers, emptyLayers, clean });
 
-  writeFileSync(
-    path.join(outputRoot, "tsconfig.declarations.json"),
-    `${JSON.stringify(declarationsConfig(layers), null, 2)}\n`,
-  );
-
+  const extraArgs = checkerTscArgs(checkers);
   let exitCode = 0;
   for (const layer of layers) {
-    if (declarationsOnly && layer.name === "tests") continue;
+    if (declarationsOnly && !emitsDeclarations(layer)) continue;
     log(`typecheck:layers: ${layer.name} (${layer.sourceFiles.length} files)`);
     const config = path.join(OUTPUT_DIRECTORY, `tsconfig.${layer.name}.json`);
-    const { status, signal } = run(["-p", config], { cwd: serverRoot });
+    const { status, signal } = run(["-p", config, ...extraArgs], { cwd: serverRoot });
     // A killed process leaves no declarations, so later layers would only add noise.
-    if (signal) return status || 1;
+    if (signal) {
+      logError(`typecheck:layers: ${layer.name}: compiler terminated by ${signal} (tsc -p ${config}, cwd: ${serverRoot})`);
+      return status || 1;
+    }
     // Later layers still run after type errors. Each file is checked in one
     // layer, so this reports everything a single tsc run would.
     if (status !== 0) exitCode = status;
@@ -273,8 +441,39 @@ export function typecheckLayers({
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  process.exitCode = typecheckLayers({
-    serverRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
-    declarationsOnly: process.argv.includes("--declarations-only"),
-  });
+  const args = process.argv.slice(2);
+  let declarationsOnly = false;
+  let clean = false;
+  let layer;
+  let checkers;
+  let valid = true;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === "--declarations-only") {
+      declarationsOnly = true;
+    } else if (arg === "--clean") {
+      clean = true;
+    } else if (arg === "--layer") {
+      layer = args[++i];
+      if (!layer || layer.startsWith("--")) valid = false;
+    } else if (arg === "--checkers") {
+      checkers = Number(args[++i]);
+      if (!Number.isInteger(checkers) || checkers < 1) valid = false;
+    } else {
+      valid = false;
+    }
+  }
+  if (declarationsOnly && layer) valid = false;
+  if (!valid) {
+    console.error("Usage: node scripts/typecheck-layers.mjs [--declarations-only | --layer <name>] [--checkers <n>] [--clean]");
+    process.exitCode = 2;
+  } else {
+    process.exitCode = typecheckLayers({
+      serverRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
+      declarationsOnly,
+      layer,
+      checkers,
+      clean,
+    });
+  }
 }

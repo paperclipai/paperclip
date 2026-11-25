@@ -32,6 +32,8 @@ import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } fr
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { accessService } from "../services/access.js";
 import { logActivity } from "../services/activity-log.js";
+import { logger } from "../middleware/logger.js";
+import { releaseProviderLimitWaits } from "../services/heartbeat/provider-limit-wait.js";
 import { aiConnectionRouterService } from "../services/ai-connection-router.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { validate } from "../middleware/validate.js";
@@ -227,15 +229,28 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
     const agentId = req.query.agentId;
     if (agentId !== undefined && !z.string().uuid().safeParse(agentId).success)
       throw unprocessable("Invalid agent ID");
+    const accounts = await filterConnectionManagementRows(db, req, "connections:read", await service.list(
+      companyId, currentUserId, agentId as string | undefined,
+    ), account => ({ connectionId: account.id }));
+    const viewer = (req.actor.type === "agent" ? req.actor.onBehalfOfMemberships : req.actor.memberships)
+      ?.some(m => m.companyId === companyId && m.membershipRole === "viewer");
+    const management = connectionManagementService(db);
+    const context = connectionRequestContext(req);
+    const personalDefaultCapability = req.actor.type === "board" ? !viewer && (await management.capability(req.actor, "connections:configure", {
+      type: "connection_management", companyId, purpose: "ai", selfServiceUserId: currentUserId,
+      operation: "PUT /companies/:companyId/ai-connections/default", readOnly: false,
+    }, { mutation: false, readContext: context })).allowed : undefined;
+    const connections = accounts.map(account => ({
+      ...account,
+      ...(personalDefaultCapability === undefined ? {} : {
+        canSetDefault: personalDefaultCapability && account.ownership === "personal" && account.ownerUserId === currentUserId && !account.routing,
+      }),
+    }));
     res.json({
       currentUserId,
       pools: await filterConnectionManagementRows(db, req, "connections:read", await pools.selectable(companyId, currentUserId), pool => ({ connectionId: pool.id })),
       canManageConnections: await canManageAiConnections(db, req, companyId),
-      connections: await filterConnectionManagementRows(db, req, "connections:read", await service.list(
-        companyId,
-        currentUserId,
-        agentId as string | undefined,
-      ), account => ({ connectionId: account.id })),
+      connections,
     } satisfies AiConnectionList);
   });
   router.get(
@@ -370,7 +385,7 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
         throw forbidden("Viewers cannot change defaults");
       if (!z.string().uuid().safeParse(req.body.grantId).success)
         throw unprocessable("Choose a personal connection");
-      await service.setDefault(companyId, userId, req.body.grantId);
+      const { previousGrantId } = await service.setDefault(companyId, userId, req.body.grantId);
       await logActivity(db, {
         companyId,
         ...connectionRequestActor(req),
@@ -378,6 +393,14 @@ export function aiConnectionRoutes(db: Db, options: Parameters<typeof supportsLo
         entityType: "connection_grant",
         entityId: req.body.grantId,
       });
+      if (previousGrantId && previousGrantId !== req.body.grantId) {
+        // Work held for a limit on the previous default rechecks against the
+        // new one. A failed release leaves the saved recheck, never the default.
+        await releaseProviderLimitWaits(db, {
+          companyId, reason: "ai_connection_changed", grantIds: [previousGrantId],
+          actor: { actorType: "user", actorId: userId },
+        }).catch((err: unknown) => logger.warn({ err, companyId }, "failed to release usage waits after a default change"));
+      }
       res.json({ ok: true });
     },
   );

@@ -4,11 +4,12 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import assert from "node:assert/strict";
 import { refineTestPlan, selectionDurations } from "./test-selection-plan.mjs";
+import { activeNightlySuitesForEnv } from "./nightly-only-suites.mjs";
 import { productInputs } from "../../.github/scripts/ci-inputs.mjs";
 import { mergeDiff } from "../../.github/scripts/ci-diff.mjs";
 import { selectProjects } from "./select-projects.mjs";
 
-export function selectionEligibility(plan) {
+export function selectionEligibility(plan, root = process.cwd()) {
   if (plan?.version !== 1 || plan.mode !== "enabled" || plan.forceReason) return "Full/shadow/forced task plan";
   if (!Array.isArray(plan.changed) || !plan.changed.length) return "Incomplete comparison";
   const changed = productInputs(plan.changed);
@@ -20,7 +21,7 @@ export function selectionEligibility(plan) {
       || /(?:^|\/)(?:vite|vitest)\.(?:config|setup)\.[cm]?[jt]sx?$|\.d\.[cm]?ts$/i.test(file)
       || file.split("/").includes("..")) return `Broad input: ${file}`;
     try {
-      if (!lstatSync(file).isFile()) return `Non-regular source: ${file}`;
+      if (!lstatSync(path.join(root, file)).isFile()) return `Non-regular source: ${file}`;
     } catch { return `Deleted or missing source: ${file}`; }
   }
   return null;
@@ -30,7 +31,7 @@ function runnerInventory(group) {
   const args = group === "serialized" ? ["--mode", "serialized", "--shard-index", "0", "--shard-count", "1"]
     : ["--mode", "general", "--group", group,
       ...(group === "general-server-without-chat" ? ["--shard-index", "0", "--shard-count", "1"] : [])];
-  const env = { ...process.env, GITHUB_WORKFLOW: "PR" };
+  const env = { ...process.env, GITHUB_WORKFLOW: "PR", PAPERCLIP_CI_FULL: "1" };
   delete env.PAPERCLIP_CI_TEST_SELECTION;
   return JSON.parse(execFileSync(process.execPath, ["scripts/run-vitest-stable.mjs", ...args, "--dry-run"],
     { env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }));
@@ -43,7 +44,6 @@ export async function createTestSelection(plan, head) {
   for (const job of ["general_tests", "verify_serialized_server"]) {
     if (plan.jobs[job].run) for (const entry of plan.jobs[job].matrix.include) groups.add(entry.group ?? "serialized");
   }
-  groups.delete("general-chat"); // Keep its line sharding and DB ownership intact.
   const owners = {}, projects = new Set(), inventories = new Map();
   const inventoryFor = group => {
     if (!inventories.has(group)) inventories.set(group, runnerInventory(group));
@@ -51,9 +51,12 @@ export async function createTestSelection(plan, head) {
   };
   for (const group of groups) {
     const inventory = inventoryFor(group);
-    if (group === "serialized" || group === "general-server-without-chat") {
+    if (group === "serialized" || group === "general-server-without-chat" || group === "general-chat") {
       owners[group] = { "@paperclipai/server": group === "serialized"
-        ? inventory.selectedSerializedSuites : inventory.selectedGeneralServerSuites };
+        ? inventory.selectedSerializedSuites
+        : group === "general-chat"
+          ? inventory.selectedChatSuites
+          : inventory.selectedGeneralServerSuites };
       projects.add("@paperclipai/server");
     } else {
       owners[group] = Object.fromEntries(inventory.workspaceProjects.map((project) => [project, null]));
@@ -73,11 +76,13 @@ export async function createTestSelection(plan, head) {
   if (server) {
     const general = inventoryFor("general-server-without-chat");
     const native = inventoryFor("general-server-native-runner");
+    const chat = inventoryFor("general-chat");
     assert.deepEqual([...general.selectedGeneralServerSuites, ...general.selectedSerializedSuites,
-      ...native.selectedGeneralServerSuites, "server/src/__tests__/chat-channels.integration.test.ts"].sort(),
+      ...native.selectedGeneralServerSuites, ...chat.selectedChatSuites].sort(),
     server.inventory, "Server inventory must be completely covered by existing lane ownership");
   }
-  return { ...refineTestPlan({ plan, head, owners, graphs, durations: selectionDurations() }), graphs };
+  const excludedSuites = activeNightlySuitesForEnv();
+  return { ...refineTestPlan({ plan, head, owners, graphs, durations: selectionDurations(), excludedSuites }), graphs };
 }
 
 async function main() {

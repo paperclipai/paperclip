@@ -21,7 +21,7 @@ use this service. The native broker passes its transaction, so the wake follows
 the outer commit. Savepoint release is not publication; rollback does not send.
 
 `instanceSettingsService.updateExperimental` signals the same queue before its
-existing transactional update. This covers enablePublicMcp, enableNativeRunner,
+existing transactional update. This covers enableNativeRunner
 and enableGrokBot changes, including caller-owned outer transactions. It permits
 prepared work retained while disabled to resume when enabled. Managed settings
 and environment overlays are process configuration and are reconstructed on restart.

@@ -8,7 +8,7 @@ import type { ActorInfo } from "../types.js";
 import { oauthConfig, normalizeOauthScopes } from "./metadata.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
 import { loadGitHubGrantMetadata } from "../github-access-discovery.js";
-import { googleWorkspaceEffectiveScopes, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { googleWorkspaceEffectiveScopes, googleWorkspaceSubmittedScopesIn, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, gte, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -16,6 +16,7 @@ import { connectionGrants, companyMemberships, principalPermissionGrants, issueT
 import type { ConnectionGrantKind, ConnectToolAppResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, forbidden, HttpError, unprocessable } from "../../../errors.js";
+import { lockConnectionForSignIn } from "../connections/first-sign-in.js";
 import { secretService } from "../../secrets.js";
 import { isPaperclipCloudConnectorStrategy, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 
@@ -131,8 +132,8 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
       ...(profile.id === "workspace.all" && stateRow.requestedScopes ? { scopes: stateRow.requestedScopes } : {}),
     });
     if (profile.id === "workspace.all") {
-      const requested = normalizeOauthScopes(stateRow.requestedScopes);
-      credentials.scopes = googleWorkspaceEffectiveScopes(requested, credentials.scopes);
+      const requested = googleWorkspaceSubmittedScopesIn(normalizeOauthScopes(stateRow.requestedScopes));
+      credentials.scopes = googleWorkspaceEffectiveScopes(requested, googleWorkspaceSubmittedScopesIn(credentials.scopes));
       if (!isGoogleWorkspaceScopeGrant(credentials.scopes)) throw unprocessable("Google did not grant any selected service permissions", { code: "oauth_scope_grant_invalid" });
     }
     const refreshToken = credentials.refreshToken;
@@ -260,9 +261,7 @@ export function createCloudOAuthCallback(db: Db, dependencies: Dependencies) {
       await tx.select({ id: toolApplications.id }).from(toolApplications)
         .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))
         .for("update");
-      await tx.select({ id: toolConnections.id }).from(toolConnections)
-        .where(and(eq(toolConnections.id, connection.id), eq(toolConnections.companyId, connection.companyId)))
-        .for("update");
+      await lockConnectionForSignIn(tx, connection);
       const existingRefs =
         existingCredentialGrant?.credentialSecretRefs ??
         (personalCredential || agentCredential

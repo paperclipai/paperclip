@@ -1,7 +1,7 @@
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { commitToolActionReview } from "../services/tool-action-review.js";
 import { googleWorkspaceSelectedScopes, defaultGitHubReviewPolicy, SLACK_CHAT_BOT_SCOPES, SLACK_BOT_TOOL_SCOPES } from "@paperclipai/shared";
-import { randomUUID, generateKeyPairSync } from "node:crypto";
+import { createHash, randomBytes, randomUUID, generateKeyPairSync } from "node:crypto";
 import { join } from "node:path";
 import { createServer } from "node:http";
 import { and, eq, sql } from "drizzle-orm";
@@ -33,6 +33,12 @@ vi.mock("../services/agent-lifecycle-driver.js", () => ({
   createLifecycleDriver: () => ({ requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" }),
 }));
 
+vi.mock("../services/chat-channels/github/webhook-recovery-work.js", async importOriginal => {
+  const original = await importOriginal<typeof import("../services/chat-channels/github/webhook-recovery-work.js")>();
+  return { ...original, registerGitHubWebhookRecoveryWork: (...args: Parameters<typeof original.registerGitHubWebhookRecoveryWork>) =>
+    original.registerGitHubWebhookRecoveryWork(args[0], args[1], () => false) };
+});
+
 // All requests traverse the assembled server and production bearer middleware.
 // No req.actor injection or special permission grants establish access.
 describe("connection management with production default agents", () => {
@@ -54,7 +60,7 @@ describe("connection management with production default agents", () => {
     server = await startRunnerApiTestServer({ authPublicBaseUrl: "https://paperclip.fixture.invalid", humanSessions: true, databaseUrl: process.env.PAPERCLIP_CONNECTION_MANAGEMENT_TEST_DATABASE_URL });
     lifecycle = configureAgentLifecycle(server.db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", join(server.root, "master.key"));
-    await instanceSettingsService(server.db).updateExperimental({ enableChatConnectors: true, enableGitHubReviewBots: true });
+    await instanceSettingsService(server.db).updateExperimental({ enableChatConnectors: true, enableGitHubReviewBots: true, enableGoogleWorkspaceConnector: true });
   }, 90_000);
   afterAll(async () => { await lifecycle?.stop(); await server?.close(); providerFetch?.mockRestore(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
@@ -79,7 +85,7 @@ describe("connection management with production default agents", () => {
     await server.db.update(heartbeatRuns).set({ agentId: agent.id }).where(eq(heartbeatRuns.id, base.runId));
     await server.db.update(issues).set({ assigneeAgentId: agent.id, responsibleUserId: userId }).where(eq(issues.id, base.issueId));
     const key = await agentService(server.db).createApiKey(agent.id, "integration", { kind: "standard" }, { responsibleUserId: userId });
-    const jwt = createLocalAgentJwt(agent.id, base.companyId, "paperclip_runner", base.runId, userId);
+    const jwt = createLocalAgentJwt(agent.id, base.companyId, "paperclip_runner", base.runId, userId)!;
     const request = async (method: string, path: string, body?: unknown, token = key.token) => {
       const response = await fetch(server.apiUrl + (path.startsWith("/mcp/") ? "" : "/api") + path, { method, headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
       return { status: response.status, body: await response.json().catch(() => null) };
@@ -388,12 +394,22 @@ describe("connection management with production default agents", () => {
     expect(await f.request("GET", `/tool-profiles/${profileIds[1]}/new-tools`)).toMatchObject({ status: 200, body: { tools: [expect.objectContaining({ connectionName: "Private profile account", description: "Private tool metadata" })] } });
     const effectivePath = `/companies/${f.companyId}/tools/profiles/effective/agents/${f.agentId}`;
     expect((await f.request("GET", effectivePath)).body.allowedTools.some((tool: { toolName: string }) => tool.toolName === "private_tool")).toBe(true);
+    const profileListPath = `/companies/${f.companyId}/tools/profiles`;
+    const summaryPath = `${profileListPath}/summary`;
+    const fullProfiles = await f.request("GET", profileListPath);
+    expect(fullProfiles.body.profiles.map((profile: { id: string }) => profile.id)).toContain(profileIds[0]);
+    const summary = await f.request("GET", summaryPath);
+    expect(summary).toEqual({ status: 200, body: { profiles: fullProfiles.body.profiles.map(
+      ({ id, name, status, updatedAt, summary, newToolsPendingCount }: Record<string, unknown>) =>
+        ({ id, name, status, updatedAt, summary, newToolsPendingCount }),
+    ) } });
     expect(await f.request("PUT", `/tool-connections/${second.body.id}/installs`, { installs: [{ targetType: "agent", targetId: f.agentId }] })).toMatchObject({ status: 200 });
     await server.db.update(toolConnections).set({ credentialPolicy: "per_user", createdByUserId: randomUUID() }).where(eq(toolConnections.id, second.body.id));
     for (const token of [f.key.token, f.jwt]) {
       expect(await f.request("GET", `/tool-profiles/${profileIds[1]}/new-tools`, undefined, token)).toMatchObject({ status: 403 });
       for (const id of profileIds) expect(await f.request("GET", `/tool-profiles/${id}/new-tools`, undefined, token)).toMatchObject({ status: 403 });
-      expect((await f.request("GET", `/companies/${f.companyId}/tools/profiles`, undefined, token)).body.profiles).toEqual([]);
+      expect((await f.request("GET", profileListPath, undefined, token)).body.profiles).toEqual([]);
+      expect(await f.request("GET", summaryPath, undefined, token)).toEqual({ status: 200, body: { profiles: [] } });
       expect(await f.request("GET", effectivePath, undefined, token)).toMatchObject({ status: 403 });
     }
     for (const [index, entry] of selectors.entries()) expect(await f.request("POST", `/companies/${f.companyId}/tools/profiles`, { profileKey: `private-attempt-${index}`, name: `Private attempt ${index}`, entries: [entry] })).toMatchObject({ status: 403 });
@@ -480,7 +496,7 @@ describe("connection management with production default agents", () => {
     try {
       const [environment] = await server.db.insert(environments).values({ name: `Login fixture ${f.agentId}`, driver: "sandbox" }).returning();
       const [session] = await server.db.insert(adapterAuthSessions).values({ companyId: f.companyId, environmentId: environment.id, adapterType: "codex_local", startedByUserId: f.userId,
-        publicSessionId: randomUUID(), status: "waiting_for_user", expiresAt: new Date(Date.now() + 60_000), aiConnection: { ownership: "personal", name: "Saved login", allAgents: false, agentIds: [] } }).returning();
+        publicSessionId: randomUUID(), status: "waiting_for_user", expiresAt: new Date(Date.now() + 60_000), aiConnection: { provider: "openai", method: "subscription", ownership: "personal", name: "Saved login", allAgents: false, agentIds: [] } }).returning();
       const path = `/companies/${f.companyId}/adapters/codex_local/login-sessions`;
       expect(await f.request("GET", `${path}/active`)).toMatchObject({ status: 200, body: { sessionId: session.publicSessionId } });
       expect(await f.request("GET", `${path}/${session.publicSessionId}`, undefined, f.jwt)).toMatchObject({ status: 200, body: { sessionId: session.publicSessionId } });
@@ -490,6 +506,38 @@ describe("connection management with production default agents", () => {
       expect(await f.request("GET", `${path}/${session.publicSessionId}`)).toMatchObject({ status: 404 });
       expect(await f.request("POST", `${path}/${session.publicSessionId}/cancel`, {})).toMatchObject({ status: 404 });
     } finally { unregisterServerAdapter("codex_local"); }
+  });
+
+  it.each(["add", "remove"] as const)("requires a connection creator to edit agent targets when finish will %s installations", async (change) => {
+    const f = await server.fixture({ connectionScenario: "fresh" });
+    const userId = f.responsibleUserId!;
+    const cookie = await server.humanSession(userId);
+    const [application] = await server.db.insert(toolApplications).values({ companyId: f.companyId, name: "Creator install authority", type: "mcp_http" }).returning();
+    const [connection] = await server.db.insert(toolConnections).values({ companyId: f.companyId, applicationId: application.id,
+      uid: randomUUID(), name: "Creator-owned connection", transport: "mcp_remote", authKind: "none", status: "active", createdByUserId: userId }).returning();
+    if (change === "remove") await server.db.insert(toolConnectionInstalls).values({ companyId: f.companyId, connectionId: connection.id, targetType: "agent", targetId: f.agentId });
+    const before = await server.db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id));
+    const finish = async () => fetch(`${server.apiUrl}/api/companies/${f.companyId}/tools/apps/${connection.id}/finish`, {
+      method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" },
+      body: JSON.stringify({ enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: { agentIds: change === "add" ? [f.agentId] : [] } }),
+    });
+    const denied = await finish();
+    expect(await denied.json()).toMatchObject({ error: expect.any(String) });
+    expect(denied.status).toBe(403);
+    expect(await server.db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id))).toEqual(before);
+    expect(await server.db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, `app:${connection.id}`))).toEqual([]);
+    await server.db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: userId,
+      permissionKey: "agents:configure", scope: { targetAgentIds: [f.agentId] } });
+    const allowed = await finish();
+    expect(allowed.status, JSON.stringify(await allowed.json())).toBe(200);
+    expect(await server.db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id))).toHaveLength(change === "add" ? 1 : 0);
+    const [peer] = await server.db.insert(agents).values({ companyId: f.companyId, name: "Outside edit scope", adapterType: "process" }).returning();
+    const outOfScope = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/tools/apps/${connection.id}/finish`, {
+      method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" },
+      body: JSON.stringify({ enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: { agentIds: [peer.id] } }),
+    });
+    expect(outOfScope.status).toBe(403);
+    expect(await server.db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id))).toHaveLength(change === "add" ? 1 : 0);
   });
 
   it("checks finish access, all-agent sharing, and retained targets against both management grants", async () => {
@@ -569,7 +617,7 @@ describe("connection management with production default agents", () => {
       }
       if (revocation === "other-agent-credential" || revocation === "other-agent-credential-none") {
         await server.db.update(toolConnections).set({ authKind: revocation === "other-agent-credential-none" ? "none" : "api_key", credentialPolicy: "per_agent" }).where(eq(toolConnections.id, created.body.id));
-        await server.db.insert(connectionGrants).values([f.agentId, targetAgentId].map(subjectAgentId => ({ companyId: f.companyId, connectionId: created.body.id, kind: "agent" as const, subjectAgentId, status: "active" })));
+        await server.db.insert(connectionGrants).values([f.agentId, targetAgentId].map(subjectAgentId => ({ companyId: f.companyId, connectionId: created.body.id, kind: "agent" as const, subjectAgentId, status: "active" as const })));
         expect(await f.request("POST", path, body, f.jwt)).toMatchObject({ status: 403, body: { reasonCode: "test_credential_identity_mismatch" } });
         expect(calls).toBe(0);
         return;
@@ -688,7 +736,7 @@ describe("connection management with production default agents", () => {
           expect(settled.policyExplanation?.delegatedCallerConsumedRateAdmissions).toHaveLength(1);
           const [nextRun] = await server.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
             status: "running", responsibleUserId: f.userId, contextSnapshot: { issueId: f.issueId } }).returning();
-          const nextJwt = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", nextRun.id, f.userId);
+          const nextJwt = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", nextRun.id, f.userId)!;
           expect(await f.request("POST", path, body, nextJwt)).toMatchObject({ status: 200, body: { decision: "off", error: { reasonCode: "rate_limited" } } });
           expect(calls).toBe(1);
         }
@@ -732,7 +780,7 @@ describe("connection management with production default agents", () => {
     const ownBinding = await f.request("POST", `${path}/bind`, { targetType: "issue", targetId: f.issueId });
     expect(ownBinding, JSON.stringify(ownBinding)).toMatchObject({ status: 201 });
     expect(await f.request("POST", `${path}/unbind`, { targetType: "issue", targetId: f.issueId })).toMatchObject({ status: 200 });
-    for (const target of [{ targetType: "project", targetId: f.projectId }, { targetType: "issue", targetId: issue.id }, { targetType: "routine", targetId: routine.id }, { targetType: "gateway", targetId: gateway.body.id }]) {
+    for (const target of [{ targetType: "project" as const, targetId: f.projectId }, { targetType: "issue" as const, targetId: issue.id }, { targetType: "routine" as const, targetId: routine.id }, { targetType: "gateway" as const, targetId: gateway.body.id }]) {
       expect(await f.request("POST", `${path}/bind`, target), JSON.stringify(target)).toMatchObject({ status: 403 });
       const [saved] = await server.db.insert(toolProfileBindings).values({ ...target, companyId: f.companyId, profileId: profile.body.id }).returning();
       expect(await f.request("PATCH", `/tool-profiles/${profile.body.id}`, { description: "Cannot edit retained target" })).toMatchObject({ status: 403 });
@@ -786,7 +834,7 @@ describe("connection management with production default agents", () => {
         return originalFrom(table);
       }) as typeof builder.from;
       return builder;
-    }) as typeof server.db.select);
+    }) as unknown as typeof server.db.select);
     try {
       const path = `/companies/${f.companyId}/tools/policies`;
       const body = { name: "Bounded policy", policyType: "allow", selectors: { agentId: f.agentId, connectionIds: Array(5000).fill(created.body.id) } };
@@ -857,7 +905,10 @@ describe("connection management with production default agents", () => {
     expect(started, JSON.stringify(started)).toMatchObject({ status: 200, body: {
       expiresAt: null, requiredUserAction: { userId: f.userId, resource: { id: created.body.id } },
     } });
-    expect(new URL(started.body.authorizationUrl).searchParams.get("resume")).toBe(created.body.id);
+    // The agent links this in chat, so it is a relative app route, never the server's own origin.
+    expect(started.body.authorizationUrl).toMatch(/^\/[^/]/);
+    expect(started.body.requiredUserAction.setupPath).toBe(started.body.authorizationUrl);
+    expect(new URL(started.body.authorizationUrl, "https://paperclip.example").searchParams.get("resume")).toBe(created.body.id);
     expect(await f.request("POST", path, { asCurrentUser: true })).toMatchObject({ status: 200, body: { authorizationUrl: started.body.authorizationUrl } });
     expect(await server.db.select().from(toolOauthStates).where(eq(toolOauthStates.connectionId, created.body.id))).toHaveLength(0);
   });
@@ -946,6 +997,19 @@ describe("connection management with production default agents", () => {
         const updated = await f.request("PUT", `/chat-endpoints/${result.body.id}/github/configuration`, body);
         expect(updated, JSON.stringify(updated)).toMatchObject({ status: 200, body: { revision: 1, configuration: { memberAccess: "selected" } } });
         expect(await f.request("PUT", `/chat-endpoints/${result.body.id}/github/configuration`, body)).toMatchObject({ status: 409 });
+        const otherUserId = randomUUID();
+        await accessService(server.db).ensureMembership(f.companyId, "user", otherUserId, "operator", "active");
+        for (const token of [f.key.token, f.jwt]) {
+          for (const field of ["responsible", "guest"]) {
+            const configuration = structuredClone(updated.body.configuration);
+            if (field === "responsible") configuration.responsibleUserId = otherUserId;
+            else configuration.people.push({ kind: "guest", githubUserId: "42", login: "guest", sponsorUserId: otherUserId, permissionProfile: "restricted" });
+            const denied = await f.request("PUT", `/chat-endpoints/${result.body.id}/github/configuration`, { expectedRevision: 1, configuration }, token);
+            expect(denied, JSON.stringify(denied)).toMatchObject({ status: 403 });
+            expect(JSON.stringify(denied.body)).toContain("task sponsor");
+          }
+        }
+        expect((await f.request("GET", `/chat-endpoints/${result.body.id}/github/configuration`)).body).toMatchObject({ revision: 1, configuration: updated.body.configuration });
         const handoff = await f.request("POST", `/chat-endpoints/${result.body.id}/github/identity/start`, {});
         expect(handoff).toMatchObject({ status: 200, body: { requiredUserAction: { userId: f.userId, resource: { id: result.body.id } } } });
       }
@@ -1414,7 +1478,7 @@ describe("connection management with production default agents", () => {
       externalConversationId: randomUUID(), externalLabel: "History" }))).returning();
     const rows = Array.from({ length: 30 }, (_, index) => ({ id: `${f.agentId.slice(0, 24)}${index.toString(16).padStart(12, "0")}`,
       companyId: f.companyId, endpointId: endpoint.body.id, conversationId: conversations[index < 3 ? 0 : 1].id,
-      providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: index < 3 ? "readable_history" : "private_history", state: "processed", normalizedEvent: {}, createdAt: new Date("2026-10-25T12:00:00.000Z") }));
+      providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: "message" as const, state: "processed" as const, redactedError: index < 3 ? null : "private_history", normalizedEvent: {}, createdAt: new Date("2026-10-25T12:00:00.000Z") }));
     await server.db.insert(chatDeliveries).values(rows);
     const path = `/chat-endpoints/${endpoint.body.id}/activity?limit=25`;
     const first = await f.request("GET", path, undefined, f.jwt);
@@ -1498,26 +1562,111 @@ describe("connection management with production default agents", () => {
     }
   });
 
-  it("keeps durable gateway client tokens bound to the issuer and responsible user", async () => {
+  // Tokens issued by agents before client-token minting became person-only
+  // remain valid until revoked, so runtime enforcement still covers them.
+  async function legacyAgentIssuedGatewayToken(f: Awaited<ReturnType<typeof fixture>>, gatewayId: string, name: string) {
+    const id = randomUUID(), token = `pcgw_${id}.${randomBytes(32).toString("base64url")}`;
+    const [row] = await server.db.insert(toolMcpGatewayTokens).values({ id, companyId: f.companyId, gatewayId, name, tokenHash: createHash("sha256").update(token).digest("hex"),
+      tokenPrefix: `pcgw_${id.slice(0, 8)}`, subjectType: "gateway_client", clientLabel: "fixture", allowedActions: ["tools/list", "tools/call", "resources/list", "resources/read", "prompts/list", "prompts/get"],
+      responsibleUserId: f.userId, createdByAgentId: f.agentId }).returning();
+    return { status: 201, body: { ...row, token } };
+  }
+
+  it("lets agents create and revoke gateway client tokens without ever receiving a token value", async () => {
     const f = await fixture();
     const profile = await f.request("POST", `/companies/${f.companyId}/tools/profiles`, { profileKey: "gateway-profile", name: "Gateway profile", entries: [] });
     expect(profile, JSON.stringify(profile)).toMatchObject({ status: 201 });
     const gateway = await f.request("POST", `/companies/${f.companyId}/tools/gateways`, { name: "Delegated gateway", slug: "delegated", profileId: profile.body.id });
     expect(gateway, JSON.stringify(gateway)).toMatchObject({ status: 201 });
-    const call = { tool: "call_api", callId: "gateway-client-secret", arguments: {
-      operationId: "POST /api/tool-gateway/gateways/{gatewayId}/tokens", pathParams: { gatewayId: gateway.body.id },
-      body: { companyId: f.companyId, name: "Fixture client", clientLabel: "fixture", expiresAt: new Date(Date.now() + 3600000).toISOString() },
-    } };
-    const issued = await f.authority.execute(call) as { status: number; data: { id: string; token: string } };
-    expect(issued, JSON.stringify(issued)).toMatchObject({ status: 201, data: { token: expect.any(String), responsibleUserId: f.userId } });
-    expect(await f.authority.execute(call)).toEqual(issued);
-    const token = { status: issued.status, body: issued.data };
-    const [receiptRun] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
-    expect(JSON.stringify(receiptRun.resultJson)).not.toContain(token.body.token);
-    const receipts = (receiptRun.resultJson as { apiToolReceipts: Record<string, { operationId: string }> }).apiToolReceipts;
-    expect(Object.values(receipts).find(receipt => receipt.operationId === call.arguments.operationId)).toHaveProperty("encryptedResult");
-    expect(JSON.stringify(redactRunnerApiPayloads(issued))).not.toContain(token.body.token);
-    expect(await server.db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.gatewayId, gateway.body.id))).toHaveLength(1);
+    const body = { companyId: f.companyId, name: "Fixture client", clientLabel: "fixture", expiresAt: new Date(Date.now() + 3600000).toISOString() };
+    const call = (callId: string, operationId: string, pathParams: Record<string, string>, payload: unknown) =>
+      f.authority.execute({ tool: "call_api", callId, arguments: { operationId, pathParams, body: payload } }) as Promise<{ status: number; data: Record<string, unknown> }>;
+    const tokenValue = /pcgw_[0-9a-f-]{36}\.[A-Za-z0-9_-]+/;
+    const [company] = await server.db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, f.companyId));
+    const tokensPath = `/${company.issuePrefix}/apps/gateways/${gateway.body.id}/tokens`;
+    expect(gateway.body).toMatchObject({ tokensPath, gatewayPath: `/${company.issuePrefix}/apps/gateways/${gateway.body.id}/overview` });
+
+    const created = await call("gateway-client-create", "POST /api/tool-gateway/gateways/{gatewayId}/tokens", { gatewayId: gateway.body.id }, body);
+    expect(created, JSON.stringify(created)).toMatchObject({ status: 201, data: { name: "Fixture client", pendingReveal: true, tokensPath,
+      tokenPrefix: expect.stringMatching(/^pcgw_[0-9a-f]{8}$/), createdByAgentId: f.agentId, responsibleUserId: f.userId,
+      requiredUserAction: { kind: "reveal_credential", userId: f.userId, setupPath: tokensPath, resource: { type: "gateway_token", id: created.data.id, companyId: f.companyId } } } });
+    expect(created.data).not.toHaveProperty("token");
+    expect(JSON.stringify(created)).not.toMatch(tokenValue);
+    const [pending] = await server.db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, created.data.id as string));
+    expect(pending).toMatchObject({ pendingReveal: true, createdByAgentId: f.agentId, responsibleUserId: f.userId, subjectType: "gateway_client", revokedAt: null });
+    // Agents cannot reveal any value.
+    const agentReveal = await call("gateway-client-reveal", "POST /api/tool-gateway/gateway-tokens/{tokenId}/reveal", { tokenId: created.data.id as string }, { companyId: f.companyId });
+    expect(agentReveal, JSON.stringify(agentReveal)).toMatchObject({ status: 403, data: { reasonCode: "gateway_token_requires_person" } });
+    expect(JSON.stringify(agentReveal)).not.toMatch(tokenValue);
+    expect(await f.request("POST", `/tool-gateway/gateway-tokens/${created.data.id}/reveal`, { companyId: f.companyId })).toMatchObject({ status: 403 });
+
+    // The responsible person reveals the value exactly once, and it works.
+    const cookie = await server.humanSession(f.userId);
+    const reveal = () => fetch(`${server.apiUrl}/api/tool-gateway/gateway-tokens/${created.data.id}/reveal`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ companyId: f.companyId }) });
+    const revealed = await reveal();
+    expect(revealed.status).toBe(200);
+    const value = await revealed.json() as { token: string; pendingReveal: boolean; id: string };
+    expect(value).toMatchObject({ id: created.data.id, pendingReveal: false, token: expect.stringMatching(new RegExp(`^pcgw_${created.data.id}\\.`)) });
+    expect(await reveal()).toMatchObject({ status: 409 });
+    expect(await server.db.select().from(activityLog).where(and(eq(activityLog.companyId, f.companyId), eq(activityLog.action, "tool_gateway.token_revealed"))))
+      .toEqual([expect.objectContaining({ actorType: "user", actorId: f.userId, entityId: gateway.body.id, details: { tokenId: created.data.id } })]);
+    const use = () => f.request("POST", `/mcp/gateways/${gateway.body.gatewayPublicId}`, { jsonrpc: "2.0", id: 1, method: "tools/list" }, value.token);
+    expect(await use()).toMatchObject({ status: 200 });
+
+    // Agents keep delegated revoke.
+    const revoked = await call("gateway-client-revoke", "POST /api/tool-gateway/gateway-tokens/{tokenId}/revoke", { tokenId: created.data.id as string }, { companyId: f.companyId });
+    expect(revoked, JSON.stringify(revoked)).toMatchObject({ status: 200, data: { id: created.data.id, revokedAt: expect.any(String) } });
+    expect((await use()).status).toBeGreaterThanOrEqual(400);
+
+    // A token revoked before reveal never gets a value.
+    const unrevealed = await call("gateway-client-create-2", "POST /api/tool-gateway/gateways/{gatewayId}/tokens", { gatewayId: gateway.body.id }, { ...body, name: "Never revealed" });
+    expect(unrevealed).toMatchObject({ status: 201 });
+    expect(await call("gateway-client-revoke-2", "POST /api/tool-gateway/gateway-tokens/{tokenId}/revoke", { tokenId: unrevealed.data.id as string }, { companyId: f.companyId })).toMatchObject({ status: 200 });
+    expect(await fetch(`${server.apiUrl}/api/tool-gateway/gateway-tokens/${unrevealed.data.id}/reveal`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ companyId: f.companyId }) }))
+      .toMatchObject({ status: 409 });
+
+    // A token that expired before reveal never gets a value.
+    const expiring = await call("gateway-client-create-3", "POST /api/tool-gateway/gateways/{gatewayId}/tokens", { gatewayId: gateway.body.id }, { ...body, name: "Expired before reveal" });
+    expect(expiring).toMatchObject({ status: 201 });
+    await server.db.update(toolMcpGatewayTokens).set({ expiresAt: new Date(Date.now() - 1000) }).where(eq(toolMcpGatewayTokens.id, expiring.data.id as string));
+    const expiredReveal = await fetch(`${server.apiUrl}/api/tool-gateway/gateway-tokens/${expiring.data.id}/reveal`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ companyId: f.companyId }) });
+    expect(expiredReveal.status).toBe(409);
+    expect(await expiredReveal.json()).toMatchObject({ reasonCode: "gateway_token_expired" });
+    const [stillPending] = await server.db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, expiring.data.id as string));
+    expect(stillPending).toMatchObject({ pendingReveal: true });
+
+    // Person callers keep receiving the value from create.
+    const personal = await fetch(`${server.apiUrl}/api/tool-gateway/gateways/${gateway.body.id}/tokens`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    expect(personal.status).toBe(201);
+    expect(await personal.json()).toMatchObject({ token: expect.stringMatching(/^pcgw_/), createdByUserId: f.userId, createdByAgentId: null, pendingReveal: false });
+  });
+
+  it("reveals an agent-created gateway token value only to its responsible person", async () => {
+    const f = await fixture();
+    const profile = await f.request("POST", `/companies/${f.companyId}/tools/profiles`, { profileKey: "gateway-profile", name: "Gateway profile", entries: [] });
+    const gateway = await f.request("POST", `/companies/${f.companyId}/tools/gateways`, { name: "Delegated gateway", slug: "delegated", profileId: profile.body.id });
+    const created = await f.request("POST", `/tool-gateway/gateways/${gateway.body.id}/tokens`, { companyId: f.companyId, name: "Fixture client", clientLabel: "fixture" });
+    expect(created, JSON.stringify(created)).toMatchObject({ status: 201, body: { pendingReveal: true } });
+    const otherId = `other-admin-${randomUUID()}`;
+    await server.db.insert(authUsers).values({ id: otherId, name: "Other admin", email: `${otherId}@fixture.invalid`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() });
+    const access = accessService(server.db);
+    await access.ensureMembership(f.companyId, "user", otherId, "owner", "active");
+    await access.ensureRoleDefaultGrants(f.companyId, otherId, "owner", otherId);
+    const cookie = await server.humanSession(otherId);
+    const reveal = await fetch(`${server.apiUrl}/api/tool-gateway/gateway-tokens/${created.body.id}/reveal`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ companyId: f.companyId }) });
+    expect(reveal.status).toBe(403);
+    expect(await reveal.json()).toMatchObject({ reasonCode: "gateway_token_reveal_requires_responsible_person" });
+    const [still] = await server.db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, created.body.id));
+    expect(still).toMatchObject({ pendingReveal: true });
+  });
+
+  it("keeps durable agent-issued gateway client tokens bound to the issuer and responsible user", async () => {
+    const f = await fixture();
+    const profile = await f.request("POST", `/companies/${f.companyId}/tools/profiles`, { profileKey: "gateway-profile", name: "Gateway profile", entries: [] });
+    expect(profile, JSON.stringify(profile)).toMatchObject({ status: 201 });
+    const gateway = await f.request("POST", `/companies/${f.companyId}/tools/gateways`, { name: "Delegated gateway", slug: "delegated", profileId: profile.body.id });
+    expect(gateway, JSON.stringify(gateway)).toMatchObject({ status: 201 });
+    const token = await legacyAgentIssuedGatewayToken(f, gateway.body.id, "Fixture client");
     const [saved] = await server.db.select().from(toolMcpGatewayTokens).where(eq(toolMcpGatewayTokens.id, token.body.id));
     expect(saved).toMatchObject({ createdByAgentId: f.agentId, responsibleUserId: f.userId, subjectType: "gateway_client" });
     const use = () => f.request("POST", `/mcp/gateways/${gateway.body.gatewayPublicId}`, { jsonrpc: "2.0", id: 1, method: "tools/list" }, token.body.token);
@@ -1579,7 +1728,7 @@ describe("connection management with production default agents", () => {
       const token = mode === "ask-board" ? await (async () => {
         const response = await fetch(`${server.apiUrl}/api/tool-gateway/gateways/${gateway.body.id}/tokens`, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify(tokenBody) });
         return { status: response.status, body: await response.json() };
-      })() : await f.request("POST", `/tool-gateway/gateways/${gateway.body.id}/tokens`, tokenBody);
+      })() : await legacyAgentIssuedGatewayToken(f, gateway.body.id, tokenBody.name);
       expect(token, JSON.stringify(token)).toMatchObject({ status: 201 });
       const path = `/mcp/gateways/${gateway.body.gatewayPublicId}`;
       const rpc = (method: string, params?: unknown) => f.request("POST", path, { jsonrpc: "2.0", id: randomUUID(), method, ...(params ? { params } : {}) }, token.body.token);
@@ -1594,7 +1743,7 @@ describe("connection management with production default agents", () => {
       if (mode === "ask-rate") await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "One issuer admission", policyType: "rate_limit", selectors: { connectionId: connection.body.id, agentId: f.agentId }, priority: -1, config: { limit: 1, windowSeconds: 60, keyBy: ["agent", "tool"] } });
       if (mode === "credential") {
         await server.db.update(toolConnections).set({ credentialPolicy: "per_agent" }).where(eq(toolConnections.id, connection.body.id));
-        await server.db.insert(connectionGrants).values([f.agentId, target.id].map(subjectAgentId => ({ companyId: f.companyId, connectionId: connection.body.id, kind: "agent" as const, subjectAgentId, status: "active" })));
+        await server.db.insert(connectionGrants).values([f.agentId, target.id].map(subjectAgentId => ({ companyId: f.companyId, connectionId: connection.body.id, kind: "agent" as const, subjectAgentId, status: "active" as const })));
       }
       const called = await rpc("tools/call", { name: tool.name, arguments: {} });
       if (isRate) {
@@ -1896,7 +2045,7 @@ describe("connection management with production default agents", () => {
     await server.db.update(agentApiKeys).set({ responsibleUserId: null }).where(eq(agentApiKeys.id, f.key.id));
     expect((await f.request("GET", `/companies/${f.companyId}/tools/gallery`)).status).toBeGreaterThanOrEqual(400);
     const g = await fixture();
-    await server.db.update(agentApiKeys).set({ scopeConfig: { kind: "task_bridge", issueId: g.issueId } }).where(eq(agentApiKeys.id, g.key.id));
+    await server.db.update(agentApiKeys).set({ scopeConfig: { kind: "task_bridge", parentIssueId: g.issueId } }).where(eq(agentApiKeys.id, g.key.id));
     expect((await g.request("GET", `/companies/${g.companyId}/tools/gallery`)).status).toBeGreaterThanOrEqual(400);
   });
 

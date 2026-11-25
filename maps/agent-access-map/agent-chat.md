@@ -25,7 +25,7 @@ API: `present` — representative operation IDs:
 Agent access: `restricted` — Board-user REST; the responding agent gets its assigned
 conversation context.
 
-Policy: Conversation discovery/creation requires a board user and the Agent Chat gate;
+Policy: Conversation discovery/creation requires a board user;
 task access follows task visibility.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L18077) at
@@ -80,7 +80,7 @@ API: `present` — representative operation IDs:
 Agent access: `partial` — Assigned conversation task tools / REST for eligible task
 history and replies.
 
-Policy: Conversation discovery/creation requires a board user and the Agent Chat gate;
+Policy: Conversation discovery/creation requires a board user;
 task access follows task visibility.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L18077) at
@@ -122,7 +122,7 @@ API: `present` — representative operation IDs:
 Agent access: `available` — Native list_projects/create_project/create_task; project MCP
 tools; REST.
 
-Policy: Conversation discovery/creation requires a board user and the Agent Chat gate;
+Policy: Conversation discovery/creation requires a board user;
 task access follows task visibility.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L18077) at
@@ -143,8 +143,9 @@ New chat handoffs default to the conversation agent when no agent or person is s
 tasks; nested execution tasks retain normal parent/child rules. Source participant,
 session generation, task assignment and private-source inheritance are checked;
 quality confirmations remain separate from task completion and publication.
-[Focused regression coverage](../../server/src/__tests__/coordinator-handoff.test.ts)
-does not claim live model/tool selection or external delivery verification.
+Canonical conversation coverage lives in
+[agent conversations](../../server/src/__tests__/agent-conversations.test.ts) and does not claim
+live model/tool selection or external delivery verification.
 Additional coverage: the explicit [chat feature evals](../../tests/runner-e2e/CHAT-FEATURES.md)
 exercise native task creation and completion delivery through the real chat UI.
 The [chat directive](../../server/src/services/agent-conversations.ts) tells agents
@@ -164,7 +165,7 @@ API: `present` — representative operation IDs:
 Agent access: `partial` — Existing SSE client in local_trusted mode with the
 experimental gate.
 
-Policy: Conversation discovery/creation requires a board user and the Agent Chat gate;
+Policy: Conversation discovery/creation requires a board user;
 task access follows task visibility.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L18077) at

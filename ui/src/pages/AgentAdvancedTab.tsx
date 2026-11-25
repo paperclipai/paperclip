@@ -1,3 +1,4 @@
+import { describeError } from "@/api/errors";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { basicSetup } from "codemirror";
@@ -44,7 +45,7 @@ export function AgentAdvancedTab(props: AgentAdvancedTabProps) {
   }, [initial, query.data, query.isFetching]);
   if (!initial) {
     if (query.error) return <div role="alert" className="space-y-3 text-sm">
-      <p>{query.error.message}</p>
+      <p>{describeError(query.error).body}</p>
       <Button variant="outline" onClick={() => query.refetch()}>Retry</Button>
     </div>;
     return <p role="status" className="text-sm text-muted-foreground">Loading configuration…</p>;
@@ -83,7 +84,6 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
         receipt => { if (active.current) setReceipts(current => [...current, receipt]); },
         label => { if (active.current) setProgress(label); });
     },
-    retry: false,
     onSuccess: configuration => {
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(agent.urlKey) });

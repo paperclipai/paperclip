@@ -1,15 +1,18 @@
+import { PatchLines } from "./PatchLines";
 import { MarkdownWordStreaming, rehypeStreamingWords } from "./MarkdownWordStreaming";
 import { isValidElement, memo, useContext, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, ExternalLink, MessageCircle, WrapText } from "lucide-react";
+import { Check, Copy, MessageCircle, WrapText } from "lucide-react";
 import { useCoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import { useCoordinatorChatReference } from "./coordinator/CoordinatorChatReferences";
 import { SidebarDocumentLink } from "./SidebarDocumentLink";
-import { parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
+import { buildDocumentAnnotationHash, parseDocumentAnnotationHash } from "@/lib/document-annotation-hash";
 import Markdown, { defaultUrlTransform, type Components, type Options } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { cn } from "../lib/utils";
-import { GithubIcon } from "@/components/icons/github-icon";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { MarkdownUrlLink } from "./MarkdownUrlLink";
+import { recognizeLinkPreview, type LinkPreviewState } from "@paperclipai/shared";
 import { Link, useCaseHref } from "@/lib/router";
 import { useTheme } from "../context/ThemeContext";
 import { useOptionalCompany } from "../context/CompanyContext";
@@ -39,6 +42,7 @@ import {
 } from "../lib/remark-workspace-file-refs";
 import { remarkSoftBreaks } from "../lib/remark-soft-breaks";
 import { StatusIcon } from "./StatusIcon";
+import { taskStatusIconProps } from "../lib/task-status-presentation";
 import { WorkspaceFileLink } from "./WorkspaceFileLink";
 import { ExternalObjectStatusIcon } from "./ExternalObjectStatusIcon";
 import {
@@ -47,6 +51,7 @@ import {
   externalObjectProviderLabel,
 } from "../lib/external-objects";
 import { normalizeExternalObjectHref } from "../lib/external-object-href";
+import { safeNavigableUrl } from "../lib/safe-url";
 import { copyTextToClipboard } from "../lib/clipboard";
 import type {
   Agent,
@@ -126,10 +131,11 @@ interface MarkdownBodyProps {
   resolveImageSrc?: (src: string) => string | null;
   /** Resolve file links to app routes; null leaves the label without a link. */
   resolveLinkHref?: (href: string) => string | null;
+  documentIssueId?: string;
   /** Called when a user clicks an inline image */
   onImageClick?: (src: string, image: HTMLImageElement) => void;
-  /** Keep untrusted decision media inert: image references and diagram source only. */
-  mediaMode?: "render" | "reference";
+  /** Keep media inert as references, or omit images in compact text previews. */
+  mediaMode?: "render" | "reference" | "omit";
   /**
    * Resolver that decides which inline-code workspace file paths may be linked
    * to the issue file viewer. Omitting it (or returning null) leaves every
@@ -185,14 +191,17 @@ function MarkdownIssueLink({
   }
 
   if (documentLink) {
-    return <SidebarDocumentLink href={href} onPointerEnter={() => setEngaged(true)} onFocus={() => setEngaged(true)}>
-      <span className="min-w-0 truncate text-foreground underline underline-offset-4">{children}</span>
+    return <SidebarDocumentLink href={href} variant="inline" onPointerEnter={() => setEngaged(true)} onFocus={() => setEngaged(true)}>
+      <span className="underline underline-offset-4">{children}</span>
     </SidebarDocumentLink>;
   }
 
   const identifier = data?.identifier ?? issuePathId;
   const title = data?.title ?? identifier;
   const status = data?.status;
+  // Same presentation inputs as every task view, so a covered blocked task is
+  // the blue in-queue glyph here too, not the red blocked one (BUG-07).
+  const statusIconProps = data && status ? taskStatusIconProps({ ...data, status }) : null;
   const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
 
   // Until the fetch settles we don't yet know whether this viewer can read the
@@ -222,8 +231,8 @@ function MarkdownIssueLink({
       title={title}
       aria-label={issueLabel}
     >
-      {status ? (
-        <StatusIcon status={status} size="md" className="relative -top-px mr-1 inline-block h-4 w-4 align-middle" />
+      {statusIconProps ? (
+        <StatusIcon {...statusIconProps} size="md" className="relative -top-px mr-1 inline-block h-4 w-4 align-middle" />
       ) : null}
       {children}
     </Link>
@@ -274,6 +283,18 @@ function MarkdownExternalLink({
     `${displayKey} — ${statusLabel}${livenessSuffix}`,
   ];
   const title = titleParts.filter(Boolean).join(" · ");
+  if (recognizeLinkPreview(href)) {
+    const knownState: LinkPreviewState = reference.statusIconKey === "git-merge" || reference.statusLabel === "Merged" ? "merged"
+      : reference.statusLabel === "Merge conflicts" ? "conflicts"
+      : reference.statusLabel === "Draft" ? "draft"
+      : reference.statusCategory === "open" ? "open"
+      : reference.statusCategory === "closed" ? "closed" : "unknown";
+    return <MarkdownUrlLink href={href} title={title} knownState={knownState}
+      externalStatus={{ category: reference.statusCategory, liveness: reference.liveness,
+        ariaLabel: `${displayKey} ${statusLabel}${livenessSuffix}: ${reference.displayTitle ?? href}` }}>
+      {children}
+    </MarkdownUrlLink>;
+  }
   return (
     <a
       href={href}
@@ -415,7 +436,10 @@ function extractMermaidSource(children: ReactNode): string | null {
 
 function safeMarkdownUrlTransform(url: string): string {
   if (url.startsWith(WORKSPACE_FILE_HREF_PREFIX)) return url;
-  return parseMentionChipHref(url) ? url : defaultUrlTransform(url);
+  const mention = parseMentionChipHref(url);
+  if (!mention) return defaultUrlTransform(url);
+  if (mention.kind === "issue") return safeNavigableUrl(url) ?? "";
+  return url;
 }
 
 type MarkdownAstNode = {
@@ -452,6 +476,19 @@ function parseWikiLinkBody(body: string): ParsedWikiLink | null {
     target,
     label: label || target,
   };
+}
+
+/**
+ * Agents sometimes write a company link as `//PAP/agents/...`. A browser reads
+ * that as a protocol-relative URL for a host named after the company prefix,
+ * which leaves the app. When the "host" is exactly a known company prefix, the
+ * link can only mean the company path, so render it as `/PAP/agents/...`.
+ */
+export function companyPathFromProtocolRelativeHref(href: string | undefined, knownPrefixes?: readonly string[]): string | undefined {
+  if (!href || !knownPrefixes?.length) return href;
+  const match = /^\/\/([^/?#]+)((?:[/?#].*)?)$/.exec(href.trim());
+  if (!match || !knownPrefixes.includes(match[1]!)) return href;
+  return `/${match[1]}${match[2] || ""}`;
 }
 
 function encodeWikiLinkTarget(target: string): string | null {
@@ -572,78 +609,6 @@ function createRemarkWikiLinks(options: {
   };
 }
 
-function isGitHubUrl(href: string | null | undefined): boolean {
-  if (!href) return false;
-  try {
-    const url = new URL(href);
-    return url.protocol === "https:" && (url.hostname === "github.com" || url.hostname === "www.github.com");
-  } catch {
-    return false;
-  }
-}
-
-function isExternalHttpUrl(href: string | null | undefined): boolean {
-  if (!href) return false;
-  try {
-    const url = new URL(href);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return false;
-    if (typeof window === "undefined") return true;
-    return url.origin !== window.location.origin;
-  } catch {
-    return false;
-  }
-}
-
-function renderLinkBody(
-  children: ReactNode,
-  leadingIcon: ReactNode,
-  trailingIcon: ReactNode,
-): ReactNode {
-  if (!leadingIcon && !trailingIcon) return children;
-
-  // React-markdown can pass arrays/elements for styled link text; the nowrap
-  // splitting below is intentionally limited to plain text links.
-  if (typeof children === "string" && children.length > 0) {
-    if (children.length === 1) {
-      return (
-        <span style={{ whiteSpace: "nowrap" }}>
-          {leadingIcon}
-          {children}
-          {trailingIcon}
-        </span>
-      );
-    }
-    const first = children[0];
-    const last = children[children.length - 1];
-    const middle = children.slice(1, -1);
-    return (
-      <>
-        {leadingIcon ? (
-          <span style={{ whiteSpace: "nowrap" }}>
-            {leadingIcon}
-            {first}
-          </span>
-        ) : first}
-        {middle}
-        {trailingIcon ? (
-          <span style={{ whiteSpace: "nowrap" }}>
-            {last}
-            {trailingIcon}
-          </span>
-        ) : last}
-      </>
-    );
-  }
-
-  return (
-    <>
-      {leadingIcon}
-      {children}
-      {trailingIcon}
-    </>
-  );
-}
-
 function CodeBlock({
   children,
   preProps,
@@ -651,6 +616,10 @@ function CodeBlock({
   children: ReactNode;
   preProps: React.HTMLAttributes<HTMLPreElement>;
 }) {
+  const code = Array.isArray(children) ? children.find(isValidElement) : children;
+  const patchCode = isValidElement<{ className?: string; children?: ReactNode }>(code)
+    && /\blanguage-(diff|patch)\b/i.test(code.props.className ?? "");
+  const patchText = patchCode ? flattenText(code.props.children) : null;
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
   const [wrapLines, setWrapLines] = useState(false);
@@ -660,7 +629,7 @@ function CodeBlock({
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
   const handleCopy = useCallback(async () => {
-    const text = preRef.current?.innerText ?? flattenText(children);
+    const text = patchText ?? preRef.current?.innerText ?? flattenText(children);
     try {
       await copyTextToClipboard(text);
       setFailed(false);
@@ -674,7 +643,7 @@ function CodeBlock({
       setCopied(false);
       setFailed(false);
     }, 1500);
-  }, [children]);
+  }, [children, patchText]);
 
   const copyLabel = failed ? "Copy failed" : copied ? "Copied!" : "Copy";
   const wrapLabel = wrapLines ? "Unwrap lines" : "Wrap lines";
@@ -696,7 +665,7 @@ function CodeBlock({
             : null),
         }}
       >
-        {children}
+        {patchText !== null ? <code className="language-diff"><PatchLines text={patchText} /></code> : children}
       </pre>
       <div
         className="paperclip-markdown-codeblock-actions"
@@ -811,6 +780,7 @@ function MarkdownBodyImpl({
   externalReferences,
   resolveImageSrc,
   resolveLinkHref,
+  documentIssueId,
   onImageClick,
   mediaMode = "render",
   resolveWorkspaceFileRef,
@@ -818,6 +788,11 @@ function MarkdownBodyImpl({
   const { theme } = useTheme();
   const coordinator = useCoordinatorPresentation();
   const streamWords = useContext(MarkdownWordStreaming);
+  const scopedUrlTransform = useCallback((url: string, key: string) => {
+    const safeUrl = safeMarkdownUrlTransform(url);
+    const target = key === "href" && documentIssueId ? parseDocumentAnnotationHash(safeUrl) : null;
+    return target && !target.documentIssueId ? buildDocumentAnnotationHash({ ...target, documentIssueId }) : safeUrl;
+  }, [documentIssueId]);
   // Read company prefixes non-throwingly: MarkdownBody renders in surfaces that
   // may lack a CompanyProvider. A null context (or no companies yet) leaves
   // knownPrefixes undefined, which keeps issue auto-linking permissive.
@@ -828,6 +803,10 @@ function MarkdownBodyImpl({
   const knownPrefixes = useMemo(
     () => (companies?.length ? companies.map((c) => c.issuePrefix) : undefined),
     [companies],
+  );
+  const knownPrefixSet = useMemo(
+    () => (knownPrefixes ? new Set(knownPrefixes.map((prefix) => prefix.toUpperCase())) : undefined),
+    [knownPrefixes],
   );
   const externalReferenceLookup = useMemo<MarkdownExternalReferenceMap | null>(() => {
     if (!externalReferences) return null;
@@ -909,7 +888,8 @@ function MarkdownBodyImpl({
         {codeChildren}
       </code>
     ),
-    a: ({ node: _node, href, style: linkStyle, children: linkChildren, ...anchorProps }) => {
+    a: ({ node: _node, href: rawHref, style: linkStyle, children: linkChildren, ...anchorProps }) => {
+      const href = companyPathFromProtocolRelativeHref(rawHref, knownPrefixes);
       const workspaceFileRef = parseWorkspaceFileHref(href);
       if (workspaceFileRef) {
         return (
@@ -936,12 +916,12 @@ function MarkdownBodyImpl({
         );
       }
 
-      const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href) : null;
+      const issueRef = linkIssueReferences ? parseIssueReferenceFromHref(href, knownPrefixSet) : null;
       const documentHash = href?.includes("#") ? href.slice(href.indexOf("#")) : null;
       const documentLink = Boolean(coordinator && documentHash && parseDocumentAnnotationHash(documentHash));
       if (documentLink && href?.startsWith("#")) {
-        return <SidebarDocumentLink href={href}>
-          <span className="min-w-0 truncate text-foreground underline underline-offset-4">{linkChildren}</span>
+        return <SidebarDocumentLink href={href} variant="inline">
+          <span className="underline underline-offset-4">{linkChildren}</span>
         </SidebarDocumentLink>;
       }
       if (issueRef) {
@@ -1009,28 +989,16 @@ function MarkdownBodyImpl({
           </Link>
         ) : <>{linkChildren}</>;
       }
-      const isGitHubLink = isGitHubUrl(href);
-      const isExternal = isExternalHttpUrl(href);
-      const leadingIcon = isGitHubLink ? (
-        <GithubIcon aria-hidden="true" className="mr-1 inline h-3.5 w-3.5 align-(--va-0_125em)" />
-      ) : null;
-      const trailingIcon = isExternal && !isGitHubLink ? (
-        <ExternalLink aria-hidden="true" className="ml-1 inline h-3 w-3 align-(--va-0_125em)" />
-      ) : null;
       return (
-        <a
-          href={href}
-          {...(isExternal
-            ? { target: "_blank", rel: "noopener noreferrer" }
-            : { rel: "noreferrer" })}
-          style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}
-        >
-          {renderLinkBody(linkChildren, leadingIcon, trailingIcon)}
-        </a>
+        <MarkdownUrlLink href={href} title={anchorProps.title} style={mergeWrapStyle(linkStyle as React.CSSProperties | undefined)}>
+          {linkChildren}
+        </MarkdownUrlLink>
       );
     },
     };
-    if (mediaMode === "reference") {
+    if (mediaMode === "omit") {
+      map.img = () => null;
+    } else if (mediaMode === "reference") {
       map.img = ({ src, alt, title }) => (
         <span data-markdown-image-reference title={title}>
           Image: {alt || "Untitled image"}{src ? ` (${src})` : ""}
@@ -1040,38 +1008,41 @@ function MarkdownBodyImpl({
       map.img = ({ node: _node, src, alt, ...imgProps }) => {
         const resolved = resolveImageSrc && src ? resolveImageSrc(src) : null;
         const finalSrc = resolved ?? src;
+        const clickSrc = onImageClick ? safeNavigableUrl(finalSrc) : null;
         return (
           <img
             {...imgProps}
             src={finalSrc}
             alt={alt ?? ""}
-            role={onImageClick && finalSrc ? "button" : undefined}
-            tabIndex={onImageClick && finalSrc ? 0 : undefined}
-            aria-label={onImageClick && finalSrc ? `Open image: ${alt || "Untitled image"}` : undefined}
-            onClick={onImageClick && finalSrc ? (e) => {
+            role={clickSrc ? "button" : undefined}
+            tabIndex={clickSrc ? 0 : undefined}
+            aria-label={clickSrc ? `Open image: ${alt || "Untitled image"}` : undefined}
+            onClick={onImageClick && clickSrc ? (e) => {
               e.preventDefault();
               e.stopPropagation();
-              onImageClick(finalSrc, e.currentTarget);
+              onImageClick(clickSrc, e.currentTarget);
             } : undefined}
-            onKeyDown={onImageClick && finalSrc ? (e) => {
+            onKeyDown={onImageClick && clickSrc ? (e) => {
               if (e.key !== "Enter" && e.key !== " ") return;
               e.preventDefault();
               e.stopPropagation();
-              onImageClick(finalSrc, e.currentTarget);
+              onImageClick(clickSrc, e.currentTarget);
             } : undefined}
-            className={cn(imgProps.className, onImageClick && "cursor-pointer")}
+            className={cn(imgProps.className, clickSrc && "cursor-pointer")}
           />
         );
       };
     }
     return map;
-  }, [theme, coordinator, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, resolveLinkHref, onImageClick, mediaMode]);
+  }, [theme, coordinator, linkIssueReferences, linkCaseReferences, externalReferenceLookup, resolveImageSrc, resolveLinkHref, onImageClick, mediaMode, knownPrefixes, knownPrefixSet]);
 
   return (
     <div
       className={cn(
         "paperclip-markdown prose prose-sm min-w-0 max-w-full break-words overflow-hidden",
         theme === "dark" && "prose-invert",
+        // Customer content: masked in session replay, skipped by autocapture.
+        ANALYTICS_MASK_CLASS,
         className,
       )}
       style={mergeWrapStyle(style)}
@@ -1080,7 +1051,7 @@ function MarkdownBodyImpl({
         remarkPlugins={remarkPlugins}
         rehypePlugins={streamWords ? [rehypeStreamingWords] : undefined}
         components={components}
-        urlTransform={safeMarkdownUrlTransform}
+        urlTransform={documentIssueId ? scopedUrlTransform : safeMarkdownUrlTransform}
       >
         {children}
       </Markdown>

@@ -63,7 +63,9 @@ describe("Antigravity candidate trusted startup", () => {
     const root = await mkdtemp(join(tmpdir(), "antigravity-candidate-continuation-"));
     const admission = candidate();
     const retained = { driverSessionId: "driver-retained", providerSessionId: "native-retained", providerIdentity: {
-      kind: "acpx", normalizedSessionId: identity.normalizedSessionId,
+      kind: "acpx" as const, normalizedSessionId: identity.normalizedSessionId,
+      acpxRecordId: "acpx-retained", backendSessionId: "backend-retained", agentSessionId: "native-retained",
+      workspaceDigest: `sha256:${"e".repeat(64)}`, providerLifetimeFenceCandidates: [1, 2, 3] as const,
       // The recovery binding digest is distinct from the release command digest.
       profileDigest: `sha256:${"a".repeat(64)}`, requestedModel: admission.model, effectiveModel: admission.model,
     } };
@@ -76,9 +78,31 @@ describe("Antigravity candidate trusted startup", () => {
       await expect(owner.transport.prepareConversationResume!({ threadId: retained.driverSessionId, model: "wrong-model", cwd: root })).rejects.toThrow("exact current conversation");
       await expect(owner.transport.prepareConversationResume!({ threadId: retained.driverSessionId, model: admission.model, cwd: "/wrong-workspace" })).rejects.toThrow("exact current conversation");
       await owner.transport.close();
-      expect(() => createRunnerdCodexTransport({ ...options, resumeActiveTurnId: "stale-active-turn" })).toThrow("fresh local isolated");
+      expect(() => createRunnerdCodexTransport({ ...options, resumeActiveTurnId: "stale-active-turn" })).toThrow("fresh isolated per-turn");
       expect(() => createRunnerdCodexTransport({ ...options, resumeProviderSession: { ...retained,
         providerIdentity: { ...retained.providerIdentity, effectiveModel: "wrong-model" } } })).toThrow("exact retained native conversation");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("admits a remote owner only with a linux-x64 grant, per-turn, on any controller host", async () => {
+    const root = await mkdtemp(join(tmpdir(), "antigravity-candidate-remote-"));
+    const linux = (): AcpxCandidateAdmission => ({ ...candidate(), platform: "linux", architecture: "x64",
+      nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS["linux-x64"].closureSha256}` });
+    try {
+      const options = { provider: "acpx" as const, acpxAgent: "antigravity" as const, stateDirectory: root,
+        runnerFilesystemRoot: "/owned-runner", acpxCandidateAdmission: linux() };
+      const owner = createRunnerdCodexTransport(options);
+      await owner.transport.close();
+      for (const change of [{ acpxCandidateAdmission: candidate() },
+        { acpxCandidateAdmission: { ...linux(), nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256}` } },
+        { acpxCandidateAdmission: { ...linux(), architecture: "arm64" as const, nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS["linux-arm64"].closureSha256}` } },
+        { lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 1000 } }, { homeMode: "preconfigured" as const }]) {
+        expect(() => createRunnerdCodexTransport({ ...options, ...change })).toThrow();
+      }
+      // The same linux-x64 grant never admits a local owner on another host.
+      if (process.platform !== "linux" || process.arch !== "x64") {
+        expect(() => createRunnerdCodexTransport({ ...options, runnerFilesystemRoot: undefined })).toThrow("on its admitted platform");
+      }
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 

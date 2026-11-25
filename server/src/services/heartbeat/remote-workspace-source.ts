@@ -1,7 +1,8 @@
-import { asc, and, eq, isNull, notExists } from "drizzle-orm";
+import { asc, and, eq, notExists } from "drizzle-orm";
 import { projects, projectWorkspaces, type Db } from "@paperclipai/db";
 import type { TaskWorkspaceIntent } from "@paperclipai/shared";
 import { HttpError } from "../../errors.js";
+import { sourcelessProjectWorkspacePolicy } from "../project-workspace-provider.js";
 import { ProjectAccessDeniedError } from "../project-access-denial.js";
 import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../task-workspace-access.js";
 import { assertSelectedWorkspaceTrust } from "../task-repository-acquisition.js";
@@ -152,13 +153,13 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
       && selected.task.executionWorkspaceId == null && selected.task.projectWorkspaceId == null
       && selected.task.workspaceSelection == null && selected.task.workspacePendingSelection == null
       && input.ref == null && input.branchName == null && input.branchMode !== "existing") {
-      const [metadataProject] = await db.select({ id: projects.id }).from(projects).where(and(
-        eq(projects.id, projectId), eq(projects.companyId, input.companyId), isNull(projects.executionWorkspacePolicy),
+      const [metadataProject] = await db.select({ policy: projects.executionWorkspacePolicy }).from(projects).where(and(
+        eq(projects.id, projectId), eq(projects.companyId, input.companyId),
         notExists(db.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(and(
           eq(projectWorkspaces.projectId, projects.id), eq(projectWorkspaces.companyId, input.companyId),
         ))),
       )).limit(1);
-      implicitTaskDirectory = Boolean(metadataProject);
+      implicitTaskDirectory = Boolean(metadataProject) && sourcelessProjectWorkspacePolicy(metadataProject.policy) === null;
     }
     if (sourceId || projectId && !implicitTaskDirectory) throw new WorkspaceValidationFailure(
       "The selected project has no repository source for a remote workspace.",

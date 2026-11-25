@@ -1,8 +1,10 @@
 import express from "express";
+import { unprocessable, forbidden } from "../errors.js";
 import request from "supertest";
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
+import type { RunnerTarget } from "../services/agent-runner-selection.js";
 
 const mockAdapterPluginStore = vi.hoisted(() => ({
   listAdapterPlugins: vi.fn(),
@@ -166,12 +168,50 @@ describe("adapter routes", () => {
       expect(response.status).toBe(200);
       expect(response.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
     }
+    // A cloud environment whose platform is unknown is never offered a candidate.
     const remote = await request(createApp({}, { resolveRunnerTarget: async () => ({ driver: "ssh" }) }))
       .get("/api/adapters?companyId=company-1&environmentId=remote");
     expect(remote.body.every((adapter: any) => adapter.candidateHarnesses === undefined)).toBe(true);
     mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["paperclip_runner"]);
     const disabled = await request(local).get("/api/adapters?companyId=company-1");
     expect(disabled.body.find((adapter: any) => adapter.type === "paperclip_runner").candidateHarnesses).toBeUndefined();
+  });
+
+  it("offers a cloud environment the candidate only for the company's linux-x64 grant", async () => {
+    // The real resolver binds a grant to the execution target it names.
+    const grant = (platform: string, architecture: string) => (input: { companyId?: string; target?: { platform: string; architecture: string } }) => {
+      if (input.companyId !== "company-1") return undefined;
+      if (input.target && (input.target.platform !== platform || input.target.architecture !== architecture)) {
+        throw new Error("Antigravity candidate admission does not match the execution target");
+      }
+      return { agent: "antigravity", model: "exact-google-model", platform, architecture };
+    };
+    const candidates = async (target: RunnerTarget, companyId = "company-1") => {
+      const response = await request(createApp({}, { resolveRunnerTarget: async () => target }))
+        .get(`/api/adapters?companyId=${companyId}&environmentId=cloud`);
+      expect(response.status).toBe(200);
+      return response.body.find((adapter: any) => adapter.type === "paperclip_runner").candidateHarnesses;
+    };
+    const offered = [{ agent: "antigravity", model: "exact-google-model" }];
+
+    mockCandidateAdmission.mockImplementation(grant("linux", "x64"));
+    expect(await candidates({ driver: "sandbox", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.39" })).toEqual(offered);
+    expect(mockCandidateAdmission).toHaveBeenLastCalledWith({ companyId: "company-1", target: { platform: "linux", architecture: "x64" } });
+    expect(await candidates({ driver: "sandbox", managedCloudImage: true })).toEqual(offered);
+    expect(await candidates({ driver: "ssh", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.39" })).toEqual(offered);
+    expect(await candidates({ driver: "ssh", platform: "linux", architecture: "x64", libc: "musl" })).toBeUndefined();
+    expect(await candidates({ driver: "ssh", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.31" })).toBeUndefined();
+    // Another company, another platform, or no Computer gets nothing.
+    expect(await candidates({ driver: "sandbox", platform: "linux", architecture: "x64" }, "other-company")).toBeUndefined();
+    expect(await candidates({ driver: "sandbox", platform: "linux", architecture: "arm64" })).toBeUndefined();
+    expect(await candidates({ driver: "sandbox" })).toBeUndefined();
+    expect(await candidates({ driver: "unavailable" })).toBeUndefined();
+    // A plugin Runner-task environment cannot launch Antigravity yet.
+    expect(await candidates({ driver: "plugin", runnerTasks: true })).toBeUndefined();
+
+    // A grant for this host does not open a cloud environment.
+    mockCandidateAdmission.mockImplementation(grant("darwin", "arm64"));
+    expect(await candidates({ driver: "sandbox", platform: "linux", architecture: "x64" })).toBeUndefined();
   });
 
   it("keeps ordinary adapter discovery available after candidate startup authority expires", async () => {
@@ -220,7 +260,7 @@ describe("adapter routes", () => {
       });
   });
 
-  it.each([
+  it.each<[RunnerTarget, string]>([
     [{ driver: "ssh", platform: "linux", architecture: "x64" }, "paperclip"],
     [{ driver: "ssh", platform: "darwin", architecture: "arm64" }, "paperclip"],
     [{ driver: "ssh", platform: "darwin", architecture: "x64" }, "paperclip"],
@@ -257,6 +297,30 @@ describe("adapter routes", () => {
     const response = await request(createApp({ source: "session", companyIds: ["allowed"] }, { resolveRunnerTarget })).get("/api/adapters?companyId=foreign&environmentId=selected");
     expect(response.status).toBe(403);
     expect(resolveRunnerTarget).not.toHaveBeenCalled();
+  });
+
+  it("keeps Cursor API discovery available without granting local support when the implicit managed Computer is unavailable", async () => {
+    const unavailable = unprocessable("Managed Computer unavailable", { code: "managed_sandbox_unavailable" });
+    const app = createApp({}, { resolveRunnerTarget: async () => { throw unavailable; } });
+    const response = await request(app).get("/api/adapters?companyId=company-1");
+    expect(response.status).toBe(200);
+    expect(response.body.find((adapter: any) => adapter.type === "cursor_cloud")).toMatchObject({ supportedRunners: ["paperclip"], defaultRunner: "paperclip" });
+    expect(response.body.find((adapter: any) => adapter.type === "codex_local").supportedRunners).toEqual([]);
+    const explicit = await request(app).get("/api/adapters?companyId=company-1&environmentId=selected");
+    expect(explicit.status).toBe(422);
+    const foreign = await request(createApp({}, { resolveRunnerTarget: async () => { throw forbidden("Foreign Computer", { code: "environment_company_mismatch" }); } })).get("/api/adapters?companyId=company-1");
+    expect(foreign.status).toBe(403);
+  });
+
+  it("does not offer Cursor execution under Kubernetes-only policy, including the unavailable managed Computer fallback", async () => {
+    for (const resolveRunnerTarget of [
+      async () => ({ driver: "sandbox", executionMode: "kubernetes" as const }),
+      async () => { throw unprocessable("Managed Computer unavailable", { code: "managed_sandbox_unavailable", executionMode: "kubernetes" }); },
+    ]) {
+      const response = await request(createApp({}, { resolveRunnerTarget })).get("/api/adapters?companyId=company-1");
+      expect(response.status).toBe(200);
+      expect(response.body.find((adapter: any) => adapter.type === "cursor_cloud").supportedRunners).toEqual([]);
+    }
   });
 
   it.each(["environmentId=selected", "companyId=", "companyId=one&companyId=two", "companyId=one&environmentId="])("rejects malformed discovery scope before resolution (%s)", async query => {

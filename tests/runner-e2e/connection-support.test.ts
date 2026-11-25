@@ -3,11 +3,12 @@ import { chmod, mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AGENT_ADAPTER_TYPES } from "../../packages/shared/src/constants.js";
+import { AI_KEY_VERIFICATION_FAILURES } from "../../server/src/services/ai-api-key-failures.js";
 import { runnerMatrix } from "./catalog.js";
 import { parseRunnerSelectors, selectRunnerExecutions, buildMatrixJobs } from "./selectors.js";
 import { connectionHarnesses, connectionScopeGaps, connectionCell, supportsConnection } from "./connection-cases.js";
 import { parseConnectionConfig, targetOrigin, selectedSecret, resolveConnectionSecret, resolveConnectionSettings } from "./connection-config.js";
-import { connectionCheckpoints, connectionEvidencePasses, connectionRunDiagnostic, createConnectionProof, verifyConnectionArtifact, verifyConnectionRun, completedConnectionArtifactRun, connectionProbeChecks, type ConnectionEvidence } from "./connection-evidence.js";
+import { connectionCheckpoints, connectionVerificationFailureCodes, connectionEvidencePasses, connectionRunDiagnostic, createConnectionProof, verifyConnectionArtifact, verifyConnectionRun, completedConnectionArtifactRun, connectionProbeChecks, type ConnectionEvidence } from "./connection-evidence.js";
 import { validateRetainedRunnerResult } from "./result-validation.js";
 import { ConnectionApi, verifyConnectionTarget } from "./connection-target.js";
 import { cleanupConnectionCompany, connectionCreationReceipt, runConnectionCampaign, safeConnectionFailure, withConnectionCampaignCancellation } from "./connection-launch.js";
@@ -298,5 +299,12 @@ describe("independent qualification", () => {
     expect(renderCaseOutcome(result, false, [])).toContain("Blocked: awaiting user");
     const cleanupFailed = buildRunnerCampaign({ campaignId: "failed-cleanup", generatedAt: result.finishedAt, expected: [execution.id], results: [{ ...result, cleanup: "failed", failureClass: "cleanup_failure" }] });
     expect(cleanupFailed.failed).toBe(1); expect(cleanupFailed.incomplete).toBe(0);
+  });
+});
+
+describe("connection creation failure codes", () => {
+  it("keeps every API key verification code the server can return", () => {
+    expect([...connectionVerificationFailureCodes].sort())
+      .toEqual(Object.values(AI_KEY_VERIFICATION_FAILURES).map(failure => failure.code).sort());
   });
 });

@@ -1,3 +1,4 @@
+import { notifyQueuedRunDispatch } from "../run-dispatch-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import type { Db } from "@paperclipai/db";
@@ -42,6 +43,15 @@ function record(value: unknown): Record<string, unknown> {
     ? value as Record<string, unknown>
     : {};
 }
+
+const CLOSABLE_INTERACTION_KINDS: ReadonlySet<string> = new Set<NativeInteractionResponseEnvelope["kind"]>([
+  "connection_intent",
+  "suggest_tasks",
+  "ask_user_questions",
+  "request_confirmation",
+  "request_checkbox_confirmation",
+  "request_item_verdicts",
+]);
 
 export type NativeAttentionMaterializedTarget = {
   effectKind: string;
@@ -125,6 +135,7 @@ export async function applyNativeAttentionStatusDecision(input: {
         if (effect.cause === "native_workspace_sync_out_unsafe_archive") {
           await notifyUnsafeWorkspaceExportRecovery(tx, input);
         }
+        await notifyQueuedRunDispatch(tx, { companyId: input.companyId });
         const [coordinator] = await tx.update(nativeRunFinalizations).set({
           phase: "terminal_failure",
           failureCode: effect.cause,
@@ -251,6 +262,24 @@ export async function materializeNativeInteractionResponses(input: {
         canonicalRequestId: typeof interactionResult.supersededByInteractionId === "string"
           ? interactionResult.supersededByInteractionId
           : undefined,
+      });
+      continue;
+    }
+    // Withdraw and cancel close a request without granting anything, yet
+    // they still wake the assignee to continue. Project the closed lifecycle
+    // as context; consumers act only on accepted, answered or pending items.
+    if (
+      interaction.status === "cancelled"
+      && interaction.result
+      && CLOSABLE_INTERACTION_KINDS.has(interaction.kind)
+    ) {
+      responses.push({
+        interactionId: interaction.id,
+        kind: interaction.kind as NativeInteractionResponseEnvelope["kind"],
+        response: {
+          status: interaction.status,
+          result: structuredClone(interaction.result) as unknown as Record<string, unknown>,
+        },
       });
       continue;
     }

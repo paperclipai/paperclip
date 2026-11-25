@@ -105,6 +105,19 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
     expect(snapshot.contextIssues.find(row => row.id === resolvedTask.id)?.interruption).toMatchObject({ state: "resolved", canRetry: false });
     expect(snapshot.failureRuns.map(run => run.agentId)).not.toContain(supersededAgent.id);
     expect(snapshotResponse.headers["cache-control"]).toBe("private, no-store");
+    const timingPhases = new Map((snapshotResponse.headers["server-timing"] ?? "").split(", ").map((entry: string) => {
+      const match = /^([a-z_]+);dur=(\d+\.\d)$/.exec(entry);
+      expect(match, entry).not.toBeNull();
+      return [match![1]!, Number(match![2])] as const;
+    }));
+    for (const phase of [
+      "paperclip_inbox", "inbox_access", "inbox_issues", "inbox_parents", "inbox_failures", "inbox_failure_context",
+      "inbox_issues_candidates", "inbox_issues_query", "inbox_issues_labels", "inbox_issues_user_stats", "inbox_issues_read_stats",
+      "inbox_issues_last_activity", "inbox_issues_archives", "inbox_issues_live_descendants",
+    ]) expect(timingPhases.get(phase), phase).toBeGreaterThanOrEqual(0);
+    // Attribution: list sub-phases run inside inbox_issues, and every phase inside the request.
+    expect(timingPhases.get("inbox_issues")!).toBeGreaterThanOrEqual(timingPhases.get("inbox_issues_candidates")! + timingPhases.get("inbox_issues_query")! - 0.2);
+    expect(timingPhases.get("paperclip_inbox")!).toBeGreaterThanOrEqual(timingPhases.get("inbox_issues")! - 0.1);
     expect(snapshot).not.toHaveProperty("failureError");
     expect(snapshot).not.toHaveProperty("contextError");
   });
@@ -144,6 +157,51 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
     expect(snapshot.failureRuns).toEqual(legacy.body);
   });
 
+  it("limits an agent's Mine read to tasks the agent may open", async () => {
+    const f = await seed("Agent Mine privacy");
+    const owner = `owner-${randomUUID()}`;
+    const agent = await addAgent(f.companyId);
+    const privateId = randomUUID();
+    const visible = await addTask(f.companyId, owner, { title: "OPEN_OWNER_TASK" });
+    await addTask(f.companyId, owner, {
+      id: privateId, identifier: "AMP-77", title: "PRIVATE_OWNER_TITLE", description: "PRIVATE_OWNER_DESCRIPTION",
+      visibility: "private", privacyRootIssueId: privateId, responsibleUserId: owner,
+    });
+    const app = appFor(null, {}, { type: "agent", agentId: agent.id, companyId: f.companyId, source: "agent_key" });
+
+    await request(app).get(`/api/issues/${privateId}`).expect(404);
+    const res = await request(app).get("/api/agents/me/inbox/mine").query({ userId: owner }).expect(200);
+
+    expect((res.body as Array<{ id: string }>).map(row => row.id)).toEqual([visible.id]);
+    for (const leaked of [privateId, "AMP-77", "PRIVATE_OWNER_TITLE", "PRIVATE_OWNER_DESCRIPTION"]) {
+      expect(JSON.stringify(res.body)).not.toContain(leaked);
+    }
+  });
+
+  it("keeps an agent's assigned private task in its queue only when its responsible user may open it", async () => {
+    const f = await seed("Agent queue privacy");
+    const other = `other-${randomUUID()}`;
+    const agent = await addAgent(f.companyId);
+    const ownId = randomUUID(), otherId = randomUUID();
+    await addTask(f.companyId, f.userId, {
+      id: ownId, title: "OWN_PRIVATE_TASK", visibility: "private", privacyRootIssueId: ownId,
+      responsibleUserId: f.userId, assigneeAgentId: agent.id,
+    });
+    await addTask(f.companyId, other, {
+      id: otherId, title: "OTHER_PRIVATE_TASK", visibility: "private", privacyRootIssueId: otherId,
+      responsibleUserId: other, assigneeAgentId: agent.id,
+    });
+    const app = appFor(null, {}, {
+      type: "agent", agentId: agent.id, companyId: f.companyId, source: "agent_key", onBehalfOfUserId: f.userId,
+    });
+
+    const queue = await request(app).get("/api/agents/me/inbox-lite").expect(200);
+    expect((queue.body as Array<{ id: string }>).map(row => row.id)).toEqual([ownId]);
+    const mine = await request(app).get("/api/agents/me/inbox/mine").query({ userId: f.userId }).expect(200);
+    expect((mine.body as Array<{ id: string }>).map(row => row.id)).toEqual([ownId]);
+    expect(JSON.stringify([queue.body, mine.body])).not.toContain("OTHER_PRIVATE_TASK");
+  });
+
   it("owns the 100-task and 200-run bounds and rejects caller filters or unauthorized identities", async () => {
     const f = await seed("Snapshot bounds");
     const ids = Array.from({ length: 105 }, () => randomUUID());
@@ -170,7 +228,7 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
     await request(appFor(null)).get(`/api/companies/${f.companyId}/inbox/mine`).expect(403);
     await request(appFor(null, {}, { type: "agent", agentId: runAgents[0]!.id, companyId: f.companyId, source: "agent_key" }))
       .get(`/api/companies/${f.companyId}/inbox/mine`).expect(403);
-    await request(appFor(null, {}, { ...f.actor, userId: undefined }))
+    await request(appFor(null, {}, { ...f.actor, userId: undefined } as Express.Request["actor"]))
       .get(`/api/companies/${f.companyId}/inbox/mine`).expect(401);
     await ctx.db.update(companyMemberships).set({ status: "archived" }).where(eq(companyMemberships.principalId, f.userId));
     await request(app).get(`/api/companies/${f.companyId}/inbox/mine`).expect(403);
@@ -284,12 +342,21 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
       release();
       const responses = await Promise.all(requests);
       expect(responses.every(response => response.status === 200)).toBe(true);
-      if (coalesced) expect((await coalesced).headers["x-paperclip-request-cache"]).toBe("coalesced");
-      await request(app).get(snapshotPath).expect(200);
-      const computesBeforeFreshRead = started.mock.calls.length;
-      const fresh = await request(app).get(snapshotPath).expect(200);
+      if (coalesced) {
+        const shared = await coalesced as { headers: Record<string, string> };
+        expect(shared.headers["x-paperclip-request-cache"]).toBe("coalesced");
+        // The coalesced reader reports the shared read's phases, not only its own access check.
+        expect(shared.headers["server-timing"]).toMatch(/inbox_issues;dur=/);
+        expect(shared.headers["server-timing"]).toMatch(/inbox_issues_query;dur=/);
+      }
+      // The aborted snapshot can outlive the seven ordinary reads. A coalesced
+      // response waits for that compute to settle before we require a fresh one.
+      const settled = await request(app).get(snapshotPath).expect(200);
+      const fresh = settled.headers["x-paperclip-request-cache"] === "coalesced"
+        ? await request(app).get(snapshotPath).expect(200)
+        : settled;
       expect(fresh.headers["x-paperclip-request-cache"]).toBe("miss");
-      expect(started).toHaveBeenCalledTimes(computesBeforeFreshRead + 1);
+      expect(started).toHaveBeenCalledTimes(9);
     } finally {
       release();
       await aborted;

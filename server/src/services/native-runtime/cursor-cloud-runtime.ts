@@ -4,8 +4,23 @@ import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { loadConfig } from "../../config.js";
+import { parseObject } from "../../adapters/utils.js";
 import { archiveCursorCloudSessionCheckpoint, CURSOR_CLOUD_DEFAULT_TIMEOUT_MS, type NativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { createRemoteMcpRelayToken, registerRemoteMcpRelay, remoteMcpRelayUrl } from "./remote-mcp-relay.js";
+
+/** Normalize Cursor's terminal evidence before shared Stop authority consumes it. */
+export function isConfirmedCursorCloudTerminalObservation(event: { eventType: string; payload: unknown }): boolean {
+  const payload = parseObject(event.payload), errorCode = parseObject(payload.error).code;
+  // Containment can join an already confirmed provider end. A local failure or
+  // an explicitly unobserved provider end cannot prove remote termination.
+  const confirmedTerminal = (event.eventType === "turn.interrupted" && payload.status === "interrupted")
+    || (event.eventType === "turn.completed" && payload.status === "completed")
+    || (event.eventType === "turn.cancelled" && payload.status === "cancelled"
+      && payload.providerTerminalState === "completed" && payload.reason === "cancelled_after_provider_completed")
+    || (event.eventType === "turn.failed" && payload.status === "failed" && typeof errorCode === "string"
+      && ["cursor_cloud_error", "cursor_cloud_expired"].includes(errorCode));
+  return confirmedTerminal && (payload.providerTerminalObserved === undefined || payload.providerTerminalObserved === true);
+}
 
 export function resolveCursorCloudPublicOrigin(): string | undefined {
   return loadConfig().authPublicBaseUrl;

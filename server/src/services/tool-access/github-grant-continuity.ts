@@ -1,14 +1,15 @@
+import { readConnectionGrantCredentialStates } from "../connection-credentials.js";
 import { randomUUID } from "node:crypto";
 import { notifyGitHubCredentialChange } from "../github-connection-notifications.js";
 import type { ActorInfo } from "./types.js";
 import { loadGitHubGrantMetadata } from "./github-access-discovery.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { measureRunTransaction } from "../execution-transaction-timing.js";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, sql, or, isNull, ne } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, connectionGrants, toolConnections } from "@paperclipai/db";
 import { conflict, HttpError, notFound, unprocessable } from "../../errors.js";
-import { PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../paperclip-cloud-connector.js";
+import { isPaperclipCloudConnectorStrategy, PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../paperclip-cloud-connector.js";
 
 import type { createOAuthGrantRefresh } from "./oauth/grant-refresh.js";
 import type { OAuthCredentialStore } from "./oauth/credential-store.js";
@@ -394,4 +395,64 @@ export function githubGrantContinuityDeadline(
 export function githubContinuityRevision(grant: Pick<typeof connectionGrants.$inferSelect, "providerTenant">): string {
   return JSON.stringify([grant.providerTenant?.oauth?.accessTokenExpiresAt, grant.providerTenant?.oauth?.refreshedAt,
     grant.providerTenant?.github?.lastAccessRefreshAt, grant.providerTenant?.github?.bindingSync?.id]);
+}
+
+export async function readIdleGitHubGrantContinuity(tx: Pick<Db, "select">, now: number,
+  checkBudget: () => void = () => {}) {
+  const rows = await tx.select({ grant: connectionGrants, connection: toolConnections, companyStatus: companies.status })
+    .from(connectionGrants).leftJoin(toolConnections, eq(toolConnections.id, connectionGrants.connectionId))
+    .leftJoin(companies, eq(companies.id, connectionGrants.companyId))
+    .where(and(eq(connectionGrants.status, "active"), sql`${connectionGrants.providerTenant}->'github' IS NOT NULL`,
+      or(isNull(toolConnections.id), ne(toolConnections.companyId, connectionGrants.companyId),
+        sql`${toolConnections.config}->>'sourceTemplateKey' = 'github'`)))
+    .orderBy(connectionGrants.id).limit(10_001);
+  const proof = projectIdleGitHubGrantContinuity(rows, now, checkBudget);
+  if (proof.blocked) return proof;
+  const eligible = new Set(proof.connectionIds);
+  const inputs = rows.flatMap(row => row.connection && eligible.has(row.connection.id)
+    && managedGitHubContinuityConnection(row.connection) === "managed" ? [{ connection: row.connection, grant: row.grant }] : []);
+  const credentials = await readConnectionGrantCredentialStates(tx, inputs, checkBudget);
+  if (!credentials) return { ...proof, blocked: true, connectionIds: [], deadlines: [] };
+  return { ...proof, state: [rows, [...credentials]] };
+}
+function managedGitHubContinuityConnection(connection: typeof toolConnections.$inferSelect): "managed" | "unrelated" | "invalid" {
+  const config = asRecord(connection.config), oauth = asRecord(config.oauth);
+  if (config.sourceTemplateKey !== "github" || connection.authKind !== "oauth"
+    || connection.credentialSource === "vercel_connect") return "unrelated";
+  if (typeof oauth.connectorProfile !== "string" || !oauth.connectorProfile) return "invalid";
+  if (oauth.connectorProfile !== "github.code") return "unrelated";
+  return isPaperclipCloudConnectorStrategy(oauth.strategy) ? "managed" : "invalid";
+}
+export function projectIdleGitHubGrantContinuity(rows: {
+  grant: typeof connectionGrants.$inferSelect;
+  connection: typeof toolConnections.$inferSelect | null;
+  companyStatus: string | null;
+}[], now: number, checkBudget: () => void = () => {}) {
+  const deadlines: number[] = [];
+  const connectionIds = new Set<string>();
+  const blocked = () => ({ blocked: true, state: rows, deadlines: [], connectionIds: [] as string[] });
+  if (rows.length > 10_000) return blocked();
+  for (const { grant, connection, companyStatus } of rows) {
+    checkBudget();
+    if (!connection || connection.companyId !== grant.companyId || !companyStatus
+      || !["active", "paused", "archived"].includes(companyStatus)
+      || !["draft", "active", "disabled", "archived"].includes(connection.status)
+      || !["oauth", "api_key", "none"].includes(connection.authKind)
+      || !["paperclip_vault", "vercel_connect"].includes(connection.credentialSource)) return blocked();
+    if (companyStatus !== "active" || connection.status !== "active" || !connection.enabled) continue;
+    const ownership = managedGitHubContinuityConnection(connection);
+    if (ownership === "invalid") return blocked();
+    if (ownership === "unrelated") continue;
+    if (grant.connectionId !== connection.id || (grant.kind === "user" ? !grant.subjectUserId
+      : grant.kind === "agent" ? !grant.subjectAgentId : true)) return blocked();
+    const oauth = asRecord(grant.providerTenant?.oauth);
+    const github = grant.providerTenant?.github;
+    if (!github || github.bindingSync || github.continuityRetry || oauth.refreshLease) return blocked();
+    const deadline = githubGrantContinuityDeadline(connection, grant);
+    if (deadline === null || !Number.isFinite(deadline) || deadline <= now) return blocked();
+    if (!grant.credentialSecretRefs.some(ref => ref.configPath === "oauth.access_token")) return blocked();
+    deadlines.push(deadline);
+    connectionIds.add(connection.id);
+  }
+  return { blocked: false, state: rows, deadlines, connectionIds: [...connectionIds].sort() };
 }

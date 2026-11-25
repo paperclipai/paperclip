@@ -1,5 +1,7 @@
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue, SelectPopover } from "../../components/ui/select";
 import { AdapterMark } from "../../components/AdapterMark";
+import { createCloudHarnessPolicy } from "@/lib/cloud-harness-policy";
+import { useMemo } from "react";
 import { MuseRunnerConnection } from "../../components/MuseRunnerConnection";
 import { GrokBotConnection } from "../../components/GrokBotConnection";
 import { DotRunnerConnection } from "../../components/DotRunnerConnection";
@@ -83,8 +85,12 @@ export function CodexLocalConfigFields({
   models,
   hideInstructionsFile,
   managedSandboxOnly,
+  availableHarnesses,
   hideRunnerHarness,
 }: AdapterConfigFieldsProps) {
+  const harnessPolicy = useMemo(() => createCloudHarnessPolicy(availableHarnesses), [availableHarnesses]);
+  const allowedAcpxProfiles = PAPERCLIP_RUNNER_ACPX_PROFILES.filter(profile => profile.qualified && harnessPolicy.isCloudRunnerProviderAllowed("acpx", profile.value));
+  const defaultAcpxAgent = allowedAcpxProfiles.find(profile => profile.value === "claude")?.value ?? allowedAcpxProfiles[0]?.value ?? "claude";
   const runnerManaged = adapterType === "paperclip_runner";
   // The execution engine picks which binary runs on the execution host, and the
   // ACP sub-fields below name host paths. The platform-managed environment owns
@@ -149,14 +155,16 @@ export function CodexLocalConfigFields({
       mark("adapterConfig", key, value);
     }
   };
-  const runnerLifecycleMode = runnerManaged
+  // "automatic" stores no lifecycleMode: the server keeps measured local
+  // harnesses warm for the default idle window and runs others turn by turn.
+  const runnerLifecycleMode: "automatic" | "per_turn" | "warm" = runnerManaged
     ? isCreate
-      ? (values!.paperclipRunnerLifecycleMode ?? "per_turn")
+      ? (values!.paperclipRunnerLifecycleMode ?? "automatic")
       : eff(
           "adapterConfig",
           "lifecycleMode",
-          config.lifecycleMode === "warm" ? "warm" : "per_turn",
-        )
+          config.lifecycleMode === "warm" || config.lifecycleMode === "per_turn" ? config.lifecycleMode : "automatic",
+        ) ?? "automatic"
     : "per_turn";
   const runnerIdleTimeoutMs = runnerManaged
     ? resolvePaperclipRunnerIdleTimeoutMs(
@@ -238,6 +246,7 @@ export function CodexLocalConfigFields({
             value={runnerProvider === "acpx" && runnerSchemaValue("acpxAgent", "claude") === "grok" ? "grok" : runnerProvider}
             onValueChange={(value) => {
               const grok = value === "grok";
+              const acpxAgent = grok ? "grok" : defaultAcpxAgent;
               const provider = grok ? "acpx" : isPaperclipRunnerProvider(value)
                 ? value
                 : "codex";
@@ -252,7 +261,7 @@ export function CodexLocalConfigFields({
                     : provider === "aws_agentcore"
                       ? defaultAwsAgentCoreModel
                       : provider === "acpx"
-                        ? grok ? "grok-4.7" : defaultAcpxClaudeModel
+                        ? grok ? "grok-4.7" : acpxAgent === "claude" ? defaultAcpxClaudeModel : ""
                         : provider === "cursor_cloud" ? ""
                         : DEFAULT_CODEX_LOCAL_MODEL;
               if (isCreate) {
@@ -265,7 +274,7 @@ export function CodexLocalConfigFields({
                     acpxSessionMode: undefined,
                     piThinkingLevel: undefined,
                     ...(provider === "cursor_cloud" ? { ...Object.fromEntries(cloudResetKeys.map(key => [key, undefined])), lifecycleMode: "per_turn" } : {}),
-                    ...(provider === "acpx" ? { acpxAgent: grok ? "grok" : "claude" } : {}),
+                    ...(provider === "acpx" ? { acpxAgent, acpxSessionMode: acpxAgent === "cursor" ? "agent" : undefined, piThinkingLevel: acpxAgent === "pi" ? "low" : undefined } : {}),
                   },
                 });
               } else {
@@ -278,7 +287,9 @@ export function CodexLocalConfigFields({
                   for (const key of ["cwd", "env", "instructionsFilePath", "command", "extraArgs", "engine", "modelReasoningEffort", "workspaceStrategy", "workspaceRuntime", "idleTimeoutMs", "acpxAgent", "managedProfileId", "agentCoreProfileId"]) mark("adapterConfig", key, undefined);
                 }
                 if (provider === "acpx") {
-                  mark("adapterConfig", "acpxAgent", grok ? "grok" : "claude");
+                  mark("adapterConfig", "acpxAgent", acpxAgent);
+                  mark("adapterConfig", "acpxSessionMode", acpxAgent === "cursor" ? "agent" : undefined);
+                  mark("adapterConfig", "piThinkingLevel", acpxAgent === "pi" ? "low" : undefined);
                 }
                 if (provider === "cursor_cloud") {
                   mark("adapterConfig", "lifecycleMode", "per_turn");
@@ -290,7 +301,7 @@ export function CodexLocalConfigFields({
             <SelectTrigger className="w-full" aria-label="Harness"><SelectValue /></SelectTrigger>
             <SelectContent>
               {!isPaperclipRunnerProvider(runnerProvider) && <SelectItem value={runnerProvider} disabled>{runnerProvider} (unknown provider)</SelectItem>}
-              {runnerHarnessOptions.map((option) => (
+              {runnerHarnessOptions.filter(option => option.value === "acpx" ? !harnessPolicy.restricted || allowedAcpxProfiles.length > 0 : harnessPolicy.isCloudRunnerProviderAllowed(option.value)).map((option) => (
                 <SelectItem key={option.value} value={option.value}>
                   <AdapterMark type={option.adapter} className="size-4" />
                   {option.label}
@@ -302,7 +313,7 @@ export function CodexLocalConfigFields({
       )}
       {runnerManaged && runnerProvider === "grok_bot" && <GrokBotConnection companyId={companyId} agentId={agentId} />}
       {runnerManaged && isCursorCloud && <>
-        <p className="text-sm text-muted-foreground">Experimental. Runs in Cursor Cloud and requires a local Paperclip computer. Cursor manages command permissions; effective model identity is unavailable. Agent environment settings support only CURSOR_API_KEY. Configure hosted secrets in your Cursor Cloud environment.</p>
+        <p className="text-sm text-muted-foreground">Experimental. Cursor hosts this agent’s execution environment. A Paperclip computer is not required. Cursor manages command permissions; effective model identity is unavailable. Agent environment settings support only CURSOR_API_KEY. Configure hosted secrets in your Cursor Cloud environment.</p>
         {[
           { key: "repoUrl", label: "GitHub repository", fallback: "", legacy: undefined, placeholder: "https://github.com/your-org/repo", hint: "Select a repository or a named Cursor cloud environment." },
           { key: "repoRef", label: "Starting ref", fallback: config.repoStartingRef ?? "", legacy: "repoStartingRef", placeholder: "Repository default" },
@@ -355,7 +366,7 @@ export function CodexLocalConfigFields({
             }}>
             <SelectTrigger className="w-full" aria-label="ACP agent"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {PAPERCLIP_RUNNER_ACPX_PROFILES.map(profile => (
+              {PAPERCLIP_RUNNER_ACPX_PROFILES.filter(profile => !harnessPolicy.restricted || (profile.qualified && harnessPolicy.isCloudRunnerProviderAllowed("acpx", profile.value))).map(profile => (
                 <SelectItem key={profile.value} value={profile.value} disabled={!profile.qualified}>
                   <AdapterMark type={profile.value === "cursor" ? "cursor" : `${profile.value}_local`} className="size-4" />
                   {profile.label}{profile.qualified ? "" : " — qualification pending"}
@@ -585,18 +596,19 @@ export function CodexLocalConfigFields({
       {runnerManaged && !isExternal && !isCursorCloud && (
         <Field configSection="runPolicy"
           label="Runner lifecycle"
-          hint="Turn by turn suspends after each run. Warm keeps the same provider process available between governed runs."
+          hint="Automatic keeps Codex and OpenCode warm on this computer for 5 minutes after a run, so a follow-up starts faster, and runs other harnesses turn by turn. Turn by turn suspends after each run. Warm keeps the same provider process available between governed runs."
         >
           <SelectPopover
             aria-label="Runner lifecycle"
             value={runnerLifecycleMode}
             onValueChange={(next) => {
-              const value = next === "warm" ? "warm" : "per_turn";
+              const value = next === "warm" || next === "per_turn" ? next : undefined;
               isCreate
                 ? set!({ paperclipRunnerLifecycleMode: value })
                 : mark("adapterConfig", "lifecycleMode", value);
             }}
             options={[
+              { value: "automatic", label: "Automatic" },
               { value: "per_turn", label: "Turn by turn" },
               { value: "warm", label: "Warm session" },
             ]}

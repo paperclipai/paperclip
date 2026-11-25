@@ -8,6 +8,8 @@ import { sendAgentChatMessage } from "../services/agent-chat-messages.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
+import * as issueServices from "../services/issues.js";
+import { agentService } from "../services/agents.js";
 import { activityService } from "../services/activity.js";
 import { recordAcceptedChatHandoff } from "../services/chat-completion-delivery.js";
 import { conversationReplay, deliverConversationComments, undeliveredConversationComments } from "../services/agent-conversations.js";
@@ -52,6 +54,72 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     action: "issue.cross_issue_influence_observed", entityType: "issue", entityId: f.issueId,
     details: { kind: ["comment", "update", "interaction_resolution"][index % 3] },
   })));
+  const waitForBlockedBy = (pid: number) => expect.poll(async () => {
+    const [state] = await server.db.execute<{ waiting: boolean }>(sql`select exists (
+      select 1 from pg_stat_activity where datname = current_database() and ${pid} = any(pg_blocking_pids(pid))
+    ) as waiting`);
+    return state.waiting;
+  }).toBe(true);
+
+  it("commits a rename and a proactive message contending for an existing chat", async () => {
+    const f = await fixture(), chat = (await send(f))!;
+    const held = Promise.withResolvers<number>(), resume = Promise.withResolvers<void>();
+    const body = "A message sent while its agent is renamed";
+    const delivery = sendAgentChatMessage(server.db, f, { body, idempotencyKey: "concurrent-rename" }, {
+      authorizeNative: async tx => {
+        const [backend] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+        held.resolve(backend.pid);
+        await resume.promise;
+      },
+    });
+    const pid = await Promise.race([held.promise, delivery.then(() => { throw new Error("Delivery ended before taking chat locks"); })]);
+    const rename = agentService(server.db).update(f.agentId, { name: "Renamed message sender" });
+    const outcomes = Promise.allSettled([delivery, rename]);
+    try {
+      await waitForBlockedBy(pid);
+    } finally {
+      resume.resolve();
+      await outcomes;
+    }
+    const settled = await outcomes;
+    const failures = settled.filter(result => result.status === "rejected").map(result =>
+      `${result.reason?.cause?.code ?? result.reason?.code}: ${result.reason?.cause?.message ?? result.reason?.message}`);
+    expect(settled, failures.join("\n")).toMatchObject([{ status: "fulfilled" }, { status: "fulfilled" }]);
+    expect((await issueService(server.db).getById(chat.conversationId))?.title).toBe("Chat with Renamed message sender");
+    expect(await server.db.select({ body: issueComments.body }).from(issueComments).where(eq(issueComments.issueId, chat.conversationId)))
+      .toContainEqual({ body });
+  });
+
+  it("serializes a rename with proactive chat creation and retains the current title", async () => {
+    const f = await fixture();
+    const reached = Promise.withResolvers<number>(), resume = Promise.withResolvers<void>();
+    const realIssueService = issueServices.issueService;
+    const spy = vi.spyOn(issueServices, "issueService").mockImplementation(database => {
+      const service = realIssueService(database);
+      return { ...service, create: async (companyId, data, transaction) => {
+        if (data.conversationAgentId === f.agentId) {
+          const [backend] = await database.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+          reached.resolve(backend.pid);
+          await resume.promise;
+        }
+        return service.create(companyId, data, transaction);
+      } };
+    });
+    const delivery = send(f);
+    const pid = await Promise.race([reached.promise, delivery.then(() => { throw new Error("Delivery ended before chat creation"); })]);
+    const rename = agentService(server.db).update(f.agentId, { name: "Renamed chat sender" });
+    const outcomes = Promise.allSettled([delivery, rename]);
+    try {
+      await waitForBlockedBy(pid);
+    } finally {
+      resume.resolve();
+      spy.mockRestore();
+      await outcomes;
+    }
+    expect(await outcomes).toMatchObject([{ status: "fulfilled" }, { status: "fulfilled" }]);
+    const receipt = (await delivery)!;
+    expect((await issueService(server.db).getById(receipt.conversationId))?.title).toBe("Chat with Renamed chat sender");
+  });
 
   it.each(["native", "http"])("enforces the shared run cap for %s delivery without creating an empty chat", async transport => {
     const f = await fixture();
@@ -147,7 +215,7 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     const locked = new Promise<number>(resolve => { ready = resolve; });
     const release = new Promise<void>(resolve => { unlock = resolve; });
     const gate = server.db.transaction(async tx => {
-      const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid() as pid`);
+      const [{ pid }] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
       await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, receipt.conversationId)).for("update");
       ready(pid); await release;
     });
@@ -263,7 +331,7 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     const locked = new Promise<number>(resolve => { ready = resolve; });
     const release = new Promise<void>(resolve => { unlock = resolve; });
     const gate = server.db.transaction(async tx => {
-      const [{ pid }] = await tx.execute(sql<{ pid: number }>`select pg_backend_pid() as pid`);
+      const [{ pid }] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
       await tx.select({ id: agents.id }).from(agents).where(eq(agents.id, f.agentId)).for("update");
       ready(pid);
       await release;
@@ -369,11 +437,11 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     expect((await f.snapshot()).issues.filter(i => i.conversationAgentId)).toHaveLength(0);
   });
 
-  it("rejects forged destinations and server-owned provenance, and respects the feature gate", async () => {
+  it("rejects forged destinations and server-owned provenance while ignoring the retired flag", async () => {
     const f = await fixture();
     expect((await httpSend(f, { ...input, agentId: f.agentId })).status).toBe(400);
     await instanceSettingsService(server.db).updateExperimental({ enableAgentChat: false });
-    try { expect((await httpSend(f)).status).toBe(404); }
+    try { expect((await httpSend(f)).status).toBe(201); }
     finally { await instanceSettingsService(server.db).updateExperimental({ enableAgentChat: true }); }
     const receipt = await send(f);
     const [comment] = await server.db.select().from(issueComments).where(eq(issueComments.id, receipt!.commentId));
@@ -386,20 +454,35 @@ import { recoveryPostgresSupport as support } from "./helpers/recovery-postgres.
     await server.db.update(issueComments).set({ createdAt: sql`'2026-10-30 12:00:00.123456+00'::timestamptz` }).where(eq(issueComments.id, a.commentId));
     await server.db.update(issueComments).set({ createdAt: sql`'2026-10-30 12:00:00.123789+00'::timestamptz` }).where(eq(issueComments.id, b.commentId));
     const cookie = await server.humanSession(f.responsibleUserId!);
+    await server.db.insert(issueComments).values([
+      { companyId: f.companyId, issueId: a.conversationId, authorUserId: f.responsibleUserId, authorType: "user", body: "Human message" },
+      { companyId: f.companyId, issueId: a.conversationId, authorAgentId: f.agentId, authorType: "system", body: "System message" },
+      { companyId: f.companyId, issueId: a.conversationId, authorAgentId: f.agentId, body: "Deleted message", deletedAt: new Date() },
+      { companyId: f.companyId, issueId: a.conversationId, authorAgentId: f.agentId, body: "Receipt", origin: "fast_response" },
+      { companyId: f.companyId, issueId: a.conversationId, authorAgentId: f.agentId, body: "Notice", presentation: { kind: "system_notice", tone: "neutral", detailsDefaultOpen: false } },
+    ]);
     const mark = (id: string) => fetch(`${server.apiUrl}/api/issues/${a.conversationId}/read`, { method: "POST", headers: { Cookie: cookie, Origin: server.apiUrl, "Content-Type": "application/json" }, body: JSON.stringify({ throughCommentId: id }) });
-    const unread = async () => (await withConversationReadState(server.db, f.companyId, f.responsibleUserId!, [{ id: a.conversationId }]))[0].isUnreadForMe;
+    const unread = async () => (await withConversationReadState(server.db, f.companyId, f.responsibleUserId!, [{ id: a.conversationId }]))[0];
+    expect(await unread()).toMatchObject({ isUnreadForMe: true, unreadMessageCount: 2 });
     const response = await mark(a.commentId);
     expect(response.status, await response.text()).toBe(200);
-    expect(await unread()).toBe(true);
+    expect(await unread()).toMatchObject({ isUnreadForMe: true, unreadMessageCount: 1 });
     expect((await mark(b.commentId)).status).toBe(200);
-    expect(await unread()).toBe(false);
+    expect(await unread()).toMatchObject({ isUnreadForMe: false, unreadMessageCount: 0 });
+    expect(await withConversationReadState(server.db, f.companyId, randomUUID(), [{ id: a.conversationId }, { id: f.issueId }]))
+      .toMatchObject([{ unreadMessageCount: 2, isUnreadForMe: true }, { unreadMessageCount: 0, isUnreadForMe: false }]);
+    expect(await withConversationReadState(server.db, randomUUID(), f.responsibleUserId!, [{ id: a.conversationId }]))
+      .toMatchObject([{ unreadMessageCount: 0, isUnreadForMe: false }]);
     await mark(a.commentId);
-    expect(await unread()).toBe(false);
+    expect(await unread()).toMatchObject({ isUnreadForMe: false, unreadMessageCount: 0 });
     const foreign = await server.fixture({ connectionScenario: "fresh" });
     const foreignMessage = (await send(foreign))!;
     expect((await mark(foreignMessage.commentId)).status).toBe(404);
     const chats = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/chats`, { headers: { Cookie: cookie } });
     expect(chats.status).toBe(200);
-    expect(await chats.json()).toMatchObject([{ id: a.conversationId, isUnreadForMe: false }]);
+    expect(await chats.json()).toMatchObject([{ id: a.conversationId, isUnreadForMe: false, unreadMessageCount: 0 }]);
+    const detail = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/chats/${f.agentId}`, { headers: { Cookie: cookie } });
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({ id: a.conversationId, unreadMessageCount: 0 });
   });
 });

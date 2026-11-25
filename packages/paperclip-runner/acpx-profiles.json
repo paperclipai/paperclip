@@ -1,16 +1,16 @@
 {
   "schema": "paperclip.acpx-profiles.v1",
-  "acpxVersion": "0.13.1",
+  "acpxVersion": "0.22.0",
   "driverKind": "acpx_runtime",
   "protocolVersion": 1,
   "profiles": {
     "antigravity": {
       "agentProfileVersion": 1,
       "agentServerPackage": "native:antigravity-acp",
-      "agentServerVersion": "1.4.3",
+      "agentServerVersion": "1.5.2",
       "agentRuntimePackage": "native:antigravity-localharness",
-      "agentRuntimeVersion": "1.4.3",
-      "commandDigest": "sha256:acf5f574b6b9ec4388ff9d081890caa330e66bf1ae3fe3b08e7f0fb0e851b9ce",
+      "agentRuntimeVersion": "1.5.2",
+      "commandDigest": "sha256:61ac14bf03ce4bbf8afe1f5a263b854517ec588d8407fe2d8f17c9fc0c037c4b",
       "requiresProviderPolicy": true,
       "qualificationStatus": "pending"
     },
@@ -55,7 +55,7 @@
       "agentServerPackage": "@agentclientprotocol/claude-agent-acp",
       "agentServerVersion": "0.73.0",
       "agentRuntimePackage": "@anthropic-ai/claude-agent-sdk",
-      "agentRuntimeVersion": "0.3.286",
+      "agentRuntimeVersion": "0.3.328",
       "commandDigest": "sha256:9d73d1f0f121fb96cc8badb28c22d5bff02d8582eb2e40360a81c189e1b9422a",
       "requiresProviderPolicy": false
     },
@@ -64,7 +64,7 @@
       "agentServerPackage": "@agentclientprotocol/codex-acp",
       "agentServerVersion": "1.6.2",
       "agentRuntimePackage": "@openai/codex",
-      "agentRuntimeVersion": "0.160.0",
+      "agentRuntimeVersion": "0.170.0",
       "commandDigest": "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc",
       "requiresProviderPolicy": false
     },

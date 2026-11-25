@@ -63,7 +63,7 @@ const credential = live ? process.env.OP_SERVICE_ACCOUNT_TOKEN! : "ops_fixture-c
     const [company] = await db.insert(companies).values({ name: "1Password connector test", issuePrefix: `OP${randomUUID().slice(0, 6)}` }).returning();
     await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: actor.actorId, membershipRole: "admin", status: "active" });
     const service = toolAccessService(db, { deploymentMode: "authenticated" });
-    const connected = await service.connectGalleryApp(company.id, { galleryKey: "1password", methodKey: "service-account",
+    const connected = await service.connectGalleryApp(company.id, { galleryKey: "1password", connectionMethodKey: "service-account",
       ...(personal ? { grantKind: "user" as const } : {}), credentialValues: { "credentials.authorization": credential } }, actor);
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Vault test agent", role: "engineer", adapterType: "process" }).returning();
     await service.finishGalleryAppConnection(company.id, connected.connectionId, {
@@ -81,7 +81,7 @@ const credential = live ? process.env.OP_SERVICE_ACCOUNT_TOKEN! : "ops_fixture-c
       if (!tool) throw new Error(`Missing reviewed tool: ${name}`);
       const output = await gateway.executeTool({ sessionToken: session.token, tool: tool.name, parameters, idempotencyKey: randomUUID() });
       expect(JSON.stringify(output).includes(credential)).toBe(false);
-      return output;
+      return output as { result?: { data?: { structuredContent?: unknown } } };
     };
     return { company, service, connected, agent, run, issue, gateway, session, tools, call };
   }

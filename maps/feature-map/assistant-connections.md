@@ -48,7 +48,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `apps-setup`
 
-Automated: [Assistant setup UI](../../ui/src/pages/apps/AssistantConnection.test.tsx) covers mocked invitation, setup, status, and revocation. [Client metadata](../../server/src/__tests__/public-mcp-client-metadata.test.ts) and [MCP routes](../../server/src/__tests__/public-mcp.test.ts) cover configured origins, metadata, and identity restrictions. They do not prove setup in an external client.
+Automated: [Client metadata](../../server/src/__tests__/public-mcp-client-metadata.test.ts) and [MCP routes](../../server/src/__tests__/public-mcp.test.ts) cover configured origins, metadata, and identity restrictions (mocked `AssistantConnection` UI tests were removed; verify setup UI manually). They do not prove setup in an external client.
 
 Manual: Open the Apps card as the intended signed-in person, copy the invitation, and verify the exact configured resource and company hint without embedded credentials. Follow manual instructions in an owned MCP client and proceed through the separate consent journey. Reload Apps to inspect connection status. Check signed-out, unconfigured-origin, and disabled experimental states; never substitute a guessed server URL or local implicit identity. Verify public instructions and authenticated setup metadata have their documented access boundaries.
 
@@ -80,7 +80,7 @@ Sources: [MCP capabilities](../../server/src/services/public-mcp/capabilities.ts
 
 ### `manage-connections`
 
-Automated: [Apps management UI](../../ui/src/pages/apps/AssistantConnection.test.tsx) covers mocked current-company controls, and [public MCP integration](../../server/src/__tests__/public-mcp.test.ts) covers persisted own-grant/token revocation. These component tests do not cover the account-wide `/assistant-connections` page or a real remote assistant after revocation.
+Automated: [public MCP integration](../../server/src/__tests__/public-mcp.test.ts) covers persisted own-grant/token revocation (mocked `AssistantConnection` UI tests were removed; neither current-company UI controls nor the account-wide `/assistant-connections` page or a real remote assistant after revocation are covered by UI unit tests).
 
 Manual: First prove a harmless read using a personal client grant. Revoke that grant in the browser, reload its list, and retry the exact same credential: the remote call must fail. As a second person, confirm their grant remains usable. Attempt removal using another person’s grant ID; the API may return a harmless no-op, so verify that person’s grant is unchanged rather than demanding a specific error. Disable Assistant connections and confirm tool calls stop while signed-in list/revoke management remains reachable. Observe any work already delegated before revocation through its ordinary task controls; revocation does not cancel it.
 

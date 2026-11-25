@@ -18,6 +18,8 @@ export type DevServerHealthStatus = {
 };
 
 export type CloudInstanceHealthStatus = {
+  /** Operator-supplied harness IDs. Absent means unrestricted; [] allows none. */
+  availableHarnesses?: string[];
   managed: true;
   managedBy: "paperclip-cloud";
   stackSlug: string | null;

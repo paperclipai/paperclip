@@ -65,8 +65,9 @@ Local service control is not agent company authority.
 Historical Cloud sandbox cleanup remains server-owned. Cleanup-only absence
 reads authenticate the tenant host with its server capability; they expose no
 new board or agent endpoint. Their signed scope cannot authorize task recovery.
-[Runtime and idle-gate regressions](../../server/src/__tests__/historical-cleanup-verification.test.ts)
-cover reconciliation, while [receipt checks](../../server/src/services/sandbox-absence-proof.test.ts)
+[Idle sleep safety regressions](../../server/src/__tests__/idle-sleep-safety.test.ts)
+cover idle-gate safety,
+while [receipt checks](../../server/src/services/sandbox-absence-proof.test.ts)
 cover signature, identity, freshness and separation from recovery authority.
 These checks do not establish a deployed sleep/wake result.
 
@@ -125,9 +126,8 @@ not agent-accessible REST capabilities. They require the managed environment and
 database operator access. The [command](../../server/src/qualify-cloud-configuration.ts)
 composes transaction-safe owner seeds and writes a private receipt. Every
 qualification rereads current revisions and image package evidence; a completed
-historical receipt grants no deployment or execution authority. [PostgreSQL coverage](../../server/src/__tests__/cloud-configuration-migration-postgres.test.ts)
-uses independent clients, lost-home reconstruction, a real replacement fixture
-worker, rollback/retry, and durable blockers. [Reader coverage](../../server/src/__tests__/cloud-configuration-readers.test.ts)
+historical receipt grants no deployment or execution authority.
+[Reader coverage](../../server/src/__tests__/cloud-configuration-readers.test.ts)
 checks bounded sources and pnpm-style link integrity. These are local fixtures;
 see the [scope and operator procedure](../../doc/cloud-configuration-migration.md).
 
@@ -168,6 +168,22 @@ API: `present` — representative operation IDs:
   status remains an in-memory read. [Route coverage](../../server/src/__tests__/instance-settings-routes.test.ts)
   and [PostgreSQL coverage](../../server/src/services/heartbeat/upgrade-readiness.test.ts)
   establish this local boundary; hosted active-run continuity requires separate proof.
+- `GET /api/instance/task-drain?idleSleepSafety=1` — the negotiated incoming-wake
+  extension requires a verified stack/action/owner-scoped Cloud control capability;
+  query parameters and tenant credentials cannot grant it. Its version-3 proof
+  permits only saved API keys and exactly bound brokered GitHub bot configuration.
+  Agent and board API requests authenticate under current tenant authority after
+  bounded host wake. Personal GitHub also requires the signed domain deadline
+  receipt and its actual stored-credential continuity proof. See [protocol scope](../../doc/idle-incoming-wake.md)
+  and [local auth/PostgreSQL evidence](../../server/src/__tests__/idle-incoming-wake.test.ts).
+- `GET /api/instance/task-drain?idleSleepSafety=1&scheduledWake=domain-deadlines-v1`
+  additionally requires the signed fixed deadline catalog. The version-3
+  `deadlineProof` receipt is mandatory even without a future alarm. It binds
+  actual timer, plugin, trace expiry and credential continuity state to the
+  owned hold. Unknown/due/recovery work and pending watchdog/merge polling
+  remain blocked. It grants no business execution authority. See
+  [domain protocol](../../doc/idle-domain-deadlines.md); local source and
+  fixture checks do not establish deployed sleep or external wake.
 - `GET /api/ready` and `HEAD /api/ready` — public deployment readiness only;
   200 after recovery, 503 while starting, recovering, or draining. No SQL,
   session resolution, company identity, or control authority.

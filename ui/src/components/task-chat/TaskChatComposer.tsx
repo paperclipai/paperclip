@@ -1,4 +1,6 @@
+import { createUuid } from "@/lib/uuid";
 import { useCurrentAccountGuard } from "@/hooks/useAccountBoundMutation";
+import { ComposerFileDropTarget } from "./ComposerFileDropTarget";
 import { AgentAvatar } from "../AgentAvatar";
 import {
   useEffect,
@@ -12,6 +14,7 @@ import {
 import { cn } from "@/lib/utils";
 import { taskChatComposerSurfaceClasses } from "./composer-surface";
 import { useComposerStop } from "@/hooks/useComposerStop";
+import { useComposerSubmitKey } from "@/hooks/useComposerSubmitKey";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import {
   DRAFT_DEBOUNCE_MS,
@@ -69,6 +72,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { IssueAttachment, IssueWorkMode } from "@paperclipai/shared";
 import type { RunnerGoalCapability } from "@paperclipai/shared";
+import { SWARM_REQUEST_MAX_CHARS } from "@paperclipai/shared";
+import { parseRunnerGoalCommand, parseSwarmCommand, planSubmission, swarmRunSettingsRefusal, type RunnerGoalComposerCommand } from "./composer-commands";
 import type { ActionCommandOption } from "@/context/EditorAutocompleteContext";
 import { TaskChatComposerTakeoverActionsContext } from "./TaskChatComposerTakeoverContext";
 
@@ -111,6 +116,8 @@ interface TaskChatComposerProps {
     attachmentIds?: string[],
     clientRequestId?: string,
     runSettings?: ComposerRunSettings,
+    /** A native command the user started with a leading `/name`; only "swarm" exists. */
+    nativeCommand?: "swarm",
   ) => Promise<void> | void;
   /** New tasks share the editor and controls, but retain their draft until creation succeeds. */
   creation?: {
@@ -134,6 +141,7 @@ interface TaskChatComposerProps {
   };
   confirmedSubmissionIds?: ReadonlySet<string>;
   onStop?: () => Promise<void>;
+  confirmedStoppedRunIds?: ReadonlySet<string>;
   stopPending?: boolean;
   stopScope?: "leaf" | "subtree";
   workMode: IssueWorkMode;
@@ -185,68 +193,8 @@ interface TaskChatComposerProps {
   ) => Promise<void> | void;
 }
 
-export type RunnerGoalComposerCommand =
-  | { action: "focus" }
-  | { action: "create"; objective: string }
-  | { action: "edit" }
-  | { action: "pause" }
-  | { action: "resume" }
-  | { action: "clear" };
-
-export type ParsedRunnerGoalCommand =
-  | { matched: false }
-  | { matched: true; command: RunnerGoalComposerCommand }
-  | { matched: true; error: string };
-
-function normalizeRunnerGoalCommandText(value: string): string {
-  const trimmed = value.trim();
-  // MDXEditor's link extension can reinterpret a selected action command plus
-  // its subsequently typed argument as one relative autolink. Accept only the
-  // exact whole-document shape it generates so the action still cannot fall
-  // through as a comment. Ordinary Markdown links remain ordinary comments.
-  const relativeAutolink = trimmed.match(
-    /^\[\/(?:go(?:al)?)?[ \t\u00a0]*\]\(<(\/goal(?:[ \t\u00a0].*)?)>\)$/s,
-  );
-  if (relativeAutolink) return relativeAutolink[1]!.replaceAll("\u00a0", " ");
-
-  const encodedAutolink = trimmed.match(
-    /^\[\/(?:go(?:al)?)?[ \t\u00a0]*\]\((\/goal(?:%20|%C2%A0).*)\)$/s,
-  );
-  if (encodedAutolink) {
-    try {
-      return decodeURIComponent(encodedAutolink[1]!).replaceAll("\u00a0", " ");
-    } catch {
-      return trimmed;
-    }
-  }
-  return trimmed.replaceAll("\u00a0", " ");
-}
-
-export function parseRunnerGoalCommand(value: string): ParsedRunnerGoalCommand {
-  const trimmed = normalizeRunnerGoalCommandText(value);
-  if (!trimmed) return { matched: false };
-  const firstWhitespace = trimmed.search(/\s/);
-  const firstToken =
-    firstWhitespace === -1 ? trimmed : trimmed.slice(0, firstWhitespace);
-  if (firstToken !== "/goal") return { matched: false };
-  const remainder =
-    firstWhitespace === -1 ? "" : trimmed.slice(firstWhitespace).trim();
-  if (!remainder) return { matched: true, command: { action: "focus" } };
-  const [subcommand, ...extra] = remainder.split(/\s+/);
-  if (["edit", "pause", "resume", "clear"].includes(subcommand)) {
-    if (extra.length > 0) {
-      return {
-        matched: true,
-        error: `/goal ${subcommand} does not accept extra arguments.`,
-      };
-    }
-    return {
-      matched: true,
-      command: { action: subcommand as "edit" | "pause" | "resume" | "clear" },
-    };
-  }
-  return { matched: true, command: { action: "create", objective: remainder } };
-}
+export { parsePlanCommand, parseRunnerGoalCommand } from "./composer-commands";
+export type { ParsedRunnerGoalCommand, RunnerGoalComposerCommand } from "./composer-commands";
 
 function identityInitials(label: string): string {
   const parts = label.trim().split(/\s+/).filter(Boolean);
@@ -318,7 +266,7 @@ function modePlaceholder(mode: IssueWorkMode, agentName: string, mobile: boolean
   if (mobile) {
     if (mode === "planning") return `Plan with ${agentName}…`;
     if (mode === "ask") return `Ask ${agentName}…`;
-    return `Message ${agentName}…`;
+    return `Work with ${agentName}`;
   }
   switch (mode) {
     case "planning":
@@ -326,7 +274,7 @@ function modePlaceholder(mode: IssueWorkMode, agentName: string, mobile: boolean
     case "ask":
       return `Ask ${agentName} a question — read-only, nothing runs…`;
     default:
-      return `Message ${agentName} — describe what you want done…`;
+      return `Work with ${agentName}`;
   }
 }
 
@@ -351,7 +299,7 @@ type ComposerAttachment = {
 type QueuedEditBackup = {
   body: string;
   attachments: ComposerAttachment[];
-  pendingMode: IssueWorkMode;
+  pendingMode: IssueWorkMode | null;
   pendingAssignee: string | null;
 };
 
@@ -389,6 +337,7 @@ export function TaskChatComposer({
   creation,
   confirmedSubmissionIds,
   onStop,
+  confirmedStoppedRunIds,
   stopPending = false,
   workMode,
   onWorkModeChange,
@@ -423,7 +372,8 @@ export function TaskChatComposer({
   onRunnerGoalReassign,
 }: TaskChatComposerProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
-  const stopControl = useComposerStop(onStop, stopPending);
+  const submitKey = useComposerSubmitKey();
+  const stopControl = useComposerStop(onStop, stopPending, confirmedStoppedRunIds);
   const [localBody, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const body = creation ? creation.value : localBody;
   const [submitting, setSubmitting] = useState(false);
@@ -446,8 +396,10 @@ export function TaskChatComposer({
     useState<HTMLElement | null>(null);
   const [takeoverControlsSlot, setTakeoverControlsSlot] =
     useState<HTMLElement | null>(null);
-  const [localPendingMode, setPendingMode] = useState<IssueWorkMode>(workMode);
-  const pendingMode = creation ? workMode : localPendingMode;
+  const [pendingModeOverride, setPendingMode] = useState<IssueWorkMode | null>(null);
+  const modeChoiceGeneration = useRef(0);
+  const sentModeChoice = useRef<{ attemptId: string; generation: number } | null>(null);
+  const pendingMode = creation ? workMode : pendingModeOverride ?? workMode;
   const [pendingAssignee, setPendingAssignee] = useState<string | null>(null);
   const coordinator = useCoordinatorPresentation();
   const [localRunSettings, setLocalRunSettings] = useState<ComposerRunSettings | null>(null);
@@ -466,6 +418,9 @@ export function TaskChatComposer({
         : [],
   );
   const attachmentsRef = useRef(attachments);
+  // Keep upload receipts durable while the optimistic message owns the preview.
+  // A rejected or uncertain send returns these same attachments to the draft.
+  const [sendingAttachmentIds, setSendingAttachmentIds] = useState<ReadonlySet<string> | null>(null);
   function setAttachments(
     update:
       | ComposerAttachment[]
@@ -542,13 +497,15 @@ export function TaskChatComposer({
     const previousId = previousQueuedEditIdRef.current;
     const nextEdit = queuedEdit;
     const nextId = nextEdit?.commentId ?? null;
+    // A save error belongs to the edit that produced it.
+    if (previousId !== nextId) setActionError(null);
 
     if (nextEdit && previousId !== nextId) {
       if (!queuedEditBackupRef.current) {
         queuedEditBackupRef.current = {
           body: bodyRef.current,
           attachments: attachmentsRef.current,
-          pendingMode,
+          pendingMode: pendingModeOverride,
           pendingAssignee: pendingAssigneeRef.current,
         };
         if (draftKey) saveDraft(draftKey, bodyRef.current);
@@ -576,7 +533,7 @@ export function TaskChatComposer({
     }
 
     previousQueuedEditIdRef.current = nextId;
-  }, [draftKey, pendingMode, queuedEdit]);
+  }, [draftKey, pendingModeOverride, queuedEdit]);
 
   useEffect(() => {
     if (!draftKey || queuedEdit) return;
@@ -668,6 +625,14 @@ export function TaskChatComposer({
   const effectivePlaceholder = queuedEdit
     ? "Edit queued message…"
     : (placeholder ?? modePlaceholder(pendingMode, assigneeName, mobile));
+  const planCommandOption: ActionCommandOption = {
+    id: "action:plan",
+    kind: "action",
+    command: "plan",
+    name: "Plan",
+    description: "Plan before acting. Nothing changes until you accept the plan.",
+    aliases: ["plan", "planning"],
+  };
   const goalUnavailable = runnerGoalCapability?.availability !== "available";
   const goalCommandOption: ActionCommandOption = {
     id: "action:goal",
@@ -696,12 +661,20 @@ export function TaskChatComposer({
   }
 
   function changeMode(mode: IssueWorkMode) {
+    modeChoiceGeneration.current += 1;
     setPendingMode(mode);
     if (creation) void onWorkModeChange?.(mode);
   }
 
+  function settleSentMode(attemptId: string) {
+    const choice = sentModeChoice.current;
+    if (choice?.attemptId !== attemptId) return;
+    if (modeChoiceGeneration.current === choice.generation) setPendingMode(null);
+    sentModeChoice.current = null;
+  }
+
   async function uploadImage(file: File): Promise<string> {
-    const id = crypto.randomUUID();
+    const id = createUuid();
     setAttachments((prev) => [
       ...prev,
       {
@@ -864,8 +837,9 @@ export function TaskChatComposer({
   const attachedRefs = attachments.filter(
     (item) => item.status === "attached" && item.contentPath && !item.inline,
   );
-  const imageAttachments = attachments.filter(item => isImage(item) && !item.inline);
-  const visibleAttachments = attachments.filter(
+  const draftAttachments = attachments.filter(item => !sendingAttachmentIds?.has(item.id));
+  const imageAttachments = draftAttachments.filter(item => isImage(item) && !item.inline);
+  const visibleAttachments = draftAttachments.filter(
     (item) => (!item.inline || item.status !== "attached") && !isImage(item),
   );
   // Sending mid-upload would silently drop the pending file from the comment;
@@ -893,12 +867,27 @@ export function TaskChatComposer({
   async function submit() {
     if (disabled || (pause && !canResetPausedConversation)) return;
     if (creation) {
+      // A swarm is started from a comment on an existing task; never create an ordinary task from it.
+      if (parseSwarmCommand(bodyRef.current)) {
+        setActionError("Create the task first, then send /swarm in a comment on it.");
+        return;
+      }
+      // Only a composer that offers Plan mode reads /plan; elsewhere it stays text.
+      const plan = onWorkModeChange
+        ? planSubmission(bodyRef.current, Boolean(creation.canSubmitWithoutBody && creation.images?.length))
+        : ({ kind: "none" } as const);
+      if (plan.kind === "switch_mode" && !submittingRef.current) {
+        changeMode("planning");
+        creation.onChange("");
+        editorRef.current?.clear();
+        return;
+      }
       if (submittingRef.current || uploadPending || uploadFailed || creation.submitDisabled || (!bodyRef.current.trim() && !creation.canSubmitWithoutBody)) return;
       submittingRef.current = true;
       setSubmitting(true);
       setActionError(null);
       try {
-        await creation.onSubmit(bodyRef.current, pendingMode, runSettings);
+        await creation.onSubmit(plan.kind === "send" ? plan.text : bodyRef.current, plan.kind === "send" ? "planning" : pendingMode, runSettings);
       } catch (error) {
         setActionError(describeError(error, { action: "create the task" }).body);
       } finally {
@@ -917,7 +906,40 @@ export function TaskChatComposer({
     const submittedBody = bodyRef.current;
     const submittedAttachments = attachmentsRef.current;
     const submittedAssignee = pendingAssigneeRef.current;
-    const trimmed = submittedBody.trim();
+    const submittedModeGeneration = modeChoiceGeneration.current;
+    // Plan mode belongs to tasks; a queued edit keeps its exact text.
+    const planCommand = queuedEdit || conversationMode || !onWorkModeChange
+      ? ({ kind: "none" } as const)
+      : planSubmission(submittedBody, attachedRefs.length > 0);
+    if (planCommand.kind === "switch_mode") {
+      changeMode("planning");
+      bodyRef.current = "";
+      if (draftKey) clearDraft(draftKey);
+      setBody("");
+      editorRef.current?.clear();
+      return;
+    }
+    const sendMode = planCommand.kind === "send" ? "planning" : pendingMode;
+    // A queued edit keeps its exact text; everywhere else a leading /swarm is a request.
+    const swarmCommand = queuedEdit ? null : parseSwarmCommand(submittedBody);
+    if (swarmCommand && !swarmCommand.request) {
+      setActionError("Write what the swarm should do after /swarm.");
+      return;
+    }
+    if (swarmCommand && swarmCommand.request.length > SWARM_REQUEST_MAX_CHARS) {
+      setActionError(`This swarm request is too long. Keep what follows /swarm under ${SWARM_REQUEST_MAX_CHARS.toLocaleString("en-US")} characters.`);
+      return;
+    }
+    const swarmSettingsRefusal = swarmCommand ? swarmRunSettingsRefusal(runSettings) : null;
+    if (swarmSettingsRefusal) {
+      setActionError(swarmSettingsRefusal);
+      return;
+    }
+    if (swarmCommand && showAssignee && assigneeValue !== currentAssigneeValue) {
+      setActionError("Send /swarm without changing the assignee.");
+      return;
+    }
+    const trimmed = swarmCommand ? swarmCommand.request : planCommand.kind === "send" ? planCommand.text : submittedBody.trim();
     const goalCommand = queuedEdit
       ? ({ matched: false } as const)
       : parseRunnerGoalCommand(submittedBody);
@@ -1025,6 +1047,7 @@ export function TaskChatComposer({
       else clearDraft(draftKey);
     }
     setBody("");
+    setSendingAttachmentIds(new Set(submittedAttachments.map(item => item.id)));
     setSubmitting(true);
     let attemptId: string | null = null;
     let request: ComposerSendRequest | null = null;
@@ -1032,12 +1055,20 @@ export function TaskChatComposer({
     try {
       if (queuedEdit) {
         if (!onSaveQueuedEdit) return;
-        await onSaveQueuedEdit(queuedEdit.commentId, fullBody);
+        setActionError(null);
+        try {
+          await onSaveQueuedEdit(queuedEdit.commentId, fullBody);
+        } catch (error) {
+          // A rejected edit keeps its text below; say why it was not saved.
+          if (mountedTaskKey.current === draftKey && queuedEditRef.current?.commentId === queuedEdit.commentId)
+            setActionError(describeError(error, { action: "save this queued message" }).body);
+          throw error;
+        }
         onCancelQueuedEdit?.();
         return;
       }
-      if (pendingMode !== workMode && onWorkModeChange) {
-        await onWorkModeChange(pendingMode);
+      if (sendMode !== workMode && onWorkModeChange) {
+        await onWorkModeChange(sendMode);
       }
       const retainedAfterMode = draftKey ? loadDraftSubmission(draftKey) : null;
       if (retainedAfterMode) {
@@ -1045,7 +1076,7 @@ export function TaskChatComposer({
         setBody(submittedBody);
         return;
       }
-      attemptId = crypto.randomUUID();
+      attemptId = createUuid();
       if (requestOwner === undefined) markRequestUnbound(attemptId);
       // IDs come only from this composer's upload receipts, never from parsing
       // arbitrary Markdown. A removed inline image no longer selects its receipt.
@@ -1071,6 +1102,7 @@ export function TaskChatComposer({
         ...(reassignment ? { reassignment } : {}),
         ...(attachmentIds.length ? { attachmentIds } : {}),
         ...(runSettings ? { runSettings: runSettings as unknown as Record<string, unknown> } : {}),
+        ...(swarmCommand ? { nativeCommand: "swarm" as const } : {}),
       };
       if (draftKey) {
         saveDraft(draftKey, submittedBody);
@@ -1078,7 +1110,10 @@ export function TaskChatComposer({
         pendingDraftRef.current = { draftKey, attemptId, submittedBody, submittedAttachmentIds: attachmentIds, request, requestOwner };
         changeBody(bodyRef.current);
       }
-      if (runSettings) {
+      sentModeChoice.current = { attemptId, generation: submittedModeGeneration };
+      if (swarmCommand) {
+        await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, undefined, "swarm");
+      } else if (runSettings) {
         await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId, runSettings);
       } else {
         await onAdd(fullBody, reopen, reassignment, attachmentIds.length ? attachmentIds : undefined, attemptId);
@@ -1088,6 +1123,7 @@ export function TaskChatComposer({
       if (draftKey) settleDraftSubmission(draftKey, attemptId,
         mountedTaskKey.current === draftKey ? bodyRef.current : undefined);
       if (mountedTaskKey.current !== draftKey) return;
+      settleSentMode(attemptId);
       const submittedIds = new Set(submittedAttachments.map((item) => item.id));
       setAttachments((current) =>
         current.filter((item) => !submittedIds.has(item.id)),
@@ -1128,6 +1164,7 @@ export function TaskChatComposer({
       setBody(restoredBody);
     } finally {
       if (pendingDraftRef.current?.attemptId === attemptId) pendingDraftRef.current = null;
+      setSendingAttachmentIds(null);
       setSubmitting(false);
     }
   }
@@ -1138,6 +1175,7 @@ export function TaskChatComposer({
     const settlementKey = JSON.stringify([draftKey, submission.attemptId]);
     if (settledSubmissionIds.current.has(settlementKey)) return;
     settledSubmissionIds.current.add(settlementKey);
+    settleSentMode(submission.attemptId);
     const nextDraft = submission.nextDraftOffset === undefined
       ? "" : bodyRef.current.slice(submission.nextDraftOffset);
     if (draftKey) settleDraftSubmission(draftKey, submission.attemptId, nextDraft);
@@ -1170,7 +1208,8 @@ export function TaskChatComposer({
       submission.attemptId,
     ] as const;
     try {
-      if (request.runSettings) await onAdd(...args, request.runSettings as unknown as ComposerRunSettings);
+      if (request.nativeCommand === "swarm") await onAdd(...args, undefined, "swarm");
+      else if (request.runSettings) await onAdd(...args, request.runSettings as unknown as ComposerRunSettings);
       else await onAdd(...args);
     } catch (error) {
       if (!isCurrentAccount()) return "pending";
@@ -1241,6 +1280,14 @@ export function TaskChatComposer({
 
   return (
     <div className={cn("flex min-w-0 flex-col", creation?.contextBar ? "gap-0" : "gap-2")}>
+      <ComposerFileDropTarget
+        enabled={canAcceptFiles && !disabled && !submitting && !creation?.readOnly}
+        newTask={Boolean(creation)}
+        onFiles={(files) => {
+          if (creation) creation.onSelectFiles(files);
+          else for (const file of files) void attachPickedFile(file);
+        }}
+      />
       {takeoverVisible && takeover ? (
         <section
           className={cn(
@@ -1315,6 +1362,7 @@ export function TaskChatComposer({
         </TaskChatComposerBar>
       ) : null}
       <div
+        data-editor-autocomplete-anchor=""
         className={taskChatComposerSurfaceClasses(mobile, streamlined)}
         onKeyDownCapture={(e) => {
         // Capture mode shortcuts on the wrapper so they work while the rich
@@ -1333,17 +1381,6 @@ export function TaskChatComposer({
         }
       }}
         onPasteCapture={handlePasteCapture}
-        onDragOver={(event) => {
-          if (canAcceptFiles && !disabled && !creation && event.dataTransfer.types.includes("Files")) event.preventDefault();
-        }}
-        onDropCapture={(event) => {
-          if (!canAcceptFiles || disabled || creation) return;
-          const files = Array.from(event.dataTransfer.files);
-          if (!files.length) return;
-          event.preventDefault();
-          event.stopPropagation();
-          for (const file of files) void attachPickedFile(file);
-        }}
       >
         {creation?.header}
         {uncertainSubmission ? (
@@ -1403,12 +1440,15 @@ export function TaskChatComposer({
               }
               readOnly={disabled || !!uncertainSubmission || Boolean(creation && (submitting || creation.readOnly))}
               mentions={mentions}
-              actionCommands={creation ? [] : conversationMode ? [{
+              actionCommands={conversationMode ? [{
                 id: "action:new", kind: "action", command: "new", name: "New session",
                 description: "Start fresh context here, preserving conversation history.", aliases: ["new"],
                 disabled,
-              }] : [goalCommandOption]}
+              }] : creation ? (onWorkModeChange ? [planCommandOption] : [])
+                // A queued edit keeps its exact text, so /plan cannot select Plan mode there.
+                : onWorkModeChange && !queuedEdit ? [planCommandOption, goalCommandOption] : [goalCommandOption]}
               onSubmit={() => void submit()}
+              submitKey={submitKey}
               fileDropTarget="parent"
               bordered={false}
               className={cn(disabled && "opacity-60")}
@@ -1424,7 +1464,7 @@ export function TaskChatComposer({
             <p
               className="px-1 text-xs text-destructive"
               role="alert"
-              data-testid={creation ? "task-chat-create-error" : "task-chat-goal-error"}
+              data-testid={creation ? "task-chat-create-error" : queuedEdit ? "task-chat-queued-edit-error" : "task-chat-goal-error"}
             >
               {actionError}
             </p>
@@ -1648,7 +1688,7 @@ export function TaskChatComposer({
                       ? "Waiting for upload to finish"
                       : uploadFailed
                         ? "Remove the failed attachment to send"
-                        : creation ? `${creation.submitLabel} (⌘+Enter)` : "Send (⌘+Enter)"
+                        : `${creation?.submitLabel ?? "Send"} (${submitKey === "mod-enter" ? "⌘/Ctrl+Enter" : "Enter"})`
               }
               aria-label={
                 showStop

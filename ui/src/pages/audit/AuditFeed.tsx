@@ -2,7 +2,7 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Download, ScrollText, ShieldAlert } from "lucide-react";
-import type { Agent, CaseWorkflowTransition } from "@paperclipai/shared";
+import type { Agent, CaseWorkflowTransition, ManagedGoogleAccessRemoval } from "@paperclipai/shared";
 import { Link, useCaseHref } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -18,14 +18,17 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Identity } from "@/components/Identity";
 import { cn, relativeTime } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
-import { formatActivityVerb } from "@/lib/activity-format";
+import { formatActivityEntityLabel, formatActivityOutcome, formatActivityVerb } from "@/lib/activity-format";
 import { buildCompanyUserProfileMap, type CompanyUserProfile } from "@/lib/company-members";
 import { auditApi, type AuditActionRecord, type AuditActionFilters } from "@/api/audit";
 import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { ApiError } from "@/api/client";
+import { describeError } from "@/api/errors";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useToastActions } from "@/context/ToastContext";
 import { instanceSettingsApi } from "@/api/instanceSettings";
+import { googleAccessRemovalNotice } from "@/features/connections/googleAccessRemoval";
 
 const PAGE_SIZE = 50;
 const ALL = "__all";
@@ -198,12 +201,22 @@ function AuditEntityNode({ record }: { record: AuditActionRecord }) {
   if (connectionId) {
     return (
       <Link to={`/apps/${connectionId}/permissions`} className="font-medium text-primary hover:underline">
-        the connection
+        {formatActivityEntityLabel("tool_connection", record.details)}
       </Link>
     );
   }
   // Non-linkable entities (company, agent, goal, …) — show a plain descriptor.
-  return <span className="text-muted-foreground">{record.entityType}</span>;
+  return <span className="text-muted-foreground">{formatActivityEntityLabel(record.entityType, record.details)}</span>;
+}
+
+function auditOutcome(record: AuditActionRecord): string | null {
+  if (record.action === "tool_connection.archived" || record.action === "tool_connection.grant_revoked") {
+    return googleAccessRemovalNotice(
+      record.details?.providerAccess as ManagedGoogleAccessRemoval | undefined,
+      record.action === "tool_connection.grant_revoked" ? "credentials" : "connection",
+    )?.body ?? null;
+  }
+  return formatActivityOutcome(record.action, record.details);
 }
 
 function AuditRow({
@@ -218,6 +231,7 @@ function AuditRow({
   casesEnabled: boolean;
 }) {
   const verb = formatActivityVerb(record.action, record.details, { agentMap, userProfileMap });
+  const outcome = auditOutcome(record);
   const responsible = record.responsibleUserId ? userProfileMap.get(record.responsibleUserId) : null;
   // Suppress the "on behalf of" chip when the human actor *is* the responsible user.
   const showOnBehalf = Boolean(
@@ -240,6 +254,7 @@ function AuditRow({
             <span className="text-muted-foreground">{verb}</span>
             <AuditEntityNode record={record} />
           </div>
+          {outcome ? <p className="text-muted-foreground">{outcome}</p> : null}
           {excerpt ? (
             <p className="line-clamp-2 border-l-2 border-border pl-2 text-muted-foreground">
               “{excerpt}”
@@ -357,7 +372,6 @@ export function AuditFeed({
   const userDirectory = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(companyId),
     queryFn: () => accessApi.listUserDirectory(companyId),
-    retry: false,
   });
 
   const agentMap = useMemo(
@@ -415,9 +429,11 @@ export function AuditFeed({
       auditApi.listAgentActions(companyId, { ...filters, limit: PAGE_SIZE, cursor: pageParam ?? undefined }),
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
-    retry: (count, error) => !(error instanceof ApiError && error.status === 403) && count < 2,
+    // The shared retry policy already covers this: a 403 never retries, a
+    // transient failure pauses across an outage and retries with backoff.
   });
 
+  const feedView = useQueryView(feed);
   const permissionDenied = feed.error instanceof ApiError && feed.error.status === 403;
   const hasBasicPage = feed.data?.pages.some((page) => page.accessTier === "basic") ?? false;
   const hasFullPage = feed.data?.pages.some((page) => page.accessTier === "full") ?? false;
@@ -543,7 +559,7 @@ export function AuditFeed({
     } catch (error) {
       pushToast({
         title: "Export failed",
-        body: error instanceof Error ? error.message : "Could not export the audit log.",
+        body: describeError(error, { action: "export the audit log" }).body,
         tone: "error",
       });
     } finally {
@@ -561,27 +577,32 @@ export function AuditFeed({
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 className="text-lg font-semibold text-foreground">Activity</h2>
-            <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-              {resolvedMode === "agents"
-                ? "Every recorded agent action, newest first — with the responsible person and run behind each one."
-                : "Everything happening in your organization, newest first — people, agents, and the system. Each line is one recorded action."}
+            <p className="mt-1 grid max-w-2xl text-sm text-muted-foreground">
+              <span className="col-start-1 row-start-1" style={{ visibility: resolvedMode === "agents" ? "hidden" : "visible" }}>
+                Everything happening in your organization, newest first — people, agents, and the system. Each line is one recorded action.
+              </span>
+              <span className="col-start-1 row-start-1" style={{ visibility: resolvedMode === "agents" ? "visible" : "hidden" }}>
+                Every recorded agent action, newest first — with the responsible person and run behind each one.
+              </span>
             </p>
           </div>
         </div>
       ) : null}
 
       {showModeToggle ? (
-        <Tabs value={resolvedMode} onValueChange={(value) => onModeChange?.(value as AuditFeedMode)}>
-          <TabsList aria-label="Activity scope">
-            <TabsTrigger value="all">Activity</TabsTrigger>
-            <TabsTrigger
-              value="agents"
-              disabled={accessTier === "basic"}
-              title={accessTier === "basic" ? "Agent Actions requires audit access" : undefined}
-            >
-              Agent Actions
-            </TabsTrigger>
-          </TabsList>
+        <Tabs data-canonical-toolbar="audit-scope" value={resolvedMode} onValueChange={(value) => onModeChange?.(value as AuditFeedMode)}>
+          <div className="design-view-toggle">
+            <TabsList aria-label="Activity scope">
+              <TabsTrigger value="all">Activity</TabsTrigger>
+              <TabsTrigger
+                value="agents"
+                disabled={accessTier === "basic"}
+                title={accessTier === "basic" ? "Agent Actions requires audit access" : undefined}
+              >
+                Agent Actions
+              </TabsTrigger>
+            </TabsList>
+          </div>
         </Tabs>
       ) : null}
 
@@ -597,7 +618,7 @@ export function AuditFeed({
         </div>
       ) : null}
 
-      <div className="flex flex-wrap items-end gap-3 border-y border-border py-3">
+      <div data-canonical-toolbar="audit-activity" role="toolbar" aria-label="Audit filters" className="flex flex-wrap items-end gap-3 border-y border-border py-3">
         {canUseAdvancedControls && !lockedAgentId && !lockedRunId ? (
           <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
             <span>Agent</span>
@@ -737,21 +758,17 @@ export function AuditFeed({
             Refreshing audit access…
           </CardContent>
         </Card>
-      ) : feed.isLoading ? (
+      ) : feedView.kind === "loading" || feedView.kind === "reconnecting" ? (
         <Card>
           <CardContent className="py-14 text-center text-sm text-muted-foreground">Loading…</CardContent>
         </Card>
-      ) : feed.error ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
-            <p className="text-sm text-muted-foreground">
-              {feed.error instanceof Error ? feed.error.message : "Failed to load the audit log."}
-            </p>
-            <Button variant="outline" size="sm" onClick={() => feed.refetch()}>
-              Try again
-            </Button>
-          </CardContent>
-        </Card>
+      ) : feedView.kind === "error" ? (
+        <QueryErrorState
+          error={feedView.error}
+          action="load the audit log"
+          onRetry={feedView.retry}
+          retrying={feedView.isFetching}
+        />
       ) : items.length === 0 ? (
         <Card>
           <CardContent className="flex flex-col items-center gap-3 py-14 text-center">

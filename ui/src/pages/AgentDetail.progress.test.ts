@@ -2,8 +2,8 @@ import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
 
 import { queryKeys } from "../lib/queryKeys";
+import { AGENT_DETAIL_NAVIGATION } from "./agent-detail-navigation";
 import {
-  AGENT_DETAIL_TABS,
   DISCARD_AGENT_CONFIG_CHANGES_MESSAGE,
   agentConfigHistoryRestoreDelta,
   buildHeartbeatProgressLogLine,
@@ -18,7 +18,7 @@ import {
 
 describe("agent detail tabs", () => {
   it("exposes Secrets as its own route-backed tab", () => {
-    expect(AGENT_DETAIL_TABS.map((tab) => tab.label)).toContain("Secrets & variables");
+    expect(AGENT_DETAIL_NAVIGATION.flatMap((section) => section.items.map((tab) => tab.label))).toContain("Secrets & variables");
     expect(parseAgentDetailView("secrets")).toBe("secrets");
   });
 

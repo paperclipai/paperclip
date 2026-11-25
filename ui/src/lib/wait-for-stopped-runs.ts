@@ -6,7 +6,21 @@ const STOPPED_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancell
 
 const VERIFICATION_ERROR = "The stop was requested, but stopping could not be verified. Refresh and try Stop again if work is still running.";
 
-function isStopped(run: HeartbeatRun) {
+type StopRunEvidence = Pick<HeartbeatRun, "id" | "companyId" | "resultJson"> & {
+  status: string;
+  runtimeMode?: string;
+};
+
+export class StopVerificationError extends Error {
+  readonly runIds: readonly string[];
+  constructor(message: string, runIds: readonly string[]) {
+    super(message);
+    this.name = "StopVerificationError";
+    this.runIds = Object.freeze([...new Set(runIds)]);
+  }
+}
+
+export function isRunStopConfirmed(run: StopRunEvidence) {
   if (!STOPPED_STATUSES.has(run.status)) return false;
   const adapterCancellation = run.resultJson?.executionCancellation;
   if (adapterCancellation && typeof adapterCancellation === "object"
@@ -32,14 +46,15 @@ export async function waitForStoppedRuns(
 ) {
   const getRun = options.getRun ?? heartbeatsApi.get;
   const deadline = Date.now() + (options.timeoutMs ?? 30_000);
-  let remaining = [...new Set(runIds)].filter((id) =>
-    !options.initialRuns?.some((run) => run?.id === id && isStopped(run)),
+  const targets = [...new Set(runIds)];
+  let remaining = targets.filter((id) =>
+    !options.initialRuns?.some((run) => run?.id === id && isRunStopConfirmed(run)),
   );
   let transientFailure = false;
   while (remaining.length > 0) {
     if (Date.now() >= deadline) {
-      throw new Error(transientFailure ? VERIFICATION_ERROR
-        : "The stop was requested, but work is still stopping. Try Stop again if it continues.");
+      throw new StopVerificationError(transientFailure ? VERIFICATION_ERROR
+        : "The stop was requested, but work is still stopping. Try Stop again if it continues.", targets);
     }
     let states;
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -55,22 +70,23 @@ export async function waitForStoppedRuns(
       ]);
     } catch (error) {
       const transient = error instanceof TypeError || (error instanceof ApiError && error.status >= 500);
-      if (!transient || Date.now() >= deadline) throw new Error(VERIFICATION_ERROR);
+      if (!transient || Date.now() >= deadline) throw new StopVerificationError(VERIFICATION_ERROR, targets);
       transientFailure = true;
     } finally {
       clearTimeout(timeout);
     }
     if (states) {
       if (states.some((run, index) => !run || run.id !== remaining[index])) {
-        throw new Error(VERIFICATION_ERROR);
+        throw new StopVerificationError(VERIFICATION_ERROR, targets);
       }
       transientFailure = false;
-      remaining = remaining.filter((_id, index) => !isStopped(states[index]!));
+      remaining = remaining.filter((_id, index) => !isRunStopConfirmed(states[index]!));
     }
     if (remaining.length === 0) return;
     if (Date.now() >= deadline) {
-      throw new Error(
+      throw new StopVerificationError(
         "The stop was requested, but work is still stopping. Try Stop again if it continues.",
+        targets,
       );
     }
     await new Promise((resolve) =>
