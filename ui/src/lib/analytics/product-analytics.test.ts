@@ -194,4 +194,27 @@ describe("product analytics", () => {
     expect(out.timestamp).toBe(timestamp);
     expect(out.properties.$current_url).toBe("https://a.paperclip.app/x");
   });
+
+  it("registers cloud-trial-inference experiment super properties and $set_once cohort on identify", async () => {
+    const treatmentConfig: BrowserAnalyticsConfig = {
+      ...config,
+      cloudTrialInferenceEnabled: true,
+    };
+    setProductAnalyticsUser({ id: "user-9", email: "alex@example.com", name: "Alex" });
+    startProductAnalytics(treatmentConfig, { load, schedule });
+    scheduled!();
+    await flush();
+
+    expect(client.register).toHaveBeenCalledWith({
+      deployment_source: "cloud",
+      environment: "staging",
+      cloud_trial_inference_enabled: true,
+      "$feature/cloud-trial-inference": "treatment",
+    });
+    expect(client.identify).toHaveBeenCalledWith(
+      "user-9",
+      { email: "alex@example.com", name: "Alex" },
+      { cloud_trial_inference_cohort: "treatment" },
+    );
+  });
 });

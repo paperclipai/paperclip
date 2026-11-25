@@ -50,6 +50,7 @@ describe("browser analytics config exposure", () => {
       stackId: "stack-1",
       replayEnabled,
       consentRequired: null,
+      cloudTrialInferenceEnabled: false,
     });
   });
 
