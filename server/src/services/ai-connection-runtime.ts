@@ -276,6 +276,23 @@ export async function prepareManagedAiRuntime(
       );
     const credentialRef = selection.grant.credentialSecretRefs.find((ref) => ref.configPath === "ai.credential");
     const routing = aiConnectionMetadataSchema.parse(selection.connection.config.ai).routing;
+    const nativeDelegatedOpenAiKey = !routing && selection.attribution.mode === "delegated" &&
+      selection.attribution.provider === "openai" && selection.attribution.method === "api_key" &&
+      (input.adapterType === "opencode_local" || input.adapterType === "hermes_local");
+    if (nativeDelegatedOpenAiKey && [
+      ...(Array.isArray(input.config.extraArgs) ? input.config.extraArgs : []),
+      ...(Array.isArray(input.config.args) ? input.config.args : []),
+    ].some(arg => {
+      if (typeof arg !== "string") return false;
+      if (input.adapterType === "hermes_local" ? /^-[Qvwh]*[mp]/.test(arg) : /^-[chv]*m/.test(arg)) return true;
+      const option = arg.split("=", 1)[0]!;
+      return option.length > 2 && ["--provider", "--base-url", "--model",
+        ...(input.adapterType === "hermes_local" ? ["--profile", "--api-key"] : []),
+      ].some(protectedOption => protectedOption.startsWith(option));
+    })) {
+      throw unprocessable("Remove provider, endpoint, model or profile overrides before selecting this AI connection",
+        { code: "ai_connection_incompatible" });
+    }
     const noAuth = routing?.auth === "none";
     if (!noAuth && !credentialRef) throw unprocessable("The selected AI credential is unavailable");
     const readFreshness = async () => {
@@ -352,6 +369,9 @@ export async function prepareManagedAiRuntime(
       env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
         provider: { openrouter: { options: { apiKey: value, headers: OPENROUTER_ATTRIBUTION_HEADERS } } },
       });
+      env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
+    }
+    if (nativeDelegatedOpenAiKey && input.adapterType === "opencode_local") {
       env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
     }
     if (!routing && input.binding.provider === "google" && harness === "gemini_local") {
@@ -586,6 +606,7 @@ export async function prepareManagedAiRuntime(
       config: {
         ...input.config,
         ...projected?.config,
+        ...(nativeDelegatedOpenAiKey && input.adapterType === "hermes_local" ? { provider: "openai-api" } : {}),
         ...(routing ? { managedAiRouting: routing } : {}),
         env,
         managedAiConnection: { ...attribution, identity, sessionIdentity },

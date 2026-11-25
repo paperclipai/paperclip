@@ -35,6 +35,7 @@ export const VALID_PROVIDERS = [
   "auto",
   "openrouter",
   "nous",
+  "openai-api",
   "openai-codex",
   "copilot",
   "copilot-acp",

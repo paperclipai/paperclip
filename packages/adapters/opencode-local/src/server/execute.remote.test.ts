@@ -164,6 +164,29 @@ describe("opencode remote execution", () => {
     expect((run[3] as { env: Record<string, string> }).env.PWD).toBe(remoteCwd);
   });
 
+  it("preserves the managed OpenAI project-config guard in the remote probe and run", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "opencode-remote-managed-openai-"));
+    cleanupDirs.push(workspace);
+    await execute({
+      runId: "managed-openai", agent: { id: "agent", companyId: "company", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "opencode", cwd: workspace, model: "openai/gpt-4.1",
+        managedAiConnection: { provider: "openai", method: "api_key", mode: "delegated" },
+        env: { HOME: "/fixture-managed-home", OPENAI_API_KEY: "fixture-selected-key", OPENCODE_DISABLE_PROJECT_CONFIG: "true" } },
+      context: {}, executionTransport: { remoteExecution: { useHostAuth: false, host: "127.0.0.1", port: 2222, username: "fixture",
+        remoteCwd: "/remote/workspace", remoteWorkspacePath: "/remote/workspace" } },
+      onLog: async () => {},
+    });
+    for (const command of ["models", "run"]) {
+      const call = runChildProcess.mock.calls.find(entry => entry[2].includes(command));
+      expect(call).toBeDefined();
+      expect((call![3] as { env: Record<string, string> }).env).toMatchObject({
+        OPENAI_API_KEY: "fixture-selected-key",
+        OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+      });
+    }
+  });
+
   it.each([[false, false], [false, true], [true, false], [true, true]])(
     "uses only forwarded credentials for remote billing (forwarded=%s, timeout=%s)", async (forwarded, timedOut) => {
       vi.stubEnv("OPENROUTER_API_KEY", "host-only-api-key");

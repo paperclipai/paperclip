@@ -324,11 +324,21 @@ export function aiConnectionService(db: Db) {
       throw aiConnectionConfigurationFailure("ai_connection_missing", "The selected AI connection is unavailable");
     const { connection, grant } = row;
     const metadata = aiConnectionMetadataSchema.safeParse(connection.config.ai);
+    const nativeDelegatedOpenAiKey =
+      binding.mode === "delegated" &&
+      metadata.success &&
+      metadata.data.provider === "openai" &&
+      metadata.data.method === "api_key" &&
+      !metadata.data.routing &&
+      ((input.adapterType === "opencode_local" && typeof input.model === "string" &&
+        input.model.startsWith("openai/") && input.model.slice("openai/".length).trim().length > 0) ||
+       (input.adapterType === "hermes_local" &&
+        (input.runnerProvider == null || input.runnerProvider === "" || input.runnerProvider === "auto" || input.runnerProvider === "openai-api")));
     if (
       !metadata.success ||
       metadata.data.provider !== binding.provider ||
       (binding.mode !== "responsible_user" && metadata.data.method !== binding.method) ||
-      !isAiConnectionCompatible(metadata.data, input.adapterType, input.model, input.runnerProvider, input.acpxAgent)
+      (!isAiConnectionCompatible(metadata.data, input.adapterType, input.model, input.runnerProvider, input.acpxAgent) && !nativeDelegatedOpenAiKey)
     )
       throw aiConnectionConfigurationFailure("ai_connection_incompatible", "The selected AI connection is incompatible");
     if (aiSubscriptionNeedsIsolatedLogin(connection.config))

@@ -31,10 +31,11 @@ function asString(v: unknown): string | undefined {
 
 async function checkCliInstalled(
   command: string,
+  env: NodeJS.ProcessEnv,
 ): Promise<AdapterEnvironmentCheck | null> {
   try {
     // Try to run the command to see if it exists
-    await execFileAsync(command, ["--version"], { timeout: 10_000 });
+    await execFileAsync(command, ["--version"], { env, timeout: 10_000 });
     return null; // OK — it ran successfully
   } catch (err: unknown) {
     const e = err as NodeJS.ErrnoException;
@@ -54,9 +55,11 @@ async function checkCliInstalled(
 
 async function checkCliVersion(
   command: string,
+  env: NodeJS.ProcessEnv,
 ): Promise<AdapterEnvironmentCheck | null> {
   try {
     const { stdout } = await execFileAsync(command, ["--version"], {
+      env,
       timeout: 10_000,
     });
     const version = stdout.trim();
@@ -83,9 +86,10 @@ async function checkCliVersion(
   }
 }
 
-async function checkPython(): Promise<AdapterEnvironmentCheck | null> {
+async function checkPython(env: NodeJS.ProcessEnv): Promise<AdapterEnvironmentCheck | null> {
   try {
     const { stdout } = await execFileAsync("python3", ["--version"], {
+      env,
       timeout: 5_000,
     });
     const version = stdout.trim();
@@ -331,6 +335,10 @@ export async function testEnvironment(
   const config = (ctx.config ?? {}) as Record<string, unknown>;
   const command = resolveHermesCommand(config);
   const checks: AdapterEnvironmentCheck[] = [];
+  const env = { ...process.env };
+  for (const [key, value] of Object.entries((config.env ?? {}) as Record<string, unknown>)) {
+    if (typeof value === "string") env[key] = value;
+  }
 
   // Managed connections must prove the selected destination with the isolated
   // runtime environment. Host credentials and ~/.hermes are not evidence.
@@ -339,10 +347,6 @@ export async function testEnvironment(
     if (remote) {
       checks.push({ level: "error", code: "hermes_remote_probe_unsupported", message: "Hermes connection testing requires a local execution environment." });
     } else {
-      const env = { ...process.env };
-      for (const [key, value] of Object.entries((config.env ?? {}) as Record<string, unknown>)) {
-        if (typeof value === "string") env[key] = value;
-      }
       const args = ["chat", "-Q", "-q", "Respond with hello. Do not use tools.", "--max-turns", "1"];
       if (asString(config.model)) args.push("-m", asString(config.model)!);
       const provider = asString(config.provider);
@@ -360,8 +364,23 @@ export async function testEnvironment(
     return { adapterType: ADAPTER_TYPE, status: checks.some(check => check.level === "error") ? "fail" : "pass", checks, testedAt: new Date().toISOString() };
   }
 
+  const probeEnvKeys = new Set([
+    "PATH", "PATHEXT", "HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+    "HERMES_HOME", "HERMES_RUNTIME_DIR", "PYTHONHOME", "PYTHONPATH",
+    "PYTHONIOENCODING", "PYTHONUTF8", "PYTHONUNBUFFERED", "VIRTUAL_ENV",
+    "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME",
+    "XDG_RUNTIME_DIR", "XDG_CONFIG_DIRS", "XDG_DATA_DIRS", "TMP", "TEMP", "TMPDIR",
+    "LANG", "LANGUAGE", "LC_ALL", "LC_CTYPE", "LC_NUMERIC", "LC_TIME",
+    "LC_COLLATE", "LC_MONETARY", "LC_MESSAGES", "LC_PAPER", "LC_NAME",
+    "LC_ADDRESS", "LC_TELEPHONE", "LC_MEASUREMENT", "LC_IDENTIFICATION",
+    "SYSTEMROOT", "WINDIR", "COMSPEC", "SYSTEMDRIVE",
+  ]);
+  const probeEnv = Object.fromEntries(
+    Object.entries(env).filter(([key]) => probeEnvKeys.has(key.toUpperCase())),
+  );
+
   // 1. CLI installed?
-  const cliCheck = await checkCliInstalled(command);
+  const cliCheck = await checkCliInstalled(command, probeEnv);
   if (cliCheck) {
     checks.push(cliCheck);
     if (cliCheck.level === "error") {
@@ -375,11 +394,11 @@ export async function testEnvironment(
   }
 
   // 2. CLI version
-  const versionCheck = await checkCliVersion(command);
+  const versionCheck = await checkCliVersion(command, probeEnv);
   if (versionCheck) checks.push(versionCheck);
 
   // 3. Python available?
-  const pythonCheck = await checkPython();
+  const pythonCheck = await checkPython(probeEnv);
   if (pythonCheck) checks.push(pythonCheck);
 
   // 4. Model config
