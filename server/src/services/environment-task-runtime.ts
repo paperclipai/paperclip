@@ -47,11 +47,9 @@ export type PluginTaskRpcErrorCodeName =
 
 const PLUGIN_RPC_ERROR_CODE_NAME_SET: ReadonlySet<string> = new Set(Object.values(PLUGIN_RPC_ERROR_CODE_NAMES));
 
-const PLUGIN_TASK_OPERATION_KINDS: ReadonlySet<string> = new Set([
-  "describe", "prepare", "check_project_auth", "submit", "connection",
-  "status", "stop", "complete", "credentials", "read_state", "archive_state",
-  "read_file", "release", "resume", "copilot_metadata", "ensure_ownership",
-]);
+const PLUGIN_TASK_OPERATION_KINDS: ReadonlySet<string> = new Set(
+  environmentTaskOperationSchema.options.map(option => option.shape.kind.value),
+);
 
 export interface PluginTaskOperationErrorMetadata {
   operation: PluginEnvironmentTaskOperation["kind"];
@@ -61,7 +59,35 @@ export interface PluginTaskOperationErrorMetadata {
 
 export interface PluginTaskCheckpointStatusMetadata {
   executionStopped: boolean;
-  sessionStateAvailable: boolean;
+  sessionStateAvailable?: boolean;
+}
+
+const unconfirmedPluginCheckpointStatuses = new WeakMap<Error, PluginTaskCheckpointStatusMetadata>();
+
+export function createUnconfirmedPluginCheckpointError(status: PluginTaskCheckpointStatusMetadata): Error {
+  const metadata: PluginTaskCheckpointStatusMetadata = {
+    executionStopped: status.executionStopped === true,
+    ...(typeof status.sessionStateAvailable === "boolean"
+      ? { sessionStateAvailable: status.sessionStateAvailable }
+      : {}),
+  };
+  const error = Object.assign(pluginTaskResumeRefused("checkpoint_status_unconfirmed"), {
+    pluginTaskCheckpointStatus: metadata,
+  });
+  unconfirmedPluginCheckpointStatuses.set(error, metadata);
+  return error;
+}
+
+/**
+ * Returns true only when `executeEnvironmentTask` refused `checkpoint_status_unconfirmed`
+ * after the provider explicitly attested both `executionStopped: true` and
+ * `sessionStateAvailable: false`. An omitted `sessionStateAvailable` remains unknown
+ * and fails closed.
+ */
+export function isConfirmedStoppedUnavailablePluginCheckpoint(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const status = unconfirmedPluginCheckpointStatuses.get(error);
+  return status?.executionStopped === true && status.sessionStateAvailable === false;
 }
 
 function readPluginRpcErrorCodeName(error: unknown): PluginTaskRpcErrorCodeName | null {
@@ -284,12 +310,11 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
       const status = await executeEnvironmentTask(db, workers, { companyId: input.companyId,
         leaseId: sources[0]!.id, operation: { kind: "status" } });
       if (status.kind !== "status" || status.executionStopped !== true || status.sessionStateAvailable !== true) {
-        const checkpointStatus: PluginTaskCheckpointStatusMetadata = {
+        throw createUnconfirmedPluginCheckpointError({
           executionStopped: status.kind === "status" && status.executionStopped === true,
-          sessionStateAvailable: status.kind === "status" && status.sessionStateAvailable === true,
-        };
-        throw Object.assign(pluginTaskResumeRefused("checkpoint_status_unconfirmed"), {
-          pluginTaskCheckpointStatus: checkpointStatus,
+          ...(status.kind === "status" && typeof status.sessionStateAvailable === "boolean"
+            ? { sessionStateAvailable: status.sessionStateAvailable }
+            : {}),
         });
       }
       if (resumeFrom !== await resolvePluginTaskResume(db, { companyId: input.companyId, leaseId: lease.id,

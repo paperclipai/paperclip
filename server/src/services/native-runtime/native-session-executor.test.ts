@@ -19987,7 +19987,12 @@ describe("runnerd provider runtime wiring", () => {
       } finally { owner.mockRestore(); resume.mockRestore(); }
     });
 
-  it.each(["stopped-state-unavailable", "stop-unconfirmed"] as const)(
+  it.each([
+    "stopped-state-unavailable",
+    "stopped-availability-omitted",
+    "stop-unconfirmed",
+    "stopped-lease-unreleased",
+  ] as const)(
     "handles unconfirmed plugin checkpoint status on replacement lease: %s",
     async mode => {
       const first = {
@@ -20032,7 +20037,9 @@ describe("runnerd provider runtime wiring", () => {
       };
       const priorEndedLease = {
         id: "old-lease", companyId: first.binding.companyId, heartbeatRunId: first.binding.runId,
-        status: "released", releasedAt: new Date(), cleanupStatus: "success",
+        status: mode === "stopped-lease-unreleased" ? "active" : "released",
+        releasedAt: mode === "stopped-lease-unreleased" ? null : new Date(),
+        cleanupStatus: mode === "stopped-lease-unreleased" ? null : "success",
         provider: "plugin:test:tasks", providerLeaseId: "old-task",
         metadata: {
           driver: "plugin",
@@ -20080,15 +20087,10 @@ describe("runnerd provider runtime wiring", () => {
       const task = vi.fn(async (operation: any) => {
         environmentTaskOperationSchema.parse(operation);
         if (operation.kind === "read_state") {
-          throw Object.assign(
-            new Error("Plugin Runner retained session is not authorized (reason: checkpoint_status_unconfirmed)"),
-            {
-              pluginTaskCheckpointStatus: {
-                executionStopped: mode === "stopped-state-unavailable",
-                sessionStateAvailable: false,
-              },
-            },
-          );
+          throw environmentTaskRuntime.createUnconfirmedPluginCheckpointError({
+            executionStopped: mode !== "stop-unconfirmed",
+            ...(mode === "stopped-availability-omitted" ? {} : { sessionStateAvailable: false }),
+          });
         }
         return {
           kind: "description", taskId: "replacement-task", launchPreparationVersion: 1, projectAuthCheckVersion: 1, warmTaskVersion: 1,
@@ -20113,6 +20115,10 @@ describe("runnerd provider runtime wiring", () => {
           await expect(createRunnerdBackend(launch)).resolves.toBeDefined();
           expect(state.createBackend).toHaveBeenCalledOnce();
           expect(existsSync(join(scoped, "continuity-breaks"))).toBe(true);
+        } else if (mode === "stopped-lease-unreleased") {
+          await expect(createRunnerdBackend(launch)).rejects.toThrow("retirement_refused=prior_lease_active");
+          expect(state.createBackend).not.toHaveBeenCalled();
+          expect(existsSync(join(scoped, "continuity-breaks"))).toBe(false);
         } else {
           await expect(createRunnerdBackend(launch)).rejects.toThrow("checkpoint_status_unconfirmed");
           expect(state.createBackend).not.toHaveBeenCalled();

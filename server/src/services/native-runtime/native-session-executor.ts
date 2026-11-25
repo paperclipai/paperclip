@@ -1,4 +1,5 @@
 import { currentControllerProcess } from "../controller-process-identity.js";
+import { isConfirmedStoppedUnavailablePluginCheckpoint } from "../environment-task-runtime.js";
 import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { isAntigravitySwarmExecution } from "../antigravity-swarm.js";
 import { applyNativeAcceptedOutcome, nativeRetainsWarmSession, readNativeAcceptedOutcome, type NativeAcceptedOutcome } from "./native-accepted-outcome.js";
@@ -6029,14 +6030,6 @@ async function verifyWarmTransitionRestart(input: {
   return verified;
 }
 
-function isConfirmedStoppedUnavailablePluginCheckpoint(error: unknown): boolean {
-  if (!(error instanceof Error) || !error.message.includes("checkpoint_status_unconfirmed")) return false;
-  const status = (error as { pluginTaskCheckpointStatus?: unknown }).pluginTaskCheckpointStatus;
-  if (!status || typeof status !== "object" || Array.isArray(status)) return false;
-  const recordStatus = status as Record<string, unknown>;
-  return recordStatus.executionStopped === true && recordStatus.sessionStateAvailable === false;
-}
-
 async function recoverPluginRunnerCheckpoint(input: {
   db: Db;
   execution: NativeExecutionInput;
@@ -6296,11 +6289,14 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
   try { originalBytes = readBoundedNativeFile(statePath, NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8"); }
   catch { return refuse("journal_unreadable"); }
   const { binding } = input.execution;
-  const remoteRunnerGone = !localRunner && (confirmedGonePluginTask || await priorRemoteSandboxLeasesEnded(input.db, {
+  const remoteRunnerGone = !localRunner && await priorRemoteSandboxLeasesEnded(input.db, {
     companyId: binding.companyId, runId: identity.runId,
     currentProviderLeaseId: target?.kind === "remote" && target.transport === "sandbox"
       ? target.sandboxLeaseAcquisition?.providerLeaseId : undefined,
-  }));
+  });
+  if (confirmedGonePluginTask && !remoteRunnerGone) {
+    return refuse("prior_lease_active");
+  }
   const parkedGovernedWait = remoteRunnerGone && await priorRunParkedOnGovernedWait(input.db, {
     companyId: binding.companyId, issueId: binding.issueId, runId: identity.runId });
   const projectionOptions = { localRunner, controlBytes: input.projectedControlBytes, remoteRunnerGone, parkedGovernedWait };

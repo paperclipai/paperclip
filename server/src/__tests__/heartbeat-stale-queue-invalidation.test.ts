@@ -563,7 +563,10 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(runRows).toHaveLength(0);
   });
 
-  it("skips manual taskless on_demand wakes for Paperclip Runner agents with a task_required receipt instead of failing a run", async () => {
+  it.each([
+    ["empty payload", undefined],
+    ["bare commentId without task", { commentId: randomUUID() }],
+  ])("skips manual taskless on_demand wakes for Paperclip Runner agents (%s) with a task_required receipt instead of failing a run", async (_label, payload) => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     await db
       .update(agents)
@@ -574,6 +577,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       source: "on_demand",
       triggerDetail: "manual",
       manualUserWake: true,
+      payload,
       requestedByActorType: "user",
       requestedByActorId: "local-board",
     });
