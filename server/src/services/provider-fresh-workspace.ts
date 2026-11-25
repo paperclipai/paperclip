@@ -35,6 +35,31 @@ export function isBoundFreshPluginTaskDirectory(input: {
   return fresh.success && fresh.data.attemptId === workspace.id;
 }
 
+export function isBoundPluginTaskDirectory(input: {
+  companyId: string; issueId: string; workspaceId: string | null;
+  workspace: ExecutionWorkspace | null;
+  owner: { agentId: string; environmentId: string; pluginKey: unknown; driverKey: unknown };
+}): boolean {
+  if (isBoundFreshPluginTaskDirectory(input)) return true;
+  const workspace = input.workspace;
+  return Boolean(
+    workspace &&
+    workspace.id === input.workspaceId &&
+    workspace.companyId === input.companyId &&
+    workspace.sourceIssueId === input.issueId &&
+    workspace.status === "active" &&
+    !workspace.projectWorkspaceId &&
+    workspace.mode === "isolated_workspace" &&
+    workspace.strategyType === "project_primary" &&
+    workspace.providerType === "adapter_managed" &&
+    !workspace.repoUrl &&
+    !workspace.branchName &&
+    workspace.cwd === `/workspaces/${input.issueId}` &&
+    workspace.metadata?.runnerTaskFreshWorkspace === undefined &&
+    isDeepStrictEqual(workspace.metadata?.runnerTaskWorkspaceOwner, input.owner),
+  );
+}
+
 export async function stageProviderFreshWorkspace(input: {
   db: Db; companyId: string; issueId: string; attemptId: string; sourceRunId: string;
   previousWorkspaceId: string | null; existing?: PluginFreshWorkspace;

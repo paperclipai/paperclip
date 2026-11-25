@@ -172,6 +172,7 @@ const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null))
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
 const mockRequestWorkspaceRecovery = vi.hoisted(() => vi.fn());
 const mockRequestTaskRetry = vi.hoisted(() => vi.fn());
+const mockAgentTaskRetryActor = vi.hoisted(() => vi.fn());
 const mockOnboardingFirstTaskDependenciesAllowed = vi.hoisted(() => vi.fn(async () => undefined));
 const mockGetExperimental = vi.hoisted(() => vi.fn());
 const mockResumeWorkspaceFinalization = vi.hoisted(() => vi.fn());
@@ -185,6 +186,8 @@ function registerRouteMocks() {
     }) };
   });
   vi.doMock("../services/task-retry.js", () => ({ requestTaskRetry: mockRequestTaskRetry }));
+  vi.doMock("../services/agent-task-retry.js", () => ({ agentOwnsRun: async () => true,
+    agentTaskRetryActor: mockAgentTaskRetryActor, recordAgentTaskRetry: async () => undefined }));
   vi.doMock("../services/onboarding-first-task-admission.js", async () => ({
     ...await vi.importActual<typeof import("../services/onboarding-first-task-admission.js")>("../services/onboarding-first-task-admission.js"),
     assertOnboardingFirstTaskDependenciesAllowed: mockOnboardingFirstTaskDependenciesAllowed,
@@ -542,6 +545,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
     mockRequestTaskRetry.mockReset().mockResolvedValue({ requestId: recoveryActionId, accepted: true, stale: false });
+    mockAgentTaskRetryActor.mockReset().mockResolvedValue(null);
     mockGetExperimental.mockReset().mockResolvedValue({ enableAgentChat: true });
     mockAccessService.canUser.mockReset();
     mockAccessService.decide.mockReset();
@@ -918,7 +922,7 @@ describe("agent issue mutation checkout ownership", () => {
   it("admits ordinary Retry only for a board actor with task mutation permission", async () => {
     const body = { idempotencyKey: recoveryActionId, observedRunId: ownerRunId };
     const deniedAgent = await request(createApp(peerActor())).post(`/api/issues/${issueId}/retry`).send(body);
-    expect(deniedAgent.status).toBe(403);
+    expect(deniedAgent.status, JSON.stringify(deniedAgent.body)).toBe(403);
     expect(mockRequestTaskRetry).not.toHaveBeenCalled();
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action !== "issue:mutate", action: input.action, reason: "test_gate", explanation: "Task is read-only.",
@@ -932,6 +936,21 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockRequestTaskRetry).toHaveBeenCalledWith(expect.objectContaining({
       companyId, issueId, actorId: "board-user", actorSource: "local_implicit", ...body,
     }));
+  });
+
+  it("keeps a granted agent's own write boundary on Retry", async () => {
+    mockAgentTaskRetryActor.mockResolvedValue({ ...boardActor(), source: "board_key",
+      memberships: [{ companyId, membershipRole: "owner", status: "active" }] });
+    mockAccessService.decide.mockImplementation(async (input: { action: string; actor: { type: string } }) =>
+      input.actor.type === "agent" && input.action === "issue:mutate"
+        ? { allowed: false, action: input.action, reason: "deny_low_trust_boundary", explanation: "Issue is outside this low-trust boundary." }
+        : { allowed: true, action: input.action, reason: "allow_test", explanation: "Allowed." });
+    const body = { idempotencyKey: recoveryActionId, observedRunId: ownerRunId };
+
+    const denied = await request(createApp(peerActor())).post(`/api/issues/${issueId}/retry`).send(body);
+
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    expect(mockRequestTaskRetry).not.toHaveBeenCalled();
   });
 
   it("rejects client-selected workspace strategy and certifications on ordinary Retry", async () => {

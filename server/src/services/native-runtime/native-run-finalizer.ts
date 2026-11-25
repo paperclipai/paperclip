@@ -48,6 +48,7 @@ import { COMPLETION_REVIEW_STAGE_REASON, completionReviewStageEntry } from "../i
 import { randomUUID } from "node:crypto";
 import { preserveNativeWorkspaceExportLease } from "./native-workspace-export-resume.js";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { laterConversationTurn, laterTurns } from "./native-response-presentation-query.js";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -75,6 +76,7 @@ import {
   type NativeAuthoritativeIssueStatus,
   gateDoneOnConfiguredReview,
 } from "./status-arbiter.js";
+import { evaluateBlockerAgentHandoff } from "./blocker-owner-handoff.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
   commitNativeStatusDecision,
@@ -998,6 +1000,19 @@ async function hasLaterAppliedStatusDecision(db: Db, input: {
   return Boolean(later);
 }
 
+// A later turn of the conversation that started replaced this turn, even after
+// it released the execution run (for example, it failed at setup).
+async function laterConversationTurnStarted(db: Db, run: {
+  id: string; companyId: string; agentId: string; issueId: string;
+}) {
+  // Compare stored timestamps; a JavaScript Date drops their microseconds.
+  const [turn] = await db.select({ id: laterTurns.id }).from(laterTurns)
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+      eq(heartbeatRuns.agentId, run.agentId)))
+    .where(laterConversationTurn(run.issueId)).limit(1);
+  return Boolean(turn);
+}
+
 /** Recover only the already accepted answer. Neither issue disposition nor
  * provider state is repaired here; an unsafe native session stays quarantined. */
 export async function repairCommittedNativeChatResponse(
@@ -1209,7 +1224,8 @@ async function recoverCommittedNativeChatResponseInScope(
         && (!issue.executionRunId || issue.executionRunId === run.id)
         && run.contextSnapshot?.issueId === issue.id
         && typeof run.contextSnapshot.conversationSessionGeneration === "number"
-        && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration;
+        && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration
+        && !(await laterConversationTurnStarted(tx, { ...run, issueId: issue.id }));
       // A deferred ordinary-task review still needs its recorded final reply.
       // Publishing that reply must not resolve the interaction or the task.
       // A task woken by an external chat message (for example a GitHub review
@@ -1805,6 +1821,21 @@ export async function finalizeNativeRun(input: {
     const reviewStage = isConversation(authoritativeIssue) || reviewContext
       ? { kind: "none" as const } : completionReviewStageEntry(authoritativeIssue, run.agentId);
     await cancelStoppedRunContinuation(input.db, { companyId: run.companyId, resultJson: savedStop }, toolCallLoopContinuationKey(run.id));
+    const namedBlockerAgentId = assessment.blocker?.ownerAgentId && assessment.blocker.ownerAgentId !== run.agentId
+      ? assessment.blocker.ownerAgentId : null;
+    const blockerHandoffLocked = namedBlockerAgentId !== null && !(await evaluateBlockerAgentHandoff(input.db, {
+      companyId: run.companyId,
+      issue: authoritativeIssue,
+      runId: run.id,
+      actorAgentId: run.agentId,
+      responsibleUserId: run.responsibleUserId,
+      driverKind: run.driverKind,
+      contextSnapshot: run.contextSnapshot,
+      runnerProfileJson: run.runnerProfileJson,
+      targetAgentId: namedBlockerAgentId,
+      unblockAction: assessment.blocker!.unblockAction,
+      requireTaskOwner: true,
+    })).allowed;
     const statusInput: Parameters<typeof resolveNativeFinalizerStatus>[0] = {
       requiredQualityReviewSatisfied: qualityReview.satisfied,
       executionStageApprovedByRun: await executionStageApprovedByRun(input.db, run, authoritativeIssue),
@@ -1826,6 +1857,7 @@ export async function finalizeNativeRun(input: {
         && isNativeEnvironmentBlocker(result),
       agentBlockerRecoverable: terminalState === "succeeded" && ownsProviderFailureDecision && !reviewContext && !stopRequested
         && result.reportedWorkDisposition === "blocked",
+      blockerHandoffLocked,
       hasQueuedChatRequest: terminalState === "succeeded" && result.reportedWorkDisposition === "blocked"
         && await hasQueuedChatRequest(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id, agentId: run.agentId }),
       failureRetryCount: executionFailureRetryCount(run),

@@ -132,6 +132,7 @@ describe("auth routes", () => {
       stackId: "stack-1",
       replayEnabled: true,
       consentRequired: null,
+      cloudTrialInferenceEnabled: false,
     });
 
     vi.stubEnv("PAPERCLIP_POSTHOG_COUNTRY_HEADER", "cf-ipcountry");

@@ -23,11 +23,11 @@ function stageBody(stageName: string): string {
   return dockerfile.slice(froms[startIdx].index ?? 0, froms[startIdx + 1]?.index ?? dockerfile.length);
 }
 
-it("copies installed dependencies as their own layer, before the per-commit app files", () => {
+it("copies installed dependencies as their own linked layer, before the per-commit app files", () => {
   const production = stageBody("production");
-  const dependencies = production.search(/^COPY --chown=node:node --from=deps \/app\/node_modules \/app\/node_modules$/m);
+  const dependencies = production.search(/^COPY --link --chown=node:node --from=deps \/app\/node_modules \/app\/node_modules$/m);
   const app = production.search(/^COPY --chown=node:node --exclude=node_modules --from=build \/app \/app$/m);
-  expect(dependencies, "dependencies must come from the deps stage").toBeGreaterThanOrEqual(0);
+  expect(dependencies, "dependencies must come from the deps stage with --link").toBeGreaterThanOrEqual(0);
   expect(app, "the app copy must leave out the root node_modules").toBeGreaterThan(dependencies);
   // A copy of all of /app from the build stage would put the dependencies
   // back into the per-commit layer.

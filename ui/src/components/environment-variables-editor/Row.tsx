@@ -21,7 +21,7 @@ import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover"
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { SecretPicker } from "./SecretPicker";
 import { CreateSecretPopover, ConvertToSecretPopover } from "./CreateSecretPopover";
-import { isSensitiveEnv } from "./sensitive";
+import { isSensitiveEnv, looksLikeCredentialToken } from "./sensitive";
 import {
   computeRowHealth,
   computeUserSecretRowHealth,
@@ -62,6 +62,7 @@ export interface EnvironmentVariableRowProps {
   /** Enter pressed in the value of the last row — append a fresh row and focus it. */
   onEnterInValueLast: () => void;
   onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
+  onRotateSecret?: (secretId: string, value: string) => Promise<CompanySecret>;
   onToast: (message: string) => void;
   /** Parent-driven focus request for this row (append flow, source switch). */
   focusRequest: "name" | "value" | null;
@@ -84,6 +85,7 @@ export function EnvironmentVariableRow({
   onNamePaste,
   onEnterInValueLast,
   onCreateSecret,
+  onRotateSecret,
   onToast,
   focusRequest,
   onFocusConsumed,
@@ -98,6 +100,7 @@ export function EnvironmentVariableRow({
   const health = computeRowHealth(row, secrets) ?? computeUserSecretRowHealth(row, userSecretDefinitions);
   const boundSecret = row.source === "secret" ? secrets.find((s) => s.id === row.secretId) ?? null : null;
   const userSecretsEnabled = (userSecretDefinitions?.length ?? 0) > 0;
+  const nameLooksLikeSecret = looksLikeCredentialToken(row.name);
   const sensitive =
     row.source === "text" && !row.sensitiveDismissed && isSensitiveEnv(row.name, row.textValue);
 
@@ -177,6 +180,34 @@ export function EnvironmentVariableRow({
     setSecretPopover(null);
   }
 
+  function selectExistingSecret(existing: CompanySecret) {
+    onPatch({
+      source: "secret",
+      secretId: existing.id,
+      userSecretKey: "",
+      required: true,
+      version: "latest",
+      textValue: "",
+    });
+    onToast(`Bound existing secret ${existing.name}`);
+    setSecretPopover(null);
+  }
+
+  async function rotateExistingSecret(existing: CompanySecret, value: string) {
+    if (!onRotateSecret) return;
+    const rotated = await onRotateSecret(existing.id, value);
+    onPatch({
+      source: "secret",
+      secretId: rotated.id,
+      userSecretKey: "",
+      required: true,
+      version: "latest",
+      textValue: "",
+    });
+    onToast(`Saved new version of ${rotated.name} (v${rotated.latestVersion})`);
+    setSecretPopover(null);
+  }
+
   function openStoreAsSecret() {
     const name = secretNameFromKey(row.name) || "secret";
     const { textValue } = row;
@@ -209,8 +240,10 @@ export function EnvironmentVariableRow({
       <div className="col-start-1 row-start-1 min-w-0 @[40rem]/env:row-start-1 @[40rem]/env:self-start">
         <input
           ref={nameInputRef}
+          type={nameLooksLikeSecret ? "password" : "text"}
           className={cn(
             nameInputClass,
+            nameLooksLikeSecret && ANALYTICS_NO_CAPTURE_CLASS,
             dirtyFields.name && "border-amber-500/70 bg-amber-500/10 focus-visible:ring-amber-500/40",
             showNameIssue && nameIssue?.level === "error" && "border-destructive focus-visible:ring-destructive/40",
             showNameIssue && nameIssue?.level === "warn" && "border-amber-500 focus-visible:ring-amber-500/40",
@@ -501,17 +534,21 @@ export function EnvironmentVariableRow({
               <ConvertToSecretPopover
                 initialName={secretPopover.name}
                 initialValue={secretPopover.value}
-                existingSecretNames={secrets.map((s) => s.name)}
+                existingSecrets={secrets}
                 onCancel={() => setSecretPopover(null)}
                 onSubmit={submitSecretPopover}
+                onSelectExisting={selectExistingSecret}
+                onRotateExisting={onRotateSecret ? rotateExistingSecret : undefined}
               />
             ) : secretPopover?.mode === "create" ? (
               <CreateSecretPopover
                 initialName={secretPopover.name}
                 initialValue={secretPopover.value}
-                existingSecretNames={secrets.map((s) => s.name)}
+                existingSecrets={secrets}
                 onCancel={() => setSecretPopover(null)}
                 onSubmit={submitSecretPopover}
+                onSelectExisting={selectExistingSecret}
+                onRotateExisting={onRotateSecret ? rotateExistingSecret : undefined}
               />
             ) : null}
           </PopoverContent>
@@ -596,7 +633,7 @@ export function EnvironmentVariableRow({
           type="button"
           onClick={onRemove}
           disabled={disabled}
-          aria-label={`Remove ${row.name.trim() || "variable"}`}
+          aria-label={nameLooksLikeSecret ? "Remove variable" : `Remove ${row.name.trim() || "variable"}`}
           className="rounded p-1 text-muted-foreground opacity-100 hover:bg-destructive/10 hover:text-destructive @[40rem]/env:opacity-0 @[40rem]/env:group-hover/row:opacity-100 @[40rem]/env:group-focus-within/row:opacity-100"
         >
           <X className="size-4" />

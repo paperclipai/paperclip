@@ -132,7 +132,7 @@ export function Connections() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: "Plugins", href: "/apps" },
       { label: "Connections" },
     ]);
     return () => setBreadcrumbs([]);

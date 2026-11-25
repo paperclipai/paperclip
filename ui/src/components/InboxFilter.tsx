@@ -3,18 +3,19 @@ import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 
-export function InboxFilter<T extends string>({ label, heading, value, options, onChange, defaultLabel }: {
+export function InboxFilter<T extends string>({ label, heading, value, options, onChange, defaultLabel, disabled }: {
   label: string;
   heading: string;
   value: T;
   options: readonly { value: T; label: string }[];
   onChange: (value: T) => void;
   defaultLabel?: string;
+  disabled?: boolean;
 }) {
   const selected = options.find(option => option.value === value);
   return <DropdownMenu>
     <DropdownMenuTrigger asChild>
-      <Button variant="outline" size="sm" value={value} aria-label={selected ? `${label}, ${selected.label}` : label}>
+      <Button variant="outline" size="sm" value={value} disabled={disabled} aria-label={selected ? `${label}, ${selected.label}` : label}>
         <span className="max-w-(--sz-160px) truncate font-medium">{defaultLabel ?? selected?.label}</span>
         <ChevronDown aria-hidden className="size-3.5 text-muted-foreground" />
       </Button>

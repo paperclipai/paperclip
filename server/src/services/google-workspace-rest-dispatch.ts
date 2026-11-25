@@ -87,17 +87,21 @@ function googleWorkspaceTransport(toolName: string): GoogleWorkspaceToolTranspor
   return googleWorkspaceToolTarget(toolName)?.transport ?? null;
 }
 
+export function googleWorkspacePaperclipToolTitle(toolName: string): string | null {
+  const target = googleWorkspaceToolTarget(toolName);
+  const restTitle = target && isGoogleWorkspaceRestService(target.service)
+    ? listGoogleWorkspaceRestTools(target.service).find((tool) => tool.name === target.leaf)?.title
+    : undefined;
+  return restTitle ? googleWorkspaceToolTitle(toolName, restTitle) : null;
+}
+
 export function googleWorkspaceCatalogToolTitle(
   sourceTemplateKey: unknown,
   name: string,
   title: string | null | undefined,
 ): string | null {
   if (sourceTemplateKey !== "google-workspace") return title ?? null;
-  const target = googleWorkspaceToolTarget(name);
-  const restTitle = target && isGoogleWorkspaceRestService(target.service)
-    ? listGoogleWorkspaceRestTools(target.service).find((tool) => tool.name === target.leaf)?.title
-    : undefined;
-  return googleWorkspaceToolTitle(name, restTitle ?? title);
+  return googleWorkspacePaperclipToolTitle(name) ?? googleWorkspaceToolTitle(name, title);
 }
 
 export interface GoogleWorkspaceMcpPreflight {

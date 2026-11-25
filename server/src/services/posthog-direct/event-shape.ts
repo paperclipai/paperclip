@@ -1,11 +1,15 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   PAPERCLIP_ENUM_DESCRIPTIONS,
   PAPERCLIP_EVENTS,
   type TelemetryDimensions,
   type TelemetryEvent,
 } from "@paperclipai/shared/telemetry";
-import type { CloudPostHogConfig } from "../cloud-posthog-config.js";
+import {
+  CLOUD_TRIAL_INFERENCE_FLAG_KEY,
+  cloudTrialInferenceCohort,
+  type CloudPostHogConfig,
+} from "../cloud-posthog-config.js";
 import { UNKNOWN_ENUM_FALLBACKS } from "./enum-fallbacks.generated.js";
 import type { PostHogEventContext } from "./request-context.js";
 
@@ -49,7 +53,19 @@ export type PostHogDirectBatchMeta = {
   ingestedAt: string;
 };
 
-type IdentityConfig = Pick<CloudPostHogConfig, "stackId" | "environment">;
+type IdentityConfig = Pick<CloudPostHogConfig, "stackId" | "environment"> & {
+  cloudTrialInferenceEnabled?: boolean;
+};
+
+export function cloudExperimentProperties(
+  cloudTrialInferenceEnabled: boolean | undefined,
+): Record<string, unknown> {
+  if (typeof cloudTrialInferenceEnabled !== "boolean") return {};
+  return {
+    cloud_trial_inference_enabled: cloudTrialInferenceEnabled,
+    [`$feature/${CLOUD_TRIAL_INFERENCE_FLAG_KEY}`]: cloudTrialInferenceCohort(cloudTrialInferenceEnabled),
+  };
+}
 
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
@@ -181,6 +197,7 @@ export function buildPostHogDirectEvent(
       ...(context?.userId ? { user_id: context.userId } : {}),
       attributed_via: context?.userId ? (context.attributedVia ?? "request") : "none",
       ...(config.environment ? { environment: config.environment } : {}),
+      ...cloudExperimentProperties(config.cloudTrialInferenceEnabled),
       ...(context?.sessionId ? { $session_id: context.sessionId } : {}),
       ...(context?.windowId ? { $window_id: context.windowId } : {}),
       $groups: { [POSTHOG_WORKSPACE_GROUP_TYPE]: config.stackId },
@@ -227,9 +244,58 @@ export function buildWorkspaceStartedEvent(
       install_hash: input.installHash,
       attributed_via: "none",
       ...(config.environment ? { environment: config.environment } : {}),
+      ...cloudExperimentProperties(config.cloudTrialInferenceEnabled),
       $groups: { [POSTHOG_WORKSPACE_GROUP_TYPE]: config.stackId },
       distinct_id: distinctId,
       $process_person_profile: false,
+    },
+  };
+}
+
+/**
+ * Cloud-only direct PostHog event (not in the self-hosted collector contract).
+ * Used for Cloud experiment exposure (`$feature_flag_called`) and Cloud starter
+ * inference funnel events (`cloud_trial.*`).
+ */
+export function buildCloudDirectEvent(
+  input: {
+    event: string;
+    occurredAt: string;
+    properties?: Record<string, unknown>;
+    setOncePersonProperties?: Record<string, unknown>;
+  },
+  context: PostHogEventContext | undefined,
+  config: IdentityConfig,
+): PostHogDirectEvent {
+  const distinctId = resolveDistinctId(config, context);
+  const hasPerson = Boolean(context?.userId);
+  const setOnce: Record<string, unknown> = {
+    ...(typeof config.cloudTrialInferenceEnabled === "boolean"
+      ? { cloud_trial_inference_cohort: cloudTrialInferenceCohort(config.cloudTrialInferenceEnabled) }
+      : {}),
+    ...(input.setOncePersonProperties ?? {}),
+  };
+  return {
+    event: input.event,
+    distinct_id: distinctId,
+    timestamp: input.occurredAt,
+    uuid: randomUUID(),
+    disableGeoip: true,
+    sendFeatureFlags: false,
+    properties: {
+      deployment_source: "cloud",
+      stack_id: config.stackId,
+      ...(context?.companyId ? { company_id: context.companyId } : {}),
+      ...(context?.userId ? { user_id: context.userId } : {}),
+      ...(config.environment ? { environment: config.environment } : {}),
+      ...cloudExperimentProperties(config.cloudTrialInferenceEnabled),
+      ...(input.properties ?? {}),
+      ...(context?.sessionId ? { $session_id: context.sessionId } : {}),
+      ...(context?.windowId ? { $window_id: context.windowId } : {}),
+      $groups: { [POSTHOG_WORKSPACE_GROUP_TYPE]: config.stackId },
+      distinct_id: distinctId,
+      ...(hasPerson && Object.keys(setOnce).length > 0 ? { $set_once: setOnce } : {}),
+      ...(hasPerson ? {} : { $process_person_profile: false }),
     },
   };
 }
