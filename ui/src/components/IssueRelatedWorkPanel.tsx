@@ -3,6 +3,7 @@ import { IssueReferencePill } from "./IssueReferencePill";
 import { ExternalObjectPill } from "./ExternalObjectPill";
 import type { IssueExternalObjectGroup } from "../hooks/useIssueExternalObjects";
 import { externalObjectToneSeverity } from "../lib/external-objects";
+import { pullRequestDisplayParts } from "../lib/pull-request-display";
 import { Badge } from "@/components/ui/badge";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { cn } from "@/lib/utils";
@@ -142,6 +143,9 @@ function ExternalObjectsSection({
         <ul className="-mx-1 flex flex-col">
           {sorted.map(({ pill, mentionCount, sourceLabels, group }) => {
             const object = group.object;
+            const pullRequestDetails = object?.providerKey === "github" && object.objectType === "pull_request"
+              ? pullRequestDisplayParts(object.data, object.statusKey === "open" || object.statusKey === "draft")
+              : [];
             return (
               <li
                 key={object?.id ?? `${pill.providerKey}:${pill.objectType}:${pill.url ?? "anon"}`}
@@ -152,6 +156,9 @@ function ExternalObjectsSection({
                   <span className={cn("min-w-0 flex-1 truncate text-sm text-muted-foreground", ANALYTICS_MASK_CLASS)}>
                     {pill.displayTitle}
                   </span>
+                ) : null}
+                {pullRequestDetails.length > 0 ? (
+                  <span className={cn("text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>{pullRequestDetails.join(" · ")}</span>
                 ) : null}
                 <div className="flex flex-wrap items-center gap-1.5">
                   {sourceLabels.map((label) => (

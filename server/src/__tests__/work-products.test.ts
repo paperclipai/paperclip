@@ -139,6 +139,24 @@ describe("workProductService", () => {
     expect(product.metadata).toEqual(metadata);
   });
 
+  it.each(["clean", null] as const)("refreshes the head commit and replaces the saved merge state with %s", async (mergeableState) => {
+    const product = createWorkProductRow({
+      url: "https://github.com/example/project/pull/42",
+      metadata: { state: "open", headSha: "1111111", mergeableState: "dirty" },
+    }) as any;
+    const resolve = vi.fn(async () => ({
+      state: "open" as const,
+      workProductState: "open" as const,
+      headRef: "feature",
+      headSha: "2222222",
+      mergeableState,
+    }));
+    const [refreshed] = await refreshPullRequestWorkProductMetadata([product], resolve);
+
+    expect(refreshed.metadata).toMatchObject({ headSha: "2222222", mergeableState });
+    expect(product.metadata).toEqual({ state: "open", headSha: "1111111", mergeableState: "dirty" });
+  });
+
   it("retains the saved PR when the provider cannot access it", async () => {
     const product = createWorkProductRow({ url: null, metadata: { url: "https://github.com/example/private-repo/pull/42" } }) as any;
     const resolve = vi.fn(async () => { throw new Error("Not found"); });

@@ -206,22 +206,22 @@ describe("GitHub external object provider", () => {
   it.each([
     [
       "open",
-      { state: "open", draft: false, merged: false, title: "Ship it", updated_at: "2026-04-24T01:02:03Z" },
+      { state: "open", draft: false, merged: false, mergeable_state: "dirty", title: "Ship it", updated_at: "2026-04-24T01:02:03Z" },
       { statusKey: "open", statusLabel: "Open", statusIconKey: "git-pull-request", statusCategory: "open", statusTone: "info", isTerminal: false },
     ],
     [
       "draft",
-      { state: "open", draft: true, merged: false, title: "WIP", updated_at: "2026-04-24T01:02:03Z" },
+      { state: "open", draft: true, merged: false, mergeable_state: "unknown", title: "WIP", updated_at: "2026-04-24T01:02:03Z" },
       { statusKey: "draft", statusLabel: "Draft", statusIconKey: "clock", statusCategory: "waiting", statusTone: "warning", isTerminal: false },
     ],
     [
       "closed",
-      { state: "closed", draft: false, merged: false, title: "Closed PR", updated_at: "2026-04-24T01:02:03Z" },
+      { state: "closed", draft: false, merged: false, mergeable_state: "clean", title: "Closed PR", updated_at: "2026-04-24T01:02:03Z" },
       { statusKey: "closed", statusLabel: "Closed", statusIconKey: "x-circle", statusCategory: "closed", statusTone: "muted", isTerminal: true },
     ],
     [
       "merged",
-      { state: "closed", draft: false, merged: true, title: "Merged PR", updated_at: "2026-04-24T01:02:03Z" },
+      { state: "closed", draft: false, merged: true, mergeable_state: "clean", title: "Merged PR", updated_at: "2026-04-24T01:02:03Z" },
       { statusKey: "merged", statusLabel: "Merged", statusIconKey: "git-merge", statusCategory: "succeeded", statusTone: "success", isTerminal: true },
     ],
   ])("resolves a %s pull request snapshot", async (_name, body, expected) => {
@@ -257,6 +257,7 @@ describe("GitHub external object provider", () => {
         }),
       }),
     });
+    expect(result.ok && result.snapshot.data?.mergeableState).toBe(_name === "open" ? "dirty" : undefined);
     expect(JSON.stringify(result)).not.toContain("authorization");
   });
 
