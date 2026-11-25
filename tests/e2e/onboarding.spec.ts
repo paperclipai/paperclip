@@ -156,7 +156,6 @@ test.describe("Onboarding wizard", () => {
   });
 
   test("the mark and labels keep their size as a single model source collapses", async ({ page }) => {
-    // A one-provider instance resizes the tile. The default two-provider row only translates it.
     await page.route("**/api/adapters", async (route) => {
       const response = await route.fetch();
       const adapters = await response.json();
@@ -180,7 +179,6 @@ test.describe("Onboarding wizard", () => {
     await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now() + 1000)));
 
     const content = [source.locator("img"), source.getByText("Claude", { exact: true }), source.getByText("API key", { exact: true })];
-    // A label slot can span the tile. Measure the rendered text itself.
     const measureContent = () => Promise.all(content.map((locator) => locator.evaluate((element) => {
       const range = document.createRange();
       if (element instanceof HTMLImageElement) range.selectNode(element);

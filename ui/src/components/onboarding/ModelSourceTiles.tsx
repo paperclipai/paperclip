@@ -116,7 +116,6 @@ function ModelSourceTile({
           : "border-border bg-card hover:bg-accent/40",
       )}
     >
-      {/* Let Motion counter the tile's animated scale on the fixed-size mark. */}
       <motion.span
         layout="position"
         transition={SOURCE_COLLAPSE_MOVE}
