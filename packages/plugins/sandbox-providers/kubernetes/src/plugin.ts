@@ -19,6 +19,7 @@ import type {
   PluginEnvironmentValidationResult,
 } from "@paperclipai/plugin-sdk";
 import {
+  KUBERNETES_ACQUIRE_TIMEOUT_MS,
   kubernetesProviderConfigSchema,
   type KubernetesProviderConfig,
   type KubernetesLeaseMetadata,
@@ -201,6 +202,20 @@ async function resolveSyncPodExec(
   return { exec, timeoutMs };
 }
 
+const HOST_RPC_OVERHEAD_MS = 30_000;
+
+const ACQUIRE_AFTER_READY_RESERVE_MS = 45_000;
+
+function acquireReadyDeadline(config: Record<string, unknown>, startedAt: number): number {
+  const positive = (value: unknown) =>
+    typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
+  const providerBudgetMs = Math.max(
+    positive(config.timeoutMs) || KUBERNETES_ACQUIRE_TIMEOUT_MS,
+    positive(config.bridgeRequestTimeoutMs),
+  );
+  return startedAt + providerBudgetMs + HOST_RPC_OVERHEAD_MS - ACQUIRE_AFTER_READY_RESERVE_MS;
+}
+
 const plugin = definePlugin({
   async setup(ctx) {
     ctx.logger.info("Kubernetes sandbox provider plugin ready");
@@ -299,6 +314,7 @@ const plugin = definePlugin({
       executionWorkspaceSettings?: Record<string, unknown> | null;
     },
   ): Promise<PluginEnvironmentLease> {
+    const acquireStartedAt = Date.now();
     const config = kubernetesProviderConfigSchema.parse(params.config);
     const namespace = deriveTenantNamespace(config, params.companyId);
 
@@ -445,15 +461,13 @@ const plugin = definePlugin({
       adapterEnv,
     });
 
-    // A Sandbox lease is usable once its pod can take an exec. Wait for that
-    // here, on a start-up budget of its own, so a cold image pull or slow
-    // scheduling never eats the first command's timeout (a 15 s setup probe
-    // lost that race on every node without the image cached). A Sandbox that
-    // fails or never becomes Ready is released rather than handed out.
     if (isSandboxCrBackend) {
       try {
         await sandboxCrOrchestrator.waitForCompletion(clients, namespace, jobName, {
-          timeoutMs: config.podStartTimeoutSec * 1000,
+          timeoutMs: Math.max(0, Math.min(
+            config.podStartTimeoutSec * 1000,
+            acquireReadyDeadline(params.config, acquireStartedAt) - Date.now(),
+          )),
           pollMs: 1000,
         });
       } catch (readyError) {

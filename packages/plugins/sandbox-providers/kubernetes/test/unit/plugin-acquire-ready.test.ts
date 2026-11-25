@@ -1,8 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-// acquireLease against fakes for everything that would touch a cluster. The
-// Sandbox readiness wait and release are recorded so each test can check the
-// lease is handed out only once its pod can take an exec.
 const h = vi.hoisted(() => ({
   waitForReady: vi.fn(async () => ({ phase: "Running", active: 1 })),
   release: vi.fn(async () => undefined),
@@ -49,6 +46,8 @@ vi.mock("../../src/scoped-network-egress.js", async (importActual) => {
 });
 
 import plugin from "../../src/plugin.js";
+import manifest from "../../src/manifest.js";
+import { kubernetesProviderConfigSchema } from "../../src/types.js";
 
 function acquire(config: Record<string, unknown> = {}) {
   return plugin.definition.onEnvironmentAcquireLease!({
@@ -104,5 +103,19 @@ describe("onEnvironmentAcquireLease readiness", () => {
     await acquire({ backend: "job" });
     expect(h.waitForReady).not.toHaveBeenCalled();
     expect(h.jobWait).not.toHaveBeenCalled();
+  });
+
+  it("declares a host acquire deadline that covers the longest start-up wait", () => {
+    const driver = manifest.environmentDrivers!.find((d) => d.driverKey === "kubernetes")!;
+    expect(driver.defaultAcquireTimeoutMs).toBe(360_000);
+    expect(kubernetesProviderConfigSchema.safeParse({ inCluster: true, podStartTimeoutSec: 300 }).success).toBe(true);
+    expect(kubernetesProviderConfigSchema.safeParse({ inCluster: true, podStartTimeoutSec: 301 }).success).toBe(false);
+  });
+
+  it("stops waiting in time to answer within a shorter host deadline", async () => {
+    await acquire({ timeoutMs: 20_000 });
+    const waited = (h.waitForReady.mock.calls[0] as unknown as [unknown, unknown, unknown, { timeoutMs: number }])[3];
+    expect(waited.timeoutMs).toBeLessThanOrEqual(5_000);
+    expect(waited.timeoutMs).toBeGreaterThan(4_000);
   });
 });
