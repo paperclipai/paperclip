@@ -114,9 +114,14 @@ function ModelSourceTile({
           : "border-border bg-card hover:bg-accent/40",
       )}
     >
-      <span className="flex size-(--sz-30px) shrink-0 items-center justify-center">
+      {/* Let Motion counter the tile's animated scale on the fixed-size mark. */}
+      <motion.span
+        layout="position"
+        transition={SOURCE_COLLAPSE_MOVE}
+        className="flex size-(--sz-30px) shrink-0 items-center justify-center"
+      >
         {source.icon}
-      </span>
+      </motion.span>
       {/*
         One step up the named ladder each — the source name from text-xs (12px)
         to --text-compact (13px), the tag under it from --text-nano (10px) to
