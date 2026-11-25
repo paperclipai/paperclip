@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   __resetPageDiagnostics,
   buildBrowserErrorContext,
+  buildQueryErrorContext,
+  queryKindFor,
   readPageLifecycle,
   sanitizeComponentStack,
   startPageDiagnostics,
@@ -15,6 +17,34 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   document.documentElement.className = "";
+});
+
+describe("query error context", () => {
+  it("keeps only a static query key name", () => {
+    expect(queryKindFor(["issues", "company-uuid", "detail", "PAP-1"])).toBe("issues");
+    expect(queryKindFor(["agent-commentary", "company-uuid"])).toBe("agent-commentary");
+    expect(queryKindFor(["266ff1d0-6be9-47cb-b2ed-300fce5fbcd3"])).toBe("other");
+    expect(queryKindFor(["abcdefab-abcd-4bcd-abcd-abcdefabcdef"])).toBe("other");
+    expect(queryKindFor(["PAP-1"])).toBe("other");
+    expect(queryKindFor(["person@example.com"])).toBe("other");
+    expect(queryKindFor(["a".repeat(65)])).toBe("other");
+    expect(queryKindFor([{ companyId: "company-uuid" }])).toBe("other");
+    expect(queryKindFor([])).toBe("other");
+  });
+
+  it("fingerprints an HTTP failure by status and query name", () => {
+    const error = Object.assign(new Error("Internal server error"), { status: 500 });
+    expect(buildQueryErrorContext(error, ["issues", "company-uuid"])).toEqual({
+      tags: { query_kind: "issues", api_status: "500" },
+      fingerprint: ["api-error", "500", "issues"],
+    });
+  });
+
+  it("keeps default stack grouping for an error without an HTTP status", () => {
+    expect(buildQueryErrorContext(new TypeError("x is undefined"), ["issues"])).toEqual({
+      tags: { query_kind: "issues" },
+    });
+  });
 });
 
 describe("browser error context", () => {

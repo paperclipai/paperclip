@@ -31,13 +31,13 @@ describe("claude setup-token session start request", () => {
     expect(result.success).toBe(false);
   });
 
-  it("rejects an agent id: the scope carries no agent id", () => {
+  it("accepts an optional saved-agent transport target", () => {
     const result = startClaudeSetupTokenSessionRequestSchema.safeParse({
       environmentId: ENVIRONMENT_ID,
       adapterType: "claude_local",
       agentId: "22222222-2222-4222-8222-222222222222",
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 });
 
@@ -96,6 +96,7 @@ describe("claude setup-token owner response and completion response", () => {
   it("accepts an owner response with the submitted-browser-code panel mode and a prompt", () => {
     const parsed = claudeSetupTokenSessionOwnerResponseSchema.parse({
       sessionId: "opaque-base64url-session-id",
+      agentId: "33333333-3333-4333-8333-333333333333",
       environmentId: ENVIRONMENT_ID,
       status: "waiting_for_user",
       expiresAt: null,
@@ -104,6 +105,8 @@ describe("claude setup-token owner response and completion response", () => {
       prompt: { authorizationUrl: "https://example.test/authorize" },
     });
     expect(parsed.panelMode).toBe("submitted_browser_code");
+    expect(parsed.agentId).toBe("33333333-3333-4333-8333-333333333333");
+    expect(claudeSetupTokenSessionOwnerResponseSchema.safeParse({ ...parsed, agentId: "invalid" }).success).toBe(false);
     expect(parsed.prompt?.authorizationUrl).toBe("https://example.test/authorize");
   });
 

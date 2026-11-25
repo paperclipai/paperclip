@@ -2,6 +2,8 @@
 
 Product map: [Team packages and catalog installation](../feature-map/teams.md).
 
+Feature ID: `teams`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -10,6 +12,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `discovery`
+
+Capability ID: `teams/discovery`.
 
 Review: `baseline`.
 
@@ -35,6 +39,8 @@ Gaps: Team browsing exists even though there is no dedicated teams product scree
 
 ## `preview`
 
+Capability ID: `teams/preview`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -59,6 +65,8 @@ execution proof.
 
 ## `install`
 
+Capability ID: `teams/install`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -82,6 +90,8 @@ Gaps: Actual agent permission branch exists. Resulting agents/accounts/workspace
 still need operator setup.
 
 ## `configuration`
+
+Capability ID: `teams/configuration`.
 
 Review: `baseline`.
 

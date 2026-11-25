@@ -34,6 +34,7 @@ describe("environment sync diagnostic envelope", () => {
     const wrap = (cause: unknown) => ({ cause });
     expect(environmentSyncErrorData(wrap(wrap(wrap({ code: "EIO" }))))).toEqual({ schema, diagnostic: { errorCode: "EIO" } });
     expect(environmentSyncErrorData(wrap(wrap(wrap(wrap({ code: "EIO" })))))).toBeUndefined();
+    expect(environmentSyncErrorData({ code: "ENAMETOOLONG" })).toEqual({ schema, diagnostic: { errorCode: "ENAMETOOLONG" } });
   });
 
   it("revalidates worker fields and ignores arbitrary payload and protocol versions", () => {

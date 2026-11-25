@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isPrivateWebhookHttpRequest,
+  isPrivateMuseHttpRequest,
   isSecretSensitiveHttpRequest,
   shouldSilenceHttpSuccessLog,
 } from "../middleware/http-log-policy.js";
@@ -63,6 +64,14 @@ describe("isPrivateWebhookHttpRequest", () => {
 });
 
 describe("isSecretSensitiveHttpRequest", () => {
+  it("protects company observability credentials on accepted and rejected paths", () => {
+    for (const method of ["GET", "PUT", "POST", "DELETE", "PATCH"]) {
+      for (const url of ["/api/companies/company/observability", "/api/companies/company/observability/test", "/api/companies/company/observability/unknown", "https://paperclip.test/API/COMPANIES/company/OBSERVABILITY?ignored=private"]) {
+        expect(isSecretSensitiveHttpRequest(method, url)).toBe(true);
+      }
+    }
+    expect(isSecretSensitiveHttpRequest("PUT", "/api/companies/company/observability-extra")).toBe(false);
+  });
   it("protects Slack registration, installation, recovery, and all callback methods", () => {
     for (const suffix of ["registration", "install", "resume"]) expect(isSecretSensitiveHttpRequest("POST", `/api/chat-endpoints/id/slack/${suffix}`)).toBe(true);
     for (const method of ["GET", "POST", "DELETE"]) for (const path of ["/api/chat-slack/oauth/callback?code=canary", "/api/chat-slack/managed/oauth/callback?claim=canary", "/api/chat-slack/managed/oauth/callback?code=canary", "/api/chat-endpoints/endpoint/slack/managed/authorize", "/api/chat-endpoints/endpoint/slack/managed/provision", "https://paperclip.test/API/CHAT-SLACK/OAUTH/callback?code=canary"])
@@ -186,5 +195,17 @@ describe("shouldSilenceHttpSuccessLog", () => {
         404,
       ),
     ).toBe(false);
+  });
+});
+
+
+describe("Muse HTTP privacy",()=>{
+  it("protects OAuth, worker bodies and rejected namespace variants",()=>{
+    for(const path of ["/api/muse/v1/oauth/authorize?pairing_ticket=private", "/api/muse/v1/commands", "/api/muse/unknown/private", "/API/MUSE/v1/token", "http://host.invalid/api/%6duse/v1/commands", "/api/%256duse/v1/queries", "/api/companies/company/agents/agent/muse-binding", "/api/companies/company/muse-invitations"])
+      for(const method of ["GET","POST","DELETE"]){expect(isPrivateMuseHttpRequest(path)).toBe(true);expect(isSecretSensitiveHttpRequest(method,path)).toBe(true);}
+    expect(isPrivateMuseHttpRequest("/api/muse-extra")).toBe(false);
+    expect(isPrivateMuseHttpRequest("/api/issues/task")).toBe(false);
+    expect(shouldSilenceHttpSuccessLog("GET","/api/muse/v1/signal",200)).toBe(true);
+    expect(shouldSilenceHttpSuccessLog("GET","/api/muse/v1/signal",503)).toBe(false);
   });
 });
