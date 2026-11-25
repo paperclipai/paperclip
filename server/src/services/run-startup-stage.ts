@@ -41,11 +41,25 @@ interface RunStartupEntry {
   issueId: string | null;
   /** Null once the agent's turn has started; the attempt keeps its resume flag. */
   stage: RunStartupStage | null;
+  /**
+   * A stage the run's environment plugin reported during one of its task
+   * operations. It shows instead of Core's stage until that operation returns,
+   * and may name an earlier stage (a stopped machine starting during submit).
+   */
+  pluginStage: RunStartupStage | null;
   sessionResumed: boolean;
   updatedAt: Date;
 }
 
 const entriesByRunId = new Map<string, RunStartupEntry>();
+
+/** Plugin task operations in flight, by plugin and task: the only time a plugin may report. */
+const pluginWindows = new Map<string, { runId: string; open: number }>();
+const windowKey = (pluginId: string, taskId: string) => `${pluginId}\u0000${taskId}`;
+
+function shownStage(entry: RunStartupEntry): RunStartupStage | null {
+  return entry.stage === null ? null : entry.pluginStage ?? entry.stage;
+}
 
 export function runStartupStageForStep(stepName: string): RunStartupStage | "started" | null {
   const mapped = STAGE_BY_STEP.get(stepName);
@@ -56,10 +70,11 @@ export function runStartupStageForStep(stepName: string): RunStartupStage | "sta
   return stepName.startsWith("heartbeat.prepare.") ? "getting_ready" : null;
 }
 
-function publish(runId: string, entry: Pick<RunStartupEntry, "companyId" | "agentId" | "issueId">,
-  stage: RunStartupStage | null, sessionResumed: boolean, updatedAt: Date) {
+function publish(runId: string, entry: RunStartupEntry, stage: RunStartupStage | null = shownStage(entry),
+  updatedAt: Date = entry.updatedAt) {
   const payload: HeartbeatRunStartupStageEvent = {
-    runId, agentId: entry.agentId, issueId: entry.issueId, stage, sessionResumed, updatedAt: updatedAt.toISOString(),
+    runId, agentId: entry.agentId, issueId: entry.issueId, stage, sessionResumed: entry.sessionResumed,
+    updatedAt: updatedAt.toISOString(),
   };
   publishLiveEvent({ companyId: entry.companyId, type: "heartbeat.run.startup_stage", payload: { ...payload } });
 }
@@ -76,10 +91,10 @@ export function beginRunStartupStages(run: { id: string; companyId: string; agen
   entriesByRunId.delete(run.id);
   const entry: RunStartupEntry = {
     companyId: run.companyId, agentId: run.agentId, issueId: run.issueId,
-    stage: "getting_ready", sessionResumed: false, updatedAt: new Date(),
+    stage: "getting_ready", pluginStage: null, sessionResumed: false, updatedAt: new Date(),
   };
   entriesByRunId.set(run.id, entry);
-  publish(run.id, entry, entry.stage, false, entry.updatedAt);
+  publish(run.id, entry);
 }
 
 /** Records that a timed step began. Unknown runs and earlier stages are ignored. */
@@ -93,9 +108,10 @@ export function noteRunStartupStep(runId: string, stepName: string) {
     return;
   }
   if ((STAGE_ORDER.get(next) ?? -1) <= (STAGE_ORDER.get(entry.stage) ?? -1)) return;
+  const shown = shownStage(entry);
   entry.stage = next;
   entry.updatedAt = new Date();
-  publish(runId, entry, entry.stage, entry.sessionResumed, entry.updatedAt);
+  if (shownStage(entry) !== shown) publish(runId, entry);
 }
 
 /** The provider confirmed it resumed a saved session for this run. */
@@ -104,7 +120,7 @@ export function noteRunStartupSessionResumed(runId: string) {
   if (!entry || entry.sessionResumed) return;
   entry.sessionResumed = true;
   entry.updatedAt = new Date();
-  publish(runId, entry, entry.stage, true, entry.updatedAt);
+  publish(runId, entry);
 }
 
 /**
@@ -116,8 +132,9 @@ export function endRunStartup(runId: string) {
   const entry = entriesByRunId.get(runId);
   if (!entry || entry.stage === null) return;
   entry.stage = null;
+  entry.pluginStage = null;
   entry.updatedAt = new Date();
-  publish(runId, entry, null, entry.sessionResumed, entry.updatedAt);
+  publish(runId, entry);
 }
 
 /** Forgets the execution attempt once it ends. */
@@ -125,7 +142,52 @@ export function finishRunStartupStages(runId: string) {
   const entry = entriesByRunId.get(runId);
   if (!entry) return;
   entriesByRunId.delete(runId);
-  if (entry.stage !== null) publish(runId, entry, null, entry.sessionResumed, new Date());
+  if (entry.stage !== null) publish(runId, entry, null, new Date());
+}
+
+/**
+ * Opens the window in which a plugin may report a stage for one of its tasks:
+ * the duration of one environment task operation for a run. Call the returned
+ * function when the operation returns; the run's own stage then shows again.
+ */
+export function openPluginStartupWindow(pluginId: string, taskId: string, runId: string): () => void {
+  const key = windowKey(pluginId, taskId);
+  const slot = pluginWindows.get(key);
+  if (slot && slot.runId === runId) slot.open += 1;
+  else pluginWindows.set(key, { runId, open: 1 });
+  let closed = false;
+  return () => {
+    if (closed) return;
+    closed = true;
+    const current = pluginWindows.get(key);
+    if (!current || current.runId !== runId) return;
+    current.open -= 1;
+    if (current.open > 0) return;
+    pluginWindows.delete(key);
+    const entry = entriesByRunId.get(runId);
+    if (!entry || entry.pluginStage === null) return;
+    const shown = shownStage(entry);
+    entry.pluginStage = null;
+    entry.updatedAt = new Date();
+    if (shownStage(entry) !== shown) publish(runId, entry);
+  };
+}
+
+/**
+ * A plugin reports the stage of its task. Accepted only inside an open window
+ * for that plugin and task, and only before the run's agent turn starts.
+ */
+export function reportPluginStartupStage(pluginId: string, taskId: string, stage: RunStartupStage): boolean {
+  if (!STAGE_ORDER.has(stage)) return false;
+  const slot = pluginWindows.get(windowKey(pluginId, taskId));
+  if (!slot) return false;
+  const entry = entriesByRunId.get(slot.runId);
+  if (!entry || entry.stage === null) return false;
+  const shown = shownStage(entry);
+  entry.pluginStage = stage;
+  entry.updatedAt = new Date();
+  if (shownStage(entry) !== shown) publish(slot.runId, entry);
+  return true;
 }
 
 export function getRunStartupStage(
@@ -143,7 +205,7 @@ export function getRunStartupStage(
   }
   if (expected.companyId != null && entry.companyId !== expected.companyId) return null;
   if (expected.agentId != null && entry.agentId !== expected.agentId) return null;
-  return { stage: entry.stage, sessionResumed: entry.sessionResumed };
+  return { stage: shownStage(entry), sessionResumed: entry.sessionResumed };
 }
 
 /** Forgets a run without publishing, e.g. once a terminal status is observed. */
@@ -153,4 +215,5 @@ export function clearRunStartupStage(runId: string) {
 
 export function clearAllRunStartupStages() {
   entriesByRunId.clear();
+  pluginWindows.clear();
 }

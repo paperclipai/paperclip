@@ -21,6 +21,7 @@ import { assertPluginTaskSourceAttachment, assertPluginTaskSourceRecovery } from
 import { pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
 import { runnerLaunchPreparationDigest, runnerLaunchRunDigest } from "../vendor/paperclip-runner/index.js";
 import { assertPluginTaskOwnershipDispatch, PluginTaskOwnershipPendingError, readyPortableTaskSource, reconcilePluginTaskAdmission } from "./plugin-task-ownership.js";
+import { openPluginStartupWindow } from "./run-startup-stage.js";
 
 export type PluginTaskDescription = Extract<PluginEnvironmentTaskResult, { kind: "description" }>;
 
@@ -343,7 +344,13 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
     throw new Error("Plugin Runner credential handoff unavailable");
   }
   if (ownership && driver.sessionHandoffVersion !== 1) throw new Error("Plugin Runner ownership reconciliation unavailable");
+  // While a task operation for a run is in flight, its plugin may report the
+  // run's startup stage for display (run-startup-stage).
   const callWorker = async <M extends HostToWorkerMethodName>(method: M, params: HostToWorkerMethods[M][0], timeout?: number): Promise<HostToWorkerMethods[M][1]> => {
+    const closeStartupWindow = method === "environmentTask" && run ? openPluginStartupWindow(plugin.id, taskId, run.id) : null;
+    try { return await callPluginWorker(method, params, timeout); } finally { closeStartupWindow?.(); }
+  };
+  const callPluginWorker = async <M extends HostToWorkerMethodName>(method: M, params: HostToWorkerMethods[M][0], timeout?: number): Promise<HostToWorkerMethods[M][1]> => {
     if (!context) {
       const cleanup = metadata.runnerTaskStartupCleanup as { contextId?: unknown; requiresPreparationStop?: unknown } | undefined;
       if (["stop", "status", "complete", "credentials"].includes(operation.kind) && typeof cleanup?.contextId === "string" && typeof cleanup.requiresPreparationStop === "boolean") {

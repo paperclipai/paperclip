@@ -159,6 +159,11 @@ export interface HostServices {
     ): Promise<string>;
   };
 
+  /** Provides `environmentTasks.reportStartupStage`. */
+  environmentTasks: {
+    reportStartupStage(params: WorkerToHostMethods["environmentTasks.reportStartupStage"][0]): Promise<void>;
+  };
+
   /** Provides `activity.log`. */
   activity: {
     log(params: {
@@ -423,6 +428,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
 
   // Activity
   "activity.log": "activity.log.write",
+
+  // Environment tasks
+  "environmentTasks.reportStartupStage": "environment.drivers.register",
 
   // Metrics
   "metrics.write": "metrics.write",
@@ -800,6 +808,11 @@ export function createHostClientHandlers(
     // Activity
     "activity.log": gated("activity.log", async (params) => {
       return services.activity.log(params);
+    }),
+
+    // Environment tasks
+    "environmentTasks.reportStartupStage": gated("environmentTasks.reportStartupStage", async (params) => {
+      return services.environmentTasks.reportStartupStage(params);
     }),
 
     // Metrics

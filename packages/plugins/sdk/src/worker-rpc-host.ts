@@ -682,6 +682,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         },
       },
 
+      environmentTasks: {
+        async reportStartupStage(input): Promise<void> {
+          await callHost("environmentTasks.reportStartupStage", { taskId: input.taskId, stage: input.stage });
+        },
+      },
+
       activity: {
         async log(entry): Promise<void> {
           await callHost("activity.log", {

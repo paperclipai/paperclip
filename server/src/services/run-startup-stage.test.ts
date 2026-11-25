@@ -14,6 +14,8 @@ import {
   MAX_TRACKED_RUN_STARTUPS,
   noteRunStartupSessionResumed,
   noteRunStartupStep,
+  openPluginStartupWindow,
+  reportPluginStartupStage,
   RUN_STARTUP_STAGE_TTL_MS,
   runStartupStageForStep,
 } from "./run-startup-stage.js";
@@ -181,6 +183,53 @@ describe("run startup stages", () => {
     expect(getRunStartupStage(run.id, { now: later })).toEqual({ stage: null, sessionResumed: true });
     finishRunStartupStages(run.id);
     expect(getRunStartupStage(run.id)).toBeNull();
+  });
+
+  describe("plugin reports", () => {
+    it("shows a plugin's stage only during its own task operation, even an earlier stage", () => {
+      const recorder = recordEvents();
+      try {
+        beginRunStartupStages(run);
+        noteRunStartupStep(run.id, "native.controller.backend_setup");
+        expect(reportPluginStartupStage("plugin-a", "task-1", "starting_environment")).toBe(false);
+        const close = openPluginStartupWindow("plugin-a", "task-1", run.id);
+        expect(reportPluginStartupStage("plugin-b", "task-1", "starting_environment")).toBe(false);
+        expect(reportPluginStartupStage("plugin-a", "task-2", "starting_environment")).toBe(false);
+        expect(reportPluginStartupStage("plugin-a", "task-1", "starting_environment")).toBe(true);
+        expect(getRunStartupStage(run.id)?.stage).toBe("starting_environment");
+        // Core keeps moving underneath; the plugin's stage shows until the call returns.
+        noteRunStartupStep(run.id, "runner.session.startup");
+        expect(getRunStartupStage(run.id)?.stage).toBe("starting_environment");
+        close();
+        close();
+        expect(getRunStartupStage(run.id)?.stage).toBe("starting_agent");
+        expect(reportPluginStartupStage("plugin-a", "task-1", "preparing_workspace")).toBe(false);
+        expect(recorder.stages()).toEqual(["getting_ready", "connecting_tools", "starting_environment", "starting_agent"]);
+      } finally {
+        recorder.unsubscribe();
+      }
+    });
+
+    it("keeps the window open until every overlapping operation returns", () => {
+      beginRunStartupStages(run);
+      const first = openPluginStartupWindow("plugin-a", "task-1", run.id);
+      const second = openPluginStartupWindow("plugin-a", "task-1", run.id);
+      reportPluginStartupStage("plugin-a", "task-1", "starting_environment");
+      first();
+      expect(getRunStartupStage(run.id)?.stage).toBe("starting_environment");
+      second();
+      expect(getRunStartupStage(run.id)?.stage).toBe("getting_ready");
+    });
+
+    it("ignores reports after the agent turn starts and unknown stages", () => {
+      beginRunStartupStages(run);
+      const close = openPluginStartupWindow("plugin-a", "task-1", run.id);
+      expect(reportPluginStartupStage("plugin-a", "task-1", "made_up" as never)).toBe(false);
+      noteRunStartupStep(run.id, "agent.turn");
+      expect(reportPluginStartupStage("plugin-a", "task-1", "starting_environment")).toBe(false);
+      expect(getRunStartupStage(run.id)?.stage).toBeNull();
+      close();
+    });
   });
 
   it("adds the stage to active run reads and drops it for ended runs", () => {

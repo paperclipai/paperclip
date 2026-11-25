@@ -36,7 +36,8 @@ import type {
   PluginExecutionWorkspaceMetadata,
 } from "@paperclipai/plugin-sdk";
 import type { CreateIssueThreadInteraction, InviteJoinType, IssueDocumentSummary, IssueRelationIssueSummary, PermissionKey, PrincipalType } from "@paperclipai/shared";
-import { pluginOperationIssueOriginKind } from "@paperclipai/shared";
+import { pluginOperationIssueOriginKind, RUN_STARTUP_STAGES, type RunStartupStage } from "@paperclipai/shared";
+import { reportPluginStartupStage } from "./run-startup-stage.js";
 import { companyService } from "./companies.js";
 import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
@@ -1808,6 +1809,17 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         return secretsHandler.resolve({ ...params, companyId });
+      },
+    },
+
+    environmentTasks: {
+      async reportStartupStage(params) {
+        // Display only: the tracker accepts it during this plugin's own task operation.
+        const stage = (params as { stage?: unknown } | undefined)?.stage;
+        const taskId = (params as { taskId?: unknown } | undefined)?.taskId;
+        if (typeof taskId !== "string" || !taskId || typeof stage !== "string"
+          || !(RUN_STARTUP_STAGES as readonly string[]).includes(stage)) return;
+        reportPluginStartupStage(pluginId, taskId, stage as RunStartupStage);
       },
     },
 
