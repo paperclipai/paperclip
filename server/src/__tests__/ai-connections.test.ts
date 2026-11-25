@@ -2739,7 +2739,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       await db.delete(adapterAuthSessions).where(eq(adapterAuthSessions.startedByUserId, owner));
     }
   });
-  it("makes a cancel due for the expiry worker when its login home cannot be removed", async () => {
+  it.skipIf(process.getuid?.() === 0)("makes a cancel due for the expiry worker when its login home cannot be removed", async () => {
     const [environment] = await db.select().from(environments).where(eq(environments.driver, "local")).limit(1);
     const id = randomUUID();
     const owner = "unremovable-home";
