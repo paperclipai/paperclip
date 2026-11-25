@@ -99,36 +99,123 @@ export function buildStaticCheckPlan() {
   ];
 }
 
-const activeChildren = new Set();
+const activeChildren = new Map();
+const SIGNAL_EXIT_CODES = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143 };
+let cancelSignal = null;
+let shutdownPromise = null;
 
-function forwardSignal(signal) {
-  for (const child of activeChildren) {
-    if (child.exitCode === null && child.signalCode === null) {
-      try {
-        child.kill(signal);
-      } catch {
-      }
+function killProcessTree(child, signal, detached) {
+  if (detached && typeof child.pid === "number" && child.pid > 0) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch (error) {
+      if (error?.code === "ESRCH") return;
     }
+  }
+  try {
+    child.kill(signal);
+  } catch {
   }
 }
 
-function runCommand(step, { bufferOutput = false } = {}) {
+function destroyPipes(child) {
+  try {
+    child.stdout?.destroy();
+  } catch {
+  }
+  try {
+    child.stderr?.destroy();
+  } catch {
+  }
+}
+
+export async function stopActiveChildren(signal = "SIGTERM", { graceMs = 5_000, forceGraceMs = 500 } = {}) {
+  const entries = [...activeChildren.entries()];
+  if (entries.length === 0) return;
+  for (const [child, entry] of entries) {
+    if (child.exitCode === null && child.signalCode === null) {
+      killProcessTree(child, signal, entry.detached);
+    }
+  }
+  const waitForAll = Promise.all(entries.map(([, entry]) => entry.done));
+  let timer;
+  const timedOut = await Promise.race([
+    waitForAll.then(() => false),
+    new Promise((resolvePromise) => {
+      timer = setTimeout(() => resolvePromise(true), graceMs);
+      timer.unref?.();
+    }),
+  ]);
+  clearTimeout(timer);
+  if (!timedOut) return;
+  for (const [child, entry] of entries) {
+    killProcessTree(child, "SIGKILL", entry.detached);
+    destroyPipes(child);
+  }
+  let forceTimer;
+  await Promise.race([
+    waitForAll,
+    new Promise((resolvePromise) => {
+      forceTimer = setTimeout(resolvePromise, forceGraceMs);
+      forceTimer.unref?.();
+    }),
+  ]);
+  clearTimeout(forceTimer);
+  for (const [, entry] of entries) {
+    entry.forceResolve();
+  }
+}
+
+function forwardSignal(signal) {
+  cancelSignal = signal;
+  if (shutdownPromise) return;
+  shutdownPromise = stopActiveChildren(signal).finally(() => {
+    process.exit(SIGNAL_EXIT_CODES[signal] ?? 128);
+  });
+}
+
+export function runCommand(step, { bufferOutput = false } = {}) {
+  if (cancelSignal) {
+    return Promise.resolve({
+      label: step.label,
+      code: SIGNAL_EXIT_CODES[cancelSignal] ?? 128,
+      durationMs: 0,
+      chunks: [],
+    });
+  }
   const startedAt = Date.now();
+  const detached = process.platform !== "win32";
   return new Promise((resolvePromise) => {
     const child = spawn(step.command, step.args, {
       cwd: step.cwd,
       env: process.env,
+      detached,
       stdio: bufferOutput ? ["ignore", "pipe", "pipe"] : "inherit",
     });
-    activeChildren.add(child);
+    let resolveDone;
+    const done = new Promise((r) => {
+      resolveDone = r;
+    });
+    const chunks = [];
     let settled = false;
     const finish = (payload) => {
       if (settled) return;
       settled = true;
       activeChildren.delete(child);
+      resolveDone();
       resolvePromise(payload);
     };
-    const chunks = [];
+    activeChildren.set(child, {
+      done,
+      detached,
+      forceResolve: () => finish({
+        label: step.label,
+        code: SIGNAL_EXIT_CODES[cancelSignal] ?? 128,
+        durationMs: Date.now() - startedAt,
+        chunks,
+      }),
+    });
     if (bufferOutput) {
       child.stdout.on("data", (chunk) => chunks.push({ stream: "stdout", chunk }));
       child.stderr.on("data", (chunk) => chunks.push({ stream: "stderr", chunk }));
@@ -145,7 +232,7 @@ function runCommand(step, { bufferOutput = false } = {}) {
     child.once("close", (code, signal) => {
       finish({
         label: step.label,
-        code: signal ? 128 : (code ?? 1),
+        code: signal ? (SIGNAL_EXIT_CODES[signal] ?? 128) : (code ?? 1),
         durationMs: Date.now() - startedAt,
         chunks,
       });
@@ -182,11 +269,19 @@ async function executePlan(phases) {
   process.on("SIGHUP", forwardSignal);
   try {
     for (const phase of phases) {
+      if (shutdownPromise) {
+        await shutdownPromise;
+        return;
+      }
       const phaseStart = Date.now();
       console.log(`[check:static] phase=${phase.name} mode=${phase.mode}`);
       if (phase.mode === "serial") {
         for (const step of phase.steps) {
           const result = await runCommand(step, { bufferOutput: false });
+          if (shutdownPromise) {
+            await shutdownPromise;
+            return;
+          }
           if (result.code !== 0) {
             console.error(`[check:static] FAILED ${result.label} (exit=${result.code})`);
             process.exit(result.code);
@@ -204,6 +299,10 @@ async function executePlan(phases) {
             return result;
           }),
         );
+        if (shutdownPromise) {
+          await shutdownPromise;
+          return;
+        }
         const failed = results.find((result) => result.code !== 0);
         if (failed) {
           console.error(`[check:static] FAILED ${failed.label} (exit=${failed.code})`);
@@ -211,6 +310,10 @@ async function executePlan(phases) {
         }
       } else if (phase.mode === "parallel-chains") {
         const chains = await Promise.all(phase.chains.map((chain) => runChain(chain, { bufferOutput: true })));
+        if (shutdownPromise) {
+          await shutdownPromise;
+          return;
+        }
         const firstFailure = chains.find((chain) => chain.failed)?.failed ?? null;
         if (firstFailure) {
           console.error(`[check:static] FAILED ${firstFailure.label} (exit=${firstFailure.code})`);

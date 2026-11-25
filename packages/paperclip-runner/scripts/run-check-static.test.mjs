@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { API_AUTHORITY_VITEST_ARGS, planApiAuthority } from "./check-api-authority.mjs";
-import { buildStaticCheckPlan } from "./run-check-static.mjs";
+import { buildStaticCheckPlan, runCommand, stopActiveChildren } from "./run-check-static.mjs";
 import { planPrepCommands, PREP_TEST_FILES } from "./run-prep-tests.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -83,4 +84,53 @@ test("buildStaticCheckPlan preserves every static check with race-free parallel 
       ["scripts/check-api-authority.mjs", "--skip-build"],
     ],
   );
+});
+
+test("stopActiveChildren terminates nested child process trees and settles buffered runCommand within graceMs", async (t) => {
+  if (process.platform === "win32") return;
+  const dir = mkdtempSync(join(tmpdir(), "run-check-static-tree-"));
+  const pidFile = join(dir, "grandchild.pid");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+  const script = `
+    const { spawnSync } = require("node:child_process");
+    const { writeFileSync } = require("node:fs");
+    const inner = 'require("node:fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); process.on("SIGTERM", () => {}); setInterval(() => {}, 1000);';
+    spawnSync(process.execPath, ["-e", inner], { stdio: "inherit" });
+  `;
+
+  const commandPromise = runCommand(
+    { label: "nested-tree", command: process.execPath, args: ["-e", script], cwd: packageRoot },
+    { bufferOutput: true },
+  );
+
+  const deadline = Date.now() + 5_000;
+  while (!existsSync(pidFile) && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  assert.ok(existsSync(pidFile), "grandchild process should start and write its pid");
+  const grandchildPid = Number(readFileSync(pidFile, "utf8").trim());
+  assert.ok(Number.isInteger(grandchildPid) && grandchildPid > 0);
+
+  const stopStart = Date.now();
+  await stopActiveChildren("SIGTERM", { graceMs: 250, forceGraceMs: 500 });
+  const result = await commandPromise;
+  const elapsedMs = Date.now() - stopStart;
+
+  assert.notEqual(result.code, 0);
+  assert.ok(elapsedMs < 3_000, `expected bounded shutdown, took ${elapsedMs}ms`);
+
+  let alive = true;
+  for (let i = 0; i < 20; i += 1) {
+    try {
+      process.kill(grandchildPid, 0);
+      await new Promise((r) => setTimeout(r, 25));
+    } catch (error) {
+      if (error?.code === "ESRCH") {
+        alive = false;
+        break;
+      }
+    }
+  }
+  assert.equal(alive, false, `grandchild process ${grandchildPid} should be terminated`);
 });
