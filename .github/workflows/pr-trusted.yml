@@ -251,6 +251,20 @@ jobs:
       - name: Test e2e shard partition
         run: node "$CI_NODE_TEST" ./scripts/__tests__/e2e-shard.test.mjs
 
+      - name: Check CI test budget policy
+        run: |
+          if [[ -f ./scripts/check-test-budget.mjs ]]; then
+            base_sha="${{ github.event.pull_request.base.sha }}"
+            if [[ -n "$base_sha" ]]; then
+              node ./scripts/check-test-budget.mjs --base "$base_sha"
+            else
+              node ./scripts/check-test-budget.mjs
+            fi
+          fi
+          if [[ -f ./scripts/check-test-budget.test.mjs ]]; then
+            node "$CI_NODE_TEST" ./scripts/check-test-budget.test.mjs
+          fi
+
       - name: Test release verify workflow wiring
         run: |
           tests=(./scripts/__tests__/release-verify-workflow.test.mjs ./scripts/__tests__/eval-schedule-monitor.test.mjs ./scripts/__tests__/prepare-runner-release-image.test.mjs ./scripts/cloud-source-verification.test.mjs ./scripts/cloud-readiness-runner-loss.test.mjs ./scripts/standard-image-contract.test.mjs ./scripts/reuse-canary-image.test.mjs)
@@ -485,6 +499,33 @@ jobs:
         if: ${{ steps.runner_release_crate.outputs.cache-hit == 'true' }}
         run: node scripts/runner-release-crate-cache.mjs mark-current
 
+      # Exact-key master cache for prebuilt Runner dist (read-only restore;
+      # prepare-runner-vendor.mjs self-validates the SHA-256 input digest and
+      # every output size, rebuilding on any mismatch).
+      - name: Restore prebuilt Runner dist (read only)
+        id: runner_dist
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            packages/paperclip-runner/dist
+            packages/paperclip-runner/node_modules/.cache/paperclip-runner-build-inputs.json
+            packages/paperclip-eval-kernel/dist
+          key: runner-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.base.json', 'patches/**', 'packages/shared/src/**', 'packages/adapter-utils/src/**', 'packages/plugins/sdk/src/**', 'packages/paperclip-runner/package.json', 'packages/paperclip-runner/tsconfig*.json', 'packages/paperclip-runner/rust-toolchain.toml', 'packages/paperclip-runner/acpx-profiles.json', 'packages/paperclip-runner/antigravity-distributions.json', 'packages/paperclip-runner/cursor-*.json', 'packages/paperclip-runner/src/**', 'packages/paperclip-runner/scripts/**', 'packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/spec/**', 'packages/paperclip-runner/runner/Cargo.toml', 'packages/paperclip-runner/runner/Cargo.lock', 'packages/paperclip-runner/runner/crates/**', 'packages/paperclip-runner/test-fixtures/**', 'packages/paperclip-runner/test/fixtures/**', 'packages/paperclip-eval-kernel/package.json', 'packages/paperclip-eval-kernel/tsconfig*.json', 'packages/paperclip-eval-kernel/src/**') }}
+
+      # Prefix-keyed master cache for TS 7 incremental .tsbuildinfo + dts outputs
+      # (read-only restore). TypeScript 7 hashes file contents so changed PR files
+      # always re-check cleanly while unchanged layers finish 10-18x faster.
+      - name: Restore incremental typecheck cache (read only)
+        id: typecheck_incremental
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            server/node_modules/.cache/paperclip-typecheck
+            ui/node_modules/.cache/paperclip-ui.tsbuildinfo
+          key: typecheck-incremental-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig.base.json', 'server/tsconfig.json', 'server/src/__tests__/tsconfig.json', 'server/scripts/typecheck-layers.mjs', 'ui/tsconfig.json') }}-${{ github.event.pull_request.base.sha }}
+          restore-keys: |
+            typecheck-incremental-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig.base.json', 'server/tsconfig.json', 'server/src/__tests__/tsconfig.json', 'server/scripts/typecheck-layers.mjs', 'ui/tsconfig.json') }}-
+
       - name: Typecheck, CLI guidance safety and release registry tests
         if: ${{ hashFiles('scripts/ci-typecheck-lane.mjs') != '' }}
         run: node scripts/ci-typecheck-lane.mjs
@@ -521,7 +562,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
-      matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON(fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.general_tests.matrix) || '{"include":[{"group":"general-server-without-chat","group_label":"server (1/20)","shard_index":0,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (2/20)","shard_index":1,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (3/20)","shard_index":2,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (4/20)","shard_index":3,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (5/20)","shard_index":4,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (6/20)","shard_index":5,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (7/20)","shard_index":6,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (8/20)","shard_index":7,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (9/20)","shard_index":8,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (10/20)","shard_index":9,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (11/20)","shard_index":10,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (12/20)","shard_index":11,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (13/20)","shard_index":12,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (14/20)","shard_index":13,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (15/20)","shard_index":14,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (16/20)","shard_index":15,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (17/20)","shard_index":16,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (18/20)","shard_index":17,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (19/20)","shard_index":18,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (20/20)","shard_index":19,"shard_count":20,"task":"ci:server"},{"group":"general-chat","group_label":"chat (1/5)","shard_index":0,"shard_count":5,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (2/5)","shard_index":1,"shard_count":5,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (3/5)","shard_index":2,"shard_count":5,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (4/5)","shard_index":3,"shard_count":5,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (5/5)","shard_index":4,"shard_count":5,"task":"ci:chat"},{"group":"general-workspaces-a","group_label":"workspaces-a (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-a","group_label":"workspaces-a (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-b","group_label":"workspaces-b","task":"ci:workspaces-b"},{"group":"general-workspaces-c","group_label":"workspaces-c","task":"ci:db"}]}') }}
+      matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON(fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.general_tests.matrix) || '{"include":[{"group":"general-server-without-chat","group_label":"server (1/20)","shard_index":0,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (2/20)","shard_index":1,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (3/20)","shard_index":2,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (4/20)","shard_index":3,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (5/20)","shard_index":4,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (6/20)","shard_index":5,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (7/20)","shard_index":6,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (8/20)","shard_index":7,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (9/20)","shard_index":8,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (10/20)","shard_index":9,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (11/20)","shard_index":10,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (12/20)","shard_index":11,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (13/20)","shard_index":12,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (14/20)","shard_index":13,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (15/20)","shard_index":14,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (16/20)","shard_index":15,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (17/20)","shard_index":16,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (18/20)","shard_index":17,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (19/20)","shard_index":18,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (20/20)","shard_index":19,"shard_count":20,"task":"ci:server"},{"group":"general-chat","group_label":"chat (1/2)","shard_index":0,"shard_count":2,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (2/2)","shard_index":1,"shard_count":2,"task":"ci:chat"},{"group":"general-workspaces-a","group_label":"workspaces-a (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-a","group_label":"workspaces-a (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-b","group_label":"workspaces-b (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-b"},{"group":"general-workspaces-b","group_label":"workspaces-b (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-b"},{"group":"general-workspaces-c","group_label":"workspaces-c","task":"ci:db"}]}') }}
 
     env:
       PAPERCLIP_CI_FULL: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
@@ -758,15 +799,19 @@ jobs:
           retention-days: 14
 
   verify_runner_e2e_support:
-    name: Runner support suite
+    name: Runner support suite (${{ matrix.shard_label }})
     needs: [gate]
     if: ${{ needs.gate.outputs.full_ci == 'true' && (needs.gate.outputs.plan == '' || fromJSON(needs.gate.outputs.plan).jobs.verify_runner_e2e_support.run) }}
     runs-on: ${{ needs.gate.outputs.runner }}
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_runner_e2e_support.matrix) || '{"include":[{"shard_index":0,"shard_count":4,"shard_label":"1/4","task":"ci:runner-e2e-support"},{"shard_index":1,"shard_count":4,"shard_label":"2/4","task":"ci:runner-e2e-support"},{"shard_index":2,"shard_count":4,"shard_label":"3/4","task":"ci:runner-e2e-support"},{"shard_index":3,"shard_count":4,"shard_label":"4/4","task":"ci:runner-e2e-support"}]}') }}
 
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
-      PAPERCLIP_CI_PROFILE_JOB: Runner support suite
+      PAPERCLIP_CI_PROFILE_JOB: Runner support suite (${{ matrix.shard_label }})
       PAPERCLIP_CI_PR_AUTHOR: ${{ github.event.pull_request.user.login }}
 
     # The paid Runner workflows depend on this suite: workflow security
@@ -806,7 +851,14 @@ jobs:
 
       # Builds the plugin SDK first, then runs Vitest and the node:test files.
       - name: Run the Runner support suite
-        run: pnpm test:e2e:runner:unit
+        run: |
+          if grep -q 'shard-index' tests/runner-e2e/run-unit.mjs; then
+            node tests/runner-e2e/run-unit.mjs --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }}
+          elif [ "${{ matrix.shard_index }}" = "0" ]; then
+            pnpm test:e2e:runner:unit
+          else
+            echo "Checkout predates sharded run-unit.mjs; shard 0 covers full suite."
+          fi
 
       - name: Upload CI profile timings
         continue-on-error: true
@@ -1279,7 +1331,12 @@ jobs:
       - name: Build Runner Evalbook viewer
         run: pnpm --filter @paperclipai/paperclip-runner build:issue-thread
 
+      # On ordinary PRs, Typecheck + Release Registry checks every server type in
+      # parallel, so server build only needs JS emit (`PAPERCLIP_TSC_EMIT_ONLY=1`).
+      # Full-CI / release builds emit full declarations and re-check types.
       - name: Build
+        env:
+          PAPERCLIP_TSC_EMIT_ONLY: ${{ !(contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
         run: pnpm build
 
       # Always verify the production runtime bundle builds cleanly (~4s).
@@ -1644,7 +1701,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
-      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.e2e_shards.matrix) || '{"include":[{"shard_index":0,"shard_count":8,"shard_label":"1/8","task":"ci:e2e"},{"shard_index":1,"shard_count":8,"shard_label":"2/8","task":"ci:e2e"},{"shard_index":2,"shard_count":8,"shard_label":"3/8","task":"ci:e2e"},{"shard_index":3,"shard_count":8,"shard_label":"4/8","task":"ci:e2e"},{"shard_index":4,"shard_count":8,"shard_label":"5/8","task":"ci:e2e"},{"shard_index":5,"shard_count":8,"shard_label":"6/8","task":"ci:e2e"},{"shard_index":6,"shard_count":8,"shard_label":"7/8","task":"ci:e2e"},{"shard_index":7,"shard_count":8,"shard_label":"8/8","task":"ci:e2e"}]}') }}
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.e2e_shards.matrix) || '{"include":[{"shard_index":0,"shard_count":12,"shard_label":"1/12","task":"ci:e2e"},{"shard_index":1,"shard_count":12,"shard_label":"2/12","task":"ci:e2e"},{"shard_index":2,"shard_count":12,"shard_label":"3/12","task":"ci:e2e"},{"shard_index":3,"shard_count":12,"shard_label":"4/12","task":"ci:e2e"},{"shard_index":4,"shard_count":12,"shard_label":"5/12","task":"ci:e2e"},{"shard_index":5,"shard_count":12,"shard_label":"6/12","task":"ci:e2e"},{"shard_index":6,"shard_count":12,"shard_label":"7/12","task":"ci:e2e"},{"shard_index":7,"shard_count":12,"shard_label":"8/12","task":"ci:e2e"},{"shard_index":8,"shard_count":12,"shard_label":"9/12","task":"ci:e2e"},{"shard_index":9,"shard_count":12,"shard_label":"10/12","task":"ci:e2e"},{"shard_index":10,"shard_count":12,"shard_label":"11/12","task":"ci:e2e"},{"shard_index":11,"shard_count":12,"shard_label":"12/12","task":"ci:e2e"}]}') }}
 
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
@@ -1740,7 +1797,7 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: server/ui-dist
-          key: e2e-ui-dist-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'ui/package.json', 'ui/index.html', 'ui/vite.config.*', 'ui/tsconfig*.json', 'ui/src/**', 'ui/public/**', 'packages/shared/src/**', 'packages/adapter-utils/src/**', 'packages/adapters/*/src/**', 'packages/plugins/sdk/src/**') }}
+          key: e2e-ui-dist-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml', 'tsconfig*.json', 'ui/package.json', 'ui/index.html', 'ui/vite.config.*', 'ui/tsconfig*.json', 'ui/src/**', 'ui/public/**', 'packages/shared/package.json', 'packages/shared/src/**', 'packages/adapter-utils/package.json', 'packages/adapter-utils/src/**', 'packages/adapters/*/package.json', 'packages/adapters/*/src/**', 'packages/plugins/sdk/package.json', 'packages/plugins/sdk/src/**', 'announcements/examples/animated/**') }}
 
       - name: Run e2e tests
         env:

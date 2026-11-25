@@ -60,7 +60,7 @@ describe("startTracingSdk", () => {
 
   it("exports a page.load span with the route template and only allowlisted attributes", async () => {
     const recorder = idleRecorder();
-    handle = startTracingSdk(config, recorder, { exporter });
+    handle = startTracingSdk({ ...config, instanceHost: "demo.example.com" }, recorder, { exporter });
     recorder.begin({ routeTemplate: "/:companyPrefix/issues/:issueId", loadType: "client", startTime: performance.now() });
     (recorder as PageLoadRecorder & { flushFrames(): void }).flushFrames();
     await handle.forceFlush();
@@ -78,8 +78,10 @@ describe("startTracingSdk", () => {
     // service.version is the build commit, absent in tests.
     expect(Object.keys(spans[0]!.resource.attributes).sort()).toEqual([
       "deployment.environment.name",
+      "paperclip.instance.host",
       "service.name",
     ]);
+    expect(spans[0]!.resource.attributes["paperclip.instance.host"]).toBe("demo.example.com");
     expect(spans[0]!.resource.attributes["service.name"]).toBe("paperclip-web");
   });
 

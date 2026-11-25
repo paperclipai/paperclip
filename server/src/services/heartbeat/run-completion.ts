@@ -15,6 +15,8 @@ import { settledResponsePublicationSql } from "../native-runtime/native-response
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { PROJECT_ACCESS_DENIED, ProjectAccessDeniedError } from "../project-access-denial.js";
+import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "../antigravity-swarm-refusal.js";
+import { PaperclipRunnerProviderProfileError } from "../native-runtime/provider-profile.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import { NON_RETRYABLE_PREFLIGHT_FAILURE_CODES, isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { ChatControlRecoveryUnresolvedError } from "./queue.js";
@@ -39,6 +41,8 @@ import { isOwnedAiConnectionSelectionRejection } from "../ai-connection-configur
 import { REVIEWED_CHAT_BINDING_NOT_READY, ReviewedChatBindingNotReadyError, reviewedChatBindingDenialResultJson } from "../reviewed-chat-binding-diagnostics.js";
 import { reportRunFailure } from "../run-failure-report.js";
 import { accountRunCost } from "../run-cost-accounting.js";
+import { forgetSessionsOfDeletedRun } from "../tool-access/connections/run-session-reset.js";
+import { forgetHandoffAfterDeletedRuns } from "../tool-access/connections/run-copies.js";
 import { isConversation, settleConversationTurn } from "../agent-conversations.js";
 import { legacyExecutionNeedsReconciliationWithEvidence } from "../legacy-execution-recovery.js";
 import { isWorkspaceGitScanError } from "../workspace-git-operation-scheduler.js";
@@ -189,6 +193,7 @@ export interface FailHeartbeatRunSetupInput {
 
 function nonRetryablePreflightFailureCode(error: unknown): string | null {
   if (error instanceof ProjectAccessDeniedError) return PROJECT_ACCESS_DENIED;
+  if (error instanceof PaperclipRunnerProviderProfileError && error.code === ANTIGRAVITY_SWARM_UNAVAILABLE) return ANTIGRAVITY_SWARM_UNAVAILABLE;
   if (error instanceof ChatControlRecoveryUnresolvedError)
     return CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE;
   if (
@@ -841,6 +846,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         // configuration metadata used for this run. Persist before release,
         // which can make a same-agent successor eligible immediately.
         await persistSessionState(livenessRun);
+        await forgetSessionsOfDeletedRun(db, livenessRun);
+        await forgetHandoffAfterDeletedRuns(db, livenessRun);
         await releaseIssueExecutionAndPromote(livenessRun, { suppressImmediateRecovery: true });
         await settleAgent();
         return;
@@ -1114,6 +1121,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
 
     if (finalizedRun) {
       await persistSessionState(finalizedRun);
+      await forgetSessionsOfDeletedRun(db, finalizedRun);
+      await forgetHandoffAfterDeletedRuns(db, finalizedRun);
     }
     await settleAgent();
   }
@@ -1342,6 +1351,10 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // replaying an unfinished turn) nothing retries it, so offer Retry instead.
     const message = interruptedExactResume
       ? describeRefusedExactResume(interruptedExactResume, thrownMessage)
+      // A refused /swarm explains itself in one plain sentence (its provider failure); the
+      // Runner's command JSON stays in the run's log and recovery history, not in the error.
+      : failureErrorCode === ANTIGRAVITY_SWARM_UNAVAILABLE && providerFailure?.message.trim()
+        ? redactFailureText(providerFailure.message.trim())
       : !storageUnavailable ? thrownMessage
         : failureErrorCode === STORAGE_UNAVAILABLE_CODE ? storageUnavailableMessage(err) : storageUnavailableHeldMessage(err);
     const failureCause = GENERIC_RUN_FAILURE_CODES.has(failureErrorCode) ? thrownFailureCause : null;

@@ -87,6 +87,10 @@ export * from "./drivers/opencode/mcp-bridge.js";
 export * from "./drivers/acpx/qualified-profiles.js";
 export { isAntigravityNativeTarget, parseAcpxCandidateAdmission, type AcpxCandidateAdmission } from "./drivers/acpx/candidate-admission.js";
 export { startAntigravityBrowserLogin, verifyAntigravityCredential, sanitizeAntigravityCredential } from "./drivers/acpx/antigravity-auth.js";
+export {
+  GENERATED_ANTIGRAVITY_SWARM_CHANNELS, GENERATED_ANTIGRAVITY_SWARM_CREDENTIAL_FACTS_FIELD, GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL,
+  readGeneratedAntigravitySwarmCredentialFacts, type GeneratedAntigravitySwarmChannel, type GeneratedAntigravitySwarmCredentialFacts,
+} from "./drivers/acpx/generated-sidecar-contract.js";
 export { AntigravityModelDiscoveryCleanupError, discoverAntigravityModels, type AntigravityModelCatalog } from "./drivers/acpx/antigravity-models.js";
 export { AntigravityCliRuntimeError, resolveAntigravityCliLaunch, type AntigravityCliLaunch, type AntigravityCliLaunchOptions, type AntigravityCliRuntimeErrorCode } from "./drivers/acpx/antigravity-cli-installation.js";
 export { acpxRuntimeSessionDirectoryName, resolveAcpxRuntimeRoot } from "./drivers/acpx/recovery-identity.js";
@@ -101,7 +105,6 @@ export { resolveGrokEffort } from "./drivers/acpx/grok-effort.js";
 export * from "./drivers/runner-tool-bridge.js";
 export {
   createRunnerdCodexTransport,
-  isSettledReleasedRunnerCut,
   revertUnattachedRelaunchRotation,
   probeNativeRunnerEnvironment,
   NativeEnvironmentProbeCleanupError,

@@ -11,6 +11,7 @@
 // Every invalid setting fails closed: the browser receives `null` and the
 // server logs one warning naming the variable, never its value.
 
+import { tracingInstanceHost } from "./tracing-instance-host.js";
 import type { BrowserTracingConfig } from "@paperclipai/shared";
 import { isCloudManagedInstance, type CloudInstanceEnv } from "./services/cloud-instance.js";
 
@@ -95,6 +96,7 @@ export function resolveBrowserTracingConfig(
   }
 
   return {
+    instanceHost: tracingInstanceHost(env),
     tracesUrl: browserTracesUrl(endpoint),
     ingestKey,
     serviceName: normalize(env.PAPERCLIP_BROWSER_TRACES_SERVICE_NAME) ?? BROWSER_TRACES_DEFAULT_SERVICE_NAME,

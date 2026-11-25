@@ -49,7 +49,11 @@ if (SKIP_UI_BUILD && !fs.existsSync(UI_DIST_INDEX)) {
 // `scripts/e2e-shard.mjs` — `scripts/__tests__/e2e-shard.test.mjs` fails if
 // the two ever drift.
 export const SERIAL_SPECS = [
+  "agent-chat-projects-handoff.spec.ts",
+  "agent-chat-projects.spec.ts",
+  "agent-chat-sessions.spec.ts",
   "agent-configuration.spec.ts",
+  "ai-personal-connection-recovery.spec.ts",
   "cases-read-only.spec.ts",
   "classic-workspace.spec.ts",
   "composer-stop.spec.ts",
@@ -101,12 +105,12 @@ function resolveExecutionMode(): { workers: number; fullyParallel: boolean } {
     workers = explicitWorkers;
     fullyParallel = workers > 1 && !includesSerial;
   } else if (strictlyParallelSafe) {
-    // 2 Chromium workers + Node server + embedded Postgres fits cleanly on
-    // 4-vCPU CI runners without CPU over-subscription thrashing.
-    workers = process.env.CI
-      ? 2
-      : Math.min(2, Math.max(1, Math.floor(os.cpus().length / 2)));
-    fullyParallel = true;
+    // Scale parallel Chromium workers dynamically with runner CPU cores while
+    // reserving headroom for the shared Node server + embedded Postgres:
+    // 4-vCPU runner -> 2 workers; 8-vCPU runner (c8i.2xlarge) -> 4 workers.
+    const cpus = os.availableParallelism();
+    workers = Math.max(1, Math.min(4, Math.floor(cpus / 2)));
+    fullyParallel = workers > 1;
   } else {
     workers = 1;
     fullyParallel = false;
@@ -118,11 +122,13 @@ function resolveExecutionMode(): { workers: number; fullyParallel: boolean } {
 }
 
 const EXECUTION_MODE = resolveExecutionMode();
+const UI_BUILD_COMMAND =
+  "node ui/node_modules/vite/bin/vite.js build ui --outDir ../server/ui-dist --emptyOutDir --minify false";
 const SERVER_START_COMMAND =
-  "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts onboard --yes --run";
+  "node cli/node_modules/tsx/dist/cli.mjs tests/e2e/start-e2e-server.ts";
 const WEB_SERVER_COMMAND = SKIP_UI_BUILD
   ? SERVER_START_COMMAND
-  : `pnpm --filter @paperclipai/ui build --outDir ../server/ui-dist --emptyOutDir && ${SERVER_START_COMMAND}`;
+  : `${UI_BUILD_COMMAND} && ${SERVER_START_COMMAND}`;
 
 export default defineConfig({
   testDir: ".",
@@ -131,6 +137,7 @@ export default defineConfig({
   // intentionally not part of the default local_trusted e2e run.
   testIgnore: ["in-feed-native/**", "multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
   timeout: 60_000,
+  expect: { timeout: 10_000 },
   retries: 0,
   // Parallel-safe shards run concurrently across multiple workers; shards or
   // runs that include any spec in SERIAL_SPECS (or unfiltered full runs) fall

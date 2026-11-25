@@ -10,10 +10,11 @@ import {
   createDb,
   googlePendingRevocations,
   toolAccessAuditEvents,
+  toolConnectionContentDeletions,
   toolConnectionInstalls,
   toolConnections,
 } from "@paperclipai/db";
-import { and, eq, isNull, ne } from "drizzle-orm";
+import { and, eq, isNull, ne, sql } from "drizzle-orm";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -21,6 +22,9 @@ import { errorHandler } from "../middleware/index.js";
 import { logger } from "../middleware/logger.js";
 import { PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
+import { accessService } from "../services/access.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+import { revokeGoogleAccessForRemovedInstance } from "../services/tool-access/connections/google-pending-revocation.js";
 import {
   connectManagedGmail as connectManagedGmailFixture,
   deleteManagedGoogleTestRows,
@@ -562,5 +566,122 @@ describeEmbeddedPostgres("removing a Paperclip-managed Google connection", () =>
     expect(removal.status).toBe(200);
     expect(fixture.connector.revoke).toHaveBeenCalledTimes(1);
     expect(await liveSecretCount(fixture.company.id)).toBe(0);
+  });
+  async function contentDeletions(connectionId: string) {
+    const rows = await db.select().from(toolConnectionContentDeletions).where(eq(toolConnectionContentDeletions.connectionId, connectionId));
+    return rows.map((row) => ({ status: row.status, reason: row.reason }));
+  }
+
+  it("starts deleting what agents read from Google when the connection is removed, without the delete-data option", async () => {
+    const fixture = await connectManagedGmail();
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`);
+
+    expect(response.status).toBe(200);
+    expect(await contentDeletions(fixture.connectionId)).toEqual([{ status: "pending", reason: "connection_removed" }]);
+    const [started] = await db.select().from(activityLog).where(and(
+      eq(activityLog.companyId, fixture.company.id), eq(activityLog.action, "tool_connection.content_deletion_started")));
+    expect(started!.details).toEqual({ reason: "connection_removed" });
+  });
+
+  it("wakes the Google Technical Information sweep when Google tools are listed and when access ends", async () => {
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.googleTechnicalInformation, notified);
+    try {
+      const fixture = await connectManagedGmail();
+      expect(notified).toHaveBeenCalled();
+      notified.mockClear();
+      await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}`).expect(200);
+      expect(notified).toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("starts deleting what agents read from Google when a person disconnects their Google account", async () => {
+    const fixture = await connectManagedGmail();
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+
+    expect(response.status).toBe(200);
+    expect(await contentDeletions(fixture.connectionId)).toEqual([{ status: "pending", reason: "access_revoked" }]);
+  });
+
+  it("starts deleting when Google reports on refresh that the user ended Paperclip's access", async () => {
+    const fixture = await connectManagedGmail();
+    fixture.connector.refresh.mockRejectedValue(
+      new PaperclipCloudConnectorError("rejected", "REAUTHORIZATION_REQUIRED", 409, undefined, "PROVIDER_REAUTHORIZATION_REQUIRED"),
+    );
+
+    await expect(fixture.service.refreshOAuthGrantCredentials({
+      companyId: fixture.company.id, connectionId: fixture.connectionId, grantId: fixture.grant.id, forceRefresh: true,
+    })).rejects.toMatchObject({ details: { code: "oauth_reauthorization_required" } });
+
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, fixture.grant.id));
+    expect(grant!.status).toBe("needs_reauthorization");
+    expect(await contentDeletions(fixture.connectionId)).toEqual([{ status: "pending", reason: "provider_access_ended" }]);
+  });
+
+  it("keeps the content when a late refresh failure answers after the grant was signed in again", async () => {
+    const fixture = await connectManagedGmail();
+    fixture.connector.refresh.mockImplementation(async () => {
+      await db.update(connectionGrants)
+        .set({ providerTenant: sql`jsonb_set(${connectionGrants.providerTenant}, '{oauth,refreshLease}', '{"id":"newer-sign-in"}'::jsonb)` as never })
+        .where(eq(connectionGrants.id, fixture.grant.id));
+      throw new PaperclipCloudConnectorError("rejected", "REAUTHORIZATION_REQUIRED", 409, undefined, "PROVIDER_REAUTHORIZATION_REQUIRED");
+    });
+
+    await expect(fixture.service.refreshOAuthGrantCredentials({
+      companyId: fixture.company.id, connectionId: fixture.connectionId, grantId: fixture.grant.id, forceRefresh: true,
+    })).rejects.toBeTruthy();
+
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, fixture.grant.id));
+    expect(grant!.status).toBe("active");
+    expect(await contentDeletions(fixture.connectionId)).toEqual([]);
+  });
+
+  it.each([
+    ["Paperclip Cloud cannot be reached", new PaperclipCloudConnectorError("Paperclip Cloud connector is unavailable", "CONNECTOR_UNAVAILABLE")],
+    ["Google fails for a moment", new PaperclipCloudConnectorError("rejected", "CONNECTOR_REQUEST_FAILED", 502, undefined, "PROVIDER_OPERATION_FAILED")],
+    ["the granted scopes do not match", new PaperclipCloudConnectorError("Paperclip Cloud scope grant did not match", "REAUTHORIZATION_REQUIRED")],
+  ] as const)("keeps the content when a refresh fails because %s", async (_label, error) => {
+    const fixture = await connectManagedGmail();
+    fixture.connector.refresh.mockRejectedValue(error);
+
+    await expect(fixture.service.refreshOAuthGrantCredentials({
+      companyId: fixture.company.id, connectionId: fixture.connectionId, grantId: fixture.grant.id, forceRefresh: true,
+    })).rejects.toBeTruthy();
+
+    expect(await contentDeletions(fixture.connectionId)).toEqual([]);
+  });
+
+  it("starts deleting when the person who connected Google leaves the company", async () => {
+    const fixture = await connectManagedGmail();
+    await db.insert(companyMemberships).values({
+      companyId: fixture.company.id, principalType: "user", principalId: `second-owner-${randomUUID()}`, status: "active", membershipRole: "owner",
+    });
+    const [membership] = await db.select().from(companyMemberships).where(and(
+      eq(companyMemberships.companyId, fixture.company.id), eq(companyMemberships.principalId, fixture.userId)));
+
+    await accessService(db).archiveMember(fixture.company.id, membership!.id);
+
+    expect(await contentDeletions(fixture.connectionId)).toEqual([{ status: "pending", reason: "member_removed" }]);
+  });
+
+  it("starts deleting for every Google connection when Paperclip Cloud removed the instance", async () => {
+    const fixture = await connectManagedGmail();
+
+    await revokeGoogleAccessForRemovedInstance(db, async () => undefined);
+
+    expect(await contentDeletions(fixture.connectionId)).toEqual([{ status: "pending", reason: "instance_removed" }]);
+  });
+
+  it("starts deleting when the organization's Google identity is revoked", async () => {
+    const fixture = await connectManagedGmail("organization");
+
+    const response = await request(fixture.app).delete(`/api/tool-connections/${fixture.connectionId}/grants/${fixture.grant.id}`);
+
+    expect(response.status).toBe(200);
+    expect(await contentDeletions(fixture.connectionId)).toEqual([{ status: "pending", reason: "access_revoked" }]);
   });
 });

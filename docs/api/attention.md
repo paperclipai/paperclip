@@ -20,7 +20,7 @@ The feed accepts these query parameters:
 
 | Parameter | Meaning |
 | --- | --- |
-| `view` | `mine`, `unassigned`, `company`, `archived`, or `all`. The API default is `all`. |
+| `view` | `mine`, `unassigned`, `company`, `waiting`, `archived`, or `all`. The API default is `all`. |
 | `includeDismissed` | Include personally hidden cards. Default: `false`. |
 | `archived` | Read retained source archives instead of current sources. This differs from personal `view=archived`. |
 | `all` | Return a complete snapshot instead of a page. |
@@ -34,6 +34,15 @@ The response includes `items`, `totalCount`, `countsBySourceKind`, `viewCounts`,
 and counts once. `deskBadgeCount` counts requests assigned to the viewer.
 Summary returns the same current counts without card bodies. Tasks also returns
 unique `taskIds` for visible requests. Neither endpoint returns card bodies.
+
+`view=waiting` returns automatic provider retries visible to the caller and
+cards the caller has snoozed. The optional `waitingCount` counts waiting cards.
+The optional `nextSnoozeAt` gives the earliest active snooze expiry.
+A provider-limit card carries `providerLimit`. Its `grouping` is
+`account_window` for a verified account and reset, or `retry_chain` for
+linked attempts on one task. Its `state` is `scheduled`, `retry_requested`,
+or `needs_retry`. The provider's `resetAt` and Paperclip's scheduled
+`retryAt` can each be null.
 
 Routing uses explicit recipients, chat ownership, review participants, task
 assignees, human instigators, and configured decision owners. A card with no
@@ -112,6 +121,25 @@ for the caller. Filters include `search`, `outcome`, `agentId`, `projectId`,
 `since`, `sort=newest|oldest`, `limit` (maximum 100), and `cursor`.
 Withdrawn requests, expired requests, and requests closed with their task have
 separate outcomes. Personal archive and snooze do not record consent.
+
+## Recent run history
+
+```text
+GET /api/companies/{companyId}/attention/run-history
+```
+
+Returns a JSON array of up to 100 failed, timed-out, or provider-held runs
+on tasks the board user can read. Each entry includes `runId`, `agentId`,
+`agentName`, `taskId`, `taskTitle`, `identifier`, `recordedAt`, `reason`,
+and `outcome`. Rows are ordered by run creation time, newest first, then by
+run ID descending when times match.
+
+Omit query parameters for the first page. For the next page, pass the last
+row’s exact `recordedAt` string as `at` and its `runId` as `id`. Keep the
+timestamp’s fractional seconds. The next page starts after that row. A page
+with fewer than 100 rows is the last page. A partial or invalid cursor returns
+HTTP 400. Each company and board user can make up to 60 run-history
+requests per minute. HTTP 429 includes a `Retry-After` header in seconds.
 
 ## Errors
 

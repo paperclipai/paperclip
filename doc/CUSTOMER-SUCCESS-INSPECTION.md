@@ -1,7 +1,7 @@
 # Cloud customer-success inspection support
 
-Paperclip exposes `/api/customer-success/v1/run-authority`, `/run-liveness` and
-`/read` for the coordinated Cloud inspection broker. This foundation supports one registered
+Paperclip exposes `/api/customer-success/v1/run-authority`, `/run-liveness`,
+`/read` and `/read-v2` for the coordinated Cloud inspection broker. This foundation supports one registered
 Paperclip agent; bot creation, scheduling, scoring and reporting are separate.
 
 The authority endpoint is disabled unless
@@ -66,6 +66,23 @@ existing project/workspace checks. Binary envelopes and inclusive byte ranges
 pass through Cloud; ranges cap at 1 MiB, JSON at 2 MiB, and lists at 100 rows.
 Remote or unsnapshotted resources report unavailable; large content requires
 pagination or download ranges. No storage credentials or bypass URLs are issued.
+
+Summary reads keep a fleet-wide refresh cheap:
+
+- `count` takes a catalogued `resource`, `companyId` and optional `parentId`,
+  and returns `{total, byStatus}`: counts grouped by the reader's `status`
+  column, or `byStatus: null` when it has none. No row content is read out.
+- `order` (`list` only) is `newest` or `oldest` by creation time, with the table's
+  primary key as tie-breaker so offset pages never repeat or skip rows. Without it, lists keep their original id order.
+- `view: "summary"` (`list`/`get` on `runs` only) returns an allowlist of ids,
+  status, error code, retry counters and timestamps plus a computed
+  `durationMs`, and leaves out the large JSON columns (result, usage, context
+  snapshot, runner profile). `RUN_SUMMARY_COLUMNS` is the allowlist.
+
+Queries that use `count`, `order` or `view` are served only on `/read-v2`
+(`inspectionReadPath` picks the path); `/read` refuses them. A tenant that
+predates them answers 404 on `/read-v2`, so Cloud fails closed with
+`tenant_inspection_version_unsupported` instead of misreading the query.
 
 Existing config/event/run redactions and path/symlink/secret-file/size restrictions
 remain in use. Authentication account/session, secret, private-key/encrypted-key

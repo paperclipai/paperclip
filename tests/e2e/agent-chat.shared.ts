@@ -16,7 +16,12 @@ export async function json(response: Awaited<ReturnType<APIRequestContext["get"]
   );
   return response.json();
 }
-export async function setup(request: APIRequestContext) {
+const DEFAULT_AGENT_NAMES = ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"] as const;
+
+export async function setup(
+  request: APIRequestContext,
+  options: { agentCount?: number } = {},
+) {
   const company = await json(
     await request.post("/api/companies", {
       data: { name: `Agent Chat ${Date.now()}` },
@@ -35,26 +40,29 @@ export async function setup(request: APIRequestContext) {
       }),
     );
   }
-  const agents = [];
-  for (const name of ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta"])
-    agents.push(
-      await json(
-        await request.post(`/api/companies/${company.id}/agents`, {
-          data: {
-            name,
-            adapterType: "process",
-            adapterConfig: {
-              command: process.execPath,
-              args: [path.resolve("tests/e2e/fixtures/agent-chat.mjs")],
-              graceSec: 1,
-            },
-            runtimeConfig: {
-              heartbeat: { enabled: false, wakeOnDemand: true },
-            },
+  const agentNames = DEFAULT_AGENT_NAMES.slice(0, options.agentCount ?? 1);
+  const createAgent = (name: string) =>
+    request
+      .post(`/api/companies/${company.id}/agents`, {
+        data: {
+          name,
+          adapterType: "process",
+          adapterConfig: {
+            command: process.execPath,
+            args: [path.resolve("tests/e2e/fixtures/agent-chat.mjs")],
+            graceSec: 1,
           },
-        }),
-      ),
-    );
+          runtimeConfig: {
+            heartbeat: { enabled: false, wakeOnDemand: true },
+          },
+        },
+      })
+      .then(json);
+  // Create the primary agent first so DB creation order and default primary-agent
+  // selection stay deterministic (`agents[0]`), then parallelize any extra agents.
+  const firstAgent = await createAgent(agentNames[0]!);
+  const remainingAgents = await Promise.all(agentNames.slice(1).map(createAgent));
+  const agents = [firstAgent, ...remainingAgents];
   const agent = agents[0];
   const chatPath = `/api/companies/${company.id}/chats/${agent.id}`;
   const route = `/${company.issuePrefix}/chats/${agent.id}`;
@@ -66,57 +74,56 @@ export async function setup(request: APIRequestContext) {
     route,
     restore: async () => {
       try {
-        const chat = await request.get(chatPath);
-        const history = chat.ok() ? await chat.json() : null;
-        const tasks = await json(
-          await request.get(`/api/companies/${company.id}/issues`),
-        );
-        const projects = await json(
-          await request.get(`/api/companies/${company.id}/projects`),
-        );
-        const ledger = await json(
-          await request.get(`/api/companies/${company.id}/heartbeat-runs`),
-        );
-        const documents = await Promise.all(
-          [...(history ? [history] : []), ...tasks].map(async (task: any) => ({
-            taskId: task.id,
-            documents: await json(
-              await request.get(`/api/issues/${task.id}/documents`),
+        const info = test.info();
+        if (info.status !== info.expectedStatus) {
+          const chat = await request.get(chatPath);
+          const history = chat.ok() ? await chat.json() : null;
+          const [tasks, projects, ledger] = await Promise.all([
+            request.get(`/api/companies/${company.id}/issues`).then(json),
+            request.get(`/api/companies/${company.id}/projects`).then(json),
+            request.get(`/api/companies/${company.id}/heartbeat-runs`).then(json),
+          ]);
+          const documents = await Promise.all(
+            [...(history ? [history] : []), ...tasks].map(async (task: any) => ({
+              taskId: task.id,
+              documents: await json(
+                await request.get(`/api/issues/${task.id}/documents`),
+              ),
+            })),
+          );
+          await info.attach("chat-persisted-state", {
+            contentType: "application/json",
+            body: Buffer.from(
+              JSON.stringify(
+                {
+                  chat: history,
+                  tasks,
+                  projects,
+                  documents,
+                  comments: history
+                    ? await json(
+                        await request.get(`/api/issues/${history.id}/comments`),
+                      )
+                    : [],
+                  runs: ledger.map((run: any) => ({
+                    id: run.id,
+                    status: run.status,
+                    startedAt: run.startedAt,
+                    finishedAt: run.finishedAt,
+                    sessionIdBefore: run.sessionIdBefore,
+                    sessionIdAfter: run.sessionIdAfter,
+                    issueId: run.contextSnapshot?.issueId,
+                    generation:
+                      run.contextSnapshot?.conversationSessionGeneration,
+                    reset: run.contextSnapshot?.conversationReset,
+                  })),
+                },
+                null,
+                2,
+              ),
             ),
-          })),
-        );
-        await test.info().attach("chat-persisted-state", {
-          contentType: "application/json",
-          body: Buffer.from(
-            JSON.stringify(
-              {
-                chat: history,
-                tasks,
-                projects,
-                documents,
-                comments: history
-                  ? await json(
-                      await request.get(`/api/issues/${history.id}/comments`),
-                    )
-                  : [],
-                runs: ledger.map((run: any) => ({
-                  id: run.id,
-                  status: run.status,
-                  startedAt: run.startedAt,
-                  finishedAt: run.finishedAt,
-                  sessionIdBefore: run.sessionIdBefore,
-                  sessionIdAfter: run.sessionIdAfter,
-                  issueId: run.contextSnapshot?.issueId,
-                  generation:
-                    run.contextSnapshot?.conversationSessionGeneration,
-                  reset: run.contextSnapshot?.conversationReset,
-                })),
-              },
-              null,
-              2,
-            ),
-          ),
-        });
+          });
+        }
       } finally {
         try {
           const runs = await json(
