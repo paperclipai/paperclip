@@ -17,6 +17,17 @@ import { preparePluginRunnerCredentials } from "../services/native-runtime/plugi
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 vi.mock("../services/subscription-refresh.js", () => ({ refreshSubscriptionConnection: async () => {} }));
+const secretRead = vi.hoisted(() => ({ fail: false }));
+vi.mock("../services/ai-connections.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../services/ai-connections.js")>();
+  return { ...actual, aiConnectionService: (database: Parameters<typeof actual.aiConnectionService>[0]) => {
+    const service = actual.aiConnectionService(database);
+    return { ...service, credential: (async (...args: Parameters<typeof service.credential>) => {
+      if (secretRead.fail) throw new Error("fixture secret store unavailable");
+      return service.credential(...args);
+    }) as typeof service.credential };
+  } };
+});
 const support = await getEmbeddedPostgresTestSupport();
 const suite = support.supported ? describe : describe.skip;
 const SIGN_IN = "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET";
@@ -44,7 +55,7 @@ suite("Google sign-in task credential writeback for plugin Runners", () => {
     database = await startEmbeddedPostgresTestDatabase("antigravity-plugin-task-"); db = createDb(database.connectionString);
   }, 90_000);
   afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
-  afterEach(() => { vi.unstubAllGlobals(); Object.assign(google, { email: "alice@example.test", rotate: undefined, fail: false, calls: 0 }); });
+  afterEach(() => { vi.unstubAllGlobals(); secretRead.fail = false; Object.assign(google, { email: "alice@example.test", rotate: undefined, fail: false, calls: 0 }); });
 
   async function fixture(saved = signIn("fixture-original", { project_id: "fixture-project" })) {
     stubGoogle();
@@ -175,6 +186,16 @@ suite("Google sign-in task credential writeback for plugin Runners", () => {
     expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "pending" });
     expect(await f.credential()).toBe(signIn("fixture-original", { project_id: "fixture-project" }));
     google.fail = false;
+    expect(await f.settle()).toBe("completed");
+    expect(await f.credential()).toBe(signIn("fixture-refreshed", { project_id: "fixture-project" }));
+  });
+
+  it("keeps the handoff pending when the saved sign-in cannot be read, then saves on the next cleanup", async () => {
+    const f = await fixture();
+    secretRead.fail = true;
+    const failed = await f.settle().catch((error: Error) => error).finally(() => { secretRead.fail = false; });
+    expect(failed).toBeInstanceOf(Error);
+    expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "pending" });
     expect(await f.settle()).toBe("completed");
     expect(await f.credential()).toBe(signIn("fixture-refreshed", { project_id: "fixture-project" }));
   });

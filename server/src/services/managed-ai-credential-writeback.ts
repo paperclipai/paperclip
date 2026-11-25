@@ -125,8 +125,9 @@ export async function syncManagedAntigravityCredential(
     ));
     const ai = aiConnectionMetadataSchema.safeParse(connection?.config.ai);
     if (!connection || !ai.success || ai.data.provider !== "google" || ai.data.method !== "subscription") return null;
+    const saved = await aiConnectionService(database).credential({ connection, grant });
     let stored: string;
-    try { stored = sanitizeAntigravityCredential(await aiConnectionService(database).credential({ connection, grant })); }
+    try { stored = sanitizeAntigravityCredential(saved); }
     catch { return null; }
     if (createHash("sha256").update(stored, "utf8").digest("hex") !== base) return null;
     return { connection, grant, stored };
