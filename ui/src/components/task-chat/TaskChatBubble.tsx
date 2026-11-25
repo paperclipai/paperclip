@@ -242,7 +242,6 @@ function TaskChatBubbleContent({
       openPath: attachment.openPath,
       downloadPath: attachment.downloadPath,
     }));
-  // A file the reply's own run already shows as its card is not repeated under the reply.
   const notRunFileCard = (ref: AttachmentRef) => {
     const id = ref.id ?? attachmentIdFromUrl(ref.url);
     return !(item.author === "agent" && item.sourceRunId && id && runFileCards.get(id) === item.sourceRunId);

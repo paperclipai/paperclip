@@ -64,7 +64,6 @@ describe("an Antigravity swarm run's task thread", () => {
 
   it("reads in plain language after the run", () => {
     expect(settled()).toEqual([
-      // A swarm line reads once: no "Swarm" label before its own sentence.
       "Swarm started in the task folder with Gemini 3.8 Flash (Low) on Google's default channel (Antigravity CLI 1.5.15). Helper changes inside the task folder are approved automatically; anything else is blocked.",
       "This swarm runs on the Google account of this agent's Google connection.",
       "Goal: Create and verify u1.txt and u2.txt",

@@ -74,12 +74,6 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-/**
- * Files the run handed in as deliverables, by the name it gave them. A new
- * session (for example the first ordinary turn after a swarm, which cannot
- * reopen the swarm's conversation) learns from this what is already in the
- * task folder without searching for it.
- */
 function readDeliveredFiles(resultJson: Record<string, unknown> | null | undefined): string[] {
   const receipts = asRecord(resultJson?.semanticToolReceipts);
   if (!receipts) return [];
@@ -94,7 +88,6 @@ function readDeliveredFiles(resultJson: Record<string, unknown> | null | undefin
   return [...files];
 }
 
-/** The run's own checks, one line each: "Check cat v1.txt: passed (one three)." */
 function readVerification(resultJson: Record<string, unknown> | null | undefined): string[] {
   const checks = asRecord(resultJson?.nativeResult)?.verification;
   if (!Array.isArray(checks)) return [];
@@ -188,8 +181,6 @@ export function buildContinuationSummaryMarkdown(input: {
   // Rows saved before SQL text was kept out of run errors still carry it.
   const modelError = summarizeRunErrorForModel(
     run.error ? withoutSqlStatementText(run.error, readRunFailureCause(run.resultJson)) : run.error, terminalFailureCategory);
-  // No run ids or log locations: this text opens the next turn, which acts on
-  // what the run did, never on where Paperclip keeps its records.
   const recentActions = [
     `The latest run finished with status \`${run.status}\`${run.finishedAt ? ` at ${run.finishedAt.toISOString()}` : ""}.`,
     resultSummary ? truncateText(resultSummary, SUMMARY_SECTION_MAX_CHARS) : "No adapter-provided result summary was captured for this run.",
@@ -199,12 +190,10 @@ export function buildContinuationSummaryMarkdown(input: {
     recentActions.push(`Latest run error${run.errorCode ? ` (${run.errorCode})` : ""}: ${truncateText(modelError, 500)}`);
   }
 
-  const delivered = readDeliveredFiles(run.resultJson);
-  // Earlier runs' files stay listed: a later run's summary may not name them again.
-  const previousFiles = [...(extractMarkdownSection(input.previousSummaryBody, "Files / Routes Touched") ?? "")
+  const previousDelivered = [...(extractMarkdownSection(input.previousSummaryBody, "Files Delivered") ?? "")
     .matchAll(/^[-*]\s+`([^`\n]+)`\s*$/gm)].map((match) => match[1]!);
-  const paths = [...new Set([...delivered, ...previousFiles,
-    ...extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt, input.previousSummaryBody)])].slice(0, 12);
+  const delivered = [...new Set([...readDeliveredFiles(run.resultJson), ...previousDelivered])].slice(0, 12);
+  const paths = extractPathCandidates(resultSummary, run.stdoutExcerpt, run.stderrExcerpt, input.previousSummaryBody);
   const objective = extractMarkdownSection(issue.description, "Objective") ?? issue.description?.trim() ?? "No objective captured.";
   const acceptanceCriteria = extractMarkdownSection(issue.description, "Acceptance Criteria") ?? "No explicit acceptance criteria captured.";
   const mode = inferMode(issue, run);
@@ -235,6 +224,7 @@ export function buildContinuationSummaryMarkdown(input: {
     "",
     bulletList(paths.map((path) => `\`${path}\``), "No file or route paths were detected in the captured run summary."),
     "",
+    ...(delivered.length > 0 ? ["## Files Delivered", "", bulletList(delivered.map((name) => `\`${name}\``), ""), ""] : []),
     "## Blockers / Decisions",
     "",
     bulletList(

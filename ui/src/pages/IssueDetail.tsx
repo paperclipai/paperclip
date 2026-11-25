@@ -5322,8 +5322,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         );
       }
       // A comment that is not known to be saved stays in the composer and
-      // resends with the same request ID; its notice replaces this toast. A
-      // refusal with a reason already shows inline under the composer.
+      // resends with the same request ID; its notice replaces this toast.
       if (classifySendFailure(err) === "pending" || isInlineSendRefusal(err)) return;
       const { title, body } = describeError(err, { action: "post the comment" });
       pushToast({ title, body, tone: "error" });
@@ -5754,8 +5753,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         );
       }
       // A comment that is not known to be saved stays in the composer and
-      // resends with the same request ID; its notice replaces this toast. A
-      // refusal with a reason already shows inline under the composer.
+      // resends with the same request ID; its notice replaces this toast.
       if (classifySendFailure(err) === "pending" || isInlineSendRefusal(err)) return;
       const { title, body } = describeError(err, { action: "post the comment" });
       pushToast({ title, body, tone: "error" });

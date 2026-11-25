@@ -59,11 +59,10 @@ describe("issue continuation summaries", () => {
   });
 
   it("opens the next session after a swarm with what the swarm did, never with where Paperclip keeps its records", () => {
-    // The accepted result of a live Antigravity /swarm run (ids and digests replaced).
     const swarmRunId = "6a1f0c2e-0000-4000-8000-00000000a001";
-    const deliverable = (filename: string, attachmentId: string) => ({
+    const deliverable = (filename: string, attachmentId: string, contentRef = filename) => ({
       operationId: "register_deliverable",
-      input: { title: `${filename} deliverable`, filename, contentRef: filename, contentType: "text/plain", byteSize: 3, sha256: "0".repeat(64) },
+      input: { title: `${filename} deliverable`, filename, contentRef, contentType: "text/plain", byteSize: 3, sha256: "0".repeat(64) },
       result: { disposition: "applied", attachmentId, contentPath: `/api/attachments/${attachmentId}/content` },
     });
     const body = buildContinuationSummaryMarkdown({
@@ -77,15 +76,13 @@ describe("issue continuation summaries", () => {
             detail: "Both files verified successfully: v1.txt exists and contains \"one\", and v2.txt exists and contains \"two\"." }] },
           semanticToolReceipts: {
             "register-v1-txt": deliverable("v1.txt", "6a1f0c2e-0000-4000-8000-00000000b001"),
-            "register-v2-txt": deliverable("v2.txt", "6a1f0c2e-0000-4000-8000-00000000b002"),
+            "register-v2-txt": deliverable("v2.txt", "6a1f0c2e-0000-4000-8000-00000000b002", "out/v2.txt"),
           },
         },
       },
       agent: { id: "agent-1", name: "Swarm Agent", adapterType: "paperclip_runner" },
     });
 
-    // The ordinary follow-up starts a fresh conversation (a swarm's CLI session
-    // cannot be reopened by the ordinary route): this summary is its memory.
     const prompt = renderPaperclipWakePrompt({
       reason: "issue_reopened_via_comment",
       issue: { id: "issue-1", identifier: "ANT-1", title: "UI check", status: "in_progress" },
@@ -94,19 +91,32 @@ describe("issue continuation summaries", () => {
       continuationSummary: { key: "continuation-summary", body },
     });
     expect(prompt).toContain("Successfully created v1.txt containing \"one\" and v2.txt containing \"two\"");
-    expect(prompt).toContain("- `v1.txt`\n- `v2.txt`");
+    expect(prompt).toContain("## Files Delivered\n\n- `v1.txt`\n- `v2.txt`");
+    expect(prompt).toContain("## Files / Routes Touched\n\n- No file or route paths were detected");
     expect(prompt).toContain("Check verifier check: passed (Both files verified successfully");
     expect(prompt).not.toContain(swarmRunId);
     expect(prompt).not.toMatch(/run log|transcript|\/api\/attachments|[0-9a-f]{64}|paperclip_runner/);
 
-    // A later run keeps the swarm's files listed even when its own result names none.
     const next = buildContinuationSummaryMarkdown({
       issue: { id: "issue-1", identifier: "ANT-1", title: "UI check", description: null, status: "done", priority: "medium" },
-      run: { id: "run-next", status: "succeeded", error: null, resultJson: { summary: "Appended three." } },
+      run: { id: "run-next", status: "succeeded", error: null, resultJson: { summary: "Appended three.",
+        semanticToolReceipts: { "register-v3-txt": deliverable("v3.txt", "6a1f0c2e-0000-4000-8000-00000000b003") } } },
       agent: { id: "agent-1", name: "Swarm Agent", adapterType: "paperclip_runner" },
       previousSummaryBody: body,
     });
-    expect(next).toContain("- `v1.txt`\n- `v2.txt`");
+    expect(next).toContain("## Files Delivered\n\n- `v3.txt`\n- `v1.txt`\n- `v2.txt`");
+  });
+
+  it("lists the latest run's paths before older ones once the list is full", () => {
+    const older = Array.from({ length: 12 }, (_, index) => `- \`server/src/old-${index}.ts\``).join("\n");
+    const body = buildContinuationSummaryMarkdown({
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Paths", description: null, status: "in_progress", priority: "medium" },
+      run: { id: "run-1", status: "succeeded", error: null, resultJson: { summary: "Updated server/src/new.ts." } },
+      agent: { id: "agent-1", name: "Agent", adapterType: "codex_local" },
+      previousSummaryBody: `# Continuation Summary\n\n## Files / Routes Touched\n\n${older}\n`,
+    });
+    expect(body).toContain("## Files / Routes Touched\n\n- `server/src/new.ts`\n- `server/src/old-0.ts`");
+    expect(body).not.toContain("old-11.ts");
   });
 
   it("uses failure state to point the next run at the error", () => {

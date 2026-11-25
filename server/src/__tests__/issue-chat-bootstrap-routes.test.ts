@@ -146,7 +146,6 @@ describeEmbeddedPostgres("task chat bootstrap", () => {
     const server = app(f.actor);
     for (const conversation of [false, true]) {
       const task = await seedTask(f.companyId, { userId: f.userId, conversation });
-      // The latest user message, which every recent window includes.
       const requested = task.commentIds[6]!;
       await recordAntigravitySwarmRequest(ctx.db, { companyId: f.companyId, issueId: task.issueId, commentId: requested, userId: f.userId });
       const marks = (comments: Array<{ id: string; nativeCommand?: string }>) =>
@@ -156,7 +155,6 @@ describeEmbeddedPostgres("task chat bootstrap", () => {
       expect(marks(list.body), "comments").toEqual([requested]);
       const one = await request(server).get(`/api/issues/${task.issueId}/comments/${requested}`).expect(200);
       expect(one.body.nativeCommand, "comment").toBe("swarm");
-      // A cold task page reads the recent window, alone or inside the chat bootstrap.
       const recent = await request(server).get(`/api/issues/${task.issueId}/recent-comments`).expect(200);
       expect(marks(recent.body.comments), "recent-comments").toEqual([requested]);
       const single = await request(server).get(`/api/issues/${task.issueId}/chat-bootstrap`).expect(200);

@@ -79,7 +79,6 @@ export interface ToolActivityPresentation {
   technicalName?: string;
   confidence: ToolClassificationConfidence;
   summaryGroup: ToolSummaryGroup;
-  /** The row's subject is a whole sentence; with one, the row shows it without a label. */
   sentenceSubject?: boolean;
 }
 
@@ -97,11 +96,6 @@ export function subjectRowLabel(label: string, settledCommand: boolean): string 
   return `${action!.split(" ")[0]}${marker ? ` · ${marker}` : ""}`;
 }
 
-/**
- * The label of a row whose subject is a whole sentence ("Swarm started in the
- * task folder…"): nothing, so the sentence reads once, unless the row failed
- * or stopped ("Swarm · failed").
- */
 export function sentenceRowLabel(label: string): string {
   return label.includes(" · ") ? label : "";
 }
@@ -178,7 +172,6 @@ interface ExactAction {
   completed?: string;
   group?: ToolSummaryGroup;
   family?: ToolFamily;
-  /** The subject is a whole sentence that says what happened. */
   sentence?: boolean;
 }
 
@@ -239,7 +232,7 @@ const EXACT_ACTIONS: Record<string, ExactAction> = {
   write_document: { action: "update", running: "Writing a document", completed: "Wrote a document" },
   // With the file as its subject the row reads "Attached u1.txt".
   register_deliverable: { action: "create", running: "Attaching a file", completed: "Attached a file" },
-  // Antigravity's swarm progress lines; the subject is the whole plain sentence, so the row shows it alone.
+  // Antigravity's swarm progress lines; the subject is the whole plain sentence.
   swarm_update: { action: "other", running: "Swarm", completed: "Swarm", family: "agent", sentence: true, group: group("swarm_update", "swarm update", "swarm updates") },
   finish_task: { action: "finish", running: "Reporting completion", completed: "Reported completion" },
   paperclip_finish: { action: "finish", running: "Reporting completion", completed: "Reported completion" },

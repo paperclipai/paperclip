@@ -1554,11 +1554,9 @@ describe("TaskChatThread draft pass-through", () => {
 
     render(<TaskChatThread comments={[reply("reply-1", "swarm-run")]} workProducts={workProducts} attachments={attachments} onAdd={async () => {}} issueStatus="done" />);
     await settleThreadLayout();
-    // The run's own card shows the file; the reply keeps its words but no second card.
     expect(container.textContent).toContain("Created v1.txt.");
     expect(chips()).toBe(0);
 
-    // A later run's reply that links the same file still shows it: its card is not that run's.
     render(<TaskChatThread comments={[reply("reply-2", "later-run")]} workProducts={workProducts} attachments={attachments} onAdd={async () => {}} issueStatus="done" />);
     await settleThreadLayout();
     expect(chips()).toBe(1);

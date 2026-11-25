@@ -33,7 +33,6 @@ describe("classifySendFailure", () => {
 });
 
 describe("isInlineSendRefusal", () => {
-  // The composer shows these inline; the page must not repeat them as a toast.
   it.each([
     ["Plan mode refusing /swarm", new ApiError("Swarm is not available while the task is in Plan mode", 422, null)],
     ["a 403", new ApiError("Forbidden", 403, null)],

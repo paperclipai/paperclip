@@ -70,11 +70,6 @@ export function groupImageResources<T extends TaskChatItem>(items: readonly T[])
   return rows;
 }
 
-/**
- * Attachment id → the run whose file card (a deliverable row in the thread)
- * already shows it. A reply from that run that links the same file does not
- * repeat it as a second card under the message.
- */
 export function runFileCardAttachments(products: readonly IssueWorkProduct[]): ReadonlyMap<string, string> {
   const byAttachment = new Map<string, string>();
   for (const product of products) {
