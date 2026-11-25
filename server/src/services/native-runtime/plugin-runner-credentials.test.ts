@@ -40,6 +40,36 @@ describe("plugin Runner selected credentials", () => {
   });
 });
 
+describe("plugin Runner Google Antigravity credentials", () => {
+  const signIn = "{\"refresh_token\":\"fixture-refresh\"}";
+  it("transfers only the selected Gemini API key", async () => {
+    const transfer = await preparePluginRunnerCredentials({ provider: "antigravity", identity: "revision", accountIdentity: "account",
+      environment: { GEMINI_API_KEY: "fixture-gemini", GOOGLE_API_KEY: "fixture-google", GOOGLE_APPLICATION_CREDENTIALS: "/controller/private/adc.json",
+        GOOGLE_GEMINI_BASE_URL: "https://router.example.test", GEMINI_HOME: "/controller/private/gemini", XAI_API_KEY: "fixture-xai",
+        HOME: "/controller/private", OTHER_SECRET: "fixture-unrelated" } });
+    expect(transfer).toEqual({ accountIdentity: "account", credential: { type: "provider-env", provider: "antigravity", environment: { GEMINI_API_KEY: "fixture-gemini" } } });
+    expect(transfer.needsWriteback).toBeUndefined();
+    expect(transfer.onCredentials).toBeUndefined();
+  });
+  it.each([
+    ["a Google sign-in", { PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: signIn }],
+    ["a Google sign-in beside a Gemini API key", { GEMINI_API_KEY: "fixture-gemini", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: signIn }],
+    ["no key", {}],
+    ["an empty key", { GEMINI_API_KEY: "" }],
+    ["a blank key", { GEMINI_API_KEY: "   " }],
+    ["only a Google API key", { GOOGLE_API_KEY: "fixture-google" }],
+  ] as const)("refuses %s because only a Gemini API key can be transferred", async (_name, environment) => {
+    const result = preparePluginRunnerCredentials({ provider: "antigravity", identity: "revision", environment });
+    await expect(result).rejects.toThrow("Google Antigravity only with a Gemini API key");
+    await result.catch((error: Error) => expect(error.message).not.toContain("fixture"));
+  });
+  it("fails closed for an invalid Gemini API key without echoing it", async () => {
+    const result = preparePluginRunnerCredentials({ provider: "antigravity", identity: "revision", environment: { GEMINI_API_KEY: "fixture\0gemini" } });
+    await expect(result).rejects.toThrow("Plugin Runner selected credential unavailable");
+    await result.catch((error: Error) => expect(error.message).not.toContain("fixture"));
+  });
+});
+
 describe("plugin Runner provider environment credentials", () => {
   const blanks = { XAI_API_KEY: "", COPILOT_GITHUB_TOKEN: "", OPENROUTER_API_KEY: "", PAPERCLIP_AI_PROVIDER_URL: "", PAPERCLIP_AI_PROVIDER_KEY: "",
     ANTHROPIC_API_KEY: "", HOME: "/controller/private", GROK_HOME: "/controller/private/provider", OTHER_SECRET: "fixture-unrelated" };
