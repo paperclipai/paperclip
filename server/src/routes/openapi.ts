@@ -2591,7 +2591,7 @@ registry.registerPath({
   summary: "Create a chat endpoint",
   description:
     "Creates one provider bot endpoint bound permanently to one Paperclip agent. Provider setup and verification happen in later calls. "
-    + "Chat providers need Chat connectors, and GitHub needs GitHub review bots, turned on by an instance admin in Experimental settings at /<prefix>/company/settings/instance/experimental. "
+    + "Experimental chat providers need Chat connectors turned on by an instance admin in Experimental settings at /<prefix>/company/settings/instance/experimental; AgentMail and GitHub are always available. "
     + "While that setting is off, connections_search shows the provider as unavailable and this call is refused; agents cannot change it. Link that page as [Experimental settings](/<prefix>/company/settings/instance/experimental) and reply.",
   request: {
     params: z.object({ companyId: z.string().uuid() }),
@@ -11816,6 +11816,32 @@ registerCurrentRoute({
   body: updateDocumentAnnotationThreadSchema,
 });
 
+registerCurrentRoute({
+  method: "put",
+  path: "/api/issues/{id}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["issues"],
+  summary: "Add a reaction on a document annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/issues/{id}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["issues"],
+  summary: "Remove a reaction on a document annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
 for (const route of [
   [
     "get",
@@ -11870,6 +11896,32 @@ registerCurrentRoute({
   tags: ["routines"],
   summary: "Update a routine description annotation thread",
   body: updateDocumentAnnotationThreadSchema,
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/routines/{id}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["routines"],
+  summary: "Add a reaction on a routine description annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/routines/{id}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["routines"],
+  summary: "Remove a reaction on a routine description annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
 });
 
 registerCurrentRoute({
@@ -13903,7 +13955,7 @@ const dotInvitationResponseSchema = z.object({
   approvalId: z.string().uuid().nullable(),
   binding: z.object({
     id: z.string().uuid(), status: z.string(), connected: z.boolean(),
-    subscriptionVerified: z.boolean(), hasPendingChallenge: z.boolean(),
+    subscriptionVerified: z.boolean(), subscriptionExpired: z.boolean().optional(), hasPendingChallenge: z.boolean(),
     pairingExpiresAt: z.string().datetime().nullable(), challengeExpiresAt: z.string().datetime().nullable(),
   }).nullable(),
 });

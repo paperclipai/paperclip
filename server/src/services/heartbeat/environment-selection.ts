@@ -20,7 +20,7 @@ import {
 import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../task-workspace-access.js";
 import { isBoundIsolatedTaskDirectory, shouldUseIsolatedTaskDirectory } from "../isolated-task-directory.js";
 import { readTaskDirectoryRetention } from "../isolated-task-directory-retention.js";
-import { isBoundFreshPluginTaskDirectory } from "../provider-fresh-workspace.js";
+import { isBoundPluginTaskDirectory } from "../provider-fresh-workspace.js";
 import {
   findNativeChatWorkspaceScope,
   nativeChatWorkspaceCwd,
@@ -549,7 +549,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     (await isBoundIsolatedTaskDirectory({ companyId: agent.companyId, issueId,
       workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace }) ||
       (selectedEnvironmentForConfig?.driver === "plugin" && agent.adapterType === "paperclip_runner" &&
-        isBoundFreshPluginTaskDirectory({ companyId: agent.companyId, issueId,
+        isBoundPluginTaskDirectory({ companyId: agent.companyId, issueId,
           workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace,
           owner: { agentId: agent.id, environmentId: selectedEnvironmentForConfig.id,
             pluginKey: parseObject(selectedEnvironmentForConfig.config).pluginKey ?? null,
@@ -567,6 +567,8 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     mode: requestedExecutionWorkspaceMode,
     hasProjectWorkspace: workspaceProjectContext?.hasWorkspace ?? false,
     projectWorkspaceId: issueRef.projectWorkspaceId,
+    hasSelectedExecutionWorkspace: Boolean(issueRef.executionWorkspaceId || boundSourceWorkspace) ||
+      requestedShouldReuseExisting || taskWorkspaceIntent?.selection.kind === "existing",
     workspaceStrategies: [
       config.workspaceStrategy,
       issueAssigneeOverrides?.adapterConfig?.workspaceStrategy,

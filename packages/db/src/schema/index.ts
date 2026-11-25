@@ -148,6 +148,7 @@ export { statusCards, statusCardUpdates } from "./status_cards.js";
 export { routineDocuments } from "./routine_documents.js";
 export { documentAnnotationThreads } from "./document_annotation_threads.js";
 export { documentAnnotationComments } from "./document_annotation_comments.js";
+export { documentAnnotationCommentReactions } from "./document_annotation_comment_reactions.js";
 export { documentAnnotationAnchorSnapshots } from "./document_annotation_anchor_snapshots.js";
 export { heartbeatRuns, workspaceRestoreFailureCodesSql } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";

@@ -171,8 +171,15 @@ export function createConnectionInstalls(db: Db, { now, getConnectionRow, assert
           );
         }
       }
+      const markAgentAccessConfigured = connection.connectionPurpose !== "ai"
+        && connection.config.agentAccessConfigured !== true;
       const markMcpAccessConfigured = connection.transport === "mcp_remote"
         && connection.config.mcpAgentAccessConfigured !== true;
+      const accessMarkerPatch = {
+        ...(markAgentAccessConfigured ? { agentAccessConfigured: true } : {}),
+        ...(markMcpAccessConfigured ? { mcpAgentAccessConfigured: true } : {}),
+      };
+      const markAccessConfigured = Object.keys(accessMarkerPatch).length > 0;
       const accessExtensions: Array<{
         targetType: "company" | "agent";
         targetId: string;
@@ -180,12 +187,13 @@ export function createConnectionInstalls(db: Db, { now, getConnectionRow, assert
       }> = [];
       await db.transaction(async (tx) => {
         await lockToolConnectionRuntimeInputs(tx, connection.companyId, connection.id);
-        if (markMcpAccessConfigured) {
-          // Preserve an explicit zero-agent selection through OAuth. Merge the
-          // marker in SQL so concurrent credential/config changes are retained.
+        if (markAccessConfigured) {
+          // Preserve explicit install selections (including zero agents) across
+          // OAuth and uninstalls. Merge in SQL so concurrent changes stay intact.
+          const patchJson = JSON.stringify(accessMarkerPatch);
           await tx.update(toolConnections).set({
-            config: sql`${toolConnections.config} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
-            transportConfig: sql`${toolConnections.transportConfig} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
+            config: sql`${toolConnections.config} || ${patchJson}::jsonb`,
+            transportConfig: sql`${toolConnections.transportConfig} || ${patchJson}::jsonb`,
             updatedAt: now(),
           }).where(and(
             eq(toolConnections.companyId, connection.companyId),
@@ -310,7 +318,7 @@ export function createConnectionInstalls(db: Db, { now, getConnectionRow, assert
               });
           }
         }
-        if (markMcpAccessConfigured || removeIds.length > 0 || additions.length > 0) {
+        if (markAccessConfigured || removeIds.length > 0 || additions.length > 0) {
           const binding = actorBinding(actor);
           await tx.insert(toolAccessAuditEvents).values({
             companyId: connection.companyId,
@@ -321,6 +329,7 @@ export function createConnectionInstalls(db: Db, { now, getConnectionRow, assert
             outcome: "success",
             reasonCode: "installs_changed",
             details: {
+              ...(markAgentAccessConfigured ? { agentAccessConfigured: true } : {}),
               ...(markMcpAccessConfigured ? { mcpAgentAccessConfigured: true } : {}),
               added: additions.map((install) => ({
                 targetType: install.targetType,

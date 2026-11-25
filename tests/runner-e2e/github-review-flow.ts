@@ -19,8 +19,6 @@ export async function runGitHubReviewFlow(input: {
   authenticateRegistration?(page: Page): Promise<void>;
 }) {
   const { page, github, api, config, resources, evidence } = input;
-  const capabilities = await api.get('/api/instance/settings/experimental');
-  if (capabilities.enableGitHubReviewBots !== true) throw new ConnectionBlock("blocked_target", "github_review_capability_unavailable");
   const company = await api.get(`/api/companies/${config.target.companyId}`);
   const agent = await api.get(`/api/agents/${config.agent.id}`);
   if (company.id !== config.target.companyId || agent.companyId !== company.id || agent.name !== config.agent.name || !["idle", "running"].includes(agent.status)) throw new ConnectionBlock("blocked_target", "configured_review_agent_unavailable");

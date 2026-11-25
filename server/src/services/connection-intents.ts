@@ -536,7 +536,7 @@ export function connectionIntentService(db: Db) {
     const yieldingServices = new Set<string>();
     const discoveryMethods = (app: (typeof APP_STORE_DEFINITIONS)[number]) => getAvailableConnectionMethods(app)
       .filter(method => method.purpose !== "channel" || app.slug === "agentmail"
-        || (method.provider === "github" ? settings.enableGitHubReviewBots : settings.enableChatConnectors));
+        || method.provider === "github" || settings.enableChatConnectors);
     const services = [...APP_STORE_DEFINITIONS.filter(app => isConnectorFeatureEnabled(app, settings)
       && discoveryMethods(app).length).map((app) => app.slug),
       ...inventory.connections.filter((connection) =>

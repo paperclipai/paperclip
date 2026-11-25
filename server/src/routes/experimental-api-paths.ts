@@ -13,6 +13,8 @@ export const experimentalApiPaths: readonly [string, string, z.ZodTypeAny | unde
   ["post", "/api/cases/{id}/documents/{key}/annotations", sharedSchemas.createDocumentAnnotationThreadSchema],
   ["post", "/api/cases/{id}/documents/{key}/annotations/{threadId}/comments", sharedSchemas.createDocumentAnnotationCommentSchema],
   ["patch", "/api/cases/{id}/documents/{key}/annotations/{threadId}", sharedSchemas.updateDocumentAnnotationThreadSchema],
+  ["put", "/api/cases/{id}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}", undefined],
+  ["delete", "/api/cases/{id}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}", undefined],
   ["put", "/api/cases/{id}/documents/{key}", caseSchemas.upsertCaseDocumentSchema],
   ["post", "/api/cases/{id}/documents/{key}/lock", undefined],
   ["post", "/api/cases/{id}/documents/{key}/unlock", undefined],
