@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import type { Db } from "@paperclipai/db";
 import {
@@ -33,6 +33,9 @@ import {
   UpdateDocumentAnnotationThread,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+
+const ANNOTATION_QUESTION_WAKE_WINDOW_MS = 10 * 60 * 1000;
+const ANNOTATION_QUESTION_WAKE_MAX_PER_WINDOW = 3;
 
 type ActorInput = {
   actorType: "agent" | "user";
@@ -948,6 +951,7 @@ export function documentAnnotationService(db: Db) {
       const firstAdd = changedRows[0]?.firstAdd === true;
       let questionWakeRequestId: string | null = null;
       let questionWakeAgentId: string | null = null;
+      let questionWakeSuppressed = false;
       if (
         input.present &&
         firstAdd &&
@@ -961,56 +965,94 @@ export function documentAnnotationService(db: Db) {
             status: issues.status,
             assigneeAgentId: issues.assigneeAgentId,
             conversationAgentId: issues.conversationAgentId,
+            conversationUserId: issues.conversationUserId,
           })
           .from(issues)
-          .where(and(eq(issues.companyId, thread.companyId), eq(issues.id, input.target.issueId)));
+          .where(and(eq(issues.companyId, thread.companyId), eq(issues.id, input.target.issueId)))
+          .for("update");
+        const chatOwnerAllowed =
+          !issue?.conversationAgentId ||
+          (issue.assigneeAgentId === issue.conversationAgentId &&
+            issue.conversationUserId === input.actor.actorId);
         if (
           issue &&
           issue.assigneeAgentId &&
           issue.status !== "done" &&
           issue.status !== "cancelled" &&
-          (!issue.conversationAgentId || issue.assigneeAgentId === issue.conversationAgentId)
+          chatOwnerAllowed
         ) {
-          const wakeRequestId = randomUUID();
-          await notifyDeferredExecutionWork(tx, {
-            companyId: thread.companyId,
-            requestId: wakeRequestId,
-          });
-          await tx.insert(agentWakeupRequests).values({
-            id: wakeRequestId,
-            companyId: thread.companyId,
-            agentId: issue.assigneeAgentId,
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_commented",
-            status: "deferred_issue_execution",
-            requestedByActorType: "user",
-            requestedByActorId: input.actor.actorId,
-            idempotencyKey: `annotation-question-reaction:${changedRows[0]!.id}`,
-            payload: {
-              issueId: issue.id,
-              annotationCommentId: comment.id,
-              annotationThreadId: thread.id,
-              annotationReaction: "question",
-              mutation: "annotation_reaction",
-              executionWait: deferredWorkIntentWait(
-                "wake_lost",
-                "Waiting to deliver annotation question reaction.",
-              ),
-              _paperclipWakeContext: {
+          const [existingPending] = await tx
+            .select({ id: agentWakeupRequests.id })
+            .from(agentWakeupRequests)
+            .where(and(
+              eq(agentWakeupRequests.companyId, thread.companyId),
+              eq(agentWakeupRequests.agentId, issue.assigneeAgentId),
+              inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued", "claimed"]),
+              sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+              sql`${agentWakeupRequests.payload}->>'mutation' = 'annotation_reaction'`,
+            ))
+            .limit(1);
+          const windowStart = new Date(Date.now() - ANNOTATION_QUESTION_WAKE_WINDOW_MS);
+          const recentActorWakes = existingPending
+            ? []
+            : await tx
+              .select({ id: agentWakeupRequests.id })
+              .from(agentWakeupRequests)
+              .where(and(
+                eq(agentWakeupRequests.companyId, thread.companyId),
+                eq(agentWakeupRequests.requestedByActorType, "user"),
+                eq(agentWakeupRequests.requestedByActorId, input.actor.actorId),
+                gte(agentWakeupRequests.requestedAt, windowStart),
+                sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+                sql`${agentWakeupRequests.payload}->>'mutation' = 'annotation_reaction'`,
+              ))
+              .limit(ANNOTATION_QUESTION_WAKE_MAX_PER_WINDOW);
+          if (existingPending || recentActorWakes.length >= ANNOTATION_QUESTION_WAKE_MAX_PER_WINDOW) {
+            questionWakeSuppressed = true;
+          } else {
+            const wakeRequestId = randomUUID();
+            await notifyDeferredExecutionWork(tx, {
+              companyId: thread.companyId,
+              requestId: wakeRequestId,
+            });
+            await tx.insert(agentWakeupRequests).values({
+              id: wakeRequestId,
+              companyId: thread.companyId,
+              agentId: issue.assigneeAgentId,
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_commented",
+              status: "deferred_issue_execution",
+              requestedByActorType: "user",
+              requestedByActorId: input.actor.actorId,
+              idempotencyKey: `annotation-question-reaction:${changedRows[0]!.id}`,
+              payload: {
                 issueId: issue.id,
-                taskId: issue.id,
                 annotationCommentId: comment.id,
                 annotationThreadId: thread.id,
                 annotationReaction: "question",
-                annotationReactionUserId: input.actor.actorId,
-                source: "issue.document_annotation_reaction",
-                wakeReason: "issue_commented",
+                mutation: "annotation_reaction",
+                executionWait: deferredWorkIntentWait(
+                  "wake_lost",
+                  "Waiting to deliver annotation question reaction.",
+                ),
+                _paperclipWakeContext: {
+                  issueId: issue.id,
+                  taskId: issue.id,
+                  annotationCommentId: comment.id,
+                  annotationThreadId: thread.id,
+                  annotationReaction: "question",
+                  annotationReactionUserId: input.actor.actorId,
+                  source: "issue.document_annotation_reaction",
+                  wakeReason: "issue_commented",
+                },
               },
-            },
-          });
-          questionWakeRequestId = wakeRequestId;
-          questionWakeAgentId = issue.assigneeAgentId;
+            });
+            questionWakeRequestId = wakeRequestId;
+            questionWakeAgentId = issue.assigneeAgentId;
+          }
+        } else {
+          questionWakeSuppressed = true;
         }
       }
       const [withSummary] = await withReactions([comment], input.actor, tx);
@@ -1021,6 +1063,7 @@ export function documentAnnotationService(db: Db) {
         firstAdd,
         questionWakeRequestId,
         questionWakeAgentId,
+        questionWakeSuppressed,
       };
     }),
 

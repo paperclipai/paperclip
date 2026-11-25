@@ -471,7 +471,7 @@ Rules:
 - An unknown reaction name returns `400`. A thread or comment that is not on this document returns `404`.
 - The response is the comment with its `reactions` array.
 - Annotation comments returned by the annotation list, thread read and document read (`includeAnnotationComments=true`) include the same `reactions` array.
-- A `question` reaction that a person adds wakes the issue assignee once, in its own follow-up run, to answer in that annotation thread. It does not wake an agent on a `done` or `cancelled` issue. Only the first `question` from each person on a comment wakes the assignee; removing it and adding it again does not. `done`, `check` and `thumbs_up`, agent reactions and repeated calls start no agent work.
+- A `question` reaction that a person adds wakes the issue assignee once, in its own follow-up run, to answer in that annotation thread. It does not wake an agent on a `done` or `cancelled` issue, or on another person's agent chat. Only the first `question` from each person on a comment wakes the assignee (removing it and adding it again does not), at most one annotation question wake is queued per issue at a time, and each person is capped at 3 question wakes per issue per 10-minute window. `done`, `check` and `thumbs_up`, agent reactions and repeated calls start no agent work.
 - Resolving a thread stays a separate action. A `done` reaction does not resolve the thread.
 
 Each entry in `reactions`:

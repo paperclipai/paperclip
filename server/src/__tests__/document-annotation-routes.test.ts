@@ -541,6 +541,34 @@ describe("document annotation routes", () => {
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     });
 
+    it("does not wake another user's agent chat from a non-owner question", async () => {
+      mockIssueService.getById.mockResolvedValue({
+        id: issueId,
+        companyId,
+        title: "Annotation API",
+        status: "in_review",
+        assigneeAgentId,
+        conversationAgentId: assigneeAgentId,
+        conversationUserId: "chat-owner",
+      });
+      await request(await createApp()).put(reactionPath("question")).expect(200);
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("does not wake the assignee when the service suppresses a capped question wake", async () => {
+      mockAnnotationService.setCommentReaction.mockResolvedValueOnce({
+        thread: annotationThread,
+        comment: { ...annotationComment, reactions: [] },
+        changed: true,
+        firstAdd: true,
+        questionWakeRequestId: null,
+        questionWakeAgentId: null,
+        questionWakeSuppressed: true,
+      });
+      await request(await createApp()).put(reactionPath("question")).expect(200);
+      expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
     it("rejects an unknown reaction name", async () => {
       await request(await createApp()).put(reactionPath("party")).expect(400);
       expect(mockAnnotationService.setCommentReaction).not.toHaveBeenCalled();

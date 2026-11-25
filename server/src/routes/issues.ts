@@ -11551,12 +11551,16 @@ export function issueRoutes(
     }
 
     const questionWakeAgentId = result.questionWakeAgentId ?? issue.assigneeAgentId;
+    const chatOwnerAllowed =
+      !issue.conversationAgentId || issue.conversationUserId === actor.actorId;
     if (
       present &&
       result.firstAdd &&
+      !result.questionWakeSuppressed &&
       reactionParsed.data === "question" &&
       actor.actorType === "user" &&
       questionWakeAgentId &&
+      chatOwnerAllowed &&
       !isClosedIssueStatus(issue.status)
     ) {
       await heartbeat.wakeup(questionWakeAgentId, {

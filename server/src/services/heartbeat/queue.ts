@@ -2160,6 +2160,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         sql`${agentWakeupRequests.payload}->'executionWait'->>'trigger' in ('pause_lifted', 'reconciler_backstop')`,
         sql`${agentWakeupRequests.payload}->'executionWait'->>'reason' in ('company.inactive', 'agent.not_invokable', 'wake_lost')`,
         eq(agentWakeupRequests.requestedByActorType, "user"),
+        sql`(${issues.conversationAgentId} is null or ${issues.conversationUserId} = ${agentWakeupRequests.requestedByActorId} or coalesce(${agentWakeupRequests.payload}->>'mutation', '') <> 'annotation_reaction')`,
         sql`coalesce(${agentWakeupRequests.idempotencyKey}, '') not like 'chat-inbound:%'`,
         sql`exists (select 1 from agents pause_agent where pause_agent.id = ${agentWakeupRequests.agentId}
           and pause_agent.status not in ('paused', 'terminated', 'pending_approval'))`,
@@ -2898,6 +2899,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         manualUserWake: opts.manualUserWake,
         taskRetryActorId,
         hasIndependentConversationWakeCause: hasIndependentConversationWakeCause(),
+        annotationQuestionReaction: isHumanAnnotationQuestionWake(),
       });
       if (preflight.kind === "skipped") return null;
       if (preflight.onboardingCompletion) enrichedContextSnapshot.onboardingCompletion = true;
@@ -3829,7 +3831,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
           // Completion can settle the conversation while admission is outside
           // the issue lock. Recheck the current state before persisting a wake.
-          if (isWaitingConversation(issue) && !hasIndependentConversationWakeCause()) {
+          if (
+            (isHumanAnnotationQuestionWake() && isConversation(issue) && issue.conversationUserId !== opts.requestedByActorId) ||
+            (isWaitingConversation(issue) && !hasIndependentConversationWakeCause())
+          ) {
             return { kind: "skipped" as const };
           }
 
