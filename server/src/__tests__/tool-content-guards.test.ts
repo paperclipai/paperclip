@@ -323,6 +323,33 @@ describe("tool content guards", () => {
     expect(delivered.uploadUrl).toBe(uploadUrl);
     expect(delivered.apiKey).toBe("***REDACTED***");
     expect(mixedResult.findings).toContain("sensitive_value");
+
+    // Request identity hashing and approval encryption stay keyed/encrypted for
+    // arguments containing a SigV4 presigned URL so retried side-effecting calls
+    // preserve their HMAC-based idempotency keys across deploys.
+    const argsWithPresignedUrl = { uploadUrl };
+    const canonical = canonicalToolArguments(argsWithPresignedUrl);
+    const expectedHmac = createHmac("sha256", signingSecret)
+      .update("paperclip:tool-request-identity:v1\0")
+      .update(canonical)
+      .digest("hex");
+    expect(toolRequestIdentityHash(argsWithPresignedUrl, signingSecret)).toBe(expectedHmac);
+    expect(toolRequestIdentityHash(argsWithPresignedUrl, signingSecret)).not.toBe(
+      createHash("sha256").update(canonical).digest("hex"),
+    );
+    const signed = signToolArguments({
+      invocationId: "invocation-sigv4",
+      toolName: "upload_receipt",
+      canonicalArguments: canonical,
+      signingSecret,
+    });
+    expect(JSON.parse(Buffer.from(signed, "base64url").toString("utf8")).version).toBe(2);
+    expect(readSignedToolArguments({
+      signedArguments: signed,
+      invocationId: "invocation-sigv4",
+      toolName: "upload_receipt",
+      signingSecret,
+    })).toEqual(argsWithPresignedUrl);
   });
 
   it("blocks prompt injection in tool results before returning to the agent", async () => {

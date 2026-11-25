@@ -319,17 +319,42 @@ describe("SigV4 presigned URLs", () => {
     expect(redactCommandText(spoofed)).not.toContain("X-Amz-Security-Token=IQoJ");
   });
 
-  it("still redacts standalone token secrets smuggled inside SigV4 parameters", () => {
-    const smuggledOpenAi = presignedUrl.replace(
-      "X-Amz-Security-Token=IQoJb3JpZ2luEXAMPLESESSION%2Ftoken%2Bvalue%3D",
-      "X-Amz-Security-Token=sk-smuggledsecret123456",
-    );
-    expect(redactCommandText(smuggledOpenAi)).not.toContain("sk-smuggledsecret123456");
+  it("still redacts standalone, percent-encoded, or malformed secrets smuggled inside SigV4 parameters", () => {
+    const jwt =
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    const smuggledTokenValues = [
+      ["sk", "smuggledsecret123456"].join("-"),
+      "%73k-smuggledsecret123456",
+      "sk%2Dsmuggledsecret123456",
+      "%2573k-smuggledsecret123456",
+      ["ghp", "smuggledtoken123456789012345"].join("_"),
+      "ghp%5Fsmuggledtoken123456789012345",
+      ["github", "pat", "smuggledtoken123456789012345"].join("_"),
+      ["sk", "live", "smuggledstripekey12345678"].join("_"),
+      "sk%5Flive%5Fsmuggledstripekey12345678",
+      jwt,
+      jwt.replaceAll(".", "%2E"),
+      "Authorization%3A%20Bearer%20secretvalue",
+      "%E0%A4%A",
+    ];
+    for (const badValue of smuggledTokenValues) {
+      const url = presignedUrl.replace(
+        "X-Amz-Security-Token=IQoJb3JpZ2luEXAMPLESESSION%2Ftoken%2Bvalue%3D",
+        `X-Amz-Security-Token=${badValue}`,
+      );
+      expect(redactCommandText(url)).not.toContain(badValue);
+    }
 
-    const smuggledGithub = presignedUrl.replace(
-      "X-Amz-Security-Token=IQoJb3JpZ2luEXAMPLESESSION%2Ftoken%2Bvalue%3D",
-      "X-Amz-Security-Token=ghp_smuggledtoken123456789012345",
-    );
-    expect(redactCommandText(smuggledGithub)).not.toContain("ghp_smuggledtoken123456789012345");
+    for (const badKeyId of ["%73k-smuggledsecret123456", "ghp%5Fsmuggledtoken123456789012345", "%E0%A4%A"]) {
+      const url = presignedUrl.replace(
+        "X-Amz-Credential=ASIAEXAMPLEKEYID0001%2F20261118%2Fus-east-1%2Fs3%2Faws4_request",
+        `X-Amz-Credential=${badKeyId}%2F20261118%2Fus-east-1%2Fs3%2Faws4_request`,
+      );
+      expect(redactCommandText(url)).not.toContain(badKeyId);
+    }
+  });
+
+  it("still collects a SigV4 presigned URL as private in diagnostic environment secrets", () => {
+    expect(collectDiagnosticEnvironmentSecrets({ PUBLIC_KEY: presignedUrl })).toEqual([presignedUrl]);
   });
 });

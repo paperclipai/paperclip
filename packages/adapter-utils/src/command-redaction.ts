@@ -1,3 +1,9 @@
+import {
+  containsSigV4PresignedUrl,
+  protectSigV4PresignedUrlParameters,
+} from "./sigv4-presigned-url.js";
+
+export { containsSigV4PresignedUrl };
 export const REDACTED_COMMAND_TEXT_VALUE = "***REDACTED***";
 
 // Public Executor helper addresses retained for callers of this predicate.
@@ -32,8 +38,13 @@ const COMMAND_ENV_SECRET_ASSIGNMENT_RE = new RegExp(
 );
 const COMMAND_AUTHORIZATION_BEARER_RE =
   /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
-const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
-const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
+const COMMAND_OPENAI_KEY_SOURCE = String.raw`\bsk-[A-Za-z0-9_-]{12,}\b`;
+const COMMAND_GITHUB_TOKEN_SOURCE = String.raw`\bgh[pousr]_[A-Za-z0-9_]{20,}\b`;
+const COMMAND_OPENAI_KEY_RE = new RegExp(COMMAND_OPENAI_KEY_SOURCE, "g");
+const COMMAND_GITHUB_TOKEN_RE = new RegExp(COMMAND_GITHUB_TOKEN_SOURCE, "g");
+const STANDALONE_SECRET_TOKEN_RE = new RegExp(
+  `${COMMAND_OPENAI_KEY_SOURCE}|${COMMAND_GITHUB_TOKEN_SOURCE}|\\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\\b|\\bgithub_pat_[A-Za-z0-9_]{20,}\\b`,
+);
 const COMMAND_JWT_RE =
   /\b(?<![A-Za-z0-9_]-*)[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,}){2}(?:\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})?\b/g;
 /** Recognize encoded JSON headers, without treating dotted identifiers as tokens. */
@@ -83,83 +94,10 @@ function maybeContainsSecretText(command: string) {
   );
 }
 
-// An AWS SigV4 presigned URL is a short-lived capability for one operation on
-// one object, which a tool returns on purpose (for example a receipt upload
-// link). Its `X-Amz-Credential` (access key ID and scope) and
-// `X-Amz-Security-Token` (an STS session token, unusable without the secret
-// key) match the secret-name rule, and the unquoted value then hides the rest
-// of the URL, so the link cannot be used. Inside a complete SigV4 query only,
-// these two parameters are set aside before redaction and put back after it.
-// Every other parameter is redacted as before, and a URL that is itself the
-// value of a secret-named assignment or option is still hidden whole.
-const PRESIGNED_URL_RE = /https:\/\/(?:[^\s"'`<>\\]|\\{1,2}u0026)+/gi;
-const PRESIGNED_URL_TRAILING_DELIMITERS_RE = /[)\]}.,;]+$/;
-const PRESIGNED_QUERY_SEPARATOR_RE = /(&|\\{1,2}u0026)/i;
-const SIGV4_CREDENTIAL_PARAM_RE =
-  /^X-Amz-Credential=(?:[A-Za-z0-9._~+-]|%(?!2[Ff])[0-9A-Fa-f]{2})+(?:%2F|\/)\d{8}(?:%2F|\/)[A-Za-z0-9_-]+(?:%2F|\/)[A-Za-z0-9_-]+(?:%2F|\/)aws4_request$/i;
-const SIGV4_SECURITY_TOKEN_PARAM_RE =
-  /^X-Amz-Security-Token=(?:[A-Za-z0-9+/._~-]|%[0-9A-Fa-f]{2})+=*$/i;
-const STANDALONE_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/;
-const STANDALONE_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/;
-// Private-use placeholders. Text that already contains them is left to the normal rules.
-const KEPT_START = String.fromCharCode(0xe000);
-const KEPT_END = String.fromCharCode(0xe001);
-const KEPT_PLACEHOLDER_RE = new RegExp(`${KEPT_START}(\\d+)${KEPT_END}`, "g");
-
 function containsStandaloneSecretToken(value: string): boolean {
-  if (STANDALONE_OPENAI_KEY_RE.test(value) || STANDALONE_GITHUB_TOKEN_RE.test(value)) {
-    return true;
-  }
+  if (STANDALONE_SECRET_TOKEN_RE.test(value)) return true;
   const jwtMatches = value.match(COMMAND_JWT_RE);
   return jwtMatches !== null && jwtMatches.some(looksLikeCredentialJwt);
-}
-
-function isSigV4PresignedQuery(parameters: string[]): boolean {
-  return (
-    parameters.some((part) => /^X-Amz-Algorithm=AWS4-HMAC-SHA256$/i.test(part)) &&
-    parameters.some((part) => SIGV4_CREDENTIAL_PARAM_RE.test(part)) &&
-    parameters.some((part) => /^X-Amz-Date=\d{8}T\d{6}Z$/i.test(part)) &&
-    parameters.some((part) => /^X-Amz-Expires=\d+$/i.test(part)) &&
-    parameters.some((part) => /^X-Amz-SignedHeaders=[^=&\s]+$/i.test(part)) &&
-    parameters.some((part) => /^X-Amz-Signature=[0-9a-f]{64}$/i.test(part))
-  );
-}
-
-function isKeptSigV4Parameter(part: string): boolean {
-  if (!SIGV4_CREDENTIAL_PARAM_RE.test(part) && !SIGV4_SECURITY_TOKEN_PARAM_RE.test(part)) {
-    return false;
-  }
-  const value = part.slice(part.indexOf("=") + 1);
-  return !containsStandaloneSecretToken(value);
-}
-
-function setAsidePresignedUrlParameters(text: string) {
-  const kept: string[] = [];
-  if (!/X-Amz-Signature=/i.test(text) || text.includes(KEPT_START) || text.includes(KEPT_END)) {
-    return { text, kept };
-  }
-  const protectedText = text.replace(PRESIGNED_URL_RE, (match) => {
-    const trailingMatch = PRESIGNED_URL_TRAILING_DELIMITERS_RE.exec(match);
-    const trailing = trailingMatch ? trailingMatch[0] : "";
-    const url = trailing ? match.slice(0, -trailing.length) : match;
-    const queryStart = url.indexOf("?");
-    if (queryStart < 0) return match;
-    // The capture group keeps each separator at an odd index.
-    const parts = url.slice(queryStart + 1).split(PRESIGNED_QUERY_SEPARATOR_RE);
-    if (!isSigV4PresignedQuery(parts.filter((_, index) => index % 2 === 0))) return match;
-    return (
-      url.slice(0, queryStart + 1) +
-      parts
-        .map((part, index) =>
-          index % 2 === 0 && isKeptSigV4Parameter(part)
-            ? `${KEPT_START}${kept.push(part) - 1}${KEPT_END}`
-            : part,
-        )
-        .join("") +
-      trailing
-    );
-  });
-  return { text: protectedText, kept };
 }
 
 export function redactCommandText(
@@ -167,11 +105,11 @@ export function redactCommandText(
   redactedValue = REDACTED_COMMAND_TEXT_VALUE,
 ): string {
   if (!maybeContainsSecretText(command)) return command;
-  const { text, kept } = setAsidePresignedUrlParameters(command);
-  const redacted = redactSetAsideCommandText(text, redactedValue);
-  return kept.length === 0
-    ? redacted
-    : redacted.replace(KEPT_PLACEHOLDER_RE, (match, index: string) => kept[Number(index)] ?? match);
+  const { text, restore } = protectSigV4PresignedUrlParameters(
+    command,
+    containsStandaloneSecretToken,
+  );
+  return restore(redactSetAsideCommandText(text, redactedValue));
 }
 
 function redactSetAsideCommandText(command: string, redactedValue: string): string {
@@ -339,6 +277,7 @@ export function collectDiagnosticEnvironmentSecrets(
   for (const [key, value] of Object.entries(env)) {
     if (typeof value !== "string" || !value) continue;
     if (declared.has(key) || secretName.test(key) ||
+      containsSigV4PresignedUrl(value) ||
       redactDiagnosticText(value) !== value || looksLikeCredentialJwt(value) ||
       /-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----/.test(value) ||
       (!isOrdinaryDiagnosticEnvSetting(key, value) && (!options.hostProcess || plausibleUndeclaredCredential(key, value)))) {
