@@ -1249,8 +1249,10 @@ describe("customer-success read authority", () => {
     expect(slowLogRun.id).toBeTruthy();
 
     // 3) Truncated search (limit: 1 with >1 runs in window) MUST still load redactors
-    // and redact registered secrets from fallback RunLogStore excerpts.
-    const logSecret = "sk-truncated-log-secret-9876543210";
+    // and redact registered secrets from fallback RunLogStore excerpts — including a
+    // secret split across two paged log chunks on both left and right edges!
+    const leftEdgeSecret = "sk-left-edge-secret-aaaa1111bbbb2222";
+    const rightEdgeSecret = "sk-right-edge-secret-cccc3333dddd4444";
     const [newestLogRun] = await db
       .insert(schema.heartbeatRuns)
       .values({
@@ -1264,12 +1266,15 @@ describe("customer-success read authority", () => {
         createdAt: new Date(Date.now() + 60_000),
       })
       .returning();
-    await redactions.register(co.id, newestLogRun.id, logSecret);
-    const secretNdjson = `${JSON.stringify({
-      ts: "2026-11-25T00:00:00Z",
-      stream: "stderr",
-      chunk: `TRUNCATED_MARKER leaked=${logSecret}`,
-    })}\n`;
+    await redactions.register(co.id, newestLogRun.id, leftEdgeSecret);
+    await redactions.register(co.id, newestLogRun.id, rightEdgeSecret);
+    // Split both secrets across separate NDJSON chunk records and page reads!
+    const secretNdjsonBytes = Buffer.from(
+      `${JSON.stringify({ ts: "2026-11-25T00:00:00Z", stream: "stderr", chunk: "sk-left-edge-" })}\n` +
+        `${JSON.stringify({ ts: "2026-11-25T00:00:01Z", stream: "stderr", chunk: "secret-aaaa1111bbbb2222 TRUNCATED_MARKER sk-right-edge-" })}\n` +
+        `${JSON.stringify({ ts: "2026-11-25T00:00:02Z", stream: "stderr", chunk: "secret-cccc3333dddd4444 end\n" })}\n`,
+      "utf8",
+    );
     const truncatedRedacted = await searchCustomerSuccessRuns(
       db,
       {
@@ -1284,8 +1289,15 @@ describe("customer-success read authority", () => {
           begin: async () => ({ store: "local_file", logRef: "unused" }),
           append: async () => 0,
           finalize: async () => ({ bytes: 0, compressed: false }),
-          read: async (handle) =>
-            handle.logRef === "truncated-secret.ndjson" ? { content: secretNdjson } : { content: "" },
+          read: async (handle, opts) => {
+            if (handle.logRef !== "truncated-secret.ndjson") return { content: "" };
+            const offset = opts?.offset ?? 0;
+            // Read one NDJSON line per page (~110 bytes) so left & right secrets cross page edges!
+            const step = Math.min(115, opts?.limitBytes ?? 115);
+            const slice = secretNdjsonBytes.subarray(offset, offset + step);
+            const nextOffset = offset + slice.length < secretNdjsonBytes.length ? offset + slice.length : undefined;
+            return { content: slice.toString("utf8"), nextOffset };
+          },
         },
       },
     );
@@ -1293,7 +1305,10 @@ describe("customer-success read authority", () => {
     expect(truncatedRedacted.patterns[0]!.matchedRuns).toBe(1);
     const truncExcerpt = truncatedRedacted.patterns[0]!.sampleRuns[0]!.excerpt ?? "";
     expect(truncExcerpt).toContain("TRUNCATED_MARKER");
-    expect(truncExcerpt).not.toContain(logSecret);
+    expect(truncExcerpt).not.toContain("sk-left-edge");
+    expect(truncExcerpt).not.toContain("aaaa1111");
+    expect(truncExcerpt).not.toContain("sk-right-edge");
+    expect(truncExcerpt).not.toContain("cccc3333");
 
     // 4) Matches after early JSON-key-only hits (e.g. searching "output" when early
     // events have key "aggregatedOutput" without "output" in their values) are found

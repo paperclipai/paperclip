@@ -11,7 +11,10 @@ import {
 } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
 import { REDACTED_EVENT_VALUE } from "../redaction.js";
-import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
+import {
+  createRunSecretRedactionRegistry,
+  redactRegisteredSecretValues,
+} from "./run-secret-redaction.js";
 import { getRunLogStore, isRunLogStoreType, type RunLogStore } from "./run-log-store.js";
 import { listRunPlatformDiagnostics } from "./run-platform-diagnostics.js";
 
@@ -23,7 +26,10 @@ const MAX_LOG_BYTES_PER_RUN = 2 * 1024 * 1024;
 const MAX_TOTAL_LOG_BYTES = 12 * 1024 * 1024;
 const MAX_EXCERPT_CHARS = 240;
 
-type TextRedactor = (text: string) => string;
+type RunTextRedactor = {
+  redact: (text: string) => string;
+  maxSecretLen: number;
+};
 
 function increment(map: Record<string, number>, key: string): void {
   map[key] = (map[key] ?? 0) + 1;
@@ -45,10 +51,10 @@ function extractRedactedExcerpt(
   rawSource: string,
   needle: string,
   caseSensitive: boolean,
-  redactor: TextRedactor,
+  redactor: RunTextRedactor,
 ): string | undefined {
   if (!rawSource || findLiteralIndex(rawSource, needle, caseSensitive) < 0) return undefined;
-  const redacted = redactor(rawSource);
+  const redacted = redactor.redact(rawSource);
   let idx = findLiteralIndex(redacted, needle, caseSensitive);
   if (idx < 0) {
     // Pattern overlapped a redacted secret; center around the redaction marker.
@@ -178,7 +184,7 @@ async function scanRunLogForPatterns(
   patterns: readonly string[],
   caseSensitive: boolean,
   remainingIndexes: Set<number>,
-  redactor: TextRedactor | null,
+  redactor: RunTextRedactor | null,
   budget: { bytes: number; deadlineMs: number; now: () => number },
 ): Promise<{
   matched: Map<number, string | undefined>;
@@ -187,14 +193,18 @@ async function scanRunLogForPatterns(
   const matched = new Map<number, string | undefined>();
   if (remainingIndexes.size === 0) return { matched, truncated: false };
   const maxPatternLen = Math.max(...patterns.map((p) => p.length));
-  const overlapChars = Math.max(0, maxPatternLen - 1);
+  const secretMargin = redactor ? redactor.maxSecretLen + MAX_EXCERPT_CHARS : 0;
+  // Keep enough overlap across paged log reads so neither a pattern nor a
+  // registered secret overlapping an excerpt window is split across page edges.
+  const overlapChars = Math.max(0, maxPatternLen - 1, secretMargin);
+  const pendingExcerpts = new Map<number, string>();
   let offset = 0;
   let scannedForRun = 0;
   let tail = "";
   let lineRemainder = "";
   let truncated = false;
 
-  while (remainingIndexes.size > 0) {
+  while (remainingIndexes.size > 0 || pendingExcerpts.size > 0) {
     const remainingMs = budget.deadlineMs - budget.now();
     if (remainingMs <= 0 || budget.bytes <= 0 || scannedForRun >= MAX_LOG_BYTES_PER_RUN) {
       truncated = true;
@@ -263,14 +273,45 @@ async function scanRunLogForPatterns(
     if (textToDecode) {
       const decoded = decodeNdjsonChunkText(textToDecode);
       const windowText = tail + decoded;
+
+      // Resolve any excerpts deferred from the previous page now that the right-edge
+      // context has arrived (or at EOF), ensuring secrets crossing the right edge
+      // are redacted in full before slicing.
+      if (redactor && pendingExcerpts.size > 0) {
+        for (const [idx, buffered] of [...pendingExcerpts.entries()]) {
+          const extended = buffered + decoded;
+          const pattern = patterns[idx]!;
+          const matchPos = findLiteralIndex(extended, pattern, caseSensitive);
+          const safeRightEdge =
+            isEof ||
+            (matchPos >= 0 && matchPos + pattern.length + secretMargin <= extended.length);
+          if (safeRightEdge) {
+            matched.set(idx, extractRedactedExcerpt(extended, pattern, caseSensitive, redactor));
+            pendingExcerpts.delete(idx);
+          } else if (extended.length <= MAX_EXCERPT_CHARS * 4 + secretMargin * 3) {
+            pendingExcerpts.set(idx, extended);
+          } else {
+            // Fail closed: omit excerpt if right-edge margin could not be bounded.
+            pendingExcerpts.delete(idx);
+          }
+        }
+      }
+
       for (const idx of [...remainingIndexes]) {
         const pattern = patterns[idx]!;
-        if (findLiteralIndex(windowText, pattern, caseSensitive) >= 0) {
-          matched.set(
-            idx,
-            redactor ? extractRedactedExcerpt(windowText, pattern, caseSensitive, redactor) : undefined,
-          );
+        const matchPos = findLiteralIndex(windowText, pattern, caseSensitive);
+        if (matchPos >= 0) {
           remainingIndexes.delete(idx);
+          if (!redactor) {
+            matched.set(idx, undefined);
+          } else if (isEof || matchPos + pattern.length + secretMargin <= windowText.length) {
+            matched.set(idx, extractRedactedExcerpt(windowText, pattern, caseSensitive, redactor));
+          } else {
+            // Defer excerpt until the next page supplies full right-edge secret context.
+            matched.set(idx, undefined);
+            const sliceStart = Math.max(0, matchPos - secretMargin);
+            pendingExcerpts.set(idx, windowText.slice(sliceStart));
+          }
         }
       }
       tail = overlapChars > 0 ? windowText.slice(-overlapChars) : "";
@@ -391,20 +432,25 @@ export async function searchCustomerSuccessRuns(
           diagnosticsByRun: new Map<string, string[]>(),
           matchedByRun: new Map<string, Map<number, string | undefined>>(),
           runsWithEvents: new Set<string>(),
-          redactorsByRun: new Map<string, TextRedactor>(),
+          redactorsByRun: new Map<string, RunTextRedactor>(),
         };
       }
 
       const runIds = runs.map((r) => r.id);
       const diagnosticsByRun = await listRunPlatformDiagnostics(tx, runIds, q.companyId);
       const redactions = includeExcerpts ? createRunSecretRedactionRegistry(tx) : null;
-      const redactorsByRun = new Map<string, TextRedactor>();
+      const redactorsByRun = new Map<string, RunTextRedactor>();
 
-      const getRedactor = async (companyId: string, runId: string): Promise<TextRedactor | null> => {
+      const getRedactor = async (companyId: string, runId: string): Promise<RunTextRedactor | null> => {
         if (!redactions) return null;
         let redactor = redactorsByRun.get(runId);
         if (!redactor) {
-          redactor = await redactions.redactorForRun(companyId, runId);
+          const values = await redactions.redactionValuesForRun(companyId, runId);
+          const maxSecretLen = values.reduce((max, v) => Math.max(max, v.length), 0);
+          redactor = {
+            redact: (text: string) => redactRegisteredSecretValues(text, values),
+            maxSecretLen,
+          };
           redactorsByRun.set(runId, redactor);
         }
         return redactor;
@@ -437,6 +483,21 @@ export async function searchCustomerSuccessRuns(
         .where(inArray(schema.heartbeatRunEvents.runId, runIds));
       const runsWithEvents = new Set(eventRunRows.map((r) => r.runId));
 
+      // Pre-resolve secret redactors BEFORE running event queries so even if an event
+      // query later hits statement_timeout, every fallback log-scan run already has its
+      // redactor loaded and the transaction does not need extra queries after recovery.
+      if (includeExcerpts) {
+        for (const run of runs) {
+          if (!run.logRef || !isRunLogStoreType(run.logStore)) continue;
+          const needsLogScan = run.runtimeMode !== "native" || !runsWithEvents.has(run.id);
+          if (!needsLogScan) continue;
+          const hits = matchedByRun.get(run.id)!;
+          if (hits.size < patterns.length) {
+            await getRedactor(run.companyId, run.id);
+          }
+        }
+      }
+
       // Push literal substring pre-filtering into PostgreSQL (raw + JSON-escaped
       // forms) and verify against decoded JSON string values in bounded batches so
       // counts are identical with or without excerpts and genuine matches behind
@@ -444,8 +505,9 @@ export async function searchCustomerSuccessRuns(
       const EVENT_CANDIDATE_BATCH_SIZE = 10;
       const MAX_EVENT_CANDIDATES_PER_RUN = 100;
       const runById = new Map(runs.map((r) => [r.id, r]));
+      let eventQueryTimedOut = false;
 
-      for (let i = 0; i < patterns.length; i++) {
+      for (let i = 0; i < patterns.length && !eventQueryTimedOut; i++) {
         if (now() >= deadlineMs) {
           truncated = true;
           break;
@@ -457,17 +519,25 @@ export async function searchCustomerSuccessRuns(
         const matchCondition = buildEventMatchCondition(pattern, caseSensitive);
         let excerptsAdded = runs.filter((r) => matchedByRun.get(r.id)!.has(i)).length;
 
-        try {
-          for (
-            let batchStart = 1;
-            remainingIds.length > 0 && batchStart <= MAX_EVENT_CANDIDATES_PER_RUN;
-            batchStart += EVENT_CANDIDATE_BATCH_SIZE
-          ) {
-            if (now() >= deadlineMs) {
-              truncated = true;
-              break;
-            }
-            const batchEnd = Math.min(batchStart + EVENT_CANDIDATE_BATCH_SIZE - 1, MAX_EVENT_CANDIDATES_PER_RUN);
+        for (
+          let batchStart = 1;
+          remainingIds.length > 0 && batchStart <= MAX_EVENT_CANDIDATES_PER_RUN;
+          batchStart += EVENT_CANDIDATE_BATCH_SIZE
+        ) {
+          const remainingMs = deadlineMs - now();
+          if (remainingMs <= 0) {
+            truncated = true;
+            break;
+          }
+          const batchEnd = Math.min(batchStart + EVENT_CANDIDATE_BATCH_SIZE - 1, MAX_EVENT_CANDIDATES_PER_RUN);
+          // Refresh statement_timeout to the remaining wall-clock budget and guard with
+          // a savepoint so a 57014 timeout rolls back only this query instead of aborting
+          // the entire read-only transaction and discarding partial matches.
+          await tx.execute(sql.raw(`SAVEPOINT cs_run_search_batch`));
+          let eventRows: Array<{ runId: string; message: string | null; payload: unknown }>;
+          try {
+            const batchTimeoutMs = Math.max(50, Math.min(wallBudgetMs, Math.floor(remainingMs)));
+            await tx.execute(sql.raw(`SET LOCAL statement_timeout = '${batchTimeoutMs}'`));
             const ranked = tx
               .select({
                 runId: schema.heartbeatRunEvents.runId,
@@ -481,7 +551,7 @@ export async function searchCustomerSuccessRuns(
               .where(and(inArray(schema.heartbeatRunEvents.runId, remainingIds), matchCondition))
               .as("ranked_events");
 
-            const eventRows = await tx
+            eventRows = await tx
               .select({
                 runId: ranked.runId,
                 message: ranked.message,
@@ -489,58 +559,47 @@ export async function searchCustomerSuccessRuns(
               })
               .from(ranked)
               .where(sql`${ranked.rn} >= ${batchStart} and ${ranked.rn} <= ${batchEnd}`);
-
-            const rowsSeenByRun = new Map<string, number>();
-            for (const eventRow of eventRows) {
-              rowsSeenByRun.set(eventRow.runId, (rowsSeenByRun.get(eventRow.runId) ?? 0) + 1);
-              const hits = matchedByRun.get(eventRow.runId);
-              if (!hits || hits.has(i)) continue;
-              const decoded = findDecodedEventMatch(eventRow.message, eventRow.payload, pattern, caseSensitive);
-              if (decoded === undefined) continue;
-              let excerpt: string | undefined;
-              if (includeExcerpts && excerptsAdded < MAX_INSPECTION_SEARCH_SAMPLE_RUNS) {
-                const run = runById.get(eventRow.runId)!;
-                const redactor = await getRedactor(run.companyId, run.id);
-                if (redactor) {
-                  excerpt = extractRedactedExcerpt(decoded, pattern, caseSensitive, redactor);
-                  excerptsAdded += 1;
-                }
-              }
-              hits.set(i, excerpt);
+            await tx.execute(sql.raw(`RELEASE SAVEPOINT cs_run_search_batch`));
+          } catch (err) {
+            await tx.execute(sql.raw(`ROLLBACK TO SAVEPOINT cs_run_search_batch`)).catch(() => undefined);
+            await tx.execute(sql.raw(`RELEASE SAVEPOINT cs_run_search_batch`)).catch(() => undefined);
+            if (isStatementTimeoutError(err)) {
+              truncated = true;
+              eventQueryTimedOut = true;
+              break;
             }
-
-            const expectedFullBatch = batchEnd - batchStart + 1;
-            // Only keep runs that have not yet matched AND filled the entire batch
-            // (meaning more SQL-matching events may exist for that run).
-            remainingIds = remainingIds.filter(
-              (id) => !matchedByRun.get(id)!.has(i) && (rowsSeenByRun.get(id) ?? 0) >= expectedFullBatch,
-            );
+            throw err;
           }
 
-          if (remainingIds.length > 0) {
-            truncated = true;
+          const rowsSeenByRun = new Map<string, number>();
+          for (const eventRow of eventRows) {
+            rowsSeenByRun.set(eventRow.runId, (rowsSeenByRun.get(eventRow.runId) ?? 0) + 1);
+            const hits = matchedByRun.get(eventRow.runId);
+            if (!hits || hits.has(i)) continue;
+            const decoded = findDecodedEventMatch(eventRow.message, eventRow.payload, pattern, caseSensitive);
+            if (decoded === undefined) continue;
+            let excerpt: string | undefined;
+            if (includeExcerpts && excerptsAdded < MAX_INSPECTION_SEARCH_SAMPLE_RUNS) {
+              const run = runById.get(eventRow.runId)!;
+              const redactor = await getRedactor(run.companyId, run.id);
+              if (redactor) {
+                excerpt = extractRedactedExcerpt(decoded, pattern, caseSensitive, redactor);
+                excerptsAdded += 1;
+              }
+            }
+            hits.set(i, excerpt);
           }
-        } catch (err) {
-          if (isStatementTimeoutError(err)) {
-            truncated = true;
-            break;
-          }
-          throw err;
+
+          const expectedFullBatch = batchEnd - batchStart + 1;
+          // Only keep runs that have not yet matched AND filled the entire batch
+          // (meaning more SQL-matching events may exist for that run).
+          remainingIds = remainingIds.filter(
+            (id) => !matchedByRun.get(id)!.has(i) && (rowsSeenByRun.get(id) ?? 0) >= expectedFullBatch,
+          );
         }
-      }
 
-      // Always pre-resolve secret redactors inside the tx for any runs that will need
-      // RunLogStore fallback scanning when excerpts are requested, even when `truncated`
-      // is already true (e.g. runsTotalInWindow > limit).
-      if (includeExcerpts) {
-        for (const run of runs) {
-          if (!run.logRef || !isRunLogStoreType(run.logStore)) continue;
-          const needsLogScan = run.runtimeMode !== "native" || !runsWithEvents.has(run.id);
-          if (!needsLogScan) continue;
-          const hits = matchedByRun.get(run.id)!;
-          if (hits.size < patterns.length) {
-            await getRedactor(run.companyId, run.id);
-          }
+        if (remainingIds.length > 0) {
+          truncated = true;
         }
       }
 
