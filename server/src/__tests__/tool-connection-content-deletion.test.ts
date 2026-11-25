@@ -32,6 +32,7 @@ import {
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createConnectionContentDeletion, requestConnectionContentDeletion } from "../services/tool-access/connections/content-deletion.js";
+import { forgetHandoffAfterDeletedRuns } from "../services/tool-access/connections/run-copies.js";
 import {
   createGoogleTechnicalInformationRetention,
   GOOGLE_TECHNICAL_INFORMATION_TTL_MS,
@@ -442,6 +443,9 @@ describeEmbeddedPostgres("deleting content stored from a connection's tool calls
 
     const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, seed.settledRun.id));
     expect(run!.error).toBeNull();
+    const [stillRunning] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, laterRun!.id));
+    expect(stillRunning!.contextSnapshot).toMatchObject({ paperclipSessionHandoffMarkdown: SECRET });
+    expect(await forgetHandoffAfterDeletedRuns(db, laterRun!)).toBe(true);
     const [later] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, laterRun!.id));
     expect(later!.contextSnapshot).toEqual({ issueId: issue!.id });
     const [summary] = await db.select().from(documents).where(eq(documents.id, document!.id));

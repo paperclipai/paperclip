@@ -1584,7 +1584,7 @@ async function buildFeedbackTraceBundleFromRow(
           sessionIdBefore: run.sessionIdBefore,
           sessionIdAfter: run.sessionIdAfter,
           externalRunId: run.externalRunId,
-          contextSnapshot: asRecord(run.contextSnapshot),
+          contextSnapshot: (({ paperclipSessionHandoffMarkdown: _handoff, ...context }) => context)(asRecord(run.contextSnapshot) ?? {}),
           logStore: run.logStore,
           logRef: run.logRef,
           logBytes: run.logBytes,

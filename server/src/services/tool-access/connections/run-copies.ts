@@ -10,6 +10,8 @@ import {
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { RESULT_TEXT_KEYS, withoutResultText } from "./content-cleaning.js";
+import { settledRunSql } from "./content-deletion.js";
+import { RUN_CONTENT_DELETED_MARKER } from "./run-session-reset.js";
 
 export async function forgetRunInTrainingExamples(tx: Db, companyId: string, run: { id: string; changed: boolean }) {
   const runs = sql`${decisionTrainingExamples.snapshot}->'runs'`;
@@ -75,6 +77,7 @@ export async function forgetRunCopies(tx: Db, companyId: string, run: { id: stri
       eq(heartbeatRuns.issueId, row.issueId),
       gt(heartbeatRuns.createdAt, row.createdAt),
       sql`${heartbeatRuns.contextSnapshot} ? 'paperclipSessionHandoffMarkdown'`,
+      settledRunSql(sql`${heartbeatRuns.id}`),
     ))
     .returning({ id: heartbeatRuns.id });
   if (handoffs.length > 0) run.changed = true;
@@ -93,4 +96,20 @@ export function runCopiesRemainSql(run: { id: SQL; companyId: SQL; issueId: SQL;
     or exists (select 1 from decision_training_examples e where e.issue_id = ${run.issueId} and e.company_id = ${run.companyId}
       and jsonb_typeof(e.snapshot->'runs') = 'array' and e.snapshot->'runs' @> ${entry}
       and not e.snapshot->'runs' @> jsonb_build_array(jsonb_build_object('id', ${run.id}::text, 'contentDeleted', true))))`;
+}
+
+export async function forgetHandoffAfterDeletedRuns(db: Db, run: { id: string; companyId: string; issueId: string | null; createdAt: Date }) {
+  if (!run.issueId) return false;
+  const cleared = await db
+    .update(heartbeatRuns)
+    .set({ contextSnapshot: sql`${heartbeatRuns.contextSnapshot} - 'paperclipSessionHandoffMarkdown'` as never })
+    .where(and(
+      eq(heartbeatRuns.id, run.id),
+      eq(heartbeatRuns.companyId, run.companyId),
+      sql`${heartbeatRuns.contextSnapshot} ? 'paperclipSessionHandoffMarkdown'`,
+      sql`exists (select 1 from heartbeat_runs earlier where earlier.company_id = ${run.companyId} and earlier.issue_id = ${run.issueId}
+        and earlier.created_at < ${run.createdAt.toISOString()}::timestamptz and earlier.result_json ? ${RUN_CONTENT_DELETED_MARKER})`,
+    ))
+    .returning({ id: heartbeatRuns.id });
+  return cleared.length > 0;
 }

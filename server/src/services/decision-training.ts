@@ -197,14 +197,12 @@ function snapshotRuns(example: ExportableExample) {
 function omitGoogleWorkspaceContent(example: ExportableExample, googleRuns: Set<string>, googleCard: boolean) {
   const snapshot = example.snapshot as unknown as { runs?: Array<Record<string, unknown>>; decision?: Record<string, unknown> };
   const runs = snapshotRuns(example);
-  const hasGoogleRun = runs.some((run) => typeof run.id === "string" && googleRuns.has(run.id));
-  if (!hasGoogleRun && !googleCard) return example.snapshot;
   return {
     ...snapshot,
     runs: runs.map((run) => typeof run.id === "string" && googleRuns.has(run.id)
       ? { id: run.id, agentId: run.agentId ?? null, status: run.status ?? null, startedAt: run.startedAt ?? null,
         finishedAt: run.finishedAt ?? null, googleWorkspaceContentOmitted: true }
-      : hasGoogleRun ? withoutHandoff(run) : run),
+      : withoutHandoff(run)),
     ...(googleCard && snapshot.decision
       ? { decision: { ...snapshot.decision, payload: withoutToolActionContent((snapshot.decision.payload ?? {}) as Record<string, unknown>) } }
       : {}),
@@ -311,7 +309,7 @@ export async function captureDecisionSnapshot(
       },
       issue: jsonCopy(issue),
       comments: comments.map(jsonCopy),
-      runs: runs.map((run) => googleRuns.has(run.id) ? googleRunStub(run) : googleRuns.size > 0 ? withoutHandoff(jsonCopy(run)) : jsonCopy(run)),
+      runs: runs.map((run) => googleRuns.has(run.id) ? googleRunStub(run) : withoutHandoff(jsonCopy(run))),
       decision: {
         kind: input.sourceKind,
         payload: decision.payload,
