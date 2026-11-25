@@ -94,7 +94,9 @@ const TASK_DETAIL_DEFAULT_PANE_WIDTH = 434;
 const MIN_PANE_WIDTH = 260;
 /** ~236px sidebar + ~420px minimum center column stay usable while resizing. */
 const RESERVED_LAYOUT_WIDTH = 656;
-const MIN_CENTER_WIDTH = 420;
+/** Fallback when `--sz-420px` is unavailable (e.g. non-browser test environments). */
+const MIN_CENTER_WIDTH_TOKEN = "--sz-420px";
+const MIN_CENTER_WIDTH_FALLBACK = 420;
 /** Content cap while maximized so text doesn't span the full viewport. */
 const MAXIMIZED_CONTENT_MAX_WIDTH = 840;
 /**
@@ -104,10 +106,14 @@ const MAXIMIZED_CONTENT_MAX_WIDTH = 840;
  */
 const RESTORE_FALLBACK_DELAY = 400;
 
-function readProposalPaneWidth(fallback: number): number {
+function readCssPxToken(tokenName: string, fallback: number): number {
   if (typeof window === "undefined") return fallback;
-  const tokenWidth = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--design-page-aside-width"));
+  const tokenWidth = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue(tokenName));
   return Number.isFinite(tokenWidth) && tokenWidth > 0 ? tokenWidth : fallback;
+}
+
+function readProposalPaneWidth(fallback: number): number {
+  return readCssPxToken("--design-page-aside-width", fallback);
 }
 
 function clampPaneWidth(width: number, fittedMax: number | null = null): number {
@@ -127,7 +133,8 @@ function measureFittedPaneMax(aside: HTMLElement | null): number | null {
   const centerLeft = main.getBoundingClientRect().left;
   if (rowRight <= centerLeft) return null;
   const available = Math.floor(rowRight - centerLeft);
-  return Math.max(Math.min(MIN_PANE_WIDTH, available), available - MIN_CENTER_WIDTH);
+  const minCenterWidth = readCssPxToken(MIN_CENTER_WIDTH_TOKEN, MIN_CENTER_WIDTH_FALLBACK);
+  return Math.max(Math.min(MIN_PANE_WIDTH, available), available - minCenterWidth);
 }
 
 function readStoredPaneWidth(storageKey: string, defaultWidth: number): number {

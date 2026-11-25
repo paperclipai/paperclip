@@ -126,6 +126,7 @@ describe("PropertiesPanel layout row fitting", () => {
     }
     vi.clearAllMocks();
     vi.restoreAllMocks();
+    document.documentElement.style.removeProperty("--sz-420px");
   });
 
   it("fits the pane to its layout row so it is never clipped at the right edge", async () => {
@@ -150,6 +151,14 @@ describe("PropertiesPanel layout row fitting", () => {
     expect(aside.style.width).toBe("372px");
     expect(inner.style.width).toBe("372px");
     expect(window.localStorage.getItem("taskChatRedesign.taskDetailPropertiesPaneWidth")).toBe("624");
+
+    // Respects the shared --sz-420px minimum center width token when customized.
+    document.documentElement.style.setProperty("--sz-420px", "460px");
+    await act(async () => {
+      window.dispatchEvent(new Event("resize"));
+    });
+    expect(aside.style.width).toBe("332px");
+    document.documentElement.style.removeProperty("--sz-420px");
 
     geometry.rowRight = 1440;
     await act(async () => {
