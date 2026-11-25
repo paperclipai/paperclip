@@ -593,6 +593,8 @@ export async function prepareManagedAiRuntime(
       attribution,
       accountName: selection.connection.name,
       accountOwnerUserId: selection.grant.subjectUserId,
+      // The Google account a subscription grant signs in with; the Runner compares only its digest.
+      ...(antigravitySubscription && selection.grant.providerTenant?.name ? { accountEmail: selection.grant.providerTenant.name } : {}),
       identity,
       home,
       cleanup: cleanupRuntime,
