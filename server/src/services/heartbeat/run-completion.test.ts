@@ -1967,4 +1967,65 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
     expect(f.deps.finalizeAgentStatus).not.toHaveBeenCalled();
   });
+
+  it("routes hermes_gateway shutdown interruptions through failed transient retry while keeping deliberate cancels cancelled", async () => {
+    const { mapFinalResultForTest } = await import("@paperclipai/hermes-paperclip-adapter/gateway/server");
+
+    const fShutdown = await fixture({}, `HG${randomUUID().slice(0, 6)}`);
+    const [hermesAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+      .where(eq(agents.id, fShutdown.agent.id)).returning();
+    const shutdownResult = mapFinalResultForTest({
+      terminal: {
+        runId: "hermes-shutdown-1",
+        status: "cancelled",
+        payload: { status: "cancelled", error: "Gateway shutdown interrupted the run." },
+      },
+      outputChunks: [],
+      sessionKey: "session-shutdown",
+      strategy: "issue",
+    });
+    await fShutdown.completion.completeRun({
+      ...fShutdown.input,
+      agent: hermesAgent!,
+      adapterResult: shutdownResult,
+    });
+    expect(await read(fShutdown.run.id)).toMatchObject({
+      status: "failed",
+      errorCode: "hermes_gateway_run_failed",
+      resultJson: {
+        status: "interrupted",
+        gateway_status: "cancelled",
+        errorFamily: "transient_upstream",
+        conversationContinuation: "continue_conversation_v1",
+      },
+    });
+    expect(fShutdown.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(
+      expect.objectContaining({ id: fShutdown.run.id, status: "failed" }),
+      hermesAgent,
+    );
+
+    const fCancel = await fixture({}, `HC${randomUUID().slice(0, 6)}`);
+    const [hermesCancelAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+      .where(eq(agents.id, fCancel.agent.id)).returning();
+    const cancelResult = mapFinalResultForTest({
+      terminal: {
+        runId: "hermes-cancel-1",
+        status: "cancelled",
+        payload: { status: "cancelled", error: "Stopped by operator." },
+      },
+      outputChunks: [],
+      sessionKey: "session-cancel",
+      strategy: "issue",
+    });
+    await fCancel.completion.completeRun({
+      ...fCancel.input,
+      agent: hermesCancelAgent!,
+      adapterResult: cancelResult,
+    });
+    expect(await read(fCancel.run.id)).toMatchObject({
+      status: "cancelled",
+      resultJson: { status: "cancelled" },
+    });
+    expect(fCancel.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
 });

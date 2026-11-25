@@ -103,7 +103,7 @@ describePostgres("execution identity query contracts", () => {
       finishedAt,
       contextSnapshot: { issueId: f.issueId },
       runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } },
-      resultJson: { run_id: "hermes-remote-1", status: "timeout" },
+      resultJson: { run_id: "hermes-remote-1", status: "cancelled" },
     });
     const [hold] = await db.insert(issueRecoveryActions).values({
       companyId: f.companyId,
@@ -255,5 +255,55 @@ describePostgres("execution identity query contracts", () => {
     expect(cancelledBlocked).toEqual([]);
     expect(cancelledAdmitted).toMatchObject({ previousRunId: cancelledRunId, commentId: followUpCommentId });
     expect(await getExecutionBlocker(db, f.companyId, cancelledIssueId)).toBeNull();
+
+    // (e) A timed-out hermes_gateway run whose remote stop was never confirmed (status: "timeout") fails closed.
+    const unconfirmedIssueId = randomUUID();
+    const unconfirmedRunId = randomUUID();
+    await db.insert(issues).values({ id: unconfirmedIssueId, companyId: f.companyId, title: "Unconfirmed Hermes timeout", status: "blocked", assigneeAgentId: f.agentId });
+    await db.insert(heartbeatRuns).values({
+      id: unconfirmedRunId,
+      companyId: f.companyId,
+      agentId: f.agentId,
+      issueId: unconfirmedIssueId,
+      status: "timed_out",
+      errorCode: "hermes_gateway_timeout",
+      runtimeMode: "legacy",
+      processPid: null,
+      processGroupId: null,
+      finishedAt,
+      contextSnapshot: { issueId: unconfirmedIssueId },
+      runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } },
+      resultJson: { run_id: "hermes-remote-3", status: "timeout" },
+    });
+    const [unconfirmedHold] = await db.insert(issueRecoveryActions).values({
+      companyId: f.companyId,
+      sourceIssueId: unconfirmedIssueId,
+      kind: "active_run_watchdog",
+      status: "resolved",
+      outcome: "blocked",
+      ownerType: "board",
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: `legacy-execution:${unconfirmedRunId}`,
+      evidence: { runId: unconfirmedRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+      nextAction: "Inspect the stopped run before continuing.",
+    }).returning();
+    const unconfirmedBlocked: string[] = [];
+    const unconfirmedAdmitted = await admitExplicitNativeContinuation({
+      db,
+      companyId: f.companyId,
+      issueId: unconfirmedIssueId,
+      agentId: f.agentId,
+      actorType: "user",
+      actorId: "board",
+      reason: "retry_failed_run",
+      commentId: null,
+      failedRunId: unconfirmedRunId,
+      successorRunId: randomUUID(),
+      dryRun: true,
+      onBlocked: reason => unconfirmedBlocked.push(reason),
+    });
+    expect(unconfirmedAdmitted).toBeNull();
+    expect(unconfirmedBlocked).toEqual(["process_identity_missing"]);
+    expect(await getExecutionBlocker(db, f.companyId, unconfirmedIssueId)).toMatchObject({ recoveryActionId: unconfirmedHold!.id });
   });
 });

@@ -1191,7 +1191,7 @@ describe("mapFinalResultForTest", () => {
     expect(Number.isFinite(Date.parse(result.retryNotBefore!))).toBe(true);
   });
 
-  it("classifies gateway shutdown interruptions as transient_upstream but keeps deliberate cancels non-transient", () => {
+  it("maps gateway shutdown interruptions to retryable failed outcomes while keeping deliberate cancels unchanged", () => {
     const shutdown = mapFinalResultForTest({
       terminal: {
         runId: "run-shutdown",
@@ -1202,8 +1202,11 @@ describe("mapFinalResultForTest", () => {
       sessionKey: "session-key",
       strategy: "issue",
     });
-    expect(shutdown.errorCode).toBe("hermes_gateway_cancelled");
+    expect(shutdown.exitCode).toBe(1);
+    expect(shutdown.signal).toBeNull();
+    expect(shutdown.errorCode).toBe("hermes_gateway_run_failed");
     expect(shutdown.errorFamily).toBe("transient_upstream");
+    expect(shutdown.resultJson).toMatchObject({ status: "interrupted", gateway_status: "cancelled" });
 
     const deliberate = mapFinalResultForTest({
       terminal: {
@@ -1216,7 +1219,31 @@ describe("mapFinalResultForTest", () => {
       strategy: "issue",
     });
     expect(deliberate.errorCode).toBe("hermes_gateway_cancelled");
+    expect(deliberate.signal).toBe("SIGTERM");
+    expect(deliberate.resultJson?.status).toBe("cancelled");
     expect(deliberate.errorFamily ?? null).toBeNull();
+  });
+
+  it.each([1e20, "1e20", "99999999999999999999"])("ignores out-of-range retry_after %j without discarding terminal result", (retryAfter) => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-huge-retry",
+        status: "failed",
+        payload: {
+          status: "failed",
+          error: "HTTP 429: Rate limit exceeded",
+          retry_after: retryAfter,
+          usage: { input_tokens: 12, output_tokens: 4 },
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.retryNotBefore).toBeUndefined();
+    expect(result.usage).toEqual({ inputTokens: 12, outputTokens: 4 });
   });
 
   it.each([

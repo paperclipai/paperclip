@@ -776,6 +776,14 @@ function parseTerminalStatusCode(value: unknown): number | null {
   return null;
 }
 
+const MAX_EPOCH_MS = 8_640_000_000_000_000;
+
+function formatValidIsoDate(ms: number): string | null {
+  if (!Number.isFinite(ms) || Math.abs(ms) > MAX_EPOCH_MS) return null;
+  const date = new Date(ms);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 function parseTerminalRetryNotBefore(payload: Record<string, unknown>, nowMs = Date.now()): string | null {
   const nestedError = asRecord(payload.error);
   const direct = nonEmpty(payload.retry_not_before)
@@ -783,8 +791,8 @@ function parseTerminalRetryNotBefore(payload: Record<string, unknown>, nowMs = D
     ?? nonEmpty(nestedError?.retry_not_before)
     ?? nonEmpty(nestedError?.retryNotBefore);
   if (direct) {
-    const parsed = Date.parse(direct);
-    if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
+    const formatted = formatValidIsoDate(Date.parse(direct));
+    if (formatted) return formatted;
   }
   const retryAfter = payload.retry_after
     ?? payload.retryAfter
@@ -795,18 +803,17 @@ function parseTerminalRetryNotBefore(payload: Record<string, unknown>, nowMs = D
     ?? nestedError?.retry_after_seconds
     ?? nestedError?.retryAfterSeconds;
   if (typeof retryAfter === "number" && Number.isFinite(retryAfter) && retryAfter > 0) {
-    return new Date(nowMs + Math.ceil(retryAfter * 1000)).toISOString();
+    return formatValidIsoDate(nowMs + Math.ceil(retryAfter * 1000));
   }
   if (typeof retryAfter === "string" && retryAfter.trim().length > 0) {
     const trimmed = retryAfter.trim();
     if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
       const seconds = Number.parseFloat(trimmed);
       if (Number.isFinite(seconds) && seconds > 0) {
-        return new Date(nowMs + Math.ceil(seconds * 1000)).toISOString();
+        return formatValidIsoDate(nowMs + Math.ceil(seconds * 1000));
       }
     }
-    const parsed = Date.parse(trimmed);
-    if (Number.isFinite(parsed)) return new Date(parsed).toISOString();
+    return formatValidIsoDate(Date.parse(trimmed));
   }
   return null;
 }
@@ -815,8 +822,9 @@ function classifyTerminalFailure(
   status: string,
   payload: Record<string, unknown>,
   errorMessage: string | null,
-): { errorFamily: AdapterExecutionResult["errorFamily"]; retryNotBefore: string | null } {
+): { errorFamily: AdapterExecutionResult["errorFamily"]; retryNotBefore: string | null; gatewayShutdown: boolean } {
   let errorFamily: AdapterExecutionResult["errorFamily"] = null;
+  let gatewayShutdown = false;
   if (FAILURE_STATUSES.has(status)) {
     const nestedError = asRecord(payload.error);
     const codeField = (nonEmpty(nestedError?.code) ?? nonEmpty(payload.error_code) ?? nonEmpty(payload.errorCode))?.toLowerCase() ?? null;
@@ -842,9 +850,10 @@ function classifyTerminalFailure(
     }
   } else if (CANCELLED_STATUSES.has(status) && errorMessage !== null && TERMINAL_GATEWAY_SHUTDOWN_RE.test(errorMessage)) {
     errorFamily = "transient_upstream";
+    gatewayShutdown = true;
   }
   const retryNotBefore = errorFamily ? parseTerminalRetryNotBefore(payload) : null;
-  return { errorFamily, retryNotBefore };
+  return { errorFamily, retryNotBefore, gatewayShutdown };
 }
 
 function terminalResultCode(status: string): { exitCode: number; signal: string | null; errorCode: string | null } {
@@ -877,14 +886,17 @@ export function mapFinalResultForTest(input: {
   const errorMessage = rawErrorMessage ? redactText(rawErrorMessage) : null;
   const terminalClassification = mapped.errorCode
     ? classifyTerminalFailure(input.terminal.status, payload, rawErrorMessage)
-    : { errorFamily: null, retryNotBefore: null };
+    : { errorFamily: null, retryNotBefore: null, gatewayShutdown: false };
+  const effectiveSignal = terminalClassification.gatewayShutdown ? null : mapped.signal;
+  const effectiveErrorCode = terminalClassification.gatewayShutdown ? "hermes_gateway_run_failed" : mapped.errorCode;
+  const resultStatus = terminalClassification.gatewayShutdown ? "interrupted" : input.terminal.status;
   return {
     exitCode: mapped.exitCode,
-    signal: mapped.signal,
+    signal: effectiveSignal,
     timedOut: false,
     provider: "hermes_gateway",
     model: extractModel(payload),
-    ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
+    ...(effectiveErrorCode ? { errorCode: effectiveErrorCode } : {}),
     ...(terminalClassification.errorFamily ? { errorFamily: terminalClassification.errorFamily } : {}),
     ...(terminalClassification.retryNotBefore ? { retryNotBefore: terminalClassification.retryNotBefore } : {}),
     ...(errorMessage ? { errorMessage } : {}),
@@ -900,7 +912,8 @@ export function mapFinalResultForTest(input: {
     sessionDisplayId,
     resultJson: {
       run_id: input.terminal.runId,
-      status: input.terminal.status,
+      status: resultStatus,
+      ...(terminalClassification.gatewayShutdown ? { gateway_status: input.terminal.status } : {}),
       session_id: sessionDisplayId,
       last_event: input.terminal.eventName ?? null,
       output: output ?? "",

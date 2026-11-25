@@ -16,6 +16,22 @@ export function isConversationAdapter(adapterType: string): boolean {
   return (CONVERSATION_ADAPTER_TYPES as readonly string[]).includes(adapterType);
 }
 
+const HERMES_GATEWAY_TERMINAL_STATUSES = new Set([
+  "completed", "failed", "error", "cancelled", "canceled", "stopped", "interrupted",
+]);
+
+/** Remote hermes_gateway runs have no local host PID; require a saved terminal gateway response. */
+export function hasHermesGatewayTerminalStopProof(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "resultJson">,
+): boolean {
+  const result = run.resultJson;
+  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
+  const status = typeof result.status === "string" ? result.status.trim().toLowerCase() : "";
+  if (HERMES_GATEWAY_TERMINAL_STATUSES.has(status)) return true;
+  const connectionFailure = result.connectionFailure as Record<string, unknown> | undefined;
+  return connectionFailure?.provider === "hermes_gateway" && connectionFailure?.operation === "configuration";
+}
+
 export const CONVERSATION_CONTINUATION_POLICY = "continue_conversation_v1";
 
 export function hasConversationContinuationPolicy(result: Record<string, unknown> | null | undefined): boolean {

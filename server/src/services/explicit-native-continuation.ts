@@ -34,7 +34,7 @@ import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity } from "./activity-log.js";
 import { activeIssueInteractionCondition } from "./issue-question-context.js";
 
-import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
+import { hasHermesGatewayTerminalStopProof, historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
 import { firstTurnDeliveredCommentIds, historyReadDeliveredCommentIds } from "./queued-comment-delivery.js";
 import { canResumePreservedResultFinalization } from "./preserved-result-finalization.js";
@@ -583,10 +583,13 @@ export async function admitExplicitNativeContinuation(input: {
           return blocked("process_identity_missing", "Paperclip is verifying that the previous session stopped.");
         // A missing process identity is not evidence that a provider exited.
         // Remote HTTP gateway adapters (hermes_gateway) never spawn a local OS child process;
-        // their settlement is verified by run.finishedAt, adapterExecutionControls, and lease checks.
-        const remoteGatewayWithoutLocalProcess = legacyUserTurn && historicalAdapter === "hermes_gateway";
+        // require a saved terminal response from the gateway before clearing the hold so an
+        // unconfirmed timeout cannot overlap with a still-running remote run.
+        const remoteGatewayStopped = legacyUserTurn
+          && historicalAdapter === "hermes_gateway"
+          && hasHermesGatewayTerminalStopProof(run);
         if (!run.processPid && !run.processGroupId &&
-            !remoteGatewayWithoutLocalProcess &&
+            !remoteGatewayStopped &&
             !await hasNativeLocalProcessStop(db, companyId, run.id) &&
             !await hasHistoricalSuspendedNativeSession(db, run) &&
             !await nativeRunNeverLaunched(db, run) &&
