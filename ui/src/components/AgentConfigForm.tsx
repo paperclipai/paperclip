@@ -195,6 +195,18 @@ const emptyOverlay: AgentConfigOverlay = {
 /** Stable empty object used as fallback for missing env config to avoid new-object-per-render. */
 const EMPTY_ENV: Record<string, EnvBinding> = {};
 
+export function resolveEffectiveAgentEnv(
+  overlayAdapterConfig: Record<string, unknown>,
+  savedAdapterConfig: Record<string, unknown> | null | undefined,
+  flushedEnv?: Record<string, EnvBinding> | null,
+): Record<string, EnvBinding> {
+  if (flushedEnv !== undefined && flushedEnv !== null) return flushedEnv;
+  if (Object.prototype.hasOwnProperty.call(overlayAdapterConfig, "env")) {
+    return (overlayAdapterConfig.env as Record<string, EnvBinding> | undefined) ?? EMPTY_ENV;
+  }
+  return (savedAdapterConfig?.env as Record<string, EnvBinding> | undefined) ?? EMPTY_ENV;
+}
+
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
   return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local";
 }
@@ -629,7 +641,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   ) => {
     if (isCreate) return;
     setOverlay((prev) => {
-      const existingEnv = (baseEnvOverride ?? prev.adapterConfig.env ?? props.agent.adapterConfig?.env ?? EMPTY_ENV) as Record<string, EnvBinding>;
+      const existingEnv = resolveEffectiveAgentEnv(
+        prev.adapterConfig,
+        props.agent.adapterConfig as Record<string, unknown> | null | undefined,
+        baseEnvOverride,
+      );
       return {
         ...prev,
         adapterConfig: {
@@ -650,7 +666,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const bindSecretAsEnvVar = useCallback((binding: BindAsEnvVarRequest) => {
     if (isCreate) return;
     const flushedEnv = flushEnvironmentDraft();
-    const currentEnv = (flushedEnv ?? overlay.adapterConfig.env ?? props.agent.adapterConfig?.env ?? EMPTY_ENV) as Record<string, EnvBinding>;
+    const currentEnv = resolveEffectiveAgentEnv(
+      overlay.adapterConfig,
+      props.agent.adapterConfig as Record<string, unknown> | null | undefined,
+      flushedEnv,
+    );
     const existing = Object.prototype.hasOwnProperty.call(currentEnv, binding.envKey)
       ? currentEnv[binding.envKey]
       : undefined;
@@ -678,7 +698,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       return;
     }
     commitSecretEnvBinding(binding.envKey, binding.secretId, binding.version, flushedEnv);
-  }, [isCreate, overlay.adapterConfig.env, !isCreate ? props.agent : undefined, commitSecretEnvBinding]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isCreate, overlay.adapterConfig, !isCreate ? props.agent : undefined, commitSecretEnvBinding]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {

@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 
-import { useState } from "react";
+import { createRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
-import { EnvironmentVariablesEditor } from "./index";
+import { EnvironmentVariablesEditor, type EnvironmentVariablesEditorHandle } from "./index";
 import { SecretPicker } from "./SecretPicker";
 
 // Radix (DropdownMenu/Popover) relies on Pointer Capture APIs that jsdom omits.
@@ -1065,5 +1065,123 @@ describe("EnvironmentVariablesEditor", () => {
     expect(container.querySelector('button[aria-label="Remove variable"]')).toBeTruthy();
     expect(container.querySelector(`[aria-label*="${token}"], [title*="${token}"]`)).toBeNull();
     expect(saveButton().disabled).toBe(true);
+  });
+
+  it("blocks flushPendingDraft when a secret-shaped token is pasted into Variable name", async () => {
+    const onChange = vi.fn();
+    const editorRef = createRef<EnvironmentVariablesEditorHandle>();
+    const token = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+    render(
+      <EnvironmentVariablesEditor
+        ref={editorRef}
+        value={{}}
+        secrets={secrets}
+        onChange={onChange}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    const addButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Add variable"))!;
+    addButton.click();
+    await flush();
+
+    const nameInput = nameInputs()[0]!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(nameInput, token);
+    nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+
+    expect(editorRef.current?.flushPendingDraft()).toBeNull();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("prefers an exact-case secret match over an earlier case-insensitive secret on collision", async () => {
+    const upper = makeSecret("s-upper", { name: "GH_TOKEN", key: "gh_token_upper", latestVersion: 4 });
+    const exact = makeSecret("s-exact", { name: "gh_token", key: "gh_token_exact", latestVersion: 1 });
+    const onChange = vi.fn();
+    const onRotateSecret = vi.fn(async (secretId: string, _value: string) => ({
+      ...exact,
+      id: secretId,
+      latestVersion: 2,
+    }));
+    const tokenValue = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+
+    render(
+      <EnvironmentVariablesEditor
+        value={{ GH_TOKEN: { type: "plain", value: tokenValue } }}
+        secrets={[upper, exact]}
+        onChange={onChange}
+        onCreateSecret={async () => exact}
+        onRotateSecret={onRotateSecret}
+      />,
+    );
+    const storeButton = container.querySelector<HTMLButtonElement>('button[title^="This value looks sensitive"]')!;
+    storeButton.click();
+    await flush();
+
+    const rotateBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Save as new version"),
+    )!;
+    rotateBtn.click();
+    await flush();
+    expect(onRotateSecret).toHaveBeenCalledWith("s-exact", tokenValue);
+    saveButton().click();
+    await flush();
+    expect(onChange).toHaveBeenLastCalledWith({
+      GH_TOKEN: { type: "secret_ref", secretId: "s-exact", version: "latest" },
+    });
+  });
+
+  it("asks the user to choose when multiple case-insensitive secrets match with no exact match", async () => {
+    const upper = makeSecret("s-upper", { name: "GH_TOKEN", key: "gh_token_upper", latestVersion: 4 });
+    const mixed = makeSecret("s-mixed", { name: "Gh_Token", key: "gh_token_mixed", latestVersion: 2 });
+    const onChange = vi.fn();
+    const onRotateSecret = vi.fn(async (secretId: string, _value: string) => ({
+      ...mixed,
+      id: secretId,
+      latestVersion: 3,
+    }));
+    const tokenValue = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+
+    render(
+      <EnvironmentVariablesEditor
+        value={{ GH_TOKEN: { type: "plain", value: tokenValue } }}
+        secrets={[upper, mixed]}
+        onChange={onChange}
+        onCreateSecret={async () => mixed}
+        onRotateSecret={onRotateSecret}
+      />,
+    );
+    const storeButton = container.querySelector<HTMLButtonElement>('button[title^="This value looks sensitive"]')!;
+    storeButton.click();
+    await flush();
+
+    // Before selecting one, neither action should target a secret blindly and Create/Store must be disabled.
+    expect(document.body.textContent).toContain("Multiple secrets match");
+    expect(
+      [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+        b.textContent?.includes("Use existing secret"),
+      ),
+    ).toBeUndefined();
+    const storeSubmitBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Store & bind"),
+    )!;
+    expect(storeSubmitBtn.disabled).toBe(true);
+
+    const mixedChoice = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Gh_Token"),
+    )!;
+    mixedChoice.click();
+    await flush();
+
+    const useExistingBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Use existing secret"),
+    )!;
+    useExistingBtn.click();
+    await flush();
+    saveButton().click();
+    await flush();
+    expect(onChange).toHaveBeenLastCalledWith({
+      GH_TOKEN: { type: "secret_ref", secretId: "s-mixed", version: "latest" },
+    });
   });
 });

@@ -52,14 +52,22 @@ export function SecretPopoverForm({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [touched, setTouched] = useState(false);
+  const [selectedAmbiguousId, setSelectedAmbiguousId] = useState<string | null>(null);
 
-  const existingSecretByLowerName = useMemo(() => {
-    const map = new Map<string, CompanySecret>();
+  const { existingSecretByExactName, existingSecretsByLowerName } = useMemo(() => {
+    const byExact = new Map<string, CompanySecret>();
+    const byLower = new Map<string, CompanySecret[]>();
     for (const secret of existingSecrets ?? []) {
-      const key = secret.name.toLowerCase();
-      if (!map.has(key)) map.set(key, secret);
+      if (!byExact.has(secret.name)) byExact.set(secret.name, secret);
+      const lowerKey = secret.name.toLowerCase();
+      const bucket = byLower.get(lowerKey);
+      if (bucket) {
+        bucket.push(secret);
+      } else {
+        byLower.set(lowerKey, [secret]);
+      }
     }
-    return map;
+    return { existingSecretByExactName: byExact, existingSecretsByLowerName: byLower };
   }, [existingSecrets]);
 
   const existingSecretNameSet = useMemo(
@@ -69,9 +77,19 @@ export function SecretPopoverForm({
 
   const trimmedName = name.trim();
   const normalizedName = trimmedName.toLowerCase();
-  const matchingSecret = normalizedName.length > 0 ? (existingSecretByLowerName.get(normalizedName) ?? null) : null;
+  const exactMatch = trimmedName.length > 0 ? (existingSecretByExactName.get(trimmedName) ?? null) : null;
+  const lowerMatches = normalizedName.length > 0 ? (existingSecretsByLowerName.get(normalizedName) ?? []) : [];
+  const ambiguousMatches = !exactMatch && lowerMatches.length > 1 ? lowerMatches : [];
+  const selectedAmbiguousSecret =
+    ambiguousMatches.length > 1 && selectedAmbiguousId
+      ? (ambiguousMatches.find((candidate) => candidate.id === selectedAmbiguousId) ?? null)
+      : null;
+  const matchingSecret =
+    exactMatch ?? (lowerMatches.length === 1 ? lowerMatches[0]! : selectedAmbiguousSecret);
+  const hasNameCollision = Boolean(exactMatch || lowerMatches.length > 0);
   const existingIsActive = matchingSecret?.status === "active";
-  const hasCollisionActions = Boolean(matchingSecret && (onSelectExisting || onRotateExisting));
+  const canRecoverCollision = Boolean(onSelectExisting || onRotateExisting);
+  const hasCollisionActions = Boolean(hasNameCollision && canRecoverCollision);
   const canUseExisting = Boolean(matchingSecret && onSelectExisting && existingIsActive);
   const canRotateExisting = Boolean(
     matchingSecret &&
@@ -84,7 +102,7 @@ export function SecretPopoverForm({
   const nameError = (() => {
     if (!trimmedName) return touched ? "Name is required" : null;
     if (!SECRET_NAME_RE.test(trimmedName)) return "Use lowercase letters, digits and _";
-    if (matchingSecret) {
+    if (hasNameCollision) {
       return hasCollisionActions ? null : "A secret with this name already exists";
     }
     if (existingSecretNameSet.has(normalizedName)) {
@@ -93,7 +111,7 @@ export function SecretPopoverForm({
     return null;
   })();
   const valueError = value.length === 0 ? (touched ? "Value is required" : null) : null;
-  const canSubmit = !submitting && !matchingSecret && trimmedName.length > 0 && value.length > 0 && !nameError;
+  const canSubmit = !submitting && !hasNameCollision && trimmedName.length > 0 && value.length > 0 && !nameError;
 
   async function handleSubmit() {
     setTouched(true);
@@ -157,7 +175,10 @@ export function SecretPopoverForm({
           placeholder="secret_name"
           aria-label="Secret name"
           aria-invalid={nameError ? true : undefined}
-          onChange={(event) => setName(event.target.value)}
+          onChange={(event) => {
+            setName(event.target.value);
+            setSelectedAmbiguousId(null);
+          }}
           onBlur={() => setTouched(true)}
           onKeyDown={(event) => {
             if (event.key === "Enter") {
@@ -169,46 +190,82 @@ export function SecretPopoverForm({
         {nameError ? <span className="block text-(length:--text-micro) text-destructive">{nameError}</span> : null}
       </label>
 
-      {hasCollisionActions && matchingSecret ? (
+      {hasCollisionActions ? (
         <div className="space-y-2 rounded-md border border-border bg-muted/40 p-2.5">
-          {existingIsActive ? (
-            <p className="text-(length:--text-micro) text-foreground">
-              <span className="font-mono font-medium">{matchingSecret.name}</span> already exists (v
-              {matchingSecret.latestVersion}).{" "}
-              {canRotateExisting
-                ? "Reuse it, save this value as a new version, or choose a different name."
-                : "Reuse it or choose a different name."}
-            </p>
-          ) : (
-            <p className="text-(length:--text-micro) text-foreground">
-              <span className="font-mono font-medium">{matchingSecret.name}</span> already exists, but it is{" "}
-              {matchingSecret.status}. Re-enable it in Secrets before reusing it, or choose a different name.
-            </p>
-          )}
-          <div className="flex flex-wrap gap-1.5">
-            {onSelectExisting ? (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void handleUseExisting()}
-                disabled={submitting || !existingIsActive}
-              >
-                Use existing secret
-              </Button>
-            ) : null}
-            {canRotateExisting ? (
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => void handleRotateExisting()}
-                disabled={submitting}
-              >
-                {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                Save as new version
-              </Button>
-            ) : null}
-          </div>
+          {ambiguousMatches.length > 1 ? (
+            <>
+              <p className="text-(length:--text-micro) text-foreground">
+                Multiple secrets match <span className="font-mono font-medium">{trimmedName}</span> with different
+                casing. Choose which secret to use, or enter a different name:
+              </p>
+              <div className="flex flex-col gap-1">
+                {ambiguousMatches.map((candidate) => {
+                  const isSelected = matchingSecret?.id === candidate.id;
+                  return (
+                    <button
+                      key={candidate.id}
+                      type="button"
+                      onClick={() => setSelectedAmbiguousId(candidate.id)}
+                      aria-pressed={isSelected}
+                      className={cn(
+                        "flex items-center justify-between rounded border px-2 py-1 text-left text-(length:--text-micro) font-mono transition-colors",
+                        isSelected
+                          ? "border-primary bg-primary/10 text-foreground"
+                          : "border-border bg-background/60 text-muted-foreground hover:text-foreground",
+                      )}
+                    >
+                      <span className="truncate">{candidate.name}</span>
+                      <span className="ml-2 shrink-0 font-sans text-muted-foreground">
+                        {candidate.status === "active" ? `v${candidate.latestVersion}` : candidate.status}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          ) : null}
+          {matchingSecret ? (
+            <>
+              {existingIsActive ? (
+                <p className="text-(length:--text-micro) text-foreground">
+                  <span className="font-mono font-medium">{matchingSecret.name}</span> already exists (v
+                  {matchingSecret.latestVersion}).{" "}
+                  {canRotateExisting
+                    ? "Reuse it, save this value as a new version, or choose a different name."
+                    : "Reuse it or choose a different name."}
+                </p>
+              ) : (
+                <p className="text-(length:--text-micro) text-foreground">
+                  <span className="font-mono font-medium">{matchingSecret.name}</span> already exists, but it is{" "}
+                  {matchingSecret.status}. Re-enable it in Secrets before reusing it, or choose a different name.
+                </p>
+              )}
+              <div className="flex flex-wrap gap-1.5">
+                {onSelectExisting ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void handleUseExisting()}
+                    disabled={submitting || !existingIsActive}
+                  >
+                    Use existing secret
+                  </Button>
+                ) : null}
+                {canRotateExisting ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => void handleRotateExisting()}
+                    disabled={submitting}
+                  >
+                    {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                    Save as new version
+                  </Button>
+                ) : null}
+              </div>
+            </>
+          ) : null}
         </div>
       ) : null}
 

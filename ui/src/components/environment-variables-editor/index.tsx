@@ -297,14 +297,19 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [disabled, hasUnsavedChanges]);
 
+  const hasSecretShapedName = useMemo(
+    () => rows.some((row) => looksLikeCredentialToken(row.name)),
+    [rows],
+  );
+
   const flushPendingDraft = useCallback(() => {
-    if (disabled || !hasUnsavedChanges) return null;
+    if (disabled || !hasUnsavedChanges || hasSecretShapedName) return null;
     pendingSaveValueKeyRef.current = draftValueKey;
     flushSync(() => {
       onChange(draftValue);
     });
     return draftValue ?? {};
-  }, [disabled, draftValue, draftValueKey, hasUnsavedChanges, onChange]);
+  }, [disabled, draftValue, draftValueKey, hasSecretShapedName, hasUnsavedChanges, onChange]);
 
   useImperativeHandle(ref, () => ({ flushPendingDraft }), [flushPendingDraft]);
 
@@ -424,10 +429,6 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   }
 
   const duplicateNames = useMemo(() => computeDuplicateNames(rows), [rows]);
-  const hasSecretShapedName = useMemo(
-    () => rows.some((row) => looksLikeCredentialToken(row.name)),
-    [rows],
-  );
 
   const attentionCount = useMemo(
     () =>
