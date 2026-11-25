@@ -129,6 +129,54 @@ function tokenizeSegment(segment: string): string[] {
   return tokens;
 }
 
+function splitShellSegments(command: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | null = null;
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i]!;
+    if (quote) {
+      if (ch === "\\" && quote === '"' && i + 1 < command.length) {
+        current += ch + command[i + 1]!;
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < command.length) {
+      current += ch + command[i + 1]!;
+      i += 1;
+      continue;
+    }
+    if (ch === ";" || ch === "\n") {
+      if (current.trim()) segments.push(current.trim());
+      current = "";
+      continue;
+    }
+    if ((ch === "&" && command[i + 1] === "&") || (ch === "|" && command[i + 1] === "|")) {
+      if (current.trim()) segments.push(current.trim());
+      current = "";
+      i += 1;
+      continue;
+    }
+    if (ch === "|") {
+      if (current.trim()) segments.push(current.trim());
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  if (current.trim()) segments.push(current.trim());
+  return segments;
+}
+
 function unwrapShellWrapper(command: string): string {
   const trimmed = command.trim();
   const wrapper = trimmed.match(/^(?:(?:\/[\w./-]+\/)?(?:bash|sh|zsh))\s+(?:-[a-zA-Z]*c)\s+(['"])([\s\S]*)\1$/);
@@ -199,6 +247,22 @@ function parseCommandSegment(segment: string): ParsedGitHubCommand[] {
       }
       continue;
     }
+    if (base === "sudo") {
+      i += 1;
+      while (i < tokens.length && tokens[i]!.startsWith("-")) {
+        const arg = tokens[i]!;
+        if (arg === "--") {
+          i += 1;
+          break;
+        }
+        if (arg === "-u" || arg === "-g" || arg === "-C" || arg === "-h" || arg === "-p" || arg === "-r" || arg === "-t") {
+          i += 2;
+        } else {
+          i += 1;
+        }
+      }
+      continue;
+    }
     if (base === "nohup" || base === "time" || base === "command" || base === "exec" || base === "setsid" || base === "unbuffer") {
       i += 1;
       while (i < tokens.length && tokens[i]!.startsWith("-")) {
@@ -248,7 +312,7 @@ function parseCommandSegment(segment: string): ParsedGitHubCommand[] {
 function parseGitHubCommands(command: string): ParsedGitHubCommand[] {
   if (!command.trim()) return [];
   const unwrapped = unwrapShellWrapper(command);
-  const segments = unwrapped.split(/\s*(?:&&|\|\||;|\||\n)\s*/);
+  const segments = splitShellSegments(unwrapped);
   const parsed: ParsedGitHubCommand[] = [];
   for (const segment of segments) {
     parsed.push(...parseCommandSegment(segment));
@@ -335,7 +399,10 @@ function didRecoverGitHubAuth(
         return true;
       }
     }
-    if (cmd.kind === "git" && cmd.subcommand === "push" && hasGitHubRemote) {
+    if (cmd.kind === "git" && cmd.subcommand === "push") {
+      // A successful `git push` already proved remote write auth; quiet or
+      // "Everything up-to-date" output may omit the remote URL, while non-GitHub
+      // remote URLs are already excluded above.
       if (!failedRepoSlug || !succeededRepoSlug || succeededRepoSlug === failedRepoSlug) {
         return true;
       }

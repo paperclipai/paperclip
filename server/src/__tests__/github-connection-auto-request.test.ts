@@ -175,9 +175,16 @@ describe("detectUnconfiguredGitHubAuthFailureInEvents", () => {
       }),
     ],
     [
-      "timeout-wrapped bash -lc git clone",
+      "timeout-wrapped bash -lc compound git clone",
       toolExecutionEvent({
-        name: "timeout -k 5 60 bash -lc 'git clone https://github.com/acme/private-repo.git'",
+        name: "timeout -k 5 60 bash -lc 'cd /workspace && git clone https://github.com/acme/private-repo.git'",
+        output: "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
+      }),
+    ],
+    [
+      "sudo-wrapped git clone",
+      toolExecutionEvent({
+        name: "sudo -u runner git clone https://github.com/acme/private-repo.git",
         output: "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n",
       }),
     ],
@@ -297,6 +304,14 @@ describe("detectUnconfiguredGitHubAuthFailureInEvents", () => {
       output: "To https://github.com/acme/private-repo.git\n",
     });
 
+    const recoveredQuietGitPush = toolExecutionEvent({
+      // paperclip:allow-git-push: synthetic command fixture testing recovery detection
+      name: "git -C /workspace push origin main",
+      exitCode: 0,
+      status: "completed",
+      output: "Everything up-to-date\n",
+    });
+
     expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, localGitStatus])).toBe(true);
     expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, ghSubcommandHelp])).toBe(true);
     expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, echoCommand])).toBe(true);
@@ -304,6 +319,7 @@ describe("detectUnconfiguredGitHubAuthFailureInEvents", () => {
     expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, differentPublicRepoClone])).toBe(true);
     expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, recoveredSameRepoClone])).toBe(false);
     expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, recoveredGitPush])).toBe(false);
+    expect(detectUnconfiguredGitHubAuthFailureInEvents([authFailure, recoveredQuietGitPush])).toBe(false);
   });
 });
 
