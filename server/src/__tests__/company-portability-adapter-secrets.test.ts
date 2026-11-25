@@ -84,7 +84,7 @@ describeEmbeddedPostgres("company portability adapter config secrets", () => {
     exported: Awaited<ReturnType<typeof exportHermesGatewayCompany>>["exported"],
     secretValues?: Record<string, string>,
     adapterOverrides?: Record<string, {
-      adapterType?: string;
+      adapterType: string;
       adapterConfig?: Record<string, unknown>;
     }>,
   ) {
@@ -172,6 +172,7 @@ describeEmbeddedPostgres("company portability adapter config secrets", () => {
       { "agent:hermes-gateway:apiKey": "hermes-override-key" },
       {
         "hermes-gateway": {
+          adapterType: "hermes_gateway",
           adapterConfig: { apiBaseUrl: "https://override.example" },
         },
       },

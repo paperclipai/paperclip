@@ -103,7 +103,11 @@ const secretSvc = {
   create: vi.fn(async () => ({ id: "secret-created" })),
   remove: vi.fn(async () => true),
   listAdapterSchemaSecretFieldKeys: vi.fn(async (_adapterType?: string | null): Promise<string[]> => []),
-  normalizeAdapterConfigForPersistence: vi.fn(async (_companyId: string, config: Record<string, unknown>) => config),
+  normalizeAdapterConfigForPersistence: vi.fn(async (
+    _companyId: string,
+    config: Record<string, unknown>,
+    _options?: { strictMode?: boolean; adapterType?: string | null },
+  ) => config),
   normalizeEnvBindingsForPersistence: vi.fn(async (_companyId: string, env: Record<string, unknown>) => env),
   syncEnvBindingsForTarget: vi.fn(async () => []),
   resolveAdapterConfigForRuntime: vi.fn(async (_companyId: string, config: Record<string, unknown>) => ({ config, secretKeys: new Set<string>() })),
@@ -2126,12 +2130,16 @@ describe("company portability", () => {
             "      type: hermes_gateway",
             "      config:",
             "        apiBaseUrl: https://hermes.example",
+            "        model: adapter-model",
             "    inputs:",
             "      env:",
             "        apiKey:",
             "          kind: secret",
             "          requirement: optional",
             "        GH_TOKEN:",
+            "          kind: secret",
+            "          requirement: optional",
+            "        model:",
             "          kind: secret",
             "          requirement: optional",
             "",
@@ -2152,11 +2160,14 @@ describe("company portability", () => {
       secretValues: {
         "agent:hermes:apiKey": "hermes-imported-key",
         "agent:hermes:GH_TOKEN": "gh-imported-token",
+        "agent:hermes:model": "model-imported-token",
       },
       adapterOverrides: {
         hermes: {
+          adapterType: "hermes_gateway",
           adapterConfig: {
             apiBaseUrl: "https://override.example",
+            model: "adapter-model",
           },
         },
       },
@@ -2172,12 +2183,85 @@ describe("company portability", () => {
       adapterType: "hermes_gateway",
       adapterConfig: expect.objectContaining({
         apiBaseUrl: "https://override.example",
+        model: "adapter-model",
         apiKey: importedSecretRef,
         env: {
           GH_TOKEN: importedSecretRef,
+          model: importedSecretRef,
         },
       }),
     }), { createdByUserId: "user-1" });
+  });
+
+  it("rechecks strict secret constraints after restoring supplied adapter inputs", async () => {
+    const previousStrictMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE;
+    process.env.PAPERCLIP_SECRETS_STRICT_MODE = "true";
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+    secretSvc.normalizeAdapterConfigForPersistence.mockImplementation(async (_companyId, config, options) => {
+      const env = config.env as Record<string, unknown> | undefined;
+      const binding = env?.API_KEY as Record<string, unknown> | undefined;
+      if (options?.strictMode && binding?.type === "plain") {
+        throw new Error("strict mode rejected restored plain input");
+      }
+      return config;
+    });
+
+    try {
+      await expect(portability.importBundle({
+        source: {
+          type: "inline",
+          files: {
+            "COMPANY.md": [
+              "---",
+              "name: Import",
+              "includes:",
+              "  - agents/hermes/AGENTS.md",
+              "---",
+              "",
+            ].join("\n"),
+            "agents/hermes/AGENTS.md": [
+              "---",
+              "name: Hermes",
+              "slug: hermes",
+              "kind: agent",
+              "---",
+              "",
+            ].join("\n"),
+            ".paperclip.yaml": [
+              "schema: paperclip/v1",
+              "agents:",
+              "  hermes:",
+              "    adapter:",
+              "      type: hermes_gateway",
+              "      config: {}",
+              "    inputs:",
+              "      env:",
+              "        API_KEY:",
+              "          kind: plain",
+              "          requirement: optional",
+              "",
+            ].join("\n"),
+          },
+        },
+        include: { company: false, agents: true, projects: false, issues: false },
+        target: { mode: "existing_company", companyId: "company-1" },
+        collisionStrategy: "rename",
+        secretValues: { "agent:hermes:API_KEY": "plain-imported-value" },
+        adapterOverrides: {
+          hermes: {
+            adapterType: "hermes_gateway",
+            adapterConfig: { apiBaseUrl: "https://override.example" },
+          },
+        },
+      }, "user-1")).rejects.toThrow("strict mode rejected restored plain input");
+    } finally {
+      if (previousStrictMode === undefined) {
+        delete process.env.PAPERCLIP_SECRETS_STRICT_MODE;
+      } else {
+        process.env.PAPERCLIP_SECRETS_STRICT_MODE = previousStrictMode;
+      }
+    }
   });
 
   it("imports agent permission grants from package metadata", async () => {

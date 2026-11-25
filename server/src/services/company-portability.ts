@@ -5783,6 +5783,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             runner,
             existingImportAgent?.defaultEnvironmentId,
           );
+          const sourceAdapterSecretFields = await secrets.listAdapterSchemaSecretFieldKeys(
+            manifestAgent.adapterType,
+          );
           const finalAdapterSecretFields = await secrets.listAdapterSchemaSecretFieldKeys(
             normalizedAdapter.adapterType,
           );
@@ -5794,7 +5797,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             ? manifestAgent.adapterConfig.env
             : {};
           for (const envInput of materializedAgentInputs) {
-            const binding = manifestAgent.adapterConfig[envInput.key] ?? manifestAdapterEnv[envInput.key];
+            const binding = sourceAdapterSecretFields.includes(envInput.key)
+              ? manifestAgent.adapterConfig[envInput.key]
+              : manifestAdapterEnv[envInput.key];
             if (binding === undefined) continue;
             if (finalAdapterSecretFields.includes(envInput.key)) {
               normalizedAdapter.adapterConfig[envInput.key] = binding;
@@ -5805,6 +5810,16 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               : {};
             normalizedAdapter.adapterConfig.env = { ...normalizedEnv, [envInput.key]: binding };
           }
+          const completedAdapterConfig = await secrets.normalizeAdapterConfigForPersistence(
+            targetCompany.id,
+            normalizedAdapter.adapterConfig,
+            { strictMode: strictSecretsMode, adapterType: normalizedAdapter.adapterType },
+          );
+          await assertImportAdapterConfigConstraints(
+            targetCompany.id,
+            normalizedAdapter.adapterType,
+            completedAdapterConfig,
+          );
           const patch = {
             name: planAgent.plannedName,
             role: manifestAgent.role,
@@ -5814,7 +5829,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             capabilities: manifestAgent.capabilities,
             reportsTo: null,
             adapterType: normalizedAdapter.adapterType,
-            adapterConfig: normalizedAdapter.adapterConfig,
+            adapterConfig: completedAdapterConfig,
             runtimeConfig: sanitizeImportedAgentRuntimeConfig(manifestAgent.runtimeConfig),
             budgetMonthlyCents: manifestAgent.budgetMonthlyCents,
             permissions: manifestAgent.permissions,
