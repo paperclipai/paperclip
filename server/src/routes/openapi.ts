@@ -11815,6 +11815,32 @@ registerCurrentRoute({
   body: updateDocumentAnnotationThreadSchema,
 });
 
+registerCurrentRoute({
+  method: "put",
+  path: "/api/issues/{id}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["issues"],
+  summary: "Add a reaction on a document annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/issues/{id}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["issues"],
+  summary: "Remove a reaction on a document annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
 for (const route of [
   [
     "get",
@@ -11869,6 +11895,32 @@ registerCurrentRoute({
   tags: ["routines"],
   summary: "Update a routine description annotation thread",
   body: updateDocumentAnnotationThreadSchema,
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/routines/{id}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["routines"],
+  summary: "Add a reaction on a routine description annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/routines/{id}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}",
+  tags: ["routines"],
+  summary: "Remove a reaction on a routine description annotation comment",
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    404: r.notFound,
+  },
 });
 
 registerCurrentRoute({
@@ -13861,7 +13913,7 @@ const dotInvitationResponseSchema = z.object({
   approvalId: z.string().uuid().nullable(),
   binding: z.object({
     id: z.string().uuid(), status: z.string(), connected: z.boolean(),
-    subscriptionVerified: z.boolean(), hasPendingChallenge: z.boolean(),
+    subscriptionVerified: z.boolean(), subscriptionExpired: z.boolean().optional(), hasPendingChallenge: z.boolean(),
     pairingExpiresAt: z.string().datetime().nullable(), challengeExpiresAt: z.string().datetime().nullable(),
   }).nullable(),
 });

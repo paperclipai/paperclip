@@ -240,6 +240,8 @@ describeToolGatewayEmbeddedPostgres("tool gateway service: action approvals", ()
 
   it.each([
     { method: "managed", errorCode: "github_access_denied", sourceKey: "github" },
+    { method: "managed", errorCode: "github_app_installation_suspended", sourceKey: "github" },
+    { method: "managed", errorCode: "github_repo_outside_app_installations", sourceKey: "github" },
     { method: "mcp-key", errorCode: "github_access_denied", sourceKey: "github" },
     { method: "foreign", errorCode: "github_access_denied", sourceKey: "github" },
     { method: "managed", errorCode: "tool_error", sourceKey: "github" },
@@ -283,21 +285,35 @@ describeToolGatewayEmbeddedPostgres("tool gateway service: action approvals", ()
     const payload = wakeup.mock.calls[0][1].payload;
     const instructions: string = payload.toolAction.instructions;
     // Retrying or re-approving hits the same GitHub refusal.
-    const trustedGitHubDenial = errorCode === "github_access_denied" || (sourceKey === "github" && method !== "foreign");
-    expect(instructions).toMatch(trustedGitHubDenial ? /do not retry.*until GitHub access is repaired/i : /did not complete successfully/);
-    // Concrete next step the agent can relay to the user.
-    if (!trustedGitHubDenial) {
-      expect(instructions).not.toMatch(/GitHub App|Refresh access|replace.*token/);
-    } else if (method === "managed") {
-      expect(instructions).toContain("github.com/new");
-      expect(instructions).toMatch(/Refresh access/);
-    } else if (method === "mcp-key") {
-      expect(instructions).toMatch(/token.*permissions/i);
-      expect(instructions).toMatch(/replace.*token/i);
-      expect(instructions).not.toMatch(/GitHub App|Refresh access/);
+    const outsideApp = errorCode === "github_repo_outside_app_installations";
+    const suspendedApp = errorCode === "github_app_installation_suspended";
+    const trustedGitHubDenial = outsideApp || suspendedApp || errorCode === "github_access_denied" || (sourceKey === "github" && method !== "foreign");
+    if (outsideApp) {
+      expect(instructions).toMatch(/do not retry/i);
+      expect(instructions).toMatch(/not installed/i);
+      expect(instructions).toMatch(/install the Paperclip GitHub App.*refresh access.*retry/i);
+      expect(instructions).not.toMatch(/select Refresh access|Add More Repos on GitHub/i);
+    } else if (suspendedApp) {
+      expect(instructions).toMatch(/do not retry/i);
+      expect(instructions).toMatch(/suspended/i);
+      expect(instructions).toMatch(/unsuspend/i);
+      expect(instructions).toContain("Refresh access");
     } else {
-      expect(instructions).toMatch(/authentication method/);
-      expect(instructions).not.toMatch(/GitHub App|Refresh access/);
+      expect(instructions).toMatch(trustedGitHubDenial ? /do not retry.*until GitHub access is repaired/i : /did not complete successfully/);
+      // Concrete next step the agent can relay to the user.
+      if (!trustedGitHubDenial) {
+        expect(instructions).not.toMatch(/GitHub App|Refresh access|replace.*token/);
+      } else if (method === "managed") {
+        expect(instructions).toContain("github.com/new");
+        expect(instructions).toMatch(/Refresh access/);
+      } else if (method === "mcp-key") {
+        expect(instructions).toMatch(/token.*permissions/i);
+        expect(instructions).toMatch(/replace.*token/i);
+        expect(instructions).not.toMatch(/GitHub App|Refresh access/);
+      } else {
+        expect(instructions).toMatch(/authentication method/);
+        expect(instructions).not.toMatch(/GitHub App|Refresh access/);
+      }
     }
     expect(payload.paperclipAgentMessage.text).toContain(instructions);
     // Provider text stays in the untrusted result, not in trusted instructions.

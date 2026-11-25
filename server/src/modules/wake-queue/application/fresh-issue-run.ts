@@ -46,6 +46,7 @@ export type FreshIssueRunStore<Run> = {
     handoffRunId: string | null;
     receiptScope: { kind: "all" } | { kind: "exact"; wakeId: string } | null;
     checkExecutionBlocker: boolean;
+    conversationResetCommentId?: string | null;
   }): Promise<{ handoffAgentId: string | null; candidates: DeferredCommentCandidate[] }>;
   readUndeliveredLegacyCommentIds(issueId: string, agentId: string, commentIds: string[]): Promise<string[]>;
   notifyRunMilestones(issueId: string): Promise<void>;
@@ -70,6 +71,7 @@ type FreshIssueRunInput = {
   boardRetryReceiptId?: string;
   failedChatRetryReceiptId?: string;
   ownsReconstructionContinuation: boolean;
+  conversationResetCommentId?: string | null;
   contextSnapshot: Record<string, unknown>;
   resolveSessionIdBefore(): Promise<string | null>;
   continuationAttempt: number;
@@ -98,15 +100,6 @@ export function createFreshIssueRunAdmission<Run extends { id: string }>(store: 
     const { receipt, durableReceipt, durableChatReceiptId, executionWaitRequestId, issue, contextSnapshot } = input;
     const { agentId, source, triggerDetail, reason, payload } = receipt;
 
-    // A deferred durable chat wake keeps its original identity and source.
-    const primary = await store.saveReceipt(durableChatReceiptId && durableChatReceiptId === executionWaitRequestId
-      ? { kind: "promote", wakeId: durableChatReceiptId, agentId, payload }
-      : {
-          kind: "insert",
-          seed: durableReceipt ? { ...receipt, id: durableReceipt.id, requestedAt: durableReceipt.requestedAt } : receipt,
-        });
-    if (!primary) return undefined;
-
     // Only a verified reassignment can bring a previous executor's saved comments.
     const interruptedRunId = readNonEmptyString(contextSnapshot.interruptedRunId);
     const handoffRunId = source === "assignment" && reason === "issue_assigned" &&
@@ -115,19 +108,45 @@ export function createFreshIssueRunAdmission<Run extends { id: string }>(store: 
 
     // Chat keeps separate batches, but an exact resumed receipt must be consumed with its successor.
     const canCoalesceComments = !durableChatReceiptId && !issue.isConversation && input.allowRunCoalescing !== false;
-    const { handoffAgentId, candidates } = await store.readCommentCandidates({
+    const isPromotedDurableChat = Boolean(durableChatReceiptId && durableChatReceiptId === executionWaitRequestId);
+    const rawRequiredReceiptId = input.queuedCommentInterruptId ?? input.queuedCommentRequestId ?? input.boardRetryReceiptId ?? null;
+    if (isPromotedDurableChat && rawRequiredReceiptId && rawRequiredReceiptId !== durableChatReceiptId) {
+      throw new Error("wake-queue: promoted durable chat wake cannot require a separate resumed receipt");
+    }
+    const requiredReceiptId = isPromotedDurableChat ? null : rawRequiredReceiptId;
+    const exactWakeId = executionWaitRequestId ?? requiredReceiptId;
+    const readCandidates = () => store.readCommentCandidates({
       issueId: issue.id,
       agentId,
       handoffRunId,
       receiptScope: canCoalesceComments || (executionWaitRequestId && input.boardRetryReceiptId)
         ? { kind: "all" }
-        : executionWaitRequestId ? { kind: "exact", wakeId: executionWaitRequestId } : null,
+        : exactWakeId ? { kind: "exact", wakeId: exactWakeId } : null,
       checkExecutionBlocker: !input.ownsReconstructionContinuation,
+      ...(input.conversationResetCommentId ? { conversationResetCommentId: input.conversationResetCommentId } : {}),
     });
+
+    // A deferred durable chat wake keeps its original identity and source, so it
+    // must be promoted off `deferred_issue_execution` before reading secondary
+    // candidates. Every other fresh run reads candidates first so a missing or
+    // blocked required receipt aborts before writing a wake or doomed run.
+    const promotedPrimary = isPromotedDurableChat
+      ? await store.saveReceipt({ kind: "promote", wakeId: durableChatReceiptId!, agentId, payload })
+      : undefined;
+    if (isPromotedDurableChat && !promotedPrimary) return undefined;
+
+    const { handoffAgentId, candidates } = await readCandidates();
     const adopted = candidates.filter((wake) => wake.id === executionWaitRequestId ||
       wake.id === input.queuedCommentInterruptId || wake.id === input.queuedCommentRequestId ||
-      isOrdinaryBoardComment(wake));
+      wake.id === input.boardRetryReceiptId || isOrdinaryBoardComment(wake));
     const adoptedWakeIds = adopted.map((wake) => wake.id);
+    if (requiredReceiptId && !adoptedWakeIds.includes(requiredReceiptId)) return undefined;
+
+    const primary = promotedPrimary ?? await store.saveReceipt({
+      kind: "insert",
+      seed: durableReceipt ? { ...receipt, id: durableReceipt.id, requestedAt: durableReceipt.requestedAt } : receipt,
+    });
+    if (!primary) return undefined;
     let commentIds = [...new Set([
       ...adopted.flatMap((wake) => queuedCommentIdsFromWakePayload(wake.payload)),
       ...queuedCommentIdsFromRunContext(contextSnapshot),

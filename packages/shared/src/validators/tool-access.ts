@@ -245,6 +245,7 @@ export const connectionGrantSchema = z.object({
       repositorySelection: z.enum(["all", "selected", "mixed", "none"]),
       installationIds: z.array(z.string().regex(/^[1-9][0-9]{0,30}$/)).max(100),
       installationOwnerLogins: z.array(z.string().trim().min(1).max(100)).max(100),
+      suspendedInstallationOwnerLogins: z.array(z.string().trim().min(1).max(100)).max(100).optional(),
       installationUrl: z.string().url().max(2000).optional(),
       managementUrl: z.string().url().max(2000).optional(),
       appSlug: z.string().regex(/^[a-z0-9-]{1,100}$/).optional(),

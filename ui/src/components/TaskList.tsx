@@ -2,7 +2,7 @@ import { Fragment, useId, useState, type ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { ChevronDown, ChevronRight, GitBranch } from "lucide-react";
 import { buildIssueTree } from "../lib/issue-tree";
-import { issueFilterLabel } from "../lib/issue-filters";
+import { issueFilterLabel, issueUpdatedTime } from "../lib/issue-filters";
 import { paperclipHumanAvatarUrl } from "../lib/issue-chat-human-author";
 import { defaultTaskListColumns, defaultTaskListSort, isTaskListColumnSort, taskListOrderToIssueSort, type TaskListColumnId, type TaskListSort, type TaskListOrder } from "../lib/task-list";
 import { sortIssues } from "../lib/issue-sort";
@@ -104,7 +104,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   const ordered = sortIssues(items.map(item => item.issue), taskListOrderToIssueSort(sort ?? defaultTaskListSort), issue => {
     const item = byId.get(issue.id)!;
     const parent = issue.parentId ? byId.get(issue.parentId)?.issue : null;
-    return { createdBy: item.createdBy, assignee: item.assignee, parentTask: parent ? `${parent.identifier} ${parent.title}` : null };
+    return { createdBy: item.createdBy, assignee: item.assignee, parentTask: parent ? `${parent.identifier} ${parent.title}` : null, updated: issueUpdatedTime(issue) };
   });
   const { roots, childMap } = buildIssueTree(ordered);
   const rowIds: string[] = [];
@@ -157,7 +157,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
             parentTask: parent ? <span><span className="font-mono">{parent.identifier}</span> {parent.title}</span> : undefined,
             tags: issue.labels?.length ? <span className="inline-flex items-center gap-1">{issue.labels.map(label => <Badge key={label.id} variant="secondary" className="shrink-0 px-1.5 py-0">{label.name}</Badge>)}</span> : undefined,
             worktree: branch ? <span className="inline-flex items-center gap-1.5"><GitBranch className="size-3 shrink-0" aria-hidden />{branch}</span> : undefined,
-            lastUpdated: timeAgo(issue.updatedAt),
+            lastUpdated: timeAgo(issueUpdatedTime(issue)),
           }}
         />
         {expanded ? children.map(child => renderBranch(child, depth + 1)) : null}

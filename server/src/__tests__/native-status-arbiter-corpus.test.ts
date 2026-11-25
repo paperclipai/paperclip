@@ -22,6 +22,9 @@ import {
   assets,
   caseHandoffs,
   cases,
+  chatConversations,
+  chatEndpointResources,
+  chatEndpoints,
   heartbeatRunEvents,
   issueAttachments,
   approvals,
@@ -42,6 +45,8 @@ import {
   nativeRunResults,
   statusDecisionEffects,
   statusDecisions,
+  toolApplications,
+  toolConnections,
   workAssessments,
   workspaceOperations,
 } from "@paperclipai/db";
@@ -90,6 +95,7 @@ import {
 import * as activityLog from "../services/activity-log.js";
 import { dismissObsoleteNativePolicyReviews, registerObsoletePolicyReviewWork } from "../services/native-runtime/obsolete-policy-reviews.js";
 import { issueService } from "../services/issues.js";
+import { heartbeatService } from "../services/heartbeat.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -3355,6 +3361,180 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     expect((await issueThreadInteractionService(db).getById(seeded.interaction.id))!.status).toBe("pending");
     await dismissAutomaticCompletionReviews(db, seeded.issueId);
     expect((await issueThreadInteractionService(db).getById(seeded.interaction.id))!.status).toBe("cancelled");
+  }, 30_000);
+
+  it.each([
+    { scope: "current_track", owner: { kind: "agent", name: "ESCD" }, saved: () => ({ agentId: delegateAgentId }) },
+    { scope: "task_wide", owner: { kind: "agent", name: "Eligible status corpus delegate" }, saved: () => ({ agentId: delegateAgentId }) },
+    { scope: "task_wide", owner: { kind: "user", name: "Avery Example" }, saved: () => "board" },
+  ])("saves the unblock owner a $scope blocked report names ($owner.kind $owner.name) and wakes an agent owner", async ({ scope, owner, saved }) => {
+    const seeded = await seedFixture({ ...corpus.fixtures.find((fixture) => fixture.id === "real-task-wide-blocker")!, id: `named-blocker-owner-${randomUUID()}` });
+    const [stored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, seeded.resultId!));
+    const result = stored!.resultJson.result as { completionClaim: Record<string, unknown> };
+    const named = {
+      ...result,
+      reportedWorkDisposition: "blocked",
+      completionClaim: { ...result.completionClaim, objectiveSatisfied: false,
+        remainingWork: [{ description: "Review the release notes draft.", blocksCompletion: true }] },
+      blocker: { reasonCode: "review_required", owner, unblockAction: "Review the release notes draft.", scope },
+    };
+    await db.update(nativeRunResults).set({ resultJson: { ...stored!.resultJson, result: named } })
+      .where(eq(nativeRunResults.id, seeded.resultId!));
+    await expect(nativeCompletionFeedback(db, seeded.runId, named as never)).resolves.toContain("Blocker report accepted");
+
+    await finalizeNativeRun({ db, runId: seeded.runId, workspaceFinalizeStatus: "succeeded" });
+    const issue = (await issueService(db).getById(seeded.issueId))!;
+    expect(issue.status).toBe("blocked");
+    expect(issue.unblockDescriptor).toEqual(expect.objectContaining({ owner: saved() }));
+    // Only the assignee's wake is dispatched, so a named agent owner must hold the task.
+    expect(issue.assigneeAgentId).toBe(owner.kind === "agent" ? delegateAgentId : agentId);
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    const ownerWakes = wakes.filter((wake) => (wake.payload as Record<string, unknown> | null)?.issueId === seeded.issueId && wake.agentId === delegateAgentId);
+    expect(ownerWakes).toHaveLength(owner.kind === "agent" ? 1 : 0);
+    if (owner.kind !== "agent") return;
+    // Dispatch admits the owner's wake instead of skipping it as another
+    // assignee's, or as a wake with no committed source.
+    await db.update(issues).set({ responsibleUserId: "corpus-board-user" }).where(eq(issues.id, seeded.issueId));
+    await heartbeatService(db).dispatchPendingNativeStatusWakeups({ companyId, requestId: ownerWakes[0]!.id });
+    const [dispatched] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, ownerWakes[0]!.id));
+    expect({ status: dispatched!.status, error: dispatched!.error }).toEqual({ status: "coalesced", error: null });
+  }, 30_000);
+
+  it("rejects a blocker owner agent name that matches no agent, before saving the block", async () => {
+    const seeded = await seedFixture({ ...corpus.fixtures.find((fixture) => fixture.id === "real-task-wide-blocker")!, id: `unknown-blocker-owner-${randomUUID()}` });
+    const [stored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, seeded.resultId!));
+    const result = stored!.resultJson.result as Record<string, unknown>;
+    await expect(nativeCompletionFeedback(db, seeded.runId, {
+      ...result, reportedWorkDisposition: "blocked",
+      blocker: { reasonCode: "review_required", owner: { kind: "agent", name: "Nonexistent Reviewer" }, unblockAction: "Review the draft.", scope: "task_wide" },
+    } as never)).rejects.toThrow("matches no agent in this company");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, seeded.runId))).toHaveLength(0);
+  }, 30_000);
+
+  it("rejects handing off an external-chat-bound task to another agent and falls back to board if bound before commit", async () => {
+    const seeded = await seedFixture({ ...corpus.fixtures.find((fixture) => fixture.id === "real-task-wide-blocker")!, id: `chat-locked-blocker-owner-${randomUUID()}` });
+    const [stored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, seeded.resultId!));
+    const result = stored!.resultJson.result as { completionClaim: Record<string, unknown> };
+    const named = {
+      ...result,
+      reportedWorkDisposition: "blocked",
+      completionClaim: { ...result.completionClaim, objectiveSatisfied: false,
+        remainingWork: [{ description: "Review the release notes draft.", blocksCompletion: true }] },
+      blocker: { reasonCode: "review_required", owner: { kind: "agent", name: "ESCD" }, unblockAction: "Review the release notes draft.", scope: "task_wide" },
+    };
+    const appId = randomUUID(), connId = randomUUID(), endpointId = randomUUID(), resourceId = randomUUID();
+    await db.insert(toolApplications).values({ id: appId, companyId, applicationKey: `chat:slack:${endpointId}`, name: "Slack", type: "chat", status: "active" });
+    await db.insert(toolConnections).values({ id: connId, companyId, applicationId: appId, name: "Slack", uid: `chat-slack-${endpointId}`, connectionPurpose: "channel", transport: "chat_sdk", status: "active", enabled: true });
+    await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId: connId, provider: "slack", publicId: randomUUID(), assignedAgentId: agentId, status: "active", providerAccountId: "slack-bot", allowDirectMessages: true, allowUnlinkedPeople: false });
+    await db.insert(chatEndpointResources).values({ id: resourceId, companyId, endpointId, type: "direct_message", providerResourceId: `dm-${endpointId}`, label: "Slack DM", availability: "available", enabled: true });
+    await db.insert(chatConversations).values({ id: randomUUID(), companyId, endpointId, resourceId, issueId: seeded.issueId, externalConversationId: `conv-${endpointId}`, externalThreadId: `slack:${endpointId}`, sessionGeneration: 1, externalLabel: "Slack DM", isDirectMessage: true, state: "active" });
+
+    // Report-time feedback refuses the handoff while the agent can still correct it.
+    await expect(nativeCompletionFeedback(db, seeded.runId, named as never))
+      .rejects.toThrow("bound to a conversation or external chat channel");
+    expect(await db.select().from(statusDecisions).where(eq(statusDecisions.runId, seeded.runId))).toHaveLength(0);
+
+    // Even if a chat binding arrives before commit, finalization falls back to board
+    // instead of failing with chat_binding_agent_locked or queueing an unwakeable wake.
+    await db.update(nativeRunResults).set({ resultJson: { ...stored!.resultJson, result: named } })
+      .where(eq(nativeRunResults.id, seeded.resultId!));
+    await finalizeNativeRun({ db, runId: seeded.runId, workspaceFinalizeStatus: "succeeded" });
+    const issue = (await issueService(db).getById(seeded.issueId))!;
+    expect(issue.status).toBe("blocked");
+    expect(issue.assigneeAgentId).toBe(agentId);
+    expect(issue.unblockDescriptor).toEqual(expect.objectContaining({ owner: "board" }));
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakes.filter((wake) => (wake.payload as Record<string, unknown> | null)?.issueId === seeded.issueId && wake.agentId === delegateAgentId)).toHaveLength(0);
+  }, 30_000);
+
+  it("hands off a dependency-gated blocker to its named agent without waking early, and falls back to board on interaction denial", async () => {
+    const depSeeded = await seedFixture({ ...corpus.fixtures.find((fixture) => fixture.id === "real-task-wide-blocker")!, id: `dep-named-blocker-${randomUUID()}` });
+    const [blockerIssue] = await db.insert(issues).values({
+      companyId, title: "Upstream prerequisite", status: "in_progress", workMode: "standard", assigneeAgentId: agentId,
+    }).returning();
+    await db.insert(issueRelations).values({ companyId, issueId: blockerIssue!.id, relatedIssueId: depSeeded.issueId, type: "blocks" });
+    const [depStored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, depSeeded.resultId!));
+    const depNamed = {
+      ...(depStored!.resultJson.result as Record<string, unknown>),
+      reportedWorkDisposition: "blocked",
+      blocker: { reasonCode: "review_required", owner: { kind: "agent", name: "ESCD" }, unblockAction: "Review once upstream finishes.", scope: "current_track" },
+    };
+    await db.update(nativeRunResults).set({ resultJson: { ...depStored!.resultJson, result: depNamed } })
+      .where(eq(nativeRunResults.id, depSeeded.resultId!));
+    await finalizeNativeRun({ db, runId: depSeeded.runId, workspaceFinalizeStatus: "succeeded" });
+    const depIssue = (await issueService(db).getById(depSeeded.issueId))!;
+    expect(depIssue.status).toBe("blocked");
+    expect(depIssue.assigneeAgentId).toBe(delegateAgentId);
+    expect(depIssue.unblockDescriptor).toEqual(expect.objectContaining({ owner: { agentId: delegateAgentId } }));
+    const depWakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(depWakes.filter((wake) => (wake.payload as Record<string, unknown> | null)?.issueId === depSeeded.issueId && wake.agentId === delegateAgentId)).toHaveLength(0);
+
+    // If agent-to-agent assignment permission is disabled before commit, finalization
+    // falls back cleanly to board instead of failing settlement.
+    const deniedSeeded = await seedFixture({ ...corpus.fixtures.find((fixture) => fixture.id === "real-task-wide-blocker")!, id: `denied-named-blocker-${randomUUID()}` });
+    const [deniedStored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, deniedSeeded.resultId!));
+    const deniedNamed = {
+      ...(deniedStored!.resultJson.result as Record<string, unknown>),
+      reportedWorkDisposition: "blocked",
+      blocker: { reasonCode: "review_required", owner: { kind: "agent", name: "ESCD" }, unblockAction: "Review the release notes draft.", scope: "task_wide" },
+    };
+    await db.update(nativeRunResults).set({ resultJson: { ...deniedStored!.resultJson, result: deniedNamed } })
+      .where(eq(nativeRunResults.id, deniedSeeded.resultId!));
+    await db.update(agents).set({ permissions: { interactions: { canAssignTasksToAgents: false } } }).where(eq(agents.id, agentId));
+    try {
+      await finalizeNativeRun({ db, runId: deniedSeeded.runId, workspaceFinalizeStatus: "succeeded" });
+      const deniedIssue = (await issueService(db).getById(deniedSeeded.issueId))!;
+      expect(deniedIssue.status).toBe("blocked");
+      expect(deniedIssue.assigneeAgentId).toBe(agentId);
+      expect(deniedIssue.unblockDescriptor).toEqual(expect.objectContaining({ owner: "board" }));
+    } finally {
+      await db.update(agents).set({ permissions: {} }).where(eq(agents.id, agentId));
+    }
+
+    // Protected target-agent assignmentPolicy (tasks:assign authorization) also
+    // rejects handoff at report time and falls back cleanly to board on commit.
+    const policySeeded = await seedFixture({ ...corpus.fixtures.find((fixture) => fixture.id === "real-task-wide-blocker")!, id: `policy-denied-blocker-${randomUUID()}` });
+    const [policyStored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, policySeeded.resultId!));
+    const policyNamed = {
+      ...(policyStored!.resultJson.result as Record<string, unknown>),
+      reportedWorkDisposition: "blocked",
+      blocker: { reasonCode: "review_required", owner: { kind: "agent", name: "ESCD" }, unblockAction: "Review the release notes draft.", scope: "task_wide" },
+    };
+    await db.update(agents).set({
+      permissions: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } },
+    }).where(eq(agents.id, delegateAgentId));
+    try {
+      await expect(nativeCompletionFeedback(db, policySeeded.runId, policyNamed as never))
+        .rejects.toThrow("cannot be assigned this task");
+      await db.update(nativeRunResults).set({ resultJson: { ...policyStored!.resultJson, result: policyNamed } })
+        .where(eq(nativeRunResults.id, policySeeded.resultId!));
+      await finalizeNativeRun({ db, runId: policySeeded.runId, workspaceFinalizeStatus: "succeeded" });
+      const policyIssue = (await issueService(db).getById(policySeeded.issueId))!;
+      expect(policyIssue.status).toBe("blocked");
+      expect(policyIssue.assigneeAgentId).toBe(agentId);
+      expect(policyIssue.unblockDescriptor).toEqual(expect.objectContaining({ owner: "board" }));
+    } finally {
+      await db.update(agents).set({ permissions: {} }).where(eq(agents.id, delegateAgentId));
+    }
+
+    // Skill-test runs carry a restricted keyScope and cannot hand off via blocker.
+    const skillSeeded = await seedFixture({ ...corpus.fixtures.find((fixture) => fixture.id === "real-task-wide-blocker")!, id: `skill-test-blocker-${randomUUID()}` });
+    const [skillStored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, skillSeeded.resultId!));
+    const skillNamed = {
+      ...(skillStored!.resultJson.result as Record<string, unknown>),
+      reportedWorkDisposition: "blocked",
+      blocker: { reasonCode: "review_required", owner: { kind: "agent", name: "ESCD" }, unblockAction: "Review the release notes draft.", scope: "task_wide" },
+    };
+    await db.update(heartbeatRuns).set({ contextSnapshot: { paperclipSkillTest: true } }).where(eq(heartbeatRuns.id, skillSeeded.runId));
+    await expect(nativeCompletionFeedback(db, skillSeeded.runId, skillNamed as never))
+      .rejects.toThrow("cannot be assigned this task");
+    await db.update(nativeRunResults).set({ resultJson: { ...skillStored!.resultJson, result: skillNamed } })
+      .where(eq(nativeRunResults.id, skillSeeded.resultId!));
+    await finalizeNativeRun({ db, runId: skillSeeded.runId, workspaceFinalizeStatus: "succeeded" });
+    const skillIssue = (await issueService(db).getById(skillSeeded.issueId))!;
+    expect(skillIssue.status).toBe("blocked");
+    expect(skillIssue.assigneeAgentId).toBe(agentId);
+    expect(skillIssue.unblockDescriptor).toEqual(expect.objectContaining({ owner: "board" }));
   }, 30_000);
 
   it("withdraws obsolete policy reviews, restores the prior status, and is idempotent", async () => {

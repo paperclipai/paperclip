@@ -216,11 +216,155 @@ describe("connection management delegated policy and profile access", () => {
       expiresAt: null, requiredUserAction: { userId: f.userId, resource: { id: created.body.id } },
     } });
     // The agent links this in chat, so it is a relative app route, never the server's own origin.
+    // A custom remote MCP server has no app source, so the hand-off goes to the
+    // draft's own permissions page where the user can click "Connect as me".
     expect(started.body.authorizationUrl).toMatch(/^\/[^/]/);
     expect(started.body.requiredUserAction.setupPath).toBe(started.body.authorizationUrl);
-    expect(new URL(started.body.authorizationUrl, "https://paperclip.example").searchParams.get("resume")).toBe(created.body.id);
+    expect(new URL(started.body.authorizationUrl, "https://paperclip.example").pathname)
+      .toMatch(new RegExp(`^/[^/]+/apps/${created.body.id}/permissions$`));
     expect(await f.request("POST", path, { asCurrentUser: true })).toMatchObject({ status: 200, body: { authorizationUrl: started.body.authorizationUrl } });
     expect(await server.db.select().from(toolOauthStates).where(eq(toolOauthStates.connectionId, created.body.id))).toHaveLength(0);
+  });
+
+  it("keeps an agent-started personal OAuth URL draft alive until the addressed user signs in", async () => {
+    const f = await fixture();
+    const mcpOrigin = "https://8.8.8.8";
+    const mcpUrl = `${mcpOrigin}/mcp`;
+    const issuer = `${mcpOrigin}/tenant/acme`;
+    let accessToken: string | null = null;
+    provider = async (url, init) => {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (url === `${mcpOrigin}/.well-known/oauth-protected-resource/mcp`) {
+        return Response.json({ resource: mcpUrl, authorization_servers: [issuer] });
+      }
+      if (url === `${mcpOrigin}/.well-known/oauth-authorization-server/tenant/acme`) {
+        return Response.json({
+          issuer,
+          authorization_endpoint: `${issuer}/authorize`,
+          token_endpoint: `${issuer}/token`,
+          registration_endpoint: `${issuer}/register`,
+          code_challenge_methods_supported: ["S256"],
+          token_endpoint_auth_methods_supported: ["none"],
+          scopes_supported: ["mcp:read"],
+        });
+      }
+      if (url === `${issuer}/register` && method === "POST") {
+        const requested = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+        return Response.json({
+          client_id: "fixture-dcr-client",
+          redirect_uris: requested.redirect_uris,
+          grant_types: requested.grant_types,
+          response_types: requested.response_types,
+          token_endpoint_auth_method: requested.token_endpoint_auth_method,
+          application_type: requested.application_type,
+        });
+      }
+      if (url === `${issuer}/token` && method === "POST") {
+        accessToken = `fixture-access-${randomUUID()}`;
+        return Response.json({
+          access_token: accessToken,
+          refresh_token: "fixture-refresh",
+          expires_in: 3600,
+          token_type: "Bearer",
+          scope: "mcp:read",
+        });
+      }
+      if (url === mcpUrl && method === "POST") {
+        const headers = new Headers(init?.headers);
+        if (headers.get("authorization") !== `Bearer ${accessToken}`) {
+          return new Response("", {
+            status: 401,
+            headers: { "www-authenticate": `Bearer resource_metadata="${mcpOrigin}/.well-known/oauth-protected-resource/mcp"` },
+          });
+        }
+        return Response.json({
+          jsonrpc: "2.0",
+          id: "paperclip-catalog-refresh",
+          result: { tools: [{ name: "list_items", description: "List items", annotations: { readOnlyHint: true } }] },
+        });
+      }
+      return Response.json({ error: "not_found" }, { status: 404 });
+    };
+    try {
+      const connected = await f.request("POST", `/companies/${f.companyId}/tools/apps/connect`, {
+        link: mcpUrl,
+        name: "Agent personal OAuth E2E",
+        authMode: "oauth",
+        grantKind: "user",
+      });
+      expect(connected, JSON.stringify(connected)).toMatchObject({ status: 201 });
+      const connectionId = connected.body.connectionId as string;
+      expect(connected.body.auth).toMatchObject({ kind: "oauth", issuer });
+      const permissionsPathPattern = new RegExp(`^/[^/]+/apps/${connectionId}/permissions$`);
+      expect(connected.body.auth.startUrl).toMatch(permissionsPathPattern);
+      expect(connected.body.requiredUserAction?.setupPath).toBe(connected.body.auth.startUrl);
+      expect(await server.db.select().from(toolOauthStates).where(eq(toolOauthStates.connectionId, connectionId))).toHaveLength(0);
+
+      // The addressed human opens the handed-off link: the draft is alive (not a 404 dead link)
+      // and exposes "Connect as me" capability while awaiting first sign-in.
+      const cookie = await server.humanSession(f.userId);
+      const getConnectionRes = await fetch(`${server.apiUrl}/api/tool-connections/${connectionId}`, { headers: { cookie } });
+      expect(getConnectionRes.status).toBe(200);
+      expect(await getConnectionRes.json()).toMatchObject({
+        id: connectionId,
+        status: "draft",
+        credentialPolicy: "per_user",
+        createdByUserId: f.userId,
+      });
+
+      const listBeforeRes = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/tools/connections`, { headers: { cookie } });
+      expect(listBeforeRes.status).toBe(200);
+      const listBefore = await listBeforeRes.json() as { connections: Array<{ id: string; status: string; firstSignInPending?: boolean }> };
+      expect(listBefore.connections.find(c => c.id === connectionId)).toMatchObject({ status: "draft", firstSignInPending: true });
+
+      const grantsBeforeRes = await fetch(`${server.apiUrl}/api/tool-connections/${connectionId}/grants`, { headers: { cookie } });
+      expect(grantsBeforeRes.status).toBe(200);
+      expect(await grantsBeforeRes.json()).toMatchObject({
+        grants: [],
+        currentUserId: f.userId,
+        capabilities: { canConnectAsCurrentUser: true },
+      });
+
+      // The human clicks "Connect as me" on the draft's permissions page and finishes OAuth.
+      const startAuthRes = await fetch(
+        `${server.apiUrl}/api/companies/${f.companyId}/tools/connections/${connectionId}/start-authorization`,
+        {
+          method: "POST",
+          headers: { cookie, "Content-Type": "application/json", origin: server.apiUrl },
+          body: JSON.stringify({ subjectUserId: f.userId, returnTo: `/apps/${connectionId}/permissions` }),
+        },
+      );
+      const startAuthBody = await startAuthRes.json();
+      expect(startAuthRes.status, JSON.stringify(startAuthBody)).toBe(200);
+      const providerAuthUrl = new URL(startAuthBody.url);
+      expect(providerAuthUrl.origin + providerAuthUrl.pathname).toBe(`${issuer}/authorize`);
+      const state = providerAuthUrl.searchParams.get("state")!;
+      expect(state).toBeTruthy();
+
+      const callbackRes = await fetch(
+        `${server.apiUrl}/api/tools/oauth/callback?${new URLSearchParams({ state, code: "fixture-auth-code", iss: issuer })}`,
+        { headers: { cookie, Accept: "text/html" }, redirect: "manual" },
+      );
+      expect(callbackRes.status).toBe(303);
+      expect(callbackRes.headers.get("location")).toMatch(new RegExp(`^/[^/]+/apps/${connectionId}/permissions\\?success=1$`));
+
+      const getAfterRes = await fetch(`${server.apiUrl}/api/tool-connections/${connectionId}`, { headers: { cookie } });
+      expect(getAfterRes.status).toBe(200);
+      expect(await getAfterRes.json()).toMatchObject({ id: connectionId, status: "active", enabled: true });
+
+      const listAfterRes = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/tools/connections`, { headers: { cookie } });
+      expect(listAfterRes.status).toBe(200);
+      const listAfter = await listAfterRes.json() as { connections: Array<{ id: string; status: string; firstSignInPending?: boolean }> };
+      expect(listAfter.connections.find(c => c.id === connectionId)?.firstSignInPending).toBeUndefined();
+
+      await expect(
+        server.db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connectionId)),
+      ).resolves.toEqual([
+        expect.objectContaining({ kind: "user", subjectUserId: f.userId, status: "active" }),
+      ]);
+    } finally {
+      provider = null;
+    }
   });
 
   it("delegates and revokes an owned credential with actual agent attribution", async () => {
@@ -257,6 +401,9 @@ describe("connection management delegated policy and profile access", () => {
     expect(created, JSON.stringify(created)).toMatchObject({ status: 201 });
     const handoff = await f.request("POST", `/tools/oauth/${created.body.id}/start`, { asCurrentUser: true });
     expect(handoff, JSON.stringify(handoff)).toMatchObject({ status: 200, body: { expiresAt: null, requiredUserAction: { userId: f.userId } } });
+    const handoffUrl = new URL(handoff.body.authorizationUrl, "https://paperclip.example");
+    expect(handoffUrl.searchParams.get("resume")).toBe(created.body.id);
+    expect(handoffUrl.searchParams.get("source")).toBe("google-workspace");
     const [unselected] = await server.db.select().from(toolConnections).where(eq(toolConnections.id, created.body.id));
     expect(unselected.config.workspaceSetup).toBeUndefined();
     const services = { gmail: "read" as const };
