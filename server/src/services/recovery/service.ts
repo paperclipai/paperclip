@@ -186,6 +186,7 @@ import {
   withoutRetryInstruction,
   buildNoRunningExecutionNoticeSeed,
   RETRY_FROM_SAVED_WORK_NEXT_ACTION,
+  workspaceValidationNextAction,
   type StrandedRecoveryNoticeSeed,
 } from "./stranded-notice.js";
 import {
@@ -2799,14 +2800,7 @@ export function recoveryService(
               : recoveryCause === "codex_output_inactivity_monitor"
                 ? "The agent stopped responding, so this attempt was ended. Press Retry to start it again from the saved work."
                 : recoveryCause === "workspace_validation_failed"
-                  ? readWorkspaceValidationPayload(input.latestRun)?.reason ===
-                    "git_worktree_branch_incoherence"
-                    ? "The task's workspace no longer matches its branch, so the agent did not start. Press Retry to start it again."
-                    : readWorkspaceValidationPayload(input.latestRun)
-                          ?.reason ===
-                        "git_worktree_base_materialization_failed"
-                      ? "Paperclip could not copy the project's repository into the task's workspace. Restore access to the repository in the project settings, then press Retry."
-                      : "The task's workspace could not be used, so the agent did not start. Press Retry to start it again."
+                  ? workspaceValidationNextAction(readWorkspaceValidationPayload(input.latestRun))
                   : recoveryCause === "configuration_incomplete"
                     ? readConfigurationIncompletePayload(input.latestRun)?.reason === "workspace_base_ref_unresolved"
                       ? "The starting branch for this task's workspace was not found in the repository. Set a starting branch that exists, then press Retry."

@@ -210,6 +210,7 @@ import {
   buildReferencedProjectRunObservability,
   assertGitSensitiveAdapterWorkspaceValid,
   createHeartbeatWorkspaceResolver,
+  readWorkspaceValidationPayloadFromRun,
 } from "./heartbeat/workspaces.js";
 export {
   WorkspaceValidationFailure,
@@ -1243,7 +1244,9 @@ export function heartbeatService(
       | undefined;
   } {
     if (noticeKind === "workspace_validation") {
-      return { notice: buildWorkspaceValidationRecoveryNoticeSeed(), recoveryCause: WORKSPACE_VALIDATION_RECOVERY_CAUSE };
+      return {
+        notice: buildWorkspaceValidationRecoveryNoticeSeed(readWorkspaceValidationPayloadFromRun(input.runRow)),
+        recoveryCause: WORKSPACE_VALIDATION_RECOVERY_CAUSE };
     }
     if (noticeKind === "configuration_incomplete") {
       const configurationIncomplete = parseObject(parseObject(input.runRow.resultJson).configurationIncomplete);

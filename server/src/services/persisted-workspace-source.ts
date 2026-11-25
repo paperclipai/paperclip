@@ -104,7 +104,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
   projectId: string | null;
   explicitProjectWorkspaceId: string | null;
   workspace: SourceWorkspace;
-  boundProjectWorkspace: { id: string; companyId: string; projectId: string; cwd: string | null } | null;
+  boundProjectWorkspace: { id: string; companyId: string; projectId: string; cwd: string | null; repoUrl?: string | null } | null;
   candidateBaseCwds: string[];
   managedSourceRoot: string;
   materializeOriginalRepository?: () => Promise<string>;
@@ -139,12 +139,20 @@ export async function resolvePersistedGitWorkspaceSource(input: {
     return new Set(candidates.filter((value): value is string => value !== null));
   };
   const knownRoots = await roots();
+  let boundLocalOwner: string | null = null;
   if (binding?.cwd) {
     // A configured local path may be a repository subfolder or another linked
     // checkout. Resolve its Git owner as the old restore path already did.
-    const localOwner = await resolveBoundLocalOwner(binding.cwd);
-    if (localOwner) knownRoots.add(localOwner);
+    boundLocalOwner = await resolveBoundLocalOwner(binding.cwd);
+    if (boundLocalOwner) knownRoots.add(boundLocalOwner);
   }
+  // The recorded URL is copied from the bound project configuration. While
+  // that configuration is unchanged, its own checkout is the recorded source
+  // even if its origin spells the remote differently (for example an SSH
+  // host alias). Every other owner must match the stored origin identity.
+  const recordedRepoUrl = workspace.repoUrl?.trim() || null;
+  const recordedByBinding = (owner: string) => Boolean(recordedRepoUrl && boundLocalOwner
+    && owner === boundLocalOwner && binding?.repoUrl?.trim() === recordedRepoUrl);
   const existing = await canonicalDirectory(cwd);
   const sourceEntry = await fs.lstat(cwd).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return null;
@@ -163,7 +171,7 @@ export async function resolvePersistedGitWorkspaceSource(input: {
       const inspection = await inspectManagedGitWorktreeBranch({ worktreePath: existing, repoRoot: owner, expectedBranchName: null });
       if (inspection.inspectionDiagnostic) failedInspection ??= inspection.inspectionDiagnostic;
       if (!inspection.valid || !await hasLinkedWorktreeStorage(existing, owner)) continue;
-      if (workspace.repoUrl && await readOrigin(owner) !== workspace.repoUrl.trim()) {
+      if (workspace.repoUrl && !recordedByBinding(owner) && await readOrigin(owner) !== workspace.repoUrl.trim()) {
         repositoryMismatch = true;
         continue;
       }
