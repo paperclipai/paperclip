@@ -384,16 +384,48 @@ describeEmbeddedPostgres("chat channels: github review workflow", () => {
       for (let pass = 0; pass < 3; pass++) await responses.processPending();
       expect(f.responseComments.get(firstId)?.body).not.toContain("Working on this");
     });
+    it.each([[502, true], [422, false]] as const)(
+      "keeps retrying a GitHub request after 8 attempts only for a temporary error: %s", async (status, retryable) => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.run.id));
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.conversation.issueId!));
+      const readResponse = async () => (await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
+        eq(chatActions.kind, "github_response_comment"))))[0];
+      const before = await readResponse();
+      await db.update(chatActions).set({ status: "failed", result: { ...before.result, attempts: 7, retryable: true,
+        retryAt: new Date(0).toISOString(), code: "acknowledgement_unconfirmed" } }).where(eq(chatActions.id, before.id));
+      f.setSupplementalProviderFetch(async (_input, init) => init?.method === "PATCH"
+        ? Response.json({ message: "GitHub error" }, { status }) : undefined);
+      const startedAt = Date.now();
+      await githubResponseCommentService(db, f.providerFetch).processPending();
+      const after = await readResponse();
+      expect(after).toMatchObject({ status: "failed", result: { attempts: 8, retryable } });
+      if (retryable) {
+        const wait = Date.parse(String(after.result?.retryAt)) - startedAt;
+        expect(wait).toBeGreaterThanOrEqual(3_590_000);
+        expect(wait).toBeLessThanOrEqual(3_660_000);
+      }
+    });
     it("settles a GitHub request whose posted comment was deleted instead of retrying it", async () => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
       const [firstId] = [...f.responseComments.keys()];
-      f.responseComments.delete(firstId);
       await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.run.id));
       await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.conversation.issueId!));
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      const readResponse = async () => (await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
+        eq(chatActions.kind, "github_response_comment"))))[0];
+      // A 404 that is not about this comment (here the comment write) is not a deletion.
+      f.setSupplementalProviderFetch(async (_input, init) => init?.method === "PATCH"
+        ? Response.json({ message: "Not Found" }, { status: 404 }) : undefined);
+      await responses.processPending();
+      expect(await readResponse()).toMatchObject({ status: "failed", result: { retryable: true } });
+      f.setSupplementalProviderFetch(async () => undefined);
+      const due = await readResponse();
+      await db.update(chatActions).set({ result: { ...due.result, retryAt: new Date(0).toISOString() } }).where(eq(chatActions.id, due.id));
+      f.responseComments.delete(firstId);
       const writes = f.responseWrites.length;
-      await githubResponseCommentService(db, f.providerFetch).processPending();
-      const [response] = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
-        eq(chatActions.kind, "github_response_comment")));
+      await responses.processPending();
+      const response = await readResponse();
       expect(response).toMatchObject({ status: "cancelled", result: { final: true, code: "response_deleted" } });
       expect(f.responseComments.size).toBe(0);
       expect(f.responseWrites).toHaveLength(writes);

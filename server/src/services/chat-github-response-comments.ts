@@ -143,7 +143,15 @@ export async function writeGitHubResponseComment(
   if (target.result?.id) {
     // Never recreate a deleted comment or edit an arbitrary caller-selected ID.
     if (!/^[1-9][0-9]*$/.test(String(target.result.id))) throw forbidden("Invalid GitHub response receipt");
-    previous = await api.request<Comment>(`${item}/${target.result.id}`);
+    try {
+      previous = await api.request<Comment>(`${item}/${target.result.id}`);
+    } catch (error) {
+      const details = error instanceof HttpError ? error.details as { providerStatus?: number } | undefined : undefined;
+      // Only a 404 for this exact comment proves it was deleted; a token or
+      // repository-access failure is not.
+      if (details?.providerStatus === 404) throw conflict("GitHub response comment was deleted", { code: "github_response_deleted" });
+      throw error;
+    }
     if (!previous.body?.includes(marker) || previous.user?.login !== source.endpoint.botUsername)
       throw forbidden("GitHub response is no longer owned by this App");
   } else {
@@ -472,8 +480,8 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       if (!row || row.result?.final === true) return;
       const attempts = Number(row.result?.attempts ?? 0) + 1;
       const denied = error instanceof Error && "status" in error && error.status === 403;
-      const details = error instanceof HttpError ? error.details as { code?: string; providerStatus?: number } | undefined : undefined;
-      if (row.result?.id && details?.code === "github_bot_operation_failed" && details.providerStatus === 404) {
+      const details = error instanceof HttpError ? error.details as { code?: string; retryable?: boolean } | undefined : undefined;
+      if (row.result?.id && details?.code === "github_response_deleted") {
         // Someone deleted the posted comment. Settle the request without
         // recreating it, as finishRun does for coalesced requests.
         await db.transaction(async tx => {
@@ -486,9 +494,10 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       await db.transaction(async tx => {
         await notifyChatResponseAvailability(tx, { companyId: row.companyId, deliveryId });
         await tx.update(chatActions).set({ status: denied ? "cancelled" : "failed", result: {
-          // A posted comment must always settle, so an unconfirmed write keeps
-          // retrying: exponential backoff up to 5 minutes, then hourly.
-          ...row.result, attempts, retryable: !denied,
+          // Temporary failures (network, rate limit, 5xx) keep retrying with
+          // backoff up to 5 minutes, then hourly. An error GitHub calls
+          // permanent stops after 8 attempts, since retrying cannot fix it.
+          ...row.result, attempts, retryable: !denied && (details?.retryable !== false || attempts < 8),
           retryAt: new Date(Date.now() + (attempts < 8 ? Math.min(300000, 1000 * 2 ** attempts) : 3_600_000)).toISOString(),
           code: denied ? "authorization_changed" : "acknowledgement_unconfirmed",
         }, updatedAt: new Date() }).where(and(eq(chatActions.id, row.id), sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`));
