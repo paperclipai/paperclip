@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import vm from "node:vm";
 
 import { defaultSuiteWeight, loadShardDurations } from "../general-server-shard.mjs";
 import { IGNORED_SPECS, listE2eSpecs, selectE2eShard } from "../e2e-shard.mjs";
@@ -73,6 +74,7 @@ function runStackScope(stack, prBaseRef) {
       env: {
         ...process.env,
         GITHUB_OUTPUT: output,
+        EVENT_REPOSITORY: "paperclipai/paperclip",
         PR_BASE_REF: prBaseRef,
         STACK_JSON: JSON.stringify(stack),
       },
@@ -173,6 +175,31 @@ test("pr.yml calls the trusted PR workflow from master", () => {
   assert.ok(readTrustedPrWorkflow().length > 0);
 });
 
+test("canonical and fork PRs use mutually exclusive revision-aligned callers", () => {
+  const jobs = readWorkflowJobs(readFileSync(prCallerWorkflow, "utf8"));
+  const canonical = jobs.get("ci");
+  const fork = jobs.get("ci_fork");
+  assert.ok(canonical && fork);
+  assert.match(canonical, /uses: paperclipai\/paperclip\/\.github\/workflows\/pr-trusted\.yml@master/);
+  assert.match(fork, /^ {4}name: ci$/m);
+  assert.match(fork, /uses: \.\/\.github\/workflows\/pr-trusted\.yml/);
+  assert.doesNotMatch(fork, /secrets:|permissions:/);
+  const condition = (job, repository, action, label) => {
+    const expression = job.match(/^ {4}if: (.+)$/m)?.[1];
+    assert.ok(expression);
+    return vm.runInNewContext(expression, { github: { repository, event: { action, label: { name: label } } } });
+  };
+  for (const repository of ["paperclipai/paperclip", "fork/paperclip"]) {
+    for (const [action, label, enabled] of [
+      ["opened", "", true], ["synchronize", "", true], ["reopened", "", true],
+      ["labeled", "profile-ci", true], ["labeled", "full-ci", true], ["labeled", "other", false],
+    ]) {
+      assert.equal(condition(canonical, repository, action, label), enabled && repository === "paperclipai/paperclip");
+      assert.equal(condition(fork, repository, action, label), enabled && repository !== "paperclipai/paperclip");
+    }
+  }
+});
+
 test("the trusted PR workflow keeps a stable aggregate check named e2e over the shard matrix", () => {
   // Branch protection requires a check literally named `e2e`. The shards run
   // as `e2e shard (n/3)`, so the aggregate job below is what keeps the
@@ -230,7 +257,7 @@ test("runner authorization uses reserved capacity and executes metadata checks o
 test("the trusted PR workflow limits full CI to merge-relevant stack layers", () => {
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
   const jobs = readWorkflowJobs(workflow);
-  assert.match(jobs.get("gate"), /uses: paperclipai\/paperclip\/\.github\/workflows\/ci-routing\.yml@master/);
+  assert.match(jobs.get("gate"), /uses: \.\/\.github\/workflows\/ci-routing\.yml/);
   const gate = readWorkflowJobs(readFileSync(routingWorkflow, "utf8")).get("gate");
 
   assert.match(gate, /^ {6}full_ci: \$\{\{ steps\.scope\.outputs\.full_ci \}\}$/m);
@@ -333,6 +360,7 @@ test("the trusted PR workflow regenerates stale stacked lockfiles", () => {
     "the unconditional resolution step needs the same timeout headroom as the lockfile refresh workflow",
   );
   const policy = workflow.split("  policy:\n")[1].split("  typecheck_release_registry:\n")[0];
+  assert.match(policy, /- name: Test MCP fixture catalog\n\s+run: node --test scripts\/mcp-fixtures\/catalog\.test\.mjs/);
   assert.doesNotMatch(
     policy,
     /cache: pnpm|uses: actions\/cache/,

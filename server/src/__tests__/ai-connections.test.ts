@@ -79,6 +79,123 @@ beforeAll(async () => {
 afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); if (home) await rm(home, { recursive: true, force: true }); });
 
 describe("managed AI connections", () => {
+  it.each(["opencode_local", "hermes_local"] as const)("selects delegated native OpenAI keys for %s", async adapterType => {
+    const owner = `native-openai-${adapterType}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, owner, { provider: "openai", method: "api_key", ownership: "personal", name: owner, apiKey: "fixture", allAgents: true, agentIds: [] }, "fixture-native-selected-key");
+    const selected = { provider: "openai", method: "api_key", mode: "delegated", ...account } as const;
+    const attribution = { ...account, provider: "openai", method: "api_key", mode: "delegated", responsibleUserId: owner };
+    const model = adapterType === "opencode_local" ? "openai/gpt-4.1" : "gpt-4.1";
+    expect((await service.select({ companyId, agentId, userId: owner, adapterType, model, binding: selected })).attribution).toMatchObject(attribution);
+    const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType, binding: selected, config: { model, env: { OPENAI_API_KEY: "fixture-project-key", OPENCODE_DISABLE_PROJECT_CONFIG: "false" } } });
+    try {
+      expect(runtime.config.env.OPENAI_API_KEY).toBe("fixture-native-selected-key");
+      expect(runtime.config.env.OPENCODE_DISABLE_PROJECT_CONFIG).toBe(adapterType === "opencode_local" ? "true" : "false");
+      if (adapterType === "hermes_local") expect(runtime.config.provider).toBe("openai-api");
+      expect(runtime.attribution).toMatchObject(attribution);
+    } finally { await runtime.cleanup(); }
+  });
+
+  it.each(["opencode_local", "hermes_local"] as const)("keeps native OpenAI compatibility boundaries for %s", async adapterType => {
+    const owner = `native-openai-boundaries-${adapterType}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, owner, { provider: "openai", method: "api_key", ownership: "personal", name: owner, apiKey: "fixture", allAgents: true, agentIds: [] }, "fixture-key");
+    const selected = { provider: "openai", method: "api_key", mode: "delegated", ...account } as const;
+    const selection = { companyId, agentId, userId: owner, adapterType, model: adapterType === "opencode_local" ? "openai/gpt-4.1" : "gpt-4.1", binding: selected };
+    const other = await create(owner, `native-other-${adapterType}`);
+    const subscription = await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: `native-subscription-${adapterType}`, loginSessionId: "fixture", allAgents: true, agentIds: [] }, "fixture-subscription");
+    const routed = await service.save(companyId, owner, { provider: "openai", method: "api_key", ownership: "personal", name: `native-routed-${adapterType}`, apiKey: "fixture", allAgents: true, agentIds: [], routing: { kind: "gateway", protocol: "responses", auth: "bearer", baseUrl: "https://example.test/v1", models: [] } }, "fixture-routed");
+    await expect(service.select({ ...selection, binding: { ...selected, ...other } })).rejects.toThrow("incompatible");
+    await expect(service.select({ ...selection, binding: { ...selected, ...subscription } })).rejects.toThrow("incompatible");
+    await expect(service.select({ ...selection, binding: { ...selected, ...routed } })).rejects.toThrow("incompatible");
+    await expect(service.select({ ...selection, binding: { ...selected, provider: "anthropic", ...other } })).rejects.toThrow("incompatible");
+    await expect(service.select({ ...selection, adapterType: "unsupported_local" })).rejects.toThrow("compatible");
+    await expect(service.select({ ...selection, binding: { ...selected, mode: "shared" } })).rejects.toThrow("incompatible");
+    await expect(service.select({ ...selection, binding: { provider: "openai", method: "api_key", mode: "responsible_user" } })).rejects.toThrow("compatible");
+    if (adapterType === "opencode_local") {
+      for (const model of [undefined, "", "gpt-4.1", "openrouter/gpt-4.1", "openai/"]) {
+        await expect(service.select({ ...selection, model })).rejects.toThrow("incompatible");
+      }
+    } else {
+      for (const runnerProvider of [undefined, "auto", "openai-api"]) {
+        expect((await service.select({ ...selection, runnerProvider })).grant.id).toBe(account.grantId);
+        const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType, binding: selected, config: { model: selection.model, provider: runnerProvider } });
+        try { expect(runtime.config.provider).toBe("openai-api"); } finally { await runtime.cleanup(); }
+      }
+      for (const runnerProvider of ["openrouter", "anthropic", "openai-codex"]) {
+        await expect(service.select({ ...selection, runnerProvider })).rejects.toThrow("incompatible");
+        await expect(prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType, binding: selected, config: { model: selection.model, provider: runnerProvider } })).rejects.toThrow("incompatible");
+      }
+    }
+  });
+
+  it.each(["opencode_local", "hermes_local"] as const)("rejects native OpenAI CLI routing overrides before credential access for %s", async adapterType => {
+    const owner = `native-openai-args-${adapterType}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const account = await service.save(companyId, owner, { provider: "openai", method: "api_key", ownership: "personal", name: owner, apiKey: "fixture", allAgents: true, agentIds: [] }, "fixture-selected-key");
+    const selected = { provider: "openai", method: "api_key", mode: "delegated", ...account } as const;
+    const model = adapterType === "opencode_local" ? "openai/gpt-4.1" : "gpt-4.1";
+    const selection = await service.select({ companyId, agentId, userId: owner, adapterType, model, binding: selected });
+    const secretId = selection.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!.secretId;
+    const before = await db.select().from(secretAccessEvents).where(eq(secretAccessEvents.secretId, secretId));
+    const overrides = [
+      ["--prov=fixture-sensitive"], ["--base-u=fixture-sensitive"], ["--mo=fixture-sensitive"],
+      ["--provider", "fixture-sensitive"], ["--provider=fixture-sensitive"],
+      ["--base-url", "fixture-sensitive"], ["--base-url=fixture-sensitive"],
+      ["--model", "fixture-sensitive"], ["--model=fixture-sensitive"],
+      ["-m", "fixture-sensitive"], ["-mfixture-sensitive"], ["-m=fixture-sensitive"],
+      ...(adapterType === "hermes_local" ? [
+        ["-Qmfixture-sensitive"], ["-vmfixture-sensitive"], ["-Qpfixture-sensitive"],
+        ["--api-k", "fixture-sensitive"], ["--api-k=fixture-sensitive"],
+        ["--profile", "fixture-sensitive"], ["--profile=fixture-sensitive"], ["-p", "fixture-sensitive"], ["-pfixture-sensitive"],
+      ] : [["-cmfixture-sensitive"]]),
+    ];
+    for (const field of ["extraArgs", "args"] as const) {
+      for (const args of overrides) {
+        const error = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType, binding: selected, config: { model, [field]: args } })
+          .then(async runtime => { await runtime.cleanup(); return null; }, error => error);
+        expect.soft(isAiConnectionIncompatible(error), args[0]).toBe(true);
+        expect(JSON.stringify(error)).not.toContain("fixture-sensitive");
+      }
+    }
+    expect(await db.select().from(secretAccessEvents).where(eq(secretAccessEvents.secretId, secretId))).toEqual(before);
+    const args = adapterType === "hermes_local" ? ["--max-turns", "4", "-tmy_mcp", "-qfixture-message"] : ["--reasoning", "high", "-fmodel.txt", "-wmodel.txt"];
+    const runtime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType, binding: selected, config: { model, extraArgs: args } });
+    try { expect(runtime.config).toMatchObject({ extraArgs: args }); } finally { await runtime.cleanup(); }
+    const routed = await service.save(companyId, owner, { provider: "openai", method: "api_key", ownership: "personal", name: `${owner}-routed`, apiKey: "fixture", allAgents: true, agentIds: [], routing: { kind: "gateway", protocol: "chat", auth: "bearer", baseUrl: "https://example.test/v1", models: [] } }, "fixture-routed-key");
+    const routedRuntime = await prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType,
+      binding: { ...selected, ...routed }, config: { model, extraArgs: ["--model", "other-model"] } });
+    try { expect(routedRuntime.config).toMatchObject({ extraArgs: ["--model", "other-model"] }); } finally { await routedRuntime.cleanup(); }
+  });
+
+  it("retains authorization checks for the delegated native OpenAI exception", async () => {
+    const owner = "native-openai-authorization";
+    await db.insert(companyMemberships).values([
+      { companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" },
+      { companyId: otherCompanyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" },
+    ]);
+    const account = await service.save(companyId, owner, { provider: "openai", method: "api_key", ownership: "personal", name: owner, apiKey: "fixture", allAgents: true, agentIds: [] }, "fixture-key");
+    const selected = { provider: "openai", method: "api_key", mode: "delegated", ...account } as const;
+    const selection = { companyId, agentId, userId: owner, adapterType: "hermes_local", binding: selected };
+    expect((await service.select(selection)).grant.id).toBe(account.grantId);
+    await expect(service.select({ ...selection, companyId: otherCompanyId })).rejects.toThrow("unavailable");
+    await expect(service.select({ ...selection, userId: "inactive-user" })).rejects.toThrow("active company member");
+    await expect(service.select({ ...selection, userId: "bob" })).rejects.toThrow("not shared");
+    const shared = await service.save(companyId, owner, { provider: "openai", method: "api_key", ownership: "shared", name: "native-shared-grant", apiKey: "fixture", allAgents: true, agentIds: [] }, "fixture-shared");
+    await expect(service.select({ ...selection, binding: { ...selected, ...shared } })).rejects.toThrow("personal account");
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+    await expect(service.select(selection)).rejects.toThrow("Reconnect");
+    await db.update(connectionGrants).set({ status: "active" }).where(eq(connectionGrants.id, account.grantId));
+    await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, account.connectionId));
+    await expect(service.select(selection)).rejects.toThrow("Reconnect");
+    await db.update(toolConnections).set({ enabled: true }).where(eq(toolConnections.id, account.connectionId));
+    await db.update(companyMemberships).set({ status: "inactive" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, owner)));
+    await expect(service.select({ ...selection, userId: "bob" })).rejects.toThrow("owner is no longer an active");
+    await db.update(companyMemberships).set({ status: "active" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, owner)));
+    await db.delete(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, account.connectionId));
+    await expect(service.select(selection)).rejects.toThrow("not permitted for this agent");
+  });
+
   it.each([
     { provider: "openrouter", envKey: "OPENROUTER_API_KEY", routed: false },
     { provider: "openrouter", envKey: "OPENROUTER_API_KEY", routed: true },

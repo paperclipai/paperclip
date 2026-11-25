@@ -392,7 +392,7 @@ export const demoProfiles = [
   },
 ];
 
-export function listTools({ schemaVariant = "baseline" } = {}) {
+export function listTools({ schemaVariant = "baseline", schemaRevision = 0 } = {}) {
   return toolCatalog.map((tool) => {
     if (schemaVariant === "changed" && tool.name === "kv.set") {
       return {
@@ -402,7 +402,7 @@ export function listTools({ schemaVariant = "baseline" } = {}) {
           ...tool.inputSchema,
           properties: {
             ...tool.inputSchema.properties,
-            expiresAt: { type: "string" },
+            expiresAt: { type: "string", ...(schemaRevision > 1 ? { description: `Schema revision ${schemaRevision}` } : {}) },
           },
           required: [...(tool.inputSchema.required ?? []), "expiresAt"],
         },
@@ -427,6 +427,7 @@ export function createFixtureState() {
     outbox: [],
     published: [],
     schemaVariant: "baseline",
+    schemaRevision: 0,
     callCounts: new Map(),
   };
 }
@@ -516,6 +517,7 @@ export async function executeFixtureTool(toolName, input = {}, state = createFix
       return { ok: true, result: { value: "configured" } };
     case "fixture.schemaFlip":
       state.schemaVariant = "changed";
+      state.schemaRevision += 1;
       return { ok: true, result: { schemaVariant: state.schemaVariant, toolName: input.toolName } };
     default:
       return { ok: false, error: { code: "unknown_tool", message: `Unknown fixture tool ${toolName}.` } };

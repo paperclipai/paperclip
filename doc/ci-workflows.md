@@ -1,5 +1,11 @@
 # CI workflows
 
+This fork removes the inherited GitHub Actions workflow files. Actions remains
+enabled, but these workflows are not shipped on this branch. Application code
+and tests are unchanged. The upstream workflow-contract tests still require the
+removed files; they are retained, not reported as passing. The notes below
+describe the upstream automation for reference.
+
 How pull-request CI is routed and trusted, who owns the lockfiles, and how the typecheck and retry lanes work.
 
 ## Dependency Lockfile Policy
@@ -31,12 +37,19 @@ are not on this list. They hold attested provider pins, so change them by hand
 
 ## Trusted PR Workflow
 
-The PR caller uses `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`.
+The canonical PR caller uses `paperclipai/paperclip/.github/workflows/pr-trusted.yml@master`.
 The AWS runner group `paperclip-public-pr` must allow
 `paperclipai/paperclip/.github/workflows/pr-trusted.yml@refs/heads/master`.
 New workflow versions merged into master then receive runner access without a
 separate SHA allowlist update. Dependabot leaves this first-party reference on
 master.
+
+Fork PRs use same-commit reusable workflows and their full fallback matrices.
+Dependency Review uses a separate `pull_request_target` workflow with read-only
+permissions and a base-only checkout. Enable Dependency graph in the fork's
+security settings. The check needs no commitperclip App key. The workflow takes
+effect after its file reaches the PR base branch; a PR cannot replace its own
+trusted check.
 
 Runner selection calls `ci-routing.yml@master`. Allowlisted maintainers use the
 reserved `paperclip-ci-routing-x64` AWS fleet for this bounded metadata job;
@@ -286,15 +299,13 @@ from delaying CODEOWNERS work in that queue:
 - A PR run on GitHub-hosted runners queues at most four jobs per test matrix
   (`max-parallel` in `pr-trusted.yml`). It runs the same jobs; the rest wait
   inside the run instead of in the shared queue. AWS runs are not limited.
-- With `AWS_CI_SHORT_JOBS_ENABLED` set to `true`, the `commitperclip PR Review`
-  job and the `PR merge review notification` job for a CODEOWNER's own
-  same-repository PR use the reserved `paperclip-ci-routing-x64` fleet. Both
-  run only master's scripts, never PR code, and use the same admission
+- With `AWS_CI_SHORT_JOBS_ENABLED` set to `true`, the
+  `PR merge review notification` job for a CODEOWNER's own same-repository PR
+  uses the reserved `paperclip-ci-routing-x64` fleet. It runs only master's
+  scripts, never PR code, and uses the same admission
   variables as the gate. Check-run and commit-status notifications carry no
   verifiable author and stay GitHub-hosted, as does every community PR.
   Before setting the variable, allow
-  `paperclipai/paperclip/.github/workflows/commitperclip-review.yml@refs/heads/master`
-  and
   `paperclipai/paperclip/.github/workflows/pr-merge-review.yml@refs/heads/master`
   in the `paperclip-ci-routing` runner group. A job routed to a group that
   does not allow its workflow stays queued.
