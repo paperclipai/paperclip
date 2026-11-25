@@ -25,6 +25,13 @@ const meta: Meta<typeof WorkspaceServiceControlBar> = {
   component: WorkspaceServiceControlBar,
   parameters: {
     layout: "padded",
+    paperclip: {
+      "capabilities": [
+        "workspaces/services"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
   args: {
     onAction: noop,

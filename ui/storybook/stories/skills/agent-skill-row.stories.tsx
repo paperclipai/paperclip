@@ -45,7 +45,15 @@ const meta: Meta<typeof AgentSkillRow> = {
   id: "agent-skills-agentskillrow",
   title: "Agents and reusable capabilities/Skills and Skill Studio/Agent Skills/AgentSkillRow",
   component: AgentSkillRow,
-  parameters: { layout: "padded" },
+  parameters: { layout: "padded",
+    paperclip: {
+      "capabilities": [
+        "skills/policy"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   decorators: [
     (Story) => (
       <div className="max-w-2xl overflow-hidden rounded-lg border border-border">

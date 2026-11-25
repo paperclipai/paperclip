@@ -1,7 +1,7 @@
 import { useLayoutEffect, useState, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { queryKeys } from "@/lib/queryKeys";
-import { buildSkillMentionHref } from "@paperclipai/shared";
+import { buildSkillMentionHref, type ChatExecutionDefaults } from "@paperclipai/shared";
 import { EditorAutocompleteProvider } from "@/context/EditorAutocompleteContext";
 import {
   endpoint,
@@ -14,7 +14,16 @@ import {
   members,
 } from "./fixtures";
 
-export type FixtureState = "populated" | "empty" | "loading" | "error" | "long" | "many" | "setup" | "skills" | "guests" | "mentions";
+export type FixtureState = "populated" | "empty" | "loading" | "error" | "long" | "many" | "setup" | "skills" | "guests" | "mentions" | "disconnected" | "repair-error" | "repair-checking";
+function initialEndpoint(state: FixtureState) {
+  if (state === "setup") return { ...endpoint, status: "draft" as const, setup: { github: { stage: "setup" as const } } };
+  if (["disconnected", "repair-error", "repair-checking"].includes(state)) return {
+    ...endpoint, status: "attention" as const,
+    healthMessage: "GitHub connection needs attention",
+    lastError: "GitHub failure has no request binding",
+  };
+  return structuredClone(endpoint);
+}
 const reviewSkill = {
   id: "11111111-1111-4111-8111-111111111111", slug: "code-review", name: "Code review",
   key: "company/company-storybook/code-review", description: "Follow the team's review playbook.",
@@ -31,12 +40,13 @@ export function FixtureApi({
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false, staleTime: Infinity } },
     });
-    client.setQueryData(queryKeys.chatEndpoints.detail(endpoint.id), endpoint);
+    client.setQueryData(queryKeys.chatEndpoints.detail(endpoint.id), initialEndpoint(state));
     client.setQueryData(queryKeys.agents.detail(agent.id), agent);
-    client.setQueryData(["github-setup", endpoint.id], state === "setup"
-      ? { ...endpoint, status: "draft", setup: { github: { stage: "setup" } } } : endpoint);
+    client.setQueryData(["github-setup", endpoint.id], initialEndpoint(state));
     client.setQueryData(["github-wizard", endpoint.id], { endpointId: endpoint.id, state: state === "setup" ? "create" : "connected" });
     client.setQueryData(queryKeys.chatEndpoints.list(endpoint.companyId), [endpoint]);
+    client.setQueryData(queryKeys.projects.list(endpoint.companyId), []);
+    client.setQueryData(["channel-workspace-choices", endpoint.companyId], []);
     client.setQueryData(["project-repositories", endpoint.companyId], {
       repositories: [
         { id: "100", fullName: "acme/web", ownerType: "organization", url: "https://github.com/acme/web", connections: ["GitHub"] },
@@ -51,6 +61,7 @@ export function FixtureApi({
   const [ready, setReady] = useState(false);
   useLayoutEffect(() => {
     const original = window.fetch;
+    let currentEndpoint = initialEndpoint(state);
     let saved = { revision: 2, configuration: structuredClone(configuration) };
     if (state === "skills") saved.configuration.defaults = {
       ...saved.configuration.defaults,
@@ -90,7 +101,22 @@ export function FixtureApi({
         );
       }
       const body = init?.body ? JSON.parse(String(init.body)) : {};
-      if (path.endsWith("/github/setup")) return Response.json({ endpointId: endpoint.id, state: state === "setup" ? "create" : "connected" });
+      if (path === `/api/chat-endpoints/${endpoint.id}` && init?.method === "PATCH") {
+        currentEndpoint = { ...currentEndpoint, ...body };
+      }
+      if (path === `/api/chat-endpoints/${endpoint.id}/setup` && init?.method === "POST") {
+        if (body.action !== "reconnect") return Response.json({ error: "Unexpected setup action" }, { status: 400 });
+        if (state === "repair-error") return Response.json({ error: "GitHub could not verify the saved private key. Check the App’s keys on GitHub." }, { status: 422 });
+        if (state === "repair-checking") return new Promise<Response>(() => {});
+        currentEndpoint = { ...currentEndpoint, status: "verifying", lastError: null, healthMessage: "Checking GitHub delivery", setup: { ...currentEndpoint.setup, step: "test" } };
+        return Response.json(currentEndpoint);
+      }
+      if (path.endsWith("/github/setup")) {
+        if (state === "setup") return Response.json({ endpointId: endpoint.id, state: "create" });
+        if (currentEndpoint.status === "attention") return Response.json({ endpointId: endpoint.id, state: "recovery", message: "Reconnect the saved App to repair delivery." });
+        currentEndpoint = { ...currentEndpoint, status: "active", healthMessage: "GitHub delivery verified", setup: { ...currentEndpoint.setup, step: "complete" } };
+        return Response.json({ endpointId: endpoint.id, state: "connected" });
+      }
       if (path.endsWith("/repositories/access")) {
         repos = repos.map((r) => (!body.enabled || r.availability === "available") ? { ...r, enabled: body.enabled } : r);
         return Response.json({ success: true });
@@ -118,14 +144,16 @@ export function FixtureApi({
       if (path.endsWith("/repositories/refresh")) return Response.json(repos);
       if (path.endsWith("/resources")) {
         if (init?.method === "PUT")
-          repos = repos.map((r) => ({
-            ...r,
-            enabled:
-              body.resources?.find(
-                (change: { id: string; enabled: boolean }) =>
-                  change.id === r.id,
-              )?.enabled ?? r.enabled,
-          }));
+          repos = repos.map((r) => {
+            const change = body.resources?.find(
+              (entry: { id: string; enabled?: boolean; executionDefaults?: ChatExecutionDefaults | null }) => entry.id === r.id,
+            );
+            return {
+              ...r,
+              enabled: change?.enabled ?? r.enabled,
+              executionDefaults: change?.executionDefaults === undefined ? r.executionDefaults : change.executionDefaults,
+            };
+          });
         const rows =
           state === "empty"
             ? []
@@ -168,7 +196,7 @@ export function FixtureApi({
       }
       if (path.endsWith("/people/lookup"))
         return Response.json({ githubUserId: "44", login: body.login });
-      return Response.json(state === "setup" ? { ...endpoint, status: "draft", setup: { github: { stage: "setup" } } } : endpoint);
+      return Response.json(currentEndpoint);
     };
     setReady(true);
     return () => {

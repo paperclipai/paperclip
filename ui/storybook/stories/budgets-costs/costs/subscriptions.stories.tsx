@@ -15,7 +15,7 @@ function fixture(): SubscriptionCostReport {
     subscription: { ...zero, inputTokens: 10000000, cachedInputTokens: 74000000, outputTokens: 1100000, eventCount: 50 },
     unknown: { ...zero }, unattributedSubscription: { ...zero },
     accounts: [
-      { id: "plus", provider: "openai", name: "Goldie’s ChatGPT", ownerUserId: "goldie", ownerName: "Goldie", shared: false, identityVerified: true,
+      { id: "plus", provider: "openai", name: "Sample ChatGPT", ownerUserId: "sample-user", ownerName: "Sample User", shared: false, identityVerified: true,
         detectedPlan: "plus", observedAt: new Date().toISOString(), lastCheckedAt: new Date().toISOString(), refreshStatus: "ok", canEdit: true,
         price, usage: { ...zero, inputTokens: 8000000, cachedInputTokens: 60000000, outputTokens: 1000000, eventCount: 40 }, agents: [{ id: "codie", name: "Codie" }, { id: "fry", name: "Fry" }] },
       { id: "max", provider: "anthropic", name: "Shared Claude", ownerUserId: null, ownerName: null, shared: true, identityVerified: true,
@@ -88,7 +88,7 @@ function SubscriptionCostsStory({ unknownPrice = false, stale = false, costGaps 
         { agentId: "fry", agentName: "Fry", agentStatus: "active", costCents: 0, inputTokens: 2000000, cachedInputTokens: 10000000, outputTokens: 200000, eventCount: 10, estimatedEventCount: 0, apiRunCount: 0, subscriptionRunCount: 10 },
         { agentId: "leela", agentName: "Leela", agentStatus: "active", costCents: 0, inputTokens: 2000000, cachedInputTokens: 14000000, outputTokens: 100000, eventCount: 10, estimatedEventCount: 0, apiRunCount: 0, subscriptionRunCount: 10 },
       ]);
-      if (path === "costs/by-user") return Response.json({ activeUserCount: 1, rows: [{ userId: "goldie", userName: "Goldie", userImage: null, costCents: 4217, costCentsExact: "4217", inputTokens: 16000000, cachedInputTokens: 80200000, outputTokens: 1300000, eventCount: 74, estimatedEventCount: 12, unpricedEventCount: 0, runCount: 74 }] });
+      if (path === "costs/by-user") return Response.json({ activeUserCount: 1, rows: [{ userId: "sample-user", userName: "Sample User", userImage: null, costCents: 4217, costCentsExact: "4217", inputTokens: 16000000, cachedInputTokens: 80200000, outputTokens: 1300000, eventCount: 74, estimatedEventCount: 12, unpricedEventCount: 0, runCount: 74 }] });
       if (path === "costs/by-project") return Response.json([{ projectId: "costs-project", projectName: "Cost reporting", costCents: 4217, inputTokens: 16000000, cachedInputTokens: 80200000, outputTokens: 1300000, eventCount: 74, estimatedEventCount: 12 }]);
       if (path === "costs/finance-summary") return Response.json({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0, currencies: [] });
       if (path.startsWith("costs/")) return Response.json([]);
@@ -103,7 +103,16 @@ function SubscriptionCostsStory({ unknownPrice = false, stale = false, costGaps 
 const meta = { id: "costs-subscriptions",
   title: "Oversight and operation/Costs and budgets/Costs/Subscriptions", component: SubscriptionCostsStory, parameters: {
   layout: "padded", docs: { description: { component: "Production Costs page with API spend, monthly subscription estimates, user and project costs. View details to edit monthly or annual prices. Provider calls are fixtures." } },
-} } satisfies Meta<typeof SubscriptionCostsStory>;
+    paperclip: {
+      "capabilities": [
+        "budgets-costs/cost-reporting",
+        "budgets-costs/budgets"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The upstream budget UI distinguishes soft warnings from hard stops; hard incidents retain raise-and-resume and keep-paused controls."
+    },
+  } } satisfies Meta<typeof SubscriptionCostsStory>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Overview: Story = { play: async ({ canvasElement }) => {
@@ -117,7 +126,7 @@ export const AccountDetails: Story = { play: async ({ canvasElement }) => {
   const canvas = within(canvasElement);
   await userEvent.click(await canvas.findByRole("button", { name: "View details" }));
   const dialog = within(document.body);
-  await expect(await dialog.findByText("Goldie’s ChatGPT")).toBeVisible();
+  await expect(await dialog.findByText("Sample ChatGPT")).toBeVisible();
   await expect(await dialog.findByText("Used by Codie, Fry")).toBeVisible();
 } };
 export const UnknownPrice: Story = { args: { unknownPrice: true } };

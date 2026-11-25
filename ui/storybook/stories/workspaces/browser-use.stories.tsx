@@ -25,6 +25,15 @@ const meta = {
           "Production Browser panel with offline provider fixtures. Fit to pane follows the available viewport after a short debounce. Fixed presets retain their dimensions. The provider interaction is mocked; live resize support was tested separately. No credentials or paid runs are used.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "workspaces/services",
+        "tasks/discussion"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
   },
   args: { issueId: "browser-story" },
   beforeEach: () => mockBrowserUse(),

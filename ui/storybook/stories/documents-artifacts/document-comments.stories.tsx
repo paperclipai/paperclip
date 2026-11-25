@@ -179,6 +179,13 @@ const meta = {
           "Inline document comment panel (PAP-10960): simplified to drop the header, filter chips, and empty-state, surface the author identity in the composer, and clamp quotes to two lines.",
       },
     },
+    paperclip: {
+      "capabilities": [
+        "documents-artifacts/annotations"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 } satisfies Meta<typeof DocumentCommentsMatrix>;
 

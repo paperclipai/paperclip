@@ -71,7 +71,17 @@ function Journey({ alreadyConfigured = false }: { alreadyConfigured?: boolean })
 const meta = { id: "decision-models-03-journey",
   title: "Getting started and access/Companies and portability/Decision models/03 Journey", component: Journey, parameters: {
   layout: "fullscreen", initialEntries: ["/PAP/company/settings"], docs: { story: { inline: false }, description: { component: "Select an existing shared connection, preserve the background setting, save, run the sample, and follow View usage. Paid calls are fixtures." } },
-} } satisfies Meta<typeof Journey>;
+    paperclip: {
+      "capabilities": [
+        "companies/identity",
+        "budgets-costs/cost-reporting",
+        "companies/decision-models"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Related decision-service examples show connection/model configuration, bounded test receipts or invocation history using shipped subjects and simulated data. No paid provider or authorization proof. The upstream budget UI distinguishes soft warnings from hard stops; hard incidents retain raise-and-resume and keep-paused controls."
+    },
+  } } satisfies Meta<typeof Journey>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const SetupToHistory: Story = { play: async ({ canvasElement }) => {
