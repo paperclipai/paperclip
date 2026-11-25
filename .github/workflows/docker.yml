@@ -51,6 +51,7 @@ jobs:
       attestations: read
     outputs:
       mode: ${{ steps.verify.outputs.mode || 'inline' }}
+      inputs_digest: ${{ steps.verify.outputs.inputs_digest }}
       build_contexts: ${{ steps.verify.outputs.build_contexts }}
       labels: ${{ steps.verify.outputs.labels }}
       build_args: ${{ steps.verify.outputs.build_args }}
@@ -104,6 +105,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE: ${{ steps.resolve.outputs.image }}
+          INPUTS_DIGEST: ${{ steps.resolve.outputs.inputs_digest }}
           LABELS: ${{ steps.resolve.outputs.labels }}
           BUILD_ARGS: ${{ steps.resolve.outputs.build_args }}
         run: |
@@ -118,6 +120,7 @@ jobs:
           fi
           {
             echo "mode=published"
+            echo "inputs_digest=$INPUTS_DIGEST"
             echo "build_contexts=runner-artifacts=docker-image://$IMAGE"
             echo "build_args=$BUILD_ARGS"
             echo "labels<<runner-image-labels-end"
@@ -354,15 +357,15 @@ jobs:
 
       # Build-before-merge. When the merge queue already built and probed this
       # exact commit (docker-merge-group.yml, with no registry credentials),
-      # push those bytes, unless a published Runner image is used. The script
-      # requires a successful merge-group run of this repository for this SHA
-      # and checks the record's commit, tree, architecture and archive digest.
-      # Any missing or mismatched proof, or any failure here, leaves
+      # push those bytes. The script requires a successful merge-group run of
+      # this repository for this SHA and checks the record's commit, tree,
+      # architecture, Runner inputs digest, and archive digest. Any missing or
+      # mismatched proof, or any failure here, leaves
       # `steps.promote.outputs.digest` empty and the build below runs as
       # before. The probe below and the exact-source gate apply either way.
       - name: Find the merge-queue build of this commit
         id: find
-        if: needs.runner_image.outputs.mode != 'published' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -395,6 +398,7 @@ jobs:
           DIRECTORY: ${{ runner.temp }}/merge-group-image
           IMAGE_NAME: ghcr.io/${{ github.repository }}
           BEFORE: ${{ github.event.before }}
+          RUNNER_INPUTS_DIGEST: ${{ needs.runner_image.outputs.inputs_digest }}
         run: |
           set -euo pipefail
           # Say plainly when this runner image cannot promote, instead of
@@ -412,7 +416,7 @@ jobs:
           git show "$BEFORE:scripts/merge-group-image.mjs" > "$trusted"
           # Verify without writing a step output: the digest is set only after
           # the exact bytes are in the registry.
-          verified="$(GITHUB_OUTPUT='' node "$trusted" verify --arch "$ARCH" --dir "$DIRECTORY" --since "$BEFORE")"
+          verified="$(GITHUB_OUTPUT='' node "$trusted" verify --arch "$ARCH" --dir "$DIRECTORY" --since "$BEFORE" --runner-inputs-digest "$RUNNER_INPUTS_DIGEST")"
           digest="$(printf '%s\n' "$verified" | sed -n 's/^digest=//p')"
           printf '%s' "$digest" | grep -Eq '^sha256:[a-f0-9]{64}$'
           # --preserve-digests fails rather than re-encode, so the registry

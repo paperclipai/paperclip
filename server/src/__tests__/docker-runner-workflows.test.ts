@@ -81,7 +81,7 @@ const IMAGE = `ghcr.io/paperclipai/paperclip-runner@sha256:${"c".repeat(64)}`;
 const INPUTS = "1".repeat(64);
 const LABELS = `io.paperclip.runner.image=${IMAGE}\nio.paperclip.runner.inputs-digest=${INPUTS}`;
 const BUILD_ARGS = `PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST=${INPUTS}`;
-const published = { mode: "published", build_contexts: `runner-artifacts=docker-image://${IMAGE}`, labels: LABELS, build_args: BUILD_ARGS };
+const published = { mode: "published", inputs_digest: INPUTS, build_contexts: `runner-artifacts=docker-image://${IMAGE}`, labels: LABELS, build_args: BUILD_ARGS };
 const canonical = "github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064'";
 const VERIFY = "Verify the attestation of the Runner image";
 
@@ -110,9 +110,7 @@ describe("the Runner image an application image build copies in docker.yml", () 
     expect(condition(resolver, 4)).toBe(`vars.RUNNER_IMAGE_CONSUME_ENABLED == 'true' && ${canonical}`);
     expect(workflow.match(/RUNNER_IMAGE_CONSUME_ENABLED/g)).toHaveLength(1);
     expect(Object.keys(jobs).filter((name) => jobs[name].includes("runner-image-resolve.mjs"))).toEqual(["runner_image"]);
-    for (const name of ["docker-merge-group.yml", "docker-app-check.yml"]) {
-      expect(read(name)).not.toMatch(/runner-image-resolve|RUNNER_IMAGE_CONSUME_ENABLED|build-contexts|--build-context|io\.paperclip\.runner|runner_image/);
-    }
+    expect(read("docker-app-check.yml")).not.toMatch(/runner-image-resolve|RUNNER_IMAGE_CONSUME_ENABLED|build-contexts|--build-context|io\.paperclip\.runner|runner_image/);
   });
 
   it("keeps inline Runner arguments and includes the macOS runtime identity without a published Runner", () => {
@@ -123,7 +121,7 @@ describe("the Runner image an application image build copies in docker.yml", () 
   it("gives both architectures the one answer: the context, the labels and the expected inputs of the verified image", () => {
     expect(/^ {4}needs: \[(.+)\]$/m.exec(legs)![1].split(", ")).toContain("runner_image");
     const reads = [...legs.matchAll(/needs\.runner_image\.[a-z_.]+/g)].map((match) => match[0]);
-    expect(new Set(reads)).toEqual(new Set(["mode", "build_args", "build_contexts", "labels"].map((name) => `needs.runner_image.outputs.${name}`)));
+    expect(new Set(reads)).toEqual(new Set(["mode", "inputs_digest", "build_args", "build_contexts", "labels"].map((name) => `needs.runner_image.outputs.${name}`)));
     for (const line of legs.split("\n").filter((entry) => entry.includes("needs.runner_image"))) expect(line).not.toContain("matrix.");
     expect(buildInputs(published)).toEqual({
       buildArgs: [...inlineBuild.buildArgs, BUILD_ARGS],
@@ -136,6 +134,7 @@ describe("the Runner image an application image build copies in docker.yml", () 
     const declared = /\n {4}outputs:\n((?: {6}.+\n)+)/.exec(resolver)![1].trimEnd().split("\n").map((line) => line.trim());
     expect(declared).toEqual([
       "mode: ${{ steps.verify.outputs.mode || 'inline' }}",
+      "inputs_digest: ${{ steps.verify.outputs.inputs_digest }}",
       "build_contexts: ${{ steps.verify.outputs.build_contexts }}",
       "labels: ${{ steps.verify.outputs.labels }}",
       "build_args: ${{ steps.verify.outputs.build_args }}",
@@ -143,7 +142,7 @@ describe("the Runner image an application image build copies in docker.yml", () 
     const verify = named(resolver, VERIFY);
     expect(verify).toContain("\n        id: verify\n");
     expect(condition(verify, 8)).toBe("steps.resolve.outputs.mode == 'published'");
-    const env = { IMAGE, LABELS, BUILD_ARGS, GH_TOKEN: "token-for-the-test" };
+    const env = { IMAGE, INPUTS_DIGEST: INPUTS, LABELS, BUILD_ARGS, GH_TOKEN: "token-for-the-test" };
     const gh = (status: number) => ({ gh: `printf '%s\\n' "$*" >> "$CALLS"\nexit ${status}` });
 
     const verified = runStep(verify, env, gh(0));
@@ -209,13 +208,14 @@ describe("the Runner image an application image build copies in docker.yml", () 
     expectPinnedAndExpressionFree(resolver);
   });
 
-  it("does not promote a merge-queue image for a commit that copies a published Runner", () => {
+  it("promotes a verified merge-queue image only when its Runner inputs digest matches master", () => {
     const find = named(legs, "Find the merge-queue build of this commit");
-    expect(condition(find, 8)).toBe(`needs.runner_image.outputs.mode != 'published' && ${canonical} && ${masterPush}`);
+    expect(condition(find, 8)).toBe(`${canonical} && ${masterPush}`);
     for (const name of ["Download the merge-queue image", "Promote the merge-queue image"]) {
       expect(condition(named(legs, name), 8)).toBe("steps.find.outputs.run_id != ''");
     }
     expect(legs.match(/steps\.find\.outputs\.run_id/g)).toHaveLength(3);
+    expect(named(legs, "Promote the merge-queue image")).toContain("RUNNER_INPUTS_DIGEST: ${{ needs.runner_image.outputs.inputs_digest }}");
     expect(condition(named(legs, "Build and push by digest"), 8)).toBe("steps.promote.outputs.digest == ''");
   });
 
