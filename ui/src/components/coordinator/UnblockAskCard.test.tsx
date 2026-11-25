@@ -6,13 +6,17 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
 import { ApiError } from "@/api/api-error";
+import { ThemeProvider } from "@/context/ThemeContext";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { queryKeys } from "@/lib/queryKeys";
 import { BlockedTaskCardBody } from "./NeedsYouCardBodies";
 
 const issues = vi.hoisted(() => ({ get: vi.fn(async (..._args: unknown[]): Promise<unknown> => ({ blocks: [] })) }));
 vi.mock("@/api/issues", () => ({ issuesApi: { get: issues.get } }));
-vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company", companies: [] }) }));
+vi.mock("@/context/CompanyContext", () => {
+  const company = { selectedCompanyId: "company", companies: [] };
+  return { useCompany: () => company, useOptionalCompany: () => company };
+});
 
 /** The "Unblock a task" card when the assignee asked a person for something. */
 describe("human unblock card", () => {
@@ -40,7 +44,7 @@ describe("human unblock card", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     if (cachedIssue) client.setQueryData(queryKeys.issues.detail("task-3"), cachedIssue);
     await act(async () => root.render(
-      <QueryClientProvider client={client}><MemoryRouter><BlockedTaskCardBody item={item} companyId="company" agentMap={agentMap} /></MemoryRouter></QueryClientProvider>,
+      <QueryClientProvider client={client}><ThemeProvider><MemoryRouter><BlockedTaskCardBody item={item} companyId="company" agentMap={agentMap} /></MemoryRouter></ThemeProvider></QueryClientProvider>,
     ));
     return container;
   }
@@ -59,6 +63,14 @@ describe("human unblock card", () => {
     ]);
     expect(card.textContent).not.toContain("Blocked by");
     expect(footerActions(card)).toEqual(["Reply in PAP-3"]);
+  });
+
+  it("renders the ask as Markdown, so its links and lists work", async () => {
+    const card = await renderCard({ unblockAction: "Pick one:\n\n- Merge [the prep branch](https://example.com/pr/1)\n- Say to build on it" });
+    const ask = card.querySelector("[data-unblock-ask]");
+    expect(ask?.querySelector("a")?.getAttribute("href")).toBe("https://example.com/pr/1");
+    expect(Array.from(ask?.querySelectorAll("li") ?? [], (item) => item.textContent)).toEqual(["Merge the prep branch", "Say to build on it"]);
+    expect(ask?.textContent).not.toContain("](");
   });
 
   it("names two held-up tasks and a count when there are more, and counts the work waiting behind them", async () => {

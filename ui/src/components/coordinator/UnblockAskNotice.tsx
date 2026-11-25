@@ -6,6 +6,7 @@ import { describeError } from "@/api/errors";
 import { issuesApi } from "@/api/issues";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
 import { isLockedIssueStub } from "@/components/LockedIssueChip";
+import { MarkdownBody } from "@/components/MarkdownBody";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { unblockHeldUp } from "@/lib/coordinator-attention";
@@ -129,7 +130,10 @@ export function UnblockAskNotice({ item, detail, askedBy }: { item: AttentionIte
     <div className={cn("overflow-hidden rounded-md border border-destructive/20", ANALYTICS_MASK_CLASS)}>
       <div className="flex gap-2.5 bg-destructive/10 px-3.5 py-3 text-sm text-foreground">
         <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-destructive" aria-hidden="true" />
-        <p data-unblock-ask><span className="font-semibold">Needed from you:</span> {detail.unblockAction}</p>
+        <div data-unblock-ask className="min-w-0 flex-1">
+          <span className="font-semibold">Needed from you:</span>{" "}
+          <MarkdownBody>{detail.unblockAction ?? ""}</MarkdownBody>
+        </div>
       </div>
       <p data-unblock-ask-context className="border-t border-destructive/15 bg-background py-2 pl-10 pr-3.5 text-xs leading-6 text-muted-foreground">
         {askedBy ? `Asked by ${askedBy} in ` : "Asked in "}
