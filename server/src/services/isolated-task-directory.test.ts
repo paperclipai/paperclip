@@ -21,6 +21,7 @@ const policy = {
 describe("repository-free workspace selection", () => {
   it("selects a private directory for low-trust sandbox tasks without a repository", () => {
     expect(shouldUseIsolatedTaskDirectory(policy)).toBe(true);
+    expect(shouldUseIsolatedTaskDirectory({ ...policy, hasSelectedExecutionWorkspace: true })).toBe(true);
   });
 
   it.each([
@@ -42,7 +43,9 @@ describe("repository-free workspace selection", () => {
     { mode: "shared_workspace" },
     { hasProjectWorkspace: true },
     { projectWorkspaceId: "workspace-1" },
-    { hasSelectedExecutionWorkspace: true },
+    { trustPreset: "standard", environmentDriver: "local", hasSelectedExecutionWorkspace: true },
+    { trustPreset: "standard", environmentDriver: "sandbox", hasSelectedExecutionWorkspace: true },
+    { trustPreset: "standard", environmentDriver: "plugin", hasSelectedExecutionWorkspace: true },
     { workspaceStrategies: [{ type: "git_worktree" }] },
     { workspaceStrategies: [{ existingBranch: "main" }] },
     { workspaceStrategies: [{ provisionCommand: "setup" }] },

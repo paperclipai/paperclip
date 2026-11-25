@@ -97,12 +97,8 @@ export function isUnrunnableWorktreeCombo(input: {
   /** The wake continues a cut-off run in a new isolated workspace that the run
    * prepares itself (`create_new`); it never needs the task's old binding. */
   freshIsolatedContinuation?: boolean | null;
-  /** A repository-free task with no explicit workspaceStrategy runs in a
-   * private isolated task directory instead of requiring a Git worktree. */
-  usesIsolatedTaskDirectory?: boolean | null;
 }): boolean {
   if (input.freshIsolatedContinuation === true) return false;
-  if (input.usesIsolatedTaskDirectory === true) return false;
   if (input.resolvedMode !== "isolated_workspace" && input.resolvedMode !== "operator_branch") return false;
   if (input.resolvedStrategy !== "git_worktree") return false;
   if (input.issue.projectId || input.issue.projectWorkspaceId) return false;

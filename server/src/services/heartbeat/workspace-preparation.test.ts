@@ -1533,6 +1533,112 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     });
   });
 
+  it("reuses a bound ordinary repository-free plugin task directory across turns without requiring a Git worktree", async () => {
+    const { input, issue, envOrchestrator } = await fixture();
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, issue.id));
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, input.agent.id));
+    const pluginEnvironment = await environmentService(db).create(input.agent.companyId, {
+      name: `Plugin task dir ${issue.id}`,
+      driver: "plugin",
+      status: "active",
+      envVars: {},
+      config: { pluginKey: "test.tasks", driverKey: "tasks" },
+    });
+    await db.update(agents).set({ defaultEnvironmentId: pluginEnvironment.id }).where(eq(agents.id, input.agent.id));
+    input.agent = { ...input.agent, adapterType: "paperclip_runner", defaultEnvironmentId: pluginEnvironment.id };
+    input.task.context = { issueId: issue.id };
+    input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
+    input.policy.effectiveExecutionWorkspaceMode = "isolated_workspace";
+
+    const selectForTurn = async (issueExecutionWorkspaceSettings: typeof input.policy.issueExecutionWorkspaceSettings) => {
+      const currentIssue = await readIssue(issue.id);
+      return selectHeartbeatEnvironment(db, {
+        run: input.run,
+        agent: input.agent,
+        task: {
+          issueRef: currentIssue,
+          issueContext: currentIssue,
+          issueId: issue.id,
+          context: input.task.context,
+          executionProjectId: null,
+          workspaceProjectContext: { hasWorkspace: false },
+          boundSourceWorkspace: null,
+          hasSelectedWorkspaceSource: false,
+          taskWorkspaceIntent: null,
+          responsibleUserId: null,
+        },
+        policy: {
+          ...input.policy,
+          issueExecutionWorkspaceSettings,
+        },
+        config: {
+          config: input.agent.adapterConfig,
+          sourceWorkspaceConfig: input.agent.adapterConfig,
+          issueAssigneeOverrides: null,
+        },
+        services: {
+          environmentsSvc: environmentService(db),
+          executionWorkspacesSvc: executionWorkspaceService(db),
+          instanceSettings: instanceSettingsService(db),
+          findSharedWorkspaceHolder: async () => null,
+          findExecutionWorkspaceHolder: async () => null,
+        },
+      });
+    };
+
+    const stopped = new Error("Plugin task directory acquisition boundary");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockRejectedValue(stopped);
+
+    const turn1 = await selectForTurn({ mode: "isolated_workspace" });
+    expect(turn1.useIsolatedTaskDirectory).toBe(true);
+    input.task.issueRef = await readIssue(issue.id);
+    input.policy.useIsolatedTaskDirectory = turn1.useIsolatedTaskDirectory;
+    input.environment = {
+      ...input.environment,
+      selectedEnvironmentId: turn1.selectedEnvironmentId,
+      selectedEnvironmentForConfig: turn1.selectedEnvironmentForConfig,
+      environmentResolution: turn1.environmentResolution,
+      resolvedInstanceSettings: turn1.resolvedInstanceSettings,
+    };
+    input.config.mergedConfig = { workspaceStrategy: { type: "git_worktree" } };
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(stopped);
+
+    const boundId = (await readIssue(issue.id)).executionWorkspaceId!;
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, boundId));
+    expect(workspace).toMatchObject({
+      cwd: `/workspaces/${issue.id}`,
+      mode: "isolated_workspace",
+      strategyType: "project_primary",
+      providerType: "adapter_managed",
+      projectWorkspaceId: null,
+      sourceIssueId: issue.id,
+    });
+
+    const turn2 = await selectForTurn({ mode: "isolated_workspace" });
+    expect(turn2.useIsolatedTaskDirectory).toBe(true);
+    input.task.issueRef = await readIssue(issue.id);
+    input.policy.useIsolatedTaskDirectory = turn2.useIsolatedTaskDirectory;
+    input.reuse.existingExecutionWorkspace = turn2.existingExecutionWorkspace;
+    input.reuse.reusableExistingExecutionWorkspace = turn2.reusableExistingExecutionWorkspace;
+    input.reuse.requestedShouldReuseExisting = turn2.requestedShouldReuseExisting;
+    input.reuse.workspaceReuseRequest = turn2.workspaceReuseRequest;
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(stopped);
+    expect((await readIssue(issue.id)).executionWorkspaceId).toBe(boundId);
+    expect(acquire).toHaveBeenCalledTimes(2);
+
+    const turn2ExplicitGit = await selectForTurn({
+      mode: "isolated_workspace",
+      workspaceStrategy: { type: "git_worktree" },
+    });
+    expect(turn2ExplicitGit.useIsolatedTaskDirectory).toBe(false);
+    input.policy.useIsolatedTaskDirectory = turn2ExplicitGit.useIsolatedTaskDirectory;
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: { reason: "plugin_workspace_strategy_unsupported" },
+    });
+    expect(acquire).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["reuse", "explicit_git", "foreign_path", "missing_path", "symlink_path", "binding_changed", "canonical_retry", "canonical_warning", "canonical_unknown_warning", "canonical_provider_warning", "canonical_fresh", "canonical_lease", "canonical_result", "canonical_controller", "canonical_output", "canonical_measurement", "canonical_repaired_git"] as const)("recomputes ordinary-turn policy for a saved source-free fresh directory: %s", async scenario => {
     const { input, issue } = await fixture();
     const userId = `directory-owner-${randomUUID()}`;

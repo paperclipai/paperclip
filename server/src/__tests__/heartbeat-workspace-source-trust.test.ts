@@ -538,6 +538,55 @@ suite("heartbeat physical workspace source trust", () => {
     expect(blockedRun).toBeNull();
     const [blockedIssue] = await db.select().from(issues).where(eq(issues.id, explicitWorktreeIssueId));
     expect(blockedIssue.status).toBe("blocked");
+
+    const sshEnvId = randomUUID();
+    const sshAgentId = randomUUID();
+    const sshIssueId = randomUUID();
+    await db.insert(environments).values({
+      id: sshEnvId,
+      name: `SSH env ${companyId.slice(0, 6)}`,
+      driver: "ssh",
+      status: "active",
+      config: { host: "fixture.invalid", port: 22, username: "fixture", remoteWorkspacePath: "/home/fixture/work" },
+    });
+    await db.insert(agents).values({
+      id: sshAgentId,
+      companyId,
+      name: "SSH worker",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      permissions: {},
+      defaultEnvironmentId: sshEnvId,
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "agent",
+      principalId: sshAgentId,
+      status: "active",
+      membershipRole: "member",
+    });
+    await db.insert(issues).values({
+      id: sshIssueId,
+      companyId,
+      projectId: null,
+      projectWorkspaceId: null,
+      title: "Projectless SSH isolated task",
+      status: "todo",
+      assigneeAgentId: sshAgentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 3,
+      identifier: `GR-3`,
+      executionWorkspaceSettings: { mode: "isolated_workspace" },
+    });
+    const sshBlockedRun = await heartbeat.wakeup(sshAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      contextSnapshot: { issueId: sshIssueId },
+    });
+    expect(sshBlockedRun).toBeNull();
+    const [sshBlockedIssue] = await db.select().from(issues).where(eq(issues.id, sshIssueId));
+    expect(sshBlockedIssue.status).toBe("blocked");
   }, 30_000);
 
 });
