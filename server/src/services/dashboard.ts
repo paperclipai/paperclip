@@ -220,7 +220,7 @@ export function dashboardService(db: Db) {
       // means the company's latest activity is a run of pure auth failures, the
       // signature of a credential outage rather than inactivity-monitor noise.
       const authFailureCodes = new Set<string>(AUTH_FAILURE_ERROR_CODES);
-      const recentTerminalRuns = await db
+      const recentTerminalRuns = await retryIdempotentDatabaseOperation(() => db
         .select({
           status: heartbeatRuns.status,
           errorCode: heartbeatRuns.errorCode,
@@ -234,7 +234,7 @@ export function dashboardService(db: Db) {
           ),
         )
         .orderBy(desc(heartbeatRuns.createdAt))
-        .limit(AUTH_FAILURE_SCAN_LIMIT);
+        .limit(AUTH_FAILURE_SCAN_LIMIT));
 
       let consecutiveAuthFailures = 0;
       let latestAuthFailureAt: Date | null = null;
