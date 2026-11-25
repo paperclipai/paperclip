@@ -50,6 +50,19 @@ describe("describeThrownValue", () => {
     expect(describeThrownValue(hostile)).toBe("EPIPE");
   });
 
+  it("keeps the outer message when a nested Error message getter throws", () => {
+    const nested = new Error("hidden");
+    Object.defineProperty(nested, "message", { get() { throw new Error("getter failed"); } });
+    expect(describeThrownValue({ message: "exec failed", error: nested })).toBe("exec failed");
+  });
+
+  it("never prints a scalar body or error value", () => {
+    const text = describeThrownValue({ statusCode: 500, body: "token=synthetic-secret-token", error: "private payload" });
+    expect(text).toBe("500");
+    expect(text).not.toContain("synthetic-secret-token");
+    expect(text).not.toContain("private payload");
+  });
+
   it("describes an object with no text fields without printing [object Object]", () => {
     expect(describeThrownValue({})).toBe("Unknown error (no message)");
     class SocketClosed {}

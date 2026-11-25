@@ -261,7 +261,6 @@ export async function execInPod(
           if (resolved) return;
           resolved = true;
           if (watchdog) clearTimeout(watchdog);
-          // The client can reject with a ws ErrorEvent, which is not an Error.
           reject(err instanceof Error ? err : new Error(describeThrownValue(err)));
         });
     },
@@ -440,7 +439,6 @@ export async function execInPodStreaming(
         if (resolved) return;
         resolved = true;
         if (watchdog) clearTimeout(watchdog);
-        // The client can reject with a ws ErrorEvent, which is not an Error.
         reject(err instanceof Error ? err : new Error(describeThrownValue(err)));
       });
   });

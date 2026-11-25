@@ -17,7 +17,6 @@ let scriptedExec: (
   statusCb: StatusCb,
   stdin: PassThrough | null,
 ) => void = () => undefined;
-// When set, the fake `Exec.exec` rejects with this value before it opens the stream.
 let execRejection: unknown = undefined;
 
 vi.mock("@kubernetes/client-node", () => {
@@ -241,7 +240,6 @@ describe("execInPodStreaming", () => {
 });
 
 describe("exec WebSocket open failure", () => {
-  // @kubernetes/client-node rejects with the ws ErrorEvent, which is not an Error.
   class ErrorEvent {
     readonly type = "error";
     readonly message = "Unexpected server response: 403";
