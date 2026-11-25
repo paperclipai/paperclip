@@ -58,7 +58,9 @@ export function CredentialTag({ mode }: { mode: ModelConnectionMode }) {
           animate={{ opacity: 1, y: 0, transition: TAG_SWAP_ENTER }}
           exit={{ opacity: 0, y: TAG_SWAP_TRAVEL, transition: TAG_SWAP_EXIT }}
         >
-          {CREDENTIAL_TAG_LABEL[mode]}
+          <motion.span layout="position" transition={SOURCE_COLLAPSE_MOVE}>
+            {CREDENTIAL_TAG_LABEL[mode]}
+          </motion.span>
         </motion.span>
       </AnimatePresence>
     </span>
@@ -129,9 +131,13 @@ function ModelSourceTile({
         font-size-only token form, so the line box comes from the tile's own
         rhythm rather than the Tailwind scale's paired line-height.
       */}
-      <span className="text-(length:--text-compact) font-medium text-foreground">
+      <motion.span
+        layout="position"
+        transition={SOURCE_COLLAPSE_MOVE}
+        className="text-(length:--text-compact) font-medium text-foreground"
+      >
         {source.label}
-      </span>
+      </motion.span>
       {mode ? <CredentialTag mode={mode} /> : <span aria-hidden className="h-4" />}
     </button>
   );
