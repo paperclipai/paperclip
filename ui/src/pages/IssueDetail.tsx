@@ -38,6 +38,7 @@ import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTa
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { IssueCreatedFromNote } from "@/components/task-detail/IssueCreatedFromNote";
 import { EmailThreadProvider } from "../components/EmailMessageCard";
+import { TaskTranscriptAgents } from "../components/task-chat/TaskChatBubble";
 import { EmailTaskActivity } from "../components/EmailTaskActivity";
 import { TaskChatScrollNavigation, taskChatScrollEntry } from "@/components/task-chat/scroll-navigation";
 import {
@@ -2671,6 +2672,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           }}
         >
           <EmailThreadProvider companyId={companyId} issueId={issueId}>
+          <TaskTranscriptAgents.Provider value={conversationMode ? null : agentMap}>
           <ThreadComponent
             {...(!classicTaskInterfaceEnabled ? {
               compactHistory: !historyExpanded,
@@ -2872,6 +2874,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             externalReferences={externalReferences}
             linkCaseReferences={linkCaseReferences}
           />
+          </TaskTranscriptAgents.Provider>
           </EmailThreadProvider>
         </TaskChatScrollNavigation.Provider>
       )}
