@@ -24,6 +24,7 @@ import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
+import { useIssueUpdatedFilterNow } from "../hooks/useIssueUpdatedFilterNow";
 import {
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
@@ -49,7 +50,10 @@ import {
   resolveIssueFilterWorkspaceId,
   shouldIncludeIssueFilterWorkspaceOption,
   issueStatusOrder,
+  issueUpdatedServerBefore,
+  issueUpdatedTime,
   type IssueFilterState,
+  type IssueUpdatedFilter,
 } from "../lib/issue-filters";
 import {
   DEFAULT_INBOX_ISSUE_COLUMNS,
@@ -481,6 +485,11 @@ interface IssuesListProps {
   /** URL sorting overrides the saved collection preference when supplied. */
   sort?: IssueSort;
   onSortChange?: (sort: IssueSort) => void;
+  /** Reports the server `updatedBefore` bound for the Updated filter's custom range end. */
+  onUpdatedBeforeChange?: (updatedBefore: string | undefined) => void;
+  /** URL Updated filter; when supplied it overrides the saved collection preference. */
+  updatedFilter?: IssueUpdatedFilter;
+  onUpdatedFilterChange?: (filter: IssueUpdatedFilter) => void;
   initialSearch?: string;
   searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions" | "sortField" | "sortDir">;
   searchWithinLoadedIssues?: boolean;
@@ -735,6 +744,9 @@ function StreamlinedIssuesList({
   onRoutineTasksOnlyChange,
   sort,
   onSortChange,
+  onUpdatedBeforeChange,
+  updatedFilter,
+  onUpdatedFilterChange,
   initialSearch,
   searchFilters,
   searchWithinLoadedIssues = false,
@@ -835,7 +847,12 @@ function StreamlinedIssuesList({
     ...savedViewState,
     ...sort,
     ...(routineTasksOnly === undefined ? {} : { routineTasksOnly }),
-  }), [savedViewState, sort, routineTasksOnly]);
+    ...updatedFilter,
+  }), [savedViewState, sort, routineTasksOnly, updatedFilter]);
+  const updatedBefore = issueUpdatedServerBefore(viewState);
+  useEffect(() => {
+    onUpdatedBeforeChange?.(updatedBefore);
+  }, [onUpdatedBeforeChange, updatedBefore]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, viewStateKey);
   useEffect(() => {
     if (!enableAgentCreatedVisibilityFilter) return;
@@ -892,6 +909,13 @@ function StreamlinedIssuesList({
 
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     if (patch.routineTasksOnly !== undefined) onRoutineTasksOnlyChange?.(patch.routineTasksOnly);
+    if (patch.updatedWithin !== undefined || patch.updatedFrom !== undefined || patch.updatedTo !== undefined) {
+      onUpdatedFilterChange?.({
+        updatedWithin: patch.updatedWithin !== undefined ? patch.updatedWithin : viewState.updatedWithin,
+        updatedFrom: patch.updatedFrom !== undefined ? patch.updatedFrom : viewState.updatedFrom,
+        updatedTo: patch.updatedTo !== undefined ? patch.updatedTo : viewState.updatedTo,
+      });
+    }
     if (patch.sortField !== undefined || patch.sortDir !== undefined) {
       onSortChange?.({
         sortField: patch.sortField ?? viewState.sortField,
@@ -914,9 +938,13 @@ function StreamlinedIssuesList({
     visibleIssueColumns,
     onRoutineTasksOnlyChange,
     onSortChange,
+    onUpdatedFilterChange,
     sort,
     viewState.sortField,
     viewState.sortDir,
+    viewState.updatedWithin,
+    viewState.updatedFrom,
+    viewState.updatedTo,
   ]);
 
   useEffect(() => {
@@ -1239,6 +1267,7 @@ function StreamlinedIssuesList({
     && !externalObjectSummariesReady;
   const externalObjectFilterError = hasExternalObjectStatusFilters ? externalObjectSummariesError : null;
 
+  const updatedFilterNow = useIssueUpdatedFilterNow(searchScopedIssues, viewState.updatedWithin);
   const filtered = useMemo(() => {
     const filteredByControls = applyIssueFilters(
       searchScopedIssues,
@@ -1247,6 +1276,7 @@ function StreamlinedIssuesList({
       enableAgentCreatedVisibilityFilter,
       liveIssueIds,
       issueFilterContext,
+      updatedFilterNow,
     );
     const byId = new Map(searchScopedIssues.map(issue => [issue.id, issue]));
     return sortIssues(filteredByControls, viewState, issue => {
@@ -1256,6 +1286,7 @@ function StreamlinedIssuesList({
         assignee: issue.assigneeAgentId ? agentName(issue.assigneeAgentId) ?? "Unknown agent" : companyUserLabelMap.get(issue.assigneeUserId ?? "") ?? null,
         project: projectById.get(issue.projectId ?? "")?.name,
         parentTask: parent ? `${parent.identifier} ${parent.title}` : null,
+        updated: issueUpdatedTime(issue),
       };
     });
   }, [
@@ -1265,6 +1296,7 @@ function StreamlinedIssuesList({
     enableAgentCreatedVisibilityFilter,
     liveIssueIds,
     issueFilterContext,
+    updatedFilterNow,
     agentName,
     companyUserLabelMap,
     projectById,
@@ -2585,7 +2617,8 @@ function StreamlinedIssuesList({
                   // dangle above an unrendered (or absent) row.
                   if (node === null) return;
                   if (separatorField && rowPresentation === "task") {
-                    const currentDateGroup = taskDateGroup(issue[separatorField], separatorNow);
+                    const separatorTimestamp = separatorField === "updatedAt" ? issueUpdatedTime(issue) : issue.createdAt;
+                    const currentDateGroup = taskDateGroup(separatorTimestamp, separatorNow);
                     const separatorLabel = taskDateGroupSeparator(previousDateGroup, currentDateGroup);
                     if (separatorLabel) {
                       nodes.push(
@@ -2597,7 +2630,8 @@ function StreamlinedIssuesList({
                     }
                     previousDateGroup = currentDateGroup;
                   } else if (separatorField) {
-                    const currentAgeBucket = issueAgeBucket(issue[separatorField], separatorNow.getTime());
+                    const separatorTimestamp = separatorField === "updatedAt" ? issueUpdatedTime(issue) : issue.createdAt;
+                    const currentAgeBucket = issueAgeBucket(separatorTimestamp, separatorNow.getTime());
                     for (const crossedBucket of previousAgeBucket === null
                       ? []
                       : issueAgeBucketsCrossed(previousAgeBucket, currentAgeBucket)) {

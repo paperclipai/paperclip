@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { includeTaskListAncestors, type TaskListItem } from "@/components/TaskList";
 import { applyIssueFilters, countActiveIssueFilters, defaultIssueFilterState, type IssueFilterState } from "@/lib/issue-filters";
 import { loadTaskListView, matchesTaskListView, saveTaskListView, type TaskListView } from "@/lib/task-list-views";
+import { useIssueUpdatedFilterNow } from "./useIssueUpdatedFilterNow";
 
 type CreatorOption = { id: string; label: string; kind: "agent" | "user" };
 const expanded: ReadonlySet<string> = new Set();
@@ -36,7 +37,9 @@ export function useTaskListCollection({ items, companyId, userId, viewStorageKey
   const setCollapsedIds = (ids: ReadonlySet<string>) => setCollapse({ companyId, ids });
   const resetExpansion = () => setCollapsedIds(expanded);
 
-  const companyItems = items.filter(item => item.issue.companyId === companyId);
+  const companyItems = useMemo(() => items.filter(item => item.issue.companyId === companyId), [items, companyId]);
+  const companyIssues = useMemo(() => companyItems.map(item => item.issue), [companyItems]);
+  const updatedFilterNow = useIssueUpdatedFilterNow(companyIssues, filters.updatedWithin);
   const creatorsById = new Map<string, CreatorOption>();
   for (const item of companyItems) {
     const { createdByAgentId, createdByUserId } = item.issue;
@@ -46,7 +49,7 @@ export function useTaskListCollection({ items, companyId, userId, viewStorageKey
     const id = `${kind}:${rawId}`;
     creatorsById.set(id, { id, kind, label: item.createdBy || rawId });
   }
-  const filteredIds = new Set(applyIssueFilters(companyItems.map(item => item.issue), filters, userId, false, liveIssueIds).map(issue => issue.id));
+  const filteredIds = new Set(applyIssueFilters(companyIssues, filters, userId, false, liveIssueIds, undefined, updatedFilterNow).map(issue => issue.id));
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const matchingItems = companyItems.filter(item => filteredIds.has(item.issue.id)
     && matchesTaskListView(view, item.issue, Boolean(item.unread), userId)

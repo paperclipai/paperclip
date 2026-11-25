@@ -2663,6 +2663,32 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).not.toContain("Update the plan only");
   });
 
+  it("tells the agent to answer a question reaction in the annotation thread", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented",
+      issue: { id: "issue-1", identifier: "PAP-1", title: "Plan", status: "in_progress" },
+      annotationDeltas: [
+        {
+          id: "annotation-comment-1",
+          threadId: "thread-1",
+          documentKey: "plan",
+          quote: "Ship it",
+          body: "This step is ready.",
+          author: { type: "agent", id: "agent-1" },
+          reaction: { name: "question", author: { type: "user", id: "user-1" } },
+        },
+      ],
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain("- annotation annotation-comment-1");
+    expect(prompt).toContain(
+      "reacted with a question to this comment. Answer it with a reply in this annotation thread.",
+    );
+  });
+
   it("renders accepted plan review context with annotation text and comments", () => {
     const payload = {
       reason: "issue_commented",

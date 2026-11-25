@@ -14,17 +14,17 @@ import { environmentTaskOperationSchema, type PluginEnvironmentTaskOperation } f
 import { readRunnerdArtifactBinding, defaultCapabilityRunnerdBinary,
   parseNativeExecutionInput, parseNativeRuntimeContext, QUALIFIED_ACPX_PROFILES, type DurableRecoveryIdentity, type RunnerProcessHandle, type RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
 import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest, canonicalNativeRuntimeContextDigest } from "@paperclipai/paperclip-runner";
-import { materializeAsset } from "./runtime-context.js";
+import { materializeAsset } from "../../services/native-runtime/runtime-context.js";
 import { spawnRunner } from "../../vendor/paperclip-runner/testing.js";
-import { describeEmbeddedPostgres, nativeRestartFixture, realProcessIt, fakeCodexAppServer, waitForCondition } from "../../__tests__/helpers/native-restart.js";
-import { executePaperclipNativeSession, cancelNativeSession, closeIdleWarmNativeSessionsForRestart, readNativeSessionIdleWork } from "./native-session-executor.js";
+import { describeEmbeddedPostgres, nativeRestartFixture, realProcessIt, fakeCodexAppServer, waitForCondition } from "./native-restart.js";
+import { executePaperclipNativeSession, cancelNativeSession, closeIdleWarmNativeSessionsForRestart, readNativeSessionIdleWork } from "../../services/native-runtime/native-session-executor.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
-import * as remoteWarmRecovery from "./remote-warm-session-recovery.js";
-import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
-import { buildNativeCompletionContract } from "./completion-contracts.js";
-import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
-import { PROCESS_START_REQUESTED } from "../native-local-process-stop.js";
-import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+import * as remoteWarmRecovery from "../../services/native-runtime/remote-warm-session-recovery.js";
+import { reconcileNativeFinalizations } from "../../services/native-runtime/native-finalization-reconciler.js";
+import { buildNativeCompletionContract } from "../../services/native-runtime/completion-contracts.js";
+import { nativeRuntimeContextFixture } from "../../services/native-runtime/runtime-context.test-fixture.js";
+import { PROCESS_START_REQUESTED } from "../../services/native-local-process-stop.js";
+import { PaperclipRunnerToolAuthority } from "../../services/native-runtime/paperclip-runner-tool-authority.js";
 
 const { createPrivateHostControlFixture } = await import(new URL("../../../../packages/paperclip-runner/test/support/private-host-control.ts", import.meta.url).href) as {
   createPrivateHostControlFixture(): {
@@ -40,36 +40,51 @@ const adoptedIdleTimeoutMs = 10_000;
 const toolDefinitions = PaperclipRunnerToolAuthority.prototype.definitions;
 const parkId = (source: DurableRecoveryIdentity) => `park_${sha(JSON.stringify(Object.fromEntries(Object.entries(source).sort(([a], [b]) => a.localeCompare(b)))))}`;
 
+const allReleaseResumeCases = [
+  ...(["codex", "claude"] as const).flatMap(harness => (["cached", "adopted", "adopted restart"] as const).map(mode => [harness, mode] as const)),
+  ["codex", "adopted cancellation"] as const,
+  ["codex", "adopted legacy cancellation"] as const,
+  ["codex", "cached cancellation"] as const,
+  ["codex", "cached held claim"] as const,
+  ["claude", "cached held claim"] as const,
+  ["codex", "cached relaunch"] as const,
+  ["claude", "cached relaunch"] as const,
+  ["codex", "adopted relaunch"] as const,
+  ["codex", "adopted restart relaunch"] as const,
+  ["claude", "adopted restart relaunch"] as const,
+  ["codex", "cached managed GitHub"] as const,
+  ["codex", "adopted managed GitHub"] as const,
+  ["codex", "adopted restart managed GitHub"] as const,
+] as const;
+
 // The only replaced service is the external environment-task/Launcher edge.
 // Runtime, backend, owner, PRP ingress, checkpoint persistence and native Runner are real.
-describeEmbeddedPostgres("plugin Runner release/resume through the Core execution entry", () => {
-  let currentCase: { teardown?: () => Promise<void> } | undefined;
-  afterEach(async () => {
-    const finished = currentCase;
-    currentCase = undefined;
-    await finished?.teardown?.();
-  });
-  const environment = nativeRestartFixture();
-  const tlsIdentity = { key: Buffer.alloc(0), cert: Buffer.alloc(0) };
-  let oldCAs: string[] = [], oldAgent = https.globalAgent;
-  beforeAll(async () => {
-    const key = join(environment.current.runtimeRoot, "tls.key"), certificate = join(environment.current.runtimeRoot, "tls.crt");
-    execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", certificate,
-      "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], { stdio: "ignore" });
-    tlsIdentity.key = await readFile(key); tlsIdentity.cert = await readFile(certificate);
-    oldCAs = getCACertificates("default"); oldAgent = https.globalAgent;
-    const certificates = [...oldCAs, tlsIdentity.cert.toString("utf8")];
-    setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
-  });
-  afterAll(() => {
-    https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
-  });
-  const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
-  nativeIt.for([...(["codex", "claude"] as const).flatMap(harness => (["cached", "adopted", "adopted restart"] as const).map(mode => [harness, mode] as const)), ["codex", "adopted cancellation"] as const, ["codex", "adopted legacy cancellation"] as const,
-    ["codex", "cached cancellation"] as const, ["codex", "cached held claim"] as const, ["claude", "cached held claim"] as const,
-    ["codex", "cached relaunch"] as const, ["claude", "cached relaunch"] as const, ["codex", "adopted relaunch"] as const,
-    ["codex", "adopted restart relaunch"] as const, ["claude", "adopted restart relaunch"] as const,
-    ["codex", "cached managed GitHub"] as const, ["codex", "adopted managed GitHub"] as const, ["codex", "adopted restart managed GitHub"] as const])("completes %s runs through a retained %s process", { timeout: 60_000 }, async ([harness, mode], context) => {
+export function registerPluginRunnerReleaseResumeSuite(group: "cached" | "adopted"): void {
+  const cases = allReleaseResumeCases.filter(([, mode]) => (group === "adopted") === mode.startsWith("adopted"));
+  describeEmbeddedPostgres(`plugin Runner release/resume through the Core execution entry (${group})`, () => {
+    let currentCase: { teardown?: () => Promise<void> } | undefined;
+    afterEach(async () => {
+      const finished = currentCase;
+      currentCase = undefined;
+      await finished?.teardown?.();
+    });
+    const environment = nativeRestartFixture();
+    const tlsIdentity = { key: Buffer.alloc(0), cert: Buffer.alloc(0) };
+    let oldCAs: string[] = [], oldAgent = https.globalAgent;
+    beforeAll(async () => {
+      const key = join(environment.current.runtimeRoot, "tls.key"), certificate = join(environment.current.runtimeRoot, "tls.crt");
+      execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", certificate,
+        "-days", "1", "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1,DNS:localhost"], { stdio: "ignore" });
+      tlsIdentity.key = await readFile(key); tlsIdentity.cert = await readFile(certificate);
+      oldCAs = getCACertificates("default"); oldAgent = https.globalAgent;
+      const certificates = [...oldCAs, tlsIdentity.cert.toString("utf8")];
+      setDefaultCACertificates(certificates); https.globalAgent = new https.Agent({ ca: certificates });
+    });
+    afterAll(() => {
+      https.globalAgent.destroy(); https.globalAgent = oldAgent; setDefaultCACertificates(oldCAs);
+    });
+    const nativeIt = process.platform === "win32" ? it.skip : realProcessIt;
+    nativeIt.for(cases)("completes %s runs through a retained %s process", { timeout: 60_000 }, async ([harness, mode], context) => {
     if (harness === "claude" && !existsSync(fakeAcpxSidecar)) context.skip();
     const thisCase: { teardown?: () => Promise<void> } = {};
     currentCase = thisCase;
@@ -314,7 +329,7 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       const providerSessionId = (await supervisor()).snapshot.providerSessionId;
       expect(providerSessionId).toEqual(expect.any(String));
       const pid = handle!.child.pid;
-      const { heartbeatService } = await import("../heartbeat.js");
+      const { heartbeatService } = await import("../../services/heartbeat.js");
       expect(await heartbeatService(db).prepareIdleWarmNativeSessionsForSleep({ canRetire: () => true }))
         .toEqual({ closed: 0, busy: 0, failed: 0, failures: [] });
       expect(stops).toBe(0); expect(handle!.isExitConfirmed?.()).toBe(false);
@@ -420,4 +435,5 @@ describeEmbeddedPostgres("plugin Runner release/resume through the Core executio
       await pendingFollowup?.catch(() => undefined);
     }
   });
-});
+  });
+}

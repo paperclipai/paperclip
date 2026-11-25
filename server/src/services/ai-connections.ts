@@ -40,7 +40,7 @@ import {
   type CreateAiConnection,
   type AiConnectionLoginIntent,
 } from "@paperclipai/shared";
-import { forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "./ai-connection-configuration-failure.js";
 import { quotaCredentialRecovery, quotaCredentialHash } from "./quota-credential-recovery.js";
 import { prepareAntigravityCredentialRecovery } from "./native-runtime/antigravity-runner-credentials.js";
@@ -754,7 +754,13 @@ export function aiConnectionService(db: Db) {
           { userId },
         );
       else if (input.ownership === "personal") {
-        const definition = await secrets.createUserSecretDefinition(
+        const [existingDefinition] = await tx.select().from(userSecretDefinitions)
+          .where(and(eq(userSecretDefinitions.companyId, companyId), eq(userSecretDefinitions.key, `ai_${grantId.replaceAll("-", "_")}`)));
+        if (existingDefinition && (existingDefinition.createdByUserId !== userId || existingDefinition.deletedAt
+          || existingDefinition.status !== "active" || existingDefinition.provider !== "local_encrypted"
+          || existingDefinition.providerConfigId || existingDefinition.managedMode !== "paperclip_managed"))
+          throw conflict("This account's saved sign-in slot was changed outside this connection. Add the account as a new connection.");
+        const definition = existingDefinition ?? await secrets.createUserSecretDefinition(
           companyId,
           {
             key: `ai_${grantId.replaceAll("-", "_")}`,

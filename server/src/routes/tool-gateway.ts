@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/shared/validators/tool-access";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } from "./authz.js";
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
+import { isGitHubAccessErrorCode } from "../services/tool-access/github-access-errors.js";
 import { forbidden, HttpError } from "../errors.js";
 import { accessService } from "../services/index.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
@@ -246,7 +247,7 @@ async function handleMcpGatewayProtocol(
       // Provider tool failures are MCP tool results, not successful calls or
       // protocol errors. The service has already recorded the failed invocation.
       if (req.body?.method === "tools/call" &&
-          (err.reasonCode === "tool_error" || err.reasonCode === "github_access_denied")) {
+          (err.reasonCode === "tool_error" || isGitHubAccessErrorCode(err.reasonCode))) {
         res.json({
           jsonrpc: "2.0",
           id,

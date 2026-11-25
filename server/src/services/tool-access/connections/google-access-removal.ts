@@ -1,9 +1,10 @@
 import type { Db } from "@paperclipai/db";
 import { companySecrets, connectionGrants, googlePendingRevocations, toolAccessAuditEvents, toolConnections } from "@paperclipai/db";
-import { and, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { ManagedGoogleAccessRemoval, ManagedGoogleRevocationOutcome } from "@paperclipai/shared";
 import { logger } from "../../../middleware/logger.js";
 import { resolveConnectionGrantSecret } from "../../connection-credentials.js";
+import { findSecretConsumers } from "../../connection-secret-consumers.js";
 import { isPaperclipCloudConnectorStrategy, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 import { managedConnectorConsentSubject, managedConnectorProfile } from "../oauth/client-settings.js";
 import { oauthConfig } from "../oauth/metadata.js";
@@ -189,25 +190,10 @@ export function createManagedGoogleAccessRemoval(db: Db, deps: {
     secretIds: string[],
     removingConnection: boolean,
   ): Promise<Set<string>> {
-    if (secretIds.length === 0) return new Set();
-    const wanted = new Set(secretIds);
-    const removedGrantIds = new Set(grants.map((grant) => grant.id));
-    const held = new Set<string>();
-    const liveGrants = await db.select({ id: connectionGrants.id, connectionId: connectionGrants.connectionId, refs: connectionGrants.credentialSecretRefs })
-      .from(connectionGrants)
-      .where(and(eq(connectionGrants.companyId, connection.companyId), ne(connectionGrants.status, "revoked")));
-    for (const row of liveGrants) {
-      if (removedGrantIds.has(row.id) || (removingConnection && row.connectionId === connection.id)) continue;
-      for (const ref of row.refs ?? []) if (wanted.has(ref.secretId)) held.add(ref.secretId);
-    }
-    const liveConnections = await db.select({ id: toolConnections.id, refs: toolConnections.credentialRefs, secretRefs: toolConnections.credentialSecretRefs })
-      .from(toolConnections)
-      .where(and(eq(toolConnections.companyId, connection.companyId), ne(toolConnections.status, "archived")));
-    for (const row of liveConnections) {
-      if (removingConnection && row.id === connection.id) continue;
-      for (const ref of [...(row.refs ?? []), ...(row.secretRefs ?? [])]) if (wanted.has(ref.secretId)) held.add(ref.secretId);
-    }
-    return held;
+    return findSecretConsumers(db, {
+      companyId: connection.companyId, connectionId: connection.id, secretIds,
+      excludeGrantIds: grants.map((grant) => grant.id), removingConnection, liveOnly: true,
+    });
   }
 
   async function deleteSentSecrets(

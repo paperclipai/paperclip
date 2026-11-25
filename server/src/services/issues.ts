@@ -38,7 +38,7 @@ import { assertNoCaseHandoffMutation, cancelCaseHandoffsForIssue, completeTermin
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { automaticReadRecoveryCleanupCondition, directHumanCommentCondition, humanCreatedIssueCondition, pendingUserRequestCondition, pendingUserRequestRowCondition, touchedByUserCondition, userParticipationActivityCondition } from "./issue-participation.js";
 import { resolveProjectDefaultWorkspaceId } from "./project-default-workspace.js";
-import { type AuthorizationActor, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
+import { type AuthorizationActor, canActorReadIssuePrivacy, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
 import { type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
 import { executionWorkspaceService } from "./execution-workspaces.js";
@@ -1949,6 +1949,8 @@ export interface IssueFilters {
   sortDir?: "asc" | "desc";
   /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
   updatedSince?: string;
+  /** ISO 8601 timestamp — only return issues with updatedAt strictly before this value. */
+  updatedBefore?: string;
 }
 
 type IssueRow = typeof issues.$inferSelect & { displayStatus?: IssueDisplayStatus; externalConversationState?: "active" | "waiting" | null };
@@ -6832,6 +6834,18 @@ async function blockedInboxIssueConditions(
       ),
     );
   }
+  if (filters?.updatedSince) {
+    const since = new Date(filters.updatedSince);
+    if (Number.isFinite(since.getTime())) {
+      conditions.push(gt(issues.updatedAt, since));
+    }
+  }
+  if (filters?.updatedBefore) {
+    const before = new Date(filters.updatedBefore);
+    if (Number.isFinite(before.getTime())) {
+      conditions.push(lt(issues.updatedAt, before));
+    }
+  }
   if (
     filters?.excludeRoutineExecutions &&
     !filters?.originKind &&
@@ -8757,6 +8771,12 @@ export function issueService(db: Db) {
         const since = new Date(filters.updatedSince);
         if (Number.isFinite(since.getTime())) {
           conditions.push(gt(issues.updatedAt, since));
+        }
+      }
+      if (filters?.updatedBefore) {
+        const before = new Date(filters.updatedBefore);
+        if (Number.isFinite(before.getTime())) {
+          conditions.push(lt(issues.updatedAt, before));
         }
       }
       if (
@@ -13724,9 +13744,23 @@ export function issueService(db: Db) {
       if (pluginOrigin) {
         actor = { ...actor, agentId: pluginOrigin.agentId, runId: pluginOrigin.runId ?? undefined, userId: undefined };
       }
+      const lockPeerChatPrivacyTree = async (txOrDb: any) => {
+        if (!actor.agentId) return;
+        const [target] = await txOrDb
+          .select({ companyId: issues.companyId, conversationAgentId: issues.conversationAgentId })
+          .from(issues)
+          .where(eq(issues.id, issueId));
+        if (target?.conversationAgentId && target.conversationAgentId !== actor.agentId) {
+          await txOrDb.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${target.companyId}`}, 0))`);
+        }
+      };
       if (dbOrTx === db) {
         const append = () =>
           measureRunTransaction(db, "response", async (tx) => {
+            // Acquire the company privacy-tree lock before locking any issue row
+            // so peer-chat source privacy checks stay in the same lock order as
+            // issue/project privacy mutations and sendAgentChatMessage.
+            await lockPeerChatPrivacyTree(tx);
             // Serialize run-authored comments on the issue so a provider retry
             // cannot publish the same visible result twice. This needs no schema
             // change: the issue row is the transaction fence, and the recursive
@@ -13743,6 +13777,10 @@ export function issueService(db: Db) {
           ? retryNativeChatReviewPresentation(append)
           : append();
       }
+      // For caller-owned transactions that have not locked the issue row yet,
+      // acquire the privacy-tree lock before issueQuery.for("update") so all
+      // peer-chat writes preserve the global lock order.
+      await lockPeerChatPrivacyTree(dbOrTx);
       // The query below locks human comments on caller-owned transactions too,
       // sharing the fence with both question creation and Slack settlement.
       const issueQuery = dbOrTx
@@ -13789,18 +13827,37 @@ export function issueService(db: Db) {
       if (options?.metadata?.chatMessage && !options.proactiveChatMessage) {
         throw forbidden("Chat message provenance is server-owned");
       }
-      if (issue.conversationAgentId && actor.agentId && issue.conversationAgentId !== actor.agentId) {
-        throw forbidden("Only this conversation's agent can post agent messages");
-      }
+      const peerChatMessage = Boolean(issue.conversationAgentId && actor.agentId && issue.conversationAgentId !== actor.agentId);
       if (issue.conversationAgentId && actor.agentId && !actor.runId) {
         throw forbidden("Agent chat messages require an authenticated run");
       }
       if (issue.conversationAgentId && actor.runId) {
         const [run] = await dbOrTx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, actor.runId));
         const [current] = await dbOrTx.select().from(issues).where(eq(issues.id, issueId));
-        if (agentRunWritesRevoked(run)) throw conflict("This conversation turn was cancelled; it cannot post a reply");
+        if (agentRunWritesRevoked(run)) {
+          throw conflict(peerChatMessage
+            ? "This run was cancelled; it cannot post in another agent's chat"
+            : "This conversation turn was cancelled; it cannot post a reply");
+        }
         const runTaskId = run?.nativeIssueId ?? run?.issueId ?? run?.contextSnapshot?.issueId ?? run?.contextSnapshot?.taskId;
-        if (options?.proactiveChatMessage) {
+        if (peerChatMessage) {
+          if (options?.proactiveChatMessage) throw forbidden("Invalid background chat message authority");
+          if (run?.status !== "running" || run.agentId !== actor.agentId || run.companyId !== issue.companyId) {
+            throw forbidden("An agent can post in another agent's chat only from its own running run");
+          }
+          if (!run.responsibleUserId || run.responsibleUserId !== current.conversationUserId
+            || (actor.onBehalfOfUserId !== undefined && actor.onBehalfOfUserId !== current.conversationUserId)) {
+            throw forbidden("An agent can post in another agent's chat only while it acts for the person who owns that chat");
+          }
+          await dbOrTx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${issue.companyId}`}, 0))`);
+          const [source] = typeof runTaskId === "string" && isUuidLike(runTaskId)
+            ? await dbOrTx.select().from(issues).where(and(eq(issues.id, runTaskId), eq(issues.companyId, issue.companyId)))
+            : [];
+          if (!source) throw forbidden("An agent can post in another agent's chat only from a task-bound run");
+          if (!(await canActorReadIssuePrivacy(dbOrTx, { type: "none" }, source))) {
+            throw forbidden("Restricted task content cannot be sent to a company-visible chat");
+          }
+        } else if (options?.proactiveChatMessage) {
           if (run?.status !== "running" || run.agentId !== actor.agentId || run.companyId !== issue.companyId
             || runTaskId !== options.proactiveChatMessage.sourceTaskId || runTaskId === issueId
             || current.conversationUserId !== options.proactiveChatMessage.userId

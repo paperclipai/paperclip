@@ -1,10 +1,25 @@
 import { alias, QueryBuilder } from "drizzle-orm/pg-core";
 import { nativeEffectiveRunTerminalStateSql } from "./native-accepted-outcome.js";
-import { and, asc, eq, exists, gt, inArray, isNotNull, isNull, ne, notExists, or, sql } from "drizzle-orm";
+import { and, asc, eq, exists, gt, inArray, isNotNull, isNull, ne, notExists, or, sql, type SQL } from "drizzle-orm";
 import { chatActions, heartbeatRunEvents, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, statusDecisionEffects } from "@paperclipai/db";
 import type { NativeResponsePresentationScope } from "../native-response-presentation-notifications.js";
 
 const laterDecisions = alias(statusDecisions, "later_status_decisions");
+export const laterTurns = alias(heartbeatRuns, "later_conversation_turns");
+
+/** A later run of the turn's agent on the task that started a new turn. A
+ * queued wake, a discarded queued message, and context compaction do not. */
+export function laterConversationTurn(issueId: SQL | string) {
+  return and(
+    eq(laterTurns.companyId, heartbeatRuns.companyId),
+    sql`${laterTurns.contextSnapshot}->>'issueId' = ${issueId}`,
+    gt(laterTurns.createdAt, heartbeatRuns.createdAt),
+    eq(laterTurns.agentId, heartbeatRuns.agentId), ne(laterTurns.status, "queued"),
+    or(ne(laterTurns.status, "cancelled"), isNotNull(laterTurns.startedAt)),
+    sql`not coalesce(jsonb_typeof(${laterTurns.contextSnapshot}->'contextCompactionRequestId') = 'string'
+      and ${laterTurns.contextSnapshot}->>'contextCompactionRequestId' ~ '[^[:space:]]', false)`,
+  );
+}
 
 export function nativeResponsePresentationCandidates(scope?: NativeResponsePresentationScope, after?: string, runId?: string) {
   const db = new QueryBuilder();
@@ -54,6 +69,10 @@ export function nativeResponsePresentationCandidates(scope?: NativeResponsePrese
               sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issues.id}::text`,
               sql`jsonb_typeof(${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration') = 'number'`,
               sql`${heartbeatRuns.contextSnapshot}->>'conversationSessionGeneration' = ${issues.conversationSessionGeneration}::text`,
+              // A later turn that started replaced this one, even after it
+              // released the execution run (for example, it failed at setup).
+              notExists(db.select({ id: laterTurns.id }).from(laterTurns)
+                .where(laterConversationTurn(sql`${issues.id}::text`))),
               exists(db.select({ id: heartbeatRunEvents.id }).from(heartbeatRunEvents).where(and(
                 eq(heartbeatRunEvents.companyId, heartbeatRuns.companyId), eq(heartbeatRunEvents.runId, heartbeatRuns.id),
                 eq(heartbeatRunEvents.agentId, heartbeatRuns.agentId), eq(heartbeatRunEvents.eventType, "item.completed"),

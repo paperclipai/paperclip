@@ -3,10 +3,10 @@ import { posix } from "node:path";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { runRemoteProviderVerification } from "./remote-provider-pack.js";
 
-import { canonicalProviderPackJson, providerPackIncompatible, compatibleProviderPackInstallation,
-  type ProviderPackIdentity, type ProviderPackInstallation, type PackProvider } from "./provider-pack-compatibility.js";
+import { canonicalProviderPackJson, providerPackIncompatible, compatibleProviderPackInstallation, requiredProviderAssetNames,
+  type ProviderPackIdentity, type ProviderPackInstallation, type PackProvider, type AdmittedProviderPackReceipt } from "./provider-pack-compatibility.js";
 export { canonicalProviderPackJson, providerPackIncompatible, type ProviderPackIdentity,
-  type ProviderPackInstallation, type PackProvider } from "./provider-pack-compatibility.js";
+  type ProviderPackInstallation, type PackProvider, type AdmittedProviderPackReceipt } from "./provider-pack-compatibility.js";
 
 async function withProviderPackCheck<T>(step: "pack" | "opencode", verify: () => Promise<T>): Promise<T> {
   try {
@@ -19,7 +19,6 @@ async function withProviderPackCheck<T>(step: "pack" | "opencode", verify: () =>
     throw Object.assign(error, { failureCheck: check });
   }
 }
-
 
 /**
  * A Node expression defining `packIdentity(root)`: a digest of the kernel
@@ -43,14 +42,20 @@ const MAX_SEALED_PACKS = 512;
 /** Test seam: forget every sealed pack record. */
 export function clearSealedProviderPacksForTest(): void { sealedPacks.clear(); }
 
-function sealKeyFor(seal: { targetKey: string } | undefined, packRoot: string, manifest: ProviderPackIdentity, acceptProvenance: boolean): string | null {
+function sealKeyFor(
+  seal: { targetKey: string } | undefined,
+  packRoot: string,
+  manifest: ProviderPackIdentity,
+  acceptProvenance: boolean,
+  requiredAssets: readonly string[] | null,
+): string | null {
   if (!seal?.targetKey) return null;
-  return createHash("sha256").update(canonicalProviderPackJson([seal.targetKey, packRoot, manifest, acceptProvenance])).digest("hex");
+  return createHash("sha256").update(canonicalProviderPackJson([seal.targetKey, packRoot, manifest, acceptProvenance, requiredAssets])).digest("hex");
 }
 
 const reportedIdentity = (stdout: string) => /paperclip-pack-identity=([a-f0-9]{64})/.exec(stdout)?.[1] ?? null;
 
-export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({ runner, cwd, packRoot, manifest, installation, provider, requireExactIdentity = false, requireCurrentOpenCodeProxy = false, acceptProvenance = false, seal }: {
+export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({ runner, cwd, packRoot, manifest, installation, provider, requireExactIdentity = false, requireCurrentOpenCodeProxy = false, acceptProvenance = false, admittedReceipt, seal }: {
   runner: CommandManagedRuntimeRunner;
   cwd: string;
   packRoot: string;
@@ -60,6 +65,7 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
   requireExactIdentity?: boolean;
   requireCurrentOpenCodeProxy?: boolean;
   acceptProvenance?: boolean;
+  admittedReceipt?: AdmittedProviderPackReceipt;
   /**
    * The exact sandbox this pack sits on. After one full verification the
    * server keeps the pack's kernel identity; later runs on the same sandbox
@@ -69,13 +75,14 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
 }): Promise<T> {
   if (installation) {
     if (!provider) throw new Error("runner_remote_provider_artifact_incompatible: provider interface is required");
-    return compatibleProviderPackInstallation(installation, manifest, packRoot, provider, requireExactIdentity, requireCurrentOpenCodeProxy);
+    return compatibleProviderPackInstallation(installation, manifest, packRoot, provider, requireExactIdentity, requireCurrentOpenCodeProxy, admittedReceipt);
   }
   const providerNodeCommand = posix.join(
     packRoot,
     manifest.payload.artifacts.nodeCommand.path,
   );
-  const sealKey = sealKeyFor(seal, packRoot, manifest, acceptProvenance);
+  const requiredAssets = requiredProviderAssetNames(provider, manifest);
+  const sealKey = sealKeyFor(seal, packRoot, manifest, acceptProvenance, requiredAssets);
   const sealed = sealKey ? sealedPacks.get(sealKey) : undefined;
   if (sealKey && sealed) {
     // Any failure or difference falls through to the full verification.
@@ -114,7 +121,8 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
     "const tree=(treeRoot)=>{try{return walk(treeRoot)}catch{return 'unreadable'}}",
     "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar','grokLauncher']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)fail('artifact_digest:'+name,name+' digest mismatch')}",
     "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)fail('dist_digest','dist tree digest mismatch')",
-    "for(const candidate of Object.values({...manifest.payload.providers,...manifest.payload.candidateProviders})){if(tree(path.join(root,candidate.path))!==candidate.sha256)fail('candidate_digest','candidate asset tree digest mismatch')}",
+    "const requiredCandidates=process.argv[4]?JSON.parse(process.argv[4]):null",
+    "for(const [name,candidate] of Object.entries({...manifest.payload.providers,...manifest.payload.candidateProviders})){if(requiredCandidates!==null&&!requiredCandidates.includes(name))continue;if(tree(path.join(root,candidate.path))!==candidate.sha256)fail('candidate_digest','candidate asset tree digest mismatch')}",
     "const version=process.versions.node.split('.').map(Number)",
     "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
     "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))fail('node_version','Node version incompatible')",
@@ -126,9 +134,12 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
     // Seal only when no entry changed while it was being hashed.
     ...(sealKey ? ["let identityAfter=null;try{identityAfter=packIdentity(root)}catch{}if(identityBefore&&identityBefore===identityAfter)process.stdout.write('\\npaperclip-pack-identity='+identityAfter+'\\n')"] : []),
   ].join(";");
+  const verifyArgs = requiredAssets !== null
+    ? ["-e", verifyScript, packRoot, expected, acceptProvenance ? "provenance" : "", JSON.stringify(requiredAssets)]
+    : ["-e", verifyScript, packRoot, expected, ...(acceptProvenance ? ["provenance"] : [])];
   const verified = await withProviderPackCheck("pack", () => runRemoteProviderVerification(() => runner.execute({
     command: providerNodeCommand,
-    args: ["-e", verifyScript, packRoot, expected, ...(acceptProvenance ? ["provenance"] : [])],
+    args: verifyArgs,
     cwd: cwd,
     bypassSession: true,
     timeoutMs: 30_000,

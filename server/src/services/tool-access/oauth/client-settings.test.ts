@@ -30,7 +30,7 @@ describe("instance OAuth clients", () => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "instance-slack-id");
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_SECRET", "instance-slack-secret");
 
-    expect(configuredOAuthClientForConnection(slack(), "slack", "https://slack.com/api/oauth.v2.access")).toMatchObject({
+    expect(configuredOAuthClientForConnection(slack(), "slack", "https://slack.com/api/oauth.v2.user.access")).toMatchObject({
       clientId: "instance-slack-id",
       clientSecret: "instance-slack-secret",
     });
@@ -38,9 +38,9 @@ describe("instance OAuth clients", () => {
 
   it.each([
     ["a different host", "https://attacker.example/token"],
-    ["a lookalike path on the vendor host", "https://slack.com/api/oauth.v2.access/../../collect"],
-    ["plain http on the vendor host", "http://slack.com/api/oauth.v2.access"],
-    ["a vendor subdomain", "https://evil.slack.com/api/oauth.v2.access"],
+    ["a lookalike path on the vendor host", "https://slack.com/api/oauth.v2.user.access/../../collect"],
+    ["plain http on the vendor host", "http://slack.com/api/oauth.v2.user.access"],
+    ["a vendor subdomain", "https://evil.slack.com/api/oauth.v2.user.access"],
     ["no token endpoint", null],
   ])("never returns the instance secret for %s", (_label, tokenUrl) => {
     vi.stubEnv("PAPERCLIP_TOOL_OAUTH_SLACK_CLIENT_ID", "instance-slack-id");
@@ -94,7 +94,7 @@ describe("instance OAuth clients", () => {
       expect(client.clientId).toBeNull();
       expect(client.clientSecret).toBeNull();
     }
-    expect(configuredOAuthClientForConnection(marked, "slack", "https://slack.com/api/oauth.v2.access").clientId).toBeNull();
+    expect(configuredOAuthClientForConnection(marked, "slack", "https://slack.com/api/oauth.v2.user.access").clientId).toBeNull();
   });
 
   it("never uses one app's instance client for a connection that claims another provider", () => {

@@ -1,6 +1,6 @@
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { isContextCompactionRun } from "../context-compaction.js";
-import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE } from "../remote-workspace-transport.js";
+import { isWorkspaceGitOperationInProgress, workspaceSaveRestCause } from "./native-workspace-failure.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeRecoveryNotices } from "../native-recovery-notice-notifications.js";
 import { resolveCommittedNativeRecoveryNotices } from "./native-recovery-notices.js";
@@ -48,6 +48,7 @@ import { COMPLETION_REVIEW_STAGE_REASON, completionReviewStageEntry } from "../i
 import { randomUUID } from "node:crypto";
 import { preserveNativeWorkspaceExportLease } from "./native-workspace-export-resume.js";
 import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { laterConversationTurn, laterTurns } from "./native-response-presentation-query.js";
 import type { Db } from "@paperclipai/db";
 import {
   agentWakeupRequests,
@@ -75,6 +76,7 @@ import {
   type NativeAuthoritativeIssueStatus,
   gateDoneOnConfiguredReview,
 } from "./status-arbiter.js";
+import { evaluateBlockerAgentHandoff } from "./blocker-owner-handoff.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
   commitNativeStatusDecision,
@@ -324,10 +326,18 @@ export function readWorkspaceFailureCause(value: unknown): string | null {
 
 function terminalFinalizationFailureMessage(failureCode: string, failureScope: "provider" | "workspace" | undefined,
   failureCause?: string | null) {
-  if (failureCode === "native_workspace_sync_out_retry_exhausted" && isSandboxStorageExhausted(failureCause)) {
+  const saveRestCause = failureCode === "native_workspace_sync_out_retry_exhausted"
+    ? workspaceSaveRestCause(failureCause)
+    : null;
+  if (saveRestCause === "sandbox_disk_full") {
     return "Saving the workspace stopped because the sandbox disk is full. The agent's result is kept, and Paperclip "
       + "saves the files again from the retained sandbox without repeating the agent's work; follow the run's recovery "
       + `action if that cannot free enough space. Last cause: ${failureCause}`;
+  }
+  if (saveRestCause === "git_operation_in_progress") {
+    return "Saving the workspace stopped because a Git operation is still in progress in the workspace. "
+      + "The agent's result is kept; finish or abort the Git operation before saving the workspace. "
+      + `Last cause: ${failureCause}`;
   }
   if (failureCode === "native_workspace_sync_out_retry_exhausted") {
     // This code also covers local-directory and plugin workspaces, so the
@@ -432,16 +442,6 @@ export async function endSupersededNativeFinalizationRuns(db: Db, runIds?: reado
     if (updatedRun.status === "failed") void reportRunFailure(db, updatedRun);
   }
   return ended;
-}
-
-/**
- * A full sandbox disk stops every copy-back the same way: the archive is built
- * in that sandbox, and nothing frees space between finalizer attempts. It is
- * recognised on the first failure and handed to saved-work recovery, which can
- * reclaim the retained sandbox's inactive provider cache before saving again.
- */
-function isSandboxStorageExhausted(failureCause: string | null | undefined) {
-  return typeof failureCause === "string" && failureCause.startsWith(`${REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE}:`);
 }
 
 const NATIVE_FINALIZATION_RETRY_LIMIT = 3;
@@ -595,9 +595,11 @@ async function recordRetryableFailure(input: {
     let finalizationFailureCount = input.failureScope === "workspace"
       ? null
       : readFinalizationFailureCount(input.run.resultJson) + 1;
+    const nonRetryableWorkspaceCause =
+      input.failureScope === "workspace" && workspaceSaveRestCause(failureCause) !== null;
     const budgetExhausted =
       input.permanent === true ||
-      (input.failureScope === "workspace" && isSandboxStorageExhausted(failureCause)) ||
+      nonRetryableWorkspaceCause ||
       (workspaceFinalizeAttempt !== null
         ? workspaceFinalizeAttempt >= 3
         : finalizationFailureCount! >= NATIVE_FINALIZATION_RETRY_LIMIT);
@@ -781,7 +783,7 @@ async function recordRetryableFailure(input: {
           originalFailureCode: input.failureCode,
         },
         nextAction: exhausted
-          ? input.permanent
+          ? input.permanent || nonRetryableWorkspaceCause
             ? input.nextAction
             : `Finalization retry budget exhausted. ${input.nextAction}`
           : input.nextAction,
@@ -854,9 +856,11 @@ export async function recordNativeFinalizationFailure(input: {
         && (message === "native_plugin_workspace_branch_mismatch" || message === "native_plugin_workspace_owner_mismatch")
         ? "Repair the plugin workspace branch or owner, then resume finalization without another provider turn."
         : input.failureScope === "workspace"
-        ? input.permanent
-          ? "Restore the exact sandbox containing the unexported workspace changes, or resolve the task manually from durable evidence."
-          : "Retry workspace export and merge from the retained sandbox; do not submit another provider turn."
+          ? input.permanent
+            ? "Restore the exact sandbox containing the unexported workspace changes, or resolve the task manually from durable evidence."
+            : isWorkspaceGitOperationInProgress(readWorkspaceFailureCause(input.failureCause))
+              ? "Finish or abort the in-progress Git operation in the workspace, then retry saving the workspace; do not submit another provider turn."
+              : "Retry workspace export and merge from the retained sandbox; do not submit another provider turn."
         : "Repair the persisted native result or contract discriminator, then resume finalization from the coordinator.",
     projectRunStatus: input.projectRunStatus,
     failureScope: input.failureScope,
@@ -994,6 +998,19 @@ async function hasLaterAppliedStatusDecision(db: Db, input: {
     gt(statusDecisions.decisionVersion, input.decision.decisionVersion),
   )).limit(1);
   return Boolean(later);
+}
+
+// A later turn of the conversation that started replaced this turn, even after
+// it released the execution run (for example, it failed at setup).
+async function laterConversationTurnStarted(db: Db, run: {
+  id: string; companyId: string; agentId: string; issueId: string;
+}) {
+  // Compare stored timestamps; a JavaScript Date drops their microseconds.
+  const [turn] = await db.select({ id: laterTurns.id }).from(laterTurns)
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
+      eq(heartbeatRuns.agentId, run.agentId)))
+    .where(laterConversationTurn(run.issueId)).limit(1);
+  return Boolean(turn);
 }
 
 /** Recover only the already accepted answer. Neither issue disposition nor
@@ -1207,7 +1224,8 @@ async function recoverCommittedNativeChatResponseInScope(
         && (!issue.executionRunId || issue.executionRunId === run.id)
         && run.contextSnapshot?.issueId === issue.id
         && typeof run.contextSnapshot.conversationSessionGeneration === "number"
-        && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration;
+        && run.contextSnapshot.conversationSessionGeneration === issue.conversationSessionGeneration
+        && !(await laterConversationTurnStarted(tx, { ...run, issueId: issue.id }));
       // A deferred ordinary-task review still needs its recorded final reply.
       // Publishing that reply must not resolve the interaction or the task.
       // A task woken by an external chat message (for example a GitHub review
@@ -1803,6 +1821,21 @@ export async function finalizeNativeRun(input: {
     const reviewStage = isConversation(authoritativeIssue) || reviewContext
       ? { kind: "none" as const } : completionReviewStageEntry(authoritativeIssue, run.agentId);
     await cancelStoppedRunContinuation(input.db, { companyId: run.companyId, resultJson: savedStop }, toolCallLoopContinuationKey(run.id));
+    const namedBlockerAgentId = assessment.blocker?.ownerAgentId && assessment.blocker.ownerAgentId !== run.agentId
+      ? assessment.blocker.ownerAgentId : null;
+    const blockerHandoffLocked = namedBlockerAgentId !== null && !(await evaluateBlockerAgentHandoff(input.db, {
+      companyId: run.companyId,
+      issue: authoritativeIssue,
+      runId: run.id,
+      actorAgentId: run.agentId,
+      responsibleUserId: run.responsibleUserId,
+      driverKind: run.driverKind,
+      contextSnapshot: run.contextSnapshot,
+      runnerProfileJson: run.runnerProfileJson,
+      targetAgentId: namedBlockerAgentId,
+      unblockAction: assessment.blocker!.unblockAction,
+      requireTaskOwner: true,
+    })).allowed;
     const statusInput: Parameters<typeof resolveNativeFinalizerStatus>[0] = {
       requiredQualityReviewSatisfied: qualityReview.satisfied,
       executionStageApprovedByRun: await executionStageApprovedByRun(input.db, run, authoritativeIssue),
@@ -1824,6 +1857,7 @@ export async function finalizeNativeRun(input: {
         && isNativeEnvironmentBlocker(result),
       agentBlockerRecoverable: terminalState === "succeeded" && ownsProviderFailureDecision && !reviewContext && !stopRequested
         && result.reportedWorkDisposition === "blocked",
+      blockerHandoffLocked,
       hasQueuedChatRequest: terminalState === "succeeded" && result.reportedWorkDisposition === "blocked"
         && await hasQueuedChatRequest(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id, agentId: run.agentId }),
       failureRetryCount: executionFailureRetryCount(run),
