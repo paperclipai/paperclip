@@ -181,8 +181,8 @@ async function prompt(id, params) {
     }
     if (!await writePlan(planPath())) return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
   }
-  // The terminal hint arrives in pieces, as recorded live (run7: ANT-31 and ANT-35).
-  for (const chunk of ["I have configured and launched the swarm.\n", "\nRun /swarm board (", "default shortcut alt+s) to open the live board", "."]) say(chunk);
+  // The terminal hint arrives in pieces, as recorded live: the hint complete without its period, then the period alone.
+  for (const chunk of ["I have configured and launched the swarm.\n", "\nRun /swarm board (default shortcut alt+s) to open the live board", "."]) say(chunk);
   if (scenario === "cancel" || scenario === "die") {
     update(state.sessionId, { sessionUpdate: "usage_update", used: 52000, size: 1048576, _meta: { usage: streamedUsage } });
     // A helper is a real descendant in the CLI's process group.

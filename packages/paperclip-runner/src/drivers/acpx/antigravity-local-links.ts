@@ -50,10 +50,12 @@ export function neutralizeAntigravityLocalLinks(text: string, roots: readonly st
     const name = label.replace(/^`|`$/g, "").trim();
     return name === path || name === basename(path) || !name ? code(path) : `${label} (${code(path)})`;
   });
-  value = value.replace(FILE_URL, url => {
+  value = value.replace(FILE_URL, match => {
+    // Sentence punctuation after a bare URL belongs to the sentence, not the file name.
+    const url = match.replace(/[.,;:!?]+$/, "");
     const decoded = decodeTarget(url);
-    if (!decoded) return url;
-    return code(insideRoot(roots, decoded.path) ?? basename(decoded.path));
+    if (!decoded) return match;
+    return code(insideRoot(roots, decoded.path) ?? basename(decoded.path)) + match.slice(url.length);
   });
   for (const root of roots) value = value.split(`${root}/`).join("");
   return value;
@@ -70,8 +72,9 @@ function holdFrom(value: string, roots: readonly string[]): number {
   if (url && url[0]) keep(url.index);
   for (const root of roots) {
     const prefix = `${root}/`;
-    for (let length = Math.min(prefix.length - 1, value.length); length >= 2; length--) {
-      if (value.endsWith(prefix.slice(0, length))) { keep(value.length - length); break; }
+    // A complete prefix needs no hold (it is replaced now); only an unfinished one, down to a lone "/", is held.
+    for (let length = Math.min(prefix.length, value.length); length >= 1; length--) {
+      if (value.endsWith(prefix.slice(0, length))) { if (length < prefix.length) keep(value.length - length); break; }
     }
   }
   return start;

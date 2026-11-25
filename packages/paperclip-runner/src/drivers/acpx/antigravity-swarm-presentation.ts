@@ -95,7 +95,8 @@ export function antigravitySwarmEvent(update: unknown, workspace: string): AcpRu
   if (kind === "agent_message_chunk" || kind === "agent_thought_chunk") {
     const content = record(value.content);
     if (content.type !== "text" || typeof content.text !== "string") return null;
-    const text = kind === "agent_message_chunk" ? stripAntigravityTerminalHints(content.text) : content.text;
+    // Raw: the hint can span chunks, so the runtime's streaming filter strips it (createAntigravityTerminalHintFilter).
+    const text = content.text;
     if (!text) return null;
     return { type: "text_delta", text, stream: kind === "agent_thought_chunk" ? "thought" : "output", tag: kind };
   }

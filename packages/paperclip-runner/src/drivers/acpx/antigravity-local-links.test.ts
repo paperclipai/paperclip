@@ -40,7 +40,14 @@ describe("Antigravity replies never link local task-folder paths", () => {
     expect(through([task], [`See [the notes](file://${task}/notes/plan.md#L3).`])).toBe("See the notes (`notes/plan.md`).");
     expect(through([task], [`See [config](file://${root}/elsewhere/config.json).`])).toBe("See config.");
     expect(through([task], [`Wrote file://${task}/b.txt and ${task}/c.txt.`])).toBe("Wrote `b.txt` and c.txt.");
+    expect(through([task], [`Wrote file://${task}/a.txt. Then file://${task}/b.txt, and file://${root}/x.json!`])).toBe("Wrote `a.txt`. Then `b.txt`, and `x.json`!");
     expect(through([task], ["Open [docs](https://example.test/a) or [run](/ANT/issues/ANT-1)."])).toBe("Open [docs](https://example.test/a) or [run](/ANT/issues/ANT-1).");
+  });
+
+  it("strips a bare task-folder path wherever the reply is split", () => {
+    const { task } = workspace();
+    const reply = `Wrote ${task}/notes/a.txt and ${task}/b.txt.`;
+    for (let at = 0; at <= reply.length; at++) expect(through([task], [reply.slice(0, at), reply.slice(at)])).toBe("Wrote notes/a.txt and b.txt.");
   });
 
   it("matches the task folder through a link to it", () => {
