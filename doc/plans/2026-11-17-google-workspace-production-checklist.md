@@ -119,9 +119,18 @@ Decisions and the details behind them are kept in the
 - [ ] The six services tested live on Google's MCP servers on the staging
       tester: all 36 actions, the agent-client OAuth setting, and one
       confirmation question from Google answered and one declined.
-- [ ] Owner decision: the AI Tools Addendum forbids keeping Google user data
-      after the user disconnects. Paperclip keeps task and run content until
-      "Delete data". See the working memory's "Google AI Tools Addendum".
+- [x] Owner decision (Nov 24): comply with the AI Tools Addendum's retention
+      rules. See the working memory's "Retention under the AI Tools Addendum".
+- [x] Content read from Google is deleted on its own when access ends:
+      connection removed, identity revoked, access ended at Google (seen on
+      refresh), owner left the company, instance removed (Nov 24, first PR).
+- [ ] Google Technical Information kept at most 30 days (second PR).
+- [ ] No Google data in training, evaluation or feedback exports (second PR).
+- [ ] Owner decision: content agents wrote from Google data (three options in
+      the working memory).
+- [ ] Live check on the staging tester: disconnect, then the run transcripts
+      and tool results from Google are gone and the activity shows the
+      deletion finished.
 - [ ] Scopes identical in the picker, the server, the Cloud broker and the
       Google Console.
 - [x] `googletester.staging.paperclip.app` created (Nov 18).
@@ -139,6 +148,8 @@ The policy is in the `paperclip-website` repository
 - [x] Policy's retention wording matches the product (content read by agents
       stays in task and run history after disconnect), or the product changes
       (Nov 17, [paperclip-website PR 197](https://github.com/paperclipai/paperclip-website/pull/197)).
+- [ ] Policy updated for deletion when access ends (Nov 24 product change;
+      the coordinator edits the website repository).
 - [x] Policy says Gmail drafts, not "send" (Nov 17, [paperclip-website PR 197](https://github.com/paperclipai/paperclip-website/pull/197)).
 - [x] Policy gives the steps and timeline for deleting data (Nov 17, [paperclip-website PR 197](https://github.com/paperclipai/paperclip-website/pull/197)).
 - [ ] Legal review of the narrowed no-training wording in [paperclip-website PR 197](https://github.com/paperclipai/paperclip-website/pull/197) (it now
