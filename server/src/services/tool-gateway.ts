@@ -9017,9 +9017,12 @@ export function createToolGatewayService(
         // deadline; it must not turn a received protocol error into a timeout.
         clearTimeout(timer);
         const errorRecord = asRecord(payloadRecord.error);
+        const fallback = errorRecord?.code === -32602
+          ? "The app rejected the arguments for this tool. Check them against the tool's input schema. If they match, the app may have removed or changed this tool: ask a person who manages this connection to refresh its catalog"
+          : "Remote MCP server returned an error";
         throw new ToolGatewayHttpError(
           502,
-          await mcpErrorMessage("Remote MCP server returned an error", payloadRecord.error,
+          await mcpErrorMessage(fallback, payloadRecord.error,
             { ...requestHeaders, ...headers, ...credentialHeaders }, [
               ...collectSensitiveStringValues(parameters), ...Object.values(resolvedCredentials),
               ...mcpErrorRequestSecrets(new URL(endpoint).searchParams),
