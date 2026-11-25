@@ -9,10 +9,12 @@ const questions = (c?: ContinuationCheckpoint): Row[] =>
   (c?.interactions ?? []).filter((i: any) => i.kind === "ask_user_questions") as Row[];
 // The board answers "Use <marker>."; agents may save the instruction or only the
 // reference, so a document passes when it holds the complete marker token.
-export const submittedReferencePattern = (marker: string) =>
-  new RegExp(`(?<![A-Za-z0-9])${marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9])`);
+export const submittedReferencePattern = (marker: string) => {
+  if (!marker) throw new Error("A submitted reference marker is required");
+  return new RegExp(`(?<![A-Za-z0-9_-])${marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_-])`);
+};
 export const includesSubmittedReference = (body: unknown, marker: string) =>
-  typeof body === "string" && submittedReferencePattern(marker).test(body);
+  !!marker && typeof body === "string" && submittedReferencePattern(marker).test(body);
 export const resumeQuestionFields = (i?: Row): Row[] =>
   Array.isArray(i?.payload?.questionSet?.questions) ? i.payload.questionSet.questions : [];
 
