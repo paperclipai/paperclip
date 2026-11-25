@@ -149,8 +149,14 @@ export function resolveNativeRuntimeMode(input: {
   if (runnerProfile.provider === "cursor_cloud" && (input.target?.kind ?? "local") !== "local") {
     throw ineligible("paperclip_runner_cursor_cloud_local_controller_required", "Cursor Cloud currently requires a local Paperclip controller. Cursor hosts its execution environment.");
   }
+  if (!input.issue) {
+    throw ineligible(
+      "paperclip_runner_task_required",
+      "Paperclip Runner requires a task to run. Assign or open a task for this agent.",
+    );
+  }
   const allowedWorkModes = ["standard", "planning", "ask", "skill_test"];
-  if (!input.issue || !allowedWorkModes.includes(input.issue.workMode)) {
+  if (!allowedWorkModes.includes(input.issue.workMode)) {
     throw ineligible(
       "paperclip_runner_issue_ineligible",
       "Paperclip Runner requires a standard, planning, ask, or skill test task.",

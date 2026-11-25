@@ -30,6 +30,7 @@ import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE, findEnvironmentProviderUnavailab
 import { REPOSITORY_CATALOG_UNAVAILABLE_CODE, findRepositoryCatalogUnavailableError } from "../repository-catalog-unavailable-error.js";
 import { findWorkspaceProviderFailure } from "../workspace-provider-failure.js";
 import { isRunnerRevisionMismatch, RUNNER_REVISION_MISMATCH_CODE, RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
+import { readPluginTaskError } from "../environment-task-runtime.js";
 import { isStorageUnavailableError, STORAGE_CREDENTIALS_REJECTED_MESSAGE, STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY, storageUnavailableHeldMessage, storageUnavailableMessage } from "../../storage/storage-unavailable.js";
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
@@ -1392,6 +1393,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const stoppedDuringFailure = signal.aborted;
     const stopSnapshot = stoppedDuringFailure ? await getRun(run.id) : null;
     const failureOutcome = stoppedDuringFailure ? "cancelled" : "failed";
+    const pluginTaskError = !stoppedDuringFailure ? readPluginTaskError(err) : null;
     const nativePreDispatchFailure = !stoppedDuringFailure && nativeTerminalFailureCode === null
       ? await nativePreDispatchFailureResult(run.id, nativeDispatchMayHaveStarted) : null;
     const failedRunWrite = await measureRunPhase("completion.terminal_write", () => setRunStatusIfRunning(run.id, failureOutcome, {
@@ -1404,6 +1406,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         resultJson: {
           ...parseObject(stopSnapshot?.resultJson),
           ...(failureCause && !stoppedDuringFailure ? { failureCause } : {}),
+          ...(pluginTaskError ? { pluginTaskError } : {}),
           ...(providerFailure ? { providerFailure: { ...providerFailure,
             message: redactCurrentUserText(identityRedactor.redact(providerFailure.message), currentUserRedactionOptions) } } : {}),
           ...(interruptedExactResume ? { nativeExactResumeRefusal: {

@@ -206,7 +206,7 @@ import {
   shouldCancelRunsForNonInvokableAgent,
   type AgentOrgRow,
 } from "../agent-invokability.js";
-import { supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
+import { supportsUnscopedHeartbeat, supportsUnscopedTimerHeartbeat } from "../heartbeat-policy.js";
 import { ISSUE_BLOCKER_STALLED_WAKE_REASON, isUuidLike } from "@paperclipai/shared";
 import { retryChatControlAdmission } from "../chat-control-admission-retry.js";
 
@@ -3089,6 +3089,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       // A temporary refusal must leave the handoff retryable, without burning
       // its one durable receipt ID on a skipped wake.
       if (caseRequest) return { created: false };
+      opts.onSkip?.(skipReason);
       if (executionWaitRequestId) {
         const waitSaved = await writeDeferredExecutionWait(db, { companyId: agent.companyId, requestId: executionWaitRequestId }, {
           reason: skipReason, message: patch.error ?? (skipReason === "issue_tree_hold_active"
@@ -3264,15 +3265,27 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     }
     const effectiveTaskKey =
       readNonEmptyString(enrichedContextSnapshot.taskKey) ?? taskKey;
-    const genericTimerWake =
-      source === "timer" &&
-      !issueId &&
-      !wakeCommentId &&
-      !readNonEmptyString(enrichedContextSnapshot.taskId) &&
-      !effectiveTaskKey;
+    const hasTaskScope = Boolean(
+      issueId ||
+      readNonEmptyString(enrichedContextSnapshot.taskId) ||
+      effectiveTaskKey,
+    );
+    const genericTimerWake = source === "timer" && !hasTaskScope && !wakeCommentId;
     // Old or direct timer producers cannot create a doomed taskless Runner
     // run. Explicit session restoration above can supply a real task scope.
-    if (genericTimerWake && !supportsUnscopedTimerHeartbeat(agent)) return null;
+    if (genericTimerWake && !supportsUnscopedTimerHeartbeat(agent)) {
+      opts.onSkip?.("heartbeat.task_required");
+      return null;
+    }
+    if (!hasTaskScope && !supportsUnscopedHeartbeat(agent)) {
+      await writeSkippedHeartbeatRequest("heartbeat.task_required", {
+        reason:
+          "Paperclip Runner requires a task to run. Assign or open a task for this agent instead of starting a standalone heartbeat.",
+        adapterType: agent.adapterType,
+        source,
+      });
+      return null;
+    }
     const resolveSessionBefore = async (tx: Pick<Db, "select">) =>
       explicitResumeSession?.sessionDisplayId ??
       resolveSessionBeforeForWakeup(agent, effectiveTaskKey, tx);

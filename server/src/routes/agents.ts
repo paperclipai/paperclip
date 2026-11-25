@@ -1,4 +1,5 @@
 import { resolveLoginEnvironmentTarget } from "../services/login-environment.js";
+import { supportsUnscopedHeartbeat } from "../services/heartbeat-policy.js";
 import { checkAgentProtectedEnvironmentKeys } from "../services/protected-environment-keys.js";
 import { assertProviderApiPlacementPolicy, managedCursorApiDefaultEnabled, resolveProviderApiPlacement } from "../services/native-runtime/provider-api-placement.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
@@ -1761,9 +1762,21 @@ export function agentRoutes(
   async function buildSkippedWakeupResponse(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
     payload: Record<string, unknown> | null | undefined,
+    skipReason?: string | null,
   ) {
     const issueId = typeof payload?.issueId === "string" && payload.issueId.trim() ? payload.issueId : null;
     if (!issueId) {
+      if (skipReason === "heartbeat.task_required" && !supportsUnscopedHeartbeat(agent)) {
+        return {
+          status: "skipped" as const,
+          reason: "task_required",
+          message: "Paperclip Runner requires a task to run. Assign or open a task for this agent instead of starting a standalone heartbeat.",
+          issueId: null,
+          executionRunId: null,
+          executionAgentId: null,
+          executionAgentName: null,
+        };
+      }
       return {
         status: "skipped" as const,
         reason: "wakeup_skipped",
@@ -6311,7 +6324,11 @@ export function agentRoutes(
   type HeartbeatSource = "timer" | "assignment" | "on_demand" | "automation";
   type WakeupRouteOpts = {
     source: HeartbeatSource | undefined;
-    skippedResponse: (agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>, payload: Record<string, unknown> | null) => unknown | Promise<unknown>;
+    skippedResponse: (
+      agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+      payload: Record<string, unknown> | null,
+      skipReason: string | null,
+    ) => unknown | Promise<unknown>;
   };
   const handleWakeupRoute = async (
     req: Request,
@@ -6506,9 +6523,13 @@ export function agentRoutes(
         ),
       );
     }
+    let wakeSkipReason: string | null = null;
     const run = await heartbeat.wakeup(id, {
       failedRunId: req.body.failedRunId ?? null,
       ...(req.actor.type === "board" && !req.body.failedRunId ? { manualUserWake: true } : {}),
+      onSkip: (skipReason) => {
+        wakeSkipReason = skipReason;
+      },
       source: opts.source,
       triggerDetail: req.body.triggerDetail ?? "manual",
       reason: req.body.reason ?? null,
@@ -6542,7 +6563,7 @@ export function agentRoutes(
     });
 
     if (!run) {
-      res.status(202).json(await opts.skippedResponse(agent, wakePayload));
+      res.status(202).json(await opts.skippedResponse(agent, wakePayload, wakeSkipReason));
       return;
     }
 
@@ -6582,7 +6603,7 @@ export function agentRoutes(
   router.post("/agents/:id/wakeup", validate(wakeAgentSchema), async (req, res) => {
     await handleWakeupRoute(req, res, {
       source: req.body.source,
-      skippedResponse: (agent, payload) => buildSkippedWakeupResponse(agent, payload),
+      skippedResponse: (agent, payload, skipReason) => buildSkippedWakeupResponse(agent, payload, skipReason),
     });
   });
 

@@ -1,4 +1,6 @@
 import { currentControllerProcess } from "../controller-process-identity.js";
+import { isConfirmedStoppedUnavailablePluginCheckpoint } from "../environment-task-runtime.js";
+import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { isAntigravitySwarmExecution } from "../antigravity-swarm.js";
 import { applyNativeAcceptedOutcome, nativeRetainsWarmSession, readNativeAcceptedOutcome, type NativeAcceptedOutcome } from "./native-accepted-outcome.js";
 import { settleReattachRun } from "../heartbeat/run-admission.js";
@@ -6032,7 +6034,7 @@ async function recoverPluginRunnerCheckpoint(input: {
   db: Db;
   execution: NativeExecutionInput;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
-}, scoped: string): Promise<void> {
+}, scoped: string): Promise<{ checkpointUnavailable?: true } | void> {
   const target = input.runnerExecutionTarget;
   if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask || !target.leaseId ||
       target.sandboxLeaseAcquisition?.outcome === "resumed") return;
@@ -6078,7 +6080,18 @@ async function recoverPluginRunnerCheckpoint(input: {
   if (!isSettledRemoteWarmControlState(control, identity)) return deny("journal_not_settled");
   const resumeFrom = await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
     leaseId: target.leaseId, priorIdentity: identity, inspectCheckpoint: true });
-  const checkpoint = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "read_state", identity, resumeFrom }));
+  let checkpoint: ReturnType<typeof environmentTaskResultSchema.parse>;
+  try {
+    checkpoint = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "read_state", identity, resumeFrom }));
+  } catch (error) {
+    // When the provider explicitly attests that the prior task stopped and its
+    // retained session state is no longer available, allow the caller to retire
+    // the settled prior root cleanly into a fresh session instead of failing.
+    if (!quarantined && isConfirmedStoppedUnavailablePluginCheckpoint(error)) {
+      return { checkpointUnavailable: true };
+    }
+    throw error;
+  }
   if (checkpoint.kind !== "state" || checkpoint.state.lifecycle !== "suspended" ||
       !Array.isArray(checkpoint.state.outbox) || checkpoint.state.outbox.length !== 0 ||
       checkpoint.state.pendingTerminalDelivery != null || checkpoint.state.pendingProviderCleanup != null ||
@@ -6237,18 +6250,27 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
   execution: NativeExecutionInput;
   projectedControlBytes?: string;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
+  pluginCheckpointUnavailableConfirmed?: boolean;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }): Promise<{ finished: true; run: typeof heartbeatRuns.$inferSelect; recheck: () => Promise<string | null> }
   | { finished: false; refused: string }> {
   const target = input.runnerExecutionTarget;
   // A resumed sandbox still holds the prior Runner's own lifecycle, which its
-  // existing recovery path reads. Plugin tasks own a separate saved checkpoint.
+  // existing recovery path reads. Plugin tasks own a separate saved checkpoint,
+  // unless the provider explicitly confirmed it is stopped and no state remains.
   const refuse = (refused: string) => ({ finished: false as const, refused });
   const lifecycle = input.execution.session.lifecyclePolicy.mode;
   const localRunner = !target || target.kind === "local";
   if (lifecycle !== "per_turn" && !(lifecycle === "warm" && !localRunner)) return refuse("lifecycle_not_per_turn");
+  let confirmedGonePluginTask = false;
   if (!localRunner) {
-    if (target.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask) {
+    confirmedGonePluginTask = Boolean(
+      input.pluginCheckpointUnavailableConfirmed
+      && target.kind === "remote" && target.transport === "sandbox" && target.runnerTask
+      && await remoteExecutionHasStopped(input.db, input.execution.binding.companyId, input.identity.runId),
+    );
+    if (target.kind !== "remote" || target.transport !== "sandbox"
+      || (!confirmedGonePluginTask && (!target.runner || target.runnerTask))) {
       return refuse("target_not_sandbox_runner");
     }
     if (!["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) {
@@ -6272,6 +6294,9 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
     currentProviderLeaseId: target?.kind === "remote" && target.transport === "sandbox"
       ? target.sandboxLeaseAcquisition?.providerLeaseId : undefined,
   });
+  if (confirmedGonePluginTask && !remoteRunnerGone) {
+    return refuse("prior_lease_active");
+  }
   const parkedGovernedWait = remoteRunnerGone && await priorRunParkedOnGovernedWait(input.db, {
     companyId: binding.companyId, issueId: binding.issueId, runId: identity.runId });
   const projectionOptions = { localRunner, controlBytes: input.projectedControlBytes, remoteRunnerGone, parkedGovernedWait };
@@ -6529,6 +6554,7 @@ async function migrateRunnerdStateRootForExecution(input: {
   restartRecovery?: NativeRestartRecoveryClaim;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   bootstrapRetryLeaseOwner?: string;
+  pluginCheckpointUnavailableConfirmed?: boolean;
 }): Promise<VerifiedWarmTransitionBinding | undefined> {
   const scoped = scopedRunnerdStateRoot(input.execution);
   await restoreWarmRunnerdController(input);
@@ -6541,8 +6567,10 @@ async function migrateRunnerdStateRootForExecution(input: {
     issueId: input.execution.binding.issueId,
     stateKey: basename(scoped),
   });
-  if (!input.restartRecovery && !input.retainedWarmOwnerRunId) {
-    await recoverPluginRunnerCheckpoint(input, scoped);
+  let pluginCheckpointUnavailableConfirmed = input.pluginCheckpointUnavailableConfirmed === true;
+  if (!input.restartRecovery && !input.retainedWarmOwnerRunId && !pluginCheckpointUnavailableConfirmed) {
+    const recovered = await recoverPluginRunnerCheckpoint(input, scoped);
+    if (recovered?.checkpointUnavailable) pluginCheckpointUnavailableConfirmed = true;
   }
   if (
     input.allowLocalRecovery &&
@@ -6698,7 +6726,7 @@ async function migrateRunnerdStateRootForExecution(input: {
       let retirementRefusal = "";
       if (verification === "terminal_state_indeterminate" && !input.retainedWarmOwnerRunId
         && (!input.restartRecovery || input.restartRecovery.kind === "bootstrap_incomplete")) {
-        const retirement = await retireFinishedPerTurnRunnerdOwner({ ...input, root: scoped, identity });
+        const retirement = await retireFinishedPerTurnRunnerdOwner({ ...input, root: scoped, identity, pluginCheckpointUnavailableConfirmed });
         if (retirement.retired) return;
         if (retirement.refused !== "lifecycle_not_per_turn") retirementRefusal = `; retirement_refused=${retirement.refused}`;
       }
@@ -11246,6 +11274,7 @@ async function executePaperclipNativeSessionAttempt(
       } finally { cachedReleasedOwner.busy = wasBusy; }
     } else releasedWarmSource(input, cachedReleasedOwner.pluginTaskId ?? null);
   }
+  let pluginCheckpointUnavailableConfirmed = false;
   if (input.useRunnerd && canRecoverWarmOwner && !input.backend &&
       input.runnerExecutionTarget?.kind === "remote" &&
       input.execution.session.lifecyclePolicy.mode === "warm" &&
@@ -11262,7 +11291,8 @@ async function executePaperclipNativeSessionAttempt(
         pluginTaskDescription = description;
       }
       if (taskTarget.sandboxLeaseAcquisition?.outcome !== "resumed" && !portableSource) {
-        await recoverPluginRunnerCheckpoint(input, root);
+        const recovered = await recoverPluginRunnerCheckpoint(input, root);
+        if (recovered?.checkpointUnavailable) pluginCheckpointUnavailableConfirmed = true;
       }
     }
     if (durableIdentityMatchesSession(identity, input.execution) && identity.runId !== input.execution.binding.runId) {
@@ -11319,6 +11349,7 @@ async function executePaperclipNativeSessionAttempt(
       restartRecovery: input.restartRecovery,
       runnerExecutionTarget: input.runnerExecutionTarget,
       bootstrapRetryLeaseOwner: input.leaseOwner,
+      pluginCheckpointUnavailableConfirmed,
     }));
   }
   const durableRunnerBinding = input.useRunnerd
