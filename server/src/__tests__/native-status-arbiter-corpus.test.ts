@@ -3491,7 +3491,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       await db.update(agents).set({ permissions: {} }).where(eq(agents.id, agentId));
     }
 
-    // Restricted target-agent assignmentPolicy (tasks:assign authorization) also
+    // Protected target-agent assignmentPolicy (tasks:assign authorization) also
     // rejects handoff at report time and falls back cleanly to board on commit.
     const policySeeded = await seedFixture({ ...corpus.fixtures.find((fixture) => fixture.id === "real-task-wide-blocker")!, id: `policy-denied-blocker-${randomUUID()}` });
     const [policyStored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, policySeeded.resultId!));
@@ -3501,7 +3501,7 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
       blocker: { reasonCode: "review_required", owner: { kind: "agent", name: "ESCD" }, unblockAction: "Review the release notes draft.", scope: "task_wide" },
     };
     await db.update(agents).set({
-      permissions: { authorizationPolicy: { assignmentPolicy: { mode: "restricted" } } },
+      permissions: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } },
     }).where(eq(agents.id, delegateAgentId));
     try {
       await expect(nativeCompletionFeedback(db, policySeeded.runId, policyNamed as never))
@@ -3516,6 +3516,25 @@ describe("P6-31 Section 18.13 executable status-authority corpus", () => {
     } finally {
       await db.update(agents).set({ permissions: {} }).where(eq(agents.id, delegateAgentId));
     }
+
+    // Skill-test runs carry a restricted keyScope and cannot hand off via blocker.
+    const skillSeeded = await seedFixture({ ...corpus.fixtures.find((fixture) => fixture.id === "real-task-wide-blocker")!, id: `skill-test-blocker-${randomUUID()}` });
+    const [skillStored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, skillSeeded.resultId!));
+    const skillNamed = {
+      ...(skillStored!.resultJson.result as Record<string, unknown>),
+      reportedWorkDisposition: "blocked",
+      blocker: { reasonCode: "review_required", owner: { kind: "agent", name: "ESCD" }, unblockAction: "Review the release notes draft.", scope: "task_wide" },
+    };
+    await db.update(heartbeatRuns).set({ contextSnapshot: { paperclipSkillTest: true } }).where(eq(heartbeatRuns.id, skillSeeded.runId));
+    await expect(nativeCompletionFeedback(db, skillSeeded.runId, skillNamed as never))
+      .rejects.toThrow("cannot be assigned this task");
+    await db.update(nativeRunResults).set({ resultJson: { ...skillStored!.resultJson, result: skillNamed } })
+      .where(eq(nativeRunResults.id, skillSeeded.resultId!));
+    await finalizeNativeRun({ db, runId: skillSeeded.runId, workspaceFinalizeStatus: "succeeded" });
+    const skillIssue = (await issueService(db).getById(skillSeeded.issueId))!;
+    expect(skillIssue.status).toBe("blocked");
+    expect(skillIssue.assigneeAgentId).toBe(agentId);
+    expect(skillIssue.unblockDescriptor).toEqual(expect.objectContaining({ owner: "board" }));
   }, 30_000);
 
   it("withdraws obsolete policy reviews, restores the prior status, and is idempotent", async () => {

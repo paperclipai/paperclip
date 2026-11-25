@@ -5,7 +5,8 @@ import { isConversation } from "../../lib/conversation-wake-policy.js";
 import { assertAssignableAgent } from "../agent-assignability.js";
 import { agentInteractionDenial } from "../agent-interaction-policy.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
-import { authorizationService } from "../authorization.js";
+import { authorizationService, type AuthorizationActor } from "../authorization.js";
+import { nativeRunKeyScope } from "./native-skill-test-scope.js";
 
 export type BlockerHandoffEligibility =
   | { allowed: true }
@@ -20,6 +21,50 @@ export type BlockerHandoffEligibility =
         | "interaction_denied";
       message: string;
     };
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown> : {};
+}
+
+async function resolveExternalAuthorizingUserId(
+  db: Db,
+  input: {
+    companyId: string;
+    actorAgentId: string;
+    driverKind?: string | null;
+    runnerProfileJson?: unknown;
+  },
+): Promise<{ ok: true; authorizingUserId?: string } | { ok: false }> {
+  const execution = record(record(input.runnerProfileJson).nativeExecutionInput);
+  const provider = record(execution.provider);
+  const isMuse = input.driverKind === "muse_external"
+    || execution.schema === "paperclip.native-execution-input.v8"
+    || provider.kind === "muse";
+  if (!isMuse) return { ok: true };
+  const binding = record(provider.binding);
+  if (
+    binding.companyId !== input.companyId ||
+    binding.agentId !== input.actorAgentId ||
+    typeof binding.bindingId !== "string" ||
+    typeof binding.bindingGeneration !== "number"
+  ) {
+    return { ok: false };
+  }
+  try {
+    const { museRunnerBroker } = await import("../muse-runner-broker.js");
+    const authorizingUserId = await museRunnerBroker(db).authorizingUserIdForBinding({
+      companyId: binding.companyId,
+      agentId: binding.agentId,
+      bindingId: binding.bindingId,
+      bindingGeneration: binding.bindingGeneration,
+    });
+    return { ok: true, authorizingUserId };
+  } catch (error) {
+    if (error instanceof HttpError) return { ok: false };
+    throw error;
+  }
+}
 
 /** Tasks bound to an external chat channel lock their agent assignment (`chat_binding_agent_locked`). */
 export async function hasExternalChatBinding(
@@ -39,7 +84,8 @@ export async function hasExternalChatBinding(
  * Single authority check for handing a blocked task to another named agent.
  * Shared across report-time feedback, finalizer arbitration, and the committer's
  * under-lock recheck so all three layers enforce the exact same invariants,
- * including `tasks:assign` authorization, assignment policy, and interaction policy.
+ * including `tasks:assign` authorization with the run's full principal (`keyScope`
+ * and external `authorizingUserId`), assignment policy, and interaction policy.
  */
 export async function evaluateBlockerAgentHandoff(
   db: Db,
@@ -50,6 +96,7 @@ export async function evaluateBlockerAgentHandoff(
       projectId: string | null;
       parentId: string | null;
       status: string;
+      workMode: string;
       conversationAgentId: string | null;
       conversationUserId: string | null;
       assigneeAgentId: string | null;
@@ -58,6 +105,9 @@ export async function evaluateBlockerAgentHandoff(
     runId: string;
     actorAgentId: string | null;
     responsibleUserId?: string | null;
+    driverKind?: string | null;
+    contextSnapshot?: unknown;
+    runnerProfileJson?: unknown;
     targetAgentId: string;
     unblockAction: string;
     requireTaskOwner?: boolean;
@@ -112,16 +162,38 @@ export async function evaluateBlockerAgentHandoff(
     }
     throw error;
   }
+  const externalAuthorizer = await resolveExternalAuthorizingUserId(db, {
+    companyId: input.companyId,
+    actorAgentId: input.actorAgentId,
+    driverKind: input.driverKind,
+    runnerProfileJson: input.runnerProfileJson,
+  });
+  if (!externalAuthorizer.ok) {
+    return {
+      allowed: false,
+      reason: "unauthorized",
+      message: "The named blocker owner cannot be assigned this task: external run authorizer is unavailable. Choose another agent or name a person.",
+    };
+  }
+  const actor: AuthorizationActor = {
+    type: "agent",
+    agentId: input.actorAgentId,
+    companyId: input.companyId,
+    runId: input.runId,
+    source: "agent_jwt",
+    onBehalfOfUserId: input.responsibleUserId ?? null,
+    keyScope: nativeRunKeyScope({
+      issueId: input.issue.id,
+      workMode: input.issue.workMode,
+      contextSnapshot: input.contextSnapshot,
+    }),
+    ...(externalAuthorizer.authorizingUserId
+      ? { authorizingUserId: externalAuthorizer.authorizingUserId }
+      : {}),
+  };
   const authDecision = await authorizationService(db).decide(
     {
-      actor: {
-        type: "agent",
-        agentId: input.actorAgentId,
-        companyId: input.companyId,
-        runId: input.runId,
-        source: "agent_jwt",
-        onBehalfOfUserId: input.responsibleUserId ?? null,
-      },
+      actor,
       action: "tasks:assign",
       resource: {
         type: "issue",

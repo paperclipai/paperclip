@@ -1784,6 +1784,9 @@ export async function commitNativeStatusDecision(input: {
     const [originRun] = await tx.select({
       agentId: heartbeatRuns.agentId,
       responsibleUserId: heartbeatRuns.responsibleUserId,
+      driverKind: heartbeatRuns.driverKind,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+      runnerProfileJson: heartbeatRuns.runnerProfileJson,
     }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
     if (input.requireReassessmentSource) {
@@ -1923,6 +1926,9 @@ export async function commitNativeStatusDecision(input: {
           runId: input.runId,
           actorAgentId: originRun?.agentId ?? null,
           responsibleUserId: originRun?.responsibleUserId ?? null,
+          driverKind: originRun?.driverKind ?? null,
+          contextSnapshot: originRun?.contextSnapshot,
+          runnerProfileJson: originRun?.runnerProfileJson,
           targetAgentId: input.decision.handoffAgentId,
           unblockAction: input.decision.unblockDescriptor?.action ?? "",
           requireTaskOwner: true,

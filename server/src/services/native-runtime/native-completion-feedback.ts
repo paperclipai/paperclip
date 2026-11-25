@@ -188,6 +188,9 @@ export async function nativeCompletionFeedback(
         runId: run.id,
         actorAgentId: run.agentId,
         responsibleUserId: run.responsibleUserId,
+        driverKind: run.driverKind,
+        contextSnapshot: run.contextSnapshot,
+        runnerProfileJson: run.runnerProfileJson,
         targetAgentId: owner.agentId,
         unblockAction: result.blocker.unblockAction,
       });
