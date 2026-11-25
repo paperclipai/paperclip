@@ -19,7 +19,9 @@ A non-null recipient limits agent discovery, references, details, versions,
 file reads and execution delivery to that agent. Project-source access is an
 additional requirement. Board operators retain company administration access.
 Background reads without an actor cannot load recipient-restricted content.
-`null` retains the previous company/project behavior.
+`null` retains the previous company/project behavior. Skill folder counts include
+only accessible skills. Moving a hidden skill by its known ID returns `404`,
+just like an unknown ID, and does not change its folder.
 
 Skill assignments control whether an accessible skill is enabled. They do not
 change its recipient. A wrong-recipient assignment or a stale version pin does

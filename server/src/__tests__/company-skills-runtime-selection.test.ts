@@ -8,6 +8,7 @@ import { and, eq } from "drizzle-orm";
 import { PAPERCLIP_FEEDBACK_SKILL_KEYS, PAPERCLIP_OPERATIONAL_SKILL_KEY, readPaperclipRuntimeSkillEntries, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { buildSkillLibraryManifestMarkdown } from "@paperclipai/adapter-utils/skill-library-manifest";
 import { applyConnectorSkills } from "../services/connector-runtime.js";
+import { executeSkillLibraryTool, SkillLibraryReadCache } from "../services/native-runtime/native-skill-library-tools.js";
 import { readAssignedSkill } from "../services/native-runtime/runner-bridge-tools.js";
 import { companySkillService } from "../services/company-skills.js";
 import { authorizationService, type AuthorizationActor } from "../services/authorization.js";
@@ -221,10 +222,16 @@ describeDatabase("selected runtime skill reconciliation", () => {
       await db.update(companySkills).set({ recipientAgentId: ownerId }).where(eq(companySkills.id, skill.id));
       fixtures.push(skill);
     }
+    const nativeCache = new SkillLibraryReadCache();
+    const nativeRead = (agentId: string, tool: string, arguments_: unknown) => executeSkillLibraryTool({
+      db, companyId, tool, arguments: arguments_, cache: nativeCache, authorize: async () => actorFor(agentId),
+    });
     const keys = fixtures.map(skill => skill.key);
     expect((await serviceFor(ownerId).list(companyId)).filter(skill => keys.includes(skill.key))).toHaveLength(5);
     for (const skill of fixtures) {
       expect((await serviceFor(ownerId).getById(companyId, skill.id))?.id).toBe(skill.id);
+      expect(await nativeRead(ownerId, "search_skills", { query: skill.key })).toMatchObject({ skills: [{ id: skill.id }] });
+      expect(await nativeRead(ownerId, "load_skill", { skill: skill.id })).toMatchObject({ skillId: skill.id, text: expect.stringContaining("Safe fixture content") });
       expect((await serviceFor(ownerId).readFile(companyId, skill.id, "SKILL.md"))?.content).toContain("Safe fixture content");
     }
     expect((await runtime(fixtureAgents[0]!, keys)).keys.filter(key => keys.includes(key))).toHaveLength(5);
@@ -235,6 +242,8 @@ describeDatabase("selected runtime skill reconciliation", () => {
       expect(await runtime(peer, keys)).toEqual(before[index]!.runtime);
       for (const skill of fixtures) {
         expect(await serviceFor(peer.id).getById(companyId, skill.id)).toBeNull();
+        expect(await nativeRead(peer.id, "search_skills", { query: skill.key })).toMatchObject({ skills: [] });
+        expect(await nativeRead(peer.id, "load_skill", { skill: skill.id })).toMatchObject({ outcome: "failed", code: "runner_skill_not_found" });
         expect(await serviceFor(peer.id).getByKey(companyId, skill.key)).toBeNull();
         expect(await serviceFor(peer.id).readFile(companyId, skill.id, "SKILL.md")).toBeNull();
         await expect(readAssignedSkill({ skills: [] } as never, { skill: skill.key, path: "SKILL.md", offset: 0 }))
@@ -249,6 +258,9 @@ describeDatabase("selected runtime skill reconciliation", () => {
       onlyKeys: new Set([changed.key]), versionSelections: new Map([[changed.key, changed.currentVersionId]]),
     });
     expect(stale).toEqual([]);
+    expect(await nativeRead(ownerId, "load_skill", { skill: changed.id, versionId: changed.currentVersionId }))
+      .toMatchObject({ outcome: "failed", code: "runner_skill_not_found" });
+    nativeCache.close();
     expect(await serviceFor(ownerId).readFile(companyId, changed.id, "SKILL.md")).toBeNull();
     await db.update(companySkills).set({ recipientAgentId: ownerId }).where(eq(companySkills.id, changed.id));
     await expect(db.delete(agents).where(eq(agents.id, ownerId))).rejects.toThrow();

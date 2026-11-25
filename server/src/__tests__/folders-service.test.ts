@@ -1,10 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import express from "express";
+import request from "supertest";
 import { eq, sql } from "drizzle-orm";
 import {
   folderSlugSchema,
 } from "@paperclipai/shared";
 import {
+  agents,
+  activityLog,
   companies,
   companySkills,
   createDb,
@@ -16,6 +20,10 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { folderService } from "../services/folders.js";
+import { folderRoutes } from "../routes/folders.js";
+import { errorHandler } from "../middleware/error-handler.js";
+import { skillAccessRequestContext, withSkillActor } from "../services/skill-access.js";
+import type { AuthorizationActor } from "../services/authorization.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -33,6 +41,8 @@ describeEmbeddedPostgres("folder service", () => {
     await db.delete(companySkills);
     await db.delete(routines);
     await db.delete(folders);
+    await db.delete(activityLog);
+    await db.delete(agents);
     await db.delete(companies);
   });
 
@@ -79,6 +89,94 @@ describeEmbeddedPostgres("folder service", () => {
       .returning();
     return skill!;
   }
+
+  async function recipientFixture() {
+    const companyId = await seedCompany();
+    const actors: AuthorizationActor[] = [];
+    for (const adapterType of ["claude_local", "codex_local", "process"] as const) {
+      const [agent] = await db.insert(agents).values({ companyId, name: adapterType, adapterType }).returning();
+      actors.push({ type: "agent", companyId, agentId: agent!.id, source: "agent_jwt" });
+    }
+    const [owner] = await db.insert(agents).values({ companyId, name: "Publisher", adapterType: "claude_local" }).returning();
+    const ownerActor: AuthorizationActor = { type: "agent", companyId, agentId: owner!.id, source: "agent_jwt" };
+    const svc = folderService(db);
+    const folder = await svc.create(companyId, { kind: "skill", name: "Marketing" });
+    const ordinary = await seedSkill(companyId, "ordinary", folder.id);
+    await seedSkill(companyId, "unfiled");
+    const baseline = await svc.list(companyId, "skill");
+    const restricted = [];
+    for (const [index, slug] of ["marketing-loops", "product-marketing", "aso", "paywalls", "signup"].entries()) {
+      const skill = await seedSkill(companyId, slug, index % 2 ? folder.id : null);
+      await db.update(companySkills).set({ recipientAgentId: owner!.id }).where(eq(companySkills.id, skill.id));
+      restricted.push(skill);
+    }
+    return { companyId, actors, ownerActor, svc, folder, ordinary, baseline, restricted };
+  }
+
+  function appFor(actor: AuthorizationActor) {
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.actor = actor as typeof req.actor; next(); });
+    app.use(skillAccessRequestContext);
+    app.use("/api", folderRoutes(db));
+    app.use(errorHandler);
+    return app;
+  }
+
+  it("keeps peer folder counts unchanged while counting recipient skills for the owner and board", async () => {
+    const { companyId, actors, ownerActor, svc, folder, baseline } = await recipientFixture();
+    for (const actor of actors) {
+      expect(await withSkillActor(actor, () => svc.list(companyId, "skill"))).toEqual(baseline);
+      const response = await request(appFor(actor)).get(`/api/companies/${companyId}/folders?kind=skill`);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual(JSON.parse(JSON.stringify(baseline)));
+    }
+    for (const actor of [ownerActor, { type: "board", userId: "operator", companyIds: [companyId] } as AuthorizationActor]) {
+      const response = await request(appFor(actor)).get(`/api/companies/${companyId}/folders?kind=skill`);
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ allCount: 7, unfiledCount: 4 });
+      expect(response.body.folders).toContainEqual(expect.objectContaining({ id: folder.id, itemCount: 3 }));
+    }
+    expect(await svc.list(companyId, "skill")).toEqual(baseline);
+  });
+
+  it("returns the same 404 for hidden and unknown skill moves without writing, and preserves allowed moves", async () => {
+    const { companyId, actors, ownerActor, svc, folder, ordinary, restricted } = await recipientFixture();
+    for (const actor of actors) {
+      const app = appFor(actor);
+      const missing = await request(app).post(`/api/companies/${companyId}/folders/items/move`)
+        .send({ kind: "skill", itemId: randomUUID(), folderId: folder.id });
+      expect(missing.status).toBe(404);
+      for (const skill of restricted) {
+        const response = await request(app).post(`/api/companies/${companyId}/folders/items/move`)
+          .send({ kind: "skill", itemId: skill.id, folderId: folder.id });
+        expect(response.status).toBe(404);
+        expect(response.body).toEqual(missing.body);
+        await expect(withSkillActor(actor, () => svc.moveItem(companyId, {
+          kind: "skill", itemId: skill.id, folderId: null,
+        }))).rejects.toMatchObject({ status: 404 });
+        const [unchanged] = await db.select().from(companySkills).where(eq(companySkills.id, skill.id));
+        expect(unchanged!.folderId).toBe(skill.folderId);
+        expect(unchanged!.updatedAt).toEqual(skill.updatedAt);
+      }
+    }
+    expect(await db.select().from(activityLog)).toEqual([]);
+    for (const [actor, skill, folderId] of [
+      [ownerActor, restricted[0]!, folder.id],
+      [{ type: "board", userId: "operator", companyIds: [companyId] }, restricted[1]!, null],
+      [actors[0]!, ordinary, null],
+    ] as const) {
+      const response = await request(appFor(actor as AuthorizationActor)).post(`/api/companies/${companyId}/folders/items/move`)
+        .send({ kind: "skill", itemId: skill.id, folderId });
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ itemId: skill.id, folderId });
+    }
+    expect(await db.select().from(activityLog)).toHaveLength(3);
+    await db.update(companySkills).set({ recipientAgentId: actors[0]!.agentId }).where(eq(companySkills.id, restricted[0]!.id));
+    const stale = await request(appFor(ownerActor)).post(`/api/companies/${companyId}/folders/items/move`)
+      .send({ kind: "skill", itemId: restricted[0]!.id, folderId: null });
+    expect(stale.status).toBe(404);
+  });
 
   it("creates, updates, reorders, and lists routine folders with counts", async () => {
     const companyId = await seedCompany();

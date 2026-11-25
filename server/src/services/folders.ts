@@ -11,6 +11,7 @@ import type {
   UpdateFolder,
 } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { skillAccessService } from "./skill-access.js";
 
 const MAX_FOLDER_DEPTH = 4;
 const RESERVED_ROOT_SLUGS = new Set(["bundled", "my", "projects"]);
@@ -152,7 +153,7 @@ export function folderService(db: Db, mutationLockHeld = false) {
     return db
       .select({ folderId: companySkills.folderId, count: sql<number>`count(*)::int` })
       .from(companySkills)
-      .where(eq(companySkills.companyId, companyId))
+      .where(and(eq(companySkills.companyId, companyId), await skillAccessService(db).condition(companyId)))
       .groupBy(companySkills.folderId);
   }
 
@@ -364,6 +365,8 @@ export function folderService(db: Db, mutationLockHeld = false) {
   }
 
   async function moveItem(companyId: string, input: MoveFolderItem) {
+    const access = skillAccessService(db);
+    if (input.kind === "skill") await access.assertSkill(companyId, input.itemId);
     if (input.folderId) {
       const target = await getFolder(companyId, input.folderId);
       if (!target) throw notFound("Folder not found");
@@ -383,7 +386,7 @@ export function folderService(db: Db, mutationLockHeld = false) {
     const existing = await db
       .select({ id: companySkills.id, folderId: companySkills.folderId })
       .from(companySkills)
-      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, input.itemId)))
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, input.itemId), await access.condition(companyId)))
       .then((rows) => rows[0] ?? null);
     if (!existing) throw notFound("Skill not found");
     if (existing.folderId && await isBundledFolder(companyId, existing.folderId)) {
@@ -392,9 +395,10 @@ export function folderService(db: Db, mutationLockHeld = false) {
     const row = await db
       .update(companySkills)
       .set({ folderId: input.folderId ?? null, updatedAt: new Date() })
-      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, input.itemId)))
+      .where(and(eq(companySkills.companyId, companyId), eq(companySkills.id, input.itemId), await access.condition(companyId)))
       .returning({ id: companySkills.id, folderId: companySkills.folderId })
-      .then((rows) => rows[0]!);
+      .then((rows) => rows[0] ?? null);
+    if (!row) throw notFound("Skill not found");
     return { kind: input.kind, itemId: row.id, folderId: row.folderId ?? null };
   }
 
