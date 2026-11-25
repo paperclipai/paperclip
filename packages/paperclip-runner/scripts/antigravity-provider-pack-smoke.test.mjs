@@ -7,7 +7,7 @@ import distributions from "../antigravity-distributions.json" with { type: "json
 
 const pins = Object.fromEntries(Object.entries(distributions.platforms).filter(([, platform]) => platform.provisioning === "verified-closure")
   .map(([target, platform]) => [target, { closureSha256: platform.closureSha256 }]));
-const released = () => { const { qualificationStatus: _pending, ...profile } = profiles.profiles.antigravity; return profile; };
+const pending = () => ({ ...profiles.profiles.antigravity, qualificationStatus: "pending" });
 
 function fixture(profile, target = "linux-x64") {
   const [platform, architecture] = target.split("-");
@@ -19,8 +19,8 @@ function fixture(profile, target = "linux-x64") {
 }
 
 for (const [name, profile, inventory, other] of [
-  ["pending", profiles.profiles.antigravity, "candidateProviders", "providers"],
-  ["released", released(), "providers", "candidateProviders"],
+  ["pending", pending(), "candidateProviders", "providers"],
+  ["released", profiles.profiles.antigravity, "providers", "candidateProviders"],
 ]) {
   test(`${name} smoke accepts only the ${inventory} entry with the patched linux-x64 closure`, () => {
     const manifest = fixture(profile);

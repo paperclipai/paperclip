@@ -12,11 +12,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("../../vendor/paperclip-runner/index.js", async importOriginal => {
   const original = await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>();
-  const { qualificationStatus: _pending, ...released } = original.QUALIFIED_ACPX_PROFILES.antigravity;
+  const pending = { ...original.QUALIFIED_ACPX_PROFILES.antigravity, qualificationStatus: "pending" as const };
   const profiles = { ...original.QUALIFIED_ACPX_PROFILES };
   Object.defineProperty(profiles, "antigravity", {
     enumerable: true,
-    get: () => mocks.released ? released : original.QUALIFIED_ACPX_PROFILES.antigravity,
+    get: () => mocks.released ? original.QUALIFIED_ACPX_PROFILES.antigravity : pending,
   });
   return {
     ...original,

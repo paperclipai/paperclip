@@ -15,6 +15,11 @@ Owner decisions (2026-11-25):
   [harness availability](../harness-availability.md)). Cloud's harness list is
   a fleet `env_config` campaign on `PAPERCLIP_AVAILABLE_HARNESSES`; the
   canonical ID is `antigravity_runtime`.
+- Waive `runner-e2e-paid` (item 7) as a blocker for the item 8 qualification
+  flip (`pending` to `qualified`, profile revision `2`, `recovery: "unverified"`)
+  so Antigravity can ship to `paperclip.staging` and be tested there. Paid-key
+  qualification rows stay marked NOT RUN in the qualification ledger until
+  actually executed.
 
 Evidence below was read on 2026-11-25 from Core `master` at `87083fe982` and
 paperclip-cloud `master` at `f3b9e76`. Between `87083fe982` and this PR's base,
@@ -36,8 +41,10 @@ Copied from the kickoff success criteria. Re-read before saying "done".
    thread.
 2. Recovery holds in Cloud: Stop works; a mid-run deploy or restart resumes,
    or Retry works (0% needed-retry target).
-3. The profile is qualified (pending to qualified) on live evidence, per the
-   ledger rule, not on local-only proof. This needs a paid Gemini API key.
+3. The profile is qualified (pending to qualified, profile revision `2`,
+   `recovery: "unverified"`) under the owner's 2026-11-25 waiver of
+   `runner-e2e-paid` so staging testing can proceed; the paid-key rows stay
+   marked NOT RUN in the ledger until run.
 4. Cloud policy lists `antigravity_runtime` through a fleet `env_config`
    campaign: staging first and verified, production after.
 5. Credentials: a person's Google token placed in a sandbox is scoped to that
@@ -256,8 +263,12 @@ Reuse the Claude delivery for the token and the Codex path for write-back:
 
 ## 4. The qualification flip
 
-Rule (ledger "Acceptance ledger"): the profile stays pending until every NOT
-RUN row passes live.
+Original rule (ledger "Acceptance ledger"): the profile stayed pending until
+every NOT RUN row passed live. **Owner waiver (2026-11-25):** the owner waived
+`runner-e2e-paid` as a flip blocker so item 8 can flip the profile to
+`qualified` (profile revision `2`, keeping `recovery: "unverified"`) and ship
+to `paperclip.staging` for live testing there. Every NOT RUN row below remains
+NOT RUN (deferred, never marked passed).
 
 | NOT RUN row | Needs a paid Gemini key? | Can the sign-in route satisfy it? |
 | --- | --- | --- |
@@ -332,8 +343,8 @@ in that repository.
 | 4 | Hosted Google sign-in (spike, then route and UI) | Core | `server/src/routes/ai-connections.ts`, `server/src/services/local-ai-login.ts`, `local-ai-browser-login.ts`, Runner `antigravity-auth.ts`, UI connection dialog | Spike answers the loopback question first. Then: on an authenticated public instance, a user completes Google sign-in by pasting the redirect; wrong `state`, reused code and another user's attempt are refused; the connection lists models | none | A |
 | 5 | Delete the saved Google sign-in on disconnect (no revoke at Google, see G10) | Core | AI connection removal and grant revocation paths, activity log | Disconnect deletes the saved sign-in (a shared one is kept; a failed delete keeps a retryable reference), the activity entry says in plain words that the sign-in stays valid at Google until the person removes it there, a later run asks to reconnect | none | A |
 | 6 | Allow Antigravity on plugin Runner-task and remote sign-in targets | Core | `antigravity-release.ts`, `antigravity-connection-probe.ts` (use the plugin probe path, `server/src/services/native-runtime/plugin-runner-probe.ts`), `antigravity-connection-policy.ts`, `antigravity-runner-credentials.ts`, `agents.ts` | Tested against a released-profile fixture (the real profile is still pending when this merges): picker offers Antigravity on a plugin environment; Test runs the plugin probe; save and run accept sign-in on remote targets when 2 is present. The Core sandbox path gets the same sign-in support. Re-verified live in item 12. **Status: done.** Merged in #22940; run-start tests (pending profile refused on plugin and sandbox targets without a grant, released profile hands the plugin Runner its typed API-key or sign-in credential) added in a follow-up | 1, 2, 3 | C |
-| 7 | Qualification runs on a paid key | Core (ledger) | `doc/plans/2026-11-22-antigravity-qualification.md` | All NOT RUN rows in section 4 pass live (24 cells local and Daytona, both lineups, session-load or no claim, attended sign-in journey, image pull time) | paid key (owner) | A (starts when the key exists) |
-| 8 | Flip Antigravity from pending to qualified | Core | `packages/paperclip-runner` release declaration and generated profiles, capability profile, docs, UI copy | Ledger rule met; the Core image's provider pack includes the closure without a candidate flag; no operator grant needed | 7, 3 | D |
+| 7 | Qualification runs on a paid key (waived as item 8 blocker on 2026-11-25; deferred) | Core (ledger) | `doc/plans/2026-11-22-antigravity-qualification.md` | All NOT RUN rows in section 4 pass live (24 cells local and Daytona, both lineups, session-load or no claim, attended sign-in journey, image pull time) | paid key (owner) | A (deferred) |
+| 8 | Flip Antigravity from pending to qualified | Core | `packages/paperclip-runner` release declaration and generated profiles (profile v2), capability profile (`recovery: "unverified"`), adapter-utils, server routes/profile/qualification, docs | Owner waiver recorded honestly in ledger; the Core image's `linux-x64` provider pack includes the closure without a candidate flag; no operator grant needed | 3 (7 waived on 2026-11-25) | D |
 | 9 | Run Antigravity on agent computers through ACPX | Cloud | `extensions/plugin-agent-computer/src/harnesses.ts`, `agent-computer/harness/harnesses.json`, `harness.go`, Launcher `task_credentials.go`, `configured_environment.go`, `agent-computer/runtime/select-pack.mjs`, `assemble.mjs`, `pack-manifest.mjs`, `verify*.mjs`, tests (copy Cloud #1696) | Row `antigravity`: driver `acpx`, `acpxAgent: "antigravity"`, `projectAuthProvider: "google"`, credential `task-env` with key sets `GEMINI_API_KEY` or the sign-in key, reserved prefixes `GEMINI_` and `GOOGLE_`, reserved exact key `PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET` with a negative test (a configured or project environment that sets it is refused), blocked project settings for `.gemini/settings.json` endpoint and key fields, the Runner's runtime root (so `agentHomeDirectory`) in the private task path, with a test that a concurrent task of the same agent cannot read the staged file, `/proc/<pid>/environ` or Runner memory, per-turn, closure under `provider-assets/antigravity/linux-x64` copied into the ROM. Tests pin the two tables together | 1, 2 (types); ROM content needs 8 | B (code), E (ROM) |
 | 10 | Pin the Runner ROM to a Core with the flip | Cloud | `agent-computer/runner-source.lock.json`, `runner-pnpm-lock.yaml` | ROM and fleet sandbox image build; closure verified at build; ROM size, build time, boot and first-token time recorded before and after | 8, 9 | E |
 | 11 | Staging policy campaign | Fleet (operator action, no code) | `env_config` campaign with the full array plus `antigravity_runtime`, canary first | Staging `/api/health` lists the exact array; picker shows Google Antigravity | 10 deployed on staging, 6 deployed | F |
@@ -355,7 +366,8 @@ broader or production exposure (items 13 and 14).
 ## 7. Waiting on the owner
 
 - **Paid Gemini API key** in the `runner-e2e-paid` environment's
-  `GEMINI_API_KEY` secret. Blocks 7, therefore 8 onward.
+  `GEMINI_API_KEY` secret. Waived as an item 8 flip blocker on 2026-11-25;
+  still needed for deferred unattended paid-key CI runs (item 7).
 - **Ledger rule:** accept either the API-key-only suite as written, or allow
   attended sign-in evidence for the lifecycle rows (section 4).
 - **Production go-ahead** for item 14 (outward-facing).

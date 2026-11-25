@@ -256,10 +256,11 @@ Verification: `not-run` — Inspect setup identity/path and repeat reuse on an o
 
 Gaps: Source-checkout setup, different platforms, remote Cursor, provider execution, and published-package acceptance remain separate scopes. Local fixture materialization does not establish remote model readiness.
 
-Antigravity addition (2026-10-28): `paperclipai runtime setup antigravity` stages
+Antigravity addition (2026-10-28; updated 2026-11-25): `paperclipai runtime setup antigravity` stages
 the verified official and patched two-executable closures on macOS ARM64. The
-operator-only authority above is unchanged. The native profile remains pending
-at API, driver, sidecar and Rust admission; a company grant cannot enable it.
+operator-only authority above is unchanged. The native profile is qualified
+(revision 2, `recovery: "unverified"`) at API, driver, sidecar and Rust admission
+under the 2026-11-25 owner waiver of `runner-e2e-paid` for staging verification.
 Google AI API-key binding is distinct from Workspace OAuth. Evidence remains
 `source-only` for agent access: [setup](../../cli/src/commands/runtime.ts),
 [provisioner](../../packages/paperclip-runner/scripts/provision-antigravity.mjs),
