@@ -3,10 +3,11 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import { agents, companies, createDb, heartbeatRuns, issueComments, issues, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { CONVERSATION_CONTINUATION_POLICY, conversationRecoveryActionPredicate, getConversationOwnershipBlocker, isConversationAdapter } from "./conversation-continuation.js";
+import { CONVERSATION_CONTINUATION_POLICY, conversationRecoveryActionPredicate, getConversationOwnershipBlocker, isConversationAdapter, runUsedConversationAdapter } from "./conversation-continuation.js";
 import { deliverExecutionStatuses } from "./execution-status-delivery.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
+import { legacyExecutionNeedsReconciliation } from "./legacy-execution-recovery.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -181,7 +182,7 @@ describePostgres("execution identity query contracts", () => {
       finishedAt,
       contextSnapshot: { issueId: f.otherIssueId },
       runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } },
-      resultJson: { conversationContinuation: CONVERSATION_CONTINUATION_POLICY },
+      resultJson: { status: "cancelled", conversationContinuation: CONVERSATION_CONTINUATION_POLICY },
     });
     const [policyHold] = await db.insert(issueRecoveryActions).values({
       companyId: f.companyId,
@@ -256,17 +257,18 @@ describePostgres("execution identity query contracts", () => {
     expect(cancelledAdmitted).toMatchObject({ previousRunId: cancelledRunId, commentId: followUpCommentId });
     expect(await getExecutionBlocker(db, f.companyId, cancelledIssueId)).toBeNull();
 
-    // (e) A timed-out hermes_gateway run whose remote stop was never confirmed (status: "timeout") fails closed.
+    // (e) A timed-out hermes_gateway run whose remote stop was never confirmed (status: "timeout") fails closed
+    // across reconciliation classification, conversation hold retirement, execution blocking, and explicit Retry.
     const unconfirmedIssueId = randomUUID();
     const unconfirmedRunId = randomUUID();
     await db.insert(issues).values({ id: unconfirmedIssueId, companyId: f.companyId, title: "Unconfirmed Hermes timeout", status: "blocked", assigneeAgentId: f.agentId });
-    await db.insert(heartbeatRuns).values({
+    const [unconfirmedRun] = await db.insert(heartbeatRuns).values({
       id: unconfirmedRunId,
       companyId: f.companyId,
       agentId: f.agentId,
       issueId: unconfirmedIssueId,
       status: "timed_out",
-      errorCode: "hermes_gateway_timeout",
+      errorCode: "execution_reconciliation_required",
       runtimeMode: "legacy",
       processPid: null,
       processGroupId: null,
@@ -274,7 +276,9 @@ describePostgres("execution identity query contracts", () => {
       contextSnapshot: { issueId: unconfirmedIssueId },
       runnerProfileJson: { adapterDispatch: { adapterType: "hermes_gateway" } },
       resultJson: { run_id: "hermes-remote-3", status: "timeout" },
-    });
+    }).returning();
+    expect(legacyExecutionNeedsReconciliation(unconfirmedRun!)).toBe(true);
+    expect(await runUsedConversationAdapter(db, unconfirmedRun!)).toBe(false);
     const [unconfirmedHold] = await db.insert(issueRecoveryActions).values({
       companyId: f.companyId,
       sourceIssueId: unconfirmedIssueId,
@@ -287,6 +291,9 @@ describePostgres("execution identity query contracts", () => {
       evidence: { runId: unconfirmedRunId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
       nextAction: "Inspect the stopped run before continuing.",
     }).returning();
+    const unconfirmedRetired = await db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.id, unconfirmedHold!.id), conversationRecoveryActionPredicate()));
+    expect(unconfirmedRetired).toEqual([]);
     const unconfirmedBlocked: string[] = [];
     const unconfirmedAdmitted = await admitExplicitNativeContinuation({
       db,

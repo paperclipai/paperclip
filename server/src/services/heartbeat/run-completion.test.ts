@@ -2027,5 +2027,50 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       resultJson: { status: "cancelled" },
     });
     expect(fCancel.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+
+    const { hasConversationContinuationPolicy } = await import("../conversation-continuation.js");
+    const { legacyExecutionNeedsReconciliation } = await import("../legacy-execution-recovery.js");
+
+    const fUnconfirmedTimeout = await fixture({}, `HU${randomUUID().slice(0, 6)}`);
+    const [hermesUnconfirmedAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+      .where(eq(agents.id, fUnconfirmedTimeout.agent.id)).returning();
+    await fUnconfirmedTimeout.completion.completeRun({
+      ...fUnconfirmedTimeout.input,
+      agent: hermesUnconfirmedAgent!,
+      adapterResult: {
+        exitCode: 1,
+        signal: null,
+        timedOut: true,
+        errorCode: "hermes_gateway_timeout",
+        errorMessage: "Hermes gateway run timed out after 300s.",
+        provider: "hermes_gateway",
+        resultJson: { run_id: "hermes-timeout-unconfirmed", status: "timeout" },
+      },
+    });
+    const unconfirmedPersisted = await read(fUnconfirmedTimeout.run.id);
+    expect(unconfirmedPersisted?.status).toBe("timed_out");
+    expect(hasConversationContinuationPolicy(unconfirmedPersisted?.resultJson)).toBe(false);
+    expect(legacyExecutionNeedsReconciliation(unconfirmedPersisted!)).toBe(true);
+
+    const fConfirmedTimeout = await fixture({}, `HT${randomUUID().slice(0, 6)}`);
+    const [hermesConfirmedAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+      .where(eq(agents.id, fConfirmedTimeout.agent.id)).returning();
+    await fConfirmedTimeout.completion.completeRun({
+      ...fConfirmedTimeout.input,
+      agent: hermesConfirmedAgent!,
+      adapterResult: {
+        exitCode: 1,
+        signal: null,
+        timedOut: true,
+        errorCode: "hermes_gateway_timeout",
+        errorMessage: "Hermes gateway run timed out after 300s.",
+        provider: "hermes_gateway",
+        resultJson: { run_id: "hermes-timeout-confirmed", status: "cancelled" },
+      },
+    });
+    const confirmedPersisted = await read(fConfirmedTimeout.run.id);
+    expect(confirmedPersisted?.status).toBe("timed_out");
+    expect(hasConversationContinuationPolicy(confirmedPersisted?.resultJson)).toBe(true);
+    expect(legacyExecutionNeedsReconciliation(confirmedPersisted!)).toBe(false);
   });
 });
