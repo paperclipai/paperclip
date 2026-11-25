@@ -1,5 +1,5 @@
 import { LiveTranscriptInterests, DISCONNECTED_TRANSCRIPT_STREAM } from "../lib/live-transcript-interests";
-import { resolveAgentAppearance, TASK_IDENTITY_CHANGED_FIELD, issueActivityChangesTaskIdentity } from "@paperclipai/shared";
+import { RUN_STARTUP_STAGES, resolveAgentAppearance, TASK_IDENTITY_CHANGED_FIELD, issueActivityChangesTaskIdentity, type RunStartupStage } from "@paperclipai/shared";
 import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { createLiveQueryRecovery } from "../lib/live-query-recovery";
 import { isLiveReconciledQuery } from "../lib/live-reconcile";
@@ -667,6 +667,8 @@ interface RunLiveStatusPatch {
   currentToolName?: string | null;
   lastAssistantSnippet?: string | null;
   lastEventAt?: string | null;
+  startupStage?: RunStartupStage | null;
+  startupSessionResumed?: boolean;
 }
 
 function hasPatchKey<K extends keyof RunLiveStatusPatch>(
@@ -697,6 +699,12 @@ function applyRunLiveStatusPatch<T extends ActiveRunForIssue | LiveRunForIssue>(
       : {}),
     ...(hasPatchKey(patch, "lastEventAt")
       ? { lastEventAt: patch.lastEventAt }
+      : {}),
+    ...(hasPatchKey(patch, "startupStage")
+      ? { startupStage: patch.startupStage }
+      : {}),
+    ...(hasPatchKey(patch, "startupSessionResumed")
+      ? { startupSessionResumed: patch.startupSessionResumed }
       : {}),
   };
 }
@@ -735,6 +743,15 @@ function readRunLiveStatusPatchFromPayload(
     patch.currentToolName = readString(payload.currentToolName);
     patch.lastAssistantSnippet = readString(payload.lastAssistantSnippet);
     patch.lastEventAt = readString(payload.lastEventAt) ?? patch.updatedAt;
+    return patch;
+  }
+
+  if (eventType === "heartbeat.run.startup_stage") {
+    const stage = readString(payload.stage);
+    patch.startupStage = stage && (RUN_STARTUP_STAGES as readonly string[]).includes(stage)
+      ? stage as RunStartupStage
+      : null;
+    patch.startupSessionResumed = payload.sessionResumed === true;
     return patch;
   }
 
@@ -2168,7 +2185,9 @@ function handleLiveEvent(
         liveStatusPatch,
       )
     : false;
-  if (event.type === "heartbeat.run.log" || event.type === "heartbeat.run.activity") {
+  // The startup stage only patches cached runs; the next run read carries it too.
+  if (event.type === "heartbeat.run.log" || event.type === "heartbeat.run.activity"
+    || event.type === "heartbeat.run.startup_stage") {
     return;
   }
 

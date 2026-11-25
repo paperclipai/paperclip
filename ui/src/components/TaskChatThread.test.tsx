@@ -14,6 +14,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConnectivityProvider, createConnectivityStore } from "@/lib/connectivity";
 import { INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS, TaskChatThread } from "./TaskChatThread";
+import { STARTUP_LABEL_MIN_DISPLAY_MS } from "./task-chat/run-startup-stage";
 import { IssueChatThread } from "./IssueChatThread";
 import type {
   Agent,
@@ -1799,6 +1800,42 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
     expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
     expect(container.textContent).toContain("Thinking");
+  });
+
+  it("names a claimed run's startup stage in the activity slot until agent activity arrives", async () => {
+    const run = nativeRunningRun();
+    const props = {
+      comments: [], onAdd: async () => {}, issueStatus: "in_progress",
+      currentUserId: "board", issueAssigneeAgentId: "agent-1",
+      agentMap: new Map([["agent-1", { id: "agent-1", name: "Runner", adapterType: "paperclip_runner", icon: "code" } as Agent]]),
+    };
+    const activity = () => container.querySelector('[data-testid="task-chat-current-activity-label"]');
+    renderThread({ ...props, activeRun: { ...run, startupStage: "connecting_tools" } });
+    expect(activity()?.textContent).toBe("Connecting tools");
+    // The stage is the activity line; the header keeps its usual Working status.
+    expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Working");
+
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, STARTUP_LABEL_MIN_DISPLAY_MS + 50)); });
+    renderThread({ ...props, activeRun: { ...run, startupStage: "starting_agent", startupSessionResumed: true } });
+    expect(activity()?.textContent).toBe("Resuming session");
+
+    nativeTranscriptState.transcriptByRun.set(run.id, [
+      { kind: "thinking", ts: "2026-08-25T18:00:01.000Z", text: "", lifecycle: "started", itemId: "reasoning-1" },
+    ]);
+    renderThread({ ...props, activeRun: { ...run, startupStage: "starting_agent" } });
+    expect(container.textContent).not.toContain("Starting agent");
+    expect(container.textContent).not.toContain("Resuming session");
+  });
+
+  it("does not name a startup stage for a queued run", () => {
+    const run = nativeRunningRun();
+    renderThread({
+      comments: [], onAdd: async () => {}, issueStatus: "in_progress",
+      currentUserId: "board", issueAssigneeAgentId: "agent-1",
+      agentMap: new Map([["agent-1", { id: "agent-1", name: "Runner", adapterType: "paperclip_runner", icon: "code" } as Agent]]),
+      activeRun: { ...run, status: "queued", startedAt: null, startupStage: "connecting_tools" },
+    });
+    expect(container.textContent).not.toContain("Connecting tools");
   });
 
   it.each([false, true].flatMap(mobile => ["streamed", "late", "absent"].map(reply => ({ mobile, reply }))))(

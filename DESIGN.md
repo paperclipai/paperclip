@@ -155,6 +155,14 @@ so this startup feedback lasts at most 30 seconds: a turn still queued after tha
 with no named hold says `Waiting to start`, without spinner or shimmer.
 A queued turn's hold is named once, in the turn header; the turn body adds no
 second line for it.
+After a run is claimed and until its agent's turn starts, the current-activity
+slot names the run's startup stage instead of `Thinking`: `Getting ready`,
+`Waking up`, `Preparing workspace`, `Restoring session`, `Connecting tools` or
+`Starting agent` (`Resuming session` when the provider resumed a saved
+session). The header keeps `Working`. A stage shimmers like `Thinking`, because
+work is in progress. Show each stage at once, and keep a shown stage for at
+least 500 ms; a change during that time shows the latest stage when it ends.
+Agent activity replaces the stage line.
 A run that waits for one of its agent's concurrency slots is a hold too: show
 `Waiting for <agent> · N slots max · P of Q in line · Configure` (the shared
 `AgentQueueWait` component) with no spinner or elapsed timer, link Configure to the
