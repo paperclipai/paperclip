@@ -195,6 +195,13 @@ export function activityService(db: Db) {
           then ${heartbeatRuns.resultJson} -> 'workspaceRestoreFailure' end,
         'workspaceRestorePath', case when length(${heartbeatRuns.resultJson} ->> 'workspaceRestorePath') <= 180
           then ${heartbeatRuns.resultJson} -> 'workspaceRestorePath' end,
+        -- A failed /swarm offers Retry unless the swarm route said the person must
+        -- change something first (task-interruption-presentation.ts decides the same).
+        'providerFailure', case when ${heartbeatRuns.errorCode} = 'antigravity_swarm_unavailable'
+          and jsonb_typeof(${heartbeatRuns.resultJson} -> 'providerFailure') = 'object'
+          then jsonb_strip_nulls(jsonb_build_object(
+            'provider', ${heartbeatRuns.resultJson} #>> '{providerFailure,provider}',
+            'retryability', ${heartbeatRuns.resultJson} #>> '{providerFailure,retryability}')) end,
         'finalResponseRecorded', case when jsonb_typeof(${heartbeatRuns.resultJson} -> 'finalResponseRecorded') = 'boolean'
           then ${heartbeatRuns.resultJson} -> 'finalResponseRecorded' end,
         'billingType', coalesce(${heartbeatRuns.resultJson} -> 'billingType', ${heartbeatRuns.resultJson} -> 'billing_type'),

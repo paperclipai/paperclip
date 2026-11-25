@@ -1,5 +1,7 @@
-import { readFileSync } from "node:fs";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Both release states are exercised against the same build: the pending
 // candidate declaration that ships today, and the qualified declaration the
@@ -26,7 +28,7 @@ import {
   assertAntigravityExecutionAdmissible,
 } from "./antigravity-release.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
-import { nativeSessionFailureDisposition, nativeSessionFailureSourceCode, scopedRunnerdStateRoot } from "./native-session-executor.js";
+import { nativeSessionFailureDisposition, nativeSessionFailureSourceCode, retireNeverOpenedCandidateRunRoot, scopedRunnerdStateRoot } from "./native-session-executor.js";
 import { NATIVE_PROVIDER_STATE_INCOMPATIBLE } from "./native-session-resume.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 
@@ -192,6 +194,68 @@ describe("Antigravity recovery policy and state root", () => {
     const otherWorkspace = antigravityExecution({ workspaceId: "92000000-0000-4000-8000-000000000009" });
     const roots = new Set([parent, subtask, otherWorkspace].map(scopedRunnerdStateRoot));
     expect(roots.size).toBe(3);
+  });
+});
+
+describe("Antigravity candidate same-run startup retry", () => {
+  let stateBase: string;
+  beforeEach(() => {
+    stateBase = mkdtempSync(join(tmpdir(), "antigravity-candidate-root-"));
+    vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", stateBase);
+  });
+  afterEach(() => rmSync(stateBase, { recursive: true, force: true }));
+
+  /** What a candidate runner leaves after its session.open failed and it suspended. */
+  function writeFailedOpenRoot(execution: NativeExecutionInput, provider: Record<string, unknown> = {}) {
+    const root = scopedRunnerdStateRoot(execution);
+    mkdirSync(join(root, "control-plane"), { recursive: true, mode: 0o700 });
+    mkdirSync(join(root, "runner"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(root, "control-plane", "control-plane-state.json"), JSON.stringify({
+      schema: "paperclip.runner.durable.control-plane-state.v2",
+      identity: { runnerInstanceId: "80000000-0000-4000-8000-000000000008", environmentLeaseId: execution.binding.executionWorkspaceId,
+        runId: execution.binding.runId, normalizedSessionId: execution.session.normalizedSessionId },
+    }));
+    writeFileSync(join(root, "runner", "acpx-provider-state.json"), JSON.stringify({
+      schema: "paperclip.runner.acpx-provider-state.v3", lifecycle: "closed", identity: null, activeTurnId: null,
+      providerExitUnconfirmed: false, semanticResult: null, pendingEvents: [], pendingRuntimeRequests: {}, openSemanticCalls: [],
+      ...provider,
+    }));
+    return root;
+  }
+  const quarantined = (root: string) => existsSync(join(stateBase, "quarantine"))
+    && readdirSync(join(stateBase, "quarantine")).some(name => name.startsWith(`${basename(root)}.identity_indeterminate.`));
+
+  it("retires a root whose session.open never opened a provider session, so the retry starts fresh", async () => {
+    const execution = antigravityExecution();
+    const root = writeFailedOpenRoot(execution);
+    expect(await retireNeverOpenedCandidateRunRoot(execution, root)).toBe(true);
+    expect(existsSync(root)).toBe(false);
+    expect(quarantined(root)).toBe(true);
+  });
+
+  it("keeps a root that opened a provider session or started a turn, and every root once released", async () => {
+    for (const provider of [
+      { lifecycle: "suspended", identity: { kind: "acpx", acpxRecordId: "record" } },
+      { lifecycle: "closed", identity: { kind: "acpx", acpxRecordId: "record" } },
+      { lifecycle: "turn_active", activeTurnId: "turn" },
+      { providerExitUnconfirmed: true },
+    ]) {
+      const execution = antigravityExecution();
+      const root = writeFailedOpenRoot(execution, provider);
+      expect(await retireNeverOpenedCandidateRunRoot(execution, root)).toBe(false);
+      expect(existsSync(root)).toBe(true);
+      rmSync(root, { recursive: true, force: true });
+    }
+    // Another run's root is never this run's to retire.
+    const other = antigravityExecution({ runId: "50000000-0000-4000-8000-000000000005" });
+    const otherRoot = writeFailedOpenRoot(other);
+    expect(await retireNeverOpenedCandidateRunRoot(antigravityExecution(), otherRoot)).toBe(false);
+    expect(existsSync(otherRoot)).toBe(true);
+    release.pending = false;
+    const released = antigravityExecution();
+    const releasedRoot = writeFailedOpenRoot(released);
+    expect(await retireNeverOpenedCandidateRunRoot(released, releasedRoot)).toBe(false);
+    expect(existsSync(releasedRoot)).toBe(true);
   });
 });
 
