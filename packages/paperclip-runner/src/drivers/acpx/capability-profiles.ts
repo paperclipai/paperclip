@@ -27,7 +27,8 @@ export interface AcpxCapabilityProfile {
 /** These are runner integration claims, not a proxy for everything a harness can do. */
 export const ACPX_CAPABILITY_PROFILES: Readonly<Record<QualifiedAcpxAgent, AcpxCapabilityProfile>> = {
   antigravity: {
-    displayName: "Google Antigravity", qualification: "pending", models: "unverified",
+    displayName: "Google Antigravity", qualification: ANTIGRAVITY_RELEASED ? "qualified" : "pending",
+    models: ANTIGRAVITY_RELEASED ? "explicit-provider-verified" : "unverified",
     permissions: ANTIGRAVITY_RELEASED ? "interactive" : "unverified", questions: ANTIGRAVITY_RELEASED ? "form" : "not-exposed",
     plans: "semantic-only", tools: "unverified",
     recovery: "unverified", usage: "unverified", steering: "unsupported", followUp: "controller-queue",

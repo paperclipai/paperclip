@@ -24,7 +24,7 @@ const grant = (companyId: string, target: string) => {
     platform, architecture, expiresAt: Date.now() + 60_000 });
 };
 
-const release = vi.hoisted(() => ({ pending: true }));
+const release = vi.hoisted(() => ({ pending: false }));
 vi.mock("../services/native-runtime/antigravity-release.js", async importOriginal => ({
   ...await importOriginal<typeof import("../services/native-runtime/antigravity-release.js")>(),
   antigravityReleasePending: () => release.pending,
@@ -60,7 +60,7 @@ describePostgres("Google Antigravity connection refusal at agent save", () => {
   }, 90_000);
 
   beforeEach(async () => {
-    release.pending = true;
+    release.pending = false;
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Antigravity save", issuePrefix: `AS${++fixtureNumber}` });
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
@@ -112,7 +112,8 @@ describePostgres("Google Antigravity connection refusal at agent save", () => {
     expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
   });
 
-  it("refuses any cloud environment while the release is pending", async () => {
+  it("refuses any cloud environment when releasePending is forced true", async () => {
+    release.pending = true;
     const binding = await saveGoogleConnection("api_key");
     const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: cloud.id, runtimeConfig: { aiConnection: binding } });
     expect(response.status, JSON.stringify(response.body)).toBe(422);
@@ -121,37 +122,15 @@ describePostgres("Google Antigravity connection refusal at agent save", () => {
     expect((await readAgent()).defaultEnvironmentId).toBeNull();
   });
 
-  it("saves a Gemini API key on a cloud environment while pending when the operator granted linux-x64", async () => {
-    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, grant(agent.companyId, "linux-x64"));
-    const binding = await saveGoogleConnection("api_key");
-    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: cloud.id, runtimeConfig: { aiConnection: binding } });
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
-    expect((await readAgent()).defaultEnvironmentId).toBe(cloud.id);
-    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
-  });
-
-  it("refuses a cloud environment when the grant is for another company or another platform", async () => {
-    const binding = await saveGoogleConnection("api_key");
-    for (const value of [grant(randomUUID(), "linux-x64"), grant(agent.companyId, "linux-arm64")]) {
-      vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, value);
-      const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: cloud.id, runtimeConfig: { aiConnection: binding } });
-      expect(response.status, JSON.stringify(response.body)).toBe(422);
-      expect(response.body.details).toMatchObject({ code: "antigravity_remote_unavailable" });
-    }
-    expect((await readAgent()).defaultEnvironmentId).toBeNull();
-  });
-
-  it.skipIf(process.platform === "linux" && process.arch === "x64")("refuses a host agent when the company holds only a cloud grant", async () => {
+  it("ignores stale candidate grants and saves a host agent normally once released", async () => {
     vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, grant(agent.companyId, "linux-x64"));
     const response = await request(app).patch(`/api/agents/${agent.id}`)
       .send({ adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-high" } });
-    expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(response.body.error).toBe("Google Antigravity is enabled only for cloud environments in this company for now. Choose a cloud environment for this agent.");
-    expect(await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agent.id))).toHaveLength(0);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
   });
 
-  it("saves a Gemini API key on a cloud environment once released", async () => {
-    release.pending = false;
+  it("saves a Gemini API key on a cloud environment without a candidate grant", async () => {
     const binding = await saveGoogleConnection("api_key");
     const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: cloud.id, runtimeConfig: { aiConnection: binding } });
     expect(response.status, JSON.stringify(response.body)).toBe(200);

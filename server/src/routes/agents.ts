@@ -1956,7 +1956,7 @@ export function agentRoutes(
       } else if (asRecord(config)?.provider === "grok_bot" && (experimental.enableGrokBot !== true || experimental.enableNativeRunner !== true)) {
         throw unprocessable("Enable Grok Bot and Paperclip Runner before connecting this agent.", { code: "paperclip_runner_grok_disabled" });
       } else if (!([undefined, "codex", "opencode"].includes(asRecord(config)?.provider as string | undefined)) &&
-        !(asRecord(config)?.provider === "acpx" && asRecord(config)?.acpxAgent === "copilot") &&
+        !(asRecord(config)?.provider === "acpx" && (asRecord(config)?.acpxAgent === "copilot" || (asRecord(config)?.acpxAgent === "antigravity" && !antigravityReleasePending()))) &&
         !["claude_local", "pi_local", "grok_local"].includes(agentHarnessType("paperclip_runner", asRecord(config) ?? {})) &&
         experimental.enableNativeRunner !== true && !antigravityCandidate && !kimiCandidate) {
         throw unprocessable(
@@ -2036,7 +2036,7 @@ export function agentRoutes(
       throw unprocessable("Select a Paperclip Runner provider before converting this agent.");
     }
     const next = { ...defaults, ...input.nextAdapterConfig };
-    if (next.provider === "acpx" && (next.acpxAgent === "pi" || next.acpxAgent === "kimi")) {
+    if (next.provider === "acpx" && (next.acpxAgent === "pi" || next.acpxAgent === "kimi" || next.acpxAgent === "antigravity")) {
       next.model = input.nextAdapterConfig.model
         ?? (input.previousAdapterType === `${next.acpxAgent}_local` ? input.previousAdapterConfig.model : "");
     } else if (!asNonEmptyString(next.model)) next.model = defaults.model;
@@ -2276,7 +2276,7 @@ export function agentRoutes(
     const incompleteModelSetup = input.setupOnly && input.adapterType === "paperclip_runner"
       && (normalizedAdapterConfig.provider === "opencode"
         || normalizedAdapterConfig.provider === "cursor_cloud"
-        || (normalizedAdapterConfig.provider === "acpx" && ["pi", "kimi"].includes(String(normalizedAdapterConfig.acpxAgent))))
+        || (normalizedAdapterConfig.provider === "acpx" && ["pi", "kimi", "antigravity"].includes(String(normalizedAdapterConfig.acpxAgent))))
       && (normalizedAdapterConfig.model === undefined || normalizedAdapterConfig.model === "");
     // Inactive drafts can precede model selection. Test/hire always validate the complete profile.
     if (!incompleteModelSetup) await assertAdapterConfigConstraints(

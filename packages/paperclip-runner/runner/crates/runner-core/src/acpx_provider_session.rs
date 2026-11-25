@@ -2504,77 +2504,35 @@ mod mode_tests {
         }
     }
     #[test]
-    fn pending_profile_cannot_launch_even_with_explicit_policy() {
+    fn released_antigravity_launches_with_explicit_policy_and_without_candidate_grant() {
         let mut config = config();
         config.agent = "antigravity".to_owned();
+        config.mode = None;
         config.pi_thinking_level = None;
-        assert!(config
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("qualification is pending"));
-    }
-
-    #[test]
-    #[cfg(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(
-            target_os = "linux",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        )
-    ))]
-    fn candidate_admission_is_bound_and_carried_through_both_bootstrap_requests() {
-        let mut cfg = config();
-        assert!(initialize_params(&cfg).get("candidateAdmission").is_none());
-        assert!(session_open_params(&cfg, &[])
+        config.validate().unwrap();
+        assert!(initialize_params(&config)
             .get("candidateAdmission")
             .is_none());
-        cfg.agent = "antigravity".to_owned();
-        cfg.mode = None;
-        let admission = crate::acpx_candidate_admission::test_admission(
-            &cfg.run_id,
-            &cfg.normalized_session_id,
-        );
-        cfg.candidate_admission = Some(admission.clone());
-        cfg.validate().unwrap();
-        assert_eq!(
-            initialize_params(&cfg)["candidateAdmission"],
-            json!(admission)
-        );
-        assert_eq!(
-            session_open_params(&cfg, &[])["candidateAdmission"],
-            json!(admission)
-        );
-        // A granted /swarm turn keeps the same grant and names its provider mode;
+        assert!(session_open_params(&config, &[])
+            .get("candidateAdmission")
+            .is_none());
+        // A /swarm turn keeps no candidate grant and names its provider mode;
         // the sidecar, not the Runner, decides which agent modes it accepts.
-        let mut swarm = cfg.clone();
+        let mut swarm = config.clone();
         swarm.mode = Some("swarm".to_owned());
         swarm.validate().unwrap();
-        let open = session_open_params(&swarm, &[]);
-        assert_eq!(open["candidateAdmission"], json!(admission));
-        assert_eq!(open["mode"], json!("swarm"));
-        assert_eq!(
-            initialize_params(&swarm)["candidateAdmission"],
-            json!(admission)
+        assert_eq!(session_open_params(&swarm, &[])["mode"], json!("swarm"));
+        assert!(session_open_params(&swarm, &[])
+            .get("candidateAdmission")
+            .is_none());
+        // Released Antigravity refuses any injected candidate grant.
+        let admission = crate::acpx_candidate_admission::test_admission(
+            &config.run_id,
+            &config.normalized_session_id,
         );
-        for (field, value) in [
-            ("run", "different-run"),
-            ("session", "different-session"),
-            ("model", "different-model"),
-            ("agent", "codex"),
-        ] {
-            let mut invalid = cfg.clone();
-            match field {
-                "run" => invalid.run_id = value.to_owned(),
-                "session" => invalid.normalized_session_id = value.to_owned(),
-                "model" => invalid.model = value.to_owned(),
-                "agent" => invalid.agent = value.to_owned(),
-                _ => unreachable!(),
-            }
-            assert!(invalid.validate().is_err(), "{field}");
-        }
-        cfg.candidate_admission.as_mut().unwrap().expires_at = 0;
-        assert!(cfg.validate().is_err());
+        let mut granted = config.clone();
+        granted.candidate_admission = Some(admission);
+        assert!(granted.validate().is_err());
     }
 
     #[test]

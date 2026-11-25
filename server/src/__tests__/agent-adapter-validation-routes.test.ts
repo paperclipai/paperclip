@@ -513,44 +513,29 @@ describe("agent routes adapter validation", () => {
     expect(mockAntigravityModels).not.toHaveBeenCalled();
   });
 
-  it.each(["create", "hire", "edit"])("refuses pending Antigravity %s before persistence", async action => {
-    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+  it.each(["create", "hire", "edit"])("admits qualified Antigravity %s without an operator candidate grant", async action => {
     const app = await createApp();
     const adapterConfig = { provider: "acpx", acpxAgent: "antigravity", model: "exact-antigravity-model" };
     const response = action === "edit"
       ? await requestApp(app, base => request(base).patch("/api/agents/11111111-1111-4111-8111-111111111111").send({ adapterType: "paperclip_runner", adapterConfig }))
       : await requestApp(app, base => request(base).post(`/api/companies/company-1/${action === "hire" ? "agent-hires" : "agents"}`).send({ name: "Antigravity", adapterType: "paperclip_runner", adapterConfig }));
-    expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(response.body.details).toMatchObject({ code: "paperclip_runner_acpx_agent_unavailable" });
-    expect(mockAgentService.create).not.toHaveBeenCalled();
-    expect(mockAgentService.update).not.toHaveBeenCalled();
-    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    expect(response.status, JSON.stringify(response.body)).toBe(action === "edit" ? 200 : 201);
   });
 
-  it.runIf(process.platform === "darwin" && process.arch === "arm64")("saves only the exact company-authorized Antigravity candidate without persisting operator authority", async () => {
-    const [{ QUALIFIED_ACPX_PROFILES }, distributionJson] = await Promise.all([
-      import("../vendor/paperclip-runner/index.js"),
-      readFile(new URL("../../../packages/paperclip-runner/antigravity-distributions.json", import.meta.url), "utf8"),
-    ]);
-    const distributions = JSON.parse(distributionJson);
+  it("creates a qualified Google Antigravity agent without an operator candidate grant or experimental Runner flag", async () => {
+    const { QUALIFIED_ACPX_PROFILES } = await import("../vendor/paperclip-runner/index.js");
+    expect(QUALIFIED_ACPX_PROFILES.antigravity.agentProfileVersion).toBe(2);
+    expect(QUALIFIED_ACPX_PROFILES.antigravity.qualificationStatus).toBeUndefined();
     const adapterConfig = { provider: "acpx", acpxAgent: "antigravity", model: "exact-antigravity-model" };
-    const admission = { schema: "paperclip.acpx-candidate-admission.v1", companyId: "company-1", agent: "antigravity",
-      model: adapterConfig.model, profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest,
-      nativeClosureDigest: `sha256:${distributions.platforms["darwin-arm64"].closureSha256}`,
-      platform: "darwin", architecture: "arm64", expiresAt: Date.now() + 60_000 };
-    vi.stubEnv("PAPERCLIP_ACPX_CANDIDATE_ADMISSION", JSON.stringify(admission));
+    vi.stubEnv("PAPERCLIP_ACPX_CANDIDATE_ADMISSION", undefined);
     const app = await createApp();
-    const created = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send({ name: "Antigravity candidate", adapterType: "paperclip_runner", adapterConfig }));
+    const created = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send({ name: "Antigravity agent", adapterType: "paperclip_runner", adapterConfig }));
     expect(created.status, JSON.stringify(created.body)).toBe(201);
     expect(mockAgentService.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ adapterConfig: expect.objectContaining(adapterConfig) }), expect.any(Object));
     expect(JSON.stringify(mockAgentService.create.mock.calls)).not.toContain("paperclip.acpx-candidate-admission");
-    expect(QUALIFIED_ACPX_PROFILES.antigravity.qualificationStatus).toBe("pending");
     mockAgentService.create.mockClear();
-    for (const changed of [{ ...admission, companyId: "another-company" }, { ...admission, model: "another-model" }]) {
-      vi.stubEnv("PAPERCLIP_ACPX_CANDIDATE_ADMISSION", JSON.stringify(changed));
-      const denied = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send({ name: "Antigravity candidate", adapterType: "paperclip_runner", adapterConfig }));
-      expect(denied.status, JSON.stringify(denied.body)).toBe(422);
-    }
+    const missingModel = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send({ name: "Antigravity agent", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "antigravity" } }));
+    expect(missingModel.status, JSON.stringify(missingModel.body)).toBe(422);
     expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 
