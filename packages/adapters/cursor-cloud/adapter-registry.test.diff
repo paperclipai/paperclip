@@ -1,0 +1,15 @@
+diff --git a/server/src/__tests__/adapter-registry.test.ts b/server/src/__tests__/adapter-registry.test.ts
+index d9baf150..256a5807 100644
+--- a/server/src/__tests__/adapter-registry.test.ts
++++ b/server/src/__tests__/adapter-registry.test.ts
+@@ -43,6 +43,10 @@ it("advertises tool-refresh recovery for the selected legacy harness", () => {
+   expect(requireServerAdapter("process").supportsToolRefreshOnResume).toBeUndefined();
+ });
+ 
++it("issues a local run JWT for cursor_cloud so remote workers can call the Paperclip API", () => {
++  expect(findServerAdapter("cursor_cloud")?.supportsLocalAgentJwt).toBe(true);
++});
++
+ const externalAdapter: ServerAdapterModule = {
+   type: "external_test",
+   execute: async () => ({
