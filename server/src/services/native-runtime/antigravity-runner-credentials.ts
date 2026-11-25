@@ -94,6 +94,10 @@ export async function prepareAntigravityRunnerCredentials(input: {
   return { environment, home, credential };
 }
 
+export class AntigravityAccountMismatchError extends Error {
+  constructor() { super("The refreshed Google account does not match the selected connection."); }
+}
+
 /** A changed refresh token must prove the same saved Google identity before
  * the connection owner may apply its generation-checked encrypted writeback. */
 export async function prepareAntigravityCredentialWriteback(input: {
@@ -109,7 +113,7 @@ export async function prepareAntigravityCredentialWriteback(input: {
   if (!input.accountEmail) throw new Error("The Google account identity is unavailable for credential refresh. Reconnect the account.");
   const verified = await verifyAntigravityCredential(input.managedHome);
   if (verified.accountEmail.toLowerCase() !== input.accountEmail.toLowerCase()) {
-    throw new Error("The refreshed Google account does not match the selected connection.");
+    throw new AntigravityAccountMismatchError();
   }
   return verified.credential;
 }

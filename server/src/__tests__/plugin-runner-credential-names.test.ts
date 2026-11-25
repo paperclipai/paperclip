@@ -23,6 +23,7 @@ describe("plugin Runner provider credential names", () => {
     expect(rustAcpxCredentialNames("copilot")).toContain("COPILOT_GITHUB_TOKEN");
     expect(rustCandidateAgents).toContain("copilot");
     expect(rustAcpxCredentialNames("antigravity")).toContain("GEMINI_API_KEY");
+    expect(rustAcpxCredentialNames("antigravity")).toContain("PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET");
     expect(rustCandidateAgents).toContain("antigravity");
     expect(rustOpenCodeNames).toContain("OPENROUTER_API_KEY");
   });
@@ -47,7 +48,11 @@ describe("plugin Runner provider credential names", () => {
       expect(ACPX_CREDENTIAL_NAMES[agent], `${name} is an ACPX ${agent} credential`).toContain(name);
       expect(rustAcpxCredentialNames(agent), `${name} reaches the ACPX sidecar from the Runner process`).toContain(name);
       expect(host[name], `${name} survives sidecar admission`).toBe(environment[name]);
-      expect(spawned[name], `${name} reaches the ${agent} process`).toBe(environment[name]);
+      if (agent === "antigravity" && name === "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET") {
+        expect(spawned[name], `${name} is staged as a private token file, never the ${agent} process environment`).toBeUndefined();
+      } else {
+        expect(spawned[name], `${name} reaches the ${agent} process`).toBe(environment[name]);
+      }
     }
   });
 
