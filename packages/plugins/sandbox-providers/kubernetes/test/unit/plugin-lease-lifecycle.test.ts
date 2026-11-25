@@ -221,7 +221,7 @@ describe("onEnvironmentDestroyLease", () => {
     ).resolves.toEqual({ providerLeaseId: "pc-abc", state: "destroyed" });
   });
 
-  it("gives no receipt while the pod still exists, within the host's default 30 s call limit", async () => {
+  it("fails, so cleanup stays pending, while the pod still exists, within the host's default 30 s call limit", async () => {
     vi.useFakeTimers();
     try {
       h.clients = {
@@ -248,7 +248,7 @@ describe("onEnvironmentDestroyLease", () => {
       void pending.then(() => { settled = true; }, () => { settled = true; });
       await vi.advanceTimersByTimeAsync(29_000);
       expect(settled).toBe(true);
-      await expect(pending).resolves.toBeUndefined();
+      await expect(pending).rejects.toThrow(/still terminating/);
     } finally {
       vi.useRealTimers();
     }

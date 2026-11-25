@@ -207,13 +207,18 @@ const TERMINATION_CALL_BUDGET_MS = 25_000;
 async function terminationReceiptOnceGone(
   clients: ReturnType<typeof makeKubeClients>,
   input: { namespace: string; name: string; backend: "sandbox-cr" | "job"; podName: string | null; startedAt: number },
-): Promise<PluginEnvironmentTerminationReceipt | void> {
+): Promise<PluginEnvironmentTerminationReceipt> {
   const { startedAt, ...resource } = input;
   const gone = await confirmLeaseResourcesGone(clients, {
     ...resource,
     timeoutMs: Math.max(0, startedAt + TERMINATION_CALL_BUDGET_MS - Date.now()),
   });
-  if (gone) return { providerLeaseId: input.name, state: "destroyed" };
+  if (!gone) {
+    throw new Error(
+      `Kubernetes lease ${input.name} is still terminating; cleanup must retry to confirm it is gone.`,
+    );
+  }
+  return { providerLeaseId: input.name, state: "destroyed" };
 }
 
 const plugin = definePlugin({
