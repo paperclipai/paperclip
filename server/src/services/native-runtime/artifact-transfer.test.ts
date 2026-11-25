@@ -46,6 +46,16 @@ describe.skipIf(process.platform !== "linux")("artifact filesystem installation"
     expect(runner.execute).not.toHaveBeenCalled();
   });
 
+  it("still verifies a saved download under the staging directory during recovery", async () => {
+    await mkdir(join(root, "docs", ".paperclip-inbound"), { recursive: true });
+    await writeFile(join(root, "docs", ".paperclip-inbound", "file.png"), bytes);
+    const runner = { execute: vi.fn(execute) };
+    const install = createArtifactInstaller(root, runner);
+    await expect(install({ ...request(), destination: "docs/.paperclip-inbound/file.png", verifyOnly: true })).resolves.toBeUndefined();
+    expect(runner.execute).toHaveBeenCalled();
+    await expect(install({ ...request(), destination: "docs/.paperclip-inbound/other.png" })).rejects.toThrow("path_denied");
+  });
+
   it("rejects parent and destination symlinks and preserves their targets", async () => {
     await mkdir(join(root, "safe")); await symlink("safe", join(root, "alias"));
     const install = createArtifactInstaller(root);
