@@ -288,7 +288,9 @@ describe("assigned MCP runner tools", () => {
     await assigned.execute({ tool: callName, arguments: { name: page.tools[0]!.name, arguments: { query: "fixture" } } });
     expect(f.executeTool).toHaveBeenCalledOnce();
     const atLimit = fixture([descriptor("app.read"), { ...large, description: "x".repeat(RUNNER_TOOL_DESCRIPTION_MAX_BYTES - "sheets.update_spreadsheet: ".length) }]);
-    expect((await createAssignedMcpTools(atLimit)).definitions(fits)).toHaveLength(2);
+    const direct = (await createAssignedMcpTools(atLimit)).definitions(fits);
+    expect(direct).toHaveLength(2);
+    expect(direct.map(tool => tool.name)).not.toContain(searchName);
   });
 
   it.each([1, 741])("uses bounded on-demand delivery for %i tools even when the direct catalog fits", async count => {

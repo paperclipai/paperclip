@@ -340,6 +340,13 @@ export async function createAssignedMcpTools(input: {
       "assigned MCP tools whose input schema is over the compile budget are offered only through assigned-tool search");
   }
   const permits = (tool: Pick<ToolGatewayDescriptor, "risk">, mode: WorkMode = input.workMode ?? "standard") => mode === "standard" || tool.risk === "read";
+  const overlong = [...tools.values()]
+    .filter(entry => permits(entry.tool) && Buffer.byteLength(String(entry.definition.description ?? ""), "utf8") > RUNNER_TOOL_DESCRIPTION_MAX_BYTES)
+    .map(entry => entry.tool.name);
+  if (overlong.length > 0) {
+    logger.warn({ gatewayPublicId: input.gatewayPublicId, overlong },
+      "assigned MCP tools whose description is over the Runner limit are offered only through assigned-tool search");
+  }
   // OpenCode's HTTP bridge returns at most 64K JSON characters. Leave room
   // for the envelope and for JSON escaping when returning a schema chunk.
   // Other harnesses retain the larger PRP page and chunk budgets.
@@ -433,8 +440,7 @@ export async function createAssignedMcpTools(input: {
   const assigned = {
     definitions(fits?: (definitions: ToolDefinition[]) => boolean): ToolDefinition[] {
       const direct = [...((input.workMode ?? "standard") === "standard" ? catalog.definitions : catalog.readDefinitions)] as ToolDefinition[];
-      const describable = direct.every(tool => Buffer.byteLength(String(tool.description ?? ""), "utf8") <= RUNNER_TOOL_DESCRIPTION_MAX_BYTES);
-      if (input.delivery !== "on_demand" && unchecked.length === 0 && describable && (!fits || fits(direct))) return direct;
+      if (input.delivery !== "on_demand" && unchecked.length === 0 && overlong.length === 0 && (!fits || fits(direct))) return direct;
       const compact = structuredClone(ON_DEMAND_TOOLS);
       if (fits && !fits(compact)) throw new Error("assigned_mcp_tool_catalog_capacity_exceeded");
       return compact;
