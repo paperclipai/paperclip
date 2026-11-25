@@ -349,10 +349,21 @@ describe("Needs You keeps its toolbar between visits", () => {
     expect(filterButton("Filter decisions by project").value).toBe("project-web");
 
     // Visiting ?folder=waiting directly loads waiting feed immediately even while boardAccess is pending,
-    // without applying Needs You's saved person/agent/project filters.
-    fixture.boardAccessGate = new Promise<void>(() => {});
+    // without applying Needs You's saved person/agent/project filters, and keeps a Waiting filter chosen
+    // before boardAccess settles.
+    let releaseBoardAccess!: () => void;
+    fixture.boardAccessGate = new Promise<void>((resolve) => { releaseBoardAccess = resolve; });
+    const waitingAgent = card("waiting-agent", 2, { agentId: "agent-cos" });
+    fixture.byView = { ...fixture.byView, waiting: [waitingAgent, waiting] };
     await visit("/decisions?folder=waiting");
-    await vi.waitFor(() => expect(cards()).toEqual(["waiting-1"]));
+    await vi.waitFor(() => expect(cards()).toEqual(["waiting-agent", "waiting-1"]));
     expect(listedViews()).toEqual(["waiting"]);
+
+    await choose("Filter decisions by agent", "Chief of Staff");
+    expect(cards()).toEqual(["waiting-agent"]);
+
+    await act(async () => releaseBoardAccess()); await flush(); await flush();
+    expect(filterButton("Filter decisions by agent").value).toBe("agent-cos");
+    expect(cards()).toEqual(["waiting-agent"]);
   });
 });

@@ -147,7 +147,8 @@ export function CoordinatorNeedsYou() {
   // Snoozed group starts open (PAP-749 plan §3).
   const [staleOpen, setStaleOpen] = useState(false);
   const [snoozedOpen, setSnoozedOpen] = useState(true);
-  useEffect(() => { setSettling([]); setSavedIds(new Map()); setStaleOpen(false); setSnoozedOpen(true); setWaitingFilters({ agentId: "", projectId: "" }); }, [selectedCompanyId, userId, view, folder]);
+  useEffect(() => { setSettling([]); setSavedIds(new Map()); setStaleOpen(false); setSnoozedOpen(true); }, [selectedCompanyId, userId, view, folder]);
+  useEffect(() => { setWaitingFilters({ agentId: "", projectId: "" }); }, [selectedCompanyId, userId, folder]);
   const archivedView = view === "archived";
   const [renderLimit, setRenderLimit] = useState(40);
   // Keyed by person and view; the For you key is the one the badge reads.
