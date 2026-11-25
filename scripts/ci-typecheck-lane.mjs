@@ -65,7 +65,6 @@ export function computeResourceProfile({ cpus = availableParallelism(), totalMem
       testProgramsCheckers: 1,
     };
   }
-  // 6-8+ core / >= 24 GiB (e.g. m6i/m7i/m8i.2xlarge or local dev): maximize parallelism across declarations, layers, and UI.
   return {
     laneConcurrency: Math.min(8, safeCpus),
     serverDeclCheckers: Math.min(6, Math.max(4, safeCpus - 2)),
@@ -379,10 +378,6 @@ export function planLane({
   const tasks = [];
 
   if (runServer) {
-    // Start prepare:runner-vendor immediately at t=0 of the task wave (overlapping
-    // with UI, CLI guidance safety, and release registry tests), then fan out
-    // server declarations, emit-only server build, and runner typecheck without
-    // racing on packages/paperclip-runner/dist or paperclip-eval-kernel.
     tasks.push(
       {
         name: PREPARE_RUNNER_VENDOR,
@@ -456,9 +451,6 @@ export function planLane({
   }
 
   if (runServer) {
-    // Schedule post-declaration checks in LPT order: longest non-incremental
-    // project (`tests/runner-e2e`, ~28s), then the 4 server test layers (~17-25s),
-    // then the smaller test projects (~7-16s) so layers never starve behind tiny projects.
     const heavyProjects = selectedProjects.filter((project) => project === "tests/runner-e2e");
     const lighterProjects = selectedProjects.filter((project) => project !== "tests/runner-e2e");
     const makeProjectTask = (project) => ({

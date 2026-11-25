@@ -35,7 +35,6 @@ export function buildRunnerBuildPlan({ env = process.env } = {}) {
     cmd("check:provider-failure-contract", node, ["scripts/generate-provider-failure-contract.mjs", "--check"]),
     cmd("check:capability-contract", node, ["scripts/generate-capability-contract.mjs", "--check"]),
     cmd("check:capability-inventory", node, ["scripts/check-capability-inventory.mjs"]),
-    cmd("check:runner-workflow-traceability", node, ["scripts/check-runner-workflow-traceability.mjs"]),
   ];
 
   const buildChains = [
@@ -99,6 +98,7 @@ export function buildRunnerBuildPlan({ env = process.env } = {}) {
         cmd("check:semantic-contracts", node, ["scripts/generate-semantic-contracts.mjs", "--check"]),
         cmd("check:replay-goldens", node, ["scripts/generate-replay-goldens.mjs", "--check"]),
         cmd("check:semantic-action-catalog", node, ["scripts/generate-semantic-action-catalog.mjs", "--check"]),
+        cmd("check:runner-workflow-traceability", node, ["scripts/check-runner-workflow-traceability.mjs"]),
       ],
     },
     {

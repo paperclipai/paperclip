@@ -98,7 +98,6 @@ test("every check of the sequential job is planned with exact DAG dependencies",
   assert.ok(byName.has("CLI guidance safety"));
   const declarationReaders = tasks.filter((task) => task.needs?.includes("server declarations"));
   assert.equal(declarationReaders.length, 2 + PROJECTS.length);
-  // Longest non-incremental project (tests/runner-e2e), then server test layers, then lighter projects.
   assert.equal(declarationReaders[0].name, "test project tests/runner-e2e");
   assert.equal(declarationReaders[1].name, "server layer tests");
   assert.equal(declarationReaders[2].name, "server layer test-tree-0");
@@ -140,7 +139,6 @@ test("computeResourceProfile scales concurrency, checkers, and UI GOMAXPROCS acr
     testProgramsConcurrency: 4,
     testProgramsCheckers: 1,
   });
-  // 8-core / 32 GiB (m6i/m7i/m8i.2xlarge): maximize concurrency and declaration checkers.
   const m8i = computeResourceProfile({ cpus: 8, totalMemoryBytes: 32 * GiB });
   assert.deepEqual(m8i, {
     laneConcurrency: 8,

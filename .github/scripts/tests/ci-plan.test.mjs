@@ -282,7 +282,7 @@ test("repository-wide guidance guards run uncached for every scanned UI file typ
     "server/src/__tests__/cli-invocation-safety.test.ts",
     "pnpm run test:release-registry",
   ]) assert.ok(fallback.includes(command), command);
-  const guidance = planLane({ buildGapPackages: [], testLayers: [] }).prepare.find((task) => task.name === "CLI guidance safety");
+  const guidance = planLane({ buildGapPackages: [], testLayers: [] }).tasks.find((task) => task.name === "CLI guidance safety");
   assert.deepEqual(guidance.args, ["exec", "vitest", "run", "--project", "@paperclipai/server", "server/src/__tests__/cli-invocation-safety.test.ts"]);
   assert.ok(!job.includes("uses: ./.github/actions/run-ci-task"));
 });

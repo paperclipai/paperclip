@@ -36,7 +36,6 @@ test("buildRunnerBuildPlan brackets with record-build-inputs and preserves every
     "check:provider-failure-contract",
     "check:capability-contract",
     "check:capability-inventory",
-    "check:runner-workflow-traceability",
     "build:verified-entrypoints",
     "install:copilot-assets",
     "build:runner-binary",
@@ -44,9 +43,23 @@ test("buildRunnerBuildPlan brackets with record-build-inputs and preserves every
     "check:semantic-contracts",
     "check:replay-goldens",
     "check:semantic-action-catalog",
+    "check:runner-workflow-traceability",
     "record-build-inputs:finish",
   ]) {
     assert.ok(allLabels.includes(required), `missing build step: ${required}`);
+  }
+
+  const postDistLabels = phases
+    .find((phase) => phase.name === "post-dist-checks")
+    .steps.map((step) => step.label);
+  for (const distCheck of [
+    "check:protocol-coverage",
+    "check:semantic-contracts",
+    "check:replay-goldens",
+    "check:semantic-action-catalog",
+    "check:runner-workflow-traceability",
+  ]) {
+    assert.ok(postDistLabels.includes(distCheck), `expected ${distCheck} in post-dist-checks`);
   }
 });
 
