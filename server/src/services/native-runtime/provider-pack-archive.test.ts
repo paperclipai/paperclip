@@ -524,3 +524,58 @@ it.skipIf(!tar || !hasZstd).each([
   expect(remote.syncIn).not.toHaveBeenCalled();
   await expect(fs.lstat(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
 });
+
+it("produces byte-identical layered archives and receipts across serial and parallel compression", async () => {
+  const fixedTime = new Date("2026-01-01T00:00:00.000Z");
+  const makeDeterministicPack = async (prefix: string) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+    roots.push(root);
+    const pack = path.join(root, "provider-pack");
+    const distDir = path.join(pack, "dist");
+    const nodeModulesDir = path.join(pack, "node_modules");
+    const pkgDir = path.join(nodeModulesDir, "pkg");
+    await fs.mkdir(distDir, { recursive: true });
+    await fs.mkdir(pkgDir, { recursive: true });
+
+    const files: Array<[string, string | Buffer]> = [
+      [path.join(pack, "provider-pack.json"), JSON.stringify({ schema: "paperclip-runner/remote-provider-pack/v1", digest })],
+      [path.join(pkgDir, "dep-a.bin"), Buffer.alloc(1024 * 1024 + 17, 11)],
+      [path.join(pkgDir, "dep-b.bin"), Buffer.alloc(1024 * 1024 + 29, 22)],
+      [path.join(pkgDir, "dep-c.bin"), Buffer.alloc(1024 * 1024 + 41, 33)],
+      [path.join(distDir, "runner.bin"), Buffer.alloc(1024 * 1024 + 53, 44)],
+      [path.join(distDir, "small.js"), "export const ok = true;\n"],
+    ];
+    for (const [filePath, content] of files) {
+      await fs.writeFile(filePath, content);
+      await fs.utimes(filePath, fixedTime, fixedTime);
+    }
+    const linkPath = path.join(distDir, "link.js");
+    await fs.symlink("small.js", linkPath);
+    await fs.lutimes(linkPath, fixedTime, fixedTime);
+    for (const dirPath of [pkgDir, nodeModulesDir, distDir, pack]) {
+      await fs.utimes(dirPath, fixedTime, fixedTime);
+    }
+    return pack;
+  };
+
+  const packSerial = await makeDeterministicPack("provider-archive-serial-");
+  const packParallel = await makeDeterministicPack("provider-archive-parallel-");
+  const serial = await createProviderPackLayers(packSerial, { concurrency: 1 });
+  const parallel = await createProviderPackLayers(packParallel, { concurrency: 4 });
+
+  expect(parallel).toEqual(serial);
+  expect(parallel.files.map((file: { path: string }) => file.path)).toEqual([
+    "node_modules/pkg/dep-a.bin",
+    "node_modules/pkg/dep-b.bin",
+    "node_modules/pkg/dep-c.bin",
+    "dist/runner.bin",
+  ]);
+  expect(await fs.readFile(`${packParallel}.archive.json`, "utf8")).toBe(
+    await fs.readFile(`${packSerial}.archive.json`, "utf8"),
+  );
+  for (const name of ["overlay.tar.zst", "0.tar.zst", "1.tar.zst", "2.tar.zst", "3.tar.zst"]) {
+    const bytesSerial = await fs.readFile(path.join(`${packSerial}.archives`, name));
+    const bytesParallel = await fs.readFile(path.join(`${packParallel}.archives`, name));
+    expect(bytesParallel.equals(bytesSerial), `${name} bytes must match`).toBe(true);
+  }
+});
