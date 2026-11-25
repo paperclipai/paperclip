@@ -17,6 +17,7 @@ import {
   activityLog,
   agents,
   agentWakeupRequests,
+  authUsers,
   companies,
   companyMemberships,
   createDb,
@@ -34,6 +35,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
 import { runningProcesses } from "../adapters/index.js";
@@ -79,6 +82,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
     await db.delete(principalPermissionGrants);
     await db.delete(agents);
     await db.delete(companyMemberships);
+    await db.delete(authUsers);
     await db.delete(companies);
   });
 
@@ -116,6 +120,7 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       agentId,
       companyId,
       runId: randomUUID(),
+      keyScope: { kind: "standard" },
       source: "agent_jwt",
     };
   }
@@ -1043,6 +1048,77 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       expect(events).toHaveLength(1);
       expect(events[0]).toMatchObject({ actorType: "agent", actorId: f.agentId, agentId: f.agentId,
         runId: f.sourceRunId, details: { grantedByUserId: "board-user" } });
+    });
+
+    it("admits a granted agent authenticated through actorMiddleware with normalized standard keyScope", async () => {
+      vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "agent-task-retry-jwt-test-secret");
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      try {
+        const f = await seedIssueWithRetry();
+        const now = new Date("2026-05-06T18:00:00.000Z");
+        await db.insert(authUsers).values({
+          id: "board-user",
+          name: "Board User",
+          email: "board-user@example.com",
+          emailVerified: true,
+          createdAt: now,
+          updatedAt: now,
+        });
+        await db.update(heartbeatRuns).set({ createdAt: new Date("2026-05-06T18:00:01.000Z") })
+          .where(eq(heartbeatRuns.id, f.retryRunId));
+        await grant(f, "board-user");
+
+        const token = createLocalAgentJwt(f.agentId, f.companyId, "codex_local", f.sourceRunId, "board-user");
+        expect(token).not.toBeNull();
+        const app = express();
+        app.use(express.json());
+        app.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession: async () => null }));
+        app.use("/api", issueRoutes(db, {} as any));
+        app.use(errorHandler);
+
+        const res = await request(app)
+          .post(`/api/issues/${f.issueId}/retry`)
+          .set("Authorization", `Bearer ${token!}`)
+          .send({ idempotencyKey: randomUUID(), observedRunId: f.retryRunId });
+
+        expect(res.status, JSON.stringify(res.body)).toBe(202);
+        expect(res.body).toMatchObject({ accepted: true, scheduledRetry: { outcome: "promoted" } });
+        expect(await retryRunStatus(f)).toBe("queued");
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("enforces the agent's responsible-user write ceiling when acting on behalf of a viewer", async () => {
+      const f = await seedIssueWithRetry();
+      const now = new Date("2026-05-06T18:00:00.000Z");
+      await db.insert(authUsers).values({
+        id: "viewer-user",
+        name: "Viewer User",
+        email: "viewer-user@example.com",
+        emailVerified: true,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await db.insert(companyMemberships).values({
+        companyId: f.companyId,
+        principalType: "user",
+        principalId: "viewer-user",
+        status: "active",
+        membershipRole: "viewer",
+      });
+      await grant(f, "board-user");
+
+      const res = await retry(f, {
+        actor: {
+          onBehalfOfUserId: "viewer-user",
+          onBehalfOfMemberships: [{ companyId: f.companyId, membershipRole: "viewer", status: "active" }],
+        },
+      });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body).toMatchObject({ details: { code: "RESPONSIBLE_USER_UNAUTHORIZED" } });
+      expect(await retryRunStatus(f)).toBe("scheduled_retry");
     });
 
     it("preserves pause gates when a granted agent presses Retry on a paused assignee", async () => {

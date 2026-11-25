@@ -3,7 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
 import { activityLog, companyMemberships, heartbeatRuns, principalPermissionGrants } from "@paperclipai/db";
 import { HttpError } from "../errors.js";
-import { logActivity } from "./activity-log.js";
+import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 
 /** Retries one granted agent may request on one task in a rolling day. */
 export const AGENT_TASK_RETRY_DAILY_CAP = 3;
@@ -29,7 +29,8 @@ export async function agentTaskRetryActor(db: Db, agent: { companyId: string; ag
       eq(principalPermissionGrants.principalType, "agent"),
       eq(principalPermissionGrants.principalId, agent.agentId),
       eq(principalPermissionGrants.permissionKey, "tasks:retry"),
-      sql`coalesce(${principalPermissionGrants.scope}, '{}'::jsonb) = '{}'::jsonb`));
+      sql`coalesce(${principalPermissionGrants.scope}, '{}'::jsonb) = '{}'::jsonb`))
+    .limit(1);
   if (!grantor) return null;
   return {
     type: "board", userId: grantor.userId, companyIds: [agent.companyId], isInstanceAdmin: false,
@@ -55,6 +56,7 @@ export async function agentOwnsRun(db: Db, input: { companyId: string; agentId: 
 export async function recordAgentTaskRetry(db: Db, input: {
   companyId: string; issueId: string; agentId: string; runId: string; grantedByUserId: string; idempotencyKey: string;
 }) {
+  const publications: ActivityPublication[] = [];
   await db.transaction(async tx => {
     await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`agent-task-retry:${input.issueId}`}))`);
     const [replay] = await tx.select({ id: activityLog.id }).from(activityLog).where(and(
@@ -71,6 +73,8 @@ export async function recordAgentTaskRetry(db: Db, input: {
         { code: "agent_task_retry_cap_reached" });
     await logActivity(tx as unknown as Db, { companyId: input.companyId, actorType: "agent", actorId: input.agentId,
       agentId: input.agentId, runId: input.runId, action: AGENT_TASK_RETRY_ACTION, entityType: "issue",
-      entityId: input.issueId, details: { grantedByUserId: input.grantedByUserId, idempotencyKey: input.idempotencyKey } });
+      entityId: input.issueId, details: { grantedByUserId: input.grantedByUserId, idempotencyKey: input.idempotencyKey } },
+      publications);
   });
+  for (const publication of publications) publishActivity(publication);
 }
