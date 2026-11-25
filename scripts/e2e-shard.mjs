@@ -1,4 +1,5 @@
 import { readdirSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -20,20 +21,35 @@ export const IGNORED_SPECS = ["in-feed-native/**", "multi-user.spec.ts", "multi-
 // with `SERIAL_SPECS` in tests/e2e/playwright.config.ts —
 // `scripts/__tests__/e2e-shard.test.mjs` fails if the two ever drift.
 export const SERIAL_SPECS = [
+  "agent-chat-projects-handoff.spec.ts",
+  "agent-chat-projects.spec.ts",
+  "agent-chat-sessions-navigation.spec.ts",
+  "agent-chat-sessions.spec.ts",
+  "agent-configuration-revisions.spec.ts",
   "agent-configuration.spec.ts",
+  "ai-personal-connection-recovery.spec.ts",
   "cases-read-only.spec.ts",
   "classic-workspace.spec.ts",
   "composer-stop.spec.ts",
   "connection-intents.spec.ts",
   "document-image-gallery.spec.ts",
+  "onboarding-resume.spec.ts",
   "onboarding.spec.ts",
   "smoke-lab-p1-p4.spec.ts",
   "smoke-lab-p5-p7.spec.ts",
 ];
 
-// Matches the CI worker count in tests/e2e/playwright.config.ts for shards
-// that contain only parallel-safe specs.
 export const DEFAULT_PARALLEL_WORKERS = 2;
+export const EFFECTIVE_PARALLEL_SPEEDUP = 1.85;
+export const EFFECTIVE_PARALLEL_SPEEDUP_4W = 3.2;
+
+export function resolveEffectiveParallelSpeedup(cpus = os.availableParallelism()) {
+  const workers = Math.max(1, Math.min(4, Math.floor(cpus / 2)));
+  if (workers >= 4) return EFFECTIVE_PARALLEL_SPEEDUP_4W;
+  if (workers === 3) return 2.55;
+  if (workers === 2) return EFFECTIVE_PARALLEL_SPEEDUP;
+  return 1;
+}
 
 export function isSerialE2eSpec(file) {
   return SERIAL_SPECS.includes(path.posix.basename(file.split(path.sep).join("/")));
@@ -56,7 +72,7 @@ export function partitionE2eShards(
   files,
   shardCount,
   durations = {},
-  { parallelWorkers = DEFAULT_PARALLEL_WORKERS } = {},
+  { parallelWorkers = EFFECTIVE_PARALLEL_SPEEDUP } = {},
 ) {
   const serialFiles = files.filter(isSerialE2eSpec);
   const parallelFiles = files.filter((file) => !isSerialE2eSpec(file));
@@ -108,26 +124,36 @@ export function selectE2eShard(files, shardIndex, shardCount, durations = {}, op
 }
 
 function parseArgs(argv) {
-  const args = { shardIndex: 0, shardCount: 1 };
+  const args = { shardIndex: 0, shardCount: 1, parallelSpeedup: null };
   for (let index = 0; index < argv.length; index += 1) {
     if (argv[index] === "--shard-index") args.shardIndex = Number(argv[index + 1]);
     if (argv[index] === "--shard-count") args.shardCount = Number(argv[index + 1]);
+    if (argv[index] === "--parallel-speedup") args.parallelSpeedup = Number(argv[index + 1]);
   }
   return args;
 }
 
 function main(argv) {
-  const { shardIndex, shardCount } = parseArgs(argv);
+  const { shardIndex, shardCount, parallelSpeedup } = parseArgs(argv);
   if (!Number.isInteger(shardCount) || shardCount < 1) {
     throw new Error(`--shard-count must be a positive integer, got ${shardCount}`);
   }
   if (!Number.isInteger(shardIndex) || shardIndex < 0 || shardIndex >= shardCount) {
     throw new Error(`--shard-index must be in [0, ${shardCount}), got ${shardIndex}`);
   }
+  const envSpeedup = Number.parseFloat(process.env.PAPERCLIP_E2E_PARALLEL_SPEEDUP ?? "");
+  const effectiveSpeedup =
+    Number.isFinite(parallelSpeedup) && parallelSpeedup > 0
+      ? parallelSpeedup
+      : Number.isFinite(envSpeedup) && envSpeedup > 0
+        ? envSpeedup
+        : resolveEffectiveParallelSpeedup();
 
   const specs = listE2eSpecs();
   const durations = loadShardDurations(DURATIONS_MANIFEST);
-  process.stdout.write(`${selectE2eShard(specs, shardIndex, shardCount, durations).join(" ")}\n`);
+  process.stdout.write(
+    `${selectE2eShard(specs, shardIndex, shardCount, durations, { parallelWorkers: effectiveSpeedup }).join(" ")}\n`,
+  );
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

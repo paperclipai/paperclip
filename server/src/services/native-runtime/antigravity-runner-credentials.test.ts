@@ -3,7 +3,8 @@ import { constants } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { antigravityCredentialTurn, bindAntigravityCredentialTurn, bindAntigravityTransportRetirement, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
+import { antigravityAccountDigest, antigravityCredentialTurn, antigravitySwarmChannel, bindAntigravityCredentialTurn, bindAntigravityTransportRetirement, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
+import { sanitizeAntigravityCredential } from "../../vendor/paperclip-runner/index.js";
 import { completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
 import type { NativeSession, createRunnerdCodexTransport } from "../../vendor/paperclip-runner/index.js";
 import { bindRetainedGoogleCredentialHome } from "../retained-google-credential-cleanup.js";
@@ -11,6 +12,11 @@ import { AntigravityConnectionConfigurationError, antigravityConnectionRefusal }
 import { NATIVE_PROVIDER_STARTUP_REJECTED, nativeSessionFailureDisposition, nativeSessionFailureSourceCode } from "./native-session-executor.js";
 
 const copyFault = vi.hoisted(() => ({ phase: "", destination: "", source: "", collisionPath: "", failedRemoval: "", removals: [] as string[], hits: 0 }));
+const release = vi.hoisted(() => ({ pending: true }));
+vi.mock("./antigravity-release.js", async importOriginal => ({
+  ...await importOriginal<typeof import("./antigravity-release.js")>(),
+  antigravityReleasePending: () => release.pending,
+}));
 vi.mock("./runner-api-files.js", async importOriginal => {
   const actual = await importOriginal<typeof import("./runner-api-files.js")>();
   return { ...actual, openRunnerWorkspaceFile: async (...args: Parameters<typeof actual.openRunnerWorkspaceFile>) => {
@@ -82,7 +88,7 @@ const credential = (token: string) => JSON.stringify({
   refresh_token: token, token_uri: "https://oauth2.googleapis.com/token", scopes: ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/aicode"],
 });
 async function home() { const root = await realpath(await mkdtemp(join(tmpdir(), "antigravity-controller-test-"))); roots.push(root); await mkdir(join(root, "antigravity-acp"), { mode: 0o700 }); return root; }
-beforeEach(async () => { vi.stubEnv("PAPERCLIP_HOME", await home()); });
+beforeEach(async () => { release.pending = true; vi.stubEnv("PAPERCLIP_HOME", await home()); });
 afterEach(async () => { copyFault.phase = ""; copyFault.destination = ""; copyFault.source = ""; copyFault.collisionPath = ""; copyFault.failedRemoval = ""; copyFault.removals = []; copyFault.hits = 0; vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
 
 describe("Antigravity managed Runner credentials", () => {
@@ -95,16 +101,40 @@ describe("Antigravity managed Runner credentials", () => {
   });
   it("uses the explicit API key while removing all subscription home and payload inputs", async () => {
     expect(await prepareAntigravityRunnerCredentials({ remote: true, environment: {
-      GEMINI_API_KEY: "fixture-selected", GOOGLE_API_KEY: "other", GEMINI_HOME: "/ambient", GOOGLE_APPLICATION_CREDENTIALS: "/ambient.json",
+      GEMINI_API_KEY: "fixture-selected", GEMINI_MODEL: "ambient-model", GOOGLE_API_KEY: "other", GOOGLE_GEMINI_BASE_URL: "https://ambient.invalid",
+      GEMINI_HOME: "/ambient", GOOGLE_APPLICATION_CREDENTIALS: "/ambient.json",
       GOOGLE_CLOUD_ACCESS_TOKEN: "ambient", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "spoofed",
     } })).toEqual({ home: null, environment: { GEMINI_API_KEY: "fixture-selected" } });
   });
-  it("projects only the selected private token and rejects remote subscription delivery", async () => {
+  it("binds the deployment's swarm channel and only a digest of the connection account to the credential", async () => {
     const managedHome = await home();
     await writeFile(join(managedHome, "antigravity-acp", "acp_token.json"), credential("fixture-selected"), { mode: 0o600 });
-    expect(await prepareAntigravityRunnerCredentials({ remote: false, managedHome, environment: { GEMINI_HOME: "/untrusted" } })).toEqual({
-      home: managedHome, credential: credential("fixture-selected"), environment: { PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: credential("fixture-selected") },
-    });
+    const previous = process.env.PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL;
+    process.env.PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL = "stable";
+    try {
+      const { environment } = await prepareAntigravityRunnerCredentials({ remote: false, managedHome, environment: {}, accountEmail: "Owner@Example.test" });
+      const secret = environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET!;
+      expect(JSON.parse(secret).paperclip).toEqual({ swarmChannel: "stable", accountSha256: antigravityAccountDigest("owner@example.test") });
+      expect(secret).not.toMatch(/example\.test/i);
+      // Pinned: the Runner's antigravityAccountDigest pins the same value for the CLI's sign-in.
+      expect(antigravityAccountDigest("OWNER@example.test")).toBe("0fde1d32467703827f511884b66298187e2944f4bfe260303f893a0af908f81e");
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL; else process.env.PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL = previous;
+    }
+    expect(antigravitySwarmChannel({})).toBe("provider_default");
+    expect(antigravitySwarmChannel({ PAPERCLIP_ANTIGRAVITY_SWARM_CHANNEL: "daily" })).toBe("provider_default");
+  });
+  it("projects only the selected private token, refuses remote sign-in while pending, and accepts remote sign-in once released", async () => {
+    const managedHome = await home();
+    await writeFile(join(managedHome, "antigravity-acp", "acp_token.json"), credential("fixture-selected"), { mode: 0o600 });
+    const projected = await prepareAntigravityRunnerCredentials({ remote: false, managedHome, environment: { GEMINI_HOME: "/untrusted" } });
+    expect(projected).toMatchObject({ home: managedHome, credential: credential("fixture-selected") });
+    expect(Object.keys(projected.environment)).toEqual(["PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET"]);
+    // The selected token, plus the swarm route's run facts, which the Runner's sanitizer drops before any write.
+    expect(JSON.parse(projected.environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET!)).toEqual({
+      ...JSON.parse(credential("fixture-selected")), paperclip: { swarmChannel: "provider_default" } });
+    expect(sanitizeAntigravityCredential(projected.environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET!)).toBe(credential("fixture-selected"));
+    // While pending, remote sign-in and warm sessions are refused permanently by name.
     for (const [input, code] of [[{ remote: true, environment: {} }, "antigravity_remote_sign_in_unsupported"],
       [{ remote: false, lifecycleMode: "warm" as const, environment: {} }, "antigravity_warm_unsupported"],
       [{ remote: false, lifecycleMode: "warm" as const, environment: { GEMINI_API_KEY: "fixture-selected" } }, "antigravity_warm_unsupported"]] as const) {
@@ -118,17 +148,37 @@ describe("Antigravity managed Runner credentials", () => {
       expect(failure).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
       expect(nativeSessionFailureDisposition(1, new Date(), failure)).toMatchObject({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_STARTUP_REJECTED });
     }
+    // Once released, remote sign-in delivers the pure sanitized credential and strips GOOGLE_*/GEMINI_* overrides; warm stays refused.
+    release.pending = false;
+    const remoteProjected = await prepareAntigravityRunnerCredentials({
+      remote: true,
+      managedHome,
+      accountEmail: "Owner@Example.test",
+      environment: { GEMINI_HOME: "/untrusted", GOOGLE_CLOUD_PROJECT: "untrusted", GEMINI_MODEL: "untrusted", KEEP: "ok" },
+    });
+    expect(remoteProjected).toEqual({
+      home: managedHome,
+      credential: credential("fixture-selected"),
+      environment: { KEEP: "ok", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: credential("fixture-selected") },
+    });
+    const remoteWarm = await prepareAntigravityRunnerCredentials({
+      remote: true, managedHome, lifecycleMode: "warm", environment: {},
+    }).catch(error => error);
+    expect(remoteWarm).toBeInstanceOf(AntigravityConnectionConfigurationError);
+    expect(remoteWarm).toMatchObject({ code: "antigravity_warm_unsupported" });
   });
   it("names the connection choices each target supports in both release states", () => {
     expect(antigravityConnectionRefusal({ apiKey: true, remote: true, releasePending: false })).toBeNull();
     // Per-turn is one contract for both routes: an API key does not enable warm.
     for (const apiKey of [true, false]) {
-      expect(antigravityConnectionRefusal({ apiKey, remote: false, lifecycleMode: "warm", releasePending: false })?.code).toBe("antigravity_warm_unsupported");
-      expect(antigravityConnectionRefusal({ apiKey, remote: false, lifecycleMode: "per_turn", releasePending: false })).toBeNull();
+      for (const remote of [false, true]) {
+        expect(antigravityConnectionRefusal({ apiKey, remote, lifecycleMode: "warm", releasePending: false })?.code).toBe("antigravity_warm_unsupported");
+        expect(antigravityConnectionRefusal({ apiKey, remote, lifecycleMode: "per_turn", releasePending: false })).toBeNull();
+      }
     }
     expect(antigravityConnectionRefusal({ apiKey: false, remote: false, releasePending: false })).toBeNull();
-    expect(antigravityConnectionRefusal({ apiKey: false, remote: true, releasePending: false })?.message)
-      .toBe("Google sign-in for Google Antigravity works only on the Paperclip host. To run this agent in a cloud environment, connect a Google API key instead.");
+    // Once released, Google sign-in is accepted on remote targets too.
+    expect(antigravityConnectionRefusal({ apiKey: false, remote: true, releasePending: false })).toBeNull();
     expect(antigravityConnectionRefusal({ apiKey: true, remote: true, releasePending: true })?.code).toBe("antigravity_remote_unavailable");
     expect(antigravityConnectionRefusal({ apiKey: false, remote: false, releasePending: true })).toBeNull();
     // While pending, an operator's cloud grant admits an API key in a cloud environment, never Google sign-in.
@@ -139,6 +189,26 @@ describe("Antigravity managed Runner credentials", () => {
       .toBe("antigravity_remote_unavailable");
     expect(antigravityConnectionRefusal({ apiKey: true, remote: true, lifecycleMode: "warm", releasePending: true, remoteCandidateAdmitted: true })?.code)
       .toBe("antigravity_warm_unsupported");
+  });
+  it("exports rotated refreshes and scrubs remote credentials via a remote runtimeStore after session retirement", async () => {
+    const managedHome = await home(), runtimeHome = await home();
+    const destination = join(managedHome, "antigravity-acp", "acp_token.json");
+    await writeFile(destination, credential("fixture-original"), { mode: 0o600 });
+    const order: string[] = [];
+    const close = vi.fn(async () => { order.push("close"); });
+    const runtimeStore = {
+      read: vi.fn(async () => { order.push("read"); return credential("fixture-remote-refreshed"); }),
+      remove: vi.fn(async () => { order.push("remove"); }),
+    };
+    const session = bindAntigravityCredentialTurn({ close } as unknown as NativeSession,
+      { managedHome, runtimeHome, credential: credential("fixture-original"), runtimeStore });
+    await completeManagedNativeCredentialTurn(session);
+    expect(order).toEqual(["close", "read", "remove"]);
+    expect(await readFile(destination, "utf8")).toBe(credential("fixture-remote-refreshed"));
+    await session.close({ reason: "completed" });
+    expect(close).toHaveBeenCalledOnce();
+    expect(runtimeStore.read).toHaveBeenCalledOnce();
+    expect(runtimeStore.remove).toHaveBeenCalledOnce();
   });
   it.each(["symlink", "public", "invalid"])("rejects a %s selected token without using a fallback", async kind => {
     const managedHome = await home(), token = join(managedHome, "antigravity-acp", "acp_token.json");

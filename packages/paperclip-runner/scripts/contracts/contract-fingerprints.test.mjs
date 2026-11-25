@@ -7,10 +7,22 @@ import { fileURLToPath } from "node:url";
 import { checkoutSources, fingerprintContracts, packContractDigest } from "./contract-fingerprints.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
-const sources = checkoutSources(root);
+const diskSources = checkoutSources(root);
+const readCache = new Map();
+const listCache = new Map();
+const sources = {
+  read: p => {
+    if (!readCache.has(p)) readCache.set(p, diskSources.read(p));
+    return readCache.get(p);
+  },
+  list: dir => {
+    if (!listCache.has(dir)) listCache.set(dir, diskSources.list(dir));
+    return listCache.get(dir);
+  },
+};
 const R = "packages/paperclip-runner";
 const RUST = `${R}/runner/crates/runner-core/src`;
-const baseline = packContractDigest(root);
+const baseline = packContractDigest(root, sources);
 
 /** Digest of the checkout with one file's text rewritten in memory. */
 function digestWith(path, edit) {
@@ -59,6 +71,14 @@ test("contract edits change the digest", () => {
     // A nested runtime context field, which the pack's strict parser rejects.
     [`${R}/protocol/provider-schemas/runtime-context.schema.json`, s => s.replace("\"aggregateDigest\": { \"$ref\": \"#/$defs/sha256Hex\" }",
       "\"aggregateDigest\": { \"$ref\": \"#/$defs/sha256Hex\" },\n        \"newContextField\": true")],
+    // The swarm route's credential facts: channel selection and the account comparison.
+    [SIDECAR_SCHEMA, s => s.replace("\"swarmChannel\": { \"enum\": [\"provider_default\", \"stable\"] }",
+      "\"swarmChannel\": { \"enum\": [\"provider_default\", \"stable\", \"daily\"] }")],
+    [SIDECAR_SCHEMA, s => s.replace("\"accountSha256\": { \"type\": \"string\", \"pattern\": \"^[a-f0-9]{64}$\" }",
+      "\"accountSha256\": { \"type\": \"string\", \"pattern\": \"^[a-f0-9]{40}$\" }")],
+    // The Antigravity swarm turn's request field: an older pack reads the request elsewhere.
+    [SIDECAR_SCHEMA, s => s.replace("\"swarmRequest\": { \"type\": \"string\", \"minLength\": 1, \"maxLength\": 16000 }",
+      "\"swarmRequest\": { \"type\": \"string\", \"minLength\": 1, \"maxLength\": 8000 }")],
     [SIDECAR_SCHEMA, s => s.replace("\"readOnly\": { \"type\": \"boolean\" }", "\"readOnly\": { \"type\": \"boolean\" },\n        \"newPolicyField\": { \"type\": \"boolean\" }")],
     [`${RUST}/configured_environment.rs`, s => s.replace("const RESERVED: &[&str] = &[", "const RESERVED: &[&str] = &[\"NEW_KEY\",")],
     [`${RUST}/acpx_provider_checkpoint.rs`, s => s.replace("pub struct AcpxSuspensionCheckpoint {",

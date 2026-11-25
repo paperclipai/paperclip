@@ -2611,6 +2611,10 @@ export type AdapterLoginPanelProps = AdapterLoginDescriptor & {
   // the completion failed, or the session failed or ran out of time. The pair
   // of `onCodeSubmitted`, so a caller that showed work can stop showing it.
   onSubmitFailed?: () => void;
+  // Fires once per failed sign-in attempt across both displayed-code and
+  // submitted-code panels (start failure, poll error, session failure, or
+  // timeout), excluding user cancellations and in-flight retries.
+  onLoginFailed?: () => void;
   onOpenAuthorization?: () => void;
   onSubmitReady?: (submit: (() => void) | null) => void;
   onRetryReady?: (retry: (() => void) | null) => void;
@@ -2644,6 +2648,30 @@ function adapterLoginTitle(adapterType: string): string {
   return provider ? `Sign in to ${provider}` : "Sign in to the environment";
 }
 
+export function isReportableAdapterLoginFailure(input: {
+  active: boolean;
+  retrying: boolean;
+  status: AdapterAuthSessionStatus | null | undefined;
+  hasFailure: boolean;
+}): boolean {
+  return input.active && !input.retrying && input.status !== "cancelled" && input.hasFailure;
+}
+
+function useReportLoginFailureOnce(failed: boolean, onLoginFailed?: () => void) {
+  const onLoginFailedRef = useRef(onLoginFailed);
+  onLoginFailedRef.current = onLoginFailed;
+  const reportedFailureRef = useRef(false);
+  useEffect(() => {
+    if (!failed) {
+      reportedFailureRef.current = false;
+      return;
+    }
+    if (reportedFailureRef.current) return;
+    reportedFailureRef.current = true;
+    onLoginFailedRef.current?.();
+  }, [failed]);
+}
+
 export function AdapterLoginPanel(props: AdapterLoginPanelProps) {
   const getCapabilities = useAdapterCapabilities();
   const Panel = getCapabilities(props.adapterType).login?.panelMode === "submitted_browser_code"
@@ -2673,6 +2701,7 @@ function DisplayedCodeLoginPanel({
   onPromptReady,
   onOpenAuthorization,
   onRetryReady,
+  onLoginFailed,
 }: AdapterLoginPanelProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const automaticComputer = Boolean(requiresAgent && !agentId && aiConnection);
@@ -2994,6 +3023,16 @@ function DisplayedCodeLoginPanel({
     return () => onRetryReadyRef.current?.(null);
   }, [retryReady]);
 
+  useReportLoginFailureOnce(
+    isReportableAdapterLoginFailure({
+      active: loginActive,
+      retrying: retrying || retryLogin.isPending,
+      status,
+      hasFailure: Boolean(startError || (isTerminal && status !== "authenticated")),
+    }),
+    onLoginFailed,
+  );
+
   if (chrome === "onboarding") {
     const failure = !retryLogin.isPending && (startError || failed)
       ? status === "timed_out" ? "expired" : "failed"
@@ -3219,6 +3258,7 @@ function SubmittedBrowserCodeLoginPanel({
   onConnected,
   onCodeSubmitted,
   onSubmitFailed,
+  onLoginFailed,
   chrome = "panel",
   aiConnection,
   onPromptReady,
@@ -3740,6 +3780,16 @@ function SubmittedBrowserCodeLoginPanel({
     codeSubmittedRef.current = false;
     onSubmitFailedRef.current?.();
   }, [codeSubmitted, startError, isFailure, timedOut]);
+
+  useReportLoginFailureOnce(
+    isReportableAdapterLoginFailure({
+      active: loginActive,
+      retrying,
+      status,
+      hasFailure: Boolean(startError || isFailure || timedOut),
+    }),
+    onLoginFailed,
+  );
 
   const onPromptReadyRef = useRef(onPromptReady);
   onPromptReadyRef.current = onPromptReady;

@@ -1,3 +1,9 @@
+import {
+  containsSigV4PresignedUrl,
+  protectSigV4PresignedUrlParameters,
+} from "./sigv4-presigned-url.js";
+
+export { containsSigV4PresignedUrl };
 export const REDACTED_COMMAND_TEXT_VALUE = "***REDACTED***";
 
 // Public Executor helper addresses retained for callers of this predicate.
@@ -32,8 +38,13 @@ const COMMAND_ENV_SECRET_ASSIGNMENT_RE = new RegExp(
 );
 const COMMAND_AUTHORIZATION_BEARER_RE =
   /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
-const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
-const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
+const COMMAND_OPENAI_KEY_SOURCE = String.raw`\bsk-[A-Za-z0-9_-]{12,}\b`;
+const COMMAND_GITHUB_TOKEN_SOURCE = String.raw`\bgh[pousr]_[A-Za-z0-9_]{20,}\b`;
+const COMMAND_OPENAI_KEY_RE = new RegExp(COMMAND_OPENAI_KEY_SOURCE, "g");
+const COMMAND_GITHUB_TOKEN_RE = new RegExp(COMMAND_GITHUB_TOKEN_SOURCE, "g");
+const STANDALONE_SECRET_TOKEN_RE = new RegExp(
+  `${COMMAND_OPENAI_KEY_SOURCE}|${COMMAND_GITHUB_TOKEN_SOURCE}|\\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\\b|\\bgithub_pat_[A-Za-z0-9_]{20,}\\b`,
+);
 const COMMAND_JWT_RE =
   /\b(?<![A-Za-z0-9_]-*)[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,}){2}(?:\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})?\b/g;
 /** Recognize encoded JSON headers, without treating dotted identifiers as tokens. */
@@ -83,11 +94,25 @@ function maybeContainsSecretText(command: string) {
   );
 }
 
+function containsStandaloneSecretToken(value: string): boolean {
+  if (STANDALONE_SECRET_TOKEN_RE.test(value)) return true;
+  const jwtMatches = value.match(COMMAND_JWT_RE);
+  return jwtMatches !== null && jwtMatches.some(looksLikeCredentialJwt);
+}
+
 export function redactCommandText(
   command: string,
   redactedValue = REDACTED_COMMAND_TEXT_VALUE,
 ): string {
   if (!maybeContainsSecretText(command)) return command;
+  const { text, restore } = protectSigV4PresignedUrlParameters(
+    command,
+    containsStandaloneSecretToken,
+  );
+  return restore(redactSetAsideCommandText(text, redactedValue));
+}
+
+function redactSetAsideCommandText(command: string, redactedValue: string): string {
   return command
     .replace(COMMAND_AUTHORIZATION_BEARER_RE, `$1${redactedValue}`)
     .replace(COMMAND_CLI_SECRET_OPTION_RE, `$1${redactedValue}$3`)
@@ -252,6 +277,7 @@ export function collectDiagnosticEnvironmentSecrets(
   for (const [key, value] of Object.entries(env)) {
     if (typeof value !== "string" || !value) continue;
     if (declared.has(key) || secretName.test(key) ||
+      containsSigV4PresignedUrl(value) ||
       redactDiagnosticText(value) !== value || looksLikeCredentialJwt(value) ||
       /-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----/.test(value) ||
       (!isOrdinaryDiagnosticEnvSetting(key, value) && (!options.hostProcess || plausibleUndeclaredCredential(key, value)))) {

@@ -73,7 +73,7 @@ export interface InstanceExperimentalSettings {
   enableApps: boolean;
   /** Exposes chat connector setup and Board surfaces; existing delivery continues when hidden. */
   enableChatConnectors: boolean;
-  /** Show GitHub review bot setup and management independently of chat connectors. */
+  /** @deprecated Compatibility key only. GitHub review bots are always enabled. */
   enableGitHubReviewBots: boolean;
   /** @deprecated Compatibility key only. Assistant connections (MCP) are always enabled. */
   enablePublicMcp: boolean;
@@ -132,6 +132,13 @@ export interface InstanceExperimentalSettings {
    * flipping it later does not change an existing first task.
    */
   enableFirstTaskPlanProposal: boolean;
+  /**
+   * Experimental Paperclip Cloud onboarding starter inference: provides a
+   * Cloud-funded $1 OpenRouter allowance (defaulting to OpenCode / Luna) via
+   * the tenant server proxy so the user's first agent works out of the box,
+   * then prompts to connect their own subscription when exhausted.
+   */
+  enableCloudTrialInference: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
   enableWorkspaceDirtyQuarantineRepair: boolean;
@@ -156,6 +163,11 @@ export interface InstanceExperimentalSettings {
    * declared, so behavior matches a client without it.
    */
   enableMcpTasks: boolean;
+  /**
+   * Let a signed-in user start Google Antigravity's native swarm with `/swarm`
+   * at the start of a task comment. Local hosts with a Google sign-in only. Default off.
+   */
+  enableAntigravitySwarm: boolean;
   /**
    * @deprecated Compatibility-only. Provider WebSocket ingress now follows
    * enableNativeRunner and this value has no runtime effect.

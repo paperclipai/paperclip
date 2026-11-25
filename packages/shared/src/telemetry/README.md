@@ -148,6 +148,19 @@ Every runner harness is in the generated `adapter_type` enum. A test in
 harness is missing from the contract. Add it to the telemetry-backend schema
 first, then copy the regenerated contract here.
 
+`agent.task_completed` records one task completion when an agent moves a task
+from a non-`done` status into `done`. Both the REST issue update route and the
+native status decision committer (`commitNativeStatusDecision` via
+`emitAgentTaskCompleted`) emit this event once per committed transition into
+`done`. Native completion starts the emit after the transaction commits without
+awaiting it, so telemetry lookups never block or fail run finalization. A
+rolled-back transaction, a replayed native decision (`replayed: true`), or a
+commit on a task that is already `done` (for example, already closed by the
+issue route) emits nothing. Native completion sends the same dimensions as the
+issue route, including `telemetryAdapterType()` for Paperclip runner harnesses
+and `withTelemetryActor()` / `resolveTelemetryPerson()` for Cloud company and
+person attribution.
+
 ## Product Lifecycle Events
 
 `model.connected`, `task.created`, `task.completed`, `task.blocked`,

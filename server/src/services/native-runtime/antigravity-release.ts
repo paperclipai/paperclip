@@ -17,9 +17,11 @@ export function antigravityCandidateTarget(remote: boolean): { platform: string;
  * the target the run would use. This host needs a grant that names this host.
  * A Core sandbox or SSH environment needs a grant for the cloud pack's
  * linux-x64 closure and a linux-x64 glibc Computer the Runner supports (or the
- * managed cloud image). A plugin Runner-task environment offers none: it cannot
- * launch Antigravity yet. A released profile offers no candidate. May throw for
- * a grant that is invalid or names another target.
+ * managed cloud image). A plugin Runner-task environment offers no candidate
+ * grant while pending because the plugin launch contract carries no candidate
+ * grant; once released, no candidate grant is needed and plugin Runner-task
+ * environments offer Antigravity through the ordinary qualified Runner path.
+ * May throw for a grant that is invalid or names another target.
  */
 export function antigravityCandidateForRunnerTarget(companyId: string, target: RunnerTarget) {
   if (!antigravityReleasePending()) return undefined;
@@ -100,6 +102,7 @@ export function assertAntigravityExecutionAdmissible(input: {
   backend?: unknown;
   restartRecovery?: unknown;
   remoteTarget: boolean;
+  pluginTask?: boolean;
   hostEnvironment?: NodeJS.ProcessEnv;
 }): void {
   const { execution } = input;
@@ -107,6 +110,9 @@ export function assertAntigravityExecutionAdmissible(input: {
   if (!antigravityReleasePending()) {
     assertAntigravitySavedStateCurrent(execution);
     return;
+  }
+  if (input.pluginTask) {
+    throw new Error("paperclip_runner_antigravity_candidate_ineligible: exact target-bound per-turn candidate admission is required");
   }
   let candidate: ReturnType<typeof resolveAntigravityCandidateAdmission>;
   try {

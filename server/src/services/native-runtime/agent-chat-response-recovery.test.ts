@@ -14,8 +14,15 @@ import { instanceSettingsService } from "../instance-settings.js";
 import { issueService } from "../issues.js";
 import * as nativeResponseNotifications from "../native-response-presentation-notifications.js";
 import { compactRunLogChunk } from "../heartbeat/run-log.js";
+import { CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON } from "../heartbeat-run-summary.js";
 
 const runLogReads = vi.hoisted(() => [] as unknown[]);
+const presentationAuthorization = vi.hoisted(() => ({ override: null as string | null }));
+vi.mock("../chat-run-publications.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../chat-run-publications.js")>();
+  return { ...actual, resolveChatRunPresentationAuthorizationReason: (async (...args: Parameters<typeof actual.resolveChatRunPresentationAuthorizationReason>) =>
+    presentationAuthorization.override ?? actual.resolveChatRunPresentationAuthorizationReason(...args)) as typeof actual.resolveChatRunPresentationAuthorizationReason };
+});
 vi.mock("../run-log-store.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../run-log-store.js")>();
   return { ...actual, getRunLogStore: () => {
@@ -649,6 +656,45 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     expect(await comments(f.runId)).toHaveLength(1);
     expect(await issue(f.issueId)).toMatchObject({ status: "in_progress", conversationState: "active" });
   });
+  it.each([
+    ["failed at setup", "failed", "yielded"], ["running", "running", "yielded"], ["finished", "succeeded", "yielded"],
+    ["failed at setup", "failed", "done"], ["failed at setup", "failed", "pending approval"],
+  ] as const)(
+    "never posts an earlier turn's reply after a later turn of the conversation started (later turn %s, %s)", async (_, status, turn) => {
+      // The earlier turn ended without a presented reply. A later turn of the
+      // same conversation then started and no longer holds the execution run.
+      const f = turn === "pending approval" ? await heldTurn(turn) : await fixture(true, { disposition: turn });
+      const [earlier] = await db.select({ createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const laterAt = new Date(earlier.createdAt.getTime() + 60_000);
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, status, runtimeMode: "native",
+        nativeIssueId: f.issueId, responsibleUserId: f.userId, createdAt: laterAt,
+        ...(status === "failed" ? { errorCode: "setup_failed", finishedAt: laterAt } : { startedAt: laterAt }),
+        ...(status === "succeeded" ? { finishedAt: laterAt } : {}),
+        contextSnapshot: { issueId: f.issueId, source: "issue.comment", conversationSessionGeneration: 0 } });
+      await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
+      const work = nativeResponsePresentationWork(db);
+      for (const entry of await work.load(f.input)) await expect(work.check(entry)).resolves.toBeNull();
+      await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
+      expect(await comments(f.runId)).toEqual([]);
+    },
+  );
+  it.each([
+    ["a queued wake that has not started", { status: "queued" }, {}],
+    ["a discarded queued message", { status: "cancelled", errorCode: "queued_comment_discarded" }, {}],
+    ["a context compaction run", { status: "succeeded" }, { contextCompactionRequestId: "compaction-request" }],
+  ] as const)("still posts the reply when the only later run is %s", async (_, run, context) => {
+    const f = await fixture();
+    const [earlier] = await db.select({ createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const laterAt = new Date(earlier.createdAt.getTime() + 60_000);
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, ...run, runtimeMode: "native",
+      responsibleUserId: f.userId, createdAt: laterAt,
+      ...(run.status === "cancelled" ? { finishedAt: laterAt } : {}),
+      ...(run.status === "succeeded" ? { startedAt: laterAt, finishedAt: laterAt } : {}),
+      contextSnapshot: { issueId: f.issueId, source: "issue.comment", conversationSessionGeneration: 0, ...context } });
+    await db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(true);
+    expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: f.reply })]);
+  });
   it("does not duplicate a reply under concurrent recovery", async () => {
     const f = await fixture();
     expect((await Promise.all([recoverCommittedNativeChatResponse(db, f.input), recoverCommittedNativeChatResponse(db, f.input)])).sort())
@@ -702,6 +748,78 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     expect(entries).toHaveLength(1); await expect(work.check(entries[0])).resolves.toBeNull();
     expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: f.reply })]);
     expect((await issue(f.issueId)).conversationAgentId).toBeNull();
+  });
+  it.each([
+    ["done", { source: "chat:github" }],
+    ["needs_review", { source: "chat:github" }],
+    ["done", { source: "automation", externalChatContinuation: true }],
+  ] as const)("publishes an external-chat task's %s reply when copy-back failure skipped the live path (%j)", async (disposition, context) => {
+    // A run woken by an external chat message reaches its accepted final reply,
+    // then workspace copy-back fails, so the live completion path never posts
+    // it. Presentation recovery must still put that reply on the task.
+    const f = await fixture(false, { disposition });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeCommentId: f.wakeId, ...context } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const work = nativeResponsePresentationWork(db), entries = await work.load(f.input);
+    expect(entries).toEqual([expect.objectContaining({ id: f.runId })]);
+    await expect(work.check(entries[0])).resolves.toBeNull();
+    expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: f.reply, createdByRunId: f.runId })]);
+    const [run] = await db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run.resultJson).toMatchObject({ presentationDecision: { reasonCodes: expect.arrayContaining(["committed_task_response_recovered"]) } });
+    expect((run.resultJson as Record<string, unknown>).responsePublication).not.toMatchObject({ state: "failed" });
+    expect(await work.load(f.input)).toEqual([]);
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
+    expect(await comments(f.runId)).toHaveLength(1);
+  });
+  it("posts a non-GitHub external-chat task reply once with the provider presentation authorization", async () => {
+    const f = await fixture(false);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeCommentId: f.wakeId, source: "chat:slack" } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    presentationAuthorization.override = CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON;
+    try {
+      await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(true);
+      await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
+    } finally { presentationAuthorization.override = null; }
+    expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: f.reply,
+      metadata: expect.objectContaining({ authorizationReason: CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON }) })]);
+  });
+  it.each([false, true])("reuses an external-chat task reply the live path saved without recording it (deleted=%s)", async deleted => {
+    const f = await fixture(false);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeCommentId: f.wakeId, source: "chat:github" } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const [saved] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: f.agentId,
+      createdByRunId: f.runId, body: f.reply, ...(deleted ? { deletedAt: new Date("2020-01-01T00:03:00Z") } : {}) }).returning();
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
+    expect(await comments(f.runId)).toEqual([saved]);
+    const [run] = await db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run.resultJson).toMatchObject({ presentationDecision: { commentAction: "reuse", commentId: saved.id } });
+    expect(await nativeResponsePresentationWork(db).load(f.input)).toEqual([]);
+  });
+  it.each([false, true])("posts an external-chat task's final answer after an earlier progress comment (deleted=%s)", async deleted => {
+    const f = await fixture(false);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeCommentId: f.wakeId, source: "chat:github" } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const [progress] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: f.agentId,
+      createdByRunId: f.runId, body: "Looking into the review comment now.",
+      ...(deleted ? { deletedAt: new Date("2020-01-01T00:03:00Z") } : {}) }).returning();
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(true);
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
+    const saved = await comments(f.runId);
+    expect(saved).toHaveLength(2);
+    expect(saved).toEqual(expect.arrayContaining([progress, expect.objectContaining({ body: f.reply, deletedAt: null })]));
+  });
+  it("reuses the summary the live path saved when the final message is a structured result", async () => {
+    const summary = "A completed hire, with its final message preserved separately.";
+    const reply = JSON.stringify({ schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary });
+    const f = await fixture(false, { reply });
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, wakeCommentId: f.wakeId, source: "chat:github" } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const [saved] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorAgentId: f.agentId,
+      createdByRunId: f.runId, body: summary }).returning();
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
+    expect(await comments(f.runId)).toEqual([saved]);
+    const [run] = await db.select({ resultJson: heartbeatRuns.resultJson }).from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(run.resultJson).toMatchObject({ presentationDecision: { commentAction: "reuse", commentId: saved.id } });
   });
   it("recovers a deferred review reply once without resolving the review or rerunning work", async () => {
     const f = await fixture(false, { disposition: "needs_review" });

@@ -5,6 +5,9 @@ const mocks = vi.hoisted(() => ({ managed: vi.fn(), discover: vi.fn(), cleanup: 
   CleanupError: class extends Error {
     constructor(readonly retired: Promise<void>) { super("cleanup pending"); }
   },
+  UnavailableError: class extends Error {
+    readonly code = "ANTIGRAVITY_RUNTIME_UNAVAILABLE";
+  },
 }));
 const spawned = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", async original => {
@@ -16,6 +19,7 @@ vi.mock("../services/ai-connection-runtime.js", () => ({ prepareManagedAiRuntime
 vi.mock("../middleware/logger.js", () => ({ logger: { warn: mocks.warn } }));
 vi.mock("../vendor/paperclip-runner/index.js", () => ({
   discoverAntigravityModels: mocks.discover, AntigravityModelDiscoveryCleanupError: mocks.CleanupError,
+  AntigravityRuntimeUnavailableError: mocks.UnavailableError,
 }));
 import { antigravityConnectionModels } from "../services/antigravity-connection-models.js";
 import { RetiredCredentialRecoveryError } from "../services/quota-credential-recovery.js";
@@ -42,6 +46,14 @@ it("uses the selected account lifecycle and returns only its model catalog", asy
     allowUninstalledPersonal: true, allowUninstalledShared: false, config: { provider: "acpx", acpxAgent: "antigravity" },
   }));
   expect(mocks.discover).toHaveBeenCalledWith("/private/selected-google-home");
+  expect(mocks.cleanup).toHaveBeenCalledExactlyOnceWith();
+});
+
+it("reports a missing server runtime plainly and logs its reason code", async () => {
+  mocks.discover.mockRejectedValueOnce(new mocks.UnavailableError("runtime missing"));
+  await expect(antigravityConnectionModels({} as never, input)).rejects.toThrow(
+    "This server does not have the current Google Antigravity runtime, so Google account models cannot load. Use a Google API key instead, or update Paperclip on this server.");
+  expect(mocks.warn).toHaveBeenCalledWith({ companyId: "company", code: "ANTIGRAVITY_RUNTIME_UNAVAILABLE" }, "Antigravity model discovery runtime is unavailable");
   expect(mocks.cleanup).toHaveBeenCalledExactlyOnceWith();
 });
 

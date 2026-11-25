@@ -52,7 +52,7 @@ test("native catalog setup, account edits, conflicts and removal persist through
   let poolId: string | undefined;
   try {
     await page.goto(`/${prefix}/dashboard`);
-    await page.getByRole("link", { name: "Connectors", exact: true }).click();
+    await page.getByRole("link", { name: "Plugins", exact: true }).click();
     await page.getByRole("button", { name: `Add connection pool ${connector.name}`, exact: true }).click();
     await expect(page.getByRole("heading", { name: "Add a connection pool", exact: true })).toBeVisible();
     await expect(page.getByRole("button", { name: "Continue", exact: true })).toBeDisabled();

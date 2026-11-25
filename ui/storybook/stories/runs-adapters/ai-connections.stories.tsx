@@ -128,9 +128,9 @@ export const ProviderCatalog: Story = {
     await expect(await canvas.findByRole("button", { name: "Add account Anthropic" })).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Connect GitHub" })).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Connect Gmail" })).toBeVisible();
-    await userEvent.type(canvas.getByPlaceholderText("Search connectors…"), "Claude");
+    await userEvent.type(canvas.getByPlaceholderText("Search plugins…"), "Claude");
     await expect(canvas.queryByRole("button", { name: "Connect Gmail" })).not.toBeInTheDocument();
-    await userEvent.clear(canvas.getByPlaceholderText("Search connectors…"));
+    await userEvent.clear(canvas.getByPlaceholderText("Search plugins…"));
   },
 };
 export const ConnectFromExistingCatalog: Story = {
@@ -148,7 +148,9 @@ export const ConnectFromExistingCatalog: Story = {
     await userEvent.click(canvas.getByRole("button", { name: "Use connection" }));
     await expect(await canvas.findByLabelText("AI account settings")).toBeVisible();
     await expect(canvas.getByRole("heading", { name: "My additional Claude account" })).toBeVisible();
-    await userEvent.click(canvas.getByRole("link", { name: "Connectors" }));
+    await userEvent.click(canvas.getByRole("link", { name: "Plugins" }));
+    // The catalog opens on plugin cards; accounts are listed under Installed.
+    await userEvent.click(await canvas.findByRole("radio", { name: "Installed" }));
     await expect(await canvas.findByRole("button", { name: "Open My additional Claude account permissions" })).toBeVisible();
     await expect(canvas.getByRole("button", { name: "Open My Claude subscription permissions" })).toBeVisible();
   },
@@ -274,7 +276,8 @@ export const ConnectorDefaultMenu: Story = {
   parameters: { paperclip: { capabilities: ["runs-adapters/validation", "connection-setup/catalog"], status: "current", implementation: "production", boundary: "fixtures",
     notes: "Production Browse/ConnectorCard crown and dropdown. Fixture API persists one default per owner/provider across methods; provider authentication and real API authorization are not exercised." } },
   play: async ({ canvasElement }) => {
-    const heading = await within(canvasElement).findByRole("heading", { name: "OpenAI" });
+    await userEvent.click(await within(canvasElement).findByRole("radio", { name: "Installed" }));
+    const heading = await within(canvasElement).findByRole("heading", { name: "OpenAI", level: 2 });
     const provider = within(heading.closest<HTMLElement>('[data-app-slug="openai"]')!);
     const body = within(canvasElement.ownerDocument.body);
     await userEvent.click(await provider.findByRole("button", { name: "2 connections" }));
@@ -293,7 +296,8 @@ export const ConnectorDefaultRetry: Story = {
   args: { host: "connections", initialConnections: connectorDefaultAccounts, failDefaultOnce: true },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const heading = await canvas.findByRole("heading", { name: "OpenAI" });
+    await userEvent.click(await canvas.findByRole("radio", { name: "Installed" }));
+    const heading = await canvas.findByRole("heading", { name: "OpenAI", level: 2 });
     const provider = within(heading.closest<HTMLElement>('[data-app-slug="openai"]')!);
     const body = within(canvasElement.ownerDocument.body);
     await userEvent.click(await provider.findByRole("button", { name: "2 connections" }));

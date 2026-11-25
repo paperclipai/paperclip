@@ -6,7 +6,8 @@ AWS key for the role method. For each connection, the control plane mints a
 one-hour bearer token at call time. Agents see the AWS tools like any other
 connector's tools and never receive AWS credentials.
 
-It is behind the `enableAwsConnector` experimental setting (off by default).
+It is available on every instance. The former `enableAwsConnector` experimental
+setting is a compatibility key whose value is ignored.
 The design and the spike that proved it are in
 [the AWS connector plan](../plans/2026-11-17-aws-connector-and-minted-credentials.md)
 and [the workload identity issuer](../plans/2026-11-17-workload-identity-issuer.md).
@@ -90,11 +91,10 @@ sequenceDiagram
 The role method takes two steps, because the role must trust a connection that
 already exists. The setup screen walks through them:
 
-1. Turn on **AWS connector** in Instance Settings, Experimental.
-2. In Connectors, open AWS. Choose the endpoint region and the access level,
+1. In Connectors, open AWS. Choose the endpoint region and the access level,
    then click **Connect**. There is no role ARN to enter yet: the role does not
    exist until the next step creates it.
-3. Paperclip saves a draft without contacting AWS and publishes the company's
+2. Paperclip saves a draft without contacting AWS and publishes the company's
    issuer. The role is named after the connection (`paperclip-<connection id>`),
    and CloudFormation fills in the account, so nothing is typed by hand. The
    screen shows one thing by default:
@@ -110,25 +110,30 @@ already exists. The setup screen walks through them:
    - While the agent works, the step shows its live checklist (it sets and
      ticks off its steps with the URLs and token in the prompt; see
      `docs/api/agent-setup-progress.md`), and its finish summary carries the
-     role ARN.
-   - Paste that role ARN into the Role ARN field.
+     role ARN. When the agent finishes, the screen fills in that ARN itself. It
+     accepts only an ARN naming this connection's own role, and keeps any ARN
+     you typed yourself.
 
-   **Or do it by hand** shows the same setup without an agent:
+   **Or do it by hand** shows the same setup without an agent, and holds the
+   Role ARN field. It opens on its own when a test fails or the agent finished
+   without a usable ARN:
    - **With CloudFormation.** Download the template, create a stack from it in
      the AWS account, set `CreateIdentityProvider` to `false` if the account
      already has an identity provider for this issuer, choose `AccessPolicyArn`
      for full access, and acknowledge that the stack creates IAM resources
-     (`CAPABILITY_NAMED_IAM`). Copy `RoleArn` from the stack's outputs.
+     (`CAPABILITY_NAMED_IAM`). Copy `RoleArn` from the stack's outputs into the
+     Role ARN field.
    - **In the IAM console or AWS CLI.** Add an OpenID Connect provider with the
      shown provider URL and audience, then create the role with the shown trust
      policy (replace `ACCOUNT_ID`), which trusts only `connection:<id>`. Attach
      `AWSMCPSignInOAuthAccessPolicy` and the agents' permissions. The CLI
-     commands read the account ID themselves and print the role ARN.
+     commands read the account ID themselves and print the role ARN to paste
+     into the Role ARN field.
 
    If the instance's address changed after the draft was saved, the screen
    shows no steps and asks you to go back and click **Connect** again, which
    saves the draft with the current address.
-4. Click **Test connection**. Paperclip saves the role ARN, mints a token, lists the tools and
+3. Click **Test connection**. Paperclip saves the role ARN, mints a token, lists the tools and
    finishes setup. If AWS refuses, the screen shows why, in place.
 
 The screen reads `GET /api/tool-connections/{connectionId}/aws-setup`, which

@@ -22,10 +22,12 @@ const architectures = ["amd64", "arm64"];
 const indexTypes = ["application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json"];
 const manifestTypes = ["application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"];
 // How long a master push waits for a merge-queue build that is still running.
-// A build takes about 12 minutes and the exact-source gate about 14.
-const findWaitMs = 15 * 60_000;
-const findPollMs = 20_000;
+// Capped at 3 minutes so a master push on a fast AWS runner falls back to
+// building from source instead of stalling behind a slower merge-group leg.
+const findWaitMs = 3 * 60_000;
+const findPollMs = 15_000;
 const fullSha = /^[a-f0-9]{40}$/;
+const hex64 = /^[a-f0-9]{64}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
 const sha256 = bytes => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
@@ -92,20 +94,31 @@ export function archiveImageDigest({ readEntry, arch }) {
 }
 
 /** What the merge-group build attests about the archive it uploads. */
-export function createRecord({ sha, tree, arch, digest }) {
+export function createRecord({ sha, tree, arch, digest, runnerInputsDigest = "" }) {
   assert.match(sha ?? "", fullSha);
   assert.match(tree ?? "", fullSha);
   assert.ok(architectures.includes(arch));
   assert.match(digest ?? "", digestPattern);
-  return { schema: recordSchema, repository, sha, tree, arch, digest };
+  assert.ok(runnerInputsDigest === "" || hex64.test(runnerInputsDigest), "runnerInputsDigest must be empty or 64 lowercase hex characters");
+  return {
+    schema: recordSchema,
+    repository,
+    sha,
+    tree,
+    arch,
+    digest,
+    ...(runnerInputsDigest ? { runnerInputsDigest } : {}),
+  };
 }
 
 /**
  * Prove the archive is the build of the tree this master push publishes. The
  * commit SHA covers its tree; the tree is compared too, so a record can never
- * vouch for different content under a reused name.
+ * vouch for different content under a reused name. When master resolved a
+ * published Runner image, the merge-group record must name the exact same
+ * Runner inputs digest (and vice versa for inline builds).
  */
-export function verifyRecord({ record, sha, tree, arch, archiveDigest }) {
+export function verifyRecord({ record, sha, tree, arch, archiveDigest, runnerInputsDigest = "" }) {
   assert.equal(record?.schema, recordSchema, "Unknown merge-group image record");
   assert.equal(record.repository, repository);
   assert.equal(record.sha, sha, "The merge-group build is for a different commit");
@@ -113,6 +126,12 @@ export function verifyRecord({ record, sha, tree, arch, archiveDigest }) {
   assert.equal(record.arch, arch, "The merge-group build is for a different architecture");
   assert.match(record.digest ?? "", digestPattern);
   assert.equal(archiveDigest, record.digest, "The archive is not the image the merge-group build recorded");
+  assert.ok(runnerInputsDigest === "" || hex64.test(runnerInputsDigest), "runnerInputsDigest must be empty or 64 lowercase hex characters");
+  assert.equal(
+    record.runnerInputsDigest ?? "",
+    runnerInputsDigest,
+    "The merge-group build used a different Runner image than master resolved",
+  );
   return record.digest;
 }
 
@@ -124,7 +143,21 @@ export function verifyRecord({ record, sha, tree, arch, archiveDigest }) {
  * check from the copy of this script in the push's `before` commit, so a push
  * cannot remove the check it is subject to.
  */
-export const pipelineFiles = [workflowPath, ".github/workflows/docker.yml", ".github/workflows/macos-runner-runtime.yml", "scripts/macos-runner-runtime.mjs", "scripts/macos-runner-runtime-cache.mjs", "scripts/merge-group-image.mjs", "scripts/assert-orphan-reaping.sh"];
+export const pipelineFiles = [
+  workflowPath,
+  ".github/workflows/docker.yml",
+  ".github/workflows/macos-runner-runtime.yml",
+  "scripts/macos-runner-runtime.mjs",
+  "scripts/macos-runner-runtime-cache.mjs",
+  "scripts/runner-image-resolve.mjs",
+  "scripts/runner-image-publish.mjs",
+  "scripts/runner-image-identity.mjs",
+  "scripts/runner-image-layout.mjs",
+  "scripts/runner-image-oci.mjs",
+  "scripts/standard-image-contract.mjs",
+  "scripts/merge-group-image.mjs",
+  "scripts/assert-orphan-reaping.sh",
+];
 
 export function assertPipelineUnchanged(changedFiles) {
   const changed = changedFiles.filter(file => pipelineFiles.includes(file));
@@ -146,6 +179,12 @@ const option = name => {
   assert.ok(value, `--${name} is required`);
   return value;
 };
+const optionalOption = name => {
+  const index = process.argv.indexOf(`--${name}`);
+  if (index <= 0) return "";
+  const value = process.argv[index + 1];
+  return value === undefined || value.startsWith("--") ? "" : value;
+};
 const output = async (key, value) => {
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `${key}=${value}\n`);
   console.log(`${key}=${value}`);
@@ -158,7 +197,8 @@ async function main(command) {
     // Runs in the credential-free merge-group build.
     assert.equal(process.env.GITHUB_EVENT_NAME, "merge_group", "Records are written only by merge-group builds");
     const digest = archiveImageDigest({ readEntry: tarReader(option("archive")), arch });
-    await writeFile(option("out"), `${JSON.stringify(createRecord({ sha, tree: gitTree(), arch, digest }), null, 2)}\n`);
+    const runnerInputsDigest = optionalOption("runner-inputs-digest");
+    await writeFile(option("out"), `${JSON.stringify(createRecord({ sha, tree: gitTree(), arch, digest, runnerInputsDigest }), null, 2)}\n`);
     return output("digest", digest);
   }
   assert.ok(process.env.GITHUB_REPOSITORY === repository && process.env.GITHUB_REF === "refs/heads/master" &&
@@ -173,8 +213,8 @@ async function main(command) {
       return response.json();
     };
     // Publication waits for the exact-source gate in any case, so waiting here
-    // for an unfinished build costs nothing while the build is the shorter of
-    // the two. Past the deadline the push builds from source.
+    // briefly for an almost-finished build costs nothing; past the deadline the
+    // push builds from source.
     const deadline = Date.now() + findWaitMs;
     let run;
     for (;;) {
@@ -195,7 +235,8 @@ async function main(command) {
     assertPipelineUnchanged(changedSince(option("since")));
     const record = JSON.parse(await readFile(`${directory}/record.json`, "utf8"));
     const archiveDigest = archiveImageDigest({ readEntry: tarReader(`${directory}/image.tar`), arch });
-    return output("digest", verifyRecord({ record, sha, tree: gitTree(), arch, archiveDigest }));
+    const runnerInputsDigest = optionalOption("runner-inputs-digest");
+    return output("digest", verifyRecord({ record, sha, tree: gitTree(), arch, archiveDigest, runnerInputsDigest }));
   }
   throw new Error(`Unknown command: ${command}`);
 }

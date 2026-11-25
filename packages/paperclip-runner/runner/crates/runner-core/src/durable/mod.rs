@@ -59,11 +59,26 @@ pub const PROVIDER_SIDE_EFFECT_PENDING: &str = "provider_side_effect_pending";
 pub const PROVIDER_SESSION_CLOSED: &str = "provider_session_closed";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DurableRunnerError(String, Option<serde_json::Value>, Option<&'static str>);
+pub struct DurableRunnerError(
+    String,
+    Option<serde_json::Value>,
+    Option<&'static str>,
+    Option<serde_json::Value>,
+);
 
 impl DurableRunnerError {
     pub fn invalid(message: impl Into<String>) -> Self {
-        Self(message.into(), None, None)
+        Self(message.into(), None, None, None)
+    }
+
+    /// See [`crate::local_runner::LocalRunnerError::with_sidecar_rejection`].
+    pub fn with_sidecar_rejection(mut self, detail: Option<serde_json::Value>) -> Self {
+        self.3 = detail;
+        self
+    }
+
+    pub fn sidecar_rejection(&self) -> Option<serde_json::Value> {
+        self.3.clone()
     }
 
     pub fn with_provider_failure(mut self, value: Option<serde_json::Value>) -> Self {
@@ -484,8 +499,14 @@ mod tests {
         let candidate = profile.canonical_digest().unwrap();
         assert_ne!(ordinary, candidate);
         let mut config = config();
-        config.acpx_launch_profile = Some(profile.clone());
+        config.acpx_launch_profile = Some(AcpxLaunchProfile {
+            candidate_admission: None,
+            ..profile.clone()
+        });
         config.validate().unwrap();
+        // Released Antigravity rejects any candidate grant attached to config.
+        config.acpx_launch_profile = Some(profile.clone());
+        assert!(config.validate().is_err());
         config.run_id = "wrong-run".to_owned();
         assert!(config.validate().is_err());
         profile.candidate_admission.as_mut().unwrap().company_id = "company-2".to_owned();

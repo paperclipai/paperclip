@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { ArrowUpRight, ChevronRight, Download, Loader2 } from "lucide-react";
-import { getAppStoreDefinition, type AwsConnectionSetup } from "@paperclipai/shared";
+import type { AwsConnectionSetup } from "@paperclipai/shared";
+import { ROLE_ARN_PATTERN, roleArnFromAgentSummary } from "./aws-role-arn";
 import { ApiError } from "@/api/client";
 import { toolsApi } from "@/api/tools";
 import { describeError } from "@/api/errors";
@@ -79,19 +80,11 @@ export const AWS_AGENT_SETUP_STEPS: AgentSetupStep[] = [
 ];
 
 /**
- * The app definition's role ARN rule (a server test keeps it equal to the server's), so this
- * check matches what the server accepts. Without a definition the server alone decides.
- */
-const ROLE_ARN_PATTERN = new RegExp(
-  getAppStoreDefinition("aws")?.methods.find((method) => method.key === "aws-role")
-    ?.tenantFields?.find((field) => field.key === "roleArn")?.validation?.pattern ?? "^arn:",
-);
-
-/**
  * The middle of AWS role setup: the connection is saved as a draft, so AWS can
  * now trust exactly this connection. By default the customer hands a prompt to
- * their own agent, which creates the role, then pastes back the role ARN; the
- * CloudFormation and by-hand steps are there for anyone who prefers them.
+ * their own agent, which creates the role and reports its ARN back through the
+ * live checklist; the CloudFormation and by-hand steps, and the Role ARN field,
+ * are there for anyone who prefers them.
  */
 export function AwsRoleSetup({
   connectionId,
@@ -118,6 +111,9 @@ export function AwsRoleSetup({
   const promptReady = !companyId || Boolean(agentProgress.handoff) || Boolean(agentProgress.error);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [roleArn, setRoleArn] = useState("");
+  // Set once the person types in the field: the agent's ARN then never replaces their value.
+  const [roleArnEdited, setRoleArnEdited] = useState(false);
+  const [byHandOpen, setByHandOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -137,6 +133,16 @@ export function AwsRoleSetup({
   const ready = setup?.available === true ? setup : null;
   const trimmedArn = roleArn.trim();
   const arnInvalid = trimmedArn.length > 0 && !ROLE_ARN_PATTERN.test(trimmedArn);
+  const agentFinished = agentProgress.progress?.status === "done";
+  const reportedArn = ready && agentFinished ? roleArnFromAgentSummary(agentProgress.progress?.summary, ready.roleName) : null;
+  useEffect(() => {
+    if (reportedArn && !roleArnEdited) setRoleArn(reportedArn);
+  }, [reportedArn, roleArnEdited]);
+  // The field is under "Or do it by hand"; open it whenever the person has to see or fix the ARN.
+  const needsArnByHand = Boolean(error) || arnInvalid || (agentFinished && !reportedArn);
+  useEffect(() => {
+    if (needsArnByHand) setByHandOpen(true);
+  }, [needsArnByHand]);
 
   return (
     <div className="space-y-5" data-testid="aws-role-setup">
@@ -171,7 +177,9 @@ export function AwsRoleSetup({
             <p className="text-sm text-muted-foreground">
               <span className="text-foreground">Give this prompt to an agent on a computer signed in to your AWS account.</span>{" "}
               {ready.savedRoleArn ? "It updates the existing role" : "It creates the role"} with the AWS CLI
-              {agentProgress.handoff ? ", shows its progress here," : ""} and tells you the role ARN to paste below.
+              {agentProgress.handoff
+                ? ", shows its progress here, and hands back the role when it finishes."
+                : " and tells you the role ARN to paste under Or do it by hand."}
             </p>
             {agentProgress.error ? (
               <InlineBanner tone="warning" title="Live progress isn’t available">
@@ -202,25 +210,17 @@ export function AwsRoleSetup({
                 onRetryRefresh={agentProgress.retryRefresh}
               />
             ) : null}
-            <div className="space-y-2">
-              <label htmlFor="aws-role-arn" className="text-sm font-medium text-foreground">Role ARN</label>
-              <Input
-                id="aws-role-arn"
-                value={roleArn}
-                onChange={(event) => setRoleArn(event.target.value)}
-                placeholder={`arn:aws:iam::<account ID>:role/${ready.roleName}`}
-                aria-invalid={arnInvalid || undefined}
-                className="font-mono text-base md:text-xs"
-                autoComplete="off"
-                spellCheck={false}
-              />
-              {arnInvalid ? (
-                <p className="text-xs text-destructive">Use the full role ARN, like arn:aws:iam::123456789012:role/{ready.roleName}.</p>
-              ) : null}
-            </div>
           </div>
 
-          <Collapsible>
+          {reportedArn && trimmedArn === reportedArn ? (
+            <p className="text-sm text-muted-foreground">Your agent’s role is ready. Test the connection to finish.</p>
+          ) : agentFinished && !reportedArn ? (
+            <p className="text-sm text-muted-foreground">
+              Your agent finished without a role ARN Paperclip could use. Paste it under Or do it by hand.
+            </p>
+          ) : null}
+
+          <Collapsible open={byHandOpen} onOpenChange={setByHandOpen}>
             <CollapsibleTrigger className="group flex items-center gap-1 text-sm font-medium text-foreground">
               <ChevronRight className="h-4 w-4 transition-transform group-data-[state=open]:rotate-90" />
               Or do it by hand
@@ -260,7 +260,7 @@ export function AwsRoleSetup({
                     resources.
                   </li>
                   <li>
-                    When the stack finishes, copy RoleArn from its Outputs tab into the field above. If this role came from
+                    When the stack finishes, copy RoleArn from its Outputs tab into the Role ARN field below. If this role came from
                     this template before, update that stack (<span className="font-mono text-foreground">{ready.roleName}</span>)
                     with the new template instead of creating another.
                   </li>
@@ -277,7 +277,7 @@ export function AwsRoleSetup({
                     {ready.savedRoleArn ? "so its trust policy is the one below" : "with the trust policy below"}, replacing
                     ACCOUNT_ID with your AWS account ID. The CLI commands do either.
                   </li>
-                  <li>Attach AWSMCPSignInOAuthAccessPolicy and the permissions agents should have, then paste the role ARN above.</li>
+                  <li>Attach AWSMCPSignInOAuthAccessPolicy and the permissions agents should have, then paste the role ARN below.</li>
                 </ol>
                 <CopyRow label="Provider URL" value={ready.issuer} />
                 <CopyRow label="Audience" value={ready.audience} />
@@ -285,6 +285,23 @@ export function AwsRoleSetup({
                 <CopyRow label="Connection subject" value={ready.subject} />
                 <CopyBlock label="Trust policy" value={JSON.stringify(ready.trustPolicy, null, 2)} />
                 <CopyBlock label="AWS CLI commands" value={awsCliCommands(ready)} />
+              </section>
+
+              <section className="space-y-2" aria-label="Role ARN">
+                <label htmlFor="aws-role-arn" className="text-sm font-medium text-foreground">Role ARN</label>
+                <Input
+                  id="aws-role-arn"
+                  value={roleArn}
+                  onChange={(event) => { setRoleArnEdited(true); setRoleArn(event.target.value); }}
+                  placeholder={`arn:aws:iam::<account ID>:role/${ready.roleName}`}
+                  aria-invalid={arnInvalid || undefined}
+                  className="font-mono text-base md:text-xs"
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                {arnInvalid ? (
+                  <p className="text-xs text-destructive">Use the full role ARN, like arn:aws:iam::123456789012:role/{ready.roleName}.</p>
+                ) : null}
               </section>
             </CollapsibleContent>
           </Collapsible>
@@ -359,7 +376,9 @@ export function awsAgentSetupPrompt(setup: Extract<AwsConnectionSetup, { availab
     "4. Save the CloudFormation template below to a file and deploy it. This creates the stack, or updates it if it already exists:",
     `   aws cloudformation deploy --stack-name ${stack} --template-file <file> --capabilities CAPABILITY_NAMED_IAM --parameter-overrides CreateIdentityProvider=<true|false>${setup.accessLevel === "full" ? " AccessPolicyArn=<policy ARN>" : ""}`,
     `   If it fails because the role ${setup.roleName} already exists outside this stack, do not delete it. Instead update its trust policy with \`aws iam update-assume-role-policy\` to the trust policy in the template (with this account's ID and the identity provider's ARN), make sure AWSMCPSignInOAuthAccessPolicy and the access policy are attached, and use that role's ARN in step 5.`,
-    `5. Give me the role's ARN (the stack's RoleArn output, or \`aws iam get-role --role-name ${setup.roleName} --query Role.Arn --output text\`), so I can paste it into Paperclip and press Test connection.${progressInstructions ? " Also put it in your finish summary, as \"Role ARN: <arn>\"." : ""}`,
+    progressInstructions
+      ? `5. Put the role's ARN (the stack's RoleArn output, or \`aws iam get-role --role-name ${setup.roleName} --query Role.Arn --output text\`) in your finish summary, as "Role ARN: <arn>". Paperclip fills it in from there; then I press Test connection.`
+      : `5. Give me the role's ARN (the stack's RoleArn output, or \`aws iam get-role --role-name ${setup.roleName} --query Role.Arn --output text\`), so I can paste it into Paperclip under Or do it by hand and press Test connection.`,
     "",
     "The role trusts only this one Paperclip connection, and no AWS keys are created or shared:",
     `- Identity provider: ${setup.issuer} (audience ${setup.audience})`,

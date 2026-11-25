@@ -60,13 +60,16 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableGrokBot: z.boolean().default(false),
   enableMuse: z.boolean().default(false),
   enableChatConnectors: z.boolean().default(false),
-  enableGitHubReviewBots: z.boolean().default(false),
+  // Deprecated compatibility key. GitHub review bots graduated from
+  // Experimental and are always enabled; older stored rows, managed configs
+  // and clients may still send it.
+  enableGitHubReviewBots: z.boolean().default(true),
   // Compatibility only: old stored and managed values must still parse.
   enableMcpAggregators: z.boolean().default(true),
   enableMemoryConnectors: z.boolean().default(false),
   enablePaperclipNotebook: z.boolean().default(false),
   enableGoogleWorkspaceConnector: z.boolean().default(false),
-  enableAwsConnector: z.boolean().default(false),
+  enableAwsConnector: z.boolean().default(true),
   enableCases: z.boolean().default(false),
   enableAgentChat: z.boolean().default(true),
   enableCombinedInboxTasks: z.boolean().default(false),
@@ -90,6 +93,7 @@ export const instanceExperimentalSettingsSchema = z.object({
   enablePaperclipDeveloperMode: z.boolean().default(false),
   enableSimplifiedEnglishInteractions: z.boolean().default(false),
   enableFirstTaskPlanProposal: z.boolean().default(false),
+  enableCloudTrialInference: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
   enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
@@ -101,6 +105,8 @@ export const instanceExperimentalSettingsSchema = z.object({
   // MCP Tasks (io.modelcontextprotocol/tasks): durable long provider calls.
   // Off: Paperclip never declares the extension, so servers never return tasks.
   enableMcpTasks: z.boolean().default(false),
+  // Trusted /swarm for Google Antigravity agents (Antigravity CLI route). Default off.
+  enableAntigravitySwarm: z.boolean().default(false),
   // Deprecated compatibility key. Runner ingress follows enableNativeRunner;
   // this remains accepted so older stored rows and managed configs keep loading.
   enableRunnerPreviewIngress: z.boolean().default(false),
