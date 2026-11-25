@@ -87,7 +87,7 @@ other variable:
 | `grok` | `XAI_API_KEY` |
 | `copilot` | `COPILOT_GITHUB_TOKEN` |
 | `opencode` | `OPENROUTER_API_KEY`, or `PAPERCLIP_AI_PROVIDER_URL` with `PAPERCLIP_AI_PROVIDER_KEY` |
-| `antigravity` | `GEMINI_API_KEY` |
+| `antigravity` | `GEMINI_API_KEY`, or `PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET` |
 
 `ENVIRONMENT_TASK_PROVIDER_CREDENTIAL_KEY_SETS` exports this list. A server test
 checks every set against the names that the Runner forwards to each provider. Every value
@@ -109,8 +109,20 @@ binding. For `antigravity`, the Runner also removes every other `GOOGLE_*` and
 `GEMINI_*` variable before it starts the provider, so a configured variable
 cannot redirect the key.
 Core does not send a Grok subscription login. A Grok agent must use an xAI API
-key in a plugin environment. Core does not send a Google sign-in yet. A Google
-Antigravity agent must use a Gemini API key in a plugin environment.
+key in a plugin environment.
+
+For a Google Antigravity agent bound to a Google sign-in, the
+`antigravity` credential carries `PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET`.
+Its value is the saved sign-in as a JSON document: the client ID, client
+secret, refresh token, token URI, the `scopes` list, and `project_id` when the
+account has one. It never contains an access token or the account email. Set it
+in the private environment of that task's Runner process only, and name it in
+`PAPERCLIP_ACPX_CREDENTIAL_BINDING`. Never put it in a file, a log, a
+configured environment, or the environment of another task. The Runner writes
+it to `<runtime root>/antigravity-home/antigravity-acp/acp_token.json` (directory
+0700, file 0600) and does not pass it to the provider process. When the provider
+lease closes, the Runner writes the newest sign-in to `auth-refresh.json` in
+the same directory and removes `acp_token.json`. See "Credential writeback".
 
 ## Configured environment
 
@@ -494,9 +506,19 @@ cancellation prevented task admission. It must not mean that an export failed.
 
 Core saves the account grant, secret reference, and session epoch on the lease.
 It saves no credential bytes or temporary path in lease metadata. After process
-termination, it can recover a Codex refresh even if Core restarted. It uses the
-existing account comparison and secret service. A revoked grant, replaced
-account, or changed session epoch discards the old refresh.
+termination, it can recover a Codex or Google sign-in refresh even if Core
+restarted. It uses the existing account comparison and secret service. A
+revoked grant, replaced account, or changed session epoch discards the old
+refresh.
+
+For a Google sign-in, `credentials` returns the same `provider-env` type with
+`provider: "antigravity"` and only `PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET`,
+set to the contents of the Runner's `auth-refresh.json` (or `acp_token.json`
+if the lease has not closed). Core saves it only when the saved connection
+still holds the exact sign-in that the task started with, and only after
+Google confirms that the refreshed sign-in belongs to the connection's account.
+A sign-in for another account is not saved; Core records that in the activity
+log.
 
 Keep file synchronization and backup outside this API. The provider must retain
 recoverable credential state until task completion succeeds.

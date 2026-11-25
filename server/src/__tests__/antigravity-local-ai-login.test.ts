@@ -283,4 +283,80 @@ describe("Google local sign-in service admission", () => {
     f.release(); await operation;
     await expect(access(f.home)).rejects.toMatchObject({ code: "ENOENT" });
   });
+
+  it("runs Google submitRedirect outside any database transaction and logs only the provider", async () => {
+    const f = await fixture();
+    let releaseRelay!: () => void;
+    const relayPending = new Promise<void>(resolve => { releaseRelay = resolve; });
+    const submitRedirect = vi.fn(async (raw: string) => {
+      expect(f.db.activeTransactions).toBe(0);
+      expect(raw).toContain("http://127.0.0.1:41234/");
+      await relayPending;
+      f.browser.outcome = "success";
+    });
+    f.browser.submitRedirect = submitRedirect;
+    const pastedUrl = `http://127.0.0.1:41234/?state=state-canary&code=${"a".repeat(600)}`;
+    f.db.selections.push([f.db.session]);
+    const submitting = f.service.submitCode("company", "user", f.attempt.sessionId, pastedUrl, {
+      allowLocalProviders: false,
+      allowHostedGoogle: true,
+    });
+    await vi.waitFor(() => expect(submitRedirect).toHaveBeenCalledOnce());
+    expect(f.db.activeTransactions).toBe(0);
+    releaseRelay();
+    await submitting;
+    expect(mocks.activity).toHaveBeenLastCalledWith(
+      f.db,
+      expect.objectContaining({
+        companyId: "company",
+        actorType: "user",
+        actorId: "user",
+        action: "ai_connection.local_login_code_submitted",
+        entityId: f.attempt.sessionId,
+        details: { provider: "google" },
+      }),
+    );
+    expect(JSON.stringify(mocks.activity.mock.calls)).not.toContain("state-canary");
+    expect(JSON.stringify(mocks.activity.mock.calls)).not.toContain("a".repeat(50));
+    f.release(); f.db.selections.push([f.db.session], [f.db.session]); await f.service.cancel("company", "user", f.attempt.sessionId);
+  });
+
+  it("falls back to an active non-local environment for hosted Google sign-in when no local environment exists", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "paperclip-google-cloud-env-test-"))); roots.push(root);
+    mocks.root.mockReturnValue(root);
+    const browser: LocalBrowserLoginState = { authorizationUrl: "https://accounts.google.com/fixture", abort: vi.fn() };
+    mocks.browser.mockReturnValue(browser);
+    const db = database(), service = localAiLoginService(db);
+    // No existing session, no active local environment, active managed sandbox environment.
+    db.selections.push([], [], [{ id: "sandbox-environment", driver: "sandbox", status: "active" }]);
+    const attempt = await service.start("company", "user", intent);
+    expect(db.session.environmentId).toBe("sandbox-environment");
+    db.selections.push([db.session], [db.session]);
+    await service.cancel("company", "user", attempt.sessionId);
+  });
+
+  it("blocks Claude code submission when local providers are disabled on a hosted instance, and enforces Claude's 512-byte limit", async () => {
+    const db = database(), service = localAiLoginService(db);
+    const claudeSession = {
+      id: "claude-session",
+      companyId: "company",
+      startedByUserId: "user",
+      connectionMethod: "local_subscription",
+      adapterType: "claude_local",
+      aiConnection: { ...intent, provider: "anthropic" as const },
+      status: "waiting_for_user",
+      expiresAt: new Date(Date.now() + 60_000),
+    };
+    db.selections.push([claudeSession]);
+    await expect(service.submitCode("company", "user", claudeSession.id, "short-code", {
+      allowLocalProviders: false,
+      allowHostedGoogle: true,
+    })).rejects.toThrow("unavailable on this hosted instance");
+
+    db.selections.push([claudeSession]);
+    await expect(service.submitCode("company", "user", claudeSession.id, "a".repeat(513), {
+      allowLocalProviders: true,
+      allowHostedGoogle: true,
+    })).rejects.toThrow("browser code is invalid");
+  });
 });

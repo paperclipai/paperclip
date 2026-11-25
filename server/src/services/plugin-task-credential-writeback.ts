@@ -2,13 +2,13 @@ import { and, eq, sql } from "drizzle-orm";
 import { environmentLeases, type Db } from "@paperclipai/db";
 import { z, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
 import { isDeepStrictEqual } from "node:util";
-import { managedAiCredentialWritebackBindingSchema, syncManagedAiCredentials, type ManagedAiCredentialWritebackBinding } from "./managed-ai-credential-writeback.js";
+import { managedAiCredentialWritebackBindingSchema, syncManagedAiCredentials, syncManagedAntigravityCredential, type ManagedAiCredentialWritebackBinding } from "./managed-ai-credential-writeback.js";
 
 const handoffSchema = z.object({
   accountIdentity: z.string().min(1),
   binding: managedAiCredentialWritebackBindingSchema,
   state: z.enum(["pending", "complete"]),
-  outcome: z.enum(["rotated", "unchanged", "binding_changed", "not_dispatched", "no_credentials"]).optional(),
+  outcome: z.enum(["rotated", "unchanged", "binding_changed", "not_dispatched", "no_credentials", "account_refused"]).optional(),
 }).strict();
 const key = "runnerTaskCredentialHandoff";
 type Scope = { companyId: string; leaseId: string; expectedTaskId?: string };
@@ -73,6 +73,14 @@ async function writeBackCredentials(
   handoff: z.infer<typeof handoffSchema>,
   fetchCredential: (accountIdentity: string) => Promise<PluginEnvironmentTaskCredential | null>,
 ) {
+  if (handoff.binding.google) return syncManagedAntigravityCredential(db, companyId, handoff.binding, async () => {
+    const credential = await fetchCredential(handoff.accountIdentity);
+    if (credential === null) return null;
+    const value = credential.type === "provider-env" && credential.provider === "antigravity"
+      ? credential.environment.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET : undefined;
+    if (!value) throw new Error("Plugin task credential provider mismatch");
+    return value;
+  });
   return syncManagedAiCredentials(db, companyId, handoff.binding, "codex", async () => {
     const credential = await fetchCredential(handoff.accountIdentity);
     if (credential === null) return null;
