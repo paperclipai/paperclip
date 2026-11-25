@@ -1,5 +1,5 @@
 import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
-import { SWARM_REQUEST_MAX_CHARS } from "@paperclipai/shared";
+import { antigravitySwarmWorkModeAllows, SWARM_REQUEST_MAX_CHARS } from "@paperclipai/shared";
 import { activityLog, agentWakeupRequests, agents, heartbeatRuns, issueComments, issues, type Db } from "@paperclipai/db";
 import { logActivity } from "./activity-log.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -47,7 +47,7 @@ export function antigravitySwarmRefusal(input: {
   }
   if (!isAntigravityAgent(input.agent)) return "Swarm works only for tasks assigned to a Google Antigravity agent.";
   if (input.planning || input.workMode === "planning") return "Swarm is not available while the task is in Plan mode: helpers change files. Approve the plan first, then send /swarm.";
-  if (input.workMode !== undefined && input.workMode !== "standard") {
+  if (input.workMode !== undefined && !antigravitySwarmWorkModeAllows(input.workMode)) {
     return "Swarm works only in a standard task: helpers change files, and this task's mode does not allow changes. Switch the task to Standard, then send /swarm.";
   }
   if (input.remote) return "Swarm is not available for this agent: it runs only on this computer, not in a cloud or remote environment.";

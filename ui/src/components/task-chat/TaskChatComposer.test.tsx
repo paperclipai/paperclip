@@ -2025,20 +2025,23 @@ describe("TaskChatComposer", () => {
     });
 
     it.each([
-      ["an Antigravity assignee with swarm on", "antigravity", true, true],
-      ["swarm turned off", "antigravity", false, false],
-      ["another kind of agent", "claude", true, false],
-    ] as const)("hints that /swarm starts a swarm only for %s", (_case, acpxAgent, enabled, hinted) => {
+      ["an Antigravity assignee with swarm on", "antigravity", true, true, "standard", "/swarm write a.txt"],
+      ["swarm turned off", "antigravity", false, false, "standard", "/swarm write a.txt"],
+      ["another kind of agent", "claude", true, false, "standard", "/swarm write a.txt"],
+      ["a bare /swarm with no request", "antigravity", true, false, "standard", "/swarm"],
+      ["a task in Plan mode", "antigravity", true, false, "planning", "/swarm write a.txt"],
+      ["a task in Ask mode", "antigravity", true, false, "ask", "/swarm write a.txt"],
+    ] as const)("hints that /swarm starts a swarm only for %s", (_case, acpxAgent, enabled, hinted, workMode, text) => {
       const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
       client.setQueryData(queryKeys.instance.experimentalSettings, { enableAntigravitySwarm: enabled });
       const agent = { id: "agent-1", name: "Gemma", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent } } as unknown as Agent;
       render(<QueryClientProvider client={client}>
-        <TaskChatComposer onAdd={vi.fn()} workMode="standard" currentAssigneeValue="agent:agent-1" modelAgents={new Map([["agent-1", agent]])} />
+        <TaskChatComposer onAdd={vi.fn()} workMode={workMode} currentAssigneeValue="agent:agent-1" modelAgents={new Map([["agent-1", agent]])} />
       </QueryClientProvider>);
       const hint = () => container.querySelector('[data-testid="task-chat-swarm-hint"]');
       typeText("write a.txt");
       expect(hint()).toBeNull();
-      typeText("/swarm write a.txt");
+      typeText(text);
       expect(Boolean(hint())).toBe(hinted);
     });
 

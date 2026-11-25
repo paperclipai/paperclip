@@ -621,9 +621,10 @@ export function TaskChatComposer({
   const showConversationModel = coordinator && conversationMode && supportsComposerModel(modelAgents?.get(assigneeValue.slice(6)));
   const swarmSetting = useAntigravitySwarmSetting();
   // A light hint that the message will start a swarm (the server decides on send).
+  // A bare /swarm is refused on send, so it gets no hint.
   const showSwarmHint = !creation && !queuedEdit && !conversationMode && assigneeValue.startsWith("agent:") &&
-    antigravitySwarmAvailable(modelAgents?.get(assigneeValue.slice(6)), swarmSetting) &&
-    parseSwarmCommand(body) !== null;
+    antigravitySwarmAvailable(modelAgents?.get(assigneeValue.slice(6)), swarmSetting, pendingMode) &&
+    Boolean(parseSwarmCommand(body)?.request);
   const assigneeLabel =
     reassignOptions?.find((o) => o.id === assigneeValue)?.label ?? "Unassigned";
   const assigneeName =

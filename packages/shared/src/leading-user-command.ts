@@ -48,14 +48,21 @@ export function isAntigravityAgent(agent: { adapterType: string; adapterConfig: 
   return agent?.adapterType === "paperclip_runner" && config.provider === "acpx" && config.acpxAgent === "antigravity";
 }
 
+/** Helpers change files, so only a standard task runs a swarm (an allow-list; Plan, Ask and others never do). */
+export function antigravitySwarmWorkModeAllows(workMode: string | null | undefined): boolean {
+  return workMode === "standard";
+}
+
 /**
- * Whether `/swarm` reaches this assignee as a swarm: a Google Antigravity agent
- * with the instance's experimental Antigravity swarm setting on. The composer
- * uses it for its hint; the server checks the same rule (and more) on send.
+ * Whether `/swarm` reaches this assignee as a swarm: a Google Antigravity agent,
+ * the instance's experimental Antigravity swarm setting on, and a standard
+ * task. The composer uses it for its hint; the server checks the same rule
+ * (and more, such as a remote environment) on send.
  */
 export function antigravitySwarmAvailable(
   agent: { adapterType: string; adapterConfig: unknown } | null | undefined,
   experimental: { enableAntigravitySwarm?: boolean } | null | undefined,
+  workMode: string | null | undefined,
 ): boolean {
-  return experimental?.enableAntigravitySwarm === true && isAntigravityAgent(agent);
+  return experimental?.enableAntigravitySwarm === true && isAntigravityAgent(agent) && antigravitySwarmWorkModeAllows(workMode);
 }
