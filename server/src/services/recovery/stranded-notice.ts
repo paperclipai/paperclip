@@ -136,10 +136,12 @@ export function workspaceValidationNextAction(payload: Record<string, unknown> |
   }
   if (reason === "persisted_workspace_source_conflict") {
     if (readNonEmptyStringField(payload, "reasonCode") === "source_repository_mismatch") {
-      return "The agent did not start: this task's workspace records a repository URL that does not match the git origin "
-        + "of the project's folder, so Paperclip could not confirm it is the same repository. Make the repository URL in "
-        + "the project's workspace settings match the folder's git origin (`git remote get-url origin`), then press Retry. "
-        + "Retrying without that change fails the same way.";
+      return "The agent did not start: this task's workspace recorded a repository URL that no longer matches the "
+        + "project's repository URL or the git origin of the project's folder, so Paperclip could not confirm it is "
+        + "the same repository. Set the project's repository URL back to the URL this workspace recorded, or make the "
+        + "folder's git origin (`git remote get-url origin`) equal to it, then press Retry. To use a different "
+        + "repository instead, save any work in this workspace first, then choose another workspace for the task. "
+        + "Retrying without one of these changes fails the same way.";
     }
     return "The agent did not start: this task's workspace's original repository could not be found or verified. "
       + "Check the project's workspace folder and repository URL in the project settings, then press Retry.";
@@ -150,8 +152,10 @@ export function workspaceValidationNextAction(payload: Record<string, unknown> |
 export function buildWorkspaceValidationRecoveryNoticeSeed(
   payload?: Record<string, unknown> | null,
 ): StrandedRecoveryNoticeSeed {
+  const nextAction = workspaceValidationNextAction(payload);
   return {
-    body: workspaceValidationNextAction(payload),
+    body: nextAction,
+    nextAction,
     title: "Workspace validation failed",
     tone: "danger",
   };
