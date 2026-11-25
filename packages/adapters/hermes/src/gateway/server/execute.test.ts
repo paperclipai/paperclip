@@ -1295,10 +1295,13 @@ describe("mapFinalResultForTest", () => {
     })).toBe(true);
     expect(hasHermesGatewayTerminalStopProof({
       connectionFailure: { provider: "hermes_gateway", operation: "create_run", reason: "rate_limited" },
-    })).toBe(true);
+    })).toBe(false);
+    expect(hasHermesGatewayTerminalStopProof({
+      connectionFailure: { provider: "hermes_gateway", operation: "create_run", reason: "remote_unavailable" },
+    })).toBe(false);
     expect(hasHermesGatewayTerminalStopProof({
       connectionFailure: { provider: "hermes_gateway", operation: "create_run", reason: "connection_refused" },
-    })).toBe(true);
+    })).toBe(false);
     expect(hasHermesGatewayTerminalStopProof({
       connectionFailure: { provider: "hermes_gateway", operation: "create_run", reason: "connection_timeout" },
     })).toBe(false);

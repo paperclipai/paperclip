@@ -2073,36 +2073,42 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(hasConversationContinuationPolicy(confirmedPersisted?.resultJson)).toBe(true);
     expect(legacyExecutionNeedsReconciliation(confirmedPersisted!)).toBe(false);
 
-    const fCreateRun429 = await fixture({}, `H4${randomUUID().slice(0, 6)}`);
-    const [hermesCreate429Agent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
-      .where(eq(agents.id, fCreateRun429.agent.id)).returning();
-    await fCreateRun429.completion.completeRun({
-      ...fCreateRun429.input,
-      agent: hermesCreate429Agent!,
-      adapterResult: {
-        exitCode: 1,
-        signal: null,
-        errorCode: "hermes_gateway_rate_limited",
-        errorFamily: "transient_upstream",
-        errorMessage: "Hermes gateway HTTP 429",
-        provider: "hermes_gateway",
-        resultJson: {
-          connectionFailure: {
-            schemaVersion: 1,
-            provider: "hermes_gateway",
-            operation: "create_run",
-            reason: "rate_limited",
+    // Ambiguous outbound POST /v1/runs HTTP 429/5xx responses do not prove non-dispatch
+    // (a proxy or redirect may have created the remote run), so they fail closed without
+    // stamping conversationContinuation and keep legacyExecutionNeedsReconciliation true.
+    for (const [tag, errorCode, reason] of [
+      ["H4", "hermes_gateway_rate_limited", "rate_limited"],
+      ["H5", "hermes_gateway_upstream_error", "remote_unavailable"],
+    ] as const) {
+      const fCreateErr = await fixture({}, `${tag}${randomUUID().slice(0, 6)}`);
+      const [hermesCreateAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+        .where(eq(agents.id, fCreateErr.agent.id)).returning();
+      await fCreateErr.completion.completeRun({
+        ...fCreateErr.input,
+        agent: hermesCreateAgent!,
+        adapterResult: {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorCode,
+          errorFamily: "transient_upstream",
+          errorMessage: `Hermes gateway ${reason}`,
+          provider: "hermes_gateway",
+          resultJson: {
+            connectionFailure: {
+              schemaVersion: 1,
+              provider: "hermes_gateway",
+              operation: "create_run",
+              reason,
+            },
           },
         },
-      },
-    });
-    const createRun429Persisted = await read(fCreateRun429.run.id);
-    expect(createRun429Persisted?.status).toBe("failed");
-    expect(hasConversationContinuationPolicy(createRun429Persisted?.resultJson)).toBe(true);
-    expect(legacyExecutionNeedsReconciliation(createRun429Persisted!)).toBe(false);
-    expect(fCreateRun429.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(
-      expect.objectContaining({ id: fCreateRun429.run.id, status: "failed" }),
-      hermesCreate429Agent,
-    );
+      });
+      const createErrPersisted = await read(fCreateErr.run.id);
+      expect(createErrPersisted?.status).toBe("failed");
+      expect(hasConversationContinuationPolicy(createErrPersisted?.resultJson)).toBe(false);
+      expect(legacyExecutionNeedsReconciliation(createErrPersisted!)).toBe(true);
+      expect(fCreateErr.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    }
   });
 });

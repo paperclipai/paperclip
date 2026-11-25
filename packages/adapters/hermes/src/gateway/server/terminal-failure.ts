@@ -3,16 +3,6 @@ import type { AdapterExecutionResult } from "@paperclipai/adapter-utils";
 const FAILURE_STATUSES = new Set(["failed", "error"]);
 const CANCELLED_STATUSES = new Set(["cancelled", "canceled", "stopped", "interrupted"]);
 const TERMINAL_STOP_STATUSES = new Set(["completed", ...FAILURE_STATUSES, ...CANCELLED_STATUSES]);
-const CONFIRMED_PRE_RUN_FAILURE_REASONS = new Set([
-  "rate_limited",
-  "remote_unavailable",
-  "authentication_failed",
-  "endpoint_not_found",
-  "connection_refused",
-  "dns_failure",
-  "network_unreachable",
-  "tls_failure",
-]);
 
 const TERMINAL_PROVIDER_QUOTA_CODES = new Set([
   "insufficient_quota",
@@ -154,7 +144,14 @@ export function classifyTerminalFailure(
   return { errorFamily, retryNotBefore, gatewayShutdown };
 }
 
-/** Remote hermes_gateway runs have no local host PID; require a saved terminal gateway response or confirmed pre-run rejection. */
+/**
+ * Remote hermes_gateway runs have no local host PID; require either a saved
+ * terminal gateway status or a pre-request configuration failure (returned
+ * before any outbound fetch). Outbound create_run HTTP 429/5xx and transport
+ * failures intentionally fail closed because redirect-following fetch or an
+ * intermediary may have already created the remote run and retries mint a new
+ * Idempotency-Key.
+ */
 export function hasHermesGatewayTerminalStopProof(
   resultJson: Record<string, unknown> | null | undefined,
 ): boolean {
@@ -163,11 +160,5 @@ export function hasHermesGatewayTerminalStopProof(
   const status = nonEmpty(result.status)?.toLowerCase() ?? "";
   if (TERMINAL_STOP_STATUSES.has(status)) return true;
   const connectionFailure = asRecord(result.connectionFailure);
-  if (connectionFailure?.provider !== "hermes_gateway") return false;
-  if (connectionFailure.operation === "configuration") return true;
-  if (connectionFailure.operation === "create_run") {
-    const reason = nonEmpty(connectionFailure.reason);
-    return reason !== null && CONFIRMED_PRE_RUN_FAILURE_REASONS.has(reason);
-  }
-  return false;
+  return connectionFailure?.provider === "hermes_gateway" && connectionFailure?.operation === "configuration";
 }
