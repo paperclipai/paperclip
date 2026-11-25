@@ -24,13 +24,13 @@ import { BlockedReasonChip } from "./BlockedReasonChip";
 import { useQueryView } from "./QueryView";
 import { IssueGroupHeader } from "./IssueGroupHeader";
 import { IssueRow, type IssueRowPresentation } from "./IssueRow";
-
-const EMPTY_BLOCKED_ISSUES: Issue[] = [];
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+
+const EMPTY_BLOCKED_ISSUES: Issue[] = [];
 
 interface BlockedInboxViewProps {
   companyId: string;

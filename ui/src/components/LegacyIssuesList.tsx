@@ -2416,7 +2416,8 @@ export function IssuesList({
                   // dangle above an unrendered (or absent) row.
                   if (node === null) return;
                   if (separatorField) {
-                    const bucket = issueAgeBucket(issue[separatorField], separatorNow);
+                    const separatorTimestamp = separatorField === "updatedAt" ? issueUpdatedTime(issue) : issue.createdAt;
+                    const bucket = issueAgeBucket(separatorTimestamp, separatorNow);
                     for (const crossedBucket of prevBucket === null
                       ? []
                       : issueAgeBucketsCrossed(prevBucket, bucket)) {

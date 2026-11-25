@@ -2617,7 +2617,8 @@ function StreamlinedIssuesList({
                   // dangle above an unrendered (or absent) row.
                   if (node === null) return;
                   if (separatorField && rowPresentation === "task") {
-                    const currentDateGroup = taskDateGroup(issue[separatorField], separatorNow);
+                    const separatorTimestamp = separatorField === "updatedAt" ? issueUpdatedTime(issue) : issue.createdAt;
+                    const currentDateGroup = taskDateGroup(separatorTimestamp, separatorNow);
                     const separatorLabel = taskDateGroupSeparator(previousDateGroup, currentDateGroup);
                     if (separatorLabel) {
                       nodes.push(
@@ -2629,7 +2630,8 @@ function StreamlinedIssuesList({
                     }
                     previousDateGroup = currentDateGroup;
                   } else if (separatorField) {
-                    const currentAgeBucket = issueAgeBucket(issue[separatorField], separatorNow.getTime());
+                    const separatorTimestamp = separatorField === "updatedAt" ? issueUpdatedTime(issue) : issue.createdAt;
+                    const currentAgeBucket = issueAgeBucket(separatorTimestamp, separatorNow.getTime());
                     for (const crossedBucket of previousAgeBucket === null
                       ? []
                       : issueAgeBucketsCrossed(previousAgeBucket, currentAgeBucket)) {
