@@ -45,7 +45,8 @@ fn assigned_tool_discovery_repairs_invalid_arguments_through_codex_transport() {
     let mut denied = 0;
     let mut dispatched = 0;
     let mut completed = false;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // Allow for a contended cold fake-provider process before asserting the tool protocol.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     while !completed && std::time::Instant::now() < deadline {
         for event in poll_and_ack(&mut executor).unwrap() {
             match event.event_type.as_str() {
@@ -92,7 +93,10 @@ fn assigned_tool_discovery_repairs_invalid_arguments_through_codex_transport() {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     executor.shutdown().unwrap();
-    assert!(completed);
+    assert!(
+        completed,
+        "fixture did not complete after {denied} denied and {dispatched} dispatched calls"
+    );
     assert_eq!(denied, 1);
     assert_eq!(dispatched, 1);
     assert_eq!(call_count(&directory, "discovery:repair-guidance"), 1);
