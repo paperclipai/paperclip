@@ -5,7 +5,8 @@ import { runProcessOwnerStamp } from "./native-runtime/native-owner-stamps.js";
 /** The process identity a heartbeat run records for its adapter child
  * (`persistHeartbeatRunProcessMetadata`). */
 export type RunProcessIdentity = Pick<typeof heartbeatRuns.$inferSelect,
-  "processPid" | "processGroupId" | "processStartedAt" | "processHostHash">;
+  "processPid" | "processGroupId" | "processStartedAt" | "processHostHash">
+  & Partial<Pick<typeof heartbeatRuns.$inferSelect, "controllerProcess">>;
 
 /**
  * The owner stamp the lost-process reapers judge a run's adapter child by.

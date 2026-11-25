@@ -41,6 +41,19 @@ describe("proveOwnerGone: local owners", () => {
     expect(await proveOwnerGone(stamp({ bootId: "current-boot" }), probe())).toEqual({ verdict: "alive", reason: "current_process" });
   });
 
+  it("proves children and groups from a rebooted kernel gone without probing reused PIDs", async () => {
+    const previous = "c".repeat(32), current = "d".repeat(32);
+    const evidence = (processSpace: string, kernelBootId: string) => ({ schema: "paperclip.local_kernel.v1" as const,
+      machineHash: "a".repeat(32), kernelBootId, processSpace });
+    const pidExists = vi.fn(() => true), processGroupExists = vi.fn(() => true);
+    expect(await proveOwnerGone(stamp({ processSpace: previous, processGroupId: 4242,
+      localKernelBoot: evidence(previous, "11111111-1111-4111-8111-111111111111") }),
+      probe({ processSpace: current, pidExists, processGroupExists,
+        localKernelBoot: evidence(current, "22222222-2222-4222-8222-222222222222") })))
+      .toEqual({ verdict: "gone", reason: "kernel_restarted" });
+    expect(pidExists).not.toHaveBeenCalled();
+    expect(processGroupExists).not.toHaveBeenCalled();
+  });
   it("proves a dead PID in the same PID space gone", async () => {
     expect(await proveOwnerGone(stamp(), probe())).toEqual({ verdict: "gone", reason: "pid_dead" });
   });
