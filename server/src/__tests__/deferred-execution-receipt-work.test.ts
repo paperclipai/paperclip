@@ -30,10 +30,6 @@ import { idleWorkSnapshot } from "../services/task-admission.js";
 vi.setConfig({ testTimeout: 90_000 });
 // Vitest's waitFor advances fake time on every poll. Keep PostgreSQL leases
 // and actual child processes on wall time until an explicit idle deadline step.
-// The deadline stops further retries; it never abandons an attempt in flight.
-// An attempt awaits real work (a drain waits for a child process and its run
-// writes), and on a loaded runner one attempt can outlast the deadline. That
-// attempt's own result decides, so a slow pass is not reported as a miss.
 function waitForReal(assertion: () => unknown | Promise<unknown>, { timeout = 1000 } = {}) {
   return new Promise<void>((resolve, reject) => {
     let settled = false, expired = false, attempting = false, lastError: unknown;
@@ -58,6 +54,24 @@ function waitForReal(assertion: () => unknown | Promise<unknown>, { timeout = 10
     void attempt();
   });
 }
+describe("waitForReal", () => {
+  const later = (ms: number) => new Promise(resolve => realTimeout(resolve, ms));
+  it("resolves an attempt that passes after its deadline", async () => {
+    await expect(waitForReal(() => later(60), { timeout: 10 })).resolves.toBeUndefined();
+  });
+  it("rejects with the error of an attempt that fails after its deadline", async () => {
+    const failure = new Error("still missing");
+    await expect(waitForReal(async () => { await later(60); throw failure; }, { timeout: 10 })).rejects.toBe(failure);
+  });
+  it("stops retrying a failing assertion at its deadline", async () => {
+    let attempts = 0;
+    await expect(waitForReal(() => { attempts++; throw new Error("absent"); }, { timeout: 120 })).rejects.toThrow("absent");
+    const settled = attempts;
+    await later(150);
+    expect(settled).toBeGreaterThan(1);
+    expect(attempts).toBe(settled);
+  });
+});
 describe("deferred receipt durable dispatch", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
