@@ -651,6 +651,15 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
       if (waiter) await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionFinalization);
     };
 
+    const releaseParkedMonitor = async (tx: DbOrTransaction) => {
+      const [monitored] = await tx.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.companyId, input.companyId),
+        eq(issues.id, input.sourceIssueId),
+        isNotNull(issues.monitorNextCheckAt),
+      )).limit(1);
+      if (monitored) await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+    };
+
     if (input.sourceTerminal) {
       const [settled] = await dbOrTx.transaction(async tx => {
         await releaseWaiter(tx as unknown as DbOrTransaction);
@@ -672,6 +681,7 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
       // Resolving another attention releases this issue's preserved Native
       // waiter to one normal inspection. No recurring monitor or new turn.
       await releaseWaiter(tx as unknown as DbOrTransaction);
+      await releaseParkedMonitor(tx as unknown as DbOrTransaction);
       await notifyIssueGraphRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
       await notifyNativeRecoveryNotices(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.companyId, issueId: input.sourceIssueId });
