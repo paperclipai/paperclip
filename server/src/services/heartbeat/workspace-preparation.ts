@@ -286,6 +286,25 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       && !projectExecutionWorkspacePolicy?.storageProviderPluginId,
     existingWorkspace: reusableExistingExecutionWorkspace ?? existingExecutionWorkspace,
   });
+  const projectStorageEnvironmentIncompleteFailure = (details: {
+    message: string;
+    projectId: string | null;
+    storageProviderPluginId: string | null;
+    environmentId: string;
+  }) => new ConfigurationIncompleteFailure(details.message, {
+    configurationIncomplete: {
+      reason: PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE,
+      companyId: agent.companyId,
+      agentId: agent.id,
+      issueId: issueId ?? null,
+      projectId: details.projectId,
+      storageProviderPluginId: details.storageProviderPluginId,
+      environmentId: details.environmentId,
+      fingerprint: `project_storage_environment:${details.storageProviderPluginId ?? "core"}:${details.environmentId}`,
+      actionUrl: `/agents/${agent.id}/runtime`,
+      missingBindings: [],
+    },
+  });
   // A volume-free server rejects execution without durable task storage. When
   // the source project's storage provider cannot serve the selected
   // environment, that mismatch is the cause and only an owner can repair it.
@@ -302,12 +321,11 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         try {
           assertProjectStorageEnvironment(provider, selectedEnvironmentForConfig);
         } catch (mismatch) {
-          throw new ConfigurationIncompleteFailure(mismatch instanceof Error ? mismatch.message : String(mismatch), {
-            configurationIncomplete: { reason: PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE, companyId: agent.companyId,
-              agentId: agent.id, issueId: issueId ?? null, projectId: issueRef?.projectId ?? null,
-              storageProviderPluginId: provider.id, environmentId: selectedEnvironmentForConfig.id,
-              fingerprint: `project_storage_environment:${provider.id}:${selectedEnvironmentForConfig.id}`,
-              actionUrl: `/agents/${agent.id}/runtime`, missingBindings: [] },
+          throw projectStorageEnvironmentIncompleteFailure({
+            message: mismatch instanceof Error ? mismatch.message : String(mismatch),
+            projectId: issueRef?.projectId ?? null,
+            storageProviderPluginId: provider.id,
+            environmentId: selectedEnvironmentForConfig.id,
           });
         }
       }
@@ -797,23 +815,12 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         await listProjectWorkspaceProviders(db, agent.companyId),
       );
       if (environmentStorage?.pluginId) {
-        throw new ConfigurationIncompleteFailure(
-          `This project's workspace storage (Core / local) does not support the environment "${selectedEnvironmentForConfig.name}". Use an agent in a compatible environment, or choose a workspace source from a project for this environment.`,
-          {
-            configurationIncomplete: {
-              reason: PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE,
-              companyId: agent.companyId,
-              agentId: agent.id,
-              issueId: issueId ?? null,
-              projectId: resolvedWorkspace.projectId,
-              storageProviderPluginId: null,
-              environmentId: selectedEnvironmentForConfig.id,
-              fingerprint: `project_storage_environment:core:${selectedEnvironmentForConfig.id}`,
-              actionUrl: `/agents/${agent.id}/runtime`,
-              missingBindings: [],
-            },
-          },
-        );
+        throw projectStorageEnvironmentIncompleteFailure({
+          message: `This project's workspace storage (Core / local) does not support the environment "${selectedEnvironmentForConfig.name}". Use an agent in a compatible environment, or choose a workspace source from a project for this environment.`,
+          projectId: resolvedWorkspace.projectId,
+          storageProviderPluginId: null,
+          environmentId: selectedEnvironmentForConfig.id,
+        });
       }
     }
     throw new WorkspaceValidationFailure("The selected plugin environment does not support Core Git worktree preparation.",
