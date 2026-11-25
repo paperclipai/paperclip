@@ -48,7 +48,7 @@ test("parallel lanes cover check:all exactly once and never bypass verification"
   });
   const checks = matrixEntries.filter((row) => row.checks).flatMap((row) => row.checks.split(" "));
   assert.deepEqual(checks, scripts["check:all-without-vitest"].split(" && ").map((command) => command.replace(/^pnpm run /, "")));
-  assert.deepEqual(matrixEntries.map((row) => row.lane), ["protocol-static", "protocol (1/4)", "protocol (2/4)", "protocol (3/4)", "protocol (4/4)", "rust", "server-integration"]);
+  assert.deepEqual(matrixEntries.map((row) => row.lane), ["protocol-static", "protocol (1/4)", "protocol (2/4)", "protocol (3/4)", "protocol (4/4)", "rust", "api-authority", "server-integration"]);
   assert.deepEqual(matrixEntries.filter((row) => row.vitest_lane).map((row) => row.vitest_lane), ["1/4", "2/4", "3/4", "4/4"]);
   assert.match(runner, /fail-fast: false/);
   assert.doesNotMatch(runner, /max-parallel: 1|^    needs:|continue-on-error:/m);
@@ -86,7 +86,7 @@ test("only the trusted Rust lane writes, and warms both build profiles before sa
   assert.match(warm, /run: pnpm --filter @paperclipai\/paperclip-runner build:rust/);
   const sha = "a".repeat(40);
   const base = { repository: "paperclipai/paperclip", event_name: "push", ref: "refs/heads/master", sha };
-  for (const lane of ["protocol-static", "protocol (1/4)", "protocol (2/4)", "protocol (3/4)", "protocol (4/4)", "rust", "server-integration"]) {
+  for (const lane of ["protocol-static", "protocol (1/4)", "protocol (2/4)", "protocol (3/4)", "protocol (4/4)", "rust", "api-authority", "server-integration"]) {
     for (const [overrides, ref, trusted] of [
       [{}, sha, true],
       [{ event_name: "pull_request", ref: "refs/pull/1/merge" }, sha, false],
