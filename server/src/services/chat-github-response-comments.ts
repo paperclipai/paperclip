@@ -475,8 +475,10 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       await db.transaction(async tx => {
         await notifyChatResponseAvailability(tx, { companyId: row.companyId, deliveryId });
         await tx.update(chatActions).set({ status: denied ? "cancelled" : "failed", result: {
-          ...row.result, attempts, retryable: !denied && attempts < 8,
-          retryAt: new Date(Date.now() + Math.min(300000, 1000 * 2 ** attempts)).toISOString(),
+          // A posted comment must always settle, so an unconfirmed write keeps
+          // retrying: exponential backoff up to 5 minutes, then hourly.
+          ...row.result, attempts, retryable: !denied,
+          retryAt: new Date(Date.now() + (attempts < 8 ? Math.min(300000, 1000 * 2 ** attempts) : 3_600_000)).toISOString(),
           code: denied ? "authorization_changed" : "acknowledgement_unconfirmed",
         }, updatedAt: new Date() }).where(and(eq(chatActions.id, row.id), sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`));
       });

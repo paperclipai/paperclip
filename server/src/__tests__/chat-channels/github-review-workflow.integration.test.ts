@@ -21,7 +21,7 @@ import path from "node:path";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import request from "supertest";
-import { and, asc, eq, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
 import { beforeAll, describe, expect, it, onTestFinished, vi } from "vitest";
 import { agents, agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, chatPublications, companies, companySkills, heartbeatRuns, issueComments, issueRecoveryActions, issues, nativeRunFinalizations, environmentLeases, workspaceOperations } from "@paperclipai/db";
 import type { Thread } from "chat";
@@ -400,10 +400,30 @@ describeEmbeddedPostgres("chat channels: github review workflow", () => {
       expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
       const migration = await readFile(path.resolve(path.dirname(fileURLToPath(import.meta.url)),
         "../../../../packages/db/src/migrations/0509_recover_exhausted_github_responses.sql"), "utf8");
+      // Rows the recovery must leave alone: final, still retryable, no posted comment, or no delivery.
+      const untouched = await db.insert(chatActions).values([
+        { result: { id: "1", final: true }, providerActionId: `untouched:${randomUUID()}`, deliveryId: response.deliveryId },
+        { result: { id: "2", retryable: true }, providerActionId: `untouched:${randomUUID()}`, deliveryId: response.deliveryId },
+        { result: { code: "acknowledgement_unconfirmed" }, providerActionId: `untouched:${randomUUID()}`, deliveryId: response.deliveryId },
+        { result: { id: "4" }, providerActionId: `untouched:${randomUUID()}`, deliveryId: null },
+      ].map(row => ({ ...row, companyId: f.companyId, endpointId: f.endpoint.id, conversationId: f.conversation.id,
+        kind: "github_response_comment", status: "failed" as const, payload: {} }))).returning();
       await db.$client.unsafe(migration);
+      expect((await Promise.all(untouched.map(row => readChatActionsById(row.id)))).map(([row]) => row.status))
+        .toEqual(["failed", "failed", "failed", "failed"]);
+      await db.delete(chatActions).where(inArray(chatActions.id, untouched.map(row => row.id)));
       // Recovery resets the attempt count so a temporary GitHub error can retry.
       expect((await readChatActionsById(response.id))[0]).toMatchObject({ status: "processed",
         result: { attempts: 0, code: "recovered_after_exhausted_retries" } });
+      let failures = 0;
+      f.setSupplementalProviderFetch(async (input, init) => init?.method === "PATCH" && failures++ === 0
+        ? Response.json({ message: "Server Error" }, { status: 502 }) : undefined);
+      await responses.processPending();
+      expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+      const [retrying] = await readChatActionsById(response.id);
+      expect(retrying).toMatchObject({ status: "failed", result: { retryable: true } });
+      await db.update(chatActions).set({ result: { ...retrying.result, retryAt: new Date(0).toISOString() } })
+        .where(eq(chatActions.id, response.id));
       await responses.processPending();
       expect(f.responseComments.get(firstId)?.body).toContain("stopped before completing");
       const [settled] = await db.select().from(chatActions).where(eq(chatActions.id, response.id));
