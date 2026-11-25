@@ -8,7 +8,7 @@ import { agentInteractionDeliveryDenial, agentWakeInteractionTexts, INTERACTION_
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { lockCurrentNativeWorkAssessmentEvidence } from "./work-assessments.js";
 import { nativeBlockerUserId } from "./native-blocker-owner.js";
-import { evaluateBlockerAgentHandoff } from "./blocker-owner.js";
+import { evaluateBlockerAgentHandoff } from "./blocker-owner-handoff.js";
 import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { lockCurrentNativeCompletionContract } from "./completion-contracts.js";

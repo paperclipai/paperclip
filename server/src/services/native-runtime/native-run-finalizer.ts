@@ -75,7 +75,7 @@ import {
   type NativeAuthoritativeIssueStatus,
   gateDoneOnConfiguredReview,
 } from "./status-arbiter.js";
-import { evaluateBlockerAgentHandoff } from "./blocker-owner.js";
+import { evaluateBlockerAgentHandoff } from "./blocker-owner-handoff.js";
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import {
   commitNativeStatusDecision,

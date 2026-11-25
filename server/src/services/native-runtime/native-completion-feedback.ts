@@ -8,7 +8,8 @@ import { publishedTaskDocuments, validateNativeDeliverableEvidence } from "./nat
 import { findAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
-import { evaluateBlockerAgentHandoff, resolveNativeBlockerOwner } from "./blocker-owner.js";
+import { resolveNativeBlockerOwner } from "./blocker-owner.js";
+import { evaluateBlockerAgentHandoff } from "./blocker-owner-handoff.js";
 import { issueService } from "../issues.js";
 import { isConversation } from "../agent-conversations.js";
 import { completionReviewStageEntry } from "../issue-execution-policy.js";
