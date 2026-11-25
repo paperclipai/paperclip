@@ -171,8 +171,8 @@ sign-in outright (`plugin-runner-credentials.ts:58`).
   with `antigravity-acp/settings.json` (`auth.type: oauth-personal`) and
   `antigravity-acp/acp_token.json` (mode 0600)
   (`ai-connection-runtime.ts:309-376`). The stored JSON holds only the fixed
-  client ID, token URI, client secret and refresh token
-  (`antigravity-auth.ts:31-45`).
+  client ID, token URI, client secret, refresh token, the required `scopes`
+  list and `project_id` when present (`antigravity-auth.ts:31-45`).
 - The Runner receives the sanitized JSON as
   `PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET`, never a path
   (`antigravity-runner-credentials.ts:76-94`), and stages it into its own
