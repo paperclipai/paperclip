@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { antigravityApiKeyModels, type AiConnectionBinding } from "@paperclipai/shared";
 import { AntigravityModelDiscoveryCleanupError, discoverAntigravityModels } from "../vendor/paperclip-runner/index.js";
@@ -6,6 +7,13 @@ import { logger } from "../middleware/logger.js";
 import { prepareManagedAiRuntime } from "./ai-connection-runtime.js";
 import { RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
 import { retainGoogleCredentialCleanup } from "./retained-google-credential-cleanup.js";
+
+function configuredRemoteProviderPackRoot(): string | undefined {
+  const raw = process.env.PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH?.trim();
+  if (!raw || raw.includes("\0") || !path.isAbsolute(raw)) return undefined;
+  const trimmed = raw.replace(/\/+$/, "") || "/";
+  return path.resolve(trimmed) === trimmed ? trimmed : undefined;
+}
 
 /** A Google API key's catalog does not depend on the key or the environment:
  * the pinned runtime builds it locally. Suggestions only; an explicit model id
@@ -41,7 +49,12 @@ export async function antigravityConnectionModels(db: Db, input: {
     if (runtime.attribution.method !== "subscription") return antigravityApiKeyModelCatalog();
     const home = runtime.config.env.GEMINI_HOME;
     if (typeof home !== "string" || !home) throw unprocessable("The selected Google runtime account is unavailable.");
-    try { return (await discoverAntigravityModels(home)).models; }
+    const providerPackageRoot = configuredRemoteProviderPackRoot();
+    try {
+      return (await (providerPackageRoot
+        ? discoverAntigravityModels(home, { providerPackageRoot })
+        : discoverAntigravityModels(home))).models;
+    }
     catch (error) {
       if (error instanceof AntigravityModelDiscoveryCleanupError) {
         // The native owner retains the live child and immutable command lease.

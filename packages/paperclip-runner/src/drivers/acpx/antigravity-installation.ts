@@ -16,11 +16,22 @@ export function antigravityRuntimeCachePath(closure: string, platform: string, a
   return realRuntimeCachePath(home, "antigravity", `${platform}-${architecture}`, closure, "Antigravity runtime cache must contain real directories");
 }
 
-export function antigravityNativeDistributionSpec(platform: NodeJS.Platform = process.platform, architecture: string = process.arch): NativeAcpxDistributionInput {
+export function antigravityNativeDistributionSpec(
+  platform: NodeJS.Platform = process.platform,
+  architecture: string = process.arch,
+  options?: { providerPackageRoot?: string },
+): NativeAcpxDistributionInput {
   const key = `${platform}-${architecture}`;
   if (!Object.hasOwn(ANTIGRAVITY_DISTRIBUTION_PINS, key)) throw new Error(`Antigravity has no admitted complete runtime closure for ${key}`);
   const pin = ANTIGRAVITY_DISTRIBUTION_PINS[key as keyof typeof ANTIGRAVITY_DISTRIBUTION_PINS];
-  const packaged = join(resolveRunnerProviderAssetsRoot(import.meta.url, "antigravity"), key);
+  const packaged = join(
+    resolveRunnerProviderAssetsRoot(
+      import.meta.url,
+      "antigravity",
+      options?.providerPackageRoot !== undefined ? { providerPackageRoot: options.providerPackageRoot } : undefined,
+    ),
+    key,
+  );
   let distributionRoot = packaged;
   try {
     const stat = lstatSync(packaged);

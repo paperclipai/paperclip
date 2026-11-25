@@ -147,3 +147,19 @@ it("allows another provider launch while the original cleanup still cannot journ
   expect(mocks.discover).toHaveBeenCalledTimes(2);
   expect(mocks.cleanup).toHaveBeenCalledTimes(3);
 });
+
+it("forwards PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH to model discovery and rejects non-normalized paths", async () => {
+  try {
+    vi.stubEnv("PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH", "/opt/paperclip-runner/provider-pack/");
+    mocks.discover.mockResolvedValueOnce({ models: [{ id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)" }], defaultModelId: "gemini-3.8-flash-high" });
+    await antigravityConnectionModels({} as never, input);
+    expect(mocks.discover).toHaveBeenLastCalledWith("/private/selected-google-home", { providerPackageRoot: "/opt/paperclip-runner/provider-pack" });
+
+    vi.stubEnv("PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH", "/opt/paperclip-runner/../etc");
+    mocks.discover.mockResolvedValueOnce({ models: [{ id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)" }], defaultModelId: "gemini-3.8-flash-high" });
+    await antigravityConnectionModels({} as never, input);
+    expect(mocks.discover).toHaveBeenLastCalledWith("/private/selected-google-home");
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});

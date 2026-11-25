@@ -47,9 +47,21 @@ _, status = os.waitpid(pid, 0)
 sys.exit(os.waitstatus_to_exitcode(status))
 `;
 
+function configuredRemoteProviderPackRoot(): string | undefined {
+  const raw = process.env.PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH?.trim();
+  if (!raw || raw.includes("\0") || !path.isAbsolute(raw)) return undefined;
+  const trimmed = raw.replace(/\/+$/, "") || "/";
+  return path.resolve(trimmed) === trimmed ? trimmed : undefined;
+}
+
 /** Run the same browser-code login used by sandbox connections on the local host. */
 export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "google", home: string): LocalBrowserLoginState {
-  if (provider === "google") return startAntigravityBrowserLogin(home);
+  if (provider === "google") {
+    const providerPackageRoot = configuredRemoteProviderPackRoot();
+    return providerPackageRoot
+      ? startAntigravityBrowserLogin(home, { providerPackageRoot })
+      : startAntigravityBrowserLogin(home);
+  }
   const controller = new AbortController();
   const state: LocalBrowserLoginState = { abort: () => controller.abort() };
   const args = provider === "anthropic" ? ["setup-token"] : ["login", "--device-auth"];
