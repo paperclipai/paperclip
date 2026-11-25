@@ -1,3 +1,5 @@
+import { looksLikeCredentialToken } from "@paperclipai/shared";
+
 // Redaction for HTTP log payloads.
 //
 // `customProps` in logger.ts copies `req.body` / `req.params` / `req.query`
@@ -159,6 +161,29 @@ export function stripSecretBearingUrlParts(value: string): string {
   }
 }
 
+function isCredentialShapedKey(key: string): boolean {
+  if (looksLikeCredentialToken(key)) return true;
+  if (key.startsWith("access.") && looksLikeCredentialToken(key.slice("access.".length))) return true;
+  return false;
+}
+
+function createRedactedKeyAllocator(existingKeys: ReadonlySet<string>): () => string {
+  let usedBase = false;
+  let nextSuffix = 2;
+  return () => {
+    if (!usedBase) {
+      usedBase = true;
+      if (!existingKeys.has(REDACTED)) return REDACTED;
+    }
+    while (existingKeys.has(`${REDACTED}_${nextSuffix}`)) {
+      nextSuffix += 1;
+    }
+    const allocated = `${REDACTED}_${nextSuffix}`;
+    nextSuffix += 1;
+    return allocated;
+  };
+}
+
 export function redactSensitive(value: unknown, depth = 0): unknown {
   if (depth > MAX_DEPTH) return undefined;
   if (value === null || typeof value !== "object") return value;
@@ -166,8 +191,17 @@ export function redactSensitive(value: unknown, depth = 0): unknown {
     if (depth + 1 > MAX_DEPTH) return undefined;
     return value.map((entry) => redactSensitive(entry, depth + 1));
   }
+  const entries = Object.entries(value as Record<string, unknown>);
+  let allocateRedactedKey: (() => string) | null = null;
   const out: Record<string, unknown> = {};
-  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+  for (const [key, entry] of entries) {
+    if (isCredentialShapedKey(key)) {
+      if (!allocateRedactedKey) {
+        allocateRedactedKey = createRedactedKeyAllocator(new Set(entries.map(([k]) => k)));
+      }
+      out[allocateRedactedKey()] = REDACTED;
+      continue;
+    }
     if (isSensitiveKey(key)) {
       out[key] = REDACTED;
       continue;
@@ -200,10 +234,12 @@ function collectSensitiveStringValuesInto(
     return;
   }
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const credentialKey = isCredentialShapedKey(key);
+    if (credentialKey) values.add(key);
     collectSensitiveStringValuesInto(
       entry,
       values,
-      collectAll || isSensitiveKey(key),
+      collectAll || isSensitiveKey(key) || credentialKey,
       depth + 1,
     );
   }
