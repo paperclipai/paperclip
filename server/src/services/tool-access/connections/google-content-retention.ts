@@ -71,7 +71,20 @@ async function googleRunIds(db: Pick<Db, "select">, companyId: string, runs: SQL
 
 export async function runsThatUsedGoogleWorkspace(db: Pick<Db, "select">, companyId: string, runIds: string[]): Promise<Set<string>> {
   if (runIds.length === 0) return new Set();
-  return googleRunIds(db, companyId, sql`(${sql.join(runIds.map((id) => sql`${id}::uuid`), sql`, `)})`);
+  const candidates = sql`(${sql.join(runIds.map((id) => sql`${id}::uuid`), sql`, `)})`;
+  const direct = await googleRunIds(db, companyId, candidates);
+  const google = googleConnectionIdsSql();
+  const sessions = (alias: string) => sql.raw(`array_remove(array[${alias}.session_id_before, ${alias}.session_id_after], null)`);
+  const sameSession = await db.select({ runId: heartbeatRuns.id }).from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      sql`${heartbeatRuns.id} in ${candidates}`,
+      sql`exists (select 1 from heartbeat_runs g where g.company_id = ${companyId} and g.agent_id = ${heartbeatRuns.agentId}
+        and ${sessions("g")} && array_remove(array[${heartbeatRuns.sessionIdBefore}, ${heartbeatRuns.sessionIdAfter}], null)
+        and (exists (select 1 from tool_invocations i where i.company_id = ${companyId} and i.run_id = g.id and i.connection_id in ${google})
+          or exists (select 1 from tool_call_events ev where ev.company_id = ${companyId} and ev.run_id = g.id and ev.connection_id in ${google})))`,
+    ));
+  return new Set([...direct, ...sameSession.map((row) => row.runId)]);
 }
 
 export async function sessionUsedGoogleWorkspace(db: Pick<Db, "select">, input: {

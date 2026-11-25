@@ -9,7 +9,6 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
-import { RESULT_TEXT_KEYS, withoutResultText } from "./content-cleaning.js";
 import { settledRunSql } from "./content-deletion.js";
 import { RUN_CONTENT_DELETED_MARKER } from "./run-session-reset.js";
 
@@ -35,15 +34,28 @@ export async function forgetRunInTrainingExamples(tx: Db, companyId: string, run
   if (replaced.length > 0) run.changed = true;
 }
 
+const STRUCTURAL_KEYS = new Set(["schema", "kind", "status", "type", "outcome", "state", "version", "code", "id"]);
+
+function withoutFreeText(value: unknown, key = ""): unknown {
+  if (typeof value === "string") return STRUCTURAL_KEYS.has(key) || /(Id|At)$/.test(key) ? value : "";
+  if (Array.isArray(value)) return value.map((entry) => withoutFreeText(entry, key));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([entryKey, entry]) => [entryKey, withoutFreeText(entry, entryKey)]));
+  }
+  return value;
+}
+
 export async function forgetRunCopies(tx: Db, companyId: string, run: { id: string; changed: boolean }, row: { issueId: string | null; createdAt: Date }) {
   const results = await tx
     .select({ id: nativeRunResults.id, resultJson: nativeRunResults.resultJson })
     .from(nativeRunResults)
     .where(and(eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.runId, run.id)));
   for (const result of results) {
-    const cleaned = withoutResultText(result.resultJson);
-    if (!cleaned.changed) continue;
-    await tx.update(nativeRunResults).set({ resultJson: (cleaned.value ?? {}) as Record<string, unknown> }).where(eq(nativeRunResults.id, result.id));
+    if (result.resultJson && typeof result.resultJson === "object" && RUN_CONTENT_DELETED_MARKER in result.resultJson) continue;
+    const cleaned = withoutFreeText(result.resultJson) as Record<string, unknown>;
+    await tx.update(nativeRunResults)
+      .set({ resultJson: { ...cleaned, [RUN_CONTENT_DELETED_MARKER]: new Date().toISOString() } })
+      .where(eq(nativeRunResults.id, result.id));
     run.changed = true;
   }
   const summaries = await tx
@@ -85,11 +97,10 @@ export async function forgetRunCopies(tx: Db, companyId: string, run: { id: stri
 
 
 export function runCopiesRemainSql(run: { id: SQL; companyId: SQL; issueId: SQL; error: SQL }): SQL {
-  const nativeText = sql.join(RESULT_TEXT_KEYS.map((key) =>
-    sql.raw(`jsonb_path_exists(n.result_json, 'lax $.**.${key} ? (@.type() == "string" && @ != "")')`)), sql` or `);
   const entry = sql`jsonb_build_array(jsonb_build_object('id', ${run.id}::text))`;
   return sql`(${run.error} is not null
-    or exists (select 1 from native_run_results n where n.company_id = ${run.companyId} and n.run_id = ${run.id} and (${nativeText}))
+    or exists (select 1 from native_run_results n where n.company_id = ${run.companyId} and n.run_id = ${run.id}
+      and not n.result_json ? ${RUN_CONTENT_DELETED_MARKER})
     or exists (select 1 from document_revisions r join issue_documents d on d.document_id = r.document_id
       where r.company_id = ${run.companyId} and r.created_by_run_id = ${run.id} and r.body <> ''
         and d.key = ${ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY})

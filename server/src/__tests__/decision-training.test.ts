@@ -243,7 +243,7 @@ describeEmbeddedPostgres("decision training", () => {
     }).returning();
     const [googleRun, otherRun] = await db.insert(heartbeatRuns).values([
       {
-        companyId: seeded.companyId, agentId: agent!.id, status: "succeeded", stdoutExcerpt: secret, resultJson: { summary: secret },
+        companyId: seeded.companyId, agentId: agent!.id, status: "succeeded", stdoutExcerpt: secret, resultJson: { summary: secret }, sessionIdAfter: "gmail-session",
         startedAt: new Date("2026-07-16T11:00:00.000Z"), finishedAt: new Date("2026-07-16T11:10:00.000Z"),
         contextSnapshot: { issueId: seeded.issueId }, createdAt: new Date("2026-07-16T11:00:00.000Z"), updatedAt: new Date("2026-07-16T11:10:00.000Z"),
       },
@@ -253,6 +253,12 @@ describeEmbeddedPostgres("decision training", () => {
         contextSnapshot: { issueId: seeded.issueId, paperclipSessionHandoffMarkdown: secret }, createdAt: new Date("2026-07-16T11:20:00.000Z"), updatedAt: new Date("2026-07-16T11:30:00.000Z"),
       },
     ]).returning();
+    const [resumedRun] = await db.insert(heartbeatRuns).values({
+      companyId: seeded.companyId, agentId: agent!.id, status: "succeeded", resultJson: { summary: `Quoting: ${secret}` },
+      sessionIdBefore: "gmail-session", sessionIdAfter: "gmail-session",
+      startedAt: new Date("2026-07-16T11:50:00.000Z"), finishedAt: new Date("2026-07-16T11:55:00.000Z"),
+      contextSnapshot: { issueId: seeded.issueId }, createdAt: new Date("2026-07-16T11:50:00.000Z"), updatedAt: new Date("2026-07-16T11:55:00.000Z"),
+    }).returning();
     const [application] = await db.insert(toolApplications).values({ companyId: seeded.companyId, name: "Google Workspace", type: "mcp_http" }).returning();
     const [connection] = await db.insert(toolConnections).values({
       companyId: seeded.companyId, applicationId: application!.id, name: "Google Workspace", uid: randomUUID(), transport: "mcp_remote",
@@ -287,6 +293,7 @@ describeEmbeddedPostgres("decision training", () => {
     expect(captured.snapshot.runs.find((run) => run.id === googleRun!.id)).toMatchObject({ googleWorkspaceContentOmitted: true });
     expect(captured.snapshot.runs.find((run) => run.id === otherRun!.id)).toMatchObject({ resultJson: { summary: "Other work" } });
     expect(captured.snapshot.runs.find((run) => run.id === deliveredRun!.id)).toMatchObject({ googleWorkspaceContentOmitted: true });
+    expect(captured.snapshot.runs.find((run) => run.id === resumedRun!.id)).toMatchObject({ googleWorkspaceContentOmitted: true });
     expect(captured.snapshot.decision.payload).toMatchObject({ payload: { question: "Send?", googleWorkspaceContentOmitted: true } });
 
     const savedBeforeThisChange = {
