@@ -935,8 +935,9 @@ mod tests {
             "--acpx-sidecar-script-sha256".to_owned(),
             format!("sha256:{}", "c".repeat(64)),
         ]);
-        let parsed = acpx_launch_profile(&args).unwrap().unwrap();
-        assert_eq!(parsed.candidate_admission.unwrap().run_id, "run-1");
+        // Released Antigravity refuses any candidate startup grant even with a
+        // complete launch profile.
+        assert!(acpx_launch_profile(&args).is_err());
         assert!(acpx_launch_profile(&[]).unwrap().is_none());
     }
 

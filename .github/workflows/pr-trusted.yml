@@ -43,6 +43,7 @@ jobs:
       plan: ${{ steps.publish.outputs.plan }}
     env:
       CI_PLAN: ${{ needs.gate.outputs.plan }}
+      CI_RUNNER_PROFILE: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 'hosted' || 'aws' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -69,8 +70,20 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Setup pnpm
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
         if: steps.eligible.outputs.enabled == 'true'
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Setup pnpm
+        if: steps.eligible.outputs.enabled == 'true' && steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -197,7 +210,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -344,7 +370,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -562,7 +601,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
-      matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON(fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.general_tests.matrix) || '{"include":[{"group":"general-server-without-chat","group_label":"server (1/20)","shard_index":0,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (2/20)","shard_index":1,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (3/20)","shard_index":2,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (4/20)","shard_index":3,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (5/20)","shard_index":4,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (6/20)","shard_index":5,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (7/20)","shard_index":6,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (8/20)","shard_index":7,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (9/20)","shard_index":8,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (10/20)","shard_index":9,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (11/20)","shard_index":10,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (12/20)","shard_index":11,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (13/20)","shard_index":12,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (14/20)","shard_index":13,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (15/20)","shard_index":14,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (16/20)","shard_index":15,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (17/20)","shard_index":16,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (18/20)","shard_index":17,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (19/20)","shard_index":18,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (20/20)","shard_index":19,"shard_count":20,"task":"ci:server"},{"group":"general-chat","group_label":"chat (1/2)","shard_index":0,"shard_count":2,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (2/2)","shard_index":1,"shard_count":2,"task":"ci:chat"},{"group":"general-workspaces-a","group_label":"workspaces-a (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-a","group_label":"workspaces-a (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-b","group_label":"workspaces-b (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-b"},{"group":"general-workspaces-b","group_label":"workspaces-b (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-b"},{"group":"general-workspaces-c","group_label":"workspaces-c","task":"ci:db"}]}') }}
+      matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON((needs.gate.outputs.runner == 'ubuntu-latest' && fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.general_tests.hosted_matrix) || fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.general_tests.matrix) || (needs.gate.outputs.runner == 'ubuntu-latest' && '{"include":[{"group":"general-server-without-chat","group_label":"server (1/8)","shard_index":0,"shard_count":8,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (2/8)","shard_index":1,"shard_count":8,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (3/8)","shard_index":2,"shard_count":8,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (4/8)","shard_index":3,"shard_count":8,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (5/8)","shard_index":4,"shard_count":8,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (6/8)","shard_index":5,"shard_count":8,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (7/8)","shard_index":6,"shard_count":8,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (8/8)","shard_index":7,"shard_count":8,"task":"ci:server"},{"group":"general-chat","group_label":"chat (1/1)","shard_index":0,"shard_count":1,"task":"ci:chat"},{"group":"general-workspaces-a","group_label":"workspaces-a (1/1)","shard_index":0,"shard_count":1,"task":"ci:workspaces-a"},{"group":"general-workspaces-b","group_label":"workspaces-b (1/1)","shard_index":0,"shard_count":1,"task":"ci:workspaces-b"},{"group":"general-workspaces-c","group_label":"workspaces-c","task":"ci:db"}]}' || '{"include":[{"group":"general-server-without-chat","group_label":"server (1/20)","shard_index":0,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (2/20)","shard_index":1,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (3/20)","shard_index":2,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (4/20)","shard_index":3,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (5/20)","shard_index":4,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (6/20)","shard_index":5,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (7/20)","shard_index":6,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (8/20)","shard_index":7,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (9/20)","shard_index":8,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (10/20)","shard_index":9,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (11/20)","shard_index":10,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (12/20)","shard_index":11,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (13/20)","shard_index":12,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (14/20)","shard_index":13,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (15/20)","shard_index":14,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (16/20)","shard_index":15,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (17/20)","shard_index":16,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (18/20)","shard_index":17,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (19/20)","shard_index":18,"shard_count":20,"task":"ci:server"},{"group":"general-server-without-chat","group_label":"server (20/20)","shard_index":19,"shard_count":20,"task":"ci:server"},{"group":"general-chat","group_label":"chat (1/3)","shard_index":0,"shard_count":3,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (2/3)","shard_index":1,"shard_count":3,"task":"ci:chat"},{"group":"general-chat","group_label":"chat (3/3)","shard_index":2,"shard_count":3,"task":"ci:chat"},{"group":"general-workspaces-a","group_label":"workspaces-a (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-a","group_label":"workspaces-a (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-a"},{"group":"general-workspaces-b","group_label":"workspaces-b (1/2)","shard_index":0,"shard_count":2,"task":"ci:workspaces-b"},{"group":"general-workspaces-b","group_label":"workspaces-b (2/2)","shard_index":1,"shard_count":2,"task":"ci:workspaces-b"},{"group":"general-workspaces-c","group_label":"workspaces-c","task":"ci:db"}]}')) }}
 
     env:
       PAPERCLIP_CI_FULL: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
@@ -598,7 +637,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -763,7 +815,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -807,7 +872,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
-      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_runner_e2e_support.matrix) || '{"include":[{"shard_index":0,"shard_count":4,"shard_label":"1/4","task":"ci:runner-e2e-support"},{"shard_index":1,"shard_count":4,"shard_label":"2/4","task":"ci:runner-e2e-support"},{"shard_index":2,"shard_count":4,"shard_label":"3/4","task":"ci:runner-e2e-support"},{"shard_index":3,"shard_count":4,"shard_label":"4/4","task":"ci:runner-e2e-support"}]}') }}
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON((needs.gate.outputs.runner == 'ubuntu-latest' && fromJSON(needs.gate.outputs.plan).jobs.verify_runner_e2e_support.hosted_matrix) || fromJSON(needs.gate.outputs.plan).jobs.verify_runner_e2e_support.matrix) || (needs.gate.outputs.runner == 'ubuntu-latest' && '{"include":[{"shard_index":0,"shard_count":2,"shard_label":"1/2","task":"ci:runner-e2e-support"},{"shard_index":1,"shard_count":2,"shard_label":"2/2","task":"ci:runner-e2e-support"}]}' || '{"include":[{"shard_index":0,"shard_count":4,"shard_label":"1/4","task":"ci:runner-e2e-support"},{"shard_index":1,"shard_count":4,"shard_label":"2/4","task":"ci:runner-e2e-support"},{"shard_index":2,"shard_count":4,"shard_label":"3/4","task":"ci:runner-e2e-support"},{"shard_index":3,"shard_count":4,"shard_label":"4/4","task":"ci:runner-e2e-support"}]}')) }}
 
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
@@ -835,7 +900,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -875,7 +953,7 @@ jobs:
     name: verify
     if: ${{ always() }}
     needs: [gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, sandbox_provider_tests, verify_serialized_server, canary_dry_run, verify_runner_e2e_support]
-    runs-on: ${{ needs.gate.outputs.runner || 'ubuntu-latest' }}
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
       - name: Validate every planned suite result
@@ -909,7 +987,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
-      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.matrix) || '{"include":[{"lane_label":"static checks","command":"check:static","release_crate":true,"task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest package (1/6)","command":"test:typescript:vitest --package-lane=1/6","task":"ci:runner-package"},{"lane_label":"vitest package (2/6)","command":"test:typescript:vitest --package-lane=2/6","task":"ci:runner-package"},{"lane_label":"vitest package (3/6)","command":"test:typescript:vitest --package-lane=3/6","task":"ci:runner-package"},{"lane_label":"vitest package (4/6)","command":"test:typescript:vitest --package-lane=4/6","task":"ci:runner-package"},{"lane_label":"vitest package (5/6)","command":"test:typescript:vitest --package-lane=5/6","task":"ci:runner-package"},{"lane_label":"vitest package (6/6)","command":"test:typescript:vitest --package-lane=6/6","task":"ci:runner-package"},{"lane_label":"vitest native server","command":"test:typescript:vitest --native-server","release_crate":true,"task":"ci:runner-vitest"}]}') }}
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON((needs.gate.outputs.runner == 'ubuntu-latest' && fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.hosted_matrix) || fromJSON(needs.gate.outputs.plan).jobs.verify_paperclip_runner.matrix) || (needs.gate.outputs.runner == 'ubuntu-latest' && '{"include":[{"lane_label":"static checks","command":"check:static","release_crate":true,"task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest package (1/3)","command":"test:typescript:vitest --package-lane=1/3","task":"ci:runner-package"},{"lane_label":"vitest package (2/3)","command":"test:typescript:vitest --package-lane=2/3","task":"ci:runner-package"},{"lane_label":"vitest package (3/3)","command":"test:typescript:vitest --package-lane=3/3","task":"ci:runner-package"},{"lane_label":"vitest native server","command":"test:typescript:vitest --native-server","release_crate":true,"task":"ci:runner-vitest"}]}' || '{"include":[{"lane_label":"static checks","command":"check:static","release_crate":true,"task":"ci:runner-static"},{"lane_label":"rust","command":"check:runner","release_crate":true,"task":"ci:runner-rust"},{"lane_label":"vitest package (1/6)","command":"test:typescript:vitest --package-lane=1/6","task":"ci:runner-package"},{"lane_label":"vitest package (2/6)","command":"test:typescript:vitest --package-lane=2/6","task":"ci:runner-package"},{"lane_label":"vitest package (3/6)","command":"test:typescript:vitest --package-lane=3/6","task":"ci:runner-package"},{"lane_label":"vitest package (4/6)","command":"test:typescript:vitest --package-lane=4/6","task":"ci:runner-package"},{"lane_label":"vitest package (5/6)","command":"test:typescript:vitest --package-lane=5/6","task":"ci:runner-package"},{"lane_label":"vitest package (6/6)","command":"test:typescript:vitest --package-lane=6/6","task":"ci:runner-package"},{"lane_label":"vitest native server (1/2)","command":"test:typescript:vitest --native-server=1/2","release_crate":true,"task":"ci:runner-vitest"},{"lane_label":"vitest native server (2/2)","command":"test:typescript:vitest --native-server=2/2","release_crate":true,"task":"ci:runner-vitest"}]}')) }}
 
     env:
       PAPERCLIP_CI_FULL: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
@@ -933,7 +1011,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1173,7 +1264,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1373,7 +1477,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
-      matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON(fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.verify_serialized_server.matrix) || '{"include":[{"shard_index":0,"shard_count":9,"shard_label":"1/9","task":"ci:serialized"},{"shard_index":1,"shard_count":9,"shard_label":"2/9","task":"ci:serialized"},{"shard_index":2,"shard_count":9,"shard_label":"3/9","task":"ci:serialized"},{"shard_index":3,"shard_count":9,"shard_label":"4/9","task":"ci:serialized"},{"shard_index":4,"shard_count":9,"shard_label":"5/9","task":"ci:serialized"},{"shard_index":5,"shard_count":9,"shard_label":"6/9","task":"ci:serialized"},{"shard_index":6,"shard_count":9,"shard_label":"7/9","task":"ci:serialized"},{"shard_index":7,"shard_count":9,"shard_label":"8/9","task":"ci:serialized"},{"shard_index":8,"shard_count":9,"shard_label":"9/9","task":"ci:serialized"}]}') }}
+      matrix: ${{ fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan) != '' && toJSON((needs.gate.outputs.runner == 'ubuntu-latest' && fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.verify_serialized_server.hosted_matrix) || fromJSON((needs.test_selection.outputs.plan || needs.gate.outputs.plan)).jobs.verify_serialized_server.matrix) || (needs.gate.outputs.runner == 'ubuntu-latest' && '{"include":[{"shard_index":0,"shard_count":4,"shard_label":"1/4","task":"ci:serialized"},{"shard_index":1,"shard_count":4,"shard_label":"2/4","task":"ci:serialized"},{"shard_index":2,"shard_count":4,"shard_label":"3/4","task":"ci:serialized"},{"shard_index":3,"shard_count":4,"shard_label":"4/4","task":"ci:serialized"}]}' || '{"include":[{"shard_index":0,"shard_count":9,"shard_label":"1/9","task":"ci:serialized"},{"shard_index":1,"shard_count":9,"shard_label":"2/9","task":"ci:serialized"},{"shard_index":2,"shard_count":9,"shard_label":"3/9","task":"ci:serialized"},{"shard_index":3,"shard_count":9,"shard_label":"4/9","task":"ci:serialized"},{"shard_index":4,"shard_count":9,"shard_label":"5/9","task":"ci:serialized"},{"shard_index":5,"shard_count":9,"shard_label":"6/9","task":"ci:serialized"},{"shard_index":6,"shard_count":9,"shard_label":"7/9","task":"ci:serialized"},{"shard_index":7,"shard_count":9,"shard_label":"8/9","task":"ci:serialized"},{"shard_index":8,"shard_count":9,"shard_label":"9/9","task":"ci:serialized"}]}')) }}
 
     env:
       PAPERCLIP_CI_FULL: ${{ (contains(github.event.pull_request.labels.*.name, 'full-ci') || vars.CI_INCREMENTAL_MODE == 'full') && '1' || '' }}
@@ -1406,7 +1510,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1502,7 +1619,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1701,7 +1831,7 @@ jobs:
     strategy:
       fail-fast: false
       max-parallel: ${{ needs.gate.outputs.runner == 'ubuntu-latest' && 4 || 256 }}
-      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON(fromJSON(needs.gate.outputs.plan).jobs.e2e_shards.matrix) || '{"include":[{"shard_index":0,"shard_count":12,"shard_label":"1/12","task":"ci:e2e"},{"shard_index":1,"shard_count":12,"shard_label":"2/12","task":"ci:e2e"},{"shard_index":2,"shard_count":12,"shard_label":"3/12","task":"ci:e2e"},{"shard_index":3,"shard_count":12,"shard_label":"4/12","task":"ci:e2e"},{"shard_index":4,"shard_count":12,"shard_label":"5/12","task":"ci:e2e"},{"shard_index":5,"shard_count":12,"shard_label":"6/12","task":"ci:e2e"},{"shard_index":6,"shard_count":12,"shard_label":"7/12","task":"ci:e2e"},{"shard_index":7,"shard_count":12,"shard_label":"8/12","task":"ci:e2e"},{"shard_index":8,"shard_count":12,"shard_label":"9/12","task":"ci:e2e"},{"shard_index":9,"shard_count":12,"shard_label":"10/12","task":"ci:e2e"},{"shard_index":10,"shard_count":12,"shard_label":"11/12","task":"ci:e2e"},{"shard_index":11,"shard_count":12,"shard_label":"12/12","task":"ci:e2e"}]}') }}
+      matrix: ${{ fromJSON(needs.gate.outputs.plan != '' && toJSON((needs.gate.outputs.runner == 'ubuntu-latest' && fromJSON(needs.gate.outputs.plan).jobs.e2e_shards.hosted_matrix) || fromJSON(needs.gate.outputs.plan).jobs.e2e_shards.matrix) || (needs.gate.outputs.runner == 'ubuntu-latest' && '{"include":[{"shard_index":0,"shard_count":4,"shard_label":"1/4","task":"ci:e2e"},{"shard_index":1,"shard_count":4,"shard_label":"2/4","task":"ci:e2e"},{"shard_index":2,"shard_count":4,"shard_label":"3/4","task":"ci:e2e"},{"shard_index":3,"shard_count":4,"shard_label":"4/4","task":"ci:e2e"}]}' || '{"include":[{"shard_index":0,"shard_count":16,"shard_label":"1/16","task":"ci:e2e"},{"shard_index":1,"shard_count":16,"shard_label":"2/16","task":"ci:e2e"},{"shard_index":2,"shard_count":16,"shard_label":"3/16","task":"ci:e2e"},{"shard_index":3,"shard_count":16,"shard_label":"4/16","task":"ci:e2e"},{"shard_index":4,"shard_count":16,"shard_label":"5/16","task":"ci:e2e"},{"shard_index":5,"shard_count":16,"shard_label":"6/16","task":"ci:e2e"},{"shard_index":6,"shard_count":16,"shard_label":"7/16","task":"ci:e2e"},{"shard_index":7,"shard_count":16,"shard_label":"8/16","task":"ci:e2e"},{"shard_index":8,"shard_count":16,"shard_label":"9/16","task":"ci:e2e"},{"shard_index":9,"shard_count":16,"shard_label":"10/16","task":"ci:e2e"},{"shard_index":10,"shard_count":16,"shard_label":"11/16","task":"ci:e2e"},{"shard_index":11,"shard_count":16,"shard_label":"12/16","task":"ci:e2e"},{"shard_index":12,"shard_count":16,"shard_label":"13/16","task":"ci:e2e"},{"shard_index":13,"shard_count":16,"shard_label":"14/16","task":"ci:e2e"},{"shard_index":14,"shard_count":16,"shard_label":"15/16","task":"ci:e2e"},{"shard_index":15,"shard_count":16,"shard_label":"16/16","task":"ci:e2e"}]}')) }}
 
     env:
       PAPERCLIP_CI_PROFILE: ${{ needs.gate.outputs.profile_ci }}
@@ -1724,7 +1854,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1840,7 +1983,7 @@ jobs:
     name: e2e
     if: ${{ always() }}
     needs: [gate, policy, e2e_shards]
-    runs-on: ${{ needs.gate.outputs.runner || 'ubuntu-latest' }}
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
       - name: Validate every planned suite result

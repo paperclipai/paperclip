@@ -86,7 +86,8 @@ export * from "./drivers/opencode/opencode-server-driver.js";
 export * from "./drivers/opencode/mcp-bridge.js";
 export * from "./drivers/acpx/qualified-profiles.js";
 export { isAntigravityNativeTarget, parseAcpxCandidateAdmission, type AcpxCandidateAdmission } from "./drivers/acpx/candidate-admission.js";
-export { startAntigravityBrowserLogin, verifyAntigravityCredential, sanitizeAntigravityCredential } from "./drivers/acpx/antigravity-auth.js";
+export { startAntigravityBrowserLogin, verifyAntigravityCredential, sanitizeAntigravityCredential, type AntigravityBrowserLoginFailureReason, type AntigravityBrowserLoginState } from "./drivers/acpx/antigravity-auth.js";
+export { AntigravityRuntimeUnavailableError } from "./drivers/acpx/antigravity-runtime-unavailable.js";
 export {
   GENERATED_ANTIGRAVITY_SWARM_CHANNELS, GENERATED_ANTIGRAVITY_SWARM_CREDENTIAL_FACTS_FIELD, GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL,
   readGeneratedAntigravitySwarmCredentialFacts, type GeneratedAntigravitySwarmChannel, type GeneratedAntigravitySwarmCredentialFacts,

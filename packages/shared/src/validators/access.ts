@@ -236,6 +236,7 @@ export const browserAnalyticsConfigSchema = z.object({
   replayEnabled: z.boolean(),
   replayWorkContentEnabled: z.boolean().optional(),
   consentRequired: z.boolean().nullable().optional(),
+  cloudTrialInferenceEnabled: z.boolean().optional(),
 });
 
 export type BrowserAnalyticsConfig = z.infer<typeof browserAnalyticsConfigSchema>;

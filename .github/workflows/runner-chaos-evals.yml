@@ -69,9 +69,12 @@ jobs:
 
       - name: Run server finalization and recovery suites
         run: |
-          pnpm --filter @paperclipai/server exec vitest run \
+          pnpm --filter @paperclipai/server exec vitest run --no-file-parallelism \
             src/__tests__/native-finalization-recovery.test.ts \
-            src/__tests__/heartbeat-process-recovery.test.ts \
+            src/__tests__/heartbeat-process-recovery-part-1.test.ts \
+            src/__tests__/heartbeat-process-recovery-part-2.test.ts \
+            src/__tests__/heartbeat-process-recovery-part-3.test.ts \
+            src/__tests__/heartbeat-process-recovery-part-4.test.ts \
             src/__tests__/heartbeat-comment-wake-batching.test.ts \
             src/__tests__/heartbeat-dependency-scheduling.test.ts \
             src/__tests__/provider-trace-store.test.ts \

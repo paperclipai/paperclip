@@ -134,6 +134,7 @@ describe("auth routes", () => {
       replayEnabled: true,
       replayWorkContentEnabled: false,
       consentRequired: null,
+      cloudTrialInferenceEnabled: false,
     });
 
     vi.stubEnv("PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED", "1");

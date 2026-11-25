@@ -7,10 +7,22 @@ import { fileURLToPath } from "node:url";
 import { checkoutSources, fingerprintContracts, packContractDigest } from "./contract-fingerprints.mjs";
 
 const root = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
-const sources = checkoutSources(root);
+const diskSources = checkoutSources(root);
+const readCache = new Map();
+const listCache = new Map();
+const sources = {
+  read: p => {
+    if (!readCache.has(p)) readCache.set(p, diskSources.read(p));
+    return readCache.get(p);
+  },
+  list: dir => {
+    if (!listCache.has(dir)) listCache.set(dir, diskSources.list(dir));
+    return listCache.get(dir);
+  },
+};
 const R = "packages/paperclip-runner";
 const RUST = `${R}/runner/crates/runner-core/src`;
-const baseline = packContractDigest(root);
+const baseline = packContractDigest(root, sources);
 
 /** Digest of the checkout with one file's text rewritten in memory. */
 function digestWith(path, edit) {

@@ -58,6 +58,7 @@ export async function forgetRunSessions(
 }
 
 export const RUN_CONTENT_DELETED_MARKER = "contentDeletedAt";
+export const RUN_ANSWER_COPIES_DELETED_MARKER = "answerCopiesDeletedAt";
 
 export async function forgetSessionsOfDeletedRun(db: Db, run: { id: string; companyId: string }) {
   const [row] = await db

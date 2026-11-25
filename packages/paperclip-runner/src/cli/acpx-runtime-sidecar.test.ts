@@ -2118,50 +2118,41 @@ describe("qualified ACPX runtime sidecar", () => {
     expect(await sidecar.next(value => value.id === 2)).toMatchObject({ ok: false, error: { message: expect.stringContaining("candidate admission") } });
   });
 
-  it("refuses pending Antigravity bootstrap before any native process opens", async () => {
+  it("initializes qualified Antigravity without a candidate grant and rejects any injected candidate grant", async () => {
     const sidecar = startSidecar();
-    sidecar.write(initializeRequest(1, "antigravity", "caller-exact-model"));
-    expect(await sidecar.next(frame => frame.id === 1)).toMatchObject({ id: 1, ok: false,
-      error: { message: expect.stringContaining("qualification is pending"), retryable: false } });
-  });
+    const model = "caller-exact-model";
+    const profile = resolveQualifiedAcpxProfile("antigravity", model);
+    expect(profile.agentProfileVersion).toBe(2);
+    expect(profile.qualificationStatus).toBeUndefined();
+    sidecar.write(initializeRequest(1, "antigravity", model));
+    expect(await sidecar.next(frame => frame.id === 1)).toMatchObject({ id: 1, ok: true, result: { profile } });
 
-  it.skipIf(process.platform !== "darwin" || process.arch !== "arm64")("admits only matching candidate startup and rejects session replay before provider launch", async () => {
-    const sidecar = startSidecar();
-    const model = "gemini-3.8-flash-low";
-    const candidateAdmission = bindAcpxCandidateAdmission({ schema: "paperclip.acpx-candidate-admission.v1", companyId: "company-candidate", agent: "antigravity", model,
-      profileDigest: resolveQualifiedAcpxProfile("antigravity", model).commandDigest,
+    const withGrant = startSidecar();
+    const candidateAdmission = { schema: "paperclip.acpx-candidate-admission.v1", companyId: "company-candidate", agent: "antigravity", model,
+      profileDigest: profile.commandDigest,
       nativeClosureDigest: `sha256:${ANTIGRAVITY_DISTRIBUTION_PINS["darwin-arm64"].closureSha256}`,
-      platform: "darwin", architecture: "arm64", expiresAt: Date.now() + 60_000 }, { runId: "run-candidate", normalizedSessionId: "session-candidate" });
+      platform: "darwin", architecture: "arm64", expiresAt: Date.now() + 60_000, runId: "run-candidate", normalizedSessionId: "session-candidate" };
     const request = initializeRequest(1, "antigravity", model);
-    sidecar.write({ ...request, params: { ...request.params, candidateAdmission } });
-    expect(await sidecar.next(frame => frame.id === 1)).toMatchObject({ ok: true, result: { profile: { agent: "antigravity", qualificationStatus: "pending", reportedModelId: model } } });
-    sidecar.write({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id: 2, command: "session.open", params: {
-      runtimeDirectory: "/unused", workingDirectory: "/unused", normalizedSessionId: "other-session", agent: "antigravity", model,
-      candidateAdmission, permissionMode: "deny-all", permissionModePinned: true, providerPolicy: { readOnly: true }, systemInstructions: "", tools: [],
-    } });
-    expect(await sidecar.next(frame => frame.id === 2)).toMatchObject({ ok: false, error: { message: expect.stringContaining("candidate admission") } });
+    withGrant.write({ ...request, params: { ...request.params, candidateAdmission } });
+    expect(await withGrant.next(frame => frame.id === 1)).toMatchObject({ id: 1, ok: false,
+      error: { message: expect.stringContaining("candidate admission"), retryable: false } });
   });
 
   // Live /swarm runs failed here: the open parser accepted a provider mode only
-  // for Cursor, so a granted swarm session.open never reached the swarm route.
+  // for Cursor, so an Antigravity swarm session.open never reached the swarm route.
   it.skipIf(!Object.hasOwn(ANTIGRAVITY_DISTRIBUTION_PINS, `${process.platform}-${process.arch}`))(
-    "carries a granted Antigravity swarm session.open to the swarm route and its typed refusal", async () => {
+    "carries a qualified Antigravity swarm session.open to the swarm route and its typed refusal", async () => {
       const model = "gemini-3.8-flash-low", sessionId = "session-swarm";
       const root = realpathSync(mkdtempSync(join(tmpdir(), "acpx-swarm-open-")));
       for (const directory of ["runtime-2", "workspace"]) mkdirSync(join(root, directory), { mode: 0o700 });
-      const platform = process.platform as "darwin" | "linux", architecture = process.arch as "arm64" | "x64";
-      const candidateAdmission = bindAcpxCandidateAdmission({ schema: "paperclip.acpx-candidate-admission.v1", companyId: "company-candidate", agent: "antigravity", model,
-        profileDigest: resolveQualifiedAcpxProfile("antigravity", model).commandDigest,
-        nativeClosureDigest: `sha256:${(ANTIGRAVITY_DISTRIBUTION_PINS as Record<string, { closureSha256: string }>)[`${platform}-${architecture}`]!.closureSha256}`,
-        platform, architecture, expiresAt: Date.now() + 60_000 }, { runId: "run-swarm", normalizedSessionId: sessionId });
       const open = (sidecar: SidecarProcess, id: number, mode: string) => sidecar.write({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id, command: "session.open", params: {
         runtimeDirectory: join(root, `runtime-${id}`), workingDirectory: join(root, "workspace"), normalizedSessionId: sessionId, agent: "antigravity", model, mode,
-        candidateAdmission, permissionMode: "approve-all", permissionModePinned: false, providerPolicy: { readOnly: false }, systemInstructions: "Paperclip instructions", tools: [] } });
+        permissionMode: "approve-all", permissionModePinned: false, providerPolicy: { readOnly: false }, systemInstructions: "Paperclip instructions", tools: [] } });
       try {
         // A Gemini API key run (no Google sign-in binding): the swarm route itself refuses, typed, with a plain message.
         const sidecar = startSidecar();
         const request = initializeRequest(1, "antigravity", model);
-        sidecar.write({ ...request, params: { ...request.params, candidateAdmission } });
+        sidecar.write(request);
         expect(await sidecar.next(frame => frame.id === 1)).toMatchObject({ ok: true });
         open(sidecar, 2, "swarm");
         const refused = await sidecar.next(frame => frame.id === 2);
@@ -2172,7 +2163,7 @@ describe("qualified ACPX runtime sidecar", () => {
 
         // Only the registered provider modes pass the parser; the refusal names its contract.
         const other = startSidecar();
-        other.write({ ...request, params: { ...request.params, candidateAdmission } });
+        other.write(request);
         expect(await other.next(frame => frame.id === 1)).toMatchObject({ ok: true });
         open(other, 2, "plan");
         expect(await other.next(frame => frame.id === 2)).toMatchObject({ ok: false,

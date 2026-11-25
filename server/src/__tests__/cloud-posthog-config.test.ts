@@ -31,7 +31,29 @@ describe("resolveCloudPostHogConfig", () => {
       browserEnabled: false,
       replayEnabled: false,
       replayWorkContentEnabled: false,
+      cloudTrialInferenceEnabled: false,
     });
+  });
+
+  it("resolves cloudTrialInferenceEnabled from PAPERCLIP_MANAGED_CONFIG and fails closed when invalid", () => {
+    expect(
+      resolveCloudPostHogConfig({
+        ...CLOUD,
+        PAPERCLIP_MANAGED_CONFIG: JSON.stringify({ features: { enableCloudTrialInference: true } }),
+      })?.cloudTrialInferenceEnabled,
+    ).toBe(true);
+    expect(
+      resolveCloudPostHogConfig({
+        ...CLOUD,
+        PAPERCLIP_MANAGED_CONFIG: JSON.stringify({ features: { enableCloudTrialInference: false } }),
+      })?.cloudTrialInferenceEnabled,
+    ).toBe(false);
+    expect(
+      resolveCloudPostHogConfig({
+        ...CLOUD,
+        PAPERCLIP_MANAGED_CONFIG: "{not-json",
+      })?.cloudTrialInferenceEnabled,
+    ).toBe(false);
   });
 
   it("accepts the legacy managed-config Cloud signal", () => {

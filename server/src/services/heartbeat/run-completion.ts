@@ -8,7 +8,8 @@ import { PREDECESSOR_RETIREMENT_FALLBACK_KEY, readPredecessorRetirementFallback,
 import { releaseUnchangedFallbackWorkspace } from "./predecessor-retirement-fallback.js";
 import { hasNativeExecutionStartEvidence } from "../native-runtime/native-restart-recovery.js";
 import { isSandboxProviderDiskFullError, NATIVE_SANDBOX_DISK_FULL } from "../native-runtime/native-sandbox-disk-full.js";
-import { withoutSqlStatementText } from "@paperclipai/shared";
+import { CLOUD_TRIAL_EXHAUSTED_ERROR_CODE, withoutSqlStatementText } from "@paperclipai/shared";
+import { isCloudTrialExhaustedError } from "../cloud-trial-inference.js";
 import { nativeTaskSessionPublicationHandled } from "../native-runtime/native-task-session-publication.js";
 import { boundOriginalMessage, describeRefusedExactResume, interruptedExactResumeCause } from "../native-runtime/native-exact-resume-failure.js";
 import { settledResponsePublicationSql } from "../native-runtime/native-response-publication-receipt.js";
@@ -1696,6 +1697,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const ownedAiSelectionRejection = isOwnedAiConnectionSelectionRejection(
       configurationIncompleteSetupFailure?.resultJson.configurationIncomplete);
     const setupFailureErrorCode =
+      (isCloudTrialExhaustedError(outerErr) ? CLOUD_TRIAL_EXHAUSTED_ERROR_CODE : null) ??
       (controllerLeaseLost && !ownedAiSelectionRejection ? CONTROLLER_LEASE_LOST_FAILURE_CODE : null) ??
       (storageUnavailable ? STORAGE_UNAVAILABLE_CODE : null) ??
       remoteWorkspacePreparationTimeout?.code ??

@@ -927,7 +927,8 @@ describe("shared ACPX engine runtime behavior", () => {
       expect(sessionOptions.env).not.toHaveProperty("PAPERCLIP_WAKE_PAYLOAD_JSON");
       const prompt = String(run.turnInputs[0]?.text);
       expect(prompt).not.toContain("stale configured wake");
-      for (const action of completedActions) expect(prompt).toContain(JSON.stringify(action));
+      for (const { runId: _runId, ...action } of completedActions) expect(prompt).toContain(JSON.stringify(action));
+      expect(prompt).not.toContain("prior-run");
     }
     const freshPrompt = String(fresh.turnInputs[0]?.text);
     for (const message of messages) expect(freshPrompt).toContain(JSON.stringify(message));

@@ -11,6 +11,7 @@ const config: CloudPostHogConfig = {
   browserEnabled: false,
   replayEnabled: false,
   replayWorkContentEnabled: false,
+  cloudTrialInferenceEnabled: false,
 };
 
 const startup = {

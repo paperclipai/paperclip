@@ -53,6 +53,7 @@ function projectAuthConflict(files: string[]) {
 export const AI_AUTH_ENV_KEYS = [
   "COPILOT_GITHUB_TOKEN",
   "PAPERCLIP_AI_PROVIDER_KEY", "PAPERCLIP_AI_PROVIDER_URL", "PAPERCLIP_CODEX_PROVIDERS",
+  "PAPERCLIP_OPENROUTER_PROXY_URL", "PAPERCLIP_OPENROUTER_PROXY_TOKEN",
   "GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL", "GOOGLE_GENAI_USE_VERTEXAI",
   "GEMINI_HOME", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_ACCESS_TOKEN", "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET",
   "HERMES_HOME", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_BEARER_TOKEN_BEDROCK", "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
@@ -582,6 +583,11 @@ export async function prepareManagedAiRuntime(
       ...(subscriptionFile && (input.binding.provider === "openai" || input.binding.provider === "xai") && credentialRef && freshness ? {
         credentialWriteback: { grantId: selection.grant.id, secretId: credentialRef.secretId, sessionEpoch: freshness.epoch,
           versionSelector: credentialRef.versionSelector ?? "latest" } satisfies ManagedAiCredentialWritebackBinding,
+      } : {}),
+      ...(antigravitySubscription && credentialRef && freshness ? {
+        credentialWriteback: { grantId: selection.grant.id, secretId: credentialRef.secretId, sessionEpoch: freshness.epoch,
+          versionSelector: credentialRef.versionSelector ?? "latest",
+          google: { credentialSha256: createHash("sha256").update(originalCredential, "utf8").digest("hex") } } satisfies ManagedAiCredentialWritebackBinding,
       } : {}),
       config: {
         ...input.config,

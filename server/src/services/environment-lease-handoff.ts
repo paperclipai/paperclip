@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { environmentLeases } from "@paperclipai/db";
+import { and, eq, sql } from "drizzle-orm";
+import { environmentLeases, type Db } from "@paperclipai/db";
 
 type Lease = typeof environmentLeases.$inferSelect;
 type Binding = Pick<Lease, "id" | "companyId" | "environmentId" | "executionWorkspaceId" | "issueId" |
@@ -72,4 +73,39 @@ export function retiredReusableLeasePredecessors(current: Lease, history: Lease[
     successor = previous;
   }
   return Object.hasOwn(successor.metadata ?? {}, incomingKey) ? null : result;
+}
+
+export const SUPERSEDED_REUSABLE_SANDBOX_KEY = "reusableSandboxLeaseSuperseded";
+const SUPERSEDED_REUSABLE_SANDBOX_SCHEMA = "paperclip.reusable-sandbox-lease-superseded.v1";
+
+/**
+ * Takes a reusable sandbox lease out of reuse. Removing its reuse scope makes
+ * the next acquisition for this workspace treat it as obsolete and clean it up
+ * through the existing obsolete-lease path, which keeps every protection. The
+ * write is a compare-and-swap on the row as read: a run that resumed or
+ * changed the lease in the meantime wins, and this returns false.
+ */
+export async function supersedeReusableSandboxLease(db: Db, lease: Lease, input: {
+  reason: "harness_backup_restored_elsewhere" | "sandbox_disk_full";
+  supersededByRunId: string;
+  supersededByProviderLeaseId?: string | null;
+  manifestSha256?: string;
+}): Promise<boolean> {
+  if (lease.leasePolicy !== "reuse_by_environment" || !lease.heartbeatRunId) return false;
+  const { reusableSandboxLease: scope, ...metadata } = lease.metadata ?? {};
+  const [claimed] = await db.update(environmentLeases).set({
+    metadata: { ...metadata, [SUPERSEDED_REUSABLE_SANDBOX_KEY]: {
+      schema: SUPERSEDED_REUSABLE_SANDBOX_SCHEMA, reason: input.reason,
+      supersededByRunId: input.supersededByRunId, supersededByProviderLeaseId: input.supersededByProviderLeaseId ?? null,
+      ...(input.manifestSha256 ? { manifestSha256: input.manifestSha256 } : {}),
+      reusableSandboxLease: scope ?? null, supersededAt: new Date().toISOString(),
+    } },
+    updatedAt: new Date(),
+  }).where(and(
+    eq(environmentLeases.companyId, lease.companyId), eq(environmentLeases.id, lease.id),
+    eq(environmentLeases.status, lease.status), eq(environmentLeases.leasePolicy, "reuse_by_environment"),
+    eq(environmentLeases.heartbeatRunId, lease.heartbeatRunId),
+    sql`${environmentLeases.metadata} = ${JSON.stringify(lease.metadata)}::jsonb`,
+  )).returning({ id: environmentLeases.id });
+  return Boolean(claimed);
 }

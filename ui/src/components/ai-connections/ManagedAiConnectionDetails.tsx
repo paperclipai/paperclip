@@ -1,4 +1,6 @@
 import { heartbeatsApi } from "@/api/heartbeats";
+import { useToastActions } from "@/context/ToastContext";
+import { aiSignInRemovalNotice } from "@/features/connections/googleAccessRemoval";
 import { Button } from "@/components/ui/button";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { aiConnectionsApi } from "@/api/ai-connections";
@@ -62,10 +64,15 @@ export function ManagedAiConnectionDetails({
   const accountsView = useQueryView(accounts);
   const grantsView = useQueryView(grants);
   const refresh = () => client.invalidateQueries();
+  const { pushToast } = useToastActions();
   const revoke = useMutation({
     mutationFn: (id: string) =>
       toolsApi.revokeConnectionGrant(connection.id, id),
-    onSuccess: refresh,
+    onSuccess: (revoked) => {
+      const notice = aiSignInRemovalNotice(revoked.signInRemoval);
+      if (notice) pushToast({ title: "Account disconnected", body: notice.body, tone: notice.tone, ...(notice.action ? { action: notice.action } : {}) });
+      return refresh();
+    },
   });
   const stop = useMutation({
     mutationFn: (id: string) => heartbeatsApi.cancel(id),

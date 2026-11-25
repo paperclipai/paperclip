@@ -6,7 +6,7 @@ import { expect, type Page } from "@playwright/test";
 import { buildAgentMentionHref, buildProjectMentionHref, parseAgentMentionHref, parseProjectMentionHref } from "../../../packages/shared/src/project-mentions.js";
 import { sendChatMessage, readChatOutputDocument, type ChatIssue, type ChatRun } from "../chat-flow.js";
 import { assertChatHire, mutableIssueSnapshot } from "../chat-hardening.js";
-import { ConnectionFailure } from "../connection-config.js";
+import { isTransientConnectionFailure } from "../connection-config.js";
 import { assertHireAuditCoverage, assertHireBinding, assertHireDocument, assertHireRuns, assertHireTaskCreation, hireDelegateNames, hireResultLinkMatches, hireRunIssueId, observedHireResources, readHireConnectionChoice, type HireScope } from "./hire-delegate-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 import { sendHireHandoffMessage } from "./hire-delegate-composer.js";
@@ -70,8 +70,7 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
   const readObserved = async <T>(route: string): Promise<T> => {
     try { return await api.get<T>(route); }
     catch (error) {
-      if (error instanceof ConnectionFailure && (error.message === "api_request_failed"
-        || /^api_status_(408|429|502|503|504)$/.test(error.message))) {
+      if (isTransientConnectionFailure(error)) {
         throw new HireReadTransportError("hire_observation_transport_unavailable");
       }
       throw error;
@@ -148,8 +147,8 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
     const runs = [...canonical.values()];
     const comments = await readObserved<Row[]>(`/api/issues/${chat.id}/comments?order=asc`);
     const requestIds = comments.filter(row => row.authorUserId === context.user.id).map(row => row.id);
-    const completionRepliesReady = assertHireRuns(scope, hiredId, owned.tasks, runs, undefined, requestIds, comments);
-    for (const run of projectedRuns) assertHireRuns(scope, hiredId, owned.tasks, [run], undefined, requestIds, comments);
+    const completionRepliesReady = assertHireRuns(scope, hiredId, owned.tasks, runs, undefined, requestIds, comments, options.deadlineAt);
+    for (const run of projectedRuns) assertHireRuns(scope, hiredId, owned.tasks, [run], undefined, requestIds, comments, options.deadlineAt);
     await retain("hire-delegate-observation.json", { scope: { ...scope, connectionBinding: undefined, connectionChoice: undefined }, chat, project,
       agents: owned.agents.map(row => ({ id: row.id, name: row.name, reportsTo: row.reportsTo })), tasks: owned.tasks,
       runs: runs.map(run => ({ id: run.id, issueId: hireRunIssueId(run), agentId: run.agentId, status: run.status })) });

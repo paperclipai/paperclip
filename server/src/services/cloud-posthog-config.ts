@@ -1,4 +1,38 @@
 import { isCloudManagedInstance, type CloudInstanceEnv } from "./cloud-instance.js";
+import { getResolvedCloudTrialInferenceEnabled } from "./cloud-posthog-cohort.js";
+
+/**
+ * PostHog experiment / feature flag key for the Cloud starter-inference A/B test.
+ * Stamped onto workspace groups, direct server events, browser super-properties,
+ * and `$feature_flag_called` exposure events so every onboarding, activation,
+ * conversion, and retention chart can split treatment vs. control cleanly.
+ */
+export const CLOUD_TRIAL_INFERENCE_FLAG_KEY = "cloud-trial-inference";
+export type CloudTrialInferenceCohort = "treatment" | "control";
+
+export function cloudTrialInferenceCohort(enabled: boolean): CloudTrialInferenceCohort {
+  return enabled ? "treatment" : "control";
+}
+
+/**
+ * Resolves whether `enableCloudTrialInference` is active in this stack's
+ * `PAPERCLIP_MANAGED_CONFIG` document. Fails closed (`false`) if absent or
+ * malformed so analytics never throw on startup.
+ */
+export function resolveCloudTrialInferenceEnabled(env: CloudInstanceEnv = process.env): boolean {
+  if (env === process.env) {
+    const resolved = getResolvedCloudTrialInferenceEnabled();
+    if (resolved !== null) return resolved;
+  }
+  const raw = env.PAPERCLIP_MANAGED_CONFIG?.trim();
+  if (!raw) return false;
+  try {
+    const parsed = JSON.parse(raw) as { features?: Record<string, unknown> } | null;
+    return parsed?.features?.enableCloudTrialInference === true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * PostHog settings for a Paperclip Cloud stack. Present only on a
@@ -14,6 +48,7 @@ export type CloudPostHogConfig = {
   browserEnabled: boolean; // PAPERCLIP_POSTHOG_BROWSER_ENABLED === "1"
   replayEnabled: boolean; // browserEnabled && PAPERCLIP_POSTHOG_REPLAY_ENABLED !== "0"
   replayWorkContentEnabled: boolean;
+  cloudTrialInferenceEnabled: boolean; // PAPERCLIP_MANAGED_CONFIG.features.enableCloudTrialInference
 };
 
 export const DEFAULT_CLOUD_POSTHOG_HOST = "https://us.i.posthog.com";
@@ -42,6 +77,7 @@ export function resolveCloudPostHogConfig(
     browserEnabled,
     replayEnabled,
     replayWorkContentEnabled: replayEnabled && readEnv(env, "PAPERCLIP_POSTHOG_REPLAY_WORK_CONTENT_ENABLED") === "1",
+    cloudTrialInferenceEnabled: resolveCloudTrialInferenceEnabled(env),
   };
 }
 

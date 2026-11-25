@@ -51,6 +51,7 @@ describe("browser analytics config exposure", () => {
       replayEnabled,
       replayWorkContentEnabled: false,
       consentRequired: null,
+      cloudTrialInferenceEnabled: false,
     });
   });
 

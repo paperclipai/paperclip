@@ -11,6 +11,7 @@ import {
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { settledRunSql } from "./content-deletion.js";
 import { RUN_CONTENT_DELETED_MARKER } from "./run-session-reset.js";
+import { withoutFreeText } from "./content-cleaning.js";
 
 export async function forgetRunInTrainingExamples(tx: Db, companyId: string, run: { id: string; changed: boolean }) {
   const runs = sql`${decisionTrainingExamples.snapshot}->'runs'`;
@@ -32,17 +33,6 @@ export async function forgetRunInTrainingExamples(tx: Db, companyId: string, run
     ))
     .returning({ id: decisionTrainingExamples.id });
   if (replaced.length > 0) run.changed = true;
-}
-
-const STRUCTURAL_KEYS = new Set(["schema", "kind", "status", "type", "outcome", "state", "version", "code", "id"]);
-
-function withoutFreeText(value: unknown, key = ""): unknown {
-  if (typeof value === "string") return STRUCTURAL_KEYS.has(key) || /(Id|At)$/.test(key) ? value : "";
-  if (Array.isArray(value)) return value.map((entry) => withoutFreeText(entry, key));
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([entryKey, entry]) => [entryKey, withoutFreeText(entry, entryKey)]));
-  }
-  return value;
 }
 
 export async function forgetRunCopies(tx: Db, companyId: string, run: { id: string; changed: boolean }, row: { issueId: string | null; createdAt: Date }) {

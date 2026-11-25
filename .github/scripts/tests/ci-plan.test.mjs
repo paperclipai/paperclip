@@ -4,7 +4,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { comparisonPaths, planTasks } from "../ci-plan.mjs";
+import vm from "node:vm";
+import { compactHostedEntries, comparisonPaths, HOSTED_SHARD_COUNTS, planSummary, planTasks } from "../ci-plan.mjs";
 import { mergeDiff } from "../ci-diff.mjs";
 import { planLane } from "../../../scripts/ci-typecheck-lane.mjs";
 
@@ -16,17 +17,95 @@ const selected = (result, job) => result.jobs[job].run;
 const selectedTasks = (result) => new Set(Object.values(result.jobs).filter((job) => job.run)
   .flatMap((job) => job.matrix.include.map((entry) => entry.task)));
 
-test("trusted workflow fallbacks preserve every declared partition and command", () => {
+test("trusted workflow fallbacks preserve every declared partition and command for both AWS and hosted runners", () => {
   const workflow = readFileSync(new URL(".github/workflows/pr-trusted.yml", root), "utf8");
+  const fullPlan = plan(["package.json"], { forceReason: "Full suite requested by label" });
+  const legacyPlan = structuredClone(fullPlan);
+  for (const lane of Object.values(legacyPlan.jobs)) delete lane.hosted_matrix;
+  const awsRunner = "runs-on/fleet=paperclip-public-pr-x64/env=public-ci";
+  const evalMatrix = (expression, { runner, planJson }) => vm.runInNewContext(expression, {
+    fromJSON: JSON.parse,
+    toJSON: JSON.stringify,
+    needs: { gate: { outputs: { runner, plan: planJson } }, test_selection: { outputs: { plan: "" } } },
+  });
   for (const [job, entries] of Object.entries(lanes)) {
     const block = workflow.split(`\n  ${job}:\n`)[1].split(/\n  [a-z0-9_]+:\n/)[0];
     const normalized = block.replaceAll("(needs.test_selection.outputs.plan || needs.gate.outputs.plan)", "needs.gate.outputs.plan");
     assert.ok(normalized.includes(`fromJSON(needs.gate.outputs.plan).jobs.${job}.run`), job);
     if (!block.includes("      matrix:")) { assert.equal(entries.length, 1); continue; }
-    const fallback = block.match(/matrix:.*\|\| '(.*)'\) \}\}/)?.[1];
-    assert.ok(fallback, `${job}: missing full fallback`);
-    assert.deepEqual(JSON.parse(fallback), { include: entries }, job);
+    const expression = block.match(/      matrix: \$\{\{ (.+) \}\}$/m)?.[1];
+    assert.ok(expression, `${job}: missing matrix expression`);
+    const expectedAws = { include: entries };
+    const expectedHosted = { include: compactHostedEntries(entries) };
+    assert.deepEqual(evalMatrix(expression, { runner: awsRunner, planJson: "" }), expectedAws, `${job} aws fallback`);
+    assert.deepEqual(evalMatrix(expression, { runner: "ubuntu-latest", planJson: "" }), expectedHosted, `${job} hosted fallback`);
+    assert.deepEqual(evalMatrix(expression, { runner: awsRunner, planJson: JSON.stringify(fullPlan) }), fullPlan.jobs[job].matrix, `${job} aws plan`);
+    assert.deepEqual(evalMatrix(expression, { runner: "ubuntu-latest", planJson: JSON.stringify(fullPlan) }), fullPlan.jobs[job].hosted_matrix, `${job} hosted plan`);
+    assert.deepEqual(evalMatrix(expression, { runner: "ubuntu-latest", planJson: JSON.stringify(legacyPlan) }), legacyPlan.jobs[job].matrix, `${job} legacy plan compat`);
   }
+});
+
+test("compactHostedEntries halves ubuntu-latest fan-out while preserving 100% of tasks, groups, and contiguous shard coverage", () => {
+  const full = plan(["package.json"], { forceReason: "Full suite requested by label" });
+  const awsJobs = Object.values(full.jobs).reduce((sum, lane) => sum + lane.total, 0);
+  const hostedJobs = Object.values(full.jobs).reduce((sum, lane) => sum + (lane.hosted_total ?? lane.total), 0);
+  assert.equal(awsJobs, 72);
+  assert.equal(hostedJobs, 33);
+  assert.ok(Buffer.byteLength(JSON.stringify(full)) < 32_768, "dual-profile plan stays compact for GITHUB_OUTPUT/env");
+
+  for (const [job, lane] of Object.entries(full.jobs)) {
+    if (!lane.hosted_matrix) continue;
+    const awsEntries = lane.matrix.include;
+    const hostedEntries = lane.hosted_matrix.include;
+    assert.ok(hostedEntries.length < awsEntries.length, `${job} should compact on hosted`);
+    const partitionKey = (entry) => `${entry.task}::${entry.group ?? ""}`;
+    assert.deepEqual(
+      [...new Set(hostedEntries.map(partitionKey))],
+      [...new Set(awsEntries.map(partitionKey))],
+      `${job} must preserve every task and group`,
+    );
+    const byPartition = new Map();
+    for (const entry of hostedEntries) {
+      const key = partitionKey(entry);
+      if (!byPartition.has(key)) byPartition.set(key, []);
+      byPartition.get(key).push(entry);
+    }
+    for (const [key, groupEntries] of byPartition) {
+      if (groupEntries[0].shard_count !== undefined) {
+        assert.deepEqual(
+          groupEntries.map((e) => [e.shard_index, e.shard_count]),
+          groupEntries.map((_, i) => [i, groupEntries.length]),
+          `${job}/${key} must have contiguous shard indices`,
+        );
+      } else if (typeof groupEntries[0].command === "string" && groupEntries[0].command.includes("--package-lane=")) {
+        assert.deepEqual(
+          groupEntries.map((e) => e.command.match(/--package-lane=(\d+\/\d+)/)?.[1]),
+          groupEntries.map((_, i) => `${i + 1}/${groupEntries.length}`),
+          `${job}/${key} must have contiguous package lanes`,
+        );
+      }
+    }
+  }
+
+  const uiPr = plan(["ui/src/components/Sidebar.tsx"]);
+  assert.equal(uiPr.jobs.general_tests.selected, 2);
+  assert.equal(uiPr.jobs.general_tests.hosted_selected, 1);
+  assert.deepEqual(uiPr.jobs.general_tests.hosted_matrix.include, [
+    { group: "general-workspaces-a", group_label: "workspaces-a (1/1)", shard_index: 0, shard_count: 1, task: "ci:workspaces-a" },
+  ]);
+  assert.equal(uiPr.jobs.e2e_shards.selected, 16);
+  assert.equal(uiPr.jobs.e2e_shards.hosted_selected, 4);
+
+  const futureEntries = Array.from({ length: 10 }, (_, shard_index) => ({
+    task: "ci:future", shard_index, shard_count: 10, shard_label: `${shard_index + 1}/10`,
+  }));
+  const futureCompact = compactHostedEntries(futureEntries, HOSTED_SHARD_COUNTS);
+  assert.equal(futureCompact.length, 5);
+  assert.equal(futureCompact[4].shard_label, "5/5");
+
+  const summary = planSummary(full);
+  assert.match(summary, /28\/28 \(hosted: 12\/12\)/);
+  assert.match(summary, /16\/16 \(hosted: 4\/4\)/);
 });
 
 test("a UI component retains browser and build coverage without unrelated server/Rust jobs", () => {
@@ -134,7 +213,7 @@ test("PR workflow keeps Build fast and passes PR-mode context to typecheck and V
   const runnerSupport = workflow.split("\n  verify_runner_e2e_support:\n")[1].split("\n  verify:\n")[0];
   assert.match(runnerSupport, /--shard-index \$\{\{ matrix\.shard_index \}\} --shard-count \$\{\{ matrix\.shard_count \}\}/);
   assert.equal(lanes.verify_runner_e2e_support.length, 4, "Runner support suite should be 4-way sharded");
-  assert.equal(lanes.e2e_shards.length, 12, "E2E should be 12-way sharded");
+  assert.equal(lanes.e2e_shards.length, 16, "E2E should be 16-way sharded");
   const typecheck = workflow.split("\n  typecheck_release_registry:\n")[1].split("\n  general_tests:\n")[0];
   assert.match(typecheck, /fetch-depth: 2/);
   assert.match(typecheck, /CI_PLAN: \$\{\{ needs\.gate\.outputs\.plan \}\}/);
@@ -203,7 +282,7 @@ test("repository-wide guidance guards run uncached for every scanned UI file typ
     "server/src/__tests__/cli-invocation-safety.test.ts",
     "pnpm run test:release-registry",
   ]) assert.ok(fallback.includes(command), command);
-  const guidance = planLane({ buildGapPackages: [], testLayers: [] }).prepare.find((task) => task.name === "CLI guidance safety");
+  const guidance = planLane({ buildGapPackages: [], testLayers: [] }).tasks.find((task) => task.name === "CLI guidance safety");
   assert.deepEqual(guidance.args, ["exec", "vitest", "run", "--project", "@paperclipai/server", "server/src/__tests__/cli-invocation-safety.test.ts"]);
   assert.ok(!job.includes("uses: ./.github/actions/run-ci-task"));
 });
@@ -361,8 +440,56 @@ test("required aggregates reject omitted, failed and cancelled selected work", (
       assert.notEqual(failedGate.status, 0, `${id}: an absent routing output must not pass`);
       assert.match(failedGate.stderr, /CI routing must succeed/);
     }
-    assert.match(block, /^ {4}runs-on: \$\{\{ needs\.gate\.outputs\.runner \|\| 'ubuntu-latest' \}\}$/m,
-      `${id}: the always-run summary must have a runner when routing produces no output`);
+    assert.match(block, /^ {4}runs-on: ubuntu-slim$/m,
+      `${id}: the always-run summary runs on ubuntu-slim without booting a PR VM`);
+  }
+});
+
+test("pr-trusted skips pnpm/action-setup only when pre-baked pnpm matches package.json packageManager", () => {
+  const workflow = readFileSync(new URL(".github/workflows/pr-trusted.yml", root), "utf8");
+  const checkBlocks = [...workflow.matchAll(/      - name: Check preinstalled pnpm\n        id: pnpm_preinstalled\n(?:        if: [^\n]+\n)?        run: \|\n((?:          [^\n]+\n)+)/g)];
+  const setupMatches = workflow.match(/      - name: Setup pnpm\n        if: [^\n]*steps\.pnpm_preinstalled\.outputs\.hit != 'true'\n        uses: pnpm\/action-setup@/g) ?? [];
+  const allPnpmActions = workflow.match(/uses: pnpm\/action-setup@/g) ?? [];
+  assert.equal(allPnpmActions.length, 11);
+  assert.equal(checkBlocks.length, allPnpmActions.length);
+  assert.equal(setupMatches.length, allPnpmActions.length);
+  const script = checkBlocks[0][1].split("\n").map((line) => line.slice(10)).join("\n");
+  for (const [, body] of checkBlocks) {
+    assert.equal(body, checkBlocks[0][1], "all preinstalled pnpm checks must stay identical");
+    assert.doesNotMatch(body, /"9\.15\.4"/, "must compare against package.json packageManager, not a hardcoded version");
+  }
+  const dir = mkdtempSync(path.join(tmpdir(), "ci-pnpm-check-"));
+  try {
+    const binDir = path.join(dir, "home/setup-pnpm/node_modules/.bin");
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(path.join(binDir, "pnpm"), "#!/bin/sh\necho 9.15.4\n", { mode: 0o755 });
+    const run = (pkg, home) => {
+      const work = mkdtempSync(path.join(dir, "work-"));
+      writeFileSync(path.join(work, "package.json"), JSON.stringify(pkg));
+      const envFile = path.join(work, "env");
+      const pathFile = path.join(work, "path");
+      const outFile = path.join(work, "out");
+      writeFileSync(envFile, ""); writeFileSync(pathFile, ""); writeFileSync(outFile, "");
+      const res = spawnSync("bash", ["-e", "-c", script], {
+        cwd: work, encoding: "utf8",
+        env: { ...process.env, HOME: home, GITHUB_ENV: envFile, GITHUB_PATH: pathFile, GITHUB_OUTPUT: outFile },
+      });
+      assert.equal(res.status, 0, res.stderr);
+      return { env: readFileSync(envFile, "utf8"), path: readFileSync(pathFile, "utf8"), out: readFileSync(outFile, "utf8").trim() };
+    };
+    const home = path.join(dir, "home");
+    const hit = run({ packageManager: "pnpm@9.15.4" }, home);
+    assert.equal(hit.out, "hit=true");
+    assert.equal(hit.env.trim(), `PNPM_HOME=${binDir}`);
+    assert.equal(hit.path.trim(), binDir);
+    assert.equal(run({ packageManager: "pnpm@9.15.4+sha512.abc" }, home).out, "hit=true");
+    const bumped = run({ packageManager: "pnpm@9.15.5" }, home);
+    assert.equal(bumped.out, "hit=false");
+    assert.equal(bumped.env, "");
+    assert.equal(run({}, home).out, "hit=false");
+    assert.equal(run({ packageManager: "pnpm@9.15.4" }, path.join(dir, "empty-home")).out, "hit=false");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -426,7 +553,7 @@ else process.exit(3);
       else {
         assert.notEqual(value, "plan=", `${JSON.stringify(overrides)}: ${result.stderr}`);
         const resultPlan = JSON.parse(value.slice("plan=".length));
-        assert.equal(resultPlan.jobs.general_tests.selected, overrides.PROFILE_CI || overrides.STACK_JSON ? 27 : 2);
+        assert.equal(resultPlan.jobs.general_tests.selected, overrides.PROFILE_CI || overrides.STACK_JSON ? 28 : 2);
         assert.equal(resultPlan.diff.base, base);
         assert.deepEqual(resultPlan.changed, ["ui/src/components/Sidebar.tsx"]);
       }
