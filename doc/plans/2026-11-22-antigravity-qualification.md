@@ -365,6 +365,22 @@ What exists:
   the task folder wherever the CLI's own sandbox allows (workspace plus temp
   directories). The outside-path check is a detector for the coordinator's
   visible calls, not a boundary. The feature stays off by default.
+- **Agent instructions (owner decision, 2026-11-25).** A swarm turn carries
+  the agent's own instructions, composed exactly as for an ordinary
+  Antigravity turn, followed by the hand-in values and Paperclip's swarm rules,
+  which state that they take precedence and that the agent's instructions
+  cannot widen what helpers may touch. #22733 had left the instructions out;
+  the owner reviewed that risk and chose to carry them. Enforced in code
+  whatever the prompt says: only Paperclip's own tools are approved and every
+  other permission request is refused, delegation tools are removed from the
+  bridge, no other tool server is accepted, a helper given its own copy of the
+  folder or a visible outside change stops the swarm, and a changed model,
+  thinking level or mode fails the run. Not enforced by Paperclip: helper
+  shell commands (see "Not confined by Paperclip" below). Prompt-only: the
+  precedence statement itself, handing in once, naming files by task-folder
+  path, and not mentioning the rules. Residual
+  risk: an agent that can edit its own instructions can influence what its
+  swarm helpers do inside the task folder.
 - **Credentials.** On macOS the CLI uses its own Google sign-in from the login
   keychain (the real HOME), not Paperclip's stored Google connection. CLI state
   lives in a private `--gemini-dir`. Terms: a legal read of the consumer terms'

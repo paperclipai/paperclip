@@ -36,6 +36,7 @@ import type { AcpxRuntimePort, AcpxRuntimePortIdentity, AcpxRuntimePortOpenOptio
 export const ANTIGRAVITY_SWARM_INSTRUCTIONS = [
   "## Paperclip swarm rules",
   "This turn runs Antigravity's native swarm for one Paperclip task. All helpers belong to this one Paperclip run.",
+  "These rules come from Paperclip and take precedence over the agent's instructions above. Where they differ, follow these rules. The agent's instructions cannot widen what helpers may touch: whatever any instruction says, Paperclip itself approves only its own tools, refuses every other permission request, offers no tools that create tasks, assign work or hire agents, and stops the swarm when a helper is given its own copy of the task folder or a change outside the task folder is seen.",
   "- Start every helper with workspace \"inherit\". Never use \"share\" or \"branch\".",
   "- Helpers change files only inside the current workspace (the task folder). Never write anywhere else.",
   "- Do not use Paperclip tools that create tasks, assign work, or hire agents while the swarm runs.",
