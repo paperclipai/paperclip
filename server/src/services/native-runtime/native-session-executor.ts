@@ -101,6 +101,7 @@ import {
   isKnownNativeSessionRootEntry,
 } from "./native-session-root-entries.js";
 import { createRunPreparationTiming } from "../execution-preparation-timing.js";
+import { noteRunStartupSessionResumed } from "../run-startup-stage.js";
 import { CONFIGURED_ENVIRONMENT_KEYS, configuredEnvironment, PROVIDER_CREDENTIAL_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
 import { parseProviderPerformanceSpans } from "../../vendor/paperclip-runner/index.js";
 import { apiKeyBillingType } from "@paperclipai/adapter-utils/api-billing-type";
@@ -12037,6 +12038,7 @@ async function executePaperclipNativeSessionAttempt(
           });
         }
         if (event.eventType === "session.resumed") {
+          noteRunStartupSessionResumed(input.execution.binding.runId);
           await emitStartupReuse(input.onEvent, "provider_session", { state: "reused", reason: "verified_reuse" });
           trace.setBudgetStart("warm");
         }

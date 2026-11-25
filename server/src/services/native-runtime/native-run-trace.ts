@@ -16,6 +16,7 @@ import {
   type SpeedBudgetBreach,
   type SpeedBudgetStart,
 } from "./native-speed-budgets.js";
+import { noteRunStartupStep } from "../run-startup-stage.js";
 
 export const NATIVE_RUN_SPAN_EVENT_TYPE = "run.performance.span";
 export const NATIVE_RUN_TRACE_SCHEMA_VERSION = 3;
@@ -463,6 +464,7 @@ export function createNativeRunTrace(input: {
     } = {},
   ): NativeRunSpanScope => {
     const startedAtMs = finiteMs(options.startedAtMs ?? Date.now());
+    try { noteRunStartupStep(input.runId, name); } catch { /* Status display never fails the trace. */ }
     if (name === PROVIDER_SESSION_LOAD_SPAN) {
       providerLoadStartsMs.push(startedAtMs);
       // The measurement can arrive before its provider span is recorded; judge now.

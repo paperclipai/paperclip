@@ -3,6 +3,7 @@ import { withDatabaseOperation } from "@paperclipai/db";
 import { EXECUTION_PREPARATION_SPAN_ATTRS, getActiveStepContext, runWithRuntimeParent } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import { createHash } from "node:crypto";
 import { isSpanContextValid, ROOT_CONTEXT, SpanStatusCode, trace, type Context, type Span } from "@opentelemetry/api";
+import { noteRunStartupStep } from "./run-startup-stage.js";
 
 type PreparationPhase = "environment_selection" | "execution_configuration" | "session"
   | "agent_read" | "chat_completion" | "conversation" | "runtime_state" | "issue_context"
@@ -214,6 +215,8 @@ export function drainRunPreparationPhases(runId: string): RecordedPreparationPha
 
 function measure<T>(runId: string, name: string, work: () => T | Promise<T>, independent = false, counts: { fileCount?: number; bytes?: number } = {}, activeParent?: Context, recordRunId?: string): Promise<T> {
   const startedAtMs = Date.now();
+  // The board's startup status follows the same timed steps (run-startup-stage).
+  try { noteRunStartupStep(runId, name); } catch { /* Status display never fails the work. */ }
   const operation = measureTraced(runId, name, work, independent, counts, activeParent, recordRunId);
   // Only pre-dispatch preparation reaches the run log here; execution attempts
   // and runtime timings belong to the turn, not to the next attempt's prepare.

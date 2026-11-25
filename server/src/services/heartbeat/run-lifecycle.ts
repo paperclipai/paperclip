@@ -204,6 +204,8 @@ import {
   MAX_HEARTBEAT_RUN_RUNTIME_TOOL_NAME_CHARS,
   setHeartbeatRunRuntimeStatus,
 } from "../heartbeat-run-runtime-status.js";
+import { clearRunStartupStage, getRunStartupStage } from "../run-startup-stage.js";
+import type { RunStartupStage } from "@paperclipai/shared";
 import { readProcessStartedAt } from "../hot-restart.js";
 import { currentProcessSpaceHash } from "../controller-process-identity.js";
 
@@ -361,9 +363,12 @@ export function decorateHeartbeatRunRuntimeStatus<
   currentToolName: string | null;
   lastAssistantSnippet: string | null;
   lastEventAt: Date | null;
+  startupStage: RunStartupStage | null;
+  startupSessionResumed: boolean;
 } {
   if (isHeartbeatRunTerminalStatus(run.status)) {
     clearHeartbeatRunRuntimeStatus(run.id);
+    clearRunStartupStage(run.id);
   }
 
   const companyId = expected.companyId ?? run.companyId ?? null;
@@ -380,6 +385,10 @@ export function decorateHeartbeatRunRuntimeStatus<
           ...(issueId !== undefined ? { issueId } : {}),
         })
       : null;
+  const startup =
+    isHeartbeatRunRuntimeStatusActive(run.status)
+      ? getRunStartupStage(run.id, { companyId, agentId })
+      : null;
 
   return {
     ...run,
@@ -390,6 +399,8 @@ export function decorateHeartbeatRunRuntimeStatus<
     currentToolName: currentStatus?.currentToolName ?? null,
     lastAssistantSnippet: currentStatus?.lastAssistantSnippet ?? null,
     lastEventAt: currentStatus?.lastEventAt ?? null,
+    startupStage: startup?.stage ?? null,
+    startupSessionResumed: startup?.sessionResumed ?? false,
   };
 }
 

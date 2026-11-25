@@ -1117,10 +1117,27 @@ export const RUN_LIVENESS_STATES = [
 ] as const;
 export type RunLivenessState = (typeof RUN_LIVENESS_STATES)[number];
 
+/**
+ * Startup steps of a run between its claim and its first agent turn, in the
+ * order they happen on every execution environment. A run moves only forward
+ * through this list within one execution attempt. The board shows the current
+ * step instead of a generic "Thinking" until the agent's turn starts.
+ */
+export const RUN_STARTUP_STAGES = [
+  "getting_ready",
+  "starting_environment",
+  "preparing_workspace",
+  "restoring_session",
+  "connecting_tools",
+  "starting_agent",
+] as const;
+export type RunStartupStage = (typeof RUN_STARTUP_STAGES)[number];
+
 export const LIVE_EVENT_TYPES = [
   "heartbeat.run.queued",
   "heartbeat.run.status",
   "heartbeat.run.progress",
+  "heartbeat.run.startup_stage",
   "heartbeat.run.event",
   "heartbeat.run.log",
   "heartbeat.run.activity",
