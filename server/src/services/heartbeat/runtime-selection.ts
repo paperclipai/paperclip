@@ -88,7 +88,7 @@ import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../chat-control-recovery-st
 import { NATIVE_PREPARATION_FENCING_VERSION } from "../native-runtime/native-active-runs.js";
 import type { issueService } from "../issues.js";
 import { buildPlanReviewContext } from "../plan-review-context.js";
-import { normalizePaperclipWakePayload, renderedContinuationMessageRevisions, selectPaperclipTaskMarkdown } from "@paperclipai/adapter-utils/server-utils";
+import { normalizePaperclipWakePayload, selectPaperclipTaskMarkdown } from "@paperclipai/adapter-utils/server-utils";
 import type { ProviderResourceDisposition } from "../environment-runtime.js";
 import { stageNativeRuntimeSkillAssets, bindStagedNativeRuntimeSkillAssets } from "../native-runtime/runtime-skill-preservation.js";
 import { configuredSecretGuidance } from "../native-runtime/configured-secret-guidance.js";
@@ -340,6 +340,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     authorityCwd: sshAuthority?.location?.remoteCwd ?? null,
   });
   let nativeExecution: NativeExecutionInput | null = null;
+  // Delivered continuation messages per built task prompt, reported by the builder.
+  const deliveredContinuationByPrompt = new Map<string, Record<string, string>>();
   let toolRefreshOnResume: boolean | undefined;
   let getNativeFreshSessionHandoff: (() => Promise<string | null>) | undefined;
   let nativeRunnerInstanceId: string | null = null;
@@ -845,6 +847,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         });
       const buildExecution = ({ normalizedSessionId, resumedSession }: { normalizedSessionId: string; resumedSession: boolean }) =>
             buildNativeExecutionInput({
+              onDeliveredContinuationMessages: (prompt, delivered) => deliveredContinuationByPrompt.set(prompt, delivered),
               agentKeyId: agentIdentity?.keyId,
               companyId: agent.companyId,
               runId: run.id,
@@ -1083,17 +1086,13 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
               : {}),
             nativeExecutionInput:
               lockedProfile.nativeExecutionInput ?? nativeExecution,
-            // The continuation messages this turn's bounded prompt delivered
-            // whole. Queued-comment delivery trusts only these for a retry. A
-            // resumed session sends continuationPrompt instead of task.prompt,
-            // so read the prompt that is actually submitted; no block means
-            // nothing was delivered through the continuation.
+            // The continuation messages this turn delivered whole, as the input
+            // builder reported them from the structures it submits (the resume
+            // delta or the bounded bootstrap history). Queued-comment delivery
+            // trusts only these for a retry.
             nativeDeliveredContinuationMessages: lockedProfile.nativeExecutionInput
               ? lockedProfile.nativeDeliveredContinuationMessages ?? null
-              : renderedContinuationMessageRevisions(String(
-                  readNonEmptyString(parseObject(nativeExecution).continuationPrompt)
-                    ?? parseObject(parseObject(nativeExecution).task).prompt ?? "",
-                )) ?? {},
+              : deliveredContinuationByPrompt.get(String(parseObject(parseObject(nativeExecution).task).prompt ?? "")) ?? {},
             nativeToolRefreshOnResume: lockedProfile.nativeExecutionInput
               ? lockedProfile.nativeToolRefreshOnResume === true : toolRefreshOnResume === true,
             ...(typeof lockedProfile.inheritedProcessIdentityRunId === "string"

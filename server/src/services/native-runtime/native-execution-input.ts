@@ -34,10 +34,12 @@ import {
   resolveQualifiedAcpxProfile,
 } from "../../vendor/paperclip-runner/index.js";
 import {
+  continuationMessageRevisions,
   isPaperclipExternalChatContractTurn,
   isPaperclipExternalChatQuestionResponseTurn,
   selectPaperclipPromptSections,
 } from "@paperclipai/adapter-utils/server-utils";
+import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
 
 // One runner turn travels in a ~510 KiB PRP command. Keep the task prompt below
 // 400 KB, reserve room for the rest of the wake, and give history what remains.
@@ -53,6 +55,8 @@ const NATIVE_GITHUB_ATTACHMENT_RECOVERY_GUIDANCE = [
 
 /** Closed constructor: callers cannot spread legacy context or environment data. */
 export interface BuildNativeExecutionInput {
+  /** Receives the task prompt and the continuation messages it delivers whole. */
+  onDeliveredContinuationMessages?: (prompt: string, delivered: Record<string, string>) => void;
   companyId: string;
   runId: string;
   issue: {
@@ -226,6 +230,8 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
   const caseMarkdown = caseExecutionMarkdown(input.caseContext ?? null);
   const assignmentPrompt = caseMarkdown && !input.taskPrompt.includes(caseMarkdown)
     ? caseMarkdown + input.taskPrompt : input.taskPrompt;
+  // The bounded continuation the bootstrap prompt actually renders.
+  let renderedContinuation: ExecutionContinuationEnvelope | null = null;
   const { taskContextNote, wakePrompt } = selectPaperclipPromptSections({
     paperclipTaskMarkdownAssignment: assignmentPrompt,
     paperclipWake: bootstrapWakePayload,
@@ -238,6 +244,7 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
     boundContinuationForRunnerTurn: {
       maxBytes: Math.max(RUNNER_TURN_HISTORY_MIN_BYTES,
         RUNNER_TURN_PROMPT_MAX_BYTES - Buffer.byteLength(assignmentPrompt, "utf8") - RUNNER_TURN_WAKE_RESERVE_BYTES),
+      onBound: (continuation) => { renderedContinuation = continuation; },
     },
   });
   const externalChatTurn =
@@ -410,6 +417,23 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
     credentialBindings: [],
     runtimeContext: input.runtimeContext,
   };
+  // Report the messages this turn delivers whole, from the structures it sends:
+  // the compact resume delta when present, else the bounded bootstrap history.
+  if (input.onDeliveredContinuationMessages) {
+    const resumePrompt = (prepared as { continuationPrompt?: string | null }).continuationPrompt;
+    let delivered: Record<string, string> = {};
+    if (typeof resumePrompt === "string" && resumePrompt) {
+      try {
+        const events = JSON.parse(resumePrompt) as { messages?: unknown };
+        delivered = Array.isArray(events.messages) ? continuationMessageRevisions(events.messages) : {};
+      } catch {
+        delivered = {};
+      }
+    } else if (renderedContinuation) {
+      delivered = continuationMessageRevisions((renderedContinuation as ExecutionContinuationEnvelope).messages ?? []);
+    }
+    input.onDeliveredContinuationMessages(prepared.task.prompt, delivered);
+  }
   return parseNativeExecutionInput(input.provider === "muse" ? { ...prepared,
     schema: "paperclip.native-execution-input.v8", provider: { kind: "muse", model: null, binding: input.museBinding, bridgeRevision: "muse-v1" },
     workspace: { access: "none", cwd: null, repoUrl: null, repoRef: null, branchName: null },

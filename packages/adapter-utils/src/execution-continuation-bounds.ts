@@ -13,9 +13,11 @@ export const CONTINUATION_PROMPT_ACTIONS_MAX_BYTES = 64_000;
 export const CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES = 32_000;
 export const CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES = 64_000;
 export const CONTINUATION_PROMPT_RECOVERY_MAX_BYTES = 32_000;
+export const CONTINUATION_PROMPT_COMPLETED_WORK_MAX_BYTES = 32_000;
 /** Sum of the section budgets above; a smaller turn budget scales them down. */
 export const CONTINUATION_PROMPT_MAX_BYTES = CONTINUATION_PROMPT_MESSAGES_MAX_BYTES + CONTINUATION_PROMPT_ACTIONS_MAX_BYTES
-  + CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES + CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES + CONTINUATION_PROMPT_RECOVERY_MAX_BYTES;
+  + CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES + CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES + CONTINUATION_PROMPT_RECOVERY_MAX_BYTES
+  + CONTINUATION_PROMPT_COMPLETED_WORK_MAX_BYTES;
 /** A single long message keeps its start and its latest direction. */
 export const CONTINUATION_PROMPT_MESSAGE_BODY_MAX_CHARS = 16_000;
 /** A required message that still does not fit keeps a short excerpt. */
@@ -159,6 +161,7 @@ export function boundExecutionContinuationForPrompt(
     interactions: cap(CONTINUATION_PROMPT_INTERACTIONS_MAX_BYTES),
     responses: cap(CONTINUATION_PROMPT_HUMAN_RESPONSES_MAX_BYTES),
     recoveries: cap(CONTINUATION_PROMPT_RECOVERY_MAX_BYTES),
+    completedWork: cap(CONTINUATION_PROMPT_COMPLETED_WORK_MAX_BYTES),
   };
   const actions = continuation.completedActions ?? [];
   const outcomes = Array.isArray(continuation.interactionOutcomes) ? continuation.interactionOutcomes : [];
@@ -170,7 +173,8 @@ export function boundExecutionContinuationForPrompt(
   const outcomesFit = bytes(outcomes) <= caps.interactions;
   const responsesFit = bytes(responses) <= caps.responses;
   const recoveriesFit = bytes(recoveries) <= caps.recoveries;
-  if (messagesFit && actionsFit && outcomesFit && responsesFit && recoveriesFit) return continuation;
+  const completedWorkFits = bytes(continuation.completedWork) <= caps.completedWork;
+  if (messagesFit && actionsFit && outcomesFit && responsesFit && recoveriesFit && completedWorkFits) return continuation;
   const messages = messagesFit
     ? { messages: continuation.messages, omitted: 0, clipped: 0, oldestIncludedMessageId: continuation.messages[0]?.id ?? null }
     : boundMessages(continuation, caps.messages);
@@ -203,9 +207,15 @@ export function boundExecutionContinuationForPrompt(
 [content omitted; read the full request with get_task_history]
 ${continuation.objective.slice(-Math.ceil(objectiveMaxChars * 0.3))}`
     : continuation.objective;
+  // A worst-case summary escapes every character to six bytes.
+  const completedWorkMaxChars = Math.max(100, Math.floor(caps.completedWork / 6));
+  const completedWork = completedWorkFits || typeof continuation.completedWork !== "string"
+    ? continuation.completedWork
+    : `${continuation.completedWork.slice(0, Math.floor(completedWorkMaxChars * 0.7))} [summary shortened; the complete summary is in get_task_context with view=full] ${continuation.completedWork.slice(-Math.ceil(completedWorkMaxChars * 0.3))}`;
   return {
     ...continuation,
     objective,
+    completedWork,
     messages: messages.messages,
     ...(continuation.completedActions ? { completedActions: boundedActions.items } : {}),
     ...(Array.isArray(continuation.interactionOutcomes) ? { interactionOutcomes: boundedOutcomes.items } : {}),
@@ -222,6 +232,7 @@ ${continuation.objective.slice(-Math.ceil(objectiveMaxChars * 0.3))}`
         interactionOutcomes: boundedOutcomes.dropped + boundedOutcomes.compacted,
         humanResponses: boundedResponses.dropped + boundedResponses.compacted,
         recoveryOutcomes: boundedRecoveries.dropped + boundedRecoveries.compacted,
+        completedWork: completedWorkFits ? 0 : 1,
       },
     },
   };
@@ -236,6 +247,7 @@ export function continuationPromptOmissionNote(omitted: ContinuationPromptOmissi
     (omitted.interactionOutcomes ?? 0) > 0 ? `the results of ${omitted.interactionOutcomes} older interactions` : null,
     (omitted.humanResponses ?? 0) > 0 ? `the contents of ${omitted.humanResponses} older human answers` : null,
     (omitted.recoveryOutcomes ?? 0) > 0 ? `the decisions of ${omitted.recoveryOutcomes} older recovery actions` : null,
+    (omitted.completedWork ?? 0) > 0 ? "the middle of the completed-work summary" : null,
   ].filter((part): part is string => part !== null);
   return `This history is bounded to fit one turn: ${parts.join(", ")} are omitted here. `
     + "Earlier messages can be read with get_task_history (limit up to 200). The complete continuation, including every completed action, interaction, human answer and recovery decision with its recorded result, "
@@ -244,43 +256,11 @@ export function continuationPromptOmissionNote(omitted: ContinuationPromptOmissi
     + "An omitted action or result is still completed: do not repeat it.";
 }
 
-const CONTINUATION_SECTION_HEADING = "## Current request and continuation context";
-const NEWLINE = String.fromCharCode(10);
-
 /**
- * Revisions of the continuation messages a rendered prompt delivered whole.
- * The continuation block is fenced JSON; a clipped message carries
- * bodyTruncated and an omitted one is absent, so neither counts as delivered.
- * Returns null when the prompt has no continuation block.
+ * Revisions of the continuation messages a runner turn delivered whole: a
+ * clipped (bodyTruncated) or deleted message does not count.
  */
-export function renderedContinuationMessageRevisions(prompt: string): Record<string, string> | null {
-  // A resumed session submits the compact JSON delta; it delivers every
-  // message it lists whole.
-  if (prompt.trimStart().startsWith("{")) {
-    try {
-      const events = JSON.parse(prompt) as { messages?: unknown };
-      return Array.isArray(events.messages) ? messageRevisions(events.messages) : null;
-    } catch {
-      return null;
-    }
-  }
-  const start = prompt.indexOf(CONTINUATION_SECTION_HEADING);
-  if (start < 0) return null;
-  const lines = prompt.slice(start).split(NEWLINE);
-  const open = lines.findIndex((line) => /^`{3,}text$/.test(line));
-  if (open < 0) return null;
-  const fence = lines[open]!.slice(0, -"text".length);
-  const close = lines.findIndex((line, index) => index > open && line === fence);
-  if (close < 0) return null;
-  try {
-    const context = JSON.parse(lines.slice(open + 1, close).join(NEWLINE)) as { messages?: unknown };
-    return Array.isArray(context.messages) ? messageRevisions(context.messages) : null;
-  } catch {
-    return null;
-  }
-}
-
-function messageRevisions(messages: unknown[]): Record<string, string> {
+export function continuationMessageRevisions(messages: unknown[]): Record<string, string> {
   const revisions: Record<string, string> = {};
   for (const message of messages as Array<Record<string, unknown>>) {
     if (typeof message?.id !== "string" || typeof message.updatedAt !== "string") continue;
