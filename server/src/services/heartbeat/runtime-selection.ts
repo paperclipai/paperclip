@@ -1075,10 +1075,16 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             nativeExecutionInput:
               lockedProfile.nativeExecutionInput ?? nativeExecution,
             // The continuation messages this turn's bounded prompt delivered
-            // whole. Queued-comment delivery trusts only these for a retry.
+            // whole. Queued-comment delivery trusts only these for a retry. A
+            // resumed session sends continuationPrompt instead of task.prompt,
+            // so read the prompt that is actually submitted; no block means
+            // nothing was delivered through the continuation.
             nativeDeliveredContinuationMessages: lockedProfile.nativeExecutionInput
               ? lockedProfile.nativeDeliveredContinuationMessages ?? null
-              : renderedContinuationMessageRevisions(String(parseObject(parseObject(nativeExecution).task).prompt ?? "")),
+              : renderedContinuationMessageRevisions(String(
+                  readNonEmptyString(parseObject(nativeExecution).continuationPrompt)
+                    ?? parseObject(parseObject(nativeExecution).task).prompt ?? "",
+                )) ?? {},
             nativeToolRefreshOnResume: lockedProfile.nativeExecutionInput
               ? lockedProfile.nativeToolRefreshOnResume === true : toolRefreshOnResume === true,
             ...(typeof lockedProfile.inheritedProcessIdentityRunId === "string"

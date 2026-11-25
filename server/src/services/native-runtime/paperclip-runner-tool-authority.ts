@@ -1896,10 +1896,20 @@ export class PaperclipRunnerToolAuthority {
    * the run's continuation records its messages as read, like get_task_history,
    * so queued delivery does not replay a message the agent recovered here.
    */
+  // Next unread offset per full-context digest. Only a read that fetched every
+  // page in order from offset 0 counts as having read the whole history.
+  #fullContextCoverage = new Map<string, number>();
+
   async #fullContextPage(taskContext: Record<string, unknown>, input: Record<string, unknown>) {
     const page = nativeTaskContextPage(taskContext, input);
+    if (!("jsonText" in page) || typeof page.contextDigest !== "string") return page;
+    const digest = page.contextDigest;
+    const offset = Number(page.offset ?? 0);
+    const contiguous = offset === 0 || this.#fullContextCoverage.get(digest) === offset;
+    if (contiguous && page.nextOffset !== null) this.#fullContextCoverage.set(digest, page.nextOffset);
     const messages = (taskContext.executionContinuation as { messages?: unknown } | undefined)?.messages;
-    if ("nextOffset" in page && page.nextOffset === null && Array.isArray(messages)) {
+    if (contiguous && page.nextOffset === null && Array.isArray(messages)) {
+      this.#fullContextCoverage.delete(digest);
       const comments = (messages as Array<Record<string, unknown>>).flatMap((message) => {
         const updatedAt = typeof message?.updatedAt === "string" ? new Date(message.updatedAt) : null;
         return typeof message?.id === "string" && message.deleted !== true && updatedAt && !Number.isNaN(updatedAt.getTime())
