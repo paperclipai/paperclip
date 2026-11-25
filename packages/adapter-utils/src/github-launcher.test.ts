@@ -526,3 +526,67 @@ it.each([401, 403])("does not wait when the task broker denies the capability (%
   expect(requests).toBe(1);
   expect(Date.now() - started).toBeLessThan(3000);
 });
+
+it("keeps intentionally anonymous launchers silent on git and gh operations while isolating ambient credentials", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-github-anonymous-silent-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, "managed"), real = path.join(root, "real"), repo = path.join(root, "repo");
+  await mkdir(bin); await mkdir(real);
+  await exec("git", ["init", "-q", repo]);
+  for (const name of ["git", "gh"]) {
+    await writeFile(path.join(bin, name), githubLauncherSource({ anonymous: true }), { mode: 0o700 });
+  }
+  await writeFile(path.join(real, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(process.env.GH_TOKEN || "anonymous");\n', { mode: 0o700 });
+  const env = { ...process.env, ...githubBrokerEnvironment({
+    GH_TOKEN: "ambient-secret", GIT_AUTHOR_NAME: "Ambient", GIT_AUTHOR_EMAIL: "ambient@example.test",
+  }, { url: "", token: "" }), PATH: `${bin}:${real}:${process.env.PATH}` };
+  const ghResult = await exec(path.join(bin, "gh"), ["auth", "status"], { env });
+  expect(ghResult.stdout).toBe("anonymous");
+  expect(ghResult.stderr).toBe("");
+  const commitResult = await exec(path.join(bin, "git"), ["-C", repo, "commit", "--allow-empty", "-qm", "Anonymous local work"], { env });
+  expect(commitResult.stderr).toBe("");
+  expect((await exec("git", ["-C", repo, "log", "-1", "--format=%an <%ae>"])).stdout.trim()).toBe("Paperclip <noreply@paperclip.ing>");
+});
+
+it("keeps broker-file launchers silent only when broker.json explicitly marks anonymous mode", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-task-github-anonymous-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, "managed"), real = path.join(root, "real");
+  await mkdir(bin); await mkdir(real);
+  await writeFile(path.join(bin, "gh"), githubLauncherSource({ brokerFile: true }), { mode: 0o700 });
+  await writeFile(path.join(real, "gh"), '#!/usr/bin/env node\nprocess.stdout.write(process.env.GH_TOKEN || "anonymous");\n', { mode: 0o700 });
+  const env = { ...process.env, PATH: `${bin}:${real}:${process.env.PATH}`, GH_TOKEN: "ambient-secret" };
+  await writeFile(path.join(bin, "broker.json"), JSON.stringify({ anonymous: true, url: "", token: "" }));
+  const anonymousResult = await exec(path.join(bin, "gh"), ["auth", "status"], { env });
+  expect(anonymousResult.stdout).toBe("anonymous");
+  expect(anonymousResult.stderr).toBe("");
+  // A failed bridge publishes empty url/token without anonymous:true and still reports capability_missing.
+  await writeFile(path.join(bin, "broker.json"), JSON.stringify({ url: "", token: "" }));
+  const failedBridgeResult = await exec(path.join(bin, "gh"), ["auth", "status"], { env });
+  expect(failedBridgeResult.stdout).toBe("anonymous");
+  expect(failedBridgeResult.stderr).toContain("capability_missing");
+});
+
+it.each(["--version", "--help", "-h", "version", "help"])(
+  "runs local gh %j without calling the broker or reporting missing capabilities",
+  async (arg) => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-gh-local-"));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const bin = path.join(root, "managed"), real = path.join(root, "real");
+    await mkdir(bin); await mkdir(real);
+    await writeFile(path.join(bin, "gh"), githubLauncherSource(), { mode: 0o700 });
+    await writeFile(path.join(real, "gh"), '#!/usr/bin/env node\nprocess.stdout.write("gh-local-ok");\n', { mode: 0o700 });
+    let requests = 0;
+    const server = createServer((_req, res) => { requests++; res.writeHead(500); res.end(); });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    cleanups.push(() => new Promise<void>(resolve => server.close(() => resolve())));
+    const { port } = server.address() as { port: number };
+    for (const broker of [{ url: "", token: "" }, { url: `http://127.0.0.1:${port}`, token: "run-capability" }]) {
+      const env = { ...process.env, ...githubBrokerEnvironment({}, broker), PATH: `${bin}:${real}:${process.env.PATH}` };
+      const result = await exec(path.join(bin, "gh"), [arg], { env });
+      expect(result.stdout).toBe("gh-local-ok");
+      expect(result.stderr).toBe("");
+    }
+    expect(requests).toBe(0);
+  },
+);

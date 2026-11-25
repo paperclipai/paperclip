@@ -100,7 +100,10 @@ describe("the Runner image an application image build copies in docker.yml", () 
       "CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}",
     ],
     buildContexts: [],
-    labels: ["${{ steps.meta.outputs.labels }}"],
+    labels: [
+      "${{ steps.meta.outputs.labels }}",
+      "${{ steps.cache-policy.outputs.cache_label }}",
+    ],
   };
 
   it("runs only when the repository variable has the enabling value, in the canonical repository, and not otherwise", () => {
