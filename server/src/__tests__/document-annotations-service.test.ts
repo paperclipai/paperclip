@@ -1071,11 +1071,50 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
   });
 
   it("bounds question reaction wakes across many distinct comments by pending backlog and per-window cap", async () => {
-    const { companyId, issueId, thread, comment, userId } = await setupAssignedAnnotatedIssue();
+    const { companyId, issueId, thread, comment, agentId, userId, queue } = await setupAssignedAnnotatedIssue();
     const actor = { actorType: "user" as const, actorId: userId, userId };
     const comments = [comment];
     for (let i = 0; i < 4; i += 1) {
       comments.push(await annotations.addComment(issueId, "plan", thread.id, { body: `Follow-up ${i + 1}` }, actor));
+    }
+
+    async function admitAndFinishQuestionWake(commentId: string, requestId: string) {
+      const run = await queue.trackWakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: {
+          issueId,
+          annotationCommentId: commentId,
+          annotationThreadId: thread.id,
+          annotationReaction: "question",
+          mutation: "annotation_reaction",
+        },
+        allowRunCoalescing: false,
+        executionWaitRequestId: requestId,
+        requestedByActorType: "user",
+        requestedByActorId: userId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          annotationCommentId: commentId,
+          annotationThreadId: thread.id,
+          annotationReaction: "question",
+          annotationReactionUserId: userId,
+          source: "issue.document_annotation_reaction",
+          wakeReason: "issue_commented",
+        },
+      });
+      expect(run).not.toBeNull();
+      await db.update(heartbeatRuns)
+        .set({ status: "succeeded", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, run!.id));
+      await db.update(agentWakeupRequests)
+        .set({ status: "completed", finishedAt: new Date() })
+        .where(eq(agentWakeupRequests.runId, run!.id));
+      await db.update(issues)
+        .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
+        .where(eq(issues.id, issueId));
     }
 
     // While the first question wake is still pending, questioning additional distinct comments creates no extra wakes.
@@ -1100,9 +1139,10 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     expect(secondWhilePending.questionWakeRequestId).toBeNull();
     expect(secondWhilePending.questionWakeSuppressed).toBe(true);
 
-    // Even as each wake finishes, the rolling per-issue per-actor cap bounds distinct comments to 3 wakes per window.
-    await db.update(agentWakeupRequests).set({ status: "completed" }).where(eq(agentWakeupRequests.id, first.questionWakeRequestId!));
-    const third = await annotations.setCommentReaction({
+    // Normal admission coalesces the original receipt into a new primary wake row; both rows must count as ONE wake
+    // so the rolling 3-per-10-minute allowance still permits 3 full question wakes before suppressing the 4th.
+    await admitAndFinishQuestionWake(comments[0]!.id, first.questionWakeRequestId!);
+    const secondWake = await annotations.setCommentReaction({
       target: { kind: "issue", issueId, key: "plan" },
       threadId: thread.id,
       commentId: comments[2]!.id,
@@ -1110,10 +1150,10 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
       present: true,
       actor,
     });
-    expect(third.questionWakeRequestId).toEqual(expect.any(String));
-    await db.update(agentWakeupRequests).set({ status: "completed" }).where(eq(agentWakeupRequests.id, third.questionWakeRequestId!));
+    expect(secondWake.questionWakeRequestId).toEqual(expect.any(String));
+    await admitAndFinishQuestionWake(comments[2]!.id, secondWake.questionWakeRequestId!);
 
-    const fourth = await annotations.setCommentReaction({
+    const thirdWake = await annotations.setCommentReaction({
       target: { kind: "issue", issueId, key: "plan" },
       threadId: thread.id,
       commentId: comments[3]!.id,
@@ -1121,10 +1161,11 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
       present: true,
       actor,
     });
-    expect(fourth.questionWakeRequestId).toEqual(expect.any(String));
-    await db.update(agentWakeupRequests).set({ status: "completed" }).where(eq(agentWakeupRequests.id, fourth.questionWakeRequestId!));
+    expect(thirdWake.questionWakeSuppressed).toBe(false);
+    expect(thirdWake.questionWakeRequestId).toEqual(expect.any(String));
+    await admitAndFinishQuestionWake(comments[3]!.id, thirdWake.questionWakeRequestId!);
 
-    const fifthCapped = await annotations.setCommentReaction({
+    const fourthCapped = await annotations.setCommentReaction({
       target: { kind: "issue", issueId, key: "plan" },
       threadId: thread.id,
       commentId: comments[4]!.id,
@@ -1132,12 +1173,13 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
       present: true,
       actor,
     });
-    expect(fifthCapped.changed).toBe(true);
-    expect(fifthCapped.questionWakeRequestId).toBeNull();
-    expect(fifthCapped.questionWakeSuppressed).toBe(true);
+    expect(fourthCapped.changed).toBe(true);
+    expect(fourthCapped.questionWakeRequestId).toBeNull();
+    expect(fourthCapped.questionWakeSuppressed).toBe(true);
 
-    const allWakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
-    expect(allWakes).toHaveLength(3);
+    const originalReceipts = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId)))
+      .filter((row) => row.idempotencyKey?.startsWith("annotation-question-reaction:"));
+    expect(originalReceipts).toHaveLength(3);
   });
 
   it("fails closed when an annotation delta comment id points at a different issue", async () => {

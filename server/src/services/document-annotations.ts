@@ -36,6 +36,7 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 
 const ANNOTATION_QUESTION_WAKE_WINDOW_MS = 10 * 60 * 1000;
 const ANNOTATION_QUESTION_WAKE_MAX_PER_WINDOW = 3;
+const ANNOTATION_QUESTION_REACTION_KEY_PREFIX = "annotation-question-reaction:";
 
 type ActorInput = {
   actorType: "agent" | "user";
@@ -1003,6 +1004,7 @@ export function documentAnnotationService(db: Db) {
                 eq(agentWakeupRequests.requestedByActorType, "user"),
                 eq(agentWakeupRequests.requestedByActorId, input.actor.actorId),
                 gte(agentWakeupRequests.requestedAt, windowStart),
+                sql`${agentWakeupRequests.idempotencyKey} like ${ANNOTATION_QUESTION_REACTION_KEY_PREFIX + "%"}`,
                 sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
                 sql`${agentWakeupRequests.payload}->>'mutation' = 'annotation_reaction'`,
               ))
@@ -1025,7 +1027,7 @@ export function documentAnnotationService(db: Db) {
               status: "deferred_issue_execution",
               requestedByActorType: "user",
               requestedByActorId: input.actor.actorId,
-              idempotencyKey: `annotation-question-reaction:${changedRows[0]!.id}`,
+              idempotencyKey: `${ANNOTATION_QUESTION_REACTION_KEY_PREFIX}${changedRows[0]!.id}`,
               payload: {
                 issueId: issue.id,
                 annotationCommentId: comment.id,
