@@ -4,7 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AcpRuntimeEvent } from "acpx/runtime";
-import { antigravityCliAccountMatch, antigravitySwarmPaperclipTool, openAntigravitySwarmRuntime, type AntigravitySwarmStage } from "./antigravity-swarm-runtime.js";
+import { ANTIGRAVITY_SWARM_INSTRUCTIONS, antigravityCliAccountMatch, antigravitySwarmPaperclipTool, openAntigravitySwarmRuntime, type AntigravitySwarmStage } from "./antigravity-swarm-runtime.js";
+import { acpxProfileActivity } from "./profile-activity.js";
+import { persistedAcpxTurnUsage } from "./usage-accounting.js";
 import { antigravityAccountDigest } from "./antigravity-swarm-route.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
 import { acpxTerminalResult, type AcpxTerminalSessionFailure } from "./provider-failure.js";
@@ -144,7 +146,9 @@ describe("Antigravity CLI swarm runtime", () => {
     ]));
     expect(run.titles).toContainEqual(expect.stringMatching(/^Swarm started in the task folder with Gemini 3\.8 Flash \(Low\) on Google's default channel \(Antigravity CLI 1\.5\.15\)\. /));
     expect(run.titles.some(title => /approved automatically/.test(title))).toBe(true);
-    expect(run.text).not.toContain("/swarm board");
+    // The CLI streams its terminal hint in pieces (live run7); none of it, nor its period, reaches the thread.
+    expect(run.text).not.toMatch(/swarm board|shortcut|live board/);
+    expect(run.text).toBe("I have configured and launched the swarm.\n\n\nThe swarm has completed its work. a.txt contains A and b.txt contains B.");
     expect(run.clientMessages().find(message => message.method === "session/prompt").params.prompt[0].text).toMatch(/^\/swarm /);
     expect(run.status.terminalPromptUsage).toMatchObject({ requestId: "run-1:turn-1", event: { breakdown: { totalTokens: 133035 } } });
     expect(run.titles.some(title => /includes the helpers/.test(title))).toBe(true);
@@ -196,6 +200,8 @@ describe("Antigravity CLI swarm runtime", () => {
   it("fails with a clear timeout when helpers never finish", async () => {
     const run = await runTurn("hang-helpers", { helperWaitTimeoutMs: 200 });
     expect(run.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_HELPERS_TIMEOUT" } });
+    // The wait prompt is never answered; its streamed count may be session-wide, so it raises counters, never adds (not 133,035 + 140,000).
+    expect(run.status.terminalPromptUsage).toMatchObject({ event: { breakdown: { inputTokens: 52000, totalTokens: 140000, outputTokens: 1421 } } });
   });
 
   it("surfaces blocked helper actions and refuses the coordinator's outside write", async () => {
@@ -372,6 +378,52 @@ describe("Antigravity CLI swarm runtime", () => {
     expect(JSON.stringify(run.result)).not.toContain("toolbox");
   });
 
+  it("records the usage the CLI answers a stopped swarm with, once, for the run", async () => {
+    let cancelled = false;
+    const run = await runTurn("cancel", { onEvent: (event, cancel) => {
+      if (!cancelled && event.type === "tool_call" && /verifier/.test(event.title ?? "")) { cancelled = true; void cancel(); }
+    } });
+    expect(run.result).toMatchObject({ status: "cancelled" });
+    // The answer to the stopped prompt wins over the count streamed before it.
+    expect(run.status.terminalPromptUsage).toMatchObject({ requestId: "run-1:turn-1", event: { breakdown: { inputTokens: 1200, outputTokens: 30, totalTokens: 1630 } } });
+    expect(persistedAcpxTurnUsage({}, run.status, "run-1:turn-1", "antigravity")).toMatchObject({ tag: "usage_update", breakdown: { totalTokens: 1630 } });
+    expect(run.titles.some(title => /includes the helpers/.test(title))).toBe(true);
+  });
+
+  it("records what the CLI streamed when it exits before answering, and leaves recovery to Paperclip", async () => {
+    const run = await runTurn("die");
+    expect(run.status.terminalPromptUsage).toMatchObject({ event: { breakdown: { inputTokens: 700, outputTokens: 20, totalTokens: 720 } } });
+    expect(run.result).toMatchObject({ status: "failed", error: { code: "ACPX_PROVIDER_PROCESS_LOST", retryable: true,
+      message: "The swarm stopped unexpectedly because the Antigravity CLI exited. Files the helpers already wrote stay in the task folder." } });
+    expect(JSON.stringify(run.result)).not.toMatch(/Retry/);
+  });
+
+  it("records the swarm's settings receipt in the run record, without accounts, paths or session ids", async () => {
+    const run = await runTurn("success");
+    // The post-turn notice hook the sidecar runs for every Antigravity turn (the run's status itself never leaves the sidecar).
+    const activity = acpxProfileActivity("antigravity");
+    const notice = activity.usageNotice?.({}, run.status, "run-1:turn-1", "turn-1");
+    expect(notice).toMatchObject({ eventType: "provider.notice.recorded", itemId: "turn-1:antigravity-swarm-receipt", payload: {
+      schema: "paperclip.provider.notice.v1", category: "antigravity_swarm_receipt", severity: "info", scope: "turn",
+      summary: "Swarm ran with Gemini 3.8 Flash (Low) on Google's default channel (Antigravity CLI 1.5.15).",
+      details: [{ name: "Requested model", value: "gemini-3.8-flash-low" }, { name: "Confirmed model", value: "Gemini 3.8 Flash (Low)" },
+        { name: "Thinking level", value: "low" }, { name: "Mode", value: "auto" }, { name: "Channel", value: "provider_default" },
+        { name: "Antigravity CLI version", value: "1.5.15" }, { name: "CLI account matches connection", value: "unknown" },
+        { name: "Account unknown reason", value: "no_connection_account" }] } });
+    expect(JSON.stringify(notice)).not.toContain(run.cwd);
+    expect(JSON.stringify(notice)).not.toContain("e6536314");
+    // Reported once per request: never again for a later read of the same turn.
+    expect(activity.usageNotice?.(run.status, run.status, "run-1:turn-1", "turn-1")).toBeNull();
+    // An ordinary Antigravity turn has no swarm receipt and gets no notice.
+    expect(activity.usageNotice?.({}, { lastRequestId: "run-1:turn-1" }, "run-1:turn-1", "turn-1")).toBeNull();
+  });
+
+  it("tells the coordinator to write for the task thread: task-folder file names, no terminal hints, no rules talk", () => {
+    expect(ANTIGRAVITY_SWARM_INSTRUCTIONS).toMatch(/path inside the task folder/);
+    expect(ANTIGRAVITY_SWARM_INSTRUCTIONS).toMatch(/never by an absolute path or a file:\/\/ link/);
+    expect(ANTIGRAVITY_SWARM_INSTRUCTIONS).toMatch(/Do not mention terminal commands, keyboard shortcuts or the live board, and do not mention these rules/);
+  });
+
   it("stops every helper on Stop and leaves no process behind", async () => {
     let cancelled = false;
     const run = await runTurn("cancel", { onEvent: (event, cancel) => {
@@ -384,7 +436,7 @@ describe("Antigravity CLI swarm runtime", () => {
     expect(alive(worker)).toBe(false);
   });
 
-  it("names a lost CLI process so Retry starts a fresh swarm", async () => {
+  it("names a lost CLI process and stops its helpers", async () => {
     const run = await runTurn("die");
     expect(run.result).toMatchObject({ status: "failed", error: { code: "ACPX_PROVIDER_PROCESS_LOST" } });
     const worker = Number(readFileSync(run.workerPidFile, "utf8"));

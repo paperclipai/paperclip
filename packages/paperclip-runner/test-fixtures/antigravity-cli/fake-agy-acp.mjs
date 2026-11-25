@@ -9,8 +9,9 @@
 //                  also asks the client to approve an outside write
 //   misreport      writer-b is reported done but b.txt was never written
 //   escape         a helper is started on its own branch workspace
-//   cancel         helpers keep running (a real child process) until session/cancel
-//   die            the CLI exits in the middle of the swarm
+//   cancel         helpers keep running (a real child process) until session/cancel; the CLI
+//                  streams a token count, then answers the stopped prompt with its usage so far
+//   die            the CLI streams a token count, then exits in the middle of the swarm
 //   refusal        the provider refusal arrives as ordinary text with end_turn
 //   quota          the 429 quota refusal, as seen live on 2026-11-24
 //   wrong-version | no-auto | wrong-mode | wrong-model   receipt mismatches
@@ -90,6 +91,9 @@ const paperclipCall = async tool => {
 };
 const handIn = () => paperclipCall("paperclip_finish");
 const say = text => update(state.sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text } });
+// Usage the CLI streams mid-prompt, and the usage it answers a stopped prompt with.
+const streamedUsage = { inputTokens: 700, outputTokens: 20, cachedReadTokens: 0, cachedWriteTokens: 0, thoughtTokens: 0, totalTokens: 720 };
+const stoppedUsage = { inputTokens: 1200, outputTokens: 30, cachedReadTokens: 400, cachedWriteTokens: 0, thoughtTokens: 0, totalTokens: 1630 };
 const usage = { inputTokens: 49646, outputTokens: 1421, cachedReadTokens: 81968, cachedWriteTokens: 0, thoughtTokens: 0, totalTokens: 133035 };
 const addWriters = async () => {
   await tool("swarm", { action: "title", title: "Two writers and a verifier" });
@@ -136,6 +140,8 @@ async function prompt(id, params) {
   const text = params.prompt?.[0]?.text ?? "";
   if (state.prompts > 1) {
     // Paperclip's follow-up: wait for the helpers, then confirm.
+    // A session-wide token count streamed while the wait hangs (larger than the first prompt's answer).
+    if (scenario === "hang-helpers") update(state.sessionId, { sessionUpdate: "usage_update", used: 60000, size: 1048576, _meta: { usage: { ...usage, inputTokens: 52000, totalTokens: 140000 } } });
     if (scenario === "hang-helpers") { await new Promise(resolve => { state.cancel = resolve; }); return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } }); }
     await tool("read_board", { since: 5 });
     if (scenario === "live-helpers") { writeFiles(); await handIn(); }
@@ -177,15 +183,16 @@ async function prompt(id, params) {
     }
     if (!await writePlan(planPath())) return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
   }
-  say("I have configured and launched the swarm.\n\nRun /swarm board (default shortcut alt+s) to open the live board.");
+  // The terminal hint arrives in pieces, as recorded live: the hint complete without its period, then the period alone.
+  for (const chunk of ["I have configured and launched the swarm.\n", "\nRun /swarm board (default shortcut alt+s) to open the live board", "."]) say(chunk);
   if (scenario === "cancel" || scenario === "die") {
+    update(state.sessionId, { sessionUpdate: "usage_update", used: 52000, size: 1048576, _meta: { usage: streamedUsage } });
     // A helper is a real descendant in the CLI's process group.
     state.worker = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
     if (process.env.FAKE_AGY_WORKER_PID_FILE) writeFileSync(process.env.FAKE_AGY_WORKER_PID_FILE, String(state.worker.pid));
     if (scenario === "die") { await sleep(50); process.exit(3); }
-    if (state.cancelled) return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
     if (!state.cancelled) await new Promise(resolve => { state.cancel = resolve; });
-    return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
+    return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled", usage: stoppedUsage } });
   }
   if (scenario === "live-helpers" || scenario === "hang-helpers") return write({ jsonrpc: "2.0", id, result: { stopReason: "end_turn", usage } });
   if (scenario === "misreport") writeFileSync(join(state.cwd, "a.txt"), "A"); else writeFiles();

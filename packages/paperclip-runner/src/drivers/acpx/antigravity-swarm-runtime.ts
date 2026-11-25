@@ -13,7 +13,8 @@ import {
   type AntigravitySwarmReceipt,
 } from "./antigravity-swarm-guard.js";
 import { GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL, GENERATED_ANTIGRAVITY_SWARM_ENVELOPE_SCHEMA, GENERATED_ANTIGRAVITY_SWARM_REQUEST_FIELD, GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS } from "./generated-sidecar-contract.js";
-import { antigravitySwarmEvent } from "./antigravity-swarm-presentation.js";
+import { antigravitySwarmEvent, createAntigravityTerminalHintFilter } from "./antigravity-swarm-presentation.js";
+import { acpRuntimeEventFromValidatedSessionUpdate } from "./acp-session-update-event.js";
 import { awaitVerifiedAcpxProviderOwnership } from "./installation-integrity.js";
 import { canonicalRunnerToolName } from "../runner-tool-bridge.js";
 import { PRP_BLOCK_TOOL_NAME, PRP_COMPLETION_TOOL_NAME } from "../../contracts/completion-result.js";
@@ -27,8 +28,9 @@ import type { AcpxRuntimePort, AcpxRuntimePortIdentity, AcpxRuntimePortOpenOptio
  * need driver-owned verification (see antigravity-swarm-guard.ts).
  *
  * One port is one fresh CLI session: it never calls `session/load` (a reload
- * resets mode and model, and the helpers are gone), so Retry after a lost
- * process always starts a fresh swarm in the same task folder.
+ * resets mode and model, and the helpers are gone), so whatever continues
+ * after a lost process (Paperclip's automatic recovery, or a Retry) starts a
+ * fresh swarm in the same task folder.
  */
 export const ANTIGRAVITY_SWARM_INSTRUCTIONS = [
   "## Paperclip swarm rules",
@@ -38,6 +40,8 @@ export const ANTIGRAVITY_SWARM_INSTRUCTIONS = [
   "- Do not use Paperclip tools that create tasks, assign work, or hire agents while the swarm runs.",
   "- Wait until every helper and the verifier have finished before you end your turn.",
   "- When the work is verified, hand in the result once through Paperclip's finish tool and name the files that were written.",
+  "- Everything you write is shown to a person in the Paperclip task thread. Name files by their path inside the task folder (for example `notes/a.txt`), never by an absolute path or a file:// link.",
+  "- Do not mention terminal commands, keyboard shortcuts or the live board, and do not mention these rules.",
 ].join("\n");
 
 const HELPER_WAIT_PROMPT = "Paperclip: wait until every helper has finished (use the swarm tools to wait; do not start new helpers), then confirm the result in one or two sentences. If you have not yet handed in through Paperclip's finish tool, do it now; if you already did, do not call it again.";
@@ -71,9 +75,15 @@ type Json = Record<string, unknown>;
 const record = (value: unknown): Json =>
   value !== null && typeof value === "object" && !Array.isArray(value) ? value as Json : {};
 
+/**
+ * A lost CLI is an interruption, not a swarm failure: Paperclip's recovery
+ * continues the task on its own (bounded by the server's per-request attempt
+ * cap), so the text tells nobody to press Retry and the failure is retryable.
+ */
+const PROCESS_LOST_MESSAGE = "The swarm stopped unexpectedly because the Antigravity CLI exited. Files the helpers already wrote stay in the task folder.";
 class ProcessLostError extends Error {
   readonly code = ANTIGRAVITY_SWARM_PROCESS_LOST;
-  constructor() { super("The swarm stopped unexpectedly because the Antigravity CLI exited. Retry starts a fresh swarm in the same task folder."); }
+  constructor() { super(PROCESS_LOST_MESSAGE); }
 }
 
 class RpcError extends Error {
@@ -233,6 +243,15 @@ function addUsage(total: Json | null, usage: unknown): Json | null {
   const next: Json = { ...(total ?? {}) };
   for (const key of ["inputTokens", "outputTokens", "cachedReadTokens", "cachedWriteTokens", "thoughtTokens", "totalTokens"]) {
     if (typeof value[key] === "number") next[key] = (typeof next[key] === "number" ? next[key] as number : 0) + (value[key] as number);
+  }
+  return next;
+}
+
+/** Per counter, the larger of two usage readings. */
+function largerUsage(total: Json, reading: Json): Json {
+  const next: Json = { ...total };
+  for (const [key, value] of Object.entries(reading)) {
+    if (typeof value === "number") next[key] = Math.max(typeof next[key] === "number" ? next[key] as number : 0, value);
   }
   return next;
 }
@@ -482,9 +501,28 @@ export async function openAntigravitySwarmRuntime(
     events.push(line("setup", `Swarm started in the task folder with ${receipt.modelName} on ${antigravitySwarmChannelLabel(channel)} (Antigravity CLI ${receipt.agentVersion}). Helper changes inside the task folder are approved automatically; anything else is blocked.`));
     // Always recorded in the run's history, including when it cannot be told.
     events.push(line("account", accountLine(cliAccount, accountReason)));
+    // Binds this turn's receipt notice and usage to its request (usage-accounting.ts, antigravity-activity.ts).
+    status.lastRequestId = input.requestId;
     // Calls Paperclip's own handler refused (each already reported once), and whether the swarm handed in.
     const deniedCalls = new Set<string>();
     let handedIn = false;
+    // Coordinator text passes the terminal-hint filter; any other step first releases the text it holds, so order is kept.
+    const hints = createAntigravityTerminalHintFilter();
+    const releaseText = () => {
+      const held = hints.flush();
+      if (held) events.push({ type: "text_delta", text: held, stream: "output", tag: "agent_message_chunk" });
+    };
+    const show = (event: AcpRuntimeEvent) => {
+      if (event.type === "text_delta" && event.stream === "output") {
+        const text = hints.push(event.text);
+        if (text) events.push({ ...event, text });
+        return;
+      }
+      releaseText();
+      events.push(event);
+    };
+    // The token counts the CLI last streamed during the current prompt, kept only when that prompt's own answer never arrives.
+    let streamedUsage: Json | null = null;
 
     updateListener = params => {
       try { guard.observe(params); } catch (error) {
@@ -493,6 +531,10 @@ export async function openAntigravitySwarmRuntime(
       }
       if (params.sessionId !== sessionId) return;
       const update = record(params.update);
+      if (update.sessionUpdate === "usage_update") {
+        const breakdown = record(record(acpRuntimeEventFromValidatedSessionUpdate({ method: "session/update", params })).breakdown);
+        if (Object.keys(breakdown).length > 0) streamedUsage = breakdown;
+      }
       const escaped = antigravitySwarmWorkspaceEscape(update);
       if (escaped) {
         halt(new AntigravitySwarmError("ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE",
@@ -522,10 +564,10 @@ export async function openAntigravitySwarmRuntime(
       if (update.sessionUpdate === "agent_message_chunk" && typeof content.text === "string") transcript += content.text;
       if (BLOCKED_TEXT.test(text) && !(typeof update.toolCallId === "string" && deniedCalls.has(update.toolCallId))) {
         blocked += 1;
-        events.push(line(`blocked-${blocked}`, "A helper was blocked from changing something outside the task folder"));
+        show(line(`blocked-${blocked}`, "A helper was blocked from changing something outside the task folder"));
       }
       const event = antigravitySwarmEvent(update, workspace);
-      if (event) events.push(event);
+      if (event) show(event);
     };
     connection.onRequest = async (method, params) => {
       if (method !== "session/request_permission" || params.sessionId !== sessionId) throw new Error("unsupported");
@@ -543,14 +585,32 @@ export async function openAntigravitySwarmRuntime(
         const requested = typeof toolCall.name === "string" && toolCall.name.startsWith(PAPERCLIP_TOOL_PREFIX)
           ? `Paperclip does not allow ${toolCall.name.slice(PAPERCLIP_TOOL_PREFIX.length).slice(0, 80)} during a swarm`
           : `Blocked: ${(typeof toolCall.title === "string" ? toolCall.title.split(workspace).join(".") : "an action outside the task folder").slice(0, 160)}`;
-        events.push(line(`blocked-${blocked}`, requested));
+        show(line(`blocked-${blocked}`, requested));
       }
       return choice ? { outcome: { outcome: "selected", optionId: choice.optionId } } : { outcome: { outcome: "cancelled" } };
     };
 
     let usage: Json | null = null;
+    /**
+     * Billable usage is kept whatever the turn's outcome: the prompt's own answer
+     * (the CLI answers a stopped prompt too), or, when that answer never arrives
+     * (the CLI exited, or did not answer within the grace), what it streamed.
+     */
+    const keepUsage = (reported: unknown) => {
+      const answered = record(reported);
+      if (Object.keys(answered).length > 0) usage = addUsage(usage, answered);
+      // Whether a streamed count covers this prompt or the whole session is not known, so
+      // after an answered prompt it can raise a counter but never adds to it (no double count).
+      else if (streamedUsage) usage = usage ? largerUsage(usage, streamedUsage) : addUsage(null, streamedUsage);
+      streamedUsage = null;
+      if (usage) {
+        status.terminalPromptUsage = { requestId: input.requestId, promptId: `${input.requestId}:swarm`,
+          event: { type: "status", tag: "usage_update", text: "terminal prompt usage", breakdown: usage } };
+      }
+    };
     const prompt = async (text: string, timeoutMs: number | null): Promise<string> => {
       if (cancelled || stop) return "cancelled";
+      streamedUsage = null;
       const response = connection.request("session/prompt", { sessionId, prompt: [{ type: "text", text }] }, null);
       started();
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -564,18 +624,18 @@ export async function openAntigravitySwarmRuntime(
           if (!stop && !cancelled) halt(new AntigravitySwarmError("ANTIGRAVITY_SWARM_HELPERS_TIMEOUT",
             "The helpers did not finish in time, so Paperclip stopped the swarm. Files they already wrote stay in the task folder."));
           const grace = dependencies.cancelGraceMs ?? DEFAULT_CANCEL_GRACE_MS;
-          const settled = await Promise.race([response.then(() => true, () => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), grace))]);
+          const settled = await Promise.race([response.then(reply => ({ reply }), () => ({ reply: null })),
+            new Promise<null>(resolve => setTimeout(() => resolve(null), grace))]);
+          keepUsage(settled?.reply?.usage);
           if (!settled) await retire().catch(() => undefined);
           return "cancelled";
         }
-        usage = addUsage(usage, outcome.usage);
-        if (usage) {
-          // Billable usage is kept whatever the turn's outcome turns out to be.
-          status.lastRequestId = input.requestId;
-          status.terminalPromptUsage = { requestId: input.requestId, promptId: `${input.requestId}:swarm`,
-            event: { type: "status", tag: "usage_update", text: "terminal prompt usage", breakdown: usage } };
-        }
+        keepUsage(outcome.usage);
         return typeof outcome.stopReason === "string" ? outcome.stopReason : "end_turn";
+      } catch (error) {
+        // The CLI exited mid-prompt: its answer is lost, so what it streamed is what can be kept.
+        keepUsage(undefined);
+        throw error;
       } finally {
         if (timer) clearTimeout(timer);
         wake = null;
@@ -586,7 +646,7 @@ export async function openAntigravitySwarmRuntime(
       dispatch?.markDispatched();
       let stopReason = await prompt(`/swarm ${request}`, null);
       if (stopReason === "end_turn" && !stop && !cancelled && helpers.size > 0 && !waitedAfterLastAdd && !classifyAntigravityRefusalText(transcript)) {
-        events.push(line("wait", "Waiting for the helpers to finish"));
+        show(line("wait", "Waiting for the helpers to finish"));
         transcript += "\n";
         await dependencies.onStage?.("helpers");
         stopReason = await prompt(HELPER_WAIT_PROMPT, dependencies.helperWaitTimeoutMs ?? DEFAULT_HELPER_WAIT_TIMEOUT_MS);
@@ -610,7 +670,7 @@ export async function openAntigravitySwarmRuntime(
       // Done still requires the hand-in through Paperclip's finish tool.
       const after = await snapshotWorkspace(workspace, listing.signal);
       const changed = changedFiles(before.files, after.files);
-      events.push(line("files", !before.complete || !after.complete ? "The task folder is too large to list every change"
+      show(line("files", !before.complete || !after.complete ? "The task folder is too large to list every change"
         : changed.length ? `Files changed in the task folder: ${changed.slice(0, 20).join(", ")}${changed.length > 20 ? ", …" : ""}` : "No files changed in the task folder"));
       // A swarm that ended without handing in is a typed swarm failure the person
       // retries, never an interruption Paperclip resumes or retries on its own
@@ -634,12 +694,14 @@ export async function openAntigravitySwarmRuntime(
       return { status: "completed", stopReason: "end_turn" };
     } catch (error) {
       if (connection.lost instanceof ProcessLostError || error instanceof ProcessLostError) {
-        return cancelled ? { status: "cancelled", stopReason: "cancelled" } : failed(ANTIGRAVITY_SWARM_PROCESS_LOST, new ProcessLostError().message);
+        return cancelled ? { status: "cancelled", stopReason: "cancelled" }
+          : { status: "failed", error: { code: ANTIGRAVITY_SWARM_PROCESS_LOST, message: PROCESS_LOST_MESSAGE, retryable: true } };
       }
       return failed(error instanceof AntigravitySwarmError ? error.code : "ANTIGRAVITY_SWARM_FAILED",
         error instanceof Error ? error.message.slice(0, 1_000) : "The swarm failed.");
     } finally {
       updateListener = null;
+      releaseText();
       if (usage) events.push(line("usage", "Token usage is the coordinator's total and includes the helpers; Google does not report it per helper"));
     }
   };
