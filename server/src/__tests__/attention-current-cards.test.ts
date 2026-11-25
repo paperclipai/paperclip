@@ -1,16 +1,21 @@
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
+  agentWakeupRequests,
+  agentRuntimeState,
+  heartbeatRunEvents,
+  heartbeatRuns,
   approvals,
   companies,
   companyMemberships,
   createDb,
   issueApprovals,
   issueComments,
+  issueRecoveryActions,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -28,6 +33,7 @@ import {
 } from "../services/attention.js";
 import { expirePendingInteractionsOnClosedIssues } from "../services/closed-issue-interaction-sweep.js";
 import { inboxDismissalService } from "../services/inbox-dismissals.js";
+import { attentionRunHistory, attentionRunHistoryQuery } from "../services/attention-provider-limits.js";
 import { pendingUserRequestRowCondition } from "../services/issue-participation.js";
 
 const TOOL_ACTION = {
@@ -228,6 +234,206 @@ describeEmbeddedPostgres("attention current cards (PAP-749 task 2a)", () => {
   async function list(companyId: string, userId: string, view?: AttentionFeedView) {
     return (await attentionService(db).list(companyId, { userId, view })).items;
   }
+
+  it.each(["done", "cancelled"])("keeps unresolved ownership recovery visible when a task is %s", async (status) => {
+    const { companyId } = await seedCompany();
+    const task = await insertIssue({ companyId, status, createdByUserId: SCOTT });
+    const limitedTask = await insertIssue({ companyId, status, createdByUserId: SCOTT });
+    const [ownership] = await db.insert(issueRecoveryActions).values([
+      { companyId, sourceIssueId: task, kind: "active_run_watchdog", ownerType: "board",
+        cause: "ownership_owner_unprovable", fingerprint: "owner", nextAction: "Confirm the previous server stopped." },
+      { companyId, sourceIssueId: limitedTask, kind: "active_run_watchdog", ownerType: "board",
+        cause: "native_provider_usage_limit", fingerprint: "limit", nextAction: "Retry after restoring capacity." },
+    ]).returning();
+    const cards = (await list(companyId, SCOTT, "company")).filter(item => item.sourceKind === "recovery_action");
+    expect(cards.map(item => item.subject.id)).toEqual([ownership!.id]);
+    const summary = await attentionService(db).summary(companyId, { userId: SCOTT });
+    expect(summary.countsBySourceKind.recovery_action).toBe(1);
+  });
+
+  it("clears an agent's last provider error when the task finishes without another run", async () => {
+    const { companyId, workerId } = await seedCompany();
+    const issueId = await insertIssue({ companyId });
+    const error = "Provider usage limit reached";
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: workerId, issueId, scopeKind: "issue",
+      error, errorCode: "native_provider_usage_limit", status: "failed" }).returning();
+    await db.insert(agentRuntimeState).values({ agentId: workerId, companyId, lastRunId: run!.id, lastError: error, adapterType: "process" });
+    await db.update(agents).set({ status: "error", errorReason: error }).where(eq(agents.id, workerId));
+    const errors = async () => (await list(companyId, SCOTT, "company")).filter(item => item.sourceKind === "agent_error_alert");
+    expect(await errors()).toHaveLength(1);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+    expect(await errors()).toHaveLength(0);
+    await db.update(agents).set({ errorReason: "Different failure" }).where(eq(agents.id, workerId));
+    expect(await errors()).toHaveLength(1);
+  });
+
+  it("keeps unverified quota retries task-scoped through archive, exhaustion, and recovery", async () => {
+    const { companyId, workerId } = await seedCompany();
+    const makeTask = () => insertIssue({ companyId, createdByUserId: SCOTT, assigneeAgentId: workerId });
+    const [first, second, third] = await Promise.all([makeTask(), makeTask(), makeTask()]);
+    const due = new Date(Date.now() + 60_000);
+    const base = { companyId, agentId: workerId, scopeKind: "issue" } as const;
+    async function start(issueId: string) {
+      const [run] = await db.insert(heartbeatRuns).values({ ...base, issueId, status: "failed",
+        errorCode: "native_provider_usage_limit" }).returning();
+      return queue(issueId, run!.id);
+    }
+    async function queue(issueId: string, parent: string) {
+      const [retry] = await db.insert(heartbeatRuns).values({ ...base, issueId, status: "scheduled_retry",
+        retryOfRunId: parent, scheduledRetryAt: due }).returning();
+      return retry!.id;
+    }
+    let retry = await start(first);
+    const secondRetry = await start(second);
+    await start(third);
+    const cards = async (view: AttentionFeedView) => (await list(companyId, SCOTT, view)).filter(item => item.providerLimit);
+    const waiting = await cards("waiting");
+    expect(waiting).toHaveLength(3);
+    expect(new Set(waiting.map(item => item.dismissalKey)).size).toBe(3);
+    const original = waiting.find(item => item.relatedIssue?.id === first)!;
+    expect(original.providerLimit).toMatchObject({ grouping: "retry_chain", attempts: 1, resetAt: null,
+      retryAt: due.toISOString(), state: "scheduled" });
+    await inboxDismissalService(db).dismiss(companyId, SCOTT, original.dismissalKey, new Date(), original.changeFingerprint);
+
+    for (let count = 2; count <= 4; count++) {
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_provider_usage_limit" }).where(eq(heartbeatRuns.id, retry));
+      retry = await queue(first, retry);
+    }
+    expect((await cards("waiting")).map(item => item.relatedIssue?.id).sort()).toEqual([second, third].sort());
+    const archived = await cards("archived");
+    expect(archived).toHaveLength(1);
+    expect(archived[0]).toMatchObject({ dismissalKey: original.dismissalKey, providerLimit: { attempts: 4 } });
+
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "native_provider_usage_limit" }).where(eq(heartbeatRuns.id, retry));
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId: workerId, runId: retry, seq: 1,
+      eventType: "lifecycle", message: "Bounded retry exhausted" });
+    const manual = await cards("mine");
+    expect(manual).toHaveLength(1);
+    expect(manual[0]).toMatchObject({ relatedIssue: { id: first }, providerLimit: { attempts: 5, state: "needs_retry" } });
+    expect(await cards("archived")).toHaveLength(0);
+    expect(await cards("waiting")).toHaveLength(2);
+
+    await db.update(heartbeatRuns).set({ status: "queued", scheduledRetryAt: null }).where(eq(heartbeatRuns.id, secondRetry));
+    const queued = (await cards("waiting")).find(item => item.relatedIssue?.id === second);
+    expect(queued?.providerLimit).toMatchObject({ attempts: 1, state: "retry_requested", resetAt: null });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, secondRetry));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, first));
+    expect((await cards("waiting")).map(item => item.relatedIssue?.id)).toEqual([third]);
+    expect(await cards("mine")).toHaveLength(0);
+  });
+
+  it("honors an older per-run archive without folding unrelated retries on the same task", async () => {
+    const { companyId, workerId } = await seedCompany();
+    const task = await insertIssue({ companyId, createdByUserId: SCOTT, assigneeAgentId: workerId });
+    const other = await insertIssue({ companyId, createdByUserId: SCOTT, assigneeAgentId: workerId });
+    const base = { companyId, agentId: workerId, scopeKind: "issue" } as const;
+    async function failed(issueId: string, parent: string | null, code = "provider_limit_wait") {
+      const [run] = await db.insert(heartbeatRuns).values({ ...base, issueId, retryOfRunId: parent,
+        status: "failed", errorCode: code }).returning();
+      return run!.id;
+    }
+    const otherRoot = await failed(other, null);
+    const root = await failed(task, otherRoot); // A cross-task pointer cannot establish a shared chain.
+    const middle = await failed(task, root);
+    const transient = await failed(task, middle, "transient_error");
+    const tip = await failed(task, transient);
+    const separate = await failed(task, null);
+    for (const parent of [tip, separate]) {
+      await db.insert(heartbeatRuns).values({ ...base, issueId: task, retryOfRunId: parent,
+        status: "scheduled_retry", scheduledRetryAt: new Date(Date.now() + 60_000) });
+    }
+    const waiting = await list(companyId, SCOTT, "waiting");
+    const before = waiting.find(item => item.providerLimit?.runId === tip)!;
+    expect(before.providerLimit?.attempts).toBe(3);
+    const oldEpisode = createHash("sha256").update(middle).digest("hex");
+    const oldKey = before.dismissalKey.replace(before.providerLimit!.episode, oldEpisode);
+    await inboxDismissalService(db).dismiss(companyId, SCOTT, oldKey, new Date(), before.changeFingerprint);
+    expect((await list(companyId, SCOTT, "archived")).map(item => item.dismissalKey)).toEqual([oldKey]);
+    expect((await list(companyId, SCOTT, "waiting")).map(item => item.providerLimit?.runId)).toEqual([separate]);
+  });
+
+  it("keeps a native retry linked to an archived provider limit through its saved retry request", async () => {
+    const { companyId, workerId } = await seedCompany();
+    const issueId = await insertIssue({ companyId, createdByUserId: SCOTT, assigneeAgentId: workerId });
+    const [initialRun] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: workerId, issueId, scopeKind: "issue", runtimeMode: "native",
+      status: "failed", errorCode: "native_provider_usage_limit",
+    }).returning();
+    const evidence = { runId: initialRun!.id, providerLimitAutomatic: true, providerLimitEstimated: true };
+    const [hold] = await db.insert(issueRecoveryActions).values({
+      companyId, sourceIssueId: issueId, kind: "active_run_watchdog", ownerType: "board",
+      cause: "native_provider_usage_limit", fingerprint: "limit", nextAction: "Retry when capacity returns.", evidence,
+    }).returning();
+    const [original] = await list(companyId, SCOTT, "waiting");
+    expect(original?.providerLimit).toMatchObject({ grouping: "retry_chain", attempts: 1 });
+    await inboxDismissalService(db).dismiss(companyId, SCOTT, original!.dismissalKey, new Date(), original!.changeFingerprint);
+
+    const requestId = randomUUID();
+    const [retry] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: workerId, issueId, scopeKind: "issue", runtimeMode: "native",
+      status: "failed", errorCode: "native_provider_usage_limit",
+      contextSnapshot: { issueId, previousRunId: initialRun!.id, taskRetryRequestId: requestId },
+    }).returning();
+    const taskRetry = {
+      schema: "paperclip.task-retry.v1", generationId: requestId, sourceRunId: initialRun!.id,
+      actorId: SCOTT, strategy: "evaluate", initiatedBy: "provider_limit_reset",
+    };
+    await db.insert(agentWakeupRequests).values({
+      id: requestId, companyId, agentId: workerId, source: "on_demand", reason: "task_retry",
+      requestedByActorType: "user", requestedByActorId: SCOTT, runId: retry!.id,
+      payload: { issueId, taskRetry },
+    });
+    await db.update(issueRecoveryActions).set({ evidence: { ...evidence, runId: retry!.id } })
+      .where(eq(issueRecoveryActions.id, hold!.id));
+    expect(await list(companyId, SCOTT, "waiting")).toHaveLength(0);
+    expect(await list(companyId, SCOTT, "archived")).toEqual([expect.objectContaining({
+      dismissalKey: original!.dismissalKey,
+      providerLimit: expect.objectContaining({ attempts: 2, runId: retry!.id }),
+    })]);
+
+    await db.update(agentWakeupRequests).set({ payload: { issueId: randomUUID(), taskRetry } })
+      .where(eq(agentWakeupRequests.id, requestId));
+    expect(await list(companyId, SCOTT, "archived")).toHaveLength(0);
+    expect(await list(companyId, SCOTT, "waiting")).toEqual([expect.objectContaining({
+      providerLimit: expect.objectContaining({ attempts: 1, runId: retry!.id }),
+    })]);
+  });
+
+  it("uses indexed history pages and recovery probes as unrelated runs accumulate", async () => {
+    const { companyId, workerId } = await seedCompany();
+    const task = await insertIssue({ companyId, createdByUserId: SCOTT });
+    const unrelated = await insertIssue({ companyId, createdByUserId: SCOTT });
+    await db.execute(sql`
+      insert into ${heartbeatRuns} (company_id, agent_id, issue_id, scope_kind, status, created_at)
+      select ${companyId}::uuid, ${workerId}::uuid, ${unrelated}::uuid, 'issue', 'succeeded',
+        now() - n * interval '1 second'
+      from generate_series(1, 5000) n
+    `);
+    await db.execute(sql`
+      insert into ${heartbeatRuns} (company_id, agent_id, issue_id, scope_kind, status, created_at)
+      select ${companyId}::uuid, ${workerId}::uuid, ${task}::uuid, 'issue', 'failed',
+        now() - interval '1 day' - n * interval '1 microsecond'
+      from generate_series(1, 101) n
+    `);
+    await db.insert(heartbeatRuns).values({
+      companyId, agentId: workerId, scopeKind: "issue", status: "succeeded", contextSnapshot: { taskId: task },
+    });
+    await db.execute(sql`analyze ${heartbeatRuns}`);
+
+    const allowed = sql`true`;
+    const first = await attentionRunHistory(db, companyId, allowed);
+    expect(first).toHaveLength(100);
+    expect(new Set(first.map(row => row.outcome))).toEqual(new Set(["Work resumed"]));
+    const before = { at: first.at(-1)!.recordedAt, id: first.at(-1)!.runId };
+    const second = await attentionRunHistory(db, companyId, allowed, before);
+    expect(second).toEqual([expect.objectContaining({ taskId: task, outcome: "Work resumed" })]);
+    expect(first.some(row => row.runId === second[0]?.runId)).toBe(false);
+
+    const query = attentionRunHistoryQuery(db, companyId, allowed, before);
+    const plan = JSON.stringify(await db.execute(sql`explain (format json) ${query}`));
+    expect(plan).toContain("heartbeat_runs_attention_history_idx");
+    expect(plan).toContain("heartbeat_runs_attention_resumed_idx");
+  });
 
   function find(items: AttentionItem[], sourceId: string) {
     return items.find((item) => item.subject.id === sourceId) ?? null;
