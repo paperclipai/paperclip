@@ -1461,6 +1461,14 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       await queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
     },
   });
+  const rotateSecret = useMutation({
+    mutationFn: (input: { secretId: string; value: string }) =>
+      secretsApi.rotate(input.secretId, { value: input.value }),
+    onSuccess: async () => {
+      if (!selectedCompanyId) return;
+      await queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    },
+  });
 
   // Managed (platform-provisioned) environments accept exactly one tenant
   // edit: the env var map. The server's write floor rejects everything
@@ -2218,6 +2226,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                 value={environmentForm.envVars}
                 secrets={secrets ?? []}
                 onCreateSecret={async (name, value) => await createSecret.mutateAsync({ name, value })}
+                onRotateSecret={async (secretId, value) => await rotateSecret.mutateAsync({ secretId, value })}
                 onChange={(env) =>
                   setEnvironmentForm((current) => ({ ...current, envVars: env ?? {} }))}
                 onDirtyChange={setEnvironmentVariablesDirty}
@@ -2544,6 +2553,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   value={environmentForm.envVars}
                   secrets={secrets ?? []}
                   onCreateSecret={async (name, value) => await createSecret.mutateAsync({ name, value })}
+                  onRotateSecret={async (secretId, value) => await rotateSecret.mutateAsync({ secretId, value })}
                   onChange={(env) =>
                     setEnvironmentForm((current) => ({ ...current, envVars: env ?? {} }))}
                   onDirtyChange={setEnvironmentVariablesDirty}

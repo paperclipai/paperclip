@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Eye, EyeOff, Loader2 } from "lucide-react";
+import type { CompanySecret } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
@@ -18,9 +19,15 @@ export interface SecretPopoverFormProps {
   initialValue: string;
   /** For a same-name uniqueness hint before the server round-trips. */
   existingSecretNames?: readonly string[];
+  /** Existing company secrets so name collisions can bind or rotate instead of dead-ending. */
+  existingSecrets?: readonly CompanySecret[];
   onCancel: () => void;
   /** Resolves once the secret is created + the row is bound; rejects with a message. */
   onSubmit: (name: string, value: string) => Promise<void>;
+  /** Bind the row to an existing secret when its name already exists. */
+  onSelectExisting?: (secret: CompanySecret) => void | Promise<void>;
+  /** Rotate an existing secret with the typed value and bind the row. */
+  onRotateExisting?: (secret: CompanySecret, value: string) => Promise<void>;
 }
 
 /**
@@ -33,8 +40,11 @@ export function SecretPopoverForm({
   initialName,
   initialValue,
   existingSecretNames,
+  existingSecrets,
   onCancel,
   onSubmit,
+  onSelectExisting,
+  onRotateExisting,
 }: SecretPopoverFormProps) {
   const [name, setName] = useState(initialName);
   const [value, setValue] = useState(initialValue);
@@ -44,16 +54,33 @@ export function SecretPopoverForm({
   const [touched, setTouched] = useState(false);
 
   const trimmedName = name.trim();
+  const normalizedName = trimmedName.toLowerCase();
+  const matchingSecret =
+    normalizedName.length > 0
+      ? (existingSecrets?.find((existing) => existing.name.toLowerCase() === normalizedName) ?? null)
+      : null;
+  const hasCollisionActions = Boolean(matchingSecret && (onSelectExisting || onRotateExisting));
+  const canRotateExisting = Boolean(
+    matchingSecret &&
+      onRotateExisting &&
+      value.length > 0 &&
+      matchingSecret.managedMode !== "external_reference" &&
+      matchingSecret.status === "active",
+  );
+
   const nameError = (() => {
     if (!trimmedName) return touched ? "Name is required" : null;
     if (!SECRET_NAME_RE.test(trimmedName)) return "Use lowercase letters, digits and _";
-    if (existingSecretNames?.some((existing) => existing.toLowerCase() === trimmedName)) {
+    if (matchingSecret) {
+      return hasCollisionActions ? null : "A secret with this name already exists";
+    }
+    if (existingSecretNames?.some((existing) => existing.toLowerCase() === normalizedName)) {
       return "A secret with this name already exists";
     }
     return null;
   })();
   const valueError = value.length === 0 ? (touched ? "Value is required" : null) : null;
-  const canSubmit = !submitting && trimmedName.length > 0 && value.length > 0 && !nameError;
+  const canSubmit = !submitting && !matchingSecret && trimmedName.length > 0 && value.length > 0 && !nameError;
 
   async function handleSubmit() {
     setTouched(true);
@@ -64,6 +91,30 @@ export function SecretPopoverForm({
       await onSubmit(trimmedName, value);
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : "Failed to create secret");
+      setSubmitting(false);
+    }
+  }
+
+  async function handleUseExisting() {
+    if (!matchingSecret || !onSelectExisting || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onSelectExisting(matchingSecret);
+    } catch (selectError) {
+      setError(selectError instanceof Error ? selectError.message : "Failed to bind existing secret");
+      setSubmitting(false);
+    }
+  }
+
+  async function handleRotateExisting() {
+    if (!matchingSecret || !onRotateExisting || !canRotateExisting || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await onRotateExisting(matchingSecret, value);
+    } catch (rotateError) {
+      setError(rotateError instanceof Error ? rotateError.message : "Failed to save new secret version");
       setSubmitting(false);
     }
   }
@@ -104,6 +155,39 @@ export function SecretPopoverForm({
         />
         {nameError ? <span className="block text-(length:--text-micro) text-destructive">{nameError}</span> : null}
       </label>
+
+      {hasCollisionActions && matchingSecret ? (
+        <div className="space-y-2 rounded-md border border-border bg-muted/40 p-2.5">
+          <p className="text-(length:--text-micro) text-foreground">
+            <span className="font-mono font-medium">{matchingSecret.name}</span> already exists (v
+            {matchingSecret.latestVersion}). Reuse it, save this value as a new version, or choose a different name.
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {onSelectExisting ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void handleUseExisting()}
+                disabled={submitting}
+              >
+                Use existing secret
+              </Button>
+            ) : null}
+            {canRotateExisting ? (
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => void handleRotateExisting()}
+                disabled={submitting}
+              >
+                {submitting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                Save as new version
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       <label className="block space-y-1">
         <span className="text-(length:--text-micro) font-medium text-muted-foreground">Value</span>

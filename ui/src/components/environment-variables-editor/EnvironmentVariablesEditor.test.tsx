@@ -923,4 +923,109 @@ describe("EnvironmentVariablesEditor", () => {
     );
     expect(match?.querySelector<HTMLElement>("[title]")?.getAttribute("title")).toBe(cloudMigrationKey);
   });
+
+  it("lets plain-to-secret conversion reuse an existing secret on name collision", async () => {
+    const existing = makeSecret("s-gh", { name: "gh_token", key: "gh_token", latestVersion: 2 });
+    const onChange = vi.fn();
+    const onRotateSecret = vi.fn(async (secretId: string, _value: string) => ({
+      ...existing,
+      id: secretId,
+      latestVersion: 3,
+    }));
+
+    render(
+      <EnvironmentVariablesEditor
+        value={{ GH_TOKEN: { type: "plain", value: ["ghp", "0123456789abcdef0123456789abcdef"].join("_") } }}
+        secrets={[existing]}
+        onChange={onChange}
+        onCreateSecret={async () => existing}
+        onRotateSecret={onRotateSecret}
+      />,
+    );
+    const storeButton = container.querySelector<HTMLButtonElement>('button[title^="This value looks sensitive"]')!;
+    storeButton.click();
+    await flush();
+
+    const useExistingBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Use existing secret"),
+    );
+    const saveNewVersionBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Save as new version"),
+    );
+    expect(useExistingBtn, "Use existing secret action should render on collision").toBeTruthy();
+    expect(saveNewVersionBtn, "Save as new version action should render on collision").toBeTruthy();
+
+    useExistingBtn!.click();
+    await flush();
+    saveButton().click();
+    await flush();
+    expect(onChange).toHaveBeenLastCalledWith({
+      GH_TOKEN: { type: "secret_ref", secretId: "s-gh", version: "latest" },
+    });
+    expect(onRotateSecret).not.toHaveBeenCalled();
+  });
+
+  it("lets plain-to-secret conversion rotate an existing secret as a new version on name collision", async () => {
+    const existing = makeSecret("s-gh", { name: "gh_token", key: "gh_token", latestVersion: 2 });
+    const onChange = vi.fn();
+    const onRotateSecret = vi.fn(async (secretId: string, _value: string) => ({
+      ...existing,
+      id: secretId,
+      latestVersion: 3,
+    }));
+
+    const nextValue = ["ghp", "fedcba9876543210fedcba9876543210"].join("_");
+    render(
+      <EnvironmentVariablesEditor
+        value={{ GH_TOKEN: { type: "plain", value: nextValue } }}
+        secrets={[existing]}
+        onChange={onChange}
+        onCreateSecret={async () => existing}
+        onRotateSecret={onRotateSecret}
+      />,
+    );
+    const storeButton = container.querySelector<HTMLButtonElement>('button[title^="This value looks sensitive"]')!;
+    storeButton.click();
+    await flush();
+
+    const rotateBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Save as new version"),
+    )!;
+    rotateBtn.click();
+    await flush();
+    expect(onRotateSecret).toHaveBeenCalledWith("s-gh", nextValue);
+    saveButton().click();
+    await flush();
+    expect(onChange).toHaveBeenLastCalledWith({
+      GH_TOKEN: { type: "secret_ref", secretId: "s-gh", version: "latest" },
+    });
+  });
+
+  it("warns immediately, masks input, and blocks save when a secret token is pasted into Variable name", async () => {
+    const onChange = vi.fn();
+    const token = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+    render(
+      <EnvironmentVariablesEditor
+        value={{}}
+        secrets={secrets}
+        onChange={onChange}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    const addButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Add variable"))!;
+    addButton.click();
+    await flush();
+
+    const nameInput = nameInputs()[0]!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(nameInput, token);
+    nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+
+    // Immediately surfaced without blur, masked, and raw token absent from unsaved banner.
+    expect(container.textContent?.toLowerCase()).toMatch(/looks like a secret/);
+    expect(nameInput.type).toBe("password");
+    expect(container.textContent).not.toContain(token);
+    expect(saveButton().disabled).toBe(true);
+  });
 });

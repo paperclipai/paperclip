@@ -264,4 +264,29 @@ describe("AgentSecretAccessEditor component", () => {
     flushSync(() => rejectButton.click());
     expect(rejected).toEqual(["prop-1"]);
   });
+
+  it("explains that API-access secrets are not exposed as $NAME env vars and offers a quick bind-as-env-var action", () => {
+    const boundEnv: Array<{ envKey: string; secretId: string; version: number | "latest" }> = [];
+    render(
+      <AgentSecretAccessEditor
+        config={{
+          "access.STRIPE_KEY": { type: "secret_ref", secretId: "s1", version: "latest" },
+        }}
+        secrets={secrets}
+        onChange={() => {}}
+        onBindAsEnvVar={(binding) => boundEnv.push(binding)}
+      />,
+    );
+
+    // Clarifies that processes/scripts will not see $NAME unless bound under Environment variables.
+    expect(container.textContent).toMatch(/\$NAME|\$STRIPE_KEY/);
+    expect(container.textContent?.toLowerCase()).toContain("environment variables");
+
+    const bindEnvButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+      button.textContent?.includes("Also bind as env var"),
+    );
+    expect(bindEnvButton, "Also bind as env var action should render for API-only binding").toBeTruthy();
+    flushSync(() => bindEnvButton!.click());
+    expect(boundEnv).toEqual([{ envKey: "STRIPE_KEY", secretId: "s1", version: "latest" }]);
+  });
 });

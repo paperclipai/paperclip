@@ -16,6 +16,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { useOptionalToastActions } from "@/context/ToastContext";
 import { EnvironmentVariableRow } from "./Row";
 import { parseDotenv } from "./parse-dotenv";
+import { looksLikeCredentialToken } from "./sensitive";
 import {
   computeDuplicateNames,
   computeRowHealth,
@@ -81,9 +82,10 @@ function normalizedEnvKey(value: Record<string, EnvBinding> | null | undefined):
 const CHANGE_SUMMARY_MAX_NAMES = 3;
 
 function formatChangedNames(names: readonly string[]): string {
-  const shown = names.slice(0, CHANGE_SUMMARY_MAX_NAMES).join(", ");
-  return names.length > CHANGE_SUMMARY_MAX_NAMES
-    ? `${shown} +${names.length - CHANGE_SUMMARY_MAX_NAMES} more`
+  const safeNames = names.map((name) => (looksLikeCredentialToken(name) ? "[redacted]" : name));
+  const shown = safeNames.slice(0, CHANGE_SUMMARY_MAX_NAMES).join(", ");
+  return safeNames.length > CHANGE_SUMMARY_MAX_NAMES
+    ? `${shown} +${safeNames.length - CHANGE_SUMMARY_MAX_NAMES} more`
     : shown;
 }
 
@@ -125,6 +127,7 @@ export interface EnvironmentVariablesEditorProps {
    */
   userSecretDefinitions?: readonly UserSecretDefinition[];
   onCreateSecret: (name: string, value: string) => Promise<CompanySecret>;
+  onRotateSecret?: (secretId: string, value: string) => Promise<CompanySecret>;
   /** Optional "Recently used" picker group + quick-bind chips. */
   recentlyUsedSecrets?: readonly CompanySecret[];
   /** Read-only rendering. */
@@ -157,6 +160,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   secrets,
   userSecretDefinitions,
   onCreateSecret,
+  onRotateSecret,
   recentlyUsedSecrets,
   disabled,
   reservedPrefixes = DEFAULT_RESERVED_PREFIXES,
@@ -407,7 +411,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   }
 
   function saveDraft() {
-    if (!hasUnsavedChanges) return;
+    if (!hasUnsavedChanges || hasSecretShapedName) return;
     pendingSaveValueKeyRef.current = draftValueKey;
     onChange(draftValue);
   }
@@ -420,6 +424,10 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
   }
 
   const duplicateNames = useMemo(() => computeDuplicateNames(rows), [rows]);
+  const hasSecretShapedName = useMemo(
+    () => rows.some((row) => looksLikeCredentialToken(row.name)),
+    [rows],
+  );
 
   const attentionCount = useMemo(
     () =>
@@ -468,7 +476,8 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
 
           {rows.map((row, index) => {
             const issue = validateName(row.name, duplicateNames, reservedPrefixes);
-            const touched = touchedNames.has(row.name.trim());
+            const trimmedName = row.name.trim();
+            const showIssue = touchedNames.has(trimmedName) || looksLikeCredentialToken(trimmedName);
             return (
               <EnvironmentVariableRow
                 key={row.id}
@@ -479,7 +488,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
                 recentlyUsedSecrets={recentlyUsedSecrets}
                 disabled={disabled}
                 nameIssue={issue}
-                showNameIssue={touched}
+                showNameIssue={showIssue}
                 dirtyFields={rowDirtyFields(row, committedRowsById.get(row.id))}
                 onPatch={(patch) => patchRow(row.id, patch)}
                 onRemove={() => removeRow(row.id)}
@@ -487,6 +496,7 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
                 onNamePaste={(text) => bulkImport(text, row.id)}
                 onEnterInValueLast={addRow}
                 onCreateSecret={onCreateSecret}
+                onRotateSecret={onRotateSecret}
                 onToast={(message) => toast?.pushToast({ title: message, tone: "success" })}
                 focusRequest={pendingFocus?.rowId === row.id ? pendingFocus.field : null}
                 onFocusConsumed={() => setPendingFocus(null)}
@@ -560,7 +570,8 @@ export const EnvironmentVariablesEditor = forwardRef<EnvironmentVariablesEditorH
             <button
               type="button"
               onClick={saveDraft}
-              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+              disabled={hasSecretShapedName}
+              className="inline-flex h-9 items-center gap-1.5 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
             >
               <Save className="size-4" />
               Save

@@ -6,7 +6,9 @@ import type {
   SecretProposalView,
   SecretVersionSelector,
 } from "@paperclipai/shared";
+import { looksLikeCredentialToken } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { SecretPicker } from "./environment-variables-editor/SecretPicker";
@@ -128,7 +130,7 @@ export function rowsToAccessMap(rows: readonly AccessRow[]): Record<string, EnvS
   const map: Record<string, EnvSecretRefBinding> = {};
   for (const row of rows) {
     const alias = row.alias.trim();
-    if (!alias || !SECRET_ALIAS_RE.test(alias) || !row.secretId) continue;
+    if (!alias || looksLikeCredentialToken(alias) || !SECRET_ALIAS_RE.test(alias) || !row.secretId) continue;
     map[alias] = { type: "secret_ref", secretId: row.secretId, version: row.version };
   }
   return map;
@@ -161,6 +163,10 @@ export interface AgentSecretAccessEditorProps {
   onChange: (next: Record<string, EnvSecretRefBinding>) => void;
   /** Create a company secret from the shared picker's pinned create action. */
   onCreateSecret?: (name: string, value: string) => Promise<CompanySecret>;
+  /** Rotate an existing company secret when a name collision occurs during creation. */
+  onRotateSecret?: (secretId: string, value: string) => Promise<CompanySecret>;
+  /** Quick action to also expose an API-only secret binding as an environment variable. */
+  onBindAsEnvVar?: (binding: { envKey: string; secretId: string; version: SecretVersionSelector }) => void;
   disabled?: boolean;
   /** Pending binding proposals targeting this agent (PAP-14731). */
   proposals?: readonly SecretProposalView[];
@@ -196,6 +202,8 @@ export function AgentSecretAccessEditor({
   secrets,
   onChange,
   onCreateSecret,
+  onRotateSecret,
+  onBindAsEnvVar,
   disabled,
   proposals,
   onApproveProposal,
@@ -266,23 +274,47 @@ export function AgentSecretAccessEditor({
       {/* Overview: every secret bound to this agent + how it is delivered. */}
       {hasBindings ? (
         <div className="space-y-1.5">
-          {summaries.map((summary) => (
-            <div
-              key={summary.secretId}
-              className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs"
-            >
-              <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="font-medium">{secretName(summary.secretId)}</span>
-              {summary.envKeys.length > 0 ? <DeliveryBadge mode="env" /> : null}
-              {summary.apiAliases.length > 0 ? <DeliveryBadge mode="api" /> : null}
-              <span className="min-w-0 truncate font-mono text-(length:--text-micro) text-muted-foreground">
-                {[
-                  ...summary.envKeys.map((key) => `${ENV_CONFIG_PATH_PREFIX}${key}`),
-                  ...summary.apiAliases.map((alias) => `${AGENT_ACCESS_CONFIG_PATH_PREFIX}${alias}`),
-                ].join(" · ")}
-              </span>
-            </div>
-          ))}
+          {summaries.map((summary) => {
+            const isApiOnly = summary.apiAliases.length > 0 && summary.envKeys.length === 0;
+            const suggestedEnvKey =
+              summary.apiAliases.find((alias) => SECRET_ALIAS_RE.test(alias) && !looksLikeCredentialToken(alias)) ||
+              envKeyFromSecretName(secretName(summary.secretId));
+            const matchingApiBinding = apiBindings.find((entry) => entry.secretId === summary.secretId);
+            return (
+              <div
+                key={summary.secretId}
+                className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs"
+              >
+                <KeyRound className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="font-medium">{secretName(summary.secretId)}</span>
+                {summary.envKeys.length > 0 ? <DeliveryBadge mode="env" /> : null}
+                {summary.apiAliases.length > 0 ? <DeliveryBadge mode="api" /> : null}
+                <span className="min-w-0 truncate font-mono text-(length:--text-micro) text-muted-foreground">
+                  {[
+                    ...summary.envKeys.map((key) => `${ENV_CONFIG_PATH_PREFIX}${key}`),
+                    ...summary.apiAliases.map((alias) => `${AGENT_ACCESS_CONFIG_PATH_PREFIX}${alias}`),
+                  ].join(" · ")}
+                </span>
+                {isApiOnly && onBindAsEnvVar && !disabled && suggestedEnvKey ? (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onBindAsEnvVar({
+                        envKey: suggestedEnvKey,
+                        secretId: summary.secretId,
+                        version: matchingApiBinding?.version ?? "latest",
+                      })
+                    }
+                    className="ml-auto inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-(length:--text-micro) font-medium text-foreground transition-colors hover:bg-accent"
+                    title={`Bind as $${suggestedEnvKey} under Environment variables`}
+                  >
+                    <Variable className="size-3" />
+                    Also bind as env var
+                  </button>
+                ) : null}
+              </div>
+            );
+          })}
         </div>
       ) : (
         <p className="text-sm text-muted-foreground">No company secret references are bound to this agent yet.</p>
@@ -332,14 +364,21 @@ export function AgentSecretAccessEditor({
 
       {/* Editable API-access grants (access.<ALIAS>). */}
       <div className="space-y-2">
-        <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
-          API access (no env var)
+        <div className="space-y-1">
+          <div className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">
+            API access (no env var)
+          </div>
+          <p className="text-(length:--text-micro) text-muted-foreground">
+            Processes and shell scripts will not see <code className="font-mono">$NAME</code> for API-access secrets.
+            To expose a secret as <code className="font-mono">$NAME</code>, bind it under Environment variables above.
+          </p>
         </div>
         {rows.length > 0 ? (
           <div className="space-y-2">
             {rows.map((row) => {
               const trimmedAlias = row.alias.trim();
-              const aliasInvalid = Boolean(trimmedAlias) && !SECRET_ALIAS_RE.test(trimmedAlias);
+              const aliasLooksLikeSecret = looksLikeCredentialToken(trimmedAlias);
+              const aliasInvalid = Boolean(trimmedAlias) && !aliasLooksLikeSecret && !SECRET_ALIAS_RE.test(trimmedAlias);
               const aliasDuplicate = Boolean(trimmedAlias) && (aliasCounts.get(trimmedAlias) ?? 0) > 1;
               const selectedSecret = secrets.find((secret) => secret.id === row.secretId) ?? null;
               return (
@@ -347,11 +386,12 @@ export function AgentSecretAccessEditor({
                   <div className="grid grid-cols-(--gtc-65) items-start gap-1.5">
                     <div>
                       <Input
+                        type={aliasLooksLikeSecret ? "password" : "text"}
                         value={row.alias}
                         onChange={(event) => patchRow(row.id, { alias: event.target.value })}
                         onBlur={(event) => {
                           const next = event.target.value.trim();
-                          if (next && !SECRET_ALIAS_RE.test(next)) {
+                          if (next && !looksLikeCredentialToken(next) && !SECRET_ALIAS_RE.test(next)) {
                             const suggested = envKeyFromSecretName(next);
                             if (suggested && suggested !== next) patchRow(row.id, { alias: suggested });
                           }
@@ -361,7 +401,8 @@ export function AgentSecretAccessEditor({
                         disabled={disabled}
                         className={cn(
                           "h-9 font-mono text-sm",
-                          (aliasInvalid || aliasDuplicate) && "border-destructive text-destructive",
+                          aliasLooksLikeSecret && ANALYTICS_NO_CAPTURE_CLASS,
+                          (aliasLooksLikeSecret || aliasInvalid || aliasDuplicate) && "border-destructive text-destructive",
                         )}
                       />
                     </div>
@@ -425,6 +466,7 @@ export function AgentSecretAccessEditor({
                             <CreateSecretPopover
                               initialName={createRequest.name}
                               initialValue=""
+                              existingSecrets={secrets}
                               existingSecretNames={secrets.map((secret) => secret.name)}
                               onCancel={() => setCreateRequest(null)}
                               onSubmit={async (name, value) => {
@@ -436,6 +478,25 @@ export function AgentSecretAccessEditor({
                                 });
                                 setCreateRequest(null);
                               }}
+                              onSelectExisting={(existing) => {
+                                patchRow(row.id, {
+                                  secretId: existing.id,
+                                  version: "latest",
+                                  alias: row.alias.trim() || envKeyFromSecretName(existing.name),
+                                });
+                                setCreateRequest(null);
+                              }}
+                              onRotateExisting={onRotateSecret
+                                ? async (existing, value) => {
+                                    const rotated = await onRotateSecret(existing.id, value);
+                                    patchRow(row.id, {
+                                      secretId: rotated.id,
+                                      version: "latest",
+                                      alias: row.alias.trim() || envKeyFromSecretName(rotated.name),
+                                    });
+                                    setCreateRequest(null);
+                                  }
+                                : undefined}
                             />
                           ) : null}
                         </PopoverContent>
@@ -476,7 +537,11 @@ export function AgentSecretAccessEditor({
                       <Trash2 className="size-3.5" />
                     </button>
                   </div>
-                  {aliasInvalid ? (
+                  {aliasLooksLikeSecret ? (
+                    <p className="pl-0.5 text-(length:--text-micro) text-destructive">
+                      Looks like a secret value — enter an alias name (e.g. GH_TOKEN), not the token itself
+                    </p>
+                  ) : aliasInvalid ? (
                     <p className="pl-0.5 text-(length:--text-micro) text-destructive">
                       Invalid alias — use letters, digits and _
                     </p>

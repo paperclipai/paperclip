@@ -1,3 +1,5 @@
+import { looksLikeCredentialToken } from "@paperclipai/shared";
+
 export const REDACTED_COMMAND_TEXT_VALUE = "***REDACTED***";
 
 // Public Executor helper addresses retained for callers of this predicate.
@@ -33,7 +35,12 @@ const COMMAND_ENV_SECRET_ASSIGNMENT_RE = new RegExp(
 const COMMAND_AUTHORIZATION_BEARER_RE =
   /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
 const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
-const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
+const COMMAND_UNDERSCORE_SECRET_KEY_RE = /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b/g;
+const COMMAND_GITHUB_TOKEN_RE = /\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{16,}\b/g;
+const COMMAND_SLACK_TOKEN_RE = /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g;
+const COMMAND_AWS_KEY_ID_RE = /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g;
+const COMMAND_GOOGLE_API_KEY_RE = /\bAIza[0-9A-Za-z\-_]{20,}\b/g;
+const COMMAND_GITLAB_PAT_RE = /\bglpat-[A-Za-z0-9_-]{16,}\b/g;
 const COMMAND_JWT_RE =
   /\b(?<![A-Za-z0-9_]-*)[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,}){2}(?:\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})?\b/g;
 /** Recognize encoded JSON headers, without treating dotted identifiers as tokens. */
@@ -68,11 +75,25 @@ const COMMAND_SECRET_HINTS = [
   "cookie",
   "connectionstring",
   "sk-",
+  "sk_live_",
+  "sk_test_",
+  "rk_live_",
+  "rk_test_",
   "ghp_",
   "gho_",
   "ghu_",
   "ghs_",
   "ghr_",
+  "github_pat_",
+  "xoxb-",
+  "xoxp-",
+  "xoxa-",
+  "xoxr-",
+  "xoxs-",
+  "akia",
+  "asia",
+  "aiza",
+  "glpat-",
 ] as const;
 
 function maybeContainsSecretText(command: string) {
@@ -107,7 +128,12 @@ export function redactCommandText(
       },
     )
     .replace(COMMAND_OPENAI_KEY_RE, redactedValue)
+    .replace(COMMAND_UNDERSCORE_SECRET_KEY_RE, redactedValue)
     .replace(COMMAND_GITHUB_TOKEN_RE, redactedValue)
+    .replace(COMMAND_SLACK_TOKEN_RE, redactedValue)
+    .replace(COMMAND_AWS_KEY_ID_RE, redactedValue)
+    .replace(COMMAND_GOOGLE_API_KEY_RE, redactedValue)
+    .replace(COMMAND_GITLAB_PAT_RE, redactedValue)
     .replace(COMMAND_JWT_RE, (match) => looksLikeCredentialJwt(match) ? redactedValue : match);
 }
 
@@ -250,6 +276,7 @@ export function collectDiagnosticEnvironmentSecrets(
   const secretName = new RegExp(`^(?:${SECRET_NAME_PATTERN})$`, "i");
   const values = new Set<string>();
   for (const [key, value] of Object.entries(env)) {
+    if (looksLikeCredentialToken(key)) values.add(key);
     if (typeof value !== "string" || !value) continue;
     if (declared.has(key) || secretName.test(key) ||
       redactDiagnosticText(value) !== value || looksLikeCredentialJwt(value) ||

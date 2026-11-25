@@ -1,3 +1,5 @@
+import { looksLikeCredentialToken } from "@paperclipai/shared";
+
 // Redaction for HTTP log payloads.
 //
 // `customProps` in logger.ts copies `req.body` / `req.params` / `req.query`
@@ -159,6 +161,21 @@ export function stripSecretBearingUrlParts(value: string): string {
   }
 }
 
+function isCredentialShapedKey(key: string): boolean {
+  if (looksLikeCredentialToken(key)) return true;
+  if (key.startsWith("access.") && looksLikeCredentialToken(key.slice("access.".length))) return true;
+  return false;
+}
+
+function nextRedactedKey(target: Record<string, unknown>): string {
+  if (!Object.prototype.hasOwnProperty.call(target, REDACTED)) return REDACTED;
+  let suffix = 2;
+  while (Object.prototype.hasOwnProperty.call(target, `${REDACTED}_${suffix}`)) {
+    suffix += 1;
+  }
+  return `${REDACTED}_${suffix}`;
+}
+
 export function redactSensitive(value: unknown, depth = 0): unknown {
   if (depth > MAX_DEPTH) return undefined;
   if (value === null || typeof value !== "object") return value;
@@ -168,6 +185,10 @@ export function redactSensitive(value: unknown, depth = 0): unknown {
   }
   const out: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (isCredentialShapedKey(key)) {
+      out[nextRedactedKey(out)] = REDACTED;
+      continue;
+    }
     if (isSensitiveKey(key)) {
       out[key] = REDACTED;
       continue;
@@ -200,10 +221,12 @@ function collectSensitiveStringValuesInto(
     return;
   }
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const credentialKey = isCredentialShapedKey(key);
+    if (credentialKey) values.add(key);
     collectSensitiveStringValuesInto(
       entry,
       values,
-      collectAll || isSensitiveKey(key),
+      collectAll || isSensitiveKey(key) || credentialKey,
       depth + 1,
     );
   }

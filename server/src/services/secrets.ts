@@ -40,9 +40,13 @@ import {
   CLASS3_STATIC_LEASE_ALLOWLIST,
   createSecretProviderConfigSchema,
   deriveProjectUrlKey,
+  ENV_VAR_NAME_RE,
   envBindingSchema,
   isUuidLike,
+  looksLikeCredentialToken,
   normalizeAgentUrlKey,
+  SECRET_SHAPED_ACCESS_ALIAS_ERROR,
+  SECRET_SHAPED_ENV_NAME_ERROR,
   secretProviderConfigPayloadSchema,
   secretProviderConfigDiscoveryPreviewSchema,
   updateSecretProviderConfigSchema,
@@ -94,7 +98,7 @@ function latestDate(a: Date | null, b: Date | null): Date | null {
   return a.getTime() >= b.getTime() ? a : b;
 }
 
-const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const ENV_KEY_RE = ENV_VAR_NAME_RE;
 const AGENT_ACCESS_CONFIG_PATH_PREFIX = "access.";
 // System consumer id for a durable orphan-sandbox teardown. The cleanup sweep
 // resolves the recorded connection secret under this id so the audit trail
@@ -895,6 +899,9 @@ function assertSecretBindingConfigPath(input: {
     throw unprocessable("API-only secret access bindings must target an agent");
   }
   const alias = input.configPath.slice(AGENT_ACCESS_CONFIG_PATH_PREFIX.length);
+  if (looksLikeCredentialToken(alias)) {
+    throw unprocessable(SECRET_SHAPED_ACCESS_ALIAS_ERROR);
+  }
   if (!ENV_KEY_RE.test(alias)) {
     throw unprocessable(`Invalid agent secret access alias: ${alias || "(empty)"}`);
   }
@@ -1966,6 +1973,9 @@ export function secretService(db: Db | DbTransaction) {
 
     const normalized: AgentEnvConfig = {};
     for (const [key, rawBinding] of Object.entries(record)) {
+      if (looksLikeCredentialToken(key)) {
+        throw unprocessable(SECRET_SHAPED_ENV_NAME_ERROR);
+      }
       if (!ENV_KEY_RE.test(key)) {
         throw unprocessable(`Invalid environment variable name: ${key}`);
       }
@@ -2011,6 +2021,16 @@ export function secretService(db: Db | DbTransaction) {
     opts?: NormalizeAdapterConfigOptions,
   ) {
     const normalized = { ...adapterConfig };
+    for (const [key, rawValue] of Object.entries(adapterConfig)) {
+      if (!key.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX) || rawValue === undefined) continue;
+      const alias = key.slice(AGENT_ACCESS_CONFIG_PATH_PREFIX.length);
+      if (looksLikeCredentialToken(alias)) {
+        throw unprocessable(SECRET_SHAPED_ACCESS_ALIAS_ERROR);
+      }
+      if (!ENV_KEY_RE.test(alias)) {
+        throw unprocessable(`Invalid agent secret access alias: ${alias || "(empty)"}`);
+      }
+    }
     if (Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
       normalized.env = await normalizeEnvConfig(companyId, adapterConfig.env, opts);
     }
@@ -5343,6 +5363,9 @@ export function secretService(db: Db | DbTransaction) {
       const manifest: RuntimeSecretManifestEntry[] = [];
 
       for (const [key, rawBinding] of Object.entries(record)) {
+        if (looksLikeCredentialToken(key)) {
+          throw unprocessable(SECRET_SHAPED_ENV_NAME_ERROR);
+        }
         if (!ENV_KEY_RE.test(key)) {
           throw unprocessable(`Invalid environment variable name: ${key}`);
         }
@@ -5746,6 +5769,9 @@ export function secretService(db: Db | DbTransaction) {
         } else {
           const env: Record<string, string> = {};
           for (const [key, rawBinding] of Object.entries(record)) {
+            if (looksLikeCredentialToken(key)) {
+              throw unprocessable(SECRET_SHAPED_ENV_NAME_ERROR);
+            }
             if (!ENV_KEY_RE.test(key)) {
               throw unprocessable(`Invalid environment variable name: ${key}`);
             }

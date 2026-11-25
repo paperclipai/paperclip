@@ -1,5 +1,6 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
 import { isPublicExecutorToolSelector, looksLikeCredentialJwt } from "@paperclipai/adapter-utils/command-redaction";
+import { looksLikeCredentialToken } from "@paperclipai/shared";
 
 const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization(?:[-_]?code)?|bearer|secrets?|passwd|passwords?|credentials?|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)(?:[-_]?(?:value|header|prod(?:uction)?|dev(?:elopment)?|test|staging|primary|secondary))*`;
 const SECRET_FIELD_NAME_START = String.raw`(?<![A-Za-z0-9_-])`;
@@ -397,11 +398,25 @@ const SECRET_TEXT_HINTS = [
   "cookie",
   "connectionstring",
   "sk-",
+  "sk_live_",
+  "sk_test_",
+  "rk_live_",
+  "rk_test_",
   "ghp_",
   "gho_",
   "ghu_",
   "ghs_",
   "ghr_",
+  "github_pat_",
+  "xoxb-",
+  "xoxp-",
+  "xoxa-",
+  "xoxr-",
+  "xoxs-",
+  "akia",
+  "asia",
+  "aiza",
+  "glpat-",
 ] as const;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
 
@@ -903,11 +918,37 @@ function isPaperclipSchemaDiscriminator(
   );
 }
 
+function isCredentialShapedObjectKey(key: string): boolean {
+  if (looksLikeCredentialToken(key)) return true;
+  if (key.startsWith("access.") && looksLikeCredentialToken(key.slice("access.".length))) return true;
+  return false;
+}
+
+function nextRedactedObjectKey(target: Record<string, unknown>, base: string): string {
+  if (!Object.prototype.hasOwnProperty.call(target, base)) return base;
+  let suffix = 2;
+  while (Object.prototype.hasOwnProperty.call(target, `${base}_${suffix}`)) {
+    suffix += 1;
+  }
+  return `${base}_${suffix}`;
+}
+
 export function sanitizeRecord(
   record: Record<string, unknown>,
 ): Record<string, unknown> {
   const redacted: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(record)) {
+    if (isCredentialShapedObjectKey(key)) {
+      const safeKey = nextRedactedObjectKey(redacted, REDACTED_EVENT_VALUE);
+      if (isSecretRefBinding(value) || isUserSecretRefBinding(value)) {
+        redacted[safeKey] = sanitizeValue(value);
+      } else if (isPlainBinding(value)) {
+        redacted[safeKey] = { type: "plain", value: REDACTED_EVENT_VALUE };
+      } else {
+        redacted[safeKey] = REDACTED_EVENT_VALUE;
+      }
+      continue;
+    }
     if (COMMAND_ARGS_PAYLOAD_KEY_RE.test(key) && Array.isArray(value)) {
       redacted[key] = sanitizeCommandArgs(value);
       continue;
@@ -1007,9 +1048,13 @@ export function redactAgentAdapterConfig(
   // `env`; keeping it out of `sanitizeRecord` means a future change there
   // cannot alter entries this function has already redacted.
   const { env, ...rest } = adapterConfig;
-  const redactedEnv = Object.fromEntries(
-    Object.entries(env).map(([key, value]) => [key, redactAgentEnvBinding(value)]),
-  );
+  const redactedEnv: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(env)) {
+    const safeKey = isCredentialShapedObjectKey(key)
+      ? nextRedactedObjectKey(redactedEnv, REDACTED_EVENT_VALUE)
+      : key;
+    redactedEnv[safeKey] = redactAgentEnvBinding(value);
+  }
 
   return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
 }

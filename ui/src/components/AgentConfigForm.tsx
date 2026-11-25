@@ -28,6 +28,7 @@ import type {
   EnvBinding,
   EnvSecretRefBinding,
   Environment,
+  SecretVersionSelector,
 } from "@paperclipai/shared";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter, isValidBrowserCode, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
@@ -483,6 +484,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
     },
   });
+  const rotateSecret = useMutation({
+    mutationFn: (input: { secretId: string; value: string }) =>
+      secretsApi.rotate(input.secretId, { value: input.value }),
+    onSuccess: () => {
+      if (!selectedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    },
+  });
 
   const uploadMarkdownImage = useMutation({
     mutationFn: async ({ file, namespace }: { file: File; namespace: string }) => {
@@ -595,6 +604,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         if (!(alias in next)) nextAdapterConfig[key] = undefined;
       }
       return { ...prev, adapterConfig: nextAdapterConfig };
+    });
+  }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const bindSecretAsEnvVar = useCallback((binding: { envKey: string; secretId: string; version: SecretVersionSelector }) => {
+    if (isCreate) return;
+    const flushedEnv = flushEnvironmentDraft();
+    setOverlay((prev) => {
+      const existingEnv = (flushedEnv ?? prev.adapterConfig.env ?? props.agent.adapterConfig?.env ?? EMPTY_ENV) as Record<string, EnvBinding>;
+      return {
+        ...prev,
+        adapterConfig: {
+          ...prev.adapterConfig,
+          env: {
+            ...existingEnv,
+            [binding.envKey]: {
+              type: "secret_ref",
+              secretId: binding.secretId,
+              version: binding.version,
+            },
+          },
+        },
+      };
     });
   }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1609,6 +1640,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         const created = await createSecret.mutateAsync({ name, value });
         return created;
       }}
+      onRotateSecret={(secretId, value) => rotateSecret.mutateAsync({ secretId, value })}
       onChange={(env) =>
         isCreate
           ? set!({ envBindings: env ?? {}, envVars: "" })
@@ -1656,6 +1688,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               secrets={availableSecrets}
               onChange={applyAccessGrants}
               onCreateSecret={(name, value) => createSecret.mutateAsync({ name, value })}
+              onRotateSecret={(secretId, value) => rotateSecret.mutateAsync({ secretId, value })}
+              onBindAsEnvVar={bindSecretAsEnvVar}
               proposals={agentBindingProposals}
               onApproveProposal={proposalReview.requestApprove}
               onRejectProposal={proposalReview.requestReject}
