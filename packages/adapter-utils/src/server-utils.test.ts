@@ -45,6 +45,12 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   WATCHDOG_DEFAULT_MANDATE,
 } from "./server-utils.js";
+import {
+  createFollowUpAfterSwarmWake,
+  FOLLOW_UP_REQUEST,
+  FOLLOW_UP_REQUEST_ID,
+  FOLLOW_UP_SWARM_RUN_ID,
+} from "./test-fixtures/follow-up-after-swarm-wake.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -2929,6 +2935,45 @@ describe("renderPaperclipWakePrompt", () => {
     });
     expect(prompt).not.toContain("New comments in order:");
     expect(prompt).toContain("Messages comment-1: An earlier turn already read this comment and may have applied it.");
+  });
+
+  it("states a follow-up request plainly once and names no run ids after a swarm run", () => {
+    const fixture = createFollowUpAfterSwarmWake();
+    const prompt = renderPaperclipWakePrompt(fixture.paperclipWake);
+    const plain = `Latest request (message ${FOLLOW_UP_REQUEST_ID}):\n\`\`\`text\n${FOLLOW_UP_REQUEST}\n\`\`\``;
+    expect(prompt.split(plain)).toHaveLength(2);
+    expect(prompt.indexOf(plain)).toBeLessThan(prompt.indexOf('"messages":'));
+    expect(prompt).not.toContain(FOLLOW_UP_SWARM_RUN_ID);
+    expect(prompt).not.toContain("createdByRunId");
+    expect(prompt).not.toContain("run receipt");
+    expect(prompt.split("## Files Delivered")).toHaveLength(2);
+    expect(prompt).not.toContain("Issue continuation summary:");
+  });
+
+  it("keeps a run-authored user comment distinguishable without naming the run", () => {
+    const fixture = createFollowUpAfterSwarmWake();
+    const continuation = fixture.paperclipWake.executionContinuation;
+    const prompt = renderPaperclipWakePrompt({ ...fixture.paperclipWake, executionContinuation: {
+      ...continuation,
+      messages: continuation.messages.map((message, index) => index === 0 ? { ...message, createdByRunId: FOLLOW_UP_SWARM_RUN_ID } : message),
+      completedActions: [{ runId: FOLLOW_UP_SWARM_RUN_ID, receiptId: "receipt-1", operationId: "register_deliverable", result: { attachmentId: "attachment-1" } }],
+      resumeDelta: { baseRunId: FOLLOW_UP_SWARM_RUN_ID, messages: continuation.messages.slice(-1) },
+    } }, { resumedSession: true });
+    expect(prompt).not.toContain(FOLLOW_UP_SWARM_RUN_ID);
+    expect(prompt).toContain('"receiptId":"receipt-1"');
+    const full = renderPaperclipWakePrompt({ ...fixture.paperclipWake, executionContinuation: {
+      ...continuation,
+      messages: continuation.messages.map((message, index) => index === 0 ? { ...message, createdByRunId: FOLLOW_UP_SWARM_RUN_ID } : message),
+    } });
+    expect(full).toContain('"authorType":"user","authorId":"local-board","createdByRunId":true');
+    expect(full).not.toContain(FOLLOW_UP_SWARM_RUN_ID);
+  });
+
+  it("keeps a continuation summary that differs from the recorded completed work", () => {
+    const fixture = createFollowUpAfterSwarmWake();
+    const prompt = renderPaperclipWakePrompt({ ...fixture.paperclipWake,
+      continuationSummary: { body: "# Newer summary\n\nA reviewer asked for a second pass." } });
+    expect(prompt).toContain("Issue continuation summary:\n# Newer summary");
   });
 
   it("renders grouped non-plan document annotations with editing scope", () => {

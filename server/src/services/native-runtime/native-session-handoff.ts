@@ -20,7 +20,7 @@ export function createNativeSessionHandoffLoader(input: Parameters<typeof buildN
 export function renderNativeSessionHandoff(input: {
   issueId: string; generation: number | null; entries: HandoffEntry[]; omittedEntriesAtLeast: number;
 }): string {
-  const entries: HandoffEntry[] = [];
+  const entries: Array<Omit<HandoffEntry, "id"> & { id?: string }> = [];
   let omitted = input.omittedEntriesAtLeast;
   let truncated = omitted > 0;
   const render = () => [
@@ -33,7 +33,9 @@ export function renderNativeSessionHandoff(input: {
     const clipped = entry.body.length > ENTRY_MAX_CHARS;
     // Preserve both the start and latest direction in exceptionally long messages.
     const body = clipped ? `${entry.body.slice(0, 2_900)}\n[content omitted]\n${entry.body.slice(-900)}` : entry.body;
-    const bounded = { ...entry, body, truncated: entry.truncated === true || clipped };
+    const { id, runId: _runId, ...modelEntry } = entry;
+    const retrievable = entry.kind !== "run_summary" && entry.kind !== "agent_reply";
+    const bounded = { ...(retrievable ? { id } : {}), ...modelEntry, body, truncated: entry.truncated === true || clipped };
     entries.push(bounded);
     truncated ||= bounded.truncated;
     // Leave space for the final omission count, including multi-byte Unicode.
