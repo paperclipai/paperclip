@@ -16108,7 +16108,7 @@ export function createRemoteRunnerProcessLauncher(input: {
   }) => Promise<void>;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   trace?: NativeRunTrace;
-  onRunnerProcessSpawned?: () => void;
+  onRunnerProcessSpawned?: () => void | Promise<void>;
 }): (spec: RunnerProcessLaunchSpec) => RunnerProcessHandle {
   const runner = input.runner;
   const reserve = input.diskReservePath ? createRemoteRunnerDiskReserve(runner, input.diskReservePath) : null;
@@ -16235,7 +16235,7 @@ export function createRemoteRunnerProcessLauncher(input: {
       });
       // Trace publication can yield after staging; recheck at dispatch.
       if (pendingSignal) return cancelledBeforeDispatch();
-      input.onRunnerProcessSpawned?.();
+      await input.onRunnerProcessSpawned?.();
       if (pendingSignal) return cancelledBeforeDispatch();
       const identityNonce = randomUUID();
       const remoteArgs = [...spec.args];
@@ -18707,13 +18707,16 @@ async function createRunnerdBackendWithinSessionClaim(
           onSpawn: input.onSpawn,
           onLog: input.onLog,
           trace: input.trace,
-          onRunnerProcessSpawned: () => {
+          onRunnerProcessSpawned: async () => {
+            resolveRemoteRunnerProcessSpawned?.();
             // A process that is launched here receives the credential that was
             // prepared for this run. An adopted runner never reaches this
             // callback and keeps the identity of the token it started with.
-            void recordReplacementRunnerCredential(input.db, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId })
-              .catch(err => logger.warn({ err, runId: input.execution.binding.runId }, "could not record the credential of a launched runner"));
-            resolveRemoteRunnerProcessSpawned?.();
+            // The launcher waits for this write before it dispatches the
+            // process: a rejection that the process reports is attributed by
+            // this identity, so the process must not run before it is saved.
+            // A failed write fails the launch.
+            await recordReplacementRunnerCredential(input.db, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
           },
         })
       : undefined;
