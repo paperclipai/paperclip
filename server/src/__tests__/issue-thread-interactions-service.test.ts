@@ -400,6 +400,18 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
     });
 
+    it("fails closed without a caller hook: the service itself denies adoption when assignment policy blocks it", async () => {
+      const fixture = await ownerless({});
+      // An authorization policy the core cannot evaluate must deny assignment.
+      await db.update(agents).set({ permissions: { authorizationPolicy: { unsupportedRule: true } } })
+        .where(eq(agents.id, fixture.agentId));
+      await expect(interactionsSvc.create({ id: fixture.issueId, companyId: fixture.companyId },
+        questionCreateInput(fixture.runId), { agentId: fixture.agentId }))
+        .rejects.toMatchObject({ status: 403 });
+      expect(await assigneeOf(fixture.issueId)).toEqual({ a: null, u: null });
+      expect(await db.select().from(issueThreadInteractions)).toHaveLength(0);
+    });
+
     it("does not ask for adoption authorization when the issue already has an owner", async () => {
       const fixture = await seedSourceQuestionFixture({});
       const owner = randomUUID();

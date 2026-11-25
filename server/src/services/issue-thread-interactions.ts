@@ -149,7 +149,7 @@ import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { withTelemetryCompany } from "../telemetry-company-scope.js";
 import { emitPlanApprovedAfterCommit } from "./product-telemetry.js";
-import { authorizationService } from "./authorization.js";
+import { authorizationDeniedDetails, authorizationService } from "./authorization.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
 import { resolveDeploymentMode } from "../config-file.js";
 import {
@@ -5163,7 +5163,7 @@ export function issueThreadInteractionService(
               assigneeUserId: normalizedData.addresseeUserId, lock: true });
           }
           const [issueRow] = await tx
-            .select({ executionPolicy: issues.executionPolicy, status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId, conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId, identifier: issues.identifier })
+            .select({ executionPolicy: issues.executionPolicy, projectId: issues.projectId, parentId: issues.parentId, status: issues.status, assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId, conversationAgentId: issues.conversationAgentId, conversationUserId: issues.conversationUserId, identifier: issues.identifier })
             .from(issues)
             .where(
               and(
@@ -5214,7 +5214,26 @@ export function issueThreadInteractionService(
                 { code: "interaction_wake_target_unbound", issueId: issue.id },
               );
             }
-            await options.authorizeWakeTargetAdoption?.();
+            if (options.authorizeWakeTargetAdoption) {
+              await options.authorizeWakeTargetAdoption();
+            } else {
+              // No caller-supplied decision: decide here, so no create() caller
+              // can adopt an issue without the tasks:assign check.
+              const scope = {
+                issueId: issue.id,
+                projectId: issueRow.projectId ?? null,
+                parentIssueId: issueRow.parentId ?? null,
+                assigneeAgentId: actor.agentId,
+                assigneeUserId: null,
+              };
+              const decision = await authorizationService(tx).decide({
+                actor: { type: "agent", agentId: actor.agentId, companyId: issue.companyId, runId: data.sourceRunId ?? null },
+                action: "tasks:assign",
+                resource: { type: "issue", companyId: issue.companyId, ...scope },
+                scope,
+              });
+              if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+            }
             await tx.update(issues)
               .set({ assigneeAgentId: actor.agentId, updatedAt: new Date() })
               .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
