@@ -1,3 +1,5 @@
+import type { AgentAppearance } from "../agent-appearance.js";
+import type { AgentRunnerChoice } from "../agent-runner.js";
 import type { AgentEnvConfig } from "./secrets.js";
 import type { RoutineVariable } from "./routine.js";
 import type { IssueCommentAuthorType, PermissionKey } from "../constants.js";
@@ -34,9 +36,7 @@ export interface CompanyPortabilityCompanyManifestEntry {
   path: string;
   name: string;
   description: string | null;
-  brandColor: string | null;
   logoPath: string | null;
-  attachmentMaxBytes: number | null;
   requireBoardApprovalForNewAgents: boolean;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: string | null;
@@ -200,10 +200,19 @@ export interface CompanyPortabilityIssueManifestEntry {
   workProducts?: CompanyPortabilityIssueWorkProductManifestEntry[];
   monitor?: CompanyPortabilityIssueMonitorManifestEntry | null;
   attachments?: CompanyPortabilityIssueAttachmentManifestEntry[];
+  /** Slug of the parent task when it is part of the same bundle (schemaVersion >= 7). */
+  parentSlug?: string | null;
+  /** Preserved source timestamps as ISO strings (schemaVersion >= 7); absent in older bundles. */
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  cancelledAt?: string | null;
   metadata: Record<string, unknown> | null;
 }
 
 export interface CompanyPortabilityAgentManifestEntry {
+  runner?: AgentRunnerChoice;
   slug: string;
   name: string;
   path: string;
@@ -211,6 +220,7 @@ export interface CompanyPortabilityAgentManifestEntry {
   role: string;
   title: string | null;
   icon: string | null;
+  appearance?: AgentAppearance | null;
   capabilities: string | null;
   reportsToSlug: string | null;
   reportsToExistingAgentId: string | null;
@@ -379,6 +389,7 @@ export interface CompanyPortabilityPreviewResult {
 }
 
 export interface CompanyPortabilityAdapterOverride {
+  runner?: AgentRunnerChoice;
   adapterType: string;
   adapterConfig?: Record<string, unknown>;
 }
@@ -400,6 +411,15 @@ export interface CompanyPortabilityImportResult {
     id: string | null;
     action: "created" | "updated" | "skipped";
     name: string;
+    reason: string | null;
+  }[];
+  skills: {
+    originalKey: string;
+    originalSlug: string;
+    key: string;
+    slug: string;
+    id: string;
+    action: "created" | "renamed" | "replaced" | "skipped";
     reason: string | null;
   }[];
   projects: {

@@ -1,3 +1,4 @@
+import { AgentIdentity } from "@/components/AgentIdentity";
 import { useMemo, useState } from "react";
 import { Link } from "@/lib/router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -10,6 +11,7 @@ import { Identity } from "./Identity";
 import { RunChatSurface } from "./RunChatSurface";
 import { StatusBadge } from "./StatusBadge";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
+import { readFromIssueChatBootstrap } from "@/lib/issue-chat-bootstrap";
 
 interface LiveRunWidgetProps {
   issueId: string;
@@ -35,7 +37,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
-    queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
+    queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.liveRuns(issueId), issueId, (item) => item.liveRuns, () => heartbeatsApi.liveRunsForIssue(issueId)),
     enabled: !!issueId,
     refetchInterval: liveRunRefetchInterval,
   });
@@ -113,7 +115,7 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
               <div className="mb-3 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div className="min-w-0">
                   <Link to={`/agents/${run.agentId}`} className="inline-flex hover:underline">
-                    <Identity name={run.agentName} size="sm" />
+                    <AgentIdentity agent={{ id: run.agentId, name: run.agentName, appearance: run.agentAppearance }} size="sm" />
                   </Link>
                   <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
                     <Link

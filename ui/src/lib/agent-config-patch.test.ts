@@ -52,12 +52,47 @@ function makeOverlay(patch?: Partial<AgentConfigOverlay>): AgentConfigOverlay {
     identity: {},
     adapterConfig: {},
     heartbeat: {},
+    debug: {},
     runtime: {},
     ...patch,
   };
 }
 
 describe("buildAgentUpdatePatch", () => {
+  it("keeps heartbeat and debug edits when removing an incompatible connection", () => {
+    const agent = makeAgent();
+    agent.runtimeConfig.aiConnection = { provider: "anthropic", method: "subscription", mode: "responsible_user" };
+    agent.runtimeConfig.debug = { providerTrace: "raw", keep: true };
+    const { aiConnection: _removed, ...runtimeConfig } = agent.runtimeConfig;
+    const patch = buildAgentUpdatePatch(agent, makeOverlay({
+      adapterType: "opencode_local", runtime: { runtimeConfig },
+      heartbeat: { intervalSec: 600 }, debug: { providerTrace: undefined },
+    }));
+    expect(patch.runtimeConfig).toEqual({ heartbeat: { enabled: true, intervalSec: 600 }, debug: { keep: true } });
+  });
+
+  it("merges heartbeat and debug edits with a newly selected connection", () => {
+    const binding = { provider: "openai", method: "api_key", mode: "responsible_user" };
+    const patch = buildAgentUpdatePatch(makeAgent(), makeOverlay({
+      runtime: { runtimeConfig: { aiConnection: binding, heartbeat: { enabled: true, intervalSec: 300 } } },
+      heartbeat: { enabled: false }, debug: { providerTrace: "raw" },
+    }));
+    expect(patch.runtimeConfig).toEqual({ aiConnection: binding, heartbeat: { enabled: false, intervalSec: 300 }, debug: { providerTrace: "raw" } });
+  });
+  it("merges the agent-scoped provider trace debug setting into runtime config", () => {
+    const patch = buildAgentUpdatePatch(
+      makeAgent(),
+      makeOverlay({ debug: { providerTrace: "raw" } }),
+    );
+
+    expect(patch).toMatchObject({
+      runtimeConfig: {
+        heartbeat: { enabled: true, intervalSec: 300 },
+        debug: { providerTrace: "raw" },
+      },
+    });
+  });
+
   it("replaces adapter config and drops env when the last env binding is cleared", () => {
     const patch = buildAgentUpdatePatch(
       makeAgent(),
@@ -75,37 +110,6 @@ describe("buildAgentUpdatePatch", () => {
       },
       replaceAdapterConfig: true,
     });
-  });
-
-  it("writes the cheap profile under runtimeConfig.modelProfiles, never on primary adapterConfig", () => {
-    const patch = buildAgentUpdatePatch(
-      makeAgent(),
-      makeOverlay({
-        modelProfiles: {
-          cheap: {
-            enabled: true,
-            adapterConfig: { model: "claude-haiku-4-5" },
-          },
-        },
-      }),
-    );
-
-    expect(patch).toEqual({
-      runtimeConfig: {
-        heartbeat: {
-          enabled: true,
-          intervalSec: 300,
-        },
-        modelProfiles: {
-          cheap: {
-            enabled: true,
-            adapterConfig: { model: "claude-haiku-4-5" },
-          },
-        },
-      },
-    });
-    // The primary adapterConfig is untouched.
-    expect(patch.adapterConfig).toBeUndefined();
   });
 
   it("writes max-turn continuation policy under runtimeConfig.heartbeat", () => {
@@ -134,61 +138,6 @@ describe("buildAgentUpdatePatch", () => {
           },
         },
       },
-    });
-  });
-
-  it("merges cheap profile changes onto existing runtimeConfig.modelProfiles state", () => {
-    const agent = makeAgent();
-    agent.runtimeConfig = {
-      heartbeat: { enabled: true, intervalSec: 300 },
-      modelProfiles: {
-        cheap: {
-          enabled: false,
-          adapterConfig: { model: "old-cheap" },
-        },
-      },
-    };
-
-    const patch = buildAgentUpdatePatch(
-      agent,
-      makeOverlay({
-        modelProfiles: {
-          cheap: {
-            enabled: true,
-          },
-        },
-      }),
-    );
-
-    expect((patch.runtimeConfig as Record<string, unknown>).modelProfiles).toEqual({
-      cheap: {
-        enabled: true,
-        adapterConfig: { model: "old-cheap" },
-      },
-    });
-  });
-
-  it("clears the cheap profile when the overlay marks it cleared", () => {
-    const agent = makeAgent();
-    agent.runtimeConfig = {
-      heartbeat: { enabled: true, intervalSec: 300 },
-      modelProfiles: {
-        cheap: {
-          enabled: true,
-          adapterConfig: { model: "claude-haiku-4-5" },
-        },
-      },
-    };
-
-    const patch = buildAgentUpdatePatch(
-      agent,
-      makeOverlay({
-        modelProfiles: { cheap: { cleared: true } },
-      }),
-    );
-
-    expect(patch.runtimeConfig).toEqual({
-      heartbeat: { enabled: true, intervalSec: 300 },
     });
   });
 

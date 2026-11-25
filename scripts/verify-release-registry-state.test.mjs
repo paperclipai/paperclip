@@ -6,13 +6,22 @@ import {
   createManifestLookupKey,
   fetchRegistryJson,
   isCanaryVersion,
+  isPrereleaseVersion,
   verifyPackageRegistryProblems,
   verifyPackageRegistryState,
+  compareCanaryVersions,
 } from "./verify-release-registry-state.mjs";
 
 test("isCanaryVersion matches release canaries", () => {
   assert.equal(isCanaryVersion("2026.427.0-canary.3"), true);
   assert.equal(isCanaryVersion("2026.427.0"), false);
+});
+
+test("isPrereleaseVersion matches canary and nightly versions", () => {
+  assert.equal(isPrereleaseVersion("2026.427.0-canary.3"), true);
+  assert.equal(isPrereleaseVersion("2026.427.0-nightly.0"), true);
+  assert.equal(isPrereleaseVersion("2026.427.0-beta.2"), true);
+  assert.equal(isPrereleaseVersion("2026.427.0"), false);
 });
 
 test("collectInternalDependencyProblems flags missing internal versions", () => {
@@ -192,7 +201,7 @@ test("verifyPackageRegistryState fails when canary latest is left in place by de
       allowCanaryLatest: false,
     }),
     [
-      "@paperclipai/plugin-e2b: latest dist-tag still resolves to canary 2026.425.0-canary.5; if that state is intentional, rerun the verification script directly with --allow-canary-latest",
+      "@paperclipai/plugin-e2b: latest dist-tag still resolves to prerelease 2026.425.0-canary.5; if that state is intentional, rerun the verification script directly with --allow-canary-latest",
       "@paperclipai/plugin-e2b@2026.425.0-canary.5 via latest: dependencies requires @paperclipai/plugin-sdk@2026.425.0-canary.5, but npm does not expose that version",
     ],
   );
@@ -225,7 +234,37 @@ test("verifyPackageRegistryProblems marks canary latest drift as non-retriable",
   });
 
   assert.equal(problems[0]?.retriable, false);
-  assert.match(problems[0]?.message ?? "", /latest dist-tag still resolves to canary/);
+  assert.match(problems[0]?.message ?? "", /latest dist-tag still resolves to prerelease/);
+});
+
+test("verifyPackageRegistryProblems accepts the nightly channel and flags nightly latest drift", () => {
+  const packageDocsByName = new Map([
+    [
+      "@paperclipai/plugin-e2b",
+      {
+        "dist-tags": {
+          latest: "2026.425.0-nightly.1",
+          nightly: "2026.427.0-nightly.0",
+        },
+        versions: {
+          "2026.427.0-nightly.0": {},
+        },
+      },
+    ],
+  ]);
+
+  const problems = verifyPackageRegistryProblems({
+    packageName: "@paperclipai/plugin-e2b",
+    packageDoc: packageDocsByName.get("@paperclipai/plugin-e2b"),
+    packageDocsByName,
+    channel: "nightly",
+    distTag: "nightly",
+    targetVersion: "2026.427.0-nightly.0",
+    allowCanaryLatest: false,
+  });
+
+  assert.equal(problems[0]?.retriable, false);
+  assert.match(problems[0]?.message ?? "", /latest dist-tag still resolves to prerelease 2026\.425\.0-nightly\.1/);
 });
 
 test("verifyPackageRegistryState allows intentional canary latest but still checks dependencies", () => {
@@ -360,4 +399,28 @@ test("fetchRegistryJson times out hung requests", async () => {
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test("a finalizing canary accepts a dist-tag that a newer canary already moved, and nothing older or foreign", () => {
+  const check = (canaryTag, allowNewerCanary, channel = "canary") => {
+    const packageDoc = { "dist-tags": { latest: "2026.1110.0", canary: canaryTag }, versions: { "2026.1116.0-canary.21800": {} } };
+    return verifyPackageRegistryProblems({
+      packageName: "@paperclipai/shared", packageDoc, packageDocsByName: new Map([["@paperclipai/shared", packageDoc]]),
+      channel, distTag: "canary", targetVersion: "2026.1116.0-canary.21800", allowCanaryLatest: false, allowNewerCanary,
+    }).map((problem) => problem.message);
+  };
+  assert.deepEqual(check("2026.1116.0-canary.21800", true), []);
+  assert.deepEqual(check("2026.1116.0-canary.21805", true), []);
+  assert.deepEqual(check("2026.1117.0-canary.21803", true), []);
+  assert.match(check("2026.1116.0-canary.21805", false)[0], /resolves to 2026\.1116\.0-canary\.21805, expected/);
+  assert.match(check("2026.1116.0-canary.21799", true)[0], /resolves to 2026\.1116\.0-canary\.21799, expected/);
+  assert.match(check("2026.1116.0-nightly.3", true)[0], /resolves to 2026\.1116\.0-nightly\.3, expected/);
+  assert.match(check(undefined, true)[0], /resolves to <missing>/);
+});
+
+test("canary versions compare by base version, then canary number", () => {
+  assert.equal(compareCanaryVersions("2026.1116.0-canary.9", "2026.1116.0-canary.21800"), -1);
+  assert.equal(compareCanaryVersions("2026.1117.0-canary.1", "2026.1116.0-canary.21800"), 1);
+  assert.equal(compareCanaryVersions("2026.1116.0-canary.7", "2026.1116.0-canary.7"), 0);
+  assert.equal(compareCanaryVersions("2026.1116.0-nightly.7", "2026.1116.0-canary.7"), null);
 });

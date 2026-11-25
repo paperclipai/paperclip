@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import type { CompanySecret, UserSecretDefinition } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
+import { ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -186,7 +187,7 @@ export function EnvironmentVariableRow({
     row.source === "text"
       ? "Text value"
       : row.source === "secret"
-        ? "Company secret reference"
+        ? "Organization secret reference"
         : "User secret reference";
   const nameErrorId = `${row.id}-name-error`;
   const healthId = `${row.id}-health`;
@@ -199,7 +200,7 @@ export function EnvironmentVariableRow({
   return (
     <div
       className={cn(
-        "group/row grid grid-cols-(--gtc-13) items-start gap-x-1.5 gap-y-1 rounded-md px-1 py-1",
+        "group/row -mx-1 grid grid-cols-(--gtc-13) items-start gap-x-1.5 gap-y-1 rounded-md px-1 py-1",
         "@[40rem]/env:grid-cols-(--gtc-14) @[40rem]/env:items-center",
         isDirty && "bg-amber-500/[0.06] ring-1 ring-amber-500/20",
       )}
@@ -284,8 +285,8 @@ export function EnvironmentVariableRow({
                     <span className="text-(length:--text-micro) text-muted-foreground">Store the value inline as plain text.</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("secret")}>
-                    <span className="text-sm">Company secret</span>
-                    <span className="text-(length:--text-micro) text-muted-foreground">Resolve a stored company secret at run start.</span>
+                    <span className="text-sm">Organization secret</span>
+                    <span className="text-(length:--text-micro) text-muted-foreground">Resolve a stored organization secret at run start.</span>
                   </DropdownMenuItem>
                   <DropdownMenuItem className="flex-col items-start gap-0.5" onSelect={() => switchSource("user_secret")}>
                     <span className="text-sm">User secret</span>
@@ -300,7 +301,7 @@ export function EnvironmentVariableRow({
                 <>
                   <input
                     ref={valueInputRef}
-                    className={valueTextInputClass}
+                    className={cn(valueTextInputClass, ANALYTICS_NO_CAPTURE_CLASS)}
                     placeholder="value"
                     value={row.textValue}
                     type={sensitive ? "password" : "text"}
@@ -522,7 +523,7 @@ export function EnvironmentVariableRow({
             id={healthId}
             role="status"
             className={cn(
-              "mt-0.5 text-(length:--text-micro)",
+              "mt-1.5 text-(length:--text-micro)",
               health.level === "error" ? "text-destructive" : "text-amber-600 dark:text-amber-400",
             )}
           >

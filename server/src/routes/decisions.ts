@@ -14,6 +14,7 @@ import { validate } from "../middleware/validate.js";
 import { decisionService, type DecisionServiceOptions } from "../services/decisions.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import { attentionService } from "../services/attention.js";
+import { attentionHandledDetails, attentionHandledFor } from "../services/attention-receipts.js";
 import { authorizationDeniedDetails, authorizationService } from "../services/authorization.js";
 import { canReadDecisionSource } from "../services/decision-queues.js";
 import { hashAttentionArchiveManifest } from "../services/decision-retention.js";
@@ -28,14 +29,14 @@ const createSchema = z.object({
   expiresAt: z.coerce.date().optional(),
   idempotencyKey: z.string().trim().min(1).max(500).nullable().optional(),
   continuationPolicy: z.enum(["none", "wake_origin_agent"]).optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 }).strict();
 const bundleSchema = z.object({ title: z.string().trim().min(1).max(500), summary: z.string().max(100_000), decisions: z.array(createSchema).min(1).max(50) }).strict();
-const decideSchema = z.object({ optionId: z.string().trim().min(1).max(120), inputValues: z.record(z.string().max(20_000)).optional(), idempotencyKey: z.string().trim().min(1).max(500).nullable().optional() }).strict();
+const decideSchema = z.object({ optionId: z.string().trim().min(1).max(120), inputValues: z.record(z.string(), z.string().max(20_000)).optional(), idempotencyKey: z.string().trim().min(1).max(500).nullable().optional() }).strict();
 const dismissSchema = z.object({ reason: z.string().max(20_000).nullable().optional() }).strict();
 const statsQuerySchema = z.object({
   groupBy: z.literal("ruleKey"),
-  originAgentId: z.string().uuid().optional(),
+  originAgentId: z.string().guid().optional(),
   since: z.coerce.date().optional(),
 }).strict();
 
@@ -147,7 +148,7 @@ export function decisionRoutes(db: Db, options: DecisionServiceOptions) {
   });
   router.get("/companies/:companyId/decisions", async (req, res) => {
     const companyId = req.params.companyId as string; assertBoard(req); assertCompanyAccess(req, companyId);
-    const query = z.object({ status: z.enum(["open", "decided", "expired", "cancelled"]).optional(), bundleId: z.string().uuid().optional(), targetIssueId: z.string().uuid().optional(), originAgentId: z.string().uuid().optional(), limit: z.coerce.number().int().positive().max(100).optional() }).safeParse(req.query);
+    const query = z.object({ status: z.enum(["open", "decided", "expired", "cancelled"]).optional(), bundleId: z.string().guid().optional(), targetIssueId: z.string().guid().optional(), originAgentId: z.string().guid().optional(), limit: z.coerce.number().int().positive().max(100).optional() }).safeParse(req.query);
     if (!query.success) { res.status(400).json({ error: "Invalid decision filters", details: query.error.flatten() }); return; }
     res.json(await svc.list(companyId, query.data));
   });
@@ -182,7 +183,10 @@ export function decisionRoutes(db: Db, options: DecisionServiceOptions) {
     const userId = boardUserId(req);
     const decision = await getAccessibleResource(req, res, svc.get(req.params.id as string), "Decision not found");
     if (!decision) return;
-    res.json(await svc.decide({ id: decision.id, decidedByUserId: userId, userActor: req.actor, ...req.body }));
+    // Who the card was for, read before the answer (PAP-749 plan §6).
+    const handledFor = await attentionHandledFor(db, decision.companyId, { sourceKind: "decision", sourceId: decision.id }, userId);
+    res.json(await svc.decide({ id: decision.id, decidedByUserId: userId, userActor: req.actor, ...req.body,
+      activityDetails: attentionHandledDetails(handledFor, "decided") }));
   });
   router.post("/decisions/:id/dismiss", validate(dismissSchema), async (req, res) => {
     const userId = boardUserId(req);
@@ -194,7 +198,12 @@ export function decisionRoutes(db: Db, options: DecisionServiceOptions) {
     assertBoardOrAgent(req);
     const decision = await getAccessibleResource(req, res, svc.get(req.params.id as string), "Decision not found");
     if (!decision) return;
-    const actor = getActorInfo(req); res.json(await svc.cancel(decision.id, { actorType: actor.actorType, actorId: actor.actorId, runId: actor.runId }));
+    const actor = getActorInfo(req);
+    const handledFor = actor.actorType === "user"
+      ? await attentionHandledFor(db, decision.companyId, { sourceKind: "decision", sourceId: decision.id }, actor.actorId)
+      : null;
+    res.json(await svc.cancel(decision.id, { actorType: actor.actorType, actorId: actor.actorId, runId: actor.runId },
+      { activityDetails: attentionHandledDetails(handledFor, "withdrawn") }));
   });
   return router;
 }

@@ -1,0 +1,101 @@
+{
+  "recordedAt": "2026-10-21",
+  "baseRevision": "16ea56fd3eb492e3636ebc60e0c9fd4deb328f14",
+  "worktreeChangesDuringProof": "Pre-auth capability summaries and key permission helper copy; generated catalog and setup assertions.",
+  "environment": {
+    "artifact": "source checkout",
+    "platform": "darwin arm64",
+    "node": "v26.4.0",
+    "instance": "isolated local_trusted with fresh embedded PostgreSQL",
+    "actor": "temporary personal board-owned grant",
+    "modelExecution": false
+  },
+  "live": {
+    "method": "mcp-oauth",
+    "region": "US",
+    "endpoint": "https://api.braintrust.dev/mcp",
+    "requestedScopes": [
+      "mcp"
+    ],
+    "providerReportedScope": "openid profile email offline_access",
+    "connect": "pass",
+    "discoveredTools": 49,
+    "readTools": 17,
+    "nonReadTools": 32,
+    "boundedRead": {
+      "tool": "list_recent_objects",
+      "limit": 1,
+      "result": "pass"
+    },
+    "syntheticWrite": {
+      "tool": "edit_dataset_rows",
+      "rows": 1,
+      "newDisposableDataset": true,
+      "readbackTool": "sql_query",
+      "result": "pass"
+    },
+    "runGateway": "Two successful process-agent heartbeats using actual run-scoped gateway capabilities. Capability delivered by private qualification harness file; provider credentials remained vaulted.",
+    "catalogRefresh": "pass; 49 tools retained",
+    "oauthReconnect": "pass; same connection, regional method and quarantine configuration; subsequent bounded read passed",
+    "cleanup": {
+      "syntheticRow": "deleted; empty result verified",
+      "disposableDataset": "deleted after explicit user approval; Braintrust dataset list empty",
+      "localConnection": "archived; 2 secrets and 1 grant revoked; installation and 49 profile entries removed",
+      "postRemovalCall": "denied with tool_not_found",
+      "gatewaySessions": "revoked; private capability files deleted",
+      "isolatedInstance": "Owned server/database stopped; disposable instance data removed; sanitized evidence retained."
+    },
+    "redaction": {
+      "api": "No raw credential fields in connection and catalog responses",
+      "serverLog": "No credential-shaped bearer/access-token/refresh-token/callback-code values",
+      "limit": "No token was decrypted for exact-value scanning."
+    }
+  },
+  "browser": {
+    "checksPassed": 15,
+    "providerCalls": false,
+    "coverage": [
+      "Apps card",
+      "all four method choices",
+      "personal/shared control",
+      "pre-auth risk copy",
+      "password input and required validation",
+      "key canary absent from browser storage",
+      "cancel without connection creation",
+      "direct method link and reload",
+      "plain source default",
+      "light and dark artwork"
+    ],
+    "observedAndFixed": "Initial form did not render definition warnings; moved risk caveats into visible capability summary and key helper, then repeated walkthrough.",
+    "unrelatedObservation": "Assistant Connection card requests an unavailable /api/mcp/connections endpoint; Braintrust setup succeeds."
+  },
+  "fixture": {
+    "braintrustServiceTestsPassed": 56,
+    "catalogTestsPassed": 36,
+    "coverage": [
+      "all four methods",
+      "DCR and PKCE",
+      "personal/shared vault ownership",
+      "read/write execution",
+      "Off and Ask-first",
+      "changed-tool quarantine",
+      "refresh/reconnect",
+      "cancellation/resume",
+      "cross-company and wrong-owner denial",
+      "revocation and failed-setup cleanup",
+      "exact canary redaction"
+    ]
+  },
+  "qualificationGaps": [
+    "US API-key method: no test key supplied",
+    "EU OAuth and API-key methods: available account uses US data plane; no EU account/key supplied",
+    "Live token expiry/refresh not forced; reconnect passed",
+    "Provider-side OAuth revocation has no advertised endpoint",
+    "Native CLI harness automatic capability delivery not exercised"
+  ],
+  "harnessCorrections": [
+    "Initial process harness used the wrong authentication header; corrected to x-paperclip-tool-gateway-token.",
+    "Initial write harness parsed normalized MCP content incorrectly; corrected before successful synthetic write."
+  ],
+  "delivery": "Live qualification is partial. Outstanding account methods, token lifecycle checks and native CLI capability delivery are listed above; successful CI does not qualify those provider behaviors."
+}

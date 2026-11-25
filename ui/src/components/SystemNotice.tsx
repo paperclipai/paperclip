@@ -206,6 +206,38 @@ function MetadataRow({ row, tone }: { row: SystemNoticeMetadataRow; tone: ToneTo
   );
 }
 
+/**
+ * The structured metadata rows shared by the boxed SystemNotice details panel
+ * and the chat shell's expandable system row (TaskChatSystemNotice, PAP-443).
+ */
+export function SystemNoticeMetadataSections({
+  sections,
+  tone = "neutral",
+}: {
+  sections: SystemNoticeMetadataSection[];
+  tone?: SystemNoticeTone;
+}) {
+  const tokens = TONE_TOKENS[tone];
+  return (
+    <div className="divide-y divide-border/50 px-1 py-1">
+      {sections.map((section, sectionIdx) => (
+        <div key={sectionIdx} className="py-1.5 first:pt-2 last:pb-2">
+          {section.title ? (
+            <div className="px-3 pb-1 pt-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
+              {section.title}
+            </div>
+          ) : null}
+          <div>
+            {section.rows.map((row, rowIdx) => (
+              <MetadataRow key={rowIdx} row={row} tone={tokens} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function SystemNotice({
   tone = "neutral",
   label,
@@ -312,22 +344,7 @@ export function SystemNotice({
             tokens.divider,
           )}
         >
-          <div className="divide-y divide-border/50 px-1 py-1">
-            {metadata!.map((section, sectionIdx) => (
-              <div key={sectionIdx} className="py-1.5 first:pt-2 last:pb-2">
-                {section.title ? (
-                  <div className="px-3 pb-1 pt-0.5 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
-                    {section.title}
-                  </div>
-                ) : null}
-                <div>
-                  {section.rows.map((row, rowIdx) => (
-                    <MetadataRow key={rowIdx} row={row} tone={tokens} />
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
+          <SystemNoticeMetadataSections sections={metadata!} tone={tone} />
         </div>
       ) : null}
     </section>

@@ -1,6 +1,6 @@
 /**
- * Canonical state inventory for the Task Chat Redesign (flag:
- * enableTaskChatRedesign).
+ * Canonical state inventory for the chat-style task thread (the default task
+ * view; the classic legacy view sits behind enableClassicTaskInterface).
  *
  * This list is the single source of truth for:
  *   - the dev harness state switcher (/dev/task-chat-lab), and
@@ -24,6 +24,7 @@ export const TASK_CHAT_STATES = [
   "working",
   "running",
   "completed",
+  "activity-phases",
   "awaiting-approval",
   "plan-todo",
   "interrupted",
@@ -63,10 +64,10 @@ export const TASK_CHAT_STATE_META: Record<TaskChatStateId, TaskChatStateMeta> = 
   },
   "agent-message": {
     id: "agent-message",
-    label: "Agent message",
+    label: "Final response",
     tier: "live",
     surface: "thread",
-    protocol: "text_delta stream:output (ACP agent_message_chunk)",
+    protocol: 'PRP item.delta kind:"agentMessage" channel:"final"',
   },
   thinking: {
     id: "thinking",
@@ -77,14 +78,14 @@ export const TASK_CHAT_STATE_META: Record<TaskChatStateId, TaskChatStateMeta> = 
   },
   responding: {
     id: "responding",
-    label: "Responding (streaming)",
+    label: "Progress update (streaming)",
     tier: "live",
     surface: "thread",
-    protocol: "text_delta stream:output, streaming",
+    protocol: 'PRP item.delta kind:"agentMessage" channel:"progress"',
   },
   "responding-burst": {
     id: "responding-burst",
-    label: "Responding (update burst)",
+    label: "Progress update burst",
     tier: "live",
     surface: "thread",
     protocol: "text_delta stream:output ×N, tool calls between (PAP-368 dwell)",
@@ -123,6 +124,13 @@ export const TASK_CHAT_STATE_META: Record<TaskChatStateId, TaskChatStateMeta> = 
     tier: "live",
     surface: "thread",
     protocol: "acpx.result (StopReason in subtype)",
+  },
+  "activity-phases": {
+    id: "activity-phases",
+    label: "Long-run activity phases",
+    tier: "live",
+    surface: "thread",
+    protocol: "assistant boundaries + chronological tool calls",
   },
   "awaiting-approval": {
     id: "awaiting-approval",

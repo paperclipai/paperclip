@@ -1,6 +1,6 @@
+import { agentAppearanceSchema } from "../agent-appearance.js";
 import { z } from "zod";
 import { PERMISSION_KEYS } from "../constants.js";
-import { MAX_COMPANY_ATTACHMENT_MAX_BYTES } from "../constants.js";
 import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
@@ -38,13 +38,15 @@ export const portabilityFileEntrySchema = z.union([
   }),
 ]);
 
+// Deliberately non-strict: packages exported by older versions still carry
+// retired company keys such as `brandColor` and `attachmentMaxBytes`. Zod
+// strips keys the schema does not name, so those bundles keep importing —
+// the retired settings are simply ignored.
 export const portabilityCompanyManifestEntrySchema = z.object({
   path: z.string().min(1),
   name: z.string().min(1),
   description: z.string().nullable(),
-  brandColor: z.string().nullable(),
   logoPath: z.string().nullable(),
-  attachmentMaxBytes: z.number().int().min(1).max(MAX_COMPANY_ATTACHMENT_MAX_BYTES).nullable().default(null),
   requireBoardApprovalForNewAgents: z.boolean(),
   feedbackDataSharingEnabled: z.boolean().default(false),
   feedbackDataSharingConsentAt: z.string().datetime().nullable().default(null),
@@ -69,6 +71,7 @@ export const portabilityBlobManifestEntrySchema = z.object({
 });
 
 export const portabilityAgentManifestEntrySchema = z.object({
+  runner: z.enum(["auto", "paperclip", "legacy"]).optional(),
   slug: z.string().min(1),
   name: z.string().min(1),
   path: z.string().min(1),
@@ -76,6 +79,7 @@ export const portabilityAgentManifestEntrySchema = z.object({
   role: z.string().min(1),
   title: z.string().nullable(),
   icon: z.string().nullable(),
+  appearance: agentAppearanceSchema.nullable().optional(),
   capabilities: z.string().nullable(),
   reportsToSlug: z.string().min(1).nullable(),
   adapterType: z.string().min(1),
@@ -222,6 +226,12 @@ export const portabilityIssueManifestEntrySchema = z.object({
   workProducts: z.array(portabilityIssueWorkProductManifestEntrySchema).default([]),
   monitor: portabilityIssueMonitorManifestEntrySchema.nullable().default(null),
   attachments: z.array(portabilityIssueAttachmentManifestEntrySchema).default([]),
+  parentSlug: z.string().min(1).nullable().optional(),
+  createdAt: z.string().datetime().nullable().optional(),
+  updatedAt: z.string().datetime().nullable().optional(),
+  startedAt: z.string().datetime().nullable().optional(),
+  completedAt: z.string().datetime().nullable().optional(),
+  cancelledAt: z.string().datetime().nullable().optional(),
   metadata: z.record(z.string(), z.unknown()).nullable(),
 });
 
@@ -230,7 +240,7 @@ export const portabilityManifestSchema = z.object({
   generatedAt: z.string().datetime(),
   source: z
     .object({
-      companyId: z.string().uuid(),
+      companyId: z.string().guid(),
       companyName: z.string().min(1),
     })
     .nullable(),
@@ -277,7 +287,7 @@ export const portabilityTargetSchema = z.discriminatedUnion("mode", [
   }),
   z.object({
     mode: z.literal("existing_company"),
-    companyId: z.string().uuid(),
+    companyId: z.string().guid(),
   }),
 ]);
 
@@ -315,6 +325,7 @@ export const companyPortabilityPreviewSchema = z.object({
 export type CompanyPortabilityPreview = z.infer<typeof companyPortabilityPreviewSchema>;
 
 export const portabilityAdapterOverrideSchema = z.object({
+  runner: z.enum(["auto", "paperclip", "legacy"]).optional(),
   adapterType: z.string().min(1),
   adapterConfig: z.record(z.string(), z.unknown()).optional(),
 });

@@ -21,7 +21,9 @@ import {
   usePluginStream,
   usePluginToast,
 } from "./bridge.js";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { Component, createElement, useEffect, useMemo, useState, type ComponentType, type ReactNode } from "react";
+import * as ReactJsxRuntimeModule from "react/jsx-runtime";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { User } from "lucide-react";
 import {
@@ -38,7 +40,6 @@ import { agentsApi } from "@/api/agents";
 import { authApi } from "@/api/auth";
 import { heartbeatsApi } from "@/api/heartbeats";
 import { issuesApi } from "@/api/issues";
-import { projectsApi } from "@/api/projects";
 import {
   buildCompanyUserInlineOptions,
 } from "@/lib/company-members";
@@ -72,6 +73,14 @@ import { copyTextToClipboard } from "@/lib/clipboard";
  */
 export interface PluginBridgeRegistry {
   react: unknown;
+  /**
+   * The host's real `react/jsx-runtime` module. Plugin bundles compiled with
+   * the automatic JSX transform must use these `jsx`/`jsxs` implementations:
+   * reconstructing them via `createElement(type, { children })` loses React's
+   * static-children marking, so dev React demands a key on every multi-child
+   * element inside plugin components.
+   */
+  reactJsxRuntime: unknown;
   reactDom: unknown;
   sdkUi: Record<string, unknown>;
 }
@@ -268,8 +277,7 @@ function PluginSdkIssuesList({
     enabled: !!companyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(companyId ?? "__no-company__", { includeArchived: true }),
-    queryFn: () => projectsApi.list(companyId!, { includeArchived: true }),
+    ...companyProjectsQuery(companyId ?? "__no-company__", { includeArchived: true }),
     enabled: !!companyId,
   });
   const liveRunsQueryKey = queryKeys.liveRuns(companyId ?? "__no-company__");
@@ -289,13 +297,12 @@ function PluginSdkIssuesList({
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
-
   const { data: issues, isLoading, error } = useQuery({
     queryKey: issuesQueryKey,
     queryFn: () => issuesApi.list(companyId!, issueFilters),
     enabled: !!companyId,
   });
+  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
   const updateIssue = useMutation({
     mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
@@ -316,7 +323,7 @@ function PluginSdkIssuesList({
   });
 
   if (!companyId) {
-    return createElement("div", { className: "text-sm text-muted-foreground" }, "Select a company to view tasks.");
+    return createElement("div", { className: "text-sm text-muted-foreground" }, "Select an organization to view tasks.");
   }
 
   return createElement(HostIssuesList, {
@@ -465,8 +472,7 @@ function PluginSdkProjectPicker({
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(resolvedCompanyId ?? "__no-company__", { includeArchived }),
-    queryFn: () => projectsApi.list(resolvedCompanyId!, { includeArchived }),
+    ...companyProjectsQuery(resolvedCompanyId ?? "__no-company__", { includeArchived }),
     enabled: !!resolvedCompanyId,
   });
   const visibleProjects = useMemo(
@@ -674,6 +680,7 @@ export function initPluginBridge(
 ): void {
   globalThis.__paperclipPluginBridge__ = {
     react,
+    reactJsxRuntime: ReactJsxRuntimeModule,
     reactDom,
     sdkUi: {
       usePluginData,

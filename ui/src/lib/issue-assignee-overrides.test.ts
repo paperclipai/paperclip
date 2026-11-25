@@ -28,18 +28,6 @@ describe("buildAssigneeAdapterOverrides", () => {
     ).toBeNull();
   });
 
-  it("cheap lane sends modelProfile=cheap and no adapterConfig", () => {
-    expect(
-      buildAssigneeAdapterOverrides({
-        adapterType: "codex_local",
-        lane: "cheap",
-        modelOverride: "ignored",
-        thinkingEffortOverride: "high",
-        chrome: false,
-      }),
-    ).toEqual({ modelProfile: "cheap" });
-  });
-
   it("custom lane preserves explicit model + thinking effort + chrome overrides", () => {
     expect(
       buildAssigneeAdapterOverrides({
@@ -92,6 +80,23 @@ describe("buildAssigneeAdapterOverrides", () => {
       }),
     ).toEqual({
       adapterConfig: { variant: "max" },
+    });
+  });
+
+  it("persists an exact GPT-6 Astra task override", () => {
+    expect(
+      buildAssigneeAdapterOverrides({
+        adapterType: "codex_local",
+        lane: "custom",
+        modelOverride: "gpt-6-astra",
+        thinkingEffortOverride: "ultra",
+        chrome: false,
+      }),
+    ).toEqual({
+      adapterConfig: {
+        model: "gpt-6-astra",
+        modelReasoningEffort: "ultra",
+      },
     });
   });
 });

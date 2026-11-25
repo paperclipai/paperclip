@@ -1,8 +1,13 @@
+import { filterConnectionManagementRows, connectionManagementGuard, connectionRequestContext, connectionRequestUserId, requiredConnectionUserAction } from "./connection-management-authz.js";
 import { Router, type Request, type Response } from "express";
 import { and, desc, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, toolApplications, toolConnections, toolInvocations } from "@paperclipai/db";
-import { humanizeConnectionDisplayName, type PermissionKey } from "@paperclipai/shared";
+import { agents, companies, toolApplications, toolCallEvents, toolConnections, toolInvocations, toolRuntimeSlots } from "@paperclipai/db";
+import {
+  humanizeConnectionDisplayName,
+  type PermissionKey,
+  type ToolConnectionLifecycleEventType,
+} from "@paperclipai/shared";
 import {
   createToolMcpGatewaySchema,
   createToolMcpGatewayTokenSchema,
@@ -12,26 +17,23 @@ import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } fr
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import { forbidden, HttpError } from "../errors.js";
 import { accessService } from "../services/index.js";
+import { authorizationDeniedDetails } from "../services/authorization.js";
+import { listConnectionLifecycleEvents } from "../services/tool-connection-activity.js";
 
-const TOOL_GATEWAY_ACTIONS = [
-  "tool_gateway.session_created",
-  "tool_gateway.session_revoked",
-  "tool_gateway.session_rejected",
-  "tool_gateway.discovery",
-  "tool_gateway.call_allowed",
-  "tool_gateway.call_denied",
-  "tool_gateway.call_completed",
-  "tool_gateway.call_failed",
-  "tool_gateway.call_deferred",
-  "tool_gateway.approval_requested",
-  "tool_gateway.runtime_mcp_delivery",
-];
+const TOOL_ACTIVITY_EVENT_TYPES = [
+  "call_completed",
+  "call_failed",
+  "call_denied",
+  "approval_requested",
+  "approval_resolved",
+] as const;
 
-const TOOL_GATEWAY_WINDOWS: Record<string, number> = {
+const TOOL_GATEWAY_WINDOWS: Record<string, number | null> = {
   "1h": 60 * 60 * 1000,
   "24h": 24 * 60 * 60 * 1000,
   "7d": 7 * 24 * 60 * 60 * 1000,
   "30d": 30 * 24 * 60 * 60 * 1000,
+  all: null,
 };
 
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -55,6 +57,31 @@ function callerHeaders(req: { headers: Record<string, string | string[] | undefi
   return headers;
 }
 
+/**
+ * Error details an HTTP caller may see. `execution` is the call's audit record
+ * (request IDs, timings, the server-side stack of an error); the audit keeps
+ * it, and callers never need it. Agents paste errors into task comments.
+ */
+function callerErrorDetails(details: Record<string, unknown>): Record<string, unknown> {
+  const { execution: _auditOnly, ...rest } = details;
+  return rest;
+}
+
+async function cancellableRequest<T>(req: Request, res: Response, work: (signal: AbortSignal) => Promise<T>) {
+  const controller = new AbortController();
+  const aborted = () => controller.abort();
+  const closed = () => { if (!res.writableEnded) controller.abort(); };
+  req.once("aborted", aborted);
+  res.once("close", closed);
+  if (req.aborted || res.destroyed) controller.abort();
+  try {
+    return await work(controller.signal);
+  } finally {
+    req.removeListener("aborted", aborted);
+    res.removeListener("close", closed);
+  }
+}
+
 async function handleMcpGatewayProtocol(
   req: Request,
   res: Response,
@@ -71,18 +98,29 @@ async function handleMcpGatewayProtocol(
     const body = (req.body ?? {}) as { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
     const id = body.id ?? null;
     if (body.method === "initialize") {
-      await toolGateway.initializeNamedGatewayProtocol({
+      const session = await toolGateway.initializeNamedGatewayProtocol({
         ...locator,
         bearerToken: token,
         callerHeaders: headers,
       });
+      const allowedActions = session.gatewayTokenAllowedActions;
+      const mayList = (action: "tools/list" | "resources/list" | "prompts/list") =>
+        !allowedActions || allowedActions.includes(action);
       res.json({
         jsonrpc: "2.0",
         id,
         result: {
           protocolVersion: "2025-03-26",
-          capabilities: { tools: {} },
+          capabilities: {
+            ...(mayList("tools/list") ? { tools: {} } : {}),
+            ...(mayList("resources/list") ? { resources: {} } : {}),
+            ...(mayList("prompts/list") ? { prompts: {} } : {}),
+          },
           serverInfo: { name: "Paperclip MCP Gateway", version: "1.0.0" },
+          _meta: {
+            "paperclip/mcp-app-ui": "host_rendered",
+            "paperclip/mcp-app-ui-detail": "Paperclip renders MCP Apps ui:// views in the task chat. The gateway does not forward them to clients.",
+          },
         },
       });
       return;
@@ -92,21 +130,44 @@ async function handleMcpGatewayProtocol(
       return;
     }
     if (body.method === "tools/list") {
-      const tools = await toolGateway.listToolsForNamedGateway({
+      const tools = await cancellableRequest(req, res, (signal) => toolGateway.listToolsForNamedGateway({
         ...locator,
         bearerToken: token,
         callerHeaders: headers,
-      });
+        signal,
+      }));
       res.json({
         jsonrpc: "2.0",
         id,
         result: {
-          tools: tools.map((tool) => ({
+          tools: [
+            ...tools.map((tool) => ({
             name: tool.name,
             title: tool.displayName,
             description: tool.description,
             inputSchema: tool.parametersSchema ?? { type: "object", properties: {} },
-          })),
+            })),
+            {
+              name: "paperclip_list_resources",
+              description: "List resources from fully assigned MCP connections.",
+              inputSchema: { type: "object", properties: {}, additionalProperties: false },
+            },
+            {
+              name: "paperclip_read_resource",
+              description: "Read a resource URI returned by paperclip_list_resources.",
+              inputSchema: { type: "object", required: ["uri"], properties: { uri: { type: "string" } }, additionalProperties: false },
+            },
+            {
+              name: "paperclip_list_prompts",
+              description: "List prompts from fully assigned MCP connections.",
+              inputSchema: { type: "object", properties: {}, additionalProperties: false },
+            },
+            {
+              name: "paperclip_get_prompt",
+              description: "Get a prompt returned by paperclip_list_prompts.",
+              inputSchema: { type: "object", required: ["name"], properties: { name: { type: "string" }, arguments: { type: "object" } }, additionalProperties: false },
+            },
+          ],
         },
       });
       return;
@@ -118,14 +179,36 @@ async function handleMcpGatewayProtocol(
         res.status(400).json({ jsonrpc: "2.0", id, error: { code: -32602, message: "params.name is required" } });
         return;
       }
-      const result = await toolGateway.executeTool({
+      const contextMethods = {
+        paperclip_list_resources: "resources/list",
+        paperclip_read_resource: "resources/read",
+        paperclip_list_prompts: "prompts/list",
+        paperclip_get_prompt: "prompts/get",
+      } as const;
+      const contextMethod = contextMethods[name as keyof typeof contextMethods];
+      if (contextMethod) {
+        const result = await cancellableRequest(req, res, (signal) => toolGateway.executeContextForNamedGateway({
+          ...locator,
+          bearerToken: token,
+          method: contextMethod,
+          params: (params.arguments && typeof params.arguments === "object" && !Array.isArray(params.arguments))
+            ? params.arguments as Record<string, unknown>
+            : {},
+          callerHeaders: headers,
+          signal,
+        }));
+        res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false } });
+        return;
+      }
+      const result = await cancellableRequest(req, res, (signal) => toolGateway.executeTool({
+        signal,
         sessionToken: token,
         gatewayId: locator.gatewayId ?? null,
         gatewayPublicId: locator.gatewayPublicId ?? null,
         tool: name,
         parameters: params.arguments ?? {},
         callerHeaders: req.headers,
-      });
+      }));
       const resultRecord = result.result && typeof result.result === "object" && !Array.isArray(result.result)
         ? result.result as Record<string, unknown>
         : null;
@@ -143,14 +226,38 @@ async function handleMcpGatewayProtocol(
       });
       return;
     }
+    if (["resources/list", "resources/read", "prompts/list", "prompts/get"].includes(body.method ?? "")) {
+      const result = await cancellableRequest(req, res, (signal) => toolGateway.executeContextForNamedGateway({
+        ...locator,
+        bearerToken: token,
+        method: body.method as "resources/list" | "resources/read" | "prompts/list" | "prompts/get",
+        params: body.params ?? {},
+        callerHeaders: headers,
+        signal,
+      }));
+      res.json({ jsonrpc: "2.0", id, result });
+      return;
+    }
     res.status(404).json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
   } catch (err) {
+    if (res.destroyed) return;
     if (err instanceof ToolGatewayHttpError) {
       const id = (req.body as { id?: unknown } | undefined)?.id ?? null;
+      // Provider tool failures are MCP tool results, not successful calls or
+      // protocol errors. The service has already recorded the failed invocation.
+      if (req.body?.method === "tools/call" &&
+          (err.reasonCode === "tool_error" || err.reasonCode === "github_access_denied")) {
+        res.json({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: err.message }], isError: true },
+        });
+        return;
+      }
       res.status(err.status).json({
         jsonrpc: "2.0",
         id,
-        error: { code: err.status >= 500 ? -32603 : -32000, message: err.message, data: { reasonCode: err.reasonCode, ...err.details } },
+        error: { code: err.status >= 500 ? -32603 : -32000, message: err.message, data: { reasonCode: err.reasonCode, ...callerErrorDetails(err.details) } },
       });
       return;
     }
@@ -160,12 +267,8 @@ async function handleMcpGatewayProtocol(
 
 export function mcpGatewayProtocolRoutes(toolGateway: ToolGatewayService) {
   const router = Router();
-  router.get("/mcp/gateways/:gatewayPublicId", async (req, res) => {
-    res.json({
-      transport: "streamable_http",
-      endpoint: `/mcp/gateways/${req.params.gatewayPublicId}`,
-      authentication: "bearer",
-    });
+  router.get("/mcp/gateways/:gatewayPublicId", async (_req, res) => {
+    res.set("Allow", "POST").status(405).end();
   });
   router.post("/mcp/gateways/:gatewayPublicId", async (req, res) => {
     await handleMcpGatewayProtocol(req, res, toolGateway, { gatewayPublicId: req.params.gatewayPublicId });
@@ -194,51 +297,63 @@ function decodeAuditCursor(value: string): { createdAt: Date; id: string } | nul
   }
 }
 
-function normalizedAuditOutcome(action: string, details: Record<string, unknown> | null | undefined) {
-  const decision = detailString(details, "decision");
-  if (action === "tool_gateway.call_completed" || action === "tool_gateway.call_allowed" || decision === "allow" || decision === "approved") return "allowed";
-  if (action === "tool_gateway.approval_requested" || decision === "require_approval") return "asked_first";
-  if (action === "tool_gateway.call_deferred" || decision === "defer_runtime") return "waiting";
-  if (action === "tool_gateway.call_failed") return "failed";
-  if (action === "tool_gateway.call_denied" || decision === "deny" || decision === "rate_limited") return "blocked";
+function toolActivityAction(eventType: string): string {
+  return `tool_gateway.${eventType}`;
+}
+
+function normalizedAuditOutcome(
+  eventType: string,
+  outcome: string,
+  decision: string | null,
+) {
+  if (eventType === "approval_requested") return "asked_first";
+  if (decision === "defer_runtime") return "waiting";
+  if (eventType === "call_denied" || outcome === "denied" || decision === "deny") return "blocked";
+  if (eventType === "call_failed" || ["failure", "timeout", "cancelled"].includes(outcome)) return "failed";
+  if (eventType === "call_completed" || eventType === "approval_resolved" || outcome === "success" || decision === "allow") return "allowed";
   return "unknown";
 }
 
 function outcomeCondition(outcome: string) {
   if (outcome === "allowed") {
     return or(
-      inArray(activityLog.action, ["tool_gateway.call_allowed", "tool_gateway.call_completed"]),
-      sql`${activityLog.details}->>'decision' in ('allow', 'approved')`,
+      eq(toolCallEvents.eventType, "call_completed"),
+      and(eq(toolCallEvents.eventType, "approval_resolved"), eq(toolCallEvents.outcome, "success")),
+      eq(toolCallEvents.decision, "allow"),
     );
   }
   if (outcome === "blocked" || outcome === "denied") {
     return or(
-      eq(activityLog.action, "tool_gateway.call_denied"),
-      sql`${activityLog.details}->>'decision' in ('deny', 'rate_limited')`,
+      eq(toolCallEvents.eventType, "call_denied"),
+      eq(toolCallEvents.outcome, "denied"),
+      eq(toolCallEvents.decision, "deny"),
     );
   }
   if (outcome === "asked_first" || outcome === "approval") {
-    return or(
-      eq(activityLog.action, "tool_gateway.approval_requested"),
-      sql`${activityLog.details}->>'decision' = 'require_approval'`,
-    );
+    return eq(toolCallEvents.eventType, "approval_requested");
   }
   if (outcome === "waiting" || outcome === "deferred") {
-    return or(
-      eq(activityLog.action, "tool_gateway.call_deferred"),
-      sql`${activityLog.details}->>'decision' = 'defer_runtime'`,
+    return eq(toolCallEvents.decision, "defer_runtime");
+  }
+  if (outcome === "failed") {
+    return and(
+      or(
+        eq(toolCallEvents.eventType, "call_failed"),
+        inArray(toolCallEvents.outcome, ["failure", "timeout", "cancelled"]),
+      ),
+      sql`${toolCallEvents.decision} is distinct from 'defer_runtime'`,
     );
   }
-  if (outcome === "failed") return eq(activityLog.action, "tool_gateway.call_failed");
   return null;
 }
 
 function sendGatewayError(res: import("express").Response, err: unknown) {
+  if (res.destroyed) return;
   if (err instanceof ToolGatewayHttpError) {
     res.status(err.status).json({
       error: err.message,
       reasonCode: err.reasonCode,
-      ...err.details,
+      ...callerErrorDetails(err.details),
     });
     return;
   }
@@ -256,14 +371,22 @@ function sendGatewayError(res: import("express").Response, err: unknown) {
 
 export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   const router = Router();
+  const managementGuard = connectionManagementGuard(db, "tool");
   const access = accessService(db);
 
   async function assertBoardPermission(req: import("express").Request, companyId: string, permissionKey: PermissionKey) {
-    assertBoard(req);
+    assertBoardOrAgent(req);
     assertCompanyAccess(req, companyId);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-    if (req.actor.userId && await access.canUser(companyId, req.actor.userId, permissionKey)) return;
+    if (connectionRequestUserId(req) && await access.canUser(companyId, connectionRequestUserId(req)!, permissionKey)) return;
     throw forbidden(`Missing permission: ${permissionKey}`);
+  }
+
+  /** The person-facing Tokens page of a gateway, where token values are revealed. */
+  async function gatewayTokensPath(companyId: string, gatewayId: string) {
+    const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId)).limit(1);
+    if (!company) throw new ToolGatewayHttpError(404, "Company not found", "company_not_found");
+    return `/${company.issuePrefix}/apps/gateways/${gatewayId}/tokens`;
   }
 
   function assertBoardMutationAccess(req: import("express").Request, companyId: string) {
@@ -281,18 +404,18 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     }
   }
 
-  router.get("/companies/:companyId/tools/gateways", async (req, res) => {
+  router.get("/companies/:companyId/tools/gateways", managementGuard("connections:gateway", "GET /companies/:companyId/tools/gateways"), async (req, res) => {
     try {
-      await assertBoardPermission(req, req.params.companyId, "tools:admin");
-      res.json({ gateways: await toolGateway.listNamedGateways(req.params.companyId) });
+      await assertBoardPermission(req, (req.params.companyId as string), "tools:admin");
+      res.json({ gateways: await filterConnectionManagementRows(db, req, "connections:gateway", await toolGateway.listNamedGateways((req.params.companyId as string)), row => ({ gatewayId: row.id })) });
     } catch (err) {
       sendGatewayError(res, err);
     }
   });
 
-  router.post("/companies/:companyId/tools/gateways", async (req, res) => {
+  router.post("/companies/:companyId/tools/gateways", managementGuard("connections:gateway", "POST /companies/:companyId/tools/gateways"), async (req, res) => {
     try {
-      await assertBoardPermission(req, req.params.companyId, "tools:admin");
+      await assertBoardPermission(req, (req.params.companyId as string), "tools:admin");
       const parsed = createToolMcpGatewaySchema.safeParse(req.body ?? {});
       if (!parsed.success) {
         res.status(422).json({ error: "Invalid gateway payload", issues: parsed.error.issues });
@@ -300,19 +423,28 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       }
       const actor = getActorInfo(req);
       const gateway = await toolGateway.createNamedGateway({
-        companyId: req.params.companyId,
+        companyId: (req.params.companyId as string),
         body: parsed.data,
         actor: { agentId: actor.agentId, userId: req.actor.type === "board" ? req.actor.userId : null },
+        managementContext: connectionRequestContext(req),
       });
-      res.status(201).json(gateway);
+      if (req.actor.type !== "agent") {
+        res.status(201).json(gateway);
+        return;
+      }
+      // Agents link the person to the saved gateway; clients need a token from its Tokens page.
+      const tokensPath = await gatewayTokensPath(req.params.companyId as string, gateway.id);
+      const gatewayPath = tokensPath.replace(/\/tokens$/, "/overview");
+      res.status(201).json({ ...gateway, gatewayPath, tokensPath,
+        nextStep: `Link the saved gateway as a Markdown link, such as [${gateway.name}](${gatewayPath}), in your reply or question. A client connects with a token from its Tokens page (${tokensPath}).` });
     } catch (err) {
       sendGatewayError(res, err);
     }
   });
 
-  router.patch("/tool-gateway/gateways/:gatewayId", async (req, res) => {
+  router.patch("/tool-gateway/gateways/:gatewayId", managementGuard("connections:gateway", "PATCH /tool-gateway/gateways/:gatewayId"), async (req, res) => {
     try {
-      assertBoard(req);
+      assertBoardOrAgent(req);
       const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
@@ -325,15 +457,15 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
       const { companyId: _companyId, ...body } = parsed.data as typeof parsed.data & { companyId?: string };
-      res.json(await toolGateway.updateNamedGateway({ companyId, gatewayId: req.params.gatewayId, body }));
+      res.json(await toolGateway.updateNamedGateway({ companyId, gatewayId: (req.params.gatewayId as string), body, managementContext: connectionRequestContext(req) }));
     } catch (err) {
       sendGatewayError(res, err);
     }
   });
 
-  router.post("/tool-gateway/gateways/:gatewayId/tokens", async (req, res) => {
+  router.post("/tool-gateway/gateways/:gatewayId/tokens", managementGuard("connections:gateway", "POST /tool-gateway/gateways/:gatewayId/tokens"), async (req, res) => {
     try {
-      assertBoard(req);
+      assertBoardOrAgent(req);
       const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
@@ -346,42 +478,81 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
       const actor = getActorInfo(req);
-      res.status(201).json(await toolGateway.createNamedGatewayToken({
+      const input = {
         companyId,
-        gatewayId: req.params.gatewayId,
+        gatewayId: (req.params.gatewayId as string),
         body: parsed.data,
         actor: { agentId: actor.agentId, userId: req.actor.type === "board" ? req.actor.userId : null },
-      }));
+        managementContext: connectionRequestContext(req),
+      };
+      if (req.actor.type !== "agent") {
+        res.status(201).json(await toolGateway.createNamedGatewayToken(input));
+        return;
+      }
+      // A token value is shown once, to whoever receives the create response.
+      // An agent could repeat it in chat, so an agent-created client token has
+      // no value until its responsible person reveals one on the Tokens page.
+      // The validator admits only gateway_client subjects on this route.
+      const tokensPath = await gatewayTokensPath(companyId, input.gatewayId);
+      const created = await toolGateway.createPendingRevealGatewayToken(input);
+      res.status(201).json({
+        ...created,
+        tokensPath,
+        ...requiredConnectionUserAction(req, { type: "gateway_token", id: created.id, companyId }, tokensPath,
+          `Reveal and copy the value of "${created.name}" on the gateway's Tokens page, then give it to the client.`, "reveal_credential"),
+        nextStep: `Created "${created.name}" without a value. Its value is generated only when the person reveals it on the gateway's Tokens page (${tokensPath}); `
+          + "link that page as a Markdown link. Never ask for, accept, or repeat token values in chat. "
+          + "When this replaces an old token, do not revoke the old one in this turn: its client keeps working on it until the person reveals the new value "
+          + "and installs it, and revoking now disconnects that client. Revoke the old token only after the person says the client works with the new one, "
+          + "or tell them they can revoke it on the same Tokens page.",
+      });
     } catch (err) {
       sendGatewayError(res, err);
     }
   });
 
-  router.post("/tool-gateway/gateway-tokens/:tokenId/revoke", async (req, res) => {
+  router.post("/tool-gateway/gateway-tokens/:tokenId/reveal", async (req, res) => {
     try {
-      assertBoard(req);
+      assertBoardOrAgent(req);
+      const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
+      if (!companyId) {
+        res.status(400).json({ error: "companyId is required" });
+        return;
+      }
+      if (req.actor.type !== "board" || !req.actor.userId) {
+        assertCompanyAccess(req, companyId);
+        throw new ToolGatewayHttpError(403,
+          "Final: only a person can reveal a gateway client token value, on the gateway's Tokens page. Do not ask for or repeat token values in chat.",
+          "gateway_token_requires_person");
+      }
+      await assertBoardPermission(req, companyId, "tools:admin");
+      res.json(await toolGateway.revealNamedGatewayToken({ companyId, tokenId: req.params.tokenId as string, userId: req.actor.userId }));
+    } catch (err) {
+      sendGatewayError(res, err);
+    }
+  });
+
+  router.post("/tool-gateway/gateway-tokens/:tokenId/revoke", managementGuard("connections:gateway", "POST /tool-gateway/gateway-tokens/:tokenId/revoke"), async (req, res) => {
+    try {
+      assertBoardOrAgent(req);
       const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
         return;
       }
       await assertBoardPermission(req, companyId, "tools:admin");
-      res.json(await toolGateway.revokeNamedGatewayToken({ companyId, tokenId: req.params.tokenId }));
+      res.json(await toolGateway.revokeNamedGatewayToken({ companyId, tokenId: (req.params.tokenId as string), managementContext: connectionRequestContext(req) }));
     } catch (err) {
       sendGatewayError(res, err);
     }
   });
 
-  router.get("/tool-gateway/gateways/:gatewayId/mcp", async (req, res) => {
-    res.json({
-      transport: "streamable_http",
-      endpoint: `/api/tool-gateway/gateways/${req.params.gatewayId}/mcp`,
-      authentication: "bearer",
-    });
+  router.get("/tool-gateway/gateways/:gatewayId/mcp", async (_req, res) => {
+    res.set("Allow", "POST").status(405).end();
   });
 
   router.post("/tool-gateway/gateways/:gatewayId/mcp", async (req, res) => {
-    await handleMcpGatewayProtocol(req, res, toolGateway, { gatewayId: req.params.gatewayId });
+    await handleMcpGatewayProtocol(req, res, toolGateway, { gatewayId: (req.params.gatewayId as string) });
   });
 
   router.post("/tool-gateway/sessions", async (req, res) => {
@@ -405,6 +576,17 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
       assertCompanyAccess(req, companyId);
+      if (req.actor.type === "board") {
+        const decision = await access.decide({
+          actor: req.actor,
+          action: "agent:wake",
+          resource: { type: "agent", companyId, agentId },
+        });
+        if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      }
+      const createdByUserId = req.actor.type === "board" && req.actor.source !== "local_implicit"
+        ? req.actor.userId ?? null
+        : null;
 
       const session = await toolGateway.createSession({
         companyId,
@@ -415,6 +597,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         ttlMs: body.ttlMs,
         actorType: actor.actorType,
         actorId: actor.actorId,
+        createdByUserId,
       });
 
       res.status(201).json({
@@ -473,7 +656,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         res.status(401).json({ error: "Tool gateway session token is required" });
         return;
       }
-      const tools = await toolGateway.listToolsForSession(token);
+      const tools = await cancellableRequest(req, res, (signal) => toolGateway.listToolsForSession(token, { signal }));
       res.json(tools);
     } catch (err) {
       sendGatewayError(res, err);
@@ -498,16 +681,18 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         res.status(400).json({ error: '"tool" is required and must be a string' });
         return;
       }
-      const result = await toolGateway.executeTool({
+      const toolName = body.tool;
+      const result = await cancellableRequest(req, res, (signal) => toolGateway.executeTool({
+        signal,
         sessionToken: token,
-        tool: body.tool,
+        tool: toolName,
         parameters: body.parameters ?? {},
         timeoutMs: body.timeoutMs,
         approvedActionRequestId:
           typeof body.approvedActionRequestId === "string" ? body.approvedActionRequestId : null,
         idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : null,
         callerHeaders: callerHeaders(req),
-      });
+      }));
       res.json(result);
     } catch (err) {
       sendGatewayError(res, err);
@@ -517,7 +702,8 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   router.post("/tool-gateway/action-requests/:id/approve", async (req, res) => {
     try {
       assertBoard(req);
-      const body = (req.body ?? {}) as { companyId?: string };
+      const body = (req.body ?? {}) as { companyId?: string; rememberAction?: boolean };
+      if (body.rememberAction !== undefined && typeof body.rememberAction !== "boolean") { res.status(400).json({ error: "rememberAction must be a boolean" }); return; }
       const companyId = body.companyId ?? (typeof req.query.companyId === "string" ? req.query.companyId : null);
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
@@ -528,6 +714,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       const actionRequest = await toolGateway.approveActionRequest({
         companyId,
         actionRequestId: req.params.id,
+        rememberAction: body.rememberAction,
         actor: {
           agentId: actor.agentId,
           userId: req.actor.type === "board" ? req.actor.userId : null,
@@ -542,17 +729,19 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   router.post("/tool-gateway/action-requests/:id/decline", async (req, res) => {
     try {
       assertBoard(req);
-      const body = (req.body ?? {}) as { companyId?: string };
+      const body = (req.body ?? {}) as { companyId?: string; reason?: string };
       const companyId = body.companyId ?? (typeof req.query.companyId === "string" ? req.query.companyId : null);
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
         return;
       }
+      if (body.reason !== undefined && (typeof body.reason !== "string" || body.reason.length > 4000)) { res.status(400).json({ error: "reason must be a string up to 4000 characters" }); return; }
       assertBoardMutationAccess(req, companyId);
       const actor = getActorInfo(req);
       const actionRequest = await toolGateway.declineActionRequest({
         companyId,
         actionRequestId: req.params.id,
+        reason: body.reason,
         actor: {
           agentId: actor.agentId,
           userId: req.actor.type === "board" ? req.actor.userId : null,
@@ -564,22 +753,25 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     }
   });
 
-  router.get("/tool-gateway/runtime-slots", async (req, res) => {
+  router.get("/tool-gateway/runtime-slots", managementGuard("connections:runtime", "GET /tool-gateway/runtime-slots"), async (req, res) => {
     try {
-      assertBoard(req);
+      assertBoardOrAgent(req);
       const companyId = typeof req.query.companyId === "string" ? req.query.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
         return;
       }
       await assertBoardPermission(req, companyId, "tools:manage_runtime");
-      res.json(await toolGateway.listRuntimeSlots(companyId));
+      const slots = await toolGateway.listRuntimeSlots(companyId);
+      const resources = await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.companyId, companyId));
+      const byId = new Map(resources.map(row => [row.id, row]));
+      res.json(await filterConnectionManagementRows(db, req, "connections:runtime", slots.filter(row => byId.has(row.id)), row => ({ connectionId: byId.get(row.id)!.connectionId, issueId: byId.get(row.id)!.issueId })));
     } catch (err) {
       sendGatewayError(res, err);
     }
   });
 
-  router.post("/tool-gateway/runtime-slots/:slotId/stop", async (req, res) => {
+  router.post("/tool-gateway/runtime-slots/:slotId/stop", managementGuard("connections:runtime", "POST /tool-gateway/runtime-slots/:slotId/stop"), async (req, res) => {
     try {
       const companyId =
         typeof req.body?.companyId === "string"
@@ -595,7 +787,8 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       const actor = getActorInfo(req);
       res.json(await toolGateway.stopRuntimeSlot({
         companyId,
-        slotId: req.params.slotId,
+        slotId: (req.params.slotId as string),
+        managementContext: connectionRequestContext(req),
         actor: {
           agentId: actor.agentId,
           runId: req.actor.type === "agent" ? req.actor.runId : null,
@@ -606,7 +799,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     }
   });
 
-  router.post("/tool-gateway/runtime-slots/:slotId/restart", async (req, res) => {
+  router.post("/tool-gateway/runtime-slots/:slotId/restart", managementGuard("connections:runtime", "POST /tool-gateway/runtime-slots/:slotId/restart"), async (req, res) => {
     try {
       const companyId =
         typeof req.body?.companyId === "string"
@@ -622,7 +815,8 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       const actor = getActorInfo(req);
       res.json(await toolGateway.restartRuntimeSlot({
         companyId,
-        slotId: req.params.slotId,
+        slotId: (req.params.slotId as string),
+        managementContext: connectionRequestContext(req),
         actor: {
           agentId: actor.agentId,
           runId: req.actor.type === "agent" ? req.actor.runId : null,
@@ -633,9 +827,9 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     }
   });
 
-  router.get("/tool-gateway/audit", async (req, res) => {
+  router.get("/tool-gateway/audit", managementGuard("connections:audit", "GET /tool-gateway/audit"), async (req, res) => {
     try {
-      assertBoard(req);
+      assertBoardOrAgent(req);
       const companyId = typeof req.query.companyId === "string" ? req.query.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
@@ -644,12 +838,17 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       await assertBoardPermission(req, companyId, "tools:view_audit");
       const limitRaw = Number(req.query.limit ?? 100);
       const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(100, Math.floor(limitRaw))) : 100;
+      const gatewayFilter = typeof req.query.gateway === "string" ? req.query.gateway.trim() : null;
       const appFilter = typeof req.query.app === "string" ? req.query.app.trim() : null;
       const agentFilter = typeof req.query.agent === "string" ? req.query.agent.trim() : null;
       const outcomeFilter = typeof req.query.outcome === "string" ? req.query.outcome.trim() : null;
-      const windowFilter = typeof req.query.window === "string" ? req.query.window.trim() : "24h";
+      const windowFilter = typeof req.query.window === "string" ? req.query.window.trim() : "all";
       const searchRaw = typeof req.query.search === "string" ? req.query.search.trim() : null;
       const cursorRaw = typeof req.query.cursor === "string" ? req.query.cursor.trim() : null;
+      if (gatewayFilter && !uuidPattern.test(gatewayFilter)) {
+        res.status(400).json({ error: "gateway must be a gateway UUID" });
+        return;
+      }
       if (appFilter && !uuidPattern.test(appFilter)) {
         res.status(400).json({ error: "app must be an applicationId or connectionId UUID" });
         return;
@@ -659,7 +858,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
       if (!(windowFilter in TOOL_GATEWAY_WINDOWS)) {
-        res.status(400).json({ error: "window must be one of 1h, 24h, 7d, 30d" });
+        res.status(400).json({ error: "window must be one of 1h, 24h, 7d, 30d, all" });
         return;
       }
       const cursor = cursorRaw ? decodeAuditCursor(cursorRaw) : null;
@@ -668,30 +867,37 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
 
+      const windowMs = TOOL_GATEWAY_WINDOWS[windowFilter];
+      const windowStartedAt = windowMs === null ? null : new Date(Date.now() - windowMs);
       const conditions = [
-        eq(activityLog.companyId, companyId),
-        inArray(activityLog.action, TOOL_GATEWAY_ACTIONS),
-        gte(activityLog.createdAt, new Date(Date.now() - TOOL_GATEWAY_WINDOWS[windowFilter])),
+        eq(toolCallEvents.companyId, companyId),
+        inArray(toolCallEvents.eventType, TOOL_ACTIVITY_EVENT_TYPES),
       ];
+      if (windowStartedAt) conditions.push(gte(toolCallEvents.createdAt, windowStartedAt));
       if (cursor) {
         conditions.push(or(
-          lt(activityLog.createdAt, cursor.createdAt),
-          and(eq(activityLog.createdAt, cursor.createdAt), lt(activityLog.id, cursor.id)),
+          lt(toolCallEvents.createdAt, cursor.createdAt),
+          and(eq(toolCallEvents.createdAt, cursor.createdAt), lt(toolCallEvents.id, cursor.id)),
+        )!);
+      }
+      if (gatewayFilter) {
+        conditions.push(or(
+          eq(toolCallEvents.gatewayId, gatewayFilter),
+          eq(toolInvocations.gatewayId, gatewayFilter),
         )!);
       }
       if (appFilter) {
         conditions.push(or(
+          eq(toolCallEvents.applicationId, appFilter),
+          eq(toolCallEvents.connectionId, appFilter),
           eq(toolInvocations.applicationId, appFilter),
           eq(toolInvocations.connectionId, appFilter),
-          sql`${activityLog.details}->>'applicationId' = ${appFilter}`,
-          sql`${activityLog.details}->>'connectionId' = ${appFilter}`,
         )!);
       }
       if (agentFilter) {
         conditions.push(or(
-          eq(activityLog.agentId, agentFilter),
+          eq(toolCallEvents.agentId, agentFilter),
           eq(toolInvocations.agentId, agentFilter),
-          sql`${activityLog.details}->>'agentId' = ${agentFilter}`,
         )!);
       }
       const outcomeWhere = outcomeFilter ? outcomeCondition(outcomeFilter) : null;
@@ -699,7 +905,9 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
 
       // Free-text search runs server-side: resolve the term against agent / app /
       // connection names first, then OR those matched IDs with direct matches on
-      // the action name, tool name, and reason code so paginating stays honest.
+      // the event type, tool name, and reason code so paginating stays honest.
+      let matchedAgentIds: string[] = [];
+      let matchedConnectionIds: string[] = [];
       if (searchRaw) {
         const like = `%${searchRaw.replace(/[%_\\]/g, (ch) => `\\${ch}`)}%`;
         const [matchAgents, matchApps, matchConnections] = await Promise.all([
@@ -710,113 +918,262 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
           db.select({ id: toolConnections.id }).from(toolConnections)
             .where(and(eq(toolConnections.companyId, companyId), ilike(toolConnections.name, like))),
         ]);
-        const matchedAgentIds = matchAgents.map((r) => r.id);
+        matchedAgentIds = matchAgents.map((r) => r.id);
         const matchedAppIds = matchApps.map((r) => r.id);
-        const matchedConnectionIds = matchConnections.map((r) => r.id);
+        matchedConnectionIds = matchConnections.map((r) => r.id);
+        if (matchedAppIds.length > 0) {
+          const appConnections = await db
+            .select({ id: toolConnections.id })
+            .from(toolConnections)
+            .where(and(
+              eq(toolConnections.companyId, companyId),
+              inArray(toolConnections.applicationId, matchedAppIds),
+            ));
+          matchedConnectionIds = [...new Set([
+            ...matchedConnectionIds,
+            ...appConnections.map((connection) => connection.id),
+          ])];
+        }
         const searchClauses = [
-          ilike(activityLog.action, like),
+          ilike(toolCallEvents.eventType, like),
+          ilike(toolCallEvents.toolName, like),
+          ilike(toolCallEvents.reasonCode, like),
+          sql`${toolCallEvents.metadata}->>'upstreamToolName' ilike ${like}`,
           ilike(toolInvocations.toolName, like),
-          sql`${activityLog.details}->>'tool' ilike ${like}`,
-          sql`${activityLog.details}->>'toolName' ilike ${like}`,
-          sql`${activityLog.details}->>'upstreamToolName' ilike ${like}`,
-          sql`${activityLog.details}->>'reasonCode' ilike ${like}`,
         ];
         if (matchedAgentIds.length > 0) {
-          searchClauses.push(inArray(activityLog.agentId, matchedAgentIds));
+          searchClauses.push(inArray(toolCallEvents.agentId, matchedAgentIds));
           searchClauses.push(inArray(toolInvocations.agentId, matchedAgentIds));
-          for (const id of matchedAgentIds) searchClauses.push(sql`${activityLog.details}->>'agentId' = ${id}`);
         }
         if (matchedAppIds.length > 0) {
+          searchClauses.push(inArray(toolCallEvents.applicationId, matchedAppIds));
           searchClauses.push(inArray(toolInvocations.applicationId, matchedAppIds));
-          for (const id of matchedAppIds) searchClauses.push(sql`${activityLog.details}->>'applicationId' = ${id}`);
         }
         if (matchedConnectionIds.length > 0) {
+          searchClauses.push(inArray(toolCallEvents.connectionId, matchedConnectionIds));
           searchClauses.push(inArray(toolInvocations.connectionId, matchedConnectionIds));
-          for (const id of matchedConnectionIds) searchClauses.push(sql`${activityLog.details}->>'connectionId' = ${id}`);
         }
         conditions.push(or(...searchClauses)!);
       }
 
       const page = await db
         .select({
-          row: activityLog,
+          row: toolCallEvents,
           invocationId: toolInvocations.id,
           invocationAgentId: toolInvocations.agentId,
+          invocationIssueId: toolInvocations.issueId,
           invocationApplicationId: toolInvocations.applicationId,
           invocationConnectionId: toolInvocations.connectionId,
           invocationToolName: toolInvocations.toolName,
+          invocationStatus: toolInvocations.status,
+          invocationPolicyDecision: toolInvocations.policyDecision,
+          invocationApprovalState: toolInvocations.approvalState,
+          invocationArgumentsSummary: toolInvocations.argumentsSummary,
+          invocationResultSummary: toolInvocations.resultSummary,
+          invocationResultSizeBytes: toolInvocations.resultSizeBytes,
+          invocationErrorCode: toolInvocations.errorCode,
+          invocationErrorMessage: toolInvocations.errorMessage,
+          invocationStartedAt: toolInvocations.startedAt,
+          invocationCompletedAt: toolInvocations.completedAt,
         })
-        .from(activityLog)
+        .from(toolCallEvents)
         .leftJoin(
           toolInvocations,
           and(
             eq(toolInvocations.companyId, companyId),
-            sql`${toolInvocations.id}::text = ${activityLog.details}->>'invocationId'`,
+            eq(toolInvocations.id, toolCallEvents.invocationId),
           ),
         )
         .where(and(...conditions))
-        .orderBy(desc(activityLog.createdAt), desc(activityLog.id))
+        .orderBy(desc(toolCallEvents.createdAt), desc(toolCallEvents.id))
         .limit(limit + 1);
 
-      const hasMore = page.length > limit;
-      const visible = hasMore ? page.slice(0, limit) : page;
+      let lifecycleConnectionIds: string[] | undefined;
+      if (gatewayFilter || outcomeFilter) {
+        lifecycleConnectionIds = [];
+      } else if (appFilter) {
+        lifecycleConnectionIds = (await db
+          .select({ id: toolConnections.id })
+          .from(toolConnections)
+          .where(and(
+            eq(toolConnections.companyId, companyId),
+            or(eq(toolConnections.id, appFilter), eq(toolConnections.applicationId, appFilter)),
+          )))
+          .map((row) => row.id);
+      }
+
+      const lifecycleEvents = await listConnectionLifecycleEvents(db, {
+        companyId,
+        connectionIds: lifecycleConnectionIds,
+        agentId: agentFilter,
+        since: windowStartedAt,
+        cursor,
+        search: searchRaw,
+        matchedAgentIds,
+        matchedConnectionIds,
+        limit: limit + 1,
+      });
+      const candidates = [
+        ...page.map((item) => ({ kind: "call" as const, id: item.row.id, createdAt: item.row.createdAt, item })),
+        ...lifecycleEvents.map((item) => ({ kind: "lifecycle" as const, id: item.id, createdAt: item.createdAt, item })),
+      ].sort((a, b) => {
+        const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+        return byTime !== 0 ? byTime : b.id.localeCompare(a.id);
+      });
+      const hasMore = candidates.length > limit;
+      const window = candidates.slice(0, limit);
+      const visible = await filterConnectionManagementRows(db, req, "connections:audit", window, candidate => candidate.kind === "call"
+        ? { connectionId: candidate.item.row.connectionId ?? candidate.item.invocationConnectionId,
+            issueId: candidate.item.invocationIssueId ?? candidate.item.row.issueId,
+            gatewayId: candidate.item.row.gatewayId }
+        : { connectionId: candidate.item.connectionId });
       const agentIds = [...new Set(visible.flatMap((item) => [
-        item.row.agentId,
-        item.invocationAgentId,
-        detailString(item.row.details, "agentId"),
+        item.kind === "call" ? item.item.row.agentId : item.item.agentId,
+        item.kind === "call" ? item.item.invocationAgentId : null,
       ]).filter((id): id is string => Boolean(id)))];
       const applicationIds = [...new Set(visible.flatMap((item) => [
-        item.invocationApplicationId,
-        detailString(item.row.details, "applicationId"),
+        item.kind === "call" ? item.item.row.applicationId : null,
+        item.kind === "call" ? item.item.invocationApplicationId : null,
       ]).filter((id): id is string => Boolean(id)))];
       const connectionIds = [...new Set(visible.flatMap((item) => [
-        item.invocationConnectionId,
-        detailString(item.row.details, "connectionId"),
+        item.kind === "call" ? item.item.row.connectionId : item.item.connectionId,
+        item.kind === "call" ? item.item.invocationConnectionId : null,
       ]).filter((id): id is string => Boolean(id)))];
-      const [agentRows, applicationRows, connectionRows] = await Promise.all([
+      const [agentRows, connectionRows] = await Promise.all([
         agentIds.length > 0
           ? db.select({ id: agents.id, name: agents.name }).from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds)))
-          : [],
-        applicationIds.length > 0
-          ? db.select({ id: toolApplications.id, name: toolApplications.name }).from(toolApplications).where(and(eq(toolApplications.companyId, companyId), inArray(toolApplications.id, applicationIds)))
           : [],
         connectionIds.length > 0
           ? db.select({ id: toolConnections.id, name: toolConnections.name, applicationId: toolConnections.applicationId }).from(toolConnections).where(and(eq(toolConnections.companyId, companyId), inArray(toolConnections.id, connectionIds)))
           : [],
       ]);
+      const allApplicationIds = [...new Set([
+        ...applicationIds,
+        ...connectionRows.map((row) => row.applicationId),
+      ])];
+      const applicationRows = allApplicationIds.length > 0
+        ? await db.select({ id: toolApplications.id, name: toolApplications.name }).from(toolApplications)
+          .where(and(eq(toolApplications.companyId, companyId), inArray(toolApplications.id, allApplicationIds)))
+        : [];
       const agentsById = new Map(agentRows.map((row) => [row.id, row]));
       const applicationsById = new Map(applicationRows.map((row) => [row.id, row]));
       const connectionsById = new Map(connectionRows.map((row) => [row.id, row]));
 
-      const events = visible.map((item) => {
+      const events = visible.map((candidate) => {
+        if (candidate.kind === "lifecycle") {
+          const lifecycle = candidate.item;
+          const connection = connectionsById.get(lifecycle.connectionId) ?? null;
+          const applicationId = connection?.applicationId ?? null;
+          const application = applicationId ? applicationsById.get(applicationId) ?? null : null;
+          const appDisplayName = connection
+            ? humanizeConnectionDisplayName(connection)
+            : application
+              ? humanizeConnectionDisplayName(application.name)
+              : null;
+          return {
+            id: lifecycle.id,
+            companyId,
+            action: `tool_connection.${lifecycle.type}`,
+            actorType: lifecycle.actorType,
+            actorId: lifecycle.actorId,
+            entityType: "tool_connection",
+            entityId: lifecycle.connectionId,
+            details: { ...(lifecycle.details ?? {}), lifecycleType: lifecycle.type },
+            createdAt: lifecycle.createdAt,
+            runId: null,
+            agentId: lifecycle.agentId,
+            agentDisplayName: lifecycle.agentId
+              ? agentsById.get(lifecycle.agentId)?.name ?? "Unknown agent"
+              : null,
+            actorDisplayName: lifecycle.actorDisplayName,
+            applicationId,
+            connectionId: lifecycle.connectionId,
+            appDisplayName,
+            applicationDisplayName: application ? humanizeConnectionDisplayName(application.name) : null,
+            connectionDisplayName: connection ? humanizeConnectionDisplayName(connection) : null,
+            toolDisplayName: null,
+            lifecycleType: lifecycle.type,
+            normalizedOutcome: "unknown" as const,
+            invocation: null,
+          };
+        }
+
+        const item = candidate.item;
         const row = item.row;
-        const details = row.details ?? null;
-        const agentId = row.agentId ?? item.invocationAgentId ?? detailString(details, "agentId");
-        const connectionId = item.invocationConnectionId ?? detailString(details, "connectionId");
+        const agentId = row.agentId ?? item.invocationAgentId;
+        const connectionId = row.connectionId ?? item.invocationConnectionId;
         const connection = connectionId ? connectionsById.get(connectionId) ?? null : null;
-        const applicationId = item.invocationApplicationId ?? detailString(details, "applicationId") ?? connection?.applicationId ?? null;
+        const applicationId = row.applicationId ?? item.invocationApplicationId ?? connection?.applicationId ?? null;
         const application = applicationId ? applicationsById.get(applicationId) ?? null : null;
-        const rawToolName = item.invocationToolName ?? detailString(details, "tool") ?? detailString(details, "toolName");
+        const rawToolName = row.toolName ?? item.invocationToolName;
         const appDisplayName = connection
           ? humanizeConnectionDisplayName(connection)
           : application
             ? humanizeConnectionDisplayName(application.name)
             : null;
+        const details = {
+          ...(row.metadata ?? {}),
+          invocationId: row.invocationId,
+          actionRequestId: row.actionRequestId,
+          gatewayId: row.gatewayId,
+          agentId,
+          issueId: row.issueId,
+          runId: row.runId,
+          applicationId,
+          connectionId,
+          tool: rawToolName,
+          toolName: rawToolName,
+          decision: row.decision,
+          matchedPolicyIds: row.matchedPolicyIds,
+          reasonCode: row.reasonCode,
+          argumentsSummary: row.argumentsSummary ?? row.requestSummary,
+          resultSummary: row.resultSummary,
+          latencyMs: row.latencyMs,
+          errorCode: row.errorCode,
+          errorMessage: row.errorMessage,
+        };
         return {
-          ...row,
+          id: row.id,
+          companyId: row.companyId,
+          action: toolActivityAction(row.eventType),
+          actorType: row.actorType,
+          actorId: row.actorId,
+          entityType: "tool_connection",
+          entityId: connectionId,
+          details,
+          createdAt: row.createdAt,
+          runId: row.runId,
           agentId,
           agentDisplayName: agentId ? agentsById.get(agentId)?.name ?? "Unknown agent" : null,
+          actorDisplayName: agentId ? agentsById.get(agentId)?.name ?? "Unknown agent" : null,
           applicationId,
           connectionId,
           appDisplayName,
           applicationDisplayName: application ? humanizeConnectionDisplayName(application.name) : null,
           connectionDisplayName: connection ? humanizeConnectionDisplayName(connection) : null,
           toolDisplayName: rawToolName ? humanizeConnectionDisplayName(rawToolName) : null,
-          normalizedOutcome: normalizedAuditOutcome(row.action, details),
+          lifecycleType: null as ToolConnectionLifecycleEventType | null,
+          normalizedOutcome: normalizedAuditOutcome(row.eventType, row.outcome, row.decision),
+          invocation: item.invocationId && item.invocationToolName && item.invocationStatus && item.invocationApprovalState
+            ? {
+                id: item.invocationId,
+                toolName: item.invocationToolName,
+                status: item.invocationStatus,
+                policyDecision: item.invocationPolicyDecision,
+                approvalState: item.invocationApprovalState,
+                argumentsSummary: item.invocationArgumentsSummary,
+                resultSummary: item.invocationResultSummary,
+                resultSizeBytes: item.invocationResultSizeBytes,
+                errorCode: item.invocationErrorCode,
+                errorMessage: item.invocationErrorMessage,
+                startedAt: item.invocationStartedAt,
+                completedAt: item.invocationCompletedAt,
+              }
+            : null,
         };
       });
 
-      const last = visible.at(-1)?.row;
+      const last = window.at(-1);
       res.json({
         events,
         nextCursor: hasMore && last ? encodeAuditCursor({ createdAt: last.createdAt, id: last.id }) : null,

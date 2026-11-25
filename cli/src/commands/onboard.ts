@@ -17,9 +17,18 @@ import {
   type SecretProvider,
   type StorageProvider,
 } from "@paperclipai/shared";
-import { configExists, readConfig, resolveConfigPath, writeConfig } from "../config/store.js";
-import type { PaperclipConfig } from "../config/schema.js";
-import { ensureAgentJwtSecret, resolveAgentJwtEnvFile } from "../config/env.js";
+import {
+  backupInvalidConfig,
+  configExists,
+  readConfig,
+  resolveConfigPath,
+  writeConfig,
+} from "../config/store.js";
+import {
+  findPaperclipConfigKeyWarnings,
+  type PaperclipConfig,
+} from "../config/schema.js";
+import { ensureAgentJwtSecret, ensureToolActionSigningSecret, resolveAgentJwtEnvFile } from "../config/env.js";
 import { ensureLocalSecretsKeyFile } from "../config/secrets-key.js";
 import { promptDatabase } from "../prompts/database.js";
 import { promptLlm } from "../prompts/llm.js";
@@ -43,7 +52,11 @@ import {
   trackInstallStarted,
   trackInstallCompleted,
 } from "../telemetry.js";
-import { handleOnboardService } from "../onboard-service.js";
+import {
+  handleOnboardService,
+  handoffToOnboardedService,
+  shouldOfferForegroundStart,
+} from "../onboard-service.js";
 import { readInstallManifest, isManagedExecutable } from "../install-store.js";
 
 type SetupMode = "quickstart" | "advanced";
@@ -100,6 +113,33 @@ function parseBooleanFromEnv(rawValue: string | undefined): boolean | null {
   if (lower === "true" || lower === "1" || lower === "yes") return true;
   if (lower === "false" || lower === "0" || lower === "no") return false;
   return null;
+}
+
+async function runOnboardedForeground(configPath: string): Promise<void> {
+  const previousOpenOnListen = process.env.PAPERCLIP_OPEN_ON_LISTEN;
+  const browserDisabled = parseBooleanFromEnv(process.env.PAPERCLIP_NO_BROWSER) === true;
+  const interactive = Boolean(process.stdin.isTTY && process.stdout.isTTY);
+
+  // The server consumes this flag in its listen callback. Keep it scoped to
+  // this foreground start so a later in-process restart does not open another
+  // tab. Explicit configuration wins over the interactive default, while the
+  // broad no-browser switch wins over an earlier explicit opt-in.
+  if (browserDisabled) {
+    process.env.PAPERCLIP_OPEN_ON_LISTEN = "false";
+  } else if (interactive && previousOpenOnListen === undefined) {
+    process.env.PAPERCLIP_OPEN_ON_LISTEN = "true";
+  }
+
+  try {
+    const { runCommand } = await import("./run.js");
+    await runCommand({ config: configPath, repair: true, yes: true });
+  } finally {
+    if (previousOpenOnListen === undefined) {
+      delete process.env.PAPERCLIP_OPEN_ON_LISTEN;
+    } else {
+      process.env.PAPERCLIP_OPEN_ON_LISTEN = previousOpenOnListen;
+    }
+  }
 }
 
 function parseNumberFromEnv(rawValue: string | undefined): number | null {
@@ -356,17 +396,45 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   );
 
   let existingConfig: PaperclipConfig | null = null;
+  let invalidBackupPath: string | undefined;
   if (configExists(opts.config)) {
     p.log.message(pc.dim(`${configPath} exists`));
 
     try {
       existingConfig = readConfig(opts.config);
+      for (const warning of findPaperclipConfigKeyWarnings(existingConfig)) {
+        p.log.warn(`Unknown config key ${warning.path}; did you mean ${warning.suggestion}? It will be preserved.`);
+      }
     } catch (err) {
-      p.log.message(
-        pc.yellow(
-          `Existing config appears invalid and will be updated.\n${err instanceof Error ? err.message : String(err)}`,
-        ),
+      const backupPath = backupInvalidConfig(opts.config);
+      p.log.warn(
+        `Existing config is invalid. Preserved the original bytes at ${backupPath}.\n${err instanceof Error ? err.message : String(err)}`,
       );
+
+      const canConfirmRepair =
+        opts.yes !== true &&
+        opts.invokedByRun !== true &&
+        process.stdin.isTTY === true &&
+        process.stdout.isTTY === true;
+      if (!canConfirmRepair) {
+        p.log.error(
+          `Refusing to replace ${configPath} without confirmation. Rerun interactively to repair from defaults; the original and ${backupPath} are unchanged.`,
+        );
+        p.outro("");
+        process.exitCode = 1;
+        return;
+      }
+
+      const repair = await p.confirm({
+        message: `Repair from defaults? The invalid original is backed up at ${backupPath}.`,
+        initialValue: false,
+      });
+      if (p.isCancel(repair) || !repair) {
+        p.cancel(`Configuration left unchanged. Invalid backup: ${backupPath}`);
+        process.exitCode = 1;
+        return;
+      }
+      invalidBackupPath = backupPath;
     }
   }
 
@@ -384,6 +452,10 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
       p.log.info(`Using existing ${pc.cyan("PAPERCLIP_AGENT_JWT_SECRET")} from environment`);
     } else {
       p.log.info(`Using existing ${pc.cyan("PAPERCLIP_AGENT_JWT_SECRET")} in ${pc.dim(envFilePath)}`);
+    }
+    const toolActionSigningSecret = ensureToolActionSigningSecret(configPath);
+    if (toolActionSigningSecret.created) {
+      p.log.success(`Created ${pc.cyan("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET")} in ${pc.dim(envFilePath)}`);
     }
 
     const keyResult = ensureLocalSecretsKeyFile(existingConfig, configPath);
@@ -420,9 +492,12 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
 
     printManagedInstallHint();
     const serviceInstalled = await handleOnboardService(opts);
+    if (serviceInstalled) {
+      await handoffToOnboardedService(existingConfig);
+    }
 
     let shouldRunNow = !serviceInstalled && (opts.run === true || opts.yes === true);
-    if (!shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
+    if (shouldOfferForegroundStart({ serviceInstalled, startAlreadyDecided: shouldRunNow, invokedByRun: opts.invokedByRun === true, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY) })) {
       const answer = await p.confirm({
         message: "Start Paperclip now?",
         initialValue: true,
@@ -433,9 +508,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     }
 
     if (shouldRunNow && !opts.invokedByRun) {
-      process.env.PAPERCLIP_OPEN_ON_LISTEN = "true";
-      const { runCommand } = await import("./run.js");
-      await runCommand({ config: configPath, repair: true, yes: true });
+      await runOnboardedForeground(configPath);
       return;
     }
 
@@ -620,6 +693,10 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   } else {
     p.log.info(`Using existing ${pc.cyan("PAPERCLIP_AGENT_JWT_SECRET")} in ${pc.dim(envFilePath)}`);
   }
+  const toolActionSigningSecret = ensureToolActionSigningSecret(configPath);
+  if (toolActionSigningSecret.created) {
+    p.log.success(`Created ${pc.cyan("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET")} in ${pc.dim(envFilePath)}`);
+  }
 
   const config: PaperclipConfig = {
     $meta: {
@@ -646,7 +723,9 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     p.log.message(pc.dim(`Using existing local secrets key file at ${keyResult.path}`));
   }
 
-  writeConfig(config, opts.config);
+  writeConfig(config, opts.config, {
+    invalidBackupPath,
+  });
 
   if (tc) trackInstallCompleted(tc, {
     adapterType: server.deploymentMode,
@@ -684,9 +763,12 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   }
 
   const serviceInstalled = await handleOnboardService(opts);
+  if (serviceInstalled) {
+    await handoffToOnboardedService(config);
+  }
 
   let shouldRunNow = !serviceInstalled && (opts.run === true || opts.yes === true);
-  if (!shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
+  if (shouldOfferForegroundStart({ serviceInstalled, startAlreadyDecided: shouldRunNow, invokedByRun: opts.invokedByRun === true, interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY) })) {
     const answer = await p.confirm({
       message: "Start Paperclip now?",
       initialValue: true,
@@ -697,9 +779,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   }
 
   if (shouldRunNow && !opts.invokedByRun) {
-    process.env.PAPERCLIP_OPEN_ON_LISTEN = "true";
-    const { runCommand } = await import("./run.js");
-    await runCommand({ config: configPath, repair: true, yes: true });
+    await runOnboardedForeground(configPath);
     return;
   }
 

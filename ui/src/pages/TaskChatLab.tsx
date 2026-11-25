@@ -8,8 +8,32 @@ import {
 import { buildScenario } from "@/components/task-chat/task-chat-fixtures";
 import { TaskChatThreadView } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatPlanView } from "@/components/task-chat/TaskChatPlanView";
+import { TaskChatBubbleActions } from "@/components/task-chat/TaskChatBubbleActions";
 import { TweakPanel } from "@/components/task-chat/TweakPanel";
-import type { TaskChatItem } from "@/components/task-chat/task-chat-model";
+import type {
+  TaskChatItem,
+  TaskChatMessageItem,
+} from "@/components/task-chat/task-chat-model";
+
+/**
+ * Demo binding for the agent-bubble copy · 👍 · 👎 cluster (PAP-413). The live
+ * thread wires these to the feedback-vote API; here the votes no-op so the
+ * harness can show the footer without a control plane.
+ */
+function labMessageActions(item: TaskChatMessageItem) {
+  if (item.author !== "agent" || item.optimistic) return null;
+  return (
+    <TaskChatBubbleActions
+      copyText={item.text}
+      feedback={{
+        activeVote: null,
+        sharingPreference: "allowed",
+        termsUrl: null,
+        onVote: async () => {},
+      }}
+    />
+  );
+}
 
 /** Replay ticks of selfTalk gap between scripted interstitial updates (~0.7s at 1×). */
 const SELF_TALK_GAP_TICKS = 30;
@@ -108,14 +132,29 @@ function useStreamingReplay(
 }
 
 /**
- * Dev harness for the Task Chat Redesign (route: /dev/task-chat-lab, behind the
- * enableTaskChatRedesign flag). Drives the render layer into every inventory
+ * Dev harness for the chat-style task thread (route: /dev/task-chat-lab, dev
+ * builds only). Drives the render layer into every inventory
  * state via synthetic events — no live agent — and is also the human's
  * post-baseline iteration cockpit: state switcher, streaming replay, a
  * 0.1×–10× speed control, and the live motion tweak panel.
  */
+/**
+ * Agent-bubble background treatments explored for PAP-501 (feedback: the
+ * dark-mode agent card reads too light against the near-black page). Each id
+ * maps to a `[data-bubble-variant]` scope in index.css; "" is the chosen
+ * page-surface treatment.
+ */
+const BUBBLE_VARIANTS = [
+  { id: "", label: "Chosen · C · On bg" },
+  { id: "former", label: "Former" },
+  { id: "darker", label: "A · Darker" },
+  { id: "hairline", label: "B · Hairline" },
+] as const;
+type BubbleVariantId = (typeof BUBBLE_VARIANTS)[number]["id"];
+
 export function TaskChatLab() {
   const [selected, setSelected] = useState<TaskChatStateId>("agent-message");
+  const [bubbleVariant, setBubbleVariant] = useState<BubbleVariantId>("");
   const [speed, setSpeed] = useState(1);
   const [playing, setPlaying] = useState(true);
   const [playToken, setPlayToken] = useState(0);
@@ -200,17 +239,41 @@ export function TaskChatLab() {
               />
               <span className="w-10 tabular-nums">{speed.toFixed(1)}×</span>
             </label>
-            <span className="ml-auto font-mono text-(length:--text-micro) text-muted-foreground">{meta.protocol}</span>
+            <div className="ml-auto flex items-center gap-2">
+              <span className="text-muted-foreground">Agent bubble</span>
+              <div className="flex items-center gap-0.5 rounded border border-border p-0.5" role="group" aria-label="Agent bubble treatment">
+                {BUBBLE_VARIANTS.map((v) => (
+                  <button
+                    key={v.id || "current"}
+                    type="button"
+                    data-bubble-variant-id={v.id || "current"}
+                    onClick={() => setBubbleVariant(v.id)}
+                    className={cn(
+                      "rounded px-2 py-0.5 text-(length:--text-micro)",
+                      bubbleVariant === v.id ? "bg-primary text-primary-foreground" : "hover:bg-accent",
+                    )}
+                  >
+                    {v.label}
+                  </button>
+                ))}
+              </div>
+              <span className="font-mono text-(length:--text-micro) text-muted-foreground">{meta.protocol}</span>
+            </div>
           </div>
 
-          <div ref={targetRef} className="flex min-h-0 flex-1 flex-col" data-testid="task-chat-stage">
+          <div
+            ref={targetRef}
+            className="flex min-h-0 flex-1 flex-col"
+            data-testid="task-chat-stage"
+            data-bubble-variant={bubbleVariant || undefined}
+          >
             {scenario.surface === "plan" && scenario.plan ? (
               <div className="mx-auto max-w-2xl px-4">
                 <TaskChatPlanView plan={scenario.plan} />
               </div>
             ) : (
               <div className="mx-auto flex min-h-0 w-full max-w-2xl flex-1 flex-col">
-                <TaskChatThreadView items={items} />
+                <TaskChatThreadView items={items} renderMessageActions={labMessageActions} />
               </div>
             )}
           </div>

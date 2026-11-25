@@ -1,0 +1,19 @@
+{
+  "schema": "paperclip.prp.fixture.v1", "fixtureVersion": 1, "protocolVersion": 1,
+  "name": "Source sequence gap", "description": "The runner stream skips source sequence 3 and replay records the missing cursor.",
+  "identity": { "schema": "paperclip.prp.identity.v1", "companyId": "company_replay", "issueId": "issue_replay_gap", "runId": "run_replay_gap", "environmentLeaseId": "lease_replay_gap", "runnerInstanceId": "runner_replay", "normalizedSessionId": "session_replay_gap", "driverSessionId": "driver_replay_gap" },
+  "capabilities": { "schema": "paperclip.prp.capabilities.v1", "sessionReusePolicy": "new_per_run", "driver": { "kind": "fake", "version": "1.0.0" }, "steer": false, "interrupt": false, "resume": true, "runtimeRequests": false, "structuredResult": true, "typedEvents": true },
+  "commands": [{ "schema": "paperclip.prp.command.v1", "commandId": "command_gap_prepare", "controllerSeq": 1, "type": "run.prepare", "issuedAt": "2026-08-07T12:40:00.000Z", "payload": {} }],
+  "events": [
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_gap_01", "sourceSeq": 1, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_gap", "normalizedSessionId": "session_replay_gap", "eventType": "session.started", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-07T12:40:00.010Z", "payload": {} },
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_gap_02", "sourceSeq": 2, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_gap", "normalizedSessionId": "session_replay_gap", "turnId": "turn_replay_gap", "eventType": "turn.started", "schemaVersion": 1, "priority": 1, "emittedAt": "2026-08-07T12:40:00.020Z", "payload": {} },
+    {
+      "schema": "paperclip.prp.event.v1", "sourceEventId": "event_gap_04", "sourceSeq": 4, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_gap", "normalizedSessionId": "session_replay_gap", "eventType": "run.result.proposed", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-07T12:40:00.040Z",
+      "payload": { "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "needs_review", "summary": "The source gap requires reconciliation.", "completionClaim": { "contractRevision": "replay-contract-v1", "objectiveSatisfied": false, "criteria": [], "remainingWork": [{ "description": "Replay missing source event", "blocksCompletion": true }] }, "evidence": [], "verification": [], "attentionRequests": [], "artifacts": [] }
+    },
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_gap_05", "sourceSeq": 5, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_gap", "normalizedSessionId": "session_replay_gap", "turnId": "turn_replay_gap", "eventType": "turn.completed", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-07T12:40:00.050Z", "payload": {} },
+    { "schema": "paperclip.prp.event.v1", "sourceEventId": "event_gap_06", "sourceSeq": 6, "sourceInstanceId": "runner_replay", "sourceKind": "runner", "runId": "run_replay_gap", "normalizedSessionId": "session_replay_gap", "eventType": "run.terminal", "schemaVersion": 1, "priority": 0, "emittedAt": "2026-08-07T12:40:00.060Z", "payload": { "schema": "paperclip.prp.terminal.v1", "turnTerminalState": "completed", "runTerminalState": "succeeded", "reportedWorkDisposition": "needs_review" } }
+  ],
+  "requests": [],
+  "result": { "schema": "paperclip.run_result.v1", "reportedWorkDisposition": "needs_review", "summary": "The source gap requires reconciliation.", "completionClaim": { "contractRevision": "replay-contract-v1", "objectiveSatisfied": false, "criteria": [], "remainingWork": [{ "description": "Replay missing source event", "blocksCompletion": true }] }, "evidence": [], "verification": [], "attentionRequests": [], "artifacts": [] }
+}

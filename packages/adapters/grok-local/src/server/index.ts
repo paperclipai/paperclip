@@ -1,3 +1,4 @@
+import { normalizeAdapterExecutionTargetSessionIdentity } from "@paperclipai/adapter-utils/execution-target";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
 
 function readNonEmptyString(value: unknown): string | null {
@@ -20,8 +21,10 @@ export const sessionCodec: AdapterSessionCodec = {
     const workspaceId = readNonEmptyString(record.workspaceId) ?? readNonEmptyString(record.workspace_id);
     const repoUrl = readNonEmptyString(record.repoUrl) ?? readNonEmptyString(record.repo_url);
     const repoRef = readNonEmptyString(record.repoRef) ?? readNonEmptyString(record.repo_ref);
+    const remoteExecution = normalizeAdapterExecutionTargetSessionIdentity(record.remoteExecution);
     return {
       sessionId,
+      ...(remoteExecution ? { remoteExecution } : {}),
       ...(cwd ? { cwd } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
@@ -42,8 +45,10 @@ export const sessionCodec: AdapterSessionCodec = {
     const workspaceId = readNonEmptyString(params.workspaceId) ?? readNonEmptyString(params.workspace_id);
     const repoUrl = readNonEmptyString(params.repoUrl) ?? readNonEmptyString(params.repo_url);
     const repoRef = readNonEmptyString(params.repoRef) ?? readNonEmptyString(params.repo_ref);
+    const remoteExecution = normalizeAdapterExecutionTargetSessionIdentity(params.remoteExecution);
     return {
       sessionId,
+      ...(remoteExecution ? { remoteExecution } : {}),
       ...(cwd ? { cwd } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
@@ -64,3 +69,25 @@ export { execute } from "./execute.js";
 export { listGrokSkills, syncGrokSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export { parseGrokJsonl, isGrokUnknownSessionError } from "./parse.js";
+export {
+  GROK_DEVICE_LOGIN_COMMAND,
+  GROK_DEVICE_LOGIN_URL_ORIGIN,
+  GROK_DEVICE_LOGIN_URL_PATH,
+  parseGrokDeviceLoginPrompt,
+  type DeviceLoginPrompt as GrokDeviceLoginPrompt,
+} from "./device-login-parse.js";
+export { resolveManagedGrokHomeDir, grokHomeHasUsableAuth } from "./grok-home.js";
+export {
+  promoteGrokDeviceLoginCredential,
+  checkStagedGrokCredentialReadiness,
+  DeviceLoginReadinessError as GrokDeviceLoginReadinessError,
+  type CredentialReadinessResult as GrokCredentialReadinessResult,
+  type PromoteGrokDeviceLoginCredentialInput,
+  type PromoteGrokDeviceLoginCredentialOutcome,
+} from "./adapter-auth-promotion.js";
+
+export { decideGrokAuthMerge } from "./grok-auth-merge-decision.js";
+
+export { parseGrokAuthPayload, hasUsableGrokAuthValue } from "./grok-home.js";
+
+export { copyBackGrokAuth } from "./grok-auth-copyback.js";
