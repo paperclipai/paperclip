@@ -57,12 +57,12 @@ runs:
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       run: |
-        if pnpm install --frozen-lockfile; then
+        if pnpm install --frozen-lockfile --prefer-offline; then
           echo 'frozen=true' >> "$GITHUB_OUTPUT"
         else
           echo '::notice title=Lockfile::checked-in lockfile is stale for this merge tree; resolving it inline'
           pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile
-          pnpm install --frozen-lockfile
+          pnpm install --frozen-lockfile --prefer-offline
         fi
 
     - name: Replay workspace install hooks after restore

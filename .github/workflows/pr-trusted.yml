@@ -70,8 +70,20 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - name: Setup pnpm
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
         if: steps.eligible.outputs.enabled == 'true'
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Setup pnpm
+        if: steps.eligible.outputs.enabled == 'true' && steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -198,7 +210,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -345,7 +370,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -599,7 +637,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -764,7 +815,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -836,7 +900,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -876,7 +953,7 @@ jobs:
     name: verify
     if: ${{ always() }}
     needs: [gate, test_selection, policy, typecheck_release_registry, general_tests, verify_paperclip_runner, build, docker_context_integrity, sandbox_provider_tests, verify_serialized_server, canary_dry_run, verify_runner_e2e_support]
-    runs-on: ${{ needs.gate.outputs.runner || 'ubuntu-latest' }}
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
       - name: Validate every planned suite result
@@ -934,7 +1011,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1174,7 +1264,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1407,7 +1510,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1503,7 +1619,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1725,7 +1854,20 @@ jobs:
           node-version: 24
           package-manager-cache: false
 
+      - name: Check preinstalled pnpm
+        id: pnpm_preinstalled
+        run: |
+          expected="$(node -e 'const m = /^pnpm@([^+\s]+)(?:\+.*)?$/.exec(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).packageManager || ""); process.stdout.write(m ? m[1] : "");')"
+          if [ -x "$HOME/setup-pnpm/node_modules/.bin/pnpm" ] && [ -n "$expected" ] && [ "$("$HOME/setup-pnpm/node_modules/.bin/pnpm" --version 2>/dev/null || true)" = "$expected" ]; then
+            echo "PNPM_HOME=$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_ENV"
+            echo "$HOME/setup-pnpm/node_modules/.bin" >> "$GITHUB_PATH"
+            echo "hit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "hit=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Setup pnpm
+        if: steps.pnpm_preinstalled.outputs.hit != 'true'
         uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
         env:
           NPM_CONFIG_AUDIT: "false"
@@ -1841,7 +1983,7 @@ jobs:
     name: e2e
     if: ${{ always() }}
     needs: [gate, policy, e2e_shards]
-    runs-on: ${{ needs.gate.outputs.runner || 'ubuntu-latest' }}
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
       - name: Validate every planned suite result
