@@ -2000,14 +2000,16 @@ describe("PaperclipControlPlanePort conformance", () => {
       companyId: identity.companyId, issueId: taskIssueId, runId: taskRunId,
     });
     expect(await repair()).toBe(false);
+    // An ordinary task woken by an external chat gets the reply the live path
+    // would have posted (#22807), and repeating recovery never posts it twice.
     await db.update(heartbeatRuns).set({ contextSnapshot: { externalChatContinuation: true } })
       .where(eq(heartbeatRuns.id, taskRunId));
+    expect(await repair()).toBe(true);
     expect(await repair()).toBe(false);
     await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, taskRunId));
     const work = nativeResponsePresentationWork(db);
-    const [entry] = await work.load({ companyId: identity.companyId, runId: taskRunId });
-    expect(entry?.id).toBe(taskRunId);
-    expect(await work.check(entry)).toBeNull();
+    // The reply is on the task, so the presentation worker has nothing left to recover.
+    expect(await work.load({ companyId: identity.companyId, runId: taskRunId })).toEqual([]);
     expect(await repair()).toBe(false);
     expect(await db.select({ body: issueComments.body }).from(issueComments)
       .where(eq(issueComments.createdByRunId, taskRunId)).orderBy(asc(issueComments.createdAt)))
