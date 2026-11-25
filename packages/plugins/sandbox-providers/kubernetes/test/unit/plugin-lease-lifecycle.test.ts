@@ -192,7 +192,6 @@ describe("onEnvironmentDestroyLease", () => {
       namespace: "paperclip-acme",
       name: "pc-abc-env",
     });
-    // The Sandbox CR and pod are confirmed gone, so execution has ended.
     expect(receipt).toEqual({ providerLeaseId: "pc-abc", state: "destroyed" });
   });
 
@@ -222,7 +221,7 @@ describe("onEnvironmentDestroyLease", () => {
     ).resolves.toEqual({ providerLeaseId: "pc-abc", state: "destroyed" });
   });
 
-  it("gives no receipt while the pod still exists", async () => {
+  it("gives no receipt while the pod still exists, within the host's default 30 s call limit", async () => {
     vi.useFakeTimers();
     try {
       h.clients = {
@@ -245,7 +244,10 @@ describe("onEnvironmentDestroyLease", () => {
         providerLeaseId: "pc-abc",
         leaseMetadata: leaseMetadata(),
       });
-      await vi.advanceTimersByTimeAsync(61_000);
+      let settled = false;
+      void pending.then(() => { settled = true; }, () => { settled = true; });
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(settled).toBe(true);
       await expect(pending).resolves.toBeUndefined();
     } finally {
       vi.useRealTimers();

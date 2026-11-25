@@ -152,23 +152,13 @@ export async function checkLeaseResumable(
 
 export interface ConfirmGoneInput {
   namespace: string;
-  /** Workload resource name (Sandbox CR name or Job name) == providerLeaseId. */
   name: string;
   backend: "sandbox-cr" | "job";
-  /** The lease's pod, when known; checked as well as the workload. */
   podName: string | null;
   timeoutMs: number;
   pollMs?: number;
 }
 
-/**
- * Wait until the lease's workload, and its pod when known, no longer exist.
- * Both backends delete with Foreground propagation, so the API server removes
- * the Sandbox CR or Job only after its pods are gone: the workload's 404 means
- * nothing of the lease can still execute. Returns false if anything is still
- * present at the deadline (the caller then gives no termination receipt and
- * the host retries the release). Errors other than 404 propagate.
- */
 export async function confirmLeaseResourcesGone(
   clients: KubeClients,
   input: ConfirmGoneInput,

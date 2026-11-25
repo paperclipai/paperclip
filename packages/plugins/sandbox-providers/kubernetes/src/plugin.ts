@@ -202,23 +202,16 @@ async function resolveSyncPodExec(
   return { exec, timeoutMs };
 }
 
-// How long a release or destroy waits to confirm the lease's workload and pod
-// are gone. Pods get a 30 s termination grace period by default.
-const TERMINATION_CONFIRM_TIMEOUT_MS = 60_000;
+const TERMINATION_CALL_BUDGET_MS = 25_000;
 
-/**
- * The termination receipt for a released or destroyed lease: `destroyed` once
- * its workload and pod are confirmed gone. If they are still terminating at the
- * deadline there is no receipt, and the host retries the release, which then
- * confirms. A receipt must never stand for a delete request alone.
- */
 async function terminationReceiptOnceGone(
   clients: ReturnType<typeof makeKubeClients>,
-  input: { namespace: string; name: string; backend: "sandbox-cr" | "job"; podName: string | null },
+  input: { namespace: string; name: string; backend: "sandbox-cr" | "job"; podName: string | null; startedAt: number },
 ): Promise<PluginEnvironmentTerminationReceipt | void> {
+  const { startedAt, ...resource } = input;
   const gone = await confirmLeaseResourcesGone(clients, {
-    ...input,
-    timeoutMs: TERMINATION_CONFIRM_TIMEOUT_MS,
+    ...resource,
+    timeoutMs: Math.max(0, startedAt + TERMINATION_CALL_BUDGET_MS - Date.now()),
   });
   if (gone) return { providerLeaseId: input.name, state: "destroyed" };
 }
@@ -595,6 +588,7 @@ const plugin = definePlugin({
     params: PluginEnvironmentReleaseLeaseParams,
   ): Promise<PluginEnvironmentTerminationReceipt | void> {
     if (!params.providerLeaseId) return;
+    const startedAt = Date.now();
     const config = kubernetesProviderConfigSchema.parse(params.config);
     const namespace =
       typeof params.leaseMetadata?.namespace === "string"
@@ -635,6 +629,7 @@ const plugin = definePlugin({
       podName: typeof params.leaseMetadata?.podName === "string" && params.leaseMetadata.podName
         ? params.leaseMetadata.podName
         : null,
+      startedAt,
     });
   },
 
@@ -642,6 +637,7 @@ const plugin = definePlugin({
     params: PluginEnvironmentDestroyLeaseParams,
   ): Promise<PluginEnvironmentTerminationReceipt | void> {
     if (!params.providerLeaseId) return;
+    const startedAt = Date.now();
     const config = kubernetesProviderConfigSchema.parse(params.config);
     const namespace =
       typeof params.leaseMetadata?.namespace === "string"
@@ -686,6 +682,7 @@ const plugin = definePlugin({
       name: params.providerLeaseId,
       backend: leaseBackend,
       podName,
+      startedAt,
     });
   },
 
