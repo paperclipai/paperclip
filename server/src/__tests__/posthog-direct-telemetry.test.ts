@@ -25,6 +25,8 @@ import {
   isPostHogDirectTelemetryActive,
   resetTelemetryForTests,
   shutdownTelemetry,
+  trackCloudPostHogEvent,
+  trackCloudTrialExposure,
 } from "../telemetry.js";
 import type { PostHogNodeClient } from "../services/posthog-direct/index.js";
 import {
@@ -291,7 +293,13 @@ describe("server telemetry sender selection", () => {
         groupType: "workspace",
         groupKey: "stack-123",
         disableGeoip: true,
-        properties: { stack_slug: "acme", primary_host: "acme.paperclip.app", environment: "staging" },
+        properties: {
+          stack_slug: "acme",
+          primary_host: "acme.paperclip.app",
+          environment: "staging",
+          cloud_trial_inference_enabled: false,
+          cloud_trial_inference_cohort: "control",
+        },
       },
     ]);
     expect(posthog.client.shutdownCalls).toBe(1);
@@ -598,5 +606,72 @@ describe("server telemetry sender selection", () => {
     expect(byState.cancelled!.properties).toMatchObject({ attributed_via: "request" });
     expect(byState.succeeded!.distinctId).toBe("paperclip-id:creator");
     expect(byState.succeeded!.properties).toMatchObject({ attributed_via: "task_creator", company_id: "company-1" });
+  });
+
+  it("Cloud: stamps cloud-trial-inference experiment cohort on events and emits deduplicated exposure and funnel events", async () => {
+    const posthog = fakePostHog();
+    const treatmentEnv = {
+      ...CLOUD_ENV,
+      PAPERCLIP_MANAGED_CONFIG: JSON.stringify({
+        v: 1,
+        mode: "cloud",
+        catalogVersion: "v1",
+        features: { enableCloudTrialInference: true },
+        plugins: { autoInstall: [] },
+      }),
+    };
+    const client = initTelemetry({ enabled: true }, { env: treatmentEnv, postHogFactory: posthog.factory })!;
+    trackRoutineCreated(client);
+    trackCloudTrialExposure({ surface: "onboarding_wizard", userId: "user-42", companyId: "co-1" });
+    // Second call for the same user/company deduplicates.
+    trackCloudTrialExposure({ surface: "onboarding_wizard", userId: "user-42", companyId: "co-1" });
+    trackCloudPostHogEvent(
+      "cloud_trial.migrated",
+      { provider: "anthropic", auth_method: "subscription", migrated_agent_count: 1 },
+      { userId: "user-42", companyId: "co-1" },
+    );
+    await shutdownTelemetry();
+
+    expect(posthog.groups[0]?.properties).toMatchObject({
+      cloud_trial_inference_enabled: true,
+      cloud_trial_inference_cohort: "treatment",
+    });
+
+    const routine = posthog.captured.find((message) => message.event === "routine.created")!;
+    expect(routine.properties).toMatchObject({
+      cloud_trial_inference_enabled: true,
+      "$feature/cloud-trial-inference": "treatment",
+    });
+
+    const exposures = posthog.captured.filter((message) => message.event === "$feature_flag_called");
+    expect(exposures).toHaveLength(1);
+    expect(exposures[0]!.distinctId).toBe("user-42");
+    expect(exposures[0]!.properties).toMatchObject({
+      $feature_flag: "cloud-trial-inference",
+      $feature_flag_response: "treatment",
+      surface: "onboarding_wizard",
+      company_id: "co-1",
+      cloud_trial_inference_enabled: true,
+      "$feature/cloud-trial-inference": "treatment",
+      $set_once: { cloud_trial_inference_cohort: "treatment" },
+    });
+
+    const migrated = posthog.captured.find((message) => message.event === "cloud_trial.migrated")!;
+    expect(migrated.distinctId).toBe("user-42");
+    expect(migrated.properties).toMatchObject({
+      provider: "anthropic",
+      auth_method: "subscription",
+      migrated_agent_count: 1,
+      cloud_trial_inference_enabled: true,
+      "$feature/cloud-trial-inference": "treatment",
+    });
+  });
+
+  it("self-hosted: cloud trial PostHog helpers are no-ops and never load posthog-node", async () => {
+    initTelemetry({ enabled: true }, { env: {} });
+    trackCloudTrialExposure({ surface: "onboarding_wizard", userId: "user-1", companyId: "co-1" });
+    trackCloudPostHogEvent("cloud_trial.started", { source: "onboarding_wizard" }, { userId: "user-1" });
+    await shutdownTelemetry();
+    expect(hoisted.posthogNodeLoads).toBe(0);
   });
 });

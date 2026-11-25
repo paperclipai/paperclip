@@ -29,11 +29,6 @@ export function useModalOpen(enabled: boolean, selector = MODAL_SELECTOR) {
 
 const FINISHED_ONBOARDING_STATUSES = new Set(["done", "cancelled"]);
 
-/**
- * A new user's first session is the onboarding first task. Announcements and
- * other optional prompts wait until that task is finished so they cannot cover
- * its questions. Unknown state (loading or a failed read) keeps them hidden.
- */
 export function useOnboardingInProgress(companyId: string | null) {
   const query = useQuery({
     queryKey: queryKeys.issues.onboardingFirstTask(companyId ?? "__none__"),

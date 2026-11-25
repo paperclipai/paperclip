@@ -2365,40 +2365,50 @@ fn commit_executor_events<E: CommandExecutor>(
 ) -> Result<(), DurableRunnerError> {
     let mut events = events.into_iter().peekable();
     while events.peek().is_some() {
-        let mut durable_prefix = 0;
-        let committed = (|| -> Result<(), DurableRunnerError> {
-            // Keep each PRP event's durable save. Only coalesce provider queue
-            // acknowledgements, bounded below the retained receipt window so
-            // a crash before the prefix ACK can replay every event exactly.
-            for event in events.by_ref().take(128) {
-                if !state.has_executor_event_receipt(
-                    &event.executor_event_id,
-                    &event.event_type,
-                    event.priority,
-                    &event.payload,
-                )? {
-                    state.enqueue_executor_event(
+        // Group commit: enqueue a bounded batch, then make all of it durable
+        // with one save before the provider may release any of it. The batch
+        // stays below the retained receipt window, so a crash between this
+        // save and the provider acknowledgement replays every event exactly.
+        let mut accepted = 0;
+        let mut enqueued = false;
+        let mut rejected = Ok(());
+        for event in events.by_ref().take(128) {
+            let committed = match state.has_executor_event_receipt(
+                &event.executor_event_id,
+                &event.event_type,
+                event.priority,
+                &event.payload,
+            ) {
+                Ok(true) => Ok(()),
+                Ok(false) => state
+                    .enqueue_executor_event(
                         config,
                         event.executor_event_id,
                         event.event_type,
                         event.priority,
                         event.payload,
-                    )?;
-                    store.save(state)?;
-                }
-                durable_prefix += 1;
+                    )
+                    .map(|_| enqueued = true),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = committed {
+                rejected = Err(error);
+                break;
             }
-            Ok(())
-        })();
-        // Even when a later save/validation fails, remove only the already
-        // durable prefix. A failed provider ACK leaves that prefix replayable;
-        // it must not hide the original commit/identity error, if any.
-        let acknowledged = if durable_prefix > 0 {
-            executor.acknowledge_events(durable_prefix)
-        } else {
-            Ok(())
+            accepted += 1;
+        }
+        // A rejected event still leaves the accepted prefix durable and
+        // releasable. A failed save releases nothing: the provider keeps the
+        // whole batch for replay.
+        let saved = if enqueued { store.save(state) } else { Ok(()) };
+        let acknowledged = match (&saved, accepted) {
+            (Ok(()), 1..) => executor.acknowledge_events(accepted),
+            _ => Ok(()),
         };
-        committed?;
+        // A failed provider ACK leaves that prefix replayable; it must not
+        // hide the original commit/identity error, if any.
+        saved?;
+        rejected?;
         acknowledged?;
     }
     Ok(())
@@ -2486,6 +2496,9 @@ fn process_command<E: CommandExecutor>(
             }
             if let Some(provider_failure) = error.provider_failure() {
                 failure["providerFailure"] = provider_failure;
+            }
+            if let Some(rejection) = error.sidecar_rejection() {
+                failure["sidecarRejection"] = rejection;
             }
             let result = state.fail_command(command, failure)?;
             store.save(state)?;
@@ -2671,6 +2684,8 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    include!("tests/batched_saves.rs");
 
     struct CountingExecutor {
         calls: usize,
@@ -6571,6 +6586,11 @@ mod tests {
         )
     ))]
     fn released_antigravity_handoff_uses_ordinary_authority_and_rejects_candidate_injection() {
+        assert!(
+            !crate::generated_acpx_profiles::acpx_release_profile("antigravity")
+                .unwrap()
+                .qualification_pending
+        );
         let directory =
             std::env::temp_dir().join(format!("antigravity-grant-handoff-{}", std::process::id()));
         let mut current = config(directory);
@@ -6593,10 +6613,7 @@ mod tests {
             candidate_admission: Some(grant.clone()),
             ..ordinary.clone()
         });
-        // Pending: the grant admits this run's startup.
-        candidate.validate().unwrap();
 
-        let _released = crate::acpx_candidate_admission::released_for_test::release("antigravity");
         current.acpx_launch_profile = Some(ordinary);
         current.validate().unwrap();
         let mut next_grant = grant.clone();

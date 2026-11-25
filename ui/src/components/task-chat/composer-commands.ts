@@ -20,14 +20,14 @@ export type ParsedRunnerGoalCommand =
   | { matched: true; command: RunnerGoalComposerCommand }
   | { matched: true; error: string };
 
-function normalizeActionCommandText(value: string, command: "goal" | "plan"): string {
+function normalizeActionCommandText(value: string, command: "goal" | "plan" | "swarm"): string {
   const trimmed = value.trim();
   // MDXEditor's link extension can reinterpret a selected action command plus
   // its subsequently typed argument as one relative autolink. Accept only the
   // exact whole-document shape it generates so the action still cannot fall
   // through as a comment. Ordinary Markdown links remain ordinary comments.
   // The label is any prefix of the command typed before it was selected.
-  const label = command === "goal" ? "(?:go(?:al)?)?" : "(?:p(?:l(?:an?)?)?)?";
+  const label = command === "goal" ? "(?:go(?:al)?)?" : command === "swarm" ? "(?:s(?:w(?:a(?:rm?)?)?)?)?" : "(?:p(?:l(?:an?)?)?)?";
   const relativeAutolink = trimmed.match(
     new RegExp(`^\\[\\/${label}[ \\t\\u00a0]*\\]\\(<(\\/${command}(?:[ \\t\\u00a0].*)?)>\\)$`, "s"),
   );
@@ -53,6 +53,23 @@ function normalizeActionCommandText(value: string, command: "goal" | "plan"): st
 export function parsePlanCommand(value: string): { matched: false } | { matched: true; request: string } {
   const command = parseLeadingUserCommand(normalizeActionCommandText(value, "plan"), ["plan"]);
   return command ? { matched: true, request: command.argument } : { matched: false };
+}
+
+/**
+ * `/swarm <request>` asks a Google Antigravity agent for its native swarm. The
+ * request is sent as a structured `nativeCommand`, never as command text; the
+ * server decides whether a swarm can run and says why when it cannot.
+ */
+export function parseSwarmCommand(value: string): { request: string } | null {
+  const command = parseLeadingUserCommand(normalizeActionCommandText(value, "swarm"), ["swarm"]);
+  return command ? { request: command.argument } : null;
+}
+
+/** A swarm runs on the agent's configured model; a per-message model or effort choice cannot apply. */
+export function swarmRunSettingsRefusal(settings: { model: string | null; effort: string | null; fast: boolean } | null | undefined): string | null {
+  return settings && (settings.model || settings.effort || settings.fast)
+    ? "Swarm uses the agent's configured model. Clear the model and effort choices for this message, then send /swarm."
+    : null;
 }
 
 export type PlanSubmission =

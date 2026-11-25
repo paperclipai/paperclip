@@ -104,7 +104,7 @@ stopped-run recovery checks.
 
 ### `operator-retry`
 
-The [connected-task regression](../../server/src/__tests__/chat-channels.integration.test.ts)
+The [connected-task regression](../../server/src/__tests__/chat-channels/github-retry-and-recovery.integration.test.ts)
 uses HTTP Retry after an accepted board message fails before provider startup.
 It checks the canonical intent, same-user identity and actual queue dispatch,
 then repeats Retry after another contained preparation failure with the same
@@ -122,9 +122,10 @@ needs containment. Observe a saved wait with no new executor. After verified
 containment, the same chat receipt must admit one successor with the original
 source batch. Reload and repeat reconciliation. Check that a paused endpoint,
 changed source, superseded request or revoked access cannot start that work.
-The connected-chat database regression in
-[chat channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
-exercises admission and queue continuation. It does not establish hosted
+The connected-chat database regressions in
+[GitHub retry and recovery](../../server/src/__tests__/chat-channels/github-retry-and-recovery.integration.test.ts)
+and [board and shared core](../../server/src/__tests__/chat-channels/board-and-shared-core.integration.test.ts)
+exercise admission and queue continuation. They do not establish hosted
 provider recovery or successful delivery.
 
 For GitHub, save a follow-up behind a failed run, then reconnect the same App.
@@ -287,7 +288,7 @@ the task becomes done or cancelled. Verify one unchanged action ID, attempt
 count, and timestamps; task completion must not authorize copyback. Clear only
 the exact receipt after operator stop verification, then confirm stale action
 cleanup. The [route regressions](../../server/src/__tests__/issue-recovery-actions.test.ts)
-and [heartbeat regression](../../server/src/__tests__/heartbeat-process-recovery.test.ts)
+and [heartbeat regression](../../server/src/__tests__/heartbeat-process-recovery-part-1.test.ts)
 cover this sequence without a live operator recovery claim.
 
 An intentionally Done onboarding parent can still need its validated
@@ -373,8 +374,9 @@ Repeat source-only repair with a `succeeded` legacy run that still has a retaine
 file obligation. Its result must remain successful, its current task owner and
 status must stay unchanged, and later saved input must become eligible for normal
 admission. A running or queued source and a normal retry of a successful turn
-remain denied. The [reconciliation regressions](../../server/src/services/workspace-restore-reconciliation.test.ts)
-cover these cases and stop-receipt validation without claiming live provider proof.
+remain denied. Canonical workspace recovery coverage lives in
+[workspace recovery admission](../../server/src/services/workspace-recovery-admission.test.ts)
+and [workspace recovery warm handoff](../../server/src/services/workspace-recovery-warm-handoff.test.ts) without claiming live provider proof.
 
 For an abandoned native copyback owner, the harness verifies the exact stopped
 deployment and the reconciler restores saved work automatically. Task users see
@@ -406,7 +408,7 @@ files, successful lease cleanup, and one bounded continuation. Reload before
 checking the successor. Repeat with controller loss: the expired fence must
 retain the exact source and require repair, never claim restored files or start
 a second executor. The database-backed
-[shutdown regression](../../server/src/__tests__/heartbeat-process-recovery.test.ts)
+[shutdown regression](../../server/src/__tests__/heartbeat-process-recovery-part-1.test.ts)
 checks finalizer joining, release order, durable retry uniqueness, and reload.
 The [settlement regressions](../../server/src/services/heartbeat/recovery.test.ts)
 cover other-controller fencing and owner loss. Provider boundaries are controlled
@@ -427,7 +429,7 @@ while the second cannot use the operator API.
 
 Automated: [legacy continuation](../../server/src/services/recovery/legacy-continuation.test.ts),
 [queue routes](../../server/src/__tests__/issue-queued-comments-routes.test.ts), and
-[native restart recovery](../../server/src/services/native-runtime/native-restart-recovery.test.ts)
+[native runner restart recovery](../../server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts)
 cover their respective recovery paths.
 
 [Queued Stop database regressions](../../server/src/modules/wake-queue/adapters/queued-operator-stop-postgres.test.ts)
@@ -494,4 +496,4 @@ Capability ID: `recovery/user-continuation`.
 Scope: ui
 Storybook: Saved follow-up waiting on stop cleanup, pause/budget gate, one eligible continuation and result/failure.
 Production: Confirm previous execution stopped before delivery, preserve message, avoid duplicate wakes and honor actual task/ancestor/budget gate in separate legacy/native paths.
-Sources: Source: [TaskChatQueuedMessages.tsx](../../ui/src/components/task-chat/TaskChatQueuedMessages.tsx), [legacy-continuation.ts](../../server/src/services/recovery/legacy-continuation.ts), [native-restart-recovery.ts](../../server/src/services/native-runtime/native-restart-recovery.ts). Tests: [legacy-continuation.test.ts](../../server/src/services/recovery/legacy-continuation.test.ts), [native-restart-recovery.test.ts](../../server/src/services/native-runtime/native-restart-recovery.test.ts), [issue-queued-comments-routes.test.ts](../../server/src/__tests__/issue-queued-comments-routes.test.ts)
+Sources: Source: [TaskChatQueuedMessages.tsx](../../ui/src/components/task-chat/TaskChatQueuedMessages.tsx), [legacy-continuation.ts](../../server/src/services/recovery/legacy-continuation.ts), [native-restart-recovery.ts](../../server/src/services/native-runtime/native-restart-recovery.ts). Tests: [legacy-continuation.test.ts](../../server/src/services/recovery/legacy-continuation.test.ts), [native-runner-restart-recovery.integration.test.ts](../../server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts), [issue-queued-comments-routes.test.ts](../../server/src/__tests__/issue-queued-comments-routes.test.ts)

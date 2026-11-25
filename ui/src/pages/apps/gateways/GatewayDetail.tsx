@@ -104,7 +104,7 @@ export function GatewayDetail() {
   useEffect(() => {
     if (!gateway) return;
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: "Plugins", href: "/apps" },
       { label: "Gateways", href: "/apps/gateways" },
       { label: gateway.name },
     ]);

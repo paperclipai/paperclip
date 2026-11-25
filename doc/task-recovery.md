@@ -233,6 +233,16 @@ a new background obligation. An uncertain acknowledgement never proves that
 files were saved. This adds no provider turn, recovery generation or retry budget,
 and the normal save and stop receipts still govern continuation.
 
+A restore of the last save can also find a full disk. When the sandbox was
+resumed from an earlier run, its own files are the cause, not the saved
+workspace. The run's lease then drops its reuse scope and records
+`reusableSandboxLeaseSuperseded` with reason `sandbox_disk_full`. The restore
+is retried within the normal bootstrap budget. That retry's acquisition treats
+the full sandbox as obsolete and cleans it up through the obsolete-lease path,
+which keeps its export and parked-file protections. Then it restores on a new
+sandbox. A sandbox created for the run has nothing from an earlier run, and a
+new one has the same disk, so a full disk there still goes to the board.
+
 Known publication receipts and exact API mutation receipts carry forward.
 Uncertain API mutations and upstream tool mutations remain fenced across run
 replacement. Reads and independent work remain available. Generic upstream

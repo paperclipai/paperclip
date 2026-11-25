@@ -10,6 +10,7 @@ import { issueRoutes } from "../routes/issues.js";
 import { activityRoutes } from "../routes/activity.js";
 import { agentRoutes } from "../routes/agents.js";
 import { errorHandler } from "../middleware/index.js";
+import { recordAntigravitySwarmRequest } from "../services/antigravity-swarm.js";
 import { describeEmbeddedPostgres, seedCompanyWithBoardAccess, useEmbeddedPostgres, type BoardActor } from "./helpers/route-test-harness.js";
 
 describeEmbeddedPostgres("task chat bootstrap", () => {
@@ -138,6 +139,29 @@ describeEmbeddedPostgres("task chat bootstrap", () => {
     expect(res.body.items[1].recentComments.comments).toHaveLength(7);
     expect(res.body.items[1].recentComments.oldestCommentId).toBeDefined();
     expect(res.body.items[0].recentComments).not.toHaveProperty("oldestCommentId");
+  });
+
+  it("marks a recorded /swarm request on every path that returns comments to the thread", async () => {
+    const f = await seedCompanyWithBoardAccess(ctx.db, "Swarm marker");
+    const server = app(f.actor);
+    for (const conversation of [false, true]) {
+      const task = await seedTask(f.companyId, { userId: f.userId, conversation });
+      const requested = task.commentIds[6]!;
+      await recordAntigravitySwarmRequest(ctx.db, { companyId: f.companyId, issueId: task.issueId, commentId: requested, userId: f.userId });
+      const marks = (comments: Array<{ id: string; nativeCommand?: string }>) =>
+        comments.filter((comment) => comment.nativeCommand === "swarm").map((comment) => comment.id);
+
+      const list = await request(server).get(`/api/issues/${task.issueId}/comments`).expect(200);
+      expect(marks(list.body), "comments").toEqual([requested]);
+      const one = await request(server).get(`/api/issues/${task.issueId}/comments/${requested}`).expect(200);
+      expect(one.body.nativeCommand, "comment").toBe("swarm");
+      const recent = await request(server).get(`/api/issues/${task.issueId}/recent-comments`).expect(200);
+      expect(marks(recent.body.comments), "recent-comments").toEqual([requested]);
+      const single = await request(server).get(`/api/issues/${task.issueId}/chat-bootstrap`).expect(200);
+      expect(marks(single.body.recentComments.comments), "chat-bootstrap").toEqual([requested]);
+      const batch = await request(server).get(url(f.companyId)).query({ ids: task.issueId }).expect(200);
+      expect(marks(batch.body.items[0].recentComments.comments), "batch chat-bootstrap").toEqual([requested]);
+    }
   });
 
   it("follows request order with mixed UUIDs and identifiers, and reads a task named twice once per ref", async () => {

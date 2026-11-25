@@ -29,6 +29,7 @@ import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { SummarySlotCard } from "../components/SummarySlotCard";
 import { MembershipAction } from "../components/MembershipAction";
+import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
 import { StarToggle } from "../components/StarToggle";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
@@ -334,6 +335,8 @@ export function ProjectDetail() {
     filter?: string;
   }>();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const workspace = useCoordinatorWorkspaceEnabled();
+  const classicWorkspace = workspace.loaded && !workspace.enabled;
   const { closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
@@ -714,7 +717,7 @@ export function ProjectDetail() {
   }
   if (!project) return null;
   const showLeftProjectNotice =
-    projectMembershipState === "left" && !dismissedLeftProjectIds.has(project.id);
+    classicWorkspace && projectMembershipState === "left" && !dismissedLeftProjectIds.has(project.id);
   const projectMembershipPending =
     membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "project" &&
@@ -810,20 +813,22 @@ export function ProjectDetail() {
             </div>
           ) : null}
         </div>
-        <div className="ml-auto flex items-center gap-2">
-          <StarToggle
-            size="button"
-            starred={projectStarred}
-            pending={projectStarPending}
-            resourceName={project.name}
-            onToggle={(next) => membershipMutation.mutate({
-              resourceType: "project",
-              resourceId: project.id,
-              resourceName: project.name,
-              starred: next,
-            })}
-          />
-        </div>
+        {classicWorkspace && (
+          <div className="ml-auto flex items-center gap-2">
+            <StarToggle
+              size="button"
+              starred={projectStarred}
+              pending={projectStarPending}
+              resourceName={project.name}
+              onToggle={(next) => membershipMutation.mutate({
+                resourceType: "project",
+                resourceId: project.id,
+                resourceName: project.name,
+                starred: next,
+              })}
+            />
+          </div>
+        )}
       </div>
 
       <SummarySlotCard

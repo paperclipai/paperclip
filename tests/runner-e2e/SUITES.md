@@ -1724,6 +1724,23 @@ pnpm test:e2e:runner -- --id antigravity-qualification.runner-acpx-antigravity.l
 pnpm test:e2e:runner -- --suite antigravity-qualification --environment daytona --max-automatic-retries 0
 ```
 
+### Google Antigravity swarm
+
+`antigravity-swarm` (5 cells, local only) lists the native `/swarm` behaviours
+on the Antigravity CLI route: `two-helpers-and-verifier`, `stop-mid-swarm`,
+`process-loss-retry`, `follow-up-after-swarm` and `flag-off-refusal`. It needs
+the experimental flag, `paperclipai runtime setup antigravity-cli` and the
+Antigravity CLI's own Google sign-in on the computer. It is explicit-only,
+never part of `--all` or CI matrix jobs, and has no automated executor yet: the
+launcher refuses its cells and points at the attended
+[live recipe](../../doc/plans/2026-11-22-antigravity-qualification.md#swarm-live-proof).
+Deterministic coverage lives in the Runner's fake-CLI tests
+(`packages/paperclip-runner/test-fixtures/antigravity-cli/fake-agy-acp.mjs`).
+
+```sh
+pnpm test:e2e:runner -- --list --suite antigravity-swarm
+```
+
 ### Google Antigravity model lineups
 
 `antigravity-model-lineup` (14 cells) and `antigravity-model-lineup-gemini4`

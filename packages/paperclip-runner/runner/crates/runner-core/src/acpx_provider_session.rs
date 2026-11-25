@@ -372,6 +372,9 @@ pub struct AcpxProviderSession {
     generation_has_run_turn: bool,
     restarted_after_turn_from: Option<u32>,
     prepared_generation: Option<String>,
+    /// Provider tool rejections held while the backend holds the outputs read
+    /// before them in memory: `(call_id, turn_id, message)`.
+    held_tool_rejections: Option<Vec<(String, String, String)>>,
 }
 
 pub(crate) fn goal_is_dormant(projection: &Value) -> bool {
@@ -438,6 +441,7 @@ impl AcpxProviderSession {
             run_result_reported: None,
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
+            held_tool_rejections: None,
             prepared_generation: None,
         })
     }
@@ -1142,21 +1146,67 @@ impl AcpxProviderSession {
             .flatten()
         {
             for (call_id, message) in retryable_rejections {
-                let response = self
-                    .transport
-                    .request_tool_resolve(json!({
-                        "callId": call_id,
-                        "turnId": turn_id,
-                        "error": {"message": message},
-                    }))
-                    .map_err(|(error, _)| self.fail_closed(error))?;
-                self.verify_resolution(&response, "tool")?;
+                if let Some(held) = self.held_tool_rejections.as_mut() {
+                    held.push((call_id, turn_id.clone(), message));
+                } else {
+                    self.reject_tool_call(&call_id, &turn_id, &message)?;
+                }
             }
         }
         if let Some(turn_id) = terminal_turn {
             self.offer_provider_turn(&turn_id, terminal_completed, terminal_live);
         }
         Ok(Some((reconciled_events, terminal_goal)))
+    }
+
+    fn reject_tool_call(
+        &mut self,
+        call_id: &str,
+        turn_id: &str,
+        message: &str,
+    ) -> Result<(), LocalRunnerError> {
+        let response = self
+            .transport
+            .request_tool_resolve(json!({
+                "callId": call_id,
+                "turnId": turn_id,
+                "error": {"message": message},
+            }))
+            .map_err(|(error, _)| self.fail_closed(error))?;
+        self.verify_resolution(&response, "tool")
+    }
+
+    /// Holds provider tool rejections from `poll_output` until
+    /// `release_tool_rejections`. The backend can then save the outputs that
+    /// it read before a rejection, before the provider sees that rejection.
+    pub(crate) fn hold_tool_rejections(&mut self) {
+        self.held_tool_rejections.get_or_insert_with(Vec::new);
+    }
+
+    pub(crate) fn has_held_tool_rejections(&self) -> bool {
+        self.held_tool_rejections
+            .as_ref()
+            .is_some_and(|held| !held.is_empty())
+    }
+
+    /// Sends the held tool rejections in their polled order. With
+    /// `keep_holding`, later rejections are held again.
+    pub(crate) fn release_tool_rejections(
+        &mut self,
+        keep_holding: bool,
+    ) -> Result<(), LocalRunnerError> {
+        let held = if keep_holding {
+            self.held_tool_rejections
+                .as_mut()
+                .map(std::mem::take)
+                .unwrap_or_default()
+        } else {
+            self.held_tool_rejections.take().unwrap_or_default()
+        };
+        for (call_id, turn_id, message) in held {
+            self.reject_tool_call(&call_id, &turn_id, &message)?;
+        }
+        Ok(())
     }
 
     pub fn deliver_tool_result(&mut self, result: &ToolResult) -> Result<(), LocalRunnerError> {
@@ -2042,7 +2092,57 @@ fn with_cleanup_error(
             "{error}; ACPX sidecar cleanup also failed: {cleanup}"
         ))
         .with_provider_failure(error.provider_failure())
-        .with_command_rejection(error.command_rejection()),
+        .with_command_rejection(error.command_rejection())
+        .with_sidecar_rejection(error.sidecar_rejection()),
+    }
+}
+
+#[cfg(all(test, unix))]
+impl AcpxProviderSession {
+    /// A session with `turn_id` active whose sidecar is the shell script at
+    /// `script`.
+    pub(crate) fn scripted_turn_for_test(
+        mut config: AcpxProviderSessionConfig,
+        identity: AcpxProviderSessionIdentity,
+        script: &Path,
+        turn_id: &str,
+    ) -> Self {
+        config.transport.command = PathBuf::from("/bin/sh");
+        config.transport.args = vec![script.to_string_lossy().into_owned()];
+        config.transport.verified_launch = None;
+        let transport =
+            AcpxSidecarTransport::start_for_agent(&config.transport, &config.agent).unwrap();
+        let mut state = AcpxProviderState::new(&config.run_id).unwrap();
+        state.begin_turn(turn_id).unwrap();
+        let mut tool_bridge = ProviderToolBridge::default();
+        tool_bridge.prepare(config.tool_set.clone()).unwrap();
+        AcpxProviderSession {
+            transport,
+            state,
+            identity,
+            tool_bridge,
+            reserved_tool_bridge: reserved_terminal_tool_bridge().unwrap(),
+            turn_controls: AcpxTurnControlCapabilities::default(),
+            catalog_revision: config.catalog_revision,
+            working_directory: config.working_directory.clone(),
+            config,
+            closed: false,
+            failure: None,
+            transport_terminated: false,
+            rejected_start_resumable: false,
+            runtime_retired: false,
+            cancelled_turn_id: None,
+            completed_turn_observed: false,
+            quiet_turn_observed: false,
+            continues_in_process: false,
+            turn_start_replaced_provider: false,
+            provider_turn_offer: None,
+            run_result_reported: None,
+            generation_has_run_turn: false,
+            restarted_after_turn_from: None,
+            prepared_generation: None,
+            held_tool_rejections: None,
+        }
     }
 }
 
@@ -2397,6 +2497,7 @@ mod mode_tests {
             run_result_reported: None,
             generation_has_run_turn: false,
             restarted_after_turn_from: None,
+            held_tool_rejections: None,
             prepared_generation: None,
         }
     }
@@ -2503,65 +2604,35 @@ mod mode_tests {
         }
     }
     #[test]
-    fn pending_profile_cannot_launch_even_with_explicit_policy() {
+    fn released_antigravity_launches_with_explicit_policy_and_without_candidate_grant() {
         let mut config = config();
         config.agent = "antigravity".to_owned();
+        config.mode = None;
         config.pi_thinking_level = None;
-        assert!(config
-            .validate()
-            .unwrap_err()
-            .to_string()
-            .contains("qualification is pending"));
-    }
-
-    #[test]
-    #[cfg(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(
-            target_os = "linux",
-            any(target_arch = "x86_64", target_arch = "aarch64")
-        )
-    ))]
-    fn candidate_admission_is_bound_and_carried_through_both_bootstrap_requests() {
-        let mut cfg = config();
-        assert!(initialize_params(&cfg).get("candidateAdmission").is_none());
-        assert!(session_open_params(&cfg, &[])
+        config.validate().unwrap();
+        assert!(initialize_params(&config)
             .get("candidateAdmission")
             .is_none());
-        cfg.agent = "antigravity".to_owned();
-        cfg.mode = None;
+        assert!(session_open_params(&config, &[])
+            .get("candidateAdmission")
+            .is_none());
+        // A /swarm turn keeps no candidate grant and names its provider mode;
+        // the sidecar, not the Runner, decides which agent modes it accepts.
+        let mut swarm = config.clone();
+        swarm.mode = Some("swarm".to_owned());
+        swarm.validate().unwrap();
+        assert_eq!(session_open_params(&swarm, &[])["mode"], json!("swarm"));
+        assert!(session_open_params(&swarm, &[])
+            .get("candidateAdmission")
+            .is_none());
+        // Released Antigravity refuses any injected candidate grant.
         let admission = crate::acpx_candidate_admission::test_admission(
-            &cfg.run_id,
-            &cfg.normalized_session_id,
+            &config.run_id,
+            &config.normalized_session_id,
         );
-        cfg.candidate_admission = Some(admission.clone());
-        cfg.validate().unwrap();
-        assert_eq!(
-            initialize_params(&cfg)["candidateAdmission"],
-            json!(admission)
-        );
-        assert_eq!(
-            session_open_params(&cfg, &[])["candidateAdmission"],
-            json!(admission)
-        );
-        for (field, value) in [
-            ("run", "different-run"),
-            ("session", "different-session"),
-            ("model", "different-model"),
-            ("agent", "codex"),
-        ] {
-            let mut invalid = cfg.clone();
-            match field {
-                "run" => invalid.run_id = value.to_owned(),
-                "session" => invalid.normalized_session_id = value.to_owned(),
-                "model" => invalid.model = value.to_owned(),
-                "agent" => invalid.agent = value.to_owned(),
-                _ => unreachable!(),
-            }
-            assert!(invalid.validate().is_err(), "{field}");
-        }
-        cfg.candidate_admission.as_mut().unwrap().expires_at = 0;
-        assert!(cfg.validate().is_err());
+        let mut granted = config.clone();
+        granted.candidate_admission = Some(admission);
+        assert!(granted.validate().is_err());
     }
 
     #[test]

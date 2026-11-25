@@ -11,7 +11,7 @@ test.afterAll(async () => { await fixture?.close(); });
 const references = hireHandoffMentions({ companyId: r.companyId, leadId: r.leadId, projectId: r.projectId, campaignId: r.campaignId }, r.agentId,
   { id: r.agentId, companyId: r.companyId, reportsTo: r.leadId, name: `Morgan Reviewer ${r.campaignId}`, icon: "code" },
   { id: r.projectId, companyId: r.companyId, name: `Journey QA hire-delegate-reuse ${r.campaignId}`, color: "#336699" });
-const message = (review = false) => `Have the existing ${references.teammate} ${review ? "review the checklist on QA-1 and write a separate saved review" : "write a concise launch checklist as a saved Paperclip document"}. Create exactly one task in ${references.project}, already assigned to that teammate when it is created. Link the result here.`;
+const message = (review = false) => `Have the existing ${references.teammate} ${review ? "review the checklist on QA-1 and write a separate saved review" : 'write a concise launch checklist as a saved Paperclip document with the line "Reference: HIREjourney1deadbeef"'}. Create exactly one task in ${references.project}, already assigned to that teammate when it is created. Link the result here.`;
 async function open(page: Page, key: string, variant = "valid", mode = "production") {
   const url = new URL("/__hire.html", fixture.url); url.searchParams.set("case", key); url.searchParams.set("variant", variant); url.searchParams.set("mode", mode);
   await page.goto(url.href);

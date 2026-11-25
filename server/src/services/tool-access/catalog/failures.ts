@@ -107,7 +107,7 @@ export function sanitizeHttpFailure(error: unknown): {
     if (code === "oauth_reauthorization_required") {
       return {
         status: "error",
-        message: "OAuth authorization expired. Reconnect this app to continue.",
+        message: "Access to this app ended. Reconnect to continue.",
         code: "oauth_reauthorization_required",
       };
     }

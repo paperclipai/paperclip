@@ -180,7 +180,12 @@ describe("layerConfig", () => {
       { emptyLayers: new Set(["cycle"]) },
     );
 
-    expect(config.compilerOptions).toMatchObject({ composite: false, noEmit: true });
+    expect(config.compilerOptions).toMatchObject({
+      composite: false,
+      incremental: true,
+      tsBuildInfoFile: "./tests.tsbuildinfo",
+      noEmit: true,
+    });
     expect(config.references).toEqual([{ path: "./tsconfig.below.json" }]);
   });
 });
@@ -195,7 +200,10 @@ describe("layerConfig for the test tree", () => {
     });
 
     expect(config.extends).toBe("../../../src/__tests__/tsconfig.json");
-    expect(config.compilerOptions).toBeUndefined();
+    expect(config.compilerOptions).toEqual({
+      incremental: true,
+      tsBuildInfoFile: "./test-tree-0.tsbuildinfo",
+    });
     expect(config.files).toEqual(["../../../src/__tests__/a.test.ts"]);
     expect(config.references).toEqual([{ path: "./tsconfig.below.json" }]);
   });

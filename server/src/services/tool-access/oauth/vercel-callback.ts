@@ -230,9 +230,10 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
         "Vercel Connect connection is missing its reviewed app definition",
       );
     const method = connectionMethodForConnection(galleryEntry, connection);
+    const shouldFinalizeDefaults = preActivationLifecycle.status === "draft";
     const refresh = await refreshCatalog(connection.id, input.actor, {
-      enableAllByDefault: true,
-      skipDefaultProfileSync: true,
+      enableAllByDefault: shouldFinalizeDefaults,
+      skipDefaultProfileSync: shouldFinalizeDefaults,
       credentialHeaders: {
         ...projectedConnectionHeaders(connection),
         [credential.headerName]: `${credential.headerPrefix ?? ""}${token.token}`,
@@ -242,13 +243,15 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
       galleryEntry,
       method.key,
     );
-    const finished = await finishOAuthCatalogWithRecommendedDefaults({
-      interactionId: stateRow.interactionId,
-      connection,
-      catalog: refresh.catalog,
-      suggestedDefaults,
-      actor: input.actor,
-    });
+    const finished = shouldFinalizeDefaults
+      ? await finishOAuthCatalogWithRecommendedDefaults({
+          interactionId: stateRow.interactionId,
+          connection,
+          catalog: refresh.catalog,
+          suggestedDefaults,
+          actor: input.actor,
+        })
+      : null;
     const [application] = await db
       .select()
       .from(toolApplications)
@@ -256,7 +259,7 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
     return {
       connectionId: connection.id,
       application: toApplication(application),
-      connection: finished.connection,
+      connection: finished?.connection ?? refresh.connection,
       catalog: refresh.catalog,
       actions: groupedActions(refresh.catalog),
       suggestedDefaults,

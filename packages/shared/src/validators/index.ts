@@ -409,6 +409,7 @@ export {
 
 export {
   createDocumentAnnotationCommentSchema,
+  documentAnnotationCommentReactionSchema,
   createDocumentAnnotationThreadSchema,
   documentAnnotationAnchorConfidenceSchema,
   documentAnnotationAnchorSelectorSchema,
@@ -464,6 +465,7 @@ export {
   issueCommentMetadataSectionSchema,
   issueCommentMetadataSchema,
   addIssueCommentSchema,
+  addIssueSwarmCommentSchema,
   sendChatMessageSchema,
   markIssueReadSchema,
   issueThreadInteractionStatusSchema,

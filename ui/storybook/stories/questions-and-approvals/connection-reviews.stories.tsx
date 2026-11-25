@@ -356,6 +356,20 @@ export const GitHubAccessNeeded: Story = {
     } },
   }]} />,
 };
+export const GitHubRepoOutsideAppAccess: Story = {
+  render: () => <TaskScreen initial={[{
+    ...failedToolActionInteraction,
+    payload: { ...failedToolActionInteraction.payload, toolAction: {
+      ...failedToolActionInteraction.payload.toolAction!, appDisplayName: "GitHub", toolDisplayName: "Create issue",
+      previewMarkdown: "Open an issue on external-org/public-repo.",
+      argumentsSummaryJson: '{"owner":"external-org","repo":"public-repo","title":"Bug report"}',
+    } },
+    result: { ...failedToolActionInteraction.result!, toolAction: {
+      ...failedToolActionInteraction.result!.toolAction!, errorCode: "github_repo_outside_app_installations",
+      errorMessage: "failed to create issue: POST https://api.github.com/repos/external-org/public-repo/issues: 403 Resource not accessible by integration []",
+    } },
+  }]} />,
+};
 export const Declined: Story = {
   render: () => <TaskScreen initial={[declinedToolActionInteraction]} />,
 };

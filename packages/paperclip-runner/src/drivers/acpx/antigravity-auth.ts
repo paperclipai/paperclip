@@ -1,12 +1,13 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, open, readlink, rename, rm } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { join } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { antigravityPrivateEnvironment, checkAntigravityPrivateHome, retireAntigravityProcess } from "./antigravity-process.js";
 import { antigravityNativeDistributionSpec } from "./antigravity-installation.js";
 import { ANTIGRAVITY_RUNTIME_VERSION } from "./generated-profiles.js";
+import { AntigravityRuntimeUnavailableError } from "./antigravity-runtime-unavailable.js";
 import { verifyNativeAcpxInstallation, type VerifiedAcpxCommandLease } from "./installation-integrity.js";
 
 const CLIENT_ID = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com";
@@ -14,15 +15,42 @@ const TOKEN_URI = "https://oauth2.googleapis.com/token";
 const SCOPES = ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/aicode"];
 const AUTH_PREFIX = "Open the following link to authenticate the ACP server: ";
 const MAX_BYTES = 64 * 1024;
+const MAX_REDIRECT_URL_LENGTH = 4096;
+const MAX_REDIRECT_CODE_LENGTH = 2048;
+const MAX_BAD_REDIRECT_ATTEMPTS = 5;
+const MAX_USED_CODE_DIGESTS = 1024;
+const REDIRECT_LOOPBACK_TIMEOUT_MS = 5_000;
+const DISALLOWED_PRINTABLE_ASCII = /[^\x21-\x7E]/;
 const LOGIN_ERROR = "Google sign-in did not complete. Start sign-in again.";
 const record = (value: unknown): Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const verifiedCredentials = new Map<string, { credential: string; accountEmail: string }>();
 const activeBrowserHomes = new Set<string>();
+const usedRedirectCodeDigests = new Set<string>();
+
+function recordUsedRedirectCodeDigest(digest: string): void {
+  usedRedirectCodeDigests.add(digest);
+  while (usedRedirectCodeDigests.size > MAX_USED_CODE_DIGESTS) {
+    const oldest = usedRedirectCodeDigests.values().next().value;
+    if (oldest === undefined) break;
+    usedRedirectCodeDigests.delete(oldest);
+  }
+}
+
+export type AntigravityBrowserLoginFailureReason = "runtime_unavailable" | "start_failed" | "login_incomplete" | "aborted";
+
+const FAILURE_MESSAGES: Readonly<Record<AntigravityBrowserLoginFailureReason, string>> = {
+  runtime_unavailable: "This server does not have the current Google Antigravity runtime, so Google sign-in cannot start. Use a Google API key instead, or update Paperclip on this server.",
+  start_failed: "Google sign-in could not start on this server. Start sign-in again.",
+  login_incomplete: LOGIN_ERROR,
+  aborted: LOGIN_ERROR,
+};
 
 export type AntigravityBrowserLoginState = {
   authorizationUrl?: string;
   outcome?: "success" | "failure";
   error?: string;
+  /** Relay a user-pasted loopback redirect URL to the local ACP listener. */
+  submitRedirect?: (rawRedirectUrl: string) => Promise<void>;
   /** Resolves only after physical process retirement and lease release. */
   abort(): Promise<void>;
 };
@@ -152,19 +180,21 @@ export async function verifyAntigravityCredential(home: string, options: { signa
  * initialize/authenticate; pending provider qualification remains enforced for
  * every session and prompt by the ordinary runtime installation path.
  */
-export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLoginState {
+export function startAntigravityBrowserLogin(home: string, options: { onFailure?: (reason: AntigravityBrowserLoginFailureReason) => void } = {}): AntigravityBrowserLoginState {
   const controller = new AbortController();
   activeBrowserHomes.add(home);
   let resolveStopped: () => void;
   const stopped = new Promise<void>(resolve => { resolveStopped = resolve; });
-  const state: AntigravityBrowserLoginState = { abort() { controller.abort(); activeBrowserHomes.delete(home); verifiedCredentials.delete(home); return stopped; } };
+  const state: AntigravityBrowserLoginState = { abort() { state.submitRedirect = undefined; controller.abort(); activeBrowserHomes.delete(home); verifiedCredentials.delete(home); return stopped; } };
   void (async () => {
     let lease: VerifiedAcpxCommandLease | undefined;
     let child: ChildProcessWithoutNullStreams | undefined, closed: Promise<void> | undefined;
     let timeout: ReturnType<typeof setTimeout> | undefined, failPending: ((error: Error) => void) | undefined;
+    let pendingReason: AntigravityBrowserLoginFailureReason = "start_failed";
     try {
       await checkAntigravityPrivateHome(home);
-      const installation = await verifyNativeAcpxInstallation(antigravityNativeDistributionSpec());
+      const installation = await Promise.resolve().then(() => verifyNativeAcpxInstallation(antigravityNativeDistributionSpec()))
+        .catch(() => { throw new AntigravityRuntimeUnavailableError(); });
       lease = await installation.openCommand({ signal: controller.signal });
       const environment = await antigravityPrivateEnvironment(home);
       if (controller.signal.aborted) throw new Error(LOGIN_ERROR);
@@ -174,7 +204,7 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
       let phase = 1, stdout = "", stderr = "", total = 0, failure: Error | undefined;
       const outputDecoder = new StringDecoder("utf8"), errorDecoder = new StringDecoder("utf8");
       const authenticated = new Promise<void>((resolve, reject) => {
-        const fail = (error = new Error(LOGIN_ERROR)) => { failure ??= error; reject(failure); };
+        const fail = (error = new Error(LOGIN_ERROR)) => { state.submitRedirect = undefined; failure ??= error; reject(failure); };
         failPending = fail;
         const send = (id: 1 | 2) => peer.stdin.write(`${JSON.stringify(id === 1
           ? { jsonrpc: "2.0", id, method: "initialize", params: { protocolVersion: 1, clientInfo: { name: "paperclip-runner", version: "1" }, clientCapabilities: {} } }
@@ -194,8 +224,8 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
               if (initialized.protocolVersion !== 1 || info.name !== "antigravity-acp" || info.version !== ANTIGRAVITY_RUNTIME_VERSION
                 || record(record(record(initialized.agentCapabilities)._meta).antigravity).paperclipAdmission !== 1
                 || !Array.isArray(initialized.authMethods) || !initialized.authMethods.some(method => record(method).id === "oauth-personal")) { fail(); return; }
-              phase = 2; send(2);
-            } else { phase = 3; resolve(); }
+              phase = 2; pendingReason = "login_incomplete"; send(2);
+            } else { phase = 3; state.submitRedirect = undefined; resolve(); }
           }
         });
         peer.stderr.on("data", (chunk: Buffer) => {
@@ -209,6 +239,104 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
               const url = validateAntigravityAuthorizationUrl(line.slice(AUTH_PREFIX.length));
               if ((phase !== 2 && phase !== 3) || state.authorizationUrl !== undefined) throw new Error(LOGIN_ERROR);
               state.authorizationUrl = url;
+              if (phase === 2 && !controller.signal.aborted && !failure) {
+                const parsedAuth = new URL(url);
+                const expectedRedirect = new URL(parsedAuth.searchParams.get("redirect_uri")!);
+                const expectedState = parsedAuth.searchParams.get("state")!;
+                const expectedStateBytes = Buffer.from(expectedState, "utf8");
+                let badAttempts = 0;
+                const rejectBadAttempt = (message: string): never => {
+                  badAttempts += 1;
+                  if (badAttempts >= MAX_BAD_REDIRECT_ATTEMPTS) {
+                    fail(new Error(LOGIN_ERROR));
+                    throw new Error("Too many invalid Google redirect URLs. Start sign-in again.");
+                  }
+                  throw new Error(message);
+                };
+                const submitRedirect = async (rawRedirectUrl: string): Promise<void> => {
+                  if (controller.signal.aborted || failure || phase !== 2 || state.submitRedirect !== submitRedirect) {
+                    throw new Error("This Google sign-in attempt can no longer accept a redirect URL. Start sign-in again.");
+                  }
+                  if (
+                    typeof rawRedirectUrl !== "string"
+                    || rawRedirectUrl.length === 0
+                    || rawRedirectUrl.length > MAX_REDIRECT_URL_LENGTH
+                    || DISALLOWED_PRINTABLE_ASCII.test(rawRedirectUrl)
+                  ) {
+                    rejectBadAttempt("Paste the full http://127.0.0.1 URL from your browser’s address bar.");
+                  }
+                  let parsed: URL;
+                  try {
+                    parsed = new URL(rawRedirectUrl);
+                  } catch {
+                    rejectBadAttempt("Paste the full http://127.0.0.1 URL from your browser’s address bar.");
+                  }
+                  if (
+                    parsed!.protocol !== "http:"
+                    || parsed!.hostname !== "127.0.0.1"
+                    || parsed!.port !== expectedRedirect.port
+                    || parsed!.pathname !== "/"
+                    || parsed!.username
+                    || parsed!.password
+                    || parsed!.hash
+                  ) {
+                    rejectBadAttempt("The pasted URL does not match this Google sign-in attempt. Copy the address from the tab opened by this sign-in and try again.");
+                  }
+                  if (parsed!.searchParams.has("error")) {
+                    rejectBadAttempt("Google sign-in was cancelled or denied. Start sign-in again.");
+                  }
+                  const states = parsed!.searchParams.getAll("state");
+                  const codes = parsed!.searchParams.getAll("code");
+                  if (states.length !== 1 || codes.length !== 1) {
+                    rejectBadAttempt("The pasted URL is missing the Google sign-in response parameters. Copy the full address bar URL and try again.");
+                  }
+                  const submittedStateBytes = Buffer.from(states[0]!, "utf8");
+                  if (submittedStateBytes.length !== expectedStateBytes.length || !timingSafeEqual(submittedStateBytes, expectedStateBytes)) {
+                    rejectBadAttempt("The pasted URL does not match this Google sign-in attempt. Copy the address from the tab opened by this sign-in and try again.");
+                  }
+                  const submittedCode = codes[0]!;
+                  if (
+                    submittedCode.length === 0
+                    || submittedCode.length > MAX_REDIRECT_CODE_LENGTH
+                    || DISALLOWED_PRINTABLE_ASCII.test(submittedCode)
+                  ) {
+                    rejectBadAttempt("The pasted URL does not contain a valid Google authorization code.");
+                  }
+                  const codeDigest = createHash("sha256").update(submittedCode, "utf8").digest("hex");
+                  if (usedRedirectCodeDigests.has(codeDigest)) {
+                    rejectBadAttempt("This Google authorization code has already been used. Start sign-in again.");
+                  }
+                  // Atomically consume single-use slot before contacting the one-shot loopback listener.
+                  recordUsedRedirectCodeDigest(codeDigest);
+                  state.submitRedirect = undefined;
+
+                  const relayUrl = new URL("/", expectedRedirect.origin);
+                  relayUrl.searchParams.set("state", expectedState);
+                  relayUrl.searchParams.set("code", submittedCode);
+
+                  let response: Response;
+                  try {
+                    response = await fetch(relayUrl.href, {
+                      method: "GET",
+                      redirect: "manual",
+                      signal: AbortSignal.any([controller.signal, AbortSignal.timeout(REDIRECT_LOOPBACK_TIMEOUT_MS)]),
+                    });
+                  } catch {
+                    fail(new Error(LOGIN_ERROR));
+                    throw new Error(LOGIN_ERROR);
+                  }
+                  try {
+                    await response.body?.cancel();
+                  } catch {
+                    // Ignore body cancellation errors after reading status.
+                  }
+                  if (response.status !== 200) {
+                    fail(new Error(LOGIN_ERROR));
+                    throw new Error(LOGIN_ERROR);
+                  }
+                };
+                state.submitRedirect = submitRedirect;
+              }
             } catch { fail(); }
           }
           if (stderr.length > MAX_BYTES) fail();
@@ -230,9 +358,14 @@ export function startAntigravityBrowserLogin(home: string): AntigravityBrowserLo
       await verifyAntigravityCredential(home, { signal: controller.signal });
       if (controller.signal.aborted) throw new Error(LOGIN_ERROR);
       state.outcome = "success";
-    } catch {
-      state.outcome = "failure"; state.error = LOGIN_ERROR;
+    } catch (error) {
+      state.outcome = "failure";
+      const reason: AntigravityBrowserLoginFailureReason = controller.signal.aborted ? "aborted"
+        : error instanceof AntigravityRuntimeUnavailableError ? "runtime_unavailable" : pendingReason;
+      state.error = FAILURE_MESSAGES[reason];
+      try { options.onFailure?.(reason); } catch {}
     } finally {
+      state.submitRedirect = undefined;
       if (timeout) clearTimeout(timeout);
       let observedClose = child === undefined;
       let cleanupWasUncertain = false;

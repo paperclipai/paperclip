@@ -2,15 +2,26 @@ import { BaseSequencer } from "vitest/node";
 
 const slowFiles = [
   "runnerd-codex-transport.test.ts",
+  "runnerd-codex-transport-backlog-proxy.test.ts",
+  "runnerd-codex-transport-cold-admission.test.ts",
   "runnerd-codex-transport-settlement.test.ts",
+  "runnerd-codex-transport-settlement-revocation.test.ts",
+  "runnerd-codex-transport-lease-expiry.test.ts",
+  "runnerd-codex-transport-held-calls.test.ts",
+  "runnerd-codex-transport-provider-turns.test.ts",
   "cursor-cloud-runner-launch.test.ts",
+  "cursor-cloud-runner-questions.test.ts",
   "runnerd-codex-transport-deadlines.test.ts",
   "opencode-server-driver.test.ts",
   "acpx-controller-recovery.test.ts",
+  "acpx-controller-adoption.test.ts",
+  "runnerd-acpx-provider-turn.test.ts",
   "runnerd-codex-transport-warm-attachment.test.ts",
   "runnerd-opencode-streaming-tools.test.ts",
   "live-session.test.ts",
   "runnerd-codex-transport-adoption.test.ts",
+  "runnerd-codex-transport-remote-retention.test.ts",
+  "runnerd-codex-transport-close-proof.test.ts",
 ];
 
 const priority = (file) => {

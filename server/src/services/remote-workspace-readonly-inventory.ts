@@ -57,7 +57,7 @@ export async function readWorkspaceInventory(root: string, controllerCopy = fals
       if (git >= 0 && ((foldedAdministrationPath === "config" && administrationPath !== "config")
         || ["commondir", "config.worktree", "objects/info/alternates", "objects/info/http-alternates"]
           .includes(foldedAdministrationPath))) fail();
-      if (stat.isSocket()) { exclude.push(next); continue; }
+      if (stat.isSocket() || stat.isFIFO()) { exclude.push(next); continue; }
       if (stat.isDirectory()) {
         if (!controllerCopy && !inGit && name !== ".git") {
           const marker = await fs.lstat(name === "node_modules" ? path.join(directory, "package.json")

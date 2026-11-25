@@ -24,6 +24,7 @@ export const responseRunColumns = {
   nativePresentationPending: sql<boolean>`coalesce(
     ${heartbeatRuns.status} = 'succeeded'
     and ${heartbeatRuns.runtimeMode} = 'native'
+    and ${heartbeatRuns.resultJson} #>> '{responsePublication,state}' is distinct from 'failed'
     and (${heartbeatRuns.nativePhase} is distinct from 'committed'
       or ${heartbeatRuns.resultJson}->'presentationDecision'->>'schema' is distinct from 'paperclip.run_presentation_decision.v1'
       or coalesce(${heartbeatRuns.resultJson}->'presentationDecision'->>'commentAction', '') not in ('none', 'create', 'reuse')),
@@ -31,6 +32,7 @@ export const responseRunColumns = {
   )`,
   // Project only the server-committed no-publication decision, never the
   // potentially large native result or model-authored summary.
+  responsePublicationFailed: sql<boolean>`coalesce(${heartbeatRuns.resultJson} #>> '{responsePublication,state}' = 'failed', false)`,
   passiveResponseWait: sql<boolean>`coalesce(
     ${heartbeatRuns.status} = 'succeeded'
     and ${heartbeatRuns.runtimeMode} = 'native'
