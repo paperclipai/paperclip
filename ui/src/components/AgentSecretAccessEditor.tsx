@@ -228,6 +228,13 @@ export function AgentSecretAccessEditor({
     for (const secret of secrets) map.set(secret.id, secret);
     return map;
   }, [secrets]);
+  const apiBindingByAlias = useMemo(() => {
+    const map = new Map<string, AgentSecretRefEntry>();
+    for (const entry of apiBindings) {
+      map.set(entry.name, entry);
+    }
+    return map;
+  }, [apiBindings]);
   const apiBindingBySecretId = useMemo(() => {
     const map = new Map<string, AgentSecretRefEntry>();
     for (const entry of apiBindings) {
@@ -313,11 +320,17 @@ export function AgentSecretAccessEditor({
             const validAliases = summary.apiAliases.filter(
               (alias) => SECRET_ALIAS_RE.test(alias) && !looksLikeCredentialToken(alias),
             );
-            const suggestedEnvKey =
-              validAliases.find((alias) => !occupiedEnvKeys.has(alias)) ||
-              validAliases[0] ||
-              envKeyFromSecretName(secretName(summary.secretId));
-            const matchingApiBinding = apiBindingBySecretId.get(summary.secretId);
+            const chosenAlias =
+              validAliases.find((alias) => !occupiedEnvKeys.has(alias)) ?? validAliases[0] ?? null;
+            const derivedEnvKey = envKeyFromSecretName(secretName(summary.secretId));
+            const fallbackEnvKey =
+              SECRET_ALIAS_RE.test(derivedEnvKey) && !looksLikeCredentialToken(derivedEnvKey)
+                ? derivedEnvKey
+                : "";
+            const suggestedEnvKey = chosenAlias ?? fallbackEnvKey;
+            const matchingApiBinding = chosenAlias
+              ? apiBindingByAlias.get(chosenAlias)
+              : apiBindingBySecretId.get(summary.secretId);
             const envKeyOccupied = Boolean(suggestedEnvKey && occupiedEnvKeys.has(suggestedEnvKey));
             const conflictForRow =
               pendingEnvConflict?.secretId === summary.secretId ? pendingEnvConflict : null;

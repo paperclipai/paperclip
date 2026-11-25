@@ -890,6 +890,24 @@ function secretResolutionErrorCode(error: unknown): SecretResolutionErrorCode {
   return "provider_error";
 }
 
+function assertSafeEnvName(key: string) {
+  if (looksLikeCredentialToken(key)) {
+    throw unprocessable(SECRET_SHAPED_ENV_NAME_ERROR);
+  }
+  if (!ENV_KEY_RE.test(key)) {
+    throw unprocessable(`Invalid environment variable name: ${key}`);
+  }
+}
+
+function assertSafeAccessAlias(alias: string) {
+  if (looksLikeCredentialToken(alias)) {
+    throw unprocessable(SECRET_SHAPED_ACCESS_ALIAS_ERROR);
+  }
+  if (!ENV_KEY_RE.test(alias)) {
+    throw unprocessable(`Invalid agent secret access alias: ${alias || "(empty)"}`);
+  }
+}
+
 function assertSecretBindingConfigPath(input: {
   targetType: SecretBindingTargetType;
   configPath: string;
@@ -899,12 +917,7 @@ function assertSecretBindingConfigPath(input: {
     throw unprocessable("API-only secret access bindings must target an agent");
   }
   const alias = input.configPath.slice(AGENT_ACCESS_CONFIG_PATH_PREFIX.length);
-  if (looksLikeCredentialToken(alias)) {
-    throw unprocessable(SECRET_SHAPED_ACCESS_ALIAS_ERROR);
-  }
-  if (!ENV_KEY_RE.test(alias)) {
-    throw unprocessable(`Invalid agent secret access alias: ${alias || "(empty)"}`);
-  }
+  assertSafeAccessAlias(alias);
 }
 
 function missingUserSecretDefinitionRuntimeBinding(
@@ -1973,12 +1986,7 @@ export function secretService(db: Db | DbTransaction) {
 
     const normalized: AgentEnvConfig = {};
     for (const [key, rawBinding] of Object.entries(record)) {
-      if (looksLikeCredentialToken(key)) {
-        throw unprocessable(SECRET_SHAPED_ENV_NAME_ERROR);
-      }
-      if (!ENV_KEY_RE.test(key)) {
-        throw unprocessable(`Invalid environment variable name: ${key}`);
-      }
+      assertSafeEnvName(key);
 
       const parsed = envBindingSchema.safeParse(rawBinding);
       if (!parsed.success) {
@@ -2023,13 +2031,7 @@ export function secretService(db: Db | DbTransaction) {
     const normalized = { ...adapterConfig };
     for (const [key, rawValue] of Object.entries(adapterConfig)) {
       if (!key.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX) || rawValue === undefined) continue;
-      const alias = key.slice(AGENT_ACCESS_CONFIG_PATH_PREFIX.length);
-      if (looksLikeCredentialToken(alias)) {
-        throw unprocessable(SECRET_SHAPED_ACCESS_ALIAS_ERROR);
-      }
-      if (!ENV_KEY_RE.test(alias)) {
-        throw unprocessable(`Invalid agent secret access alias: ${alias || "(empty)"}`);
-      }
+      assertSafeAccessAlias(key.slice(AGENT_ACCESS_CONFIG_PATH_PREFIX.length));
     }
     if (Object.prototype.hasOwnProperty.call(adapterConfig, "env")) {
       normalized.env = await normalizeEnvConfig(companyId, adapterConfig.env, opts);
@@ -5364,7 +5366,11 @@ export function secretService(db: Db | DbTransaction) {
 
       for (const [key, rawBinding] of Object.entries(record)) {
         if (looksLikeCredentialToken(key)) {
-          throw unprocessable(SECRET_SHAPED_ENV_NAME_ERROR);
+          logger.warn(
+            { companyId },
+            "skipping legacy credential-shaped environment variable name during runtime env resolution",
+          );
+          continue;
         }
         if (!ENV_KEY_RE.test(key)) {
           throw unprocessable(`Invalid environment variable name: ${key}`);
@@ -5770,7 +5776,11 @@ export function secretService(db: Db | DbTransaction) {
           const env: Record<string, string> = {};
           for (const [key, rawBinding] of Object.entries(record)) {
             if (looksLikeCredentialToken(key)) {
-              throw unprocessable(SECRET_SHAPED_ENV_NAME_ERROR);
+              logger.warn(
+                { companyId },
+                "skipping legacy credential-shaped environment variable name during runtime adapter resolution",
+              );
+              continue;
             }
             if (!ENV_KEY_RE.test(key)) {
               throw unprocessable(`Invalid environment variable name: ${key}`);

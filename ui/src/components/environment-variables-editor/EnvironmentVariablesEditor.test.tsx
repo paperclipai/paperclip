@@ -1062,6 +1062,8 @@ describe("EnvironmentVariablesEditor", () => {
     expect(container.textContent?.toLowerCase()).toMatch(/looks like a secret/);
     expect(nameInput.type).toBe("password");
     expect(container.textContent).not.toContain(token);
+    expect(container.querySelector('button[aria-label="Remove variable"]')).toBeTruthy();
+    expect(container.querySelector(`[aria-label*="${token}"], [title*="${token}"]`)).toBeNull();
     expect(saveButton().disabled).toBe(true);
   });
 });

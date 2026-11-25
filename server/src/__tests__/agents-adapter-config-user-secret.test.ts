@@ -456,6 +456,40 @@ describeEmbeddedPostgres("agents adapter-config user-secret resolution routes", 
       expect(serialized).not.toContain(secretName);
       expect(serialized.toLowerCase()).toMatch(/secret|token/);
     }
+
+    // Also reject secret-shaped access.* aliases without echoing the token.
+    const secretAlias = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+    const aliasRes = await request(app)
+      .patch(`/api/agents/${agentId}`)
+      .send({
+        adapterConfig: {
+          [`access.${secretAlias}`]: {
+            type: "secret_ref",
+            secretId: randomUUID(),
+            version: "latest",
+          },
+        },
+      });
+    expect(aliasRes.status, JSON.stringify(aliasRes.body)).toBe(422);
+    expect(JSON.stringify(aliasRes.body)).not.toContain(secretAlias);
+    expect(JSON.stringify(aliasRes.body).toLowerCase()).toMatch(/secret|token/);
+
+    // Legacy secret-shaped env names already stored in DB must be skipped at runtime
+    // instead of breaking existing heartbeats.
+    const svc = secretService(db);
+    const legacyKey = ["github", "pat", "11ABCDEF0123456789", "legacyTokenValue"].join("_");
+    const resolvedEnv = await svc.resolveEnvBindings(COMPANY_ID, {
+      [legacyKey]: { type: "plain", value: "ignored" },
+      SAFE_VAR: { type: "plain", value: "ok" },
+    });
+    expect(resolvedEnv.env).toEqual({ SAFE_VAR: "ok" });
+    const resolvedRuntime = await svc.resolveAdapterConfigForRuntime(COMPANY_ID, {
+      env: {
+        [legacyKey]: { type: "plain", value: "ignored" },
+        SAFE_VAR: { type: "plain", value: "ok" },
+      },
+    });
+    expect(resolvedRuntime.config.env).toEqual({ SAFE_VAR: "ok" });
   });
 });
 

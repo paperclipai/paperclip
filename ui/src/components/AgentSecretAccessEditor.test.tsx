@@ -335,6 +335,30 @@ describe("AgentSecretAccessEditor component", () => {
     });
   });
 
+  it("copies the chosen free alias's pinned version when multiple aliases reference the same secret", () => {
+    const boundEnv: Array<{ envKey: string; secretId: string; version: number | "latest" }> = [];
+    render(
+      <AgentSecretAccessEditor
+        config={{
+          env: {
+            OLD: { type: "plain", value: "occupied" },
+          },
+          "access.OLD": { type: "secret_ref", secretId: "s1", version: 1 },
+          "access.NEW": { type: "secret_ref", secretId: "s1", version: 3 },
+        }}
+        secrets={secrets}
+        onChange={() => {}}
+        onBindAsEnvVar={(binding) => boundEnv.push(binding)}
+      />,
+    );
+
+    const bindEnvButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find((button) =>
+      button.textContent?.includes("Also bind as env var"),
+    )!;
+    flushSync(() => bindEnvButton.click());
+    expect(boundEnv).toEqual([{ envKey: "NEW", secretId: "s1", version: 3 }]);
+  });
+
   it("scales linearly when rendering and editing an alias across 200 secrets and bindings", () => {
     const count = 200;
     let secretIdReads = 0;
