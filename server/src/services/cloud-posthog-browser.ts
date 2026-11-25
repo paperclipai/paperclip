@@ -74,5 +74,6 @@ export function resolveBrowserAnalyticsConfig(
     stackId: config.stackId,
     replayEnabled: config.replayEnabled,
     consentRequired: resolveAnalyticsConsentRequired(env, headers),
+    cloudTrialInferenceEnabled: config.cloudTrialInferenceEnabled,
   };
 }

@@ -293,7 +293,7 @@ import {
   resolveDefaultAgentInstructionsBundleRole,
 } from "../services/default-agent-instructions.js";
 import { buildOnboardingFirstAgentInstructionsBundle } from "../services/onboarding-first-task-assets.js";
-import { getTelemetryClient } from "../telemetry.js";
+import { getTelemetryClient, trackCloudPostHogEvent } from "../telemetry.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
@@ -4893,6 +4893,17 @@ export function agentRoutes(
       const telemetryClient = getTelemetryClient();
       if (telemetryClient) {
         trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
+      }
+      if ((agent.runtimeConfig as Record<string, unknown> | null)?.cloudTrialInference === true) {
+        const rawModel = (agent.adapterConfig as Record<string, unknown> | null)?.model;
+        trackCloudPostHogEvent(
+          "cloud_trial.started",
+          {
+            source: "onboarding_wizard",
+            ...(typeof rawModel === "string" && rawModel.trim() ? { model: rawModel.trim() } : {}),
+          },
+          { userId: actor.actorType === "user" ? actor.actorId : null, companyId },
+        );
       }
 
       await applyDefaultAgentTaskAssignGrant(

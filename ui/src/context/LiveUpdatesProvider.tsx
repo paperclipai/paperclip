@@ -2219,6 +2219,16 @@ function handleLiveEvent(
     return;
   }
 
+  if (event.type === "cloud_trial.status.updated") {
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.cloudInference.status(expectedCompanyId),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.list(expectedCompanyId),
+    });
+    return;
+  }
+
   if (event.type === "agent.status") {
     queryClient.invalidateQueries({
       queryKey: queryKeys.agents.list(expectedCompanyId),

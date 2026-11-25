@@ -17,6 +17,8 @@ import { createAgentIdentityRedactor, secretEnvironmentValues } from "../agent-i
 import { agentIdentityService, supportsManagedAgentIdentity } from "../agent-identity.js";
 import { readAiConnectionConfigurationFailure, readAiCredentialAccessFailure } from "../ai-connection-configuration-failure.js";
 import { AI_AUTH_ENV_KEYS, isAiConnectionBusy, prepareManagedAiRuntime, stripAiAuthBindings } from "../ai-connection-runtime.js";
+import { getDefaultCloudTrialInferenceController } from "../cloud-trial-inference.js";
+import { isAgentUsingCloudTrialInference } from "@paperclipai/shared";
 import { managedAiSessionIdentityCompatible } from "../ai-connection-session.js";
 import type { companySkillService } from "../company-skills.js";
 import { connectionIntentService } from "../connection-intents.js";
@@ -93,6 +95,7 @@ export interface HeartbeatExecutionConfigurationInput {
   // The executor must observe these before a later preparation step can throw.
   onFailureSecretsResolved: (readSecrets: () => string[]) => void;
   onManagedAiRuntimeAcquired: (runtime: ManagedAiRuntime) => void;
+  onCloudTrialRuntimeCleanup?: (cleanup: () => Promise<void>) => void;
   onIdentityRedactorPrepared: (redactor: ReturnType<typeof createAgentIdentityRedactor>) => void;
 }
 
@@ -269,6 +272,26 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
     for (const key of AI_AUTH_ENV_KEYS) secretKeys.add(key);
     context.aiConnection = { ...managedAiRuntime.attribution, accountName: managedAiRuntime.accountName, identity: managedAiRuntime.identity, sessionIdentity: managedAiRuntime.sessionIdentity };
     await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ aiConnection: context.aiConnection, ...(context.aiRouterTaskKey ? { aiRouterTaskKey: context.aiRouterTaskKey } : {}), ...(context.aiRouterSelection ? { aiRouterSelection: context.aiRouterSelection } : {}) })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
+  } else if (isAgentUsingCloudTrialInference(agent.runtimeConfig)) {
+    const cloudTrialRuntime = await time("configuration_ai_runtime", () =>
+      getDefaultCloudTrialInferenceController().prepareCloudTrialRuntime(db, {
+        companyId: agent.companyId,
+        agentId: agent.id,
+        runId: run.id,
+        model: typeof resolvedConfig.model === "string" ? resolvedConfig.model : undefined,
+      }),
+    );
+    input.onCloudTrialRuntimeCleanup?.(cloudTrialRuntime.cleanup);
+    const currentEnv = parseObject(resolvedConfig.env);
+    resolvedConfig.env = {
+      ...stripAiAuthBindings(currentEnv),
+      ...cloudTrialRuntime.env,
+    };
+    if (typeof resolvedConfig.model !== "string" || !resolvedConfig.model.trim()) {
+      resolvedConfig.model = cloudTrialRuntime.defaultModel;
+    }
+    for (const key of AI_AUTH_ENV_KEYS) secretKeys.add(key);
+    identityRedactor.addSecretValues(cloudTrialRuntime.secretValues);
   }
   if (secretManifest.length > 0) {
     context.paperclipSecrets = {

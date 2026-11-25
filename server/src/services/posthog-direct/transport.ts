@@ -3,8 +3,12 @@ import type {
   TelemetrySendResult,
   TelemetryTransport,
 } from "@paperclipai/shared/telemetry";
-import type { CloudPostHogConfig } from "../cloud-posthog-config.js";
 import {
+  cloudTrialInferenceCohort,
+  type CloudPostHogConfig,
+} from "../cloud-posthog-config.js";
+import {
+  buildCloudDirectEvent,
   buildPostHogDirectEvent,
   buildWorkspaceStartedEvent,
   POSTHOG_WORKSPACE_GROUP_TYPE,
@@ -70,8 +74,17 @@ export type WorkspaceStartup = {
 };
 
 export type PostHogDirectTransport = TelemetryTransport & {
+  /** Whether the stack has the Cloud starter-inference experiment enabled. */
+  readonly cloudTrialInferenceEnabled: boolean;
   /** Sends `$groupidentify` and `cloud.workspace_started` for this start. */
   announceWorkspace(startup: WorkspaceStartup): Promise<void>;
+  /** Captures a Cloud-only direct PostHog event (not in the self-hosted collector contract). */
+  captureCloudEvent(input: {
+    event: string;
+    properties?: Record<string, unknown>;
+    contextOverride?: Partial<PostHogEventContext>;
+    setOncePersonProperties?: Record<string, unknown>;
+  }): Promise<void>;
   shutdown(): Promise<void>;
 };
 
@@ -123,6 +136,8 @@ export function createPostHogDirectTransport(
         stack_slug: startup.stackSlug,
         primary_host: startup.primaryHost,
         environment: config.environment,
+        cloud_trial_inference_enabled: config.cloudTrialInferenceEnabled,
+        cloud_trial_inference_cohort: cloudTrialInferenceCohort(config.cloudTrialInferenceEnabled),
       },
     });
     capture(
@@ -142,6 +157,8 @@ export function createPostHogDirectTransport(
   }
 
   return {
+    cloudTrialInferenceEnabled: config.cloudTrialInferenceEnabled,
+
     hashesPrivateRefs: false,
 
     captureEventContext: () => capturePostHogEventContext(),
@@ -199,6 +216,42 @@ export function createPostHogDirectTransport(
       }
       captureAnnouncement(client, announcement);
       await client.flush();
+    },
+
+    async captureCloudEvent(input): Promise<void> {
+      let client: PostHogNodeClient;
+      try {
+        client = await getClient();
+      } catch {
+        return;
+      }
+      const reqCtx = capturePostHogEventContext();
+      const mergedContext: PostHogEventContext | undefined =
+        reqCtx || input.contextOverride
+          ? {
+              ...(reqCtx ?? {}),
+              ...(input.contextOverride?.userId ? { userId: input.contextOverride.userId } : {}),
+              ...(input.contextOverride?.companyId ? { companyId: input.contextOverride.companyId } : {}),
+              ...(input.contextOverride?.sessionId ? { sessionId: input.contextOverride.sessionId } : {}),
+              ...(input.contextOverride?.windowId ? { windowId: input.contextOverride.windowId } : {}),
+            }
+          : undefined;
+      const message = buildCloudDirectEvent(
+        {
+          event: input.event,
+          occurredAt: now().toISOString(),
+          properties: input.properties,
+          setOncePersonProperties: input.setOncePersonProperties,
+        },
+        mergedContext,
+        config,
+      );
+      capture(client, message);
+      try {
+        await client.flush();
+      } catch {
+        console.warn(`[telemetry] PostHog flush failed for cloud event ${input.event}`);
+      }
     },
 
     async shutdown(): Promise<void> {
