@@ -15817,6 +15817,12 @@ export function issueRoutes(
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            if (agentCommentUpdate && existing.conversationAgentId && existing.conversationAgentId !== actor.agentId) {
+              // Acquire the company privacy-tree lock before assertAgentInteraction
+              // locks the destination conversation row so concurrent peer PATCH and
+              // POST comment requests follow the same global lock order.
+              await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${existing.companyId}`}, 0))`);
+            }
             if (agentCommentUpdate) await assertAgentInteraction(tx, {
               companyId: existing.companyId, actorAgentId: actor.agentId,
               operation: "comment", issueId: id, texts: [commentBody], lock: true,

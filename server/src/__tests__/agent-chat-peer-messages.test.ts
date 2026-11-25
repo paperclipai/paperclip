@@ -334,6 +334,55 @@ import { issueRoutes } from "../routes/issues.js";
     }
   });
 
+  it("acquires the privacy-tree lock before locking the chat row on PATCH comment updates", async () => {
+    const f = await seed();
+    let unlock!: () => void;
+    let ready!: (pid: number) => void;
+    const locked = new Promise<number>((resolve) => { ready = resolve; });
+    const release = new Promise<void>((resolve) => { unlock = resolve; });
+    const gate = db.transaction(async (tx) => {
+      const [{ pid }] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${f.company.id}`}, 0))`);
+      ready(pid);
+      await release;
+    });
+    const pid = await locked;
+    const app = chiefApp(f);
+    let patchPromise: Promise<request.Response> | undefined;
+    try {
+      patchPromise = request(app)
+        .patch(`/api/issues/${f.assistantChat.id}`)
+        .send({ comment: "PATCH peer update" })
+        .then((res) => res);
+      await vi.waitFor(async () => {
+        const [row] = await db.execute<{ blocked: boolean }>(sql`select exists(
+          select 1 from pg_stat_activity where datname = current_database() and ${pid} = any(pg_blocking_pids(pid))
+        ) as blocked`);
+        expect(row.blocked).toBe(true);
+      }, { timeout: 5_000, interval: 20 });
+      // While PATCH waits on issue-privacy-tree, it must not yet hold a FOR UPDATE lock on the chat row.
+      const lockedCheck = await db.transaction(async (tx) => {
+        const rows = await tx.execute<{ id: string }>(sql`select id from issues where id = ${f.assistantChat.id} for update nowait`);
+        return rows.length;
+      });
+      expect(lockedCheck).toBe(1);
+      unlock();
+      await gate;
+      const [patchRes, postRes] = await Promise.all([
+        patchPromise,
+        request(app).post(`/api/issues/${f.assistantChat.id}/comments`).send({ body: message }),
+      ]);
+      expect(patchRes.status, JSON.stringify(patchRes.body)).toBe(200);
+      expect(postRes.status, JSON.stringify(postRes.body)).toBe(201);
+      const saved = await db.select().from(issueComments).where(eq(issueComments.issueId, f.assistantChat.id));
+      expect(saved.map((c) => c.body)).toEqual(expect.arrayContaining(["PATCH peer update", message]));
+    } finally {
+      unlock();
+      await gate.catch(() => {});
+      await patchPromise?.catch(() => {});
+    }
+  });
+
   it("labels another agent's chat message as other_agent in fresh-session history", async () => {
     const f = await seed();
     await db.insert(issueComments).values([

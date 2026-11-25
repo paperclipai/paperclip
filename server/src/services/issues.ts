@@ -13724,21 +13724,23 @@ export function issueService(db: Db) {
       if (pluginOrigin) {
         actor = { ...actor, agentId: pluginOrigin.agentId, runId: pluginOrigin.runId ?? undefined, userId: undefined };
       }
+      const lockPeerChatPrivacyTree = async (txOrDb: any) => {
+        if (!actor.agentId) return;
+        const [target] = await txOrDb
+          .select({ companyId: issues.companyId, conversationAgentId: issues.conversationAgentId })
+          .from(issues)
+          .where(eq(issues.id, issueId));
+        if (target?.conversationAgentId && target.conversationAgentId !== actor.agentId) {
+          await txOrDb.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${target.companyId}`}, 0))`);
+        }
+      };
       if (dbOrTx === db) {
         const append = () =>
           measureRunTransaction(db, "response", async (tx) => {
-            if (actor.agentId) {
-              // Acquire the company privacy-tree lock before locking any issue row
-              // so peer-chat source privacy checks stay in the same lock order as
-              // issue/project privacy mutations and sendAgentChatMessage.
-              const [target] = await tx
-                .select({ companyId: issues.companyId, conversationAgentId: issues.conversationAgentId })
-                .from(issues)
-                .where(eq(issues.id, issueId));
-              if (target?.conversationAgentId && target.conversationAgentId !== actor.agentId) {
-                await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${target.companyId}`}, 0))`);
-              }
-            }
+            // Acquire the company privacy-tree lock before locking any issue row
+            // so peer-chat source privacy checks stay in the same lock order as
+            // issue/project privacy mutations and sendAgentChatMessage.
+            await lockPeerChatPrivacyTree(tx);
             // Serialize run-authored comments on the issue so a provider retry
             // cannot publish the same visible result twice. This needs no schema
             // change: the issue row is the transaction fence, and the recursive
@@ -13755,6 +13757,10 @@ export function issueService(db: Db) {
           ? retryNativeChatReviewPresentation(append)
           : append();
       }
+      // For caller-owned transactions that have not locked the issue row yet,
+      // acquire the privacy-tree lock before issueQuery.for("update") so all
+      // peer-chat writes preserve the global lock order.
+      await lockPeerChatPrivacyTree(dbOrTx);
       // The query below locks human comments on caller-owned transactions too,
       // sharing the fence with both question creation and Slack settlement.
       const issueQuery = dbOrTx
