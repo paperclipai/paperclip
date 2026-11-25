@@ -31,7 +31,7 @@ import {
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
 import { TaskChatReasoningSummary } from "./TaskChatReasoningSummary";
 import { latestReasoningHeadline } from "./reasoning-summary";
-import { retriedLabel, SUBJECT_FAMILIES, toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
+import { retriedLabel, SUBJECT_FAMILIES, subjectRowLabel, toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 import { useTaskReferenceLabel, withTaskReference } from "./task-reference";
@@ -123,12 +123,9 @@ function presentation(item: Activity, active: boolean, taskLabel?: string): Acti
     // With a concrete subject, the verb alone reads better: "Read README.md".
     // A finished command needs no verb at all: the icon and "$" say it ran.
     // A failure or stop keeps its marker ("Read · failed") unless an exit
-    // chip already says how a command ended.
-    const marker = item.status === "failed" || item.status === "interrupted" ? label.split(" · ").at(1) : undefined;
+    // chip already says how a command ended. Live rows use the same helper.
     const verb = subject && SUBJECT_FAMILIES.has(tool.family)
-      ? terminal && !running && (item.status === "completed" || item.exitCode != null)
-        ? ""
-        : `${label.split(" ")[0]!}${marker ? ` · ${marker}` : ""}`
+      ? subjectRowLabel(label, terminal && !running && (item.status === "completed" || item.exitCode != null))
       : label;
     // Exit 0 is only news for commands; for reads and searches it is noise.
     const exitCode = item.exitCode ?? null;

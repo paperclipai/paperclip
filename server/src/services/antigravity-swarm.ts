@@ -141,14 +141,9 @@ export async function withAntigravitySwarmMarkers<T extends { id: string; author
 ): Promise<Array<T & { nativeCommand?: typeof ANTIGRAVITY_SWARM_COMMAND }>> {
   const candidates = comments.filter(comment => comment.authorUserId && !comment.authorAgentId).map(comment => comment.id);
   if (candidates.length === 0) return [...comments];
-  const commentId = sql<string>`${activityLog.details}->>'commentId'`;
-  const recorded = await db.select({ commentId, actorId: activityLog.actorId }).from(activityLog)
-    .where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issueId),
-      eq(activityLog.action, ANTIGRAVITY_SWARM_REQUESTED_ACTION), eq(activityLog.actorType, "user"), inArray(commentId, candidates)));
-  if (recorded.length === 0) return [...comments];
-  const requests = new Set(recorded.map(row => `${row.commentId}\0${row.actorId}`));
-  return comments.map(comment => comment.authorUserId && !comment.authorAgentId && requests.has(`${comment.id}\0${comment.authorUserId}`)
-    ? { ...comment, nativeCommand: ANTIGRAVITY_SWARM_COMMAND } : comment);
+  // The one definition of a recorded request (recordedSwarmRequestSql), read from the stored rows.
+  const requests = new Set(await recordedSwarmRequestIds(db, companyId, issueId, candidates));
+  return comments.map(comment => requests.has(comment.id) ? { ...comment, nativeCommand: ANTIGRAVITY_SWARM_COMMAND } : comment);
 }
 
 export async function recordAntigravitySwarmRequest(db: Db, input: { companyId: string; issueId: string; commentId: string; userId: string }): Promise<void> {

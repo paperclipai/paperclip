@@ -113,6 +113,12 @@ describe("Antigravity tool identity", () => {
     for (const event of shown) expect(project(event)).not.toBeNull();
   });
 
+  it("names a deletion and a move as what they are, never as an edit", () => {
+    expect(antigravityToolDetail({ title: "Delete old.txt", kind: "delete" })).toEqual({ toolName: "delete_file" });
+    expect(antigravityToolDetail({ title: "Move a.txt", kind: "move" })).toEqual({ toolName: "move_file" });
+    expect(antigravityToolDetail({ title: "Write a.txt", kind: "edit" })).toEqual({ toolName: "edit_file" });
+  });
+
   it("leaves a call it cannot name unchanged", () => {
     expect(antigravityToolDetail({ title: "Something", kind: "other" })).toBeNull();
     expect(antigravityToolDetail({ title: "runner_extra_write_file", kind: "other", _meta: { mcp: { tool: "write_file", server: "runner_extra" } } })).toBeNull();

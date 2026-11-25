@@ -31,6 +31,7 @@ import {
   isGenericToolName,
   retriedLabel,
   SUBJECT_FAMILIES,
+  subjectRowLabel,
   toolActivityPresentation,
   type ToolIcon,
 } from "./tool-taxonomy";
@@ -143,13 +144,12 @@ export function providerActivityPresentation(item: TaskChatProviderActivityItem)
         && SUBJECT_FAMILIES.has(settled.family);
       if (concrete) {
         const terminal = settled.family === "terminal";
-        const verb = (label: string) => label.split(" ")[0]!;
         return {
           icon: settled.icon,
-          runningLabel: verb(settled.runningLabel),
-          completedLabel: terminal ? "" : verb(settled.completedLabel),
-          failedLabel: `${verb(settled.completedLabel)} · failed`,
-          interruptedLabel: `${verb(settled.runningLabel)} · stopped`,
+          runningLabel: subjectRowLabel(settled.runningLabel, false),
+          completedLabel: subjectRowLabel(settled.completedLabel, terminal),
+          failedLabel: subjectRowLabel(settled.failedLabel, false),
+          interruptedLabel: subjectRowLabel(settled.interruptedLabel, false),
           detail: [terminal ? `$ ${boundedActivity}` : boundedActivity, source].filter(Boolean).join(" · "),
         };
       }

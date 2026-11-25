@@ -84,6 +84,17 @@ export interface ToolActivityPresentation {
 /** Families whose rows read as "<verb> <subject>", for example "Read README.md". */
 export const SUBJECT_FAMILIES: ReadonlySet<ToolFamily> = new Set(["terminal", "read", "edit", "grep", "search", "web"]);
 
+/**
+ * The label of a row that shows a concrete subject, for live and settled rows
+ * alike: only the verb and any outcome ("Read · failed" beside "u1.txt"), or
+ * nothing for a settled command, whose "$ " subject says it ran.
+ */
+export function subjectRowLabel(label: string, settledCommand: boolean): string {
+  if (settledCommand) return "";
+  const [action, marker] = label.split(" · ");
+  return `${action!.split(" ")[0]}${marker ? ` · ${marker}` : ""}`;
+}
+
 /** "Read · failed" → "Read · retried", for a failure a later call of the same tool recovered. */
 export function retriedLabel(failedLabel: string): string {
   return failedLabel.replace(/ · failed$/, " · retried");

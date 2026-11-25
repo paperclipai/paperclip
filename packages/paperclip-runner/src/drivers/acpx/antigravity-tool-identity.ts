@@ -31,7 +31,7 @@ const TITLED_PAPERCLIP = new RegExp(`^(?:Run )?(?:mcp_)?${ANTIGRAVITY_PAPERCLIP_
 /** Command-line arguments the CLI's shell tools carry. */
 const COMMAND_KEYS = ["CommandLine", "commandLine", "command", "Command"];
 /** Kinds whose native name an ordinary run never sends, named the way the CLI names them. */
-const KIND_TOOLS: Readonly<Record<string, string>> = { execute: "run_command", read: "view_file", edit: "edit_file", delete: "edit_file", move: "edit_file" };
+const KIND_TOOLS: Readonly<Record<string, string>> = { execute: "run_command", read: "view_file", edit: "edit_file", delete: "delete_file", move: "move_file" };
 
 function paperclipTool(tool: string): string {
   return `mcp__${ANTIGRAVITY_PAPERCLIP_MCP_SERVER}__${canonicalRunnerToolName(tool)}`;

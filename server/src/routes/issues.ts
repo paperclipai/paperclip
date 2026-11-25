@@ -19483,7 +19483,9 @@ export function issueRoutes(
             }),
           });
           await externalObjectsSvc.syncCommentSafely(receipt.id);
-          res.status(201).json(receipt);
+          // A resent /swarm request answers with the same marker as its first send.
+          const [marked] = await withAntigravitySwarmMarkers(db, issue.companyId, issue.id, [receipt]);
+          res.status(201).json(marked);
           return;
         }
       }
