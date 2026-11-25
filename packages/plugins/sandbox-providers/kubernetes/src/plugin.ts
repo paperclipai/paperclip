@@ -206,6 +206,8 @@ const HOST_RPC_OVERHEAD_MS = 30_000;
 
 const ACQUIRE_AFTER_READY_RESERVE_MS = 45_000;
 
+const MIN_READY_WAIT_MS = 1_000;
+
 function acquireReadyDeadline(config: Record<string, unknown>, startedAt: number): number {
   const positive = (value: unknown) =>
     typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
@@ -213,7 +215,8 @@ function acquireReadyDeadline(config: Record<string, unknown>, startedAt: number
     positive(config.timeoutMs) || KUBERNETES_ACQUIRE_TIMEOUT_MS,
     positive(config.bridgeRequestTimeoutMs),
   );
-  return startedAt + providerBudgetMs + HOST_RPC_OVERHEAD_MS - ACQUIRE_AFTER_READY_RESERVE_MS;
+  const hostDeadlineMs = providerBudgetMs + HOST_RPC_OVERHEAD_MS;
+  return startedAt + hostDeadlineMs - Math.min(ACQUIRE_AFTER_READY_RESERVE_MS, Math.floor(hostDeadlineMs / 2));
 }
 
 const plugin = definePlugin({
@@ -464,7 +467,7 @@ const plugin = definePlugin({
     if (isSandboxCrBackend) {
       try {
         await sandboxCrOrchestrator.waitForCompletion(clients, namespace, jobName, {
-          timeoutMs: Math.max(0, Math.min(
+          timeoutMs: Math.max(MIN_READY_WAIT_MS, Math.min(
             config.podStartTimeoutSec * 1000,
             acquireReadyDeadline(params.config, acquireStartedAt) - Date.now(),
           )),

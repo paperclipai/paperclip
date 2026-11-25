@@ -48,6 +48,7 @@ vi.mock("../../src/scoped-network-egress.js", async (importActual) => {
 import plugin from "../../src/plugin.js";
 import manifest from "../../src/manifest.js";
 import { kubernetesProviderConfigSchema } from "../../src/types.js";
+import { waitForSandboxReady } from "../../src/sandbox-cr-orchestrator.js";
 
 function acquire(config: Record<string, unknown> = {}) {
   return plugin.definition.onEnvironmentAcquireLease!({
@@ -115,7 +116,22 @@ describe("onEnvironmentAcquireLease readiness", () => {
   it("stops waiting in time to answer within a shorter host deadline", async () => {
     await acquire({ timeoutMs: 20_000 });
     const waited = (h.waitForReady.mock.calls[0] as unknown as [unknown, unknown, unknown, { timeoutMs: number }])[3];
-    expect(waited.timeoutMs).toBeLessThanOrEqual(5_000);
-    expect(waited.timeoutMs).toBeGreaterThan(4_000);
+    expect(waited.timeoutMs).toBeLessThanOrEqual(25_000);
+    expect(waited.timeoutMs).toBeGreaterThan(24_000);
+  });
+
+  it.each([1, 15_000])("hands out an already-ready Sandbox under a %i ms host timeout", async (timeoutMs) => {
+    const getNamespacedCustomObject = vi.fn(async () => ({
+      metadata: { uid: "uid-1" },
+      status: { conditions: [{ type: "Ready", status: "True" }], podName: "pc-pod" },
+    }));
+    h.waitForReady.mockImplementationOnce((async (_clients: unknown, namespace: string, name: string, opts: { timeoutMs: number; pollMs?: number }) =>
+      waitForSandboxReady({ custom: { getNamespacedCustomObject } } as never, namespace, name, opts)) as never);
+    const lease = await acquire({ timeoutMs });
+    expect(getNamespacedCustomObject).toHaveBeenCalled();
+    expect(h.release).not.toHaveBeenCalled();
+    expect((lease.metadata as { podName?: string }).podName).toBe("pc-pod");
+    const waited = (h.waitForReady.mock.calls[0] as unknown as [unknown, unknown, unknown, { timeoutMs: number }])[3];
+    expect(waited.timeoutMs).toBeGreaterThan(14_000);
   });
 });
