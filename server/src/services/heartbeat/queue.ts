@@ -4851,6 +4851,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             // its fresh-session contract into unrelated work or create a second
             // deferred wake that could later replay the same reconciliation.
             if (reconciledSourceRunId) return { kind: "deferred" as const };
+            // An already-deferred interrupt, saved-comment, or task-retry receipt
+            // is its own durable outbox. Never fold it into an active run or insert
+            // a second deferred wake that loses its exact receipt-binding authority.
+            if (opts.queuedCommentInterruptId || opts.queuedCommentRequestId || opts.taskRetryRequestId) {
+              return { kind: "deferred" as const };
+            }
 
             // Offer the input to the active external agent, but keep a durable queued wake
             // until it reads the comment. A finish racing the event tick must
@@ -5187,6 +5193,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             boardRetryReceiptId: failedChatRetry ? undefined : opts.taskRetryRequestId,
             failedChatRetryReceiptId: failedChatRetry ? opts.taskRetryRequestId : undefined,
             ownsReconstructionContinuation: Boolean(ownsReconstructionContinuation),
+            conversationResetCommentId: recovery.conversationResetCommentId,
             explicitContinuationRunId: explicitContinuation ? explicitContinuationRunId : null,
             retryOfRunId: failedChatRetry
               ? durableRequest!.failedRunRetry!.failedRunId
