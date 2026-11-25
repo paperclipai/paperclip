@@ -1,4 +1,14 @@
-import { googleWorkspaceToolTitle } from "@paperclipai/shared";
+import { googleWorkspaceToolTitle, type ToolCatalogEntryStatus } from "@paperclipai/shared";
+
+export function withoutUnavailableActions(
+  ids: Iterable<string>,
+  catalog: ReadonlyArray<{ id: string; status: ToolCatalogEntryStatus }>,
+): string[] {
+  const unavailable = new Set(catalog
+    .filter((entry) => entry.status === "disabled" || entry.status === "removed")
+    .map((entry) => entry.id));
+  return [...ids].filter((id) => !unavailable.has(id));
+}
 
 /**
  * Apply one permission to a set of actions in a single change.

@@ -3406,7 +3406,7 @@ export function toolAccessService(
       connection.id,
       input.askFirstCatalogEntryIds,
     );
-    if (enabledRows.some((entry) => entry.status === "disabled" && !(entry.quarantineReason === "mcp_tool_removed" && isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)))) {
+    if (enabledRows.some((entry) => entry.status === "disabled" && entry.quarantineReason !== "mcp_tool_removed")) {
       throw badRequest("Disabled actions cannot be enabled");
     }
     if (reviewedIds.length > 0) {
