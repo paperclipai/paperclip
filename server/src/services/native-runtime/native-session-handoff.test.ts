@@ -14,7 +14,9 @@ describe("renderNativeSessionHandoff", () => {
         { kind: "original_request", id: "comment-request", body: "Create w1.txt and w2.txt.", author: "user" },
         { kind: "document", id: "document-summary", key: "continuation-summary", body: "# Continuation Summary" },
         { kind: "run_summary", id: swarmRunId, status: "succeeded", body: reply, sourceTrust: null },
-        { kind: "agent_reply", id: "11171", runId: swarmRunId, body: reply, sourceTrust: null },
+        { kind: "agent_reply", id: "11171", runId: swarmRunId, body: reply, sourceTrust: {
+          preset: "low_trust_review", disposition: "quarantined", sourceIssueId: "issue-48", sourceRunId: swarmRunId, sourceAgentId: "agent-1",
+        } },
       ],
     });
     expect(packet).not.toContain(swarmRunId);
@@ -27,5 +29,8 @@ describe("renderNativeSessionHandoff", () => {
       ["agent_reply", undefined],
     ]);
     expect(entries[2]).toMatchObject({ status: "succeeded", body: reply, truncated: false });
+    expect(entries[3]!.sourceTrust).toEqual({
+      preset: "low_trust_review", disposition: "quarantined", sourceIssueId: "issue-48", sourceAgentId: "agent-1",
+    });
   });
 });

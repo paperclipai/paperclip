@@ -2950,6 +2950,23 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).not.toContain("Issue continuation summary:");
   });
 
+  it("states an agent-authored wake comment plainly when the history owns it", () => {
+    const fixture = createFollowUpAfterSwarmWake();
+    const continuation = fixture.paperclipWake.executionContinuation;
+    const agentComment = continuation.messages[3]!;
+    const prompt = renderPaperclipWakePrompt({ ...fixture.paperclipWake,
+      commentIds: [agentComment.id, FOLLOW_UP_REQUEST_ID],
+      comments: [
+        { id: agentComment.id, body: agentComment.body, author: { type: "agent", id: "agent-1" }, createdAt: agentComment.createdAt },
+        ...fixture.paperclipWake.comments,
+      ],
+      commentWindow: { requestedCount: 2, includedCount: 2, missingCount: 0 },
+    });
+    expect(prompt).toContain(`Earlier wake comment (message ${agentComment.id}):\n\`\`\`text\n${fixture.swarmReply}\n\`\`\``);
+    expect(prompt).toContain(`Latest request (message ${FOLLOW_UP_REQUEST_ID}):\n\`\`\`text\n${FOLLOW_UP_REQUEST}\n\`\`\``);
+    expect(prompt).not.toContain("New comments in order:");
+  });
+
   it("keeps a run-authored user comment distinguishable without naming the run", () => {
     const fixture = createFollowUpAfterSwarmWake();
     const continuation = fixture.paperclipWake.executionContinuation;
