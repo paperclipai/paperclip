@@ -1990,7 +1990,26 @@ describeEmbeddedPostgres("tool access policy service", () => {
       reasonCode: "deny_connection_not_installed",
     });
 
-    // Uninstalling all agents denies everyone, including Agent A.
+    // Removing the final install through putConnectionInstalls must immediately
+    // deny the removed agent in policy and Effective Access, even while the
+    // wizard-authored app_gallery_finish binding remains on the profile.
+    await accessSvc.putConnectionInstalls(connection!.id, { installs: [] });
+    expect(await decideFor(agentA.id)).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_connection_not_installed",
+    });
+    const effectiveAfterUninstall = await accessSvc.getEffectiveProfilesForAgent(company.id, agentA.id);
+    expect(effectiveAfterUninstall.allowedTools).toEqual([]);
+    expect(effectiveAfterUninstall.profiles.every((profile) => profile.summary.allowedToolCount === 0)).toBe(true);
+
+    // Re-installing for Agent A restores access, and clearing via finish denies everyone.
+    await accessSvc.putConnectionInstalls(connection!.id, { installs: [{ targetType: "agent", targetId: agentA.id }] });
+    expect(await decideFor(agentA.id)).toMatchObject({
+      allowed: true,
+      decision: "allow",
+      reasonCode: "allow_profile",
+    });
     await accessSvc.finishGalleryAppConnection(company.id, connection!.id, {
       enabledCatalogEntryIds: [catalogEntry!.id],
       askFirstCatalogEntryIds: [],
@@ -2155,6 +2174,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(effA.body.allowedTools.map((t: { id: string }) => t.id)).toContain(catalogEntry!.id);
     const effB = await effectiveAccess(agentB.id).expect(200);
     expect(effB.body.allowedTools.map((t: { id: string }) => t.id)).not.toContain(catalogEntry!.id);
+    expect(effB.body.profiles[0].summary.allowedToolCount).toBe(0);
     const effC = await effectiveAccess(agentC.id).expect(200);
     expect(effC.body.allowedTools.map((t: { id: string }) => t.id)).not.toContain(catalogEntry!.id);
 

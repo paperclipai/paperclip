@@ -2,7 +2,7 @@ import type { ConnectionManagementContext } from "./connection-management.js";
 import { createHash } from "node:crypto";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
 import type { ToolApprovalClaim } from "./tool-approval-execution.js";
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -17,7 +17,6 @@ import {
   toolCatalogEntries,
   toolConnections,
   toolCallEvents,
-  toolConnectionInstalls,
   toolInvocations,
   toolMcpGateways,
   toolMcpGatewayTokens,
@@ -62,6 +61,11 @@ import {
   type CompiledPolicySelector,
   type PolicySelectorIndex,
 } from "./tool-access/policy-selector-index.js";
+import {
+  agentAccessConfiguredSql,
+  readConnectionAccessBoundaries,
+  type ConnectionAccessBoundary,
+} from "./tool-access/connection-access-boundary.js";
 
 class RejectedInvocationAdmission extends Error {
   constructor(readonly decision: ToolAccessDecision) {
@@ -87,7 +91,7 @@ export type ToolAccessContext = {
   catalogSchemaHash: string | null;
   providerType: string | null;
   connectionTransport: string | null;
-  mcpAgentAccessConfigured: boolean;
+  agentAccessConfigured: boolean;
   applicationKey: string | null;
   upstreamToolName: string | null;
   toolName: string;
@@ -1168,7 +1172,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     let upstreamToolName = typeof input.request.upstreamToolName === "string" ? input.request.upstreamToolName : null;
     let riskLevel = asToolRiskLevel(input.request.riskLevel);
     let connectionTransport: string | null = null;
-    let mcpAgentAccessConfigured = false;
+    let agentAccessConfigured = false;
     let applicationType: string | null = null;
 
     if (catalogEntryId) {
@@ -1211,7 +1215,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
             enabled: toolConnections.enabled,
             status: toolConnections.status,
             transport: toolConnections.transport,
-            mcpAgentAccessConfigured: sql<boolean>`coalesce((${toolConnections.config} ->> 'mcpAgentAccessConfigured') = 'true', false)`,
+            agentAccessConfigured: agentAccessConfiguredSql(),
           })
           .from(toolConnections)
           .where(eq(toolConnections.id, contextConnectionId)));
@@ -1223,7 +1227,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
       }
       applicationId = connection.applicationId;
       connectionTransport = connection.transport;
-      mcpAgentAccessConfigured = connection.mcpAgentAccessConfigured;
+      agentAccessConfigured = Boolean(connection.agentAccessConfigured);
     }
     if (applicationId) {
       const contextApplicationId = applicationId;
@@ -1277,7 +1281,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         catalogSchemaHash,
         providerType,
         connectionTransport,
-        mcpAgentAccessConfigured,
+        agentAccessConfigured,
         applicationKey,
         upstreamToolName,
         toolName: input.request.toolName,
@@ -1334,46 +1338,23 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     return { profiles: activeProfiles, entries };
   }
 
-  async function connectionInstallState(ctx: ToolAccessContext, cache?: ToolAccessDecisionCache) {
-    if (!ctx.agentId || !ctx.connectionId) {
-      return { hasAnyInstalls: false, installedForAgent: false };
-    }
-    const installs = await cachedRead(cache, `connection-installs:${ctx.companyId}:${ctx.connectionId}`, async () =>
-      db.select({ targetType: toolConnectionInstalls.targetType, targetId: toolConnectionInstalls.targetId })
-        .from(toolConnectionInstalls)
-        .where(and(eq(toolConnectionInstalls.companyId, ctx.companyId), eq(toolConnectionInstalls.connectionId, ctx.connectionId!))));
-    const installedForAgent = installs.some((install) =>
-      (install.targetType === "company" && install.targetId === ctx.companyId)
-      || (install.targetType === "agent" && install.targetId === ctx.agentId));
-    return { hasAnyInstalls: installs.length > 0, installedForAgent };
-  }
-
-  async function connectionManagedAccessState(ctx: ToolAccessContext, cache?: ToolAccessDecisionCache) {
-    if (!ctx.connectionId) {
-      return { hasManagedProfile: false, hasUnboundManagedProfile: false };
-    }
+  async function connectionAccessBoundary(
+    ctx: ToolAccessContext,
+    cache?: ToolAccessDecisionCache,
+  ): Promise<ConnectionAccessBoundary | null> {
+    if (ctx.actorType !== "agent" || !ctx.connectionId) return null;
     const connectionId = ctx.connectionId;
-    return cachedRead(cache, `connection-managed-access:${ctx.companyId}:${connectionId}`, async () => {
-      const rows = await db
-        .select({
-          id: toolProfiles.id,
-          profileKey: toolProfiles.profileKey,
-          metadata: toolProfiles.metadata,
-          hasBinding: sql<boolean>`exists (select 1 from ${toolProfileBindings} where ${toolProfileBindings.companyId} = ${toolProfiles.companyId} and ${toolProfileBindings.profileId} = ${toolProfiles.id})`,
-        })
-        .from(toolProfiles)
-        .where(and(
-          eq(toolProfiles.companyId, ctx.companyId),
-          eq(toolProfiles.status, "active"),
-          or(
-            eq(toolProfiles.profileKey, `app:${connectionId}`),
-            sql`${toolProfiles.metadata}->>'source' = 'connection_intent' and ${toolProfiles.metadata}->>'connectionId' = ${connectionId}`,
-          ),
-        ));
-      const managed = rows.filter((profile) => isConnectionAccessProfile(profile, connectionId));
-      const hasManagedProfile = managed.length > 0;
-      const hasUnboundManagedProfile = hasManagedProfile && managed.every((profile) => !profile.hasBinding);
-      return { hasManagedProfile, hasUnboundManagedProfile };
+    return cachedRead(cache, `connection-access-boundary:${ctx.companyId}:${ctx.agentId ?? "none"}:${connectionId}`, async () => {
+      const boundaries = await readConnectionAccessBoundaries(db, {
+        companyId: ctx.companyId,
+        agentId: ctx.agentId,
+        connectionIds: [connectionId],
+        knownConnections: new Map([[connectionId, {
+          transport: ctx.connectionTransport,
+          agentAccessConfigured: ctx.agentAccessConfigured,
+        }]]),
+      });
+      return boundaries.get(connectionId) ?? null;
     });
   }
 
@@ -1656,22 +1637,18 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
       return decision("deny", "deny_policy_block", "Tool invocation no longer matches this admission.", [], []);
     }
     if (input.consumeRateLimit === true) consumedRateAdmissions.push(...(admittedRates ?? []));
-    if (ctx.actorType === "agent" && ctx.connectionId) {
-      const installState = await connectionInstallState(ctx, cache);
-      if (!installState.installedForAgent) {
-        const requireInstall = ctx.connectionTransport === "plugin"
-          || installState.hasAnyInstalls
-          || ctx.mcpAgentAccessConfigured
-          || (await connectionManagedAccessState(ctx, cache)).hasUnboundManagedProfile;
-        if (requireInstall) {
-          return decision("deny", "deny_connection_not_installed",
-            "This connection is not installed for this agent.", [], [], { redactionPlan: redaction.redactionPlan });
-        }
-      }
+    const connectionBoundary = await connectionAccessBoundary(ctx, cache);
+    if (ctx.actorType === "agent" && ctx.connectionId && ctx.connectionTransport === "plugin"
+      && !connectionBoundary?.installedForAgent) {
+      return decision("deny", "deny_connection_not_installed",
+        "This connection is not installed for this agent.", [], [], { redactionPlan: redaction.redactionPlan });
     }
+    const blockedByConnectionInstall = Boolean(
+      connectionBoundary && connectionBoundary.requiresInstall && !connectionBoundary.installedForAgent,
+    );
     const profileState = await effectiveProfiles(ctx, cache);
     const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
-    const permittedByProfile = profileState.profiles.some((profile) => {
+    const permittedByProfile = !blockedByConnectionInstall && profileState.profiles.some((profile) => {
       const matchingEntries = profileState.entries.filter((entry) => entry.profileId === profile.id && profileEntryMatches(entry, ctx));
       return !matchingEntries.some((entry) => entry.effect === "exclude")
         && (profile.defaultAction === "allow" || matchingEntries.some((entry) => entry.effect === "include"));
@@ -1750,6 +1727,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         continue;
       }
       if (policy.policyType === "trust_rule") {
+        if (blockedByConnectionInstall) continue;
         const rule = trustRuleConfig(policy);
         if (!rule || !trustRuleIsActive(policy)) continue;
         if (!argumentFiltersMatch(rule.argumentFilters, ctx)) continue;
@@ -1794,12 +1772,16 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     // application. A grant that names the action, connection or application
     // still applies. Board users keep their operator grants.
     const governedByConnectionProfile = ctx.actorType === "agent" && !!ctx.connectionId && (
-      profileState.profiles.some((profile) => isConnectionAccessProfile(profile, ctx.connectionId))
+      Boolean(connectionBoundary?.requiresInstall || connectionBoundary?.hasManagedProfile)
+      || profileState.profiles.some((profile) => isConnectionAccessProfile(profile, ctx.connectionId))
       || profileState.entries.some((entry) => entry.connectionId === ctx.connectionId || profileEntryMatches(entry, ctx))
-      || (await connectionManagedAccessState(ctx, cache)).hasManagedProfile
     );
     if (await explicitGrant(ctx, cache, { toolTargetedOnly: governedByConnectionProfile })) {
       return decision("allow", "allow_explicit_grant", "Tool access allowed by explicit grant.", effectiveProfileIds, [], { redactionPlan: redaction.redactionPlan });
+    }
+    if (blockedByConnectionInstall) {
+      return decision("deny", "deny_connection_not_installed",
+        "This connection is not installed for this agent.", effectiveProfileIds, [], { redactionPlan: redaction.redactionPlan });
     }
 
     const entriesByProfile = new Map<string, Array<typeof toolProfileEntries.$inferSelect>>();
@@ -2099,7 +2081,7 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         routineId: null,
         gatewayId: null,
         connectionTransport: null,
-        mcpAgentAccessConfigured: false,
+        agentAccessConfigured: false,
         applicationId: invocation.applicationId,
         connectionId: invocation.connectionId,
         catalogEntryId: invocation.catalogEntryId,

@@ -4,8 +4,9 @@ import { lockManagedAppPolicies, lockToolAssignmentAgents } from "../assignment-
 import type { ActorInfo, ToolAccessMutationDb } from "../types.js";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { toolCatalogEntries, toolConnectionInstalls, toolConnections, toolPolicies, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
+import { toolCatalogEntries, toolConnections, toolPolicies, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
 import type { ToolPolicy } from "@paperclipai/shared";
+import { defaultConnectionProfileBindingTargets } from "../connection-access-boundary.js";
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
@@ -72,27 +73,7 @@ export function createCatalogDefaultAccess(db: Db) {
     const createdProfile = !profile;
     const resetToRecommendedDefaults = !profile || profile.status !== "active";
     if (resetToRecommendedDefaults) await lockToolAssignmentAgents(dbClient, input.connection.companyId, [{ targetType: "company", targetId: input.connection.companyId }]);
-    const defaultBindingTargets = async () => {
-      const existingInstalls = await dbClient
-        .select({ targetType: toolConnectionInstalls.targetType, targetId: toolConnectionInstalls.targetId })
-        .from(toolConnectionInstalls)
-        .where(and(
-          eq(toolConnectionInstalls.companyId, input.connection.companyId),
-          eq(toolConnectionInstalls.connectionId, input.connection.id),
-        ));
-      if (existingInstalls.length > 0) {
-        if (existingInstalls.some((install) => install.targetType === "company" && install.targetId === input.connection.companyId)) {
-          return [{ targetType: "company" as const, targetId: input.connection.companyId }];
-        }
-        return existingInstalls
-          .filter((install) => install.targetType === "agent")
-          .map((install) => ({ targetType: "agent" as const, targetId: install.targetId }));
-      }
-      if (asRecord(input.connection.config).mcpAgentAccessConfigured === true) {
-        return [];
-      }
-      return [{ targetType: "company" as const, targetId: input.connection.companyId }];
-    };
+    const defaultBindingTargets = () => defaultConnectionProfileBindingTargets(dbClient, input.connection);
 
     if (!profile) {
       const [sameName] = await dbClient

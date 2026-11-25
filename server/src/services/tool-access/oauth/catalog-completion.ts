@@ -7,6 +7,7 @@ import { issueThreadInteractions, toolConnectionInstalls, toolConnections, toolP
 import type { ConnectToolAppResult, FinishToolApp, ToolCatalogEntry } from "@paperclipai/shared";
 
 import type { FinishConnectionSetup } from "../catalog/contracts.js";
+import { hasAgentAccessConfiguredMarker } from "../connection-access-boundary.js";
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -86,10 +87,10 @@ export function createOAuthCatalogCompletion(db: Db, finishGalleryAppConnection:
       || isPluginAppSlug(input.connection.config.sourceTemplateKey)
       || input.connection.config.sourceTemplateKey === "google-workspace"
       || isRemoteMcpConnectorMethod(
-      input.connection.config.sourceTemplateKey,
-      input.connection.config.connectionMethodKey,
-    ) || (input.connection.transport === "mcp_remote"
-      && input.connection.config.mcpAgentAccessConfigured === true);
+        input.connection.config.sourceTemplateKey,
+        input.connection.config.connectionMethodKey,
+      )
+      || hasAgentAccessConfiguredMarker(input.connection.config);
     const access: FinishToolApp["access"] = deferTaskAccess
       ? { agentIds: [] }
       : installs.length === 0
