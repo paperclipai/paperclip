@@ -1254,6 +1254,29 @@ describeEmbeddedPostgres("issue scheduled retry routes", () => {
       expect(res.body).toMatchObject({ details: { code: "agent_task_retry_cap_reached" } });
     });
 
+    it("deduplicates overlapping calls with the same idempotencyKey within the current 24h window", async () => {
+      const f = await seedIssueWithRetry();
+      await grant(f, "board-user");
+      const duplicateKey = randomUUID();
+      await db.insert(activityLog).values({
+        companyId: f.companyId,
+        actorType: "agent",
+        actorId: f.agentId,
+        agentId: f.agentId,
+        runId: f.sourceRunId,
+        action: "issue.retry_requested_by_agent",
+        entityType: "issue",
+        entityId: f.issueId,
+        details: { grantedByUserId: "board-user", idempotencyKey: duplicateKey },
+      });
+
+      for (let i = 0; i < 4; i += 1) expect((await retry(f, { idempotencyKey: duplicateKey })).status).not.toBe(429);
+
+      const events = await db.select().from(activityLog).where(and(eq(activityLog.entityId, f.issueId),
+        eq(activityLog.action, "issue.retry_requested_by_agent")));
+      expect(events).toHaveLength(1);
+    });
+
     it("refuses a run id that is not the agent's own run", async () => {
       const f = await seedIssueWithRetry();
       await grant(f, "board-user");

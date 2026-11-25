@@ -51,9 +51,9 @@ export async function agentOwnsRun(db: Db, input: { companyId: string; agentId: 
  * Count an agent's Retry toward its daily cap on the task. The activity row
  * names the agent and the grantor, and is written before the Retry so refused
  * and failed attempts count too. A replay of an idempotency key that already
- * has a saved Retry receipt for this task and grantor counts once; an old
- * unsaved attempt (such as a stale observedRunId) cannot be reused to bypass
- * today's cap.
+ * has a saved Retry receipt for this task and grantor, or was already counted
+ * for this agent within the current 24-hour window, counts once; an old
+ * unsaved attempt from outside the window cannot bypass today's cap.
  */
 export async function recordAgentTaskRetry(db: Db, input: {
   companyId: string; issueId: string; agentId: string; runId: string; grantedByUserId: string; idempotencyKey: string;
@@ -67,6 +67,12 @@ export async function recordAgentTaskRetry(db: Db, input: {
       eq(agentWakeupRequests.requestedByActorId, input.grantedByUserId),
       sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`)).limit(1);
     if (savedReceipt) return;
+    const [recentReplay] = await tx.select({ id: activityLog.id }).from(activityLog).where(and(
+      eq(activityLog.companyId, input.companyId), eq(activityLog.entityType, "issue"),
+      eq(activityLog.entityId, input.issueId), eq(activityLog.action, AGENT_TASK_RETRY_ACTION),
+      eq(activityLog.actorId, input.agentId), gt(activityLog.createdAt, sql`now() - interval '1 day'`),
+      sql`${activityLog.details}->>'idempotencyKey' = ${input.idempotencyKey}`)).limit(1);
+    if (recentReplay) return;
     const [{ value: recent }] = await tx.select({ value: count() }).from(activityLog).where(and(
       eq(activityLog.companyId, input.companyId), eq(activityLog.entityType, "issue"),
       eq(activityLog.entityId, input.issueId), eq(activityLog.action, AGENT_TASK_RETRY_ACTION),
