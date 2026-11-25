@@ -70,6 +70,7 @@ export class NativeRuntimeEligibilityError extends NativeRunnerSelectionError {
   constructor(
     code: string,
     reason?: string,
+    readonly detailReason?: string,
   ) {
     super(code, reason ?? `Native runner profile is ineligible: ${code}`);
     this.name = "NativeRuntimeEligibilityError";
@@ -79,10 +80,12 @@ export class NativeRuntimeEligibilityError extends NativeRunnerSelectionError {
 function ineligible(
   code: string,
   reason: string,
+  detailReason?: string,
 ): NativeRuntimeEligibilityError {
   return new NativeRuntimeEligibilityError(
     code,
     reason,
+    detailReason,
   );
 }
 
@@ -116,7 +119,7 @@ export function resolveNativeRuntimeMode(input: {
       candidateTarget: antigravityCandidateTarget((input.target?.kind ?? "local") === "remote") });
   } catch (error) {
     if (error instanceof PaperclipRunnerProviderProfileError) {
-      throw ineligible(error.code, error.message);
+      throw ineligible(error.code, error.message, error.detailReason);
     }
     throw error;
   }

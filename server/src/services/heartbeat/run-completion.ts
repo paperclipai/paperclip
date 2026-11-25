@@ -345,21 +345,9 @@ type DotConfigurationIncompleteReason =
   | "dot_disabled"
   | "dot_config_invalid";
 
-function classifyDotConfigInvalidReason(adapterConfig?: unknown): "dot_pairing_required" | "dot_config_invalid" {
-  const config = parseObject(adapterConfig);
-  const bindingId = readNonEmptyString(config.dotBindingId);
-  const lifecycleMode = readNonEmptyString(config.lifecycleMode);
-  const model = readNonEmptyString(config.model);
-  if (!bindingId && config.allowUnmeteredProvider === true && (!lifecycleMode || lifecycleMode === "per_turn") && !model) {
-    return "dot_pairing_required";
-  }
-  return "dot_config_invalid";
-}
-
 function dotConfigIncompleteFailure(
   error: unknown,
   run: Pick<typeof heartbeatRuns.$inferSelect, "companyId" | "agentId">,
-  adapterConfig?: unknown,
 ): ConfigurationIncompleteFailure | null {
   let reason: DotConfigurationIncompleteReason | null = null;
   if (error instanceof McpOAuthError && isDotBindingUnavailableReason(error.reason)) {
@@ -368,7 +356,7 @@ function dotConfigIncompleteFailure(
     if (error.code === "paperclip_runner_dot_disabled") {
       reason = "dot_disabled";
     } else if (error.code === "paperclip_runner_dot_config_invalid") {
-      reason = adapterConfig === undefined ? "dot_config_invalid" : classifyDotConfigInvalidReason(adapterConfig);
+      reason = error.detailReason === "dot_pairing_required" ? "dot_pairing_required" : "dot_config_invalid";
     }
   }
   if (!reason) return null;
@@ -1344,7 +1332,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       err,
     )
       ? err
-      : dotConfigIncompleteFailure(err, run, agent.adapterConfig);
+      : dotConfigIncompleteFailure(err, run);
     const recordedResponsibleUserDenialCode =
       normalizeResponsibleUserDenialCode(
         (await getRun(run.id).catch(() => null))?.errorCode,
@@ -1681,7 +1669,6 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // A missing secret/env binding is a known pre-dispatch configuration gap,
     // not an opaque setup crash. Surface it with its own errorCode so the
     // recovery path routes it to a human owner instead of looping retries.
-    const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
     const workspaceValidationSetupFailure = isWorkspaceValidationFailure(
       outerErr,
     )
@@ -1690,7 +1677,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     const configurationIncompleteSetupFailure =
       isConfigurationIncompleteFailure(outerErr)
         ? outerErr
-        : dotConfigIncompleteFailure(outerErr, run, setupFailureAgent?.adapterConfig);
+        : dotConfigIncompleteFailure(outerErr, run);
     const unresolvedBaseRefSetupFailure = isUnresolvedWorkspaceBaseRefError(
       outerErr,
     )
@@ -1787,6 +1774,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
         ...(workspaceProviderFailure ? { workspaceProviderFailure } : {}) },
       "heartbeat execution setup failed",
     );
+    const setupFailureAgent = await getAgent(run.agentId).catch(() => null);
     // The structured failure payload drives the recovery notice and next
     // action, so it is persisted even when the agent lookup failed and the
     // agent-scoped stop metadata cannot be merged in.
