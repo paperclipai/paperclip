@@ -194,6 +194,7 @@ import {
 } from "../execution-workspace-policy.js";
 import { isExecutionForcedToKubernetes } from "../execution-allowlist.js";
 import { shouldUseIsolatedTaskDirectory } from "../isolated-task-directory.js";
+import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
 import { readContinuationAttempt } from "../recovery/index.js";
 import { AI_CONNECTION_POOL_WAIT_RETRY_REASON, allowsDependencyBlockedWake, extractWakeCommentIds, wakeChatConversationsConflict } from "../../modules/run-dispatch/index.js";
 import { releaseProviderLimitWaits } from "./provider-limit-wait.js";
@@ -4587,6 +4588,38 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 .from(instanceSettingsTable)
                 .where(eq(instanceSettingsTable.singletonKey, "default"))
                 .then((rows) => rows[0] ?? null);
+              const issuePolicyRow = await tx
+                .select({ executionPolicy: issues.executionPolicy })
+                .from(issues)
+                .where(
+                  and(
+                    eq(issues.id, issue.id),
+                    eq(issues.companyId, issue.companyId),
+                  ),
+                )
+                .then((rows) => rows[0] ?? null);
+              const trustPreset = resolveCoreTrustPreset({
+                companyId: agent.companyId,
+                agent: {
+                  companyId: agent.companyId,
+                  permissions: agent.permissions,
+                },
+                issue: {
+                  companyId: issue.companyId,
+                  executionPolicy: issuePolicyRow?.executionPolicy ?? null,
+                },
+                run: {
+                  companyId: agent.companyId,
+                  executionPolicy: enrichedContextSnapshot.executionPolicy,
+                },
+              });
+              const lowTrustIssueEnvironmentId =
+                trustPreset.kind === "low_trust_review"
+                  ? (parseIssueExecutionWorkspaceSettings(
+                      issue.executionWorkspaceSettings,
+                      { includeEnvironmentId: true },
+                    )?.environmentId ?? null)
+                  : null;
               const executionMode = parseObject(
                 settingsRow?.general,
               ).executionMode;
@@ -4600,6 +4633,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 environmentDriver = "sandbox";
               } else {
                 const selectedEnvironmentId =
+                  lowTrustIssueEnvironmentId ??
                   agent.defaultEnvironmentId ??
                   settingsRow?.defaultEnvironmentId ??
                   null;
@@ -4619,7 +4653,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               }
               if (
                 shouldUseIsolatedTaskDirectory({
-                  trustPreset: "standard",
+                  trustPreset: trustPreset.kind,
                   environmentDriver,
                   mode: resolvedMode,
                   hasProjectWorkspace: false,

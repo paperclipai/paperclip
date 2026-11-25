@@ -587,6 +587,74 @@ suite("heartbeat physical workspace source trust", () => {
     expect(sshBlockedRun).toBeNull();
     const [sshBlockedIssue] = await db.select().from(issues).where(eq(issues.id, sshIssueId));
     expect(sshBlockedIssue.status).toBe("blocked");
+
+    const sandboxEnvId = randomUUID();
+    const lowTrustSandboxIssueId = randomUUID();
+    await db.insert(environments).values({
+      id: sandboxEnvId,
+      name: `Low-trust sandbox ${companyId.slice(0, 6)}`,
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "fake", image: "fake:test" },
+    });
+    await db.insert(issues).values({
+      id: lowTrustSandboxIssueId,
+      companyId,
+      projectId: null,
+      projectWorkspaceId: null,
+      title: "Low-trust projectless sandbox task on SSH-default agent",
+      status: "todo",
+      assigneeAgentId: sshAgentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 4,
+      identifier: `GR-4`,
+      executionPolicy: {
+        trustPreset: "low_trust_review",
+        authorizationPolicy: {
+          trustPreset: "low_trust_review",
+          trustBoundary: { mode: "low_trust_review", companyId, issueIds: [lowTrustSandboxIssueId] },
+        },
+      },
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        environmentId: sandboxEnvId,
+      },
+    });
+    const sandboxHeartbeat = heartbeatService(db, {
+      environmentRuntime: {
+        ...environmentRuntimeService(db),
+        execute: async (input) => ({
+          exitCode: 0,
+          stdout: execFileSync(input.command, input.args ?? [], {
+            cwd: root,
+            input: input.stdin,
+            encoding: "utf8",
+            env: { ...process.env, ...input.env },
+          }),
+          stderr: "",
+          signal: null,
+          timedOut: false,
+        }),
+      },
+    });
+    const lowTrustRun = await sandboxHeartbeat.wakeup(sshAgentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      contextSnapshot: { issueId: lowTrustSandboxIssueId },
+    });
+    expect(lowTrustRun).not.toBeNull();
+    await vi.waitFor(
+      async () => expect((await sandboxHeartbeat.getRun(lowTrustRun!.id))?.status).toMatch(/^(succeeded|failed)$/),
+      { timeout: 15_000 },
+    );
+    await drainHeartbeatRunsToQuiescence(db, sandboxHeartbeat);
+    expect(await sandboxHeartbeat.getRun(lowTrustRun!.id)).toMatchObject({ status: "succeeded", errorCode: null });
+    const lowTrustCalls = execute.mock.calls.filter(([input]) => input.runId === lowTrustRun!.id);
+    expect(lowTrustCalls).toHaveLength(1);
+    expect(lowTrustCalls[0][0].context.paperclipEnvironment.driver).toBe("sandbox");
+    expect(lowTrustCalls[0][0].context.paperclipWorkspace.strategy).toBe("project_primary");
+    const [lowTrustIssue] = await db.select().from(issues).where(eq(issues.id, lowTrustSandboxIssueId));
+    expect(lowTrustIssue.status).not.toBe("blocked");
   }, 30_000);
 
 });
