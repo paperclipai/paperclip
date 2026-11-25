@@ -181,6 +181,20 @@ describe("boundExecutionContinuationForPrompt", () => {
       .toEqual({ delta: "2026-11-24T00:00:00.000Z" });
   });
 
+  it("still shows a wake comment that the bounded history leaves out", () => {
+    const queued = message("queued", "QUEUED_REQUEST please keep the audit trail");
+    const newer = Array.from({ length: 40 }, (_, index) => message(`newer-${index}`, "y".repeat(4_000)));
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_commented", issue: { id: "issue-1", title: "Task" },
+      comments: [{ id: "queued", body: queued.body, author: { type: "user", id: "user-1" } }],
+      commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 }, fallbackFetchNeeded: false,
+      executionContinuation: envelope({ messages: [queued, ...newer] }),
+    }, { boundContinuationForRunnerTurn: { maxBytes: 48_000 } });
+    expect(prompt).toContain("This history is bounded");
+    expect(prompt).toContain("New comments in order:");
+    expect(prompt).toContain("QUEUED_REQUEST please keep the audit trail");
+  });
+
   it("shortens a large completed-work summary to its share of the budget", () => {
     const bounded = boundExecutionContinuationForPrompt(envelope({ completedWork: "<".repeat(100_000) }));
     expect(bytes(bounded.completedWork)).toBeLessThanOrEqual(32_000 + 600);
