@@ -73,10 +73,12 @@ const pluginTarget = () => ({ kind: "remote", transport: "sandbox", providerKey:
   remoteCwd: "/unused", runnerTask: describeTask }) as unknown as AdapterExecutionTarget;
 const sandboxTarget = () => ({ kind: "remote", transport: "sandbox", remoteCwd: "/workspace",
   runner: { execute: vi.fn() } }) as unknown as AdapterExecutionTarget;
-const runStart = (execution: NativeExecutionInput, runnerExecutionTarget: AdapterExecutionTarget) =>
-  executePaperclipNativeSession({ db: emptyDb(), execution, useRunnerd: true, runnerInstanceId: "antigravity-run-start",
+const runStart = (execution: NativeExecutionInput, runnerExecutionTarget: AdapterExecutionTarget, db = emptyDb()) =>
+  executePaperclipNativeSession({ db, execution, useRunnerd: true, runnerInstanceId: "antigravity-run-start",
     runnerIngressAuthorized: true, runnerExecutionTarget });
 const INELIGIBLE = /paperclip_runner_antigravity_candidate_ineligible/;
+const COORDINATOR_CLAIM = /^native_finalization_coordinator_missing$/;
+const coordinatorReads = [{ table: "native_run_finalizations", locked: false }, { table: "native_run_finalizations", locked: true }];
 
 let ownerFactory: MockInstance<typeof pluginTaskRuntime.createPluginRunnerTaskOwner>;
 beforeEach(() => {
@@ -100,8 +102,9 @@ describe("Antigravity run start while the profile is pending", () => {
 
   it("admits a granted Core sandbox run past the gate, and still refuses the same grant on a plugin Runner-task target", async () => {
     grant.admitted = true;
-    const admitted = await runStart(antigravityExecution(), sandboxTarget()).then(() => null, (error: unknown) => error);
-    expect(String(admitted)).not.toMatch(INELIGIBLE);
+    const db = emptyDb();
+    await expect(runStart(antigravityExecution(), sandboxTarget(), db)).rejects.toThrow(COORDINATOR_CLAIM);
+    expect(db.reads).toEqual(coordinatorReads);
     expect(grant.targets).toContainEqual({ platform: "linux", architecture: "x64" });
     await expect(runStart(antigravityExecution(), pluginTarget())).rejects.toThrow(INELIGIBLE);
     expect(describeTask).not.toHaveBeenCalled();
@@ -112,12 +115,14 @@ describe("Antigravity run start while the profile is pending", () => {
 describe("Antigravity run start once the profile is released", () => {
   it("passes the gate on a plugin Runner-task target and refuses state saved under another profile version", async () => {
     expect(antigravityReleasePending()).toBe(false);
-    const current = await runStart(antigravityExecution(), pluginTarget()).then(() => null, (error: unknown) => error);
-    expect(String(current)).not.toMatch(INELIGIBLE);
-    expect(current).not.toBeInstanceOf(NativeProviderStateIncompatibleError);
+    const db = emptyDb();
+    await expect(runStart(antigravityExecution(), pluginTarget(), db)).rejects.toThrow(COORDINATOR_CLAIM);
+    expect(db.reads).toEqual([{ table: "environment_leases", locked: false }, ...coordinatorReads]);
     const older = antigravityExecution();
     (older.provider as { profile: { agentProfileVersion: number } }).profile.agentProfileVersion -= 1;
-    await expect(runStart(older, pluginTarget())).rejects.toBeInstanceOf(NativeProviderStateIncompatibleError);
+    const olderDb = emptyDb();
+    await expect(runStart(older, pluginTarget(), olderDb)).rejects.toBeInstanceOf(NativeProviderStateIncompatibleError);
+    expect(olderDb.reads).toEqual([]);
   });
 
   it.each(["api_key", "sign_in"] as const)("hands a %s plugin Runner task only its typed credential", async method => {
