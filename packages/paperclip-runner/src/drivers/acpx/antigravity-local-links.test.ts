@@ -40,6 +40,8 @@ describe("Antigravity replies never link local task-folder paths", () => {
     expect(through([task], [`See [the notes](file://${task}/notes/plan.md#L3).`])).toBe("See the notes (`notes/plan.md`).");
     expect(through([task], [`See [config](file://${root}/elsewhere/config.json).`])).toBe("See config.");
     expect(through([task], [`Wrote file://${task}/b.txt and ${task}/c.txt.`])).toBe("Wrote `b.txt` and c.txt.");
+    expect(through([task], [`It ran in ${task}.`])).toBe("It ran in the task folder.");
+    expect(through([task], [`It ran in ${task}`])).toBe("It ran in the task folder");
     expect(through([task], [`Wrote file://${task}/a.txt. Then file://${task}/b.txt, and file://${root}/x.json!`])).toBe("Wrote `a.txt`. Then `b.txt`, and `x.json`!");
     expect(through([task], ["Open [docs](https://example.test/a) or [run](/ANT/issues/ANT-1)."])).toBe("Open [docs](https://example.test/a) or [run](/ANT/issues/ANT-1).");
   });

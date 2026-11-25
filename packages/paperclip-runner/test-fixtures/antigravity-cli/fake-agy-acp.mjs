@@ -140,6 +140,8 @@ async function prompt(id, params) {
   const text = params.prompt?.[0]?.text ?? "";
   if (state.prompts > 1) {
     // Paperclip's follow-up: wait for the helpers, then confirm.
+    // A session-wide token count streamed while the wait hangs (larger than the first prompt's answer).
+    if (scenario === "hang-helpers") update(state.sessionId, { sessionUpdate: "usage_update", used: 60000, size: 1048576, _meta: { usage: { ...usage, inputTokens: 52000, totalTokens: 140000 } } });
     if (scenario === "hang-helpers") { await new Promise(resolve => { state.cancel = resolve; }); return write({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } }); }
     await tool("read_board", { since: 5 });
     if (scenario === "live-helpers") { writeFiles(); await handIn(); }

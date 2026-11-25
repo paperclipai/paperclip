@@ -247,6 +247,15 @@ function addUsage(total: Json | null, usage: unknown): Json | null {
   return next;
 }
 
+/** Per counter, the larger of two usage readings. */
+function largerUsage(total: Json, reading: Json): Json {
+  const next: Json = { ...total };
+  for (const [key, value] of Object.entries(reading)) {
+    if (typeof value === "number") next[key] = Math.max(typeof next[key] === "number" ? next[key] as number : 0, value);
+  }
+  return next;
+}
+
 /**
  * The swarm's only instruction is the user's recorded request, which Paperclip
  * carries in the model envelope's own `swarmRequest` field (from the execution
@@ -589,7 +598,10 @@ export async function openAntigravitySwarmRuntime(
      */
     const keepUsage = (reported: unknown) => {
       const answered = record(reported);
-      usage = addUsage(usage, Object.keys(answered).length > 0 ? answered : streamedUsage);
+      if (Object.keys(answered).length > 0) usage = addUsage(usage, answered);
+      // Whether a streamed count covers this prompt or the whole session is not known, so
+      // after an answered prompt it can raise a counter but never adds to it (no double count).
+      else if (streamedUsage) usage = usage ? largerUsage(usage, streamedUsage) : addUsage(null, streamedUsage);
       streamedUsage = null;
       if (usage) {
         status.terminalPromptUsage = { requestId: input.requestId, promptId: `${input.requestId}:swarm`,

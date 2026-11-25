@@ -200,6 +200,8 @@ describe("Antigravity CLI swarm runtime", () => {
   it("fails with a clear timeout when helpers never finish", async () => {
     const run = await runTurn("hang-helpers", { helperWaitTimeoutMs: 200 });
     expect(run.result).toMatchObject({ status: "failed", error: { code: "ANTIGRAVITY_SWARM_HELPERS_TIMEOUT" } });
+    // The wait prompt is never answered; its streamed count may be session-wide, so it raises counters, never adds (not 133,035 + 140,000).
+    expect(run.status.terminalPromptUsage).toMatchObject({ event: { breakdown: { inputTokens: 52000, totalTokens: 140000, outputTokens: 1421 } } });
   });
 
   it("surfaces blocked helper actions and refuses the coordinator's outside write", async () => {

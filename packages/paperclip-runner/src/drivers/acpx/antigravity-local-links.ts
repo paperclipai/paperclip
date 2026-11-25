@@ -1,6 +1,7 @@
 import { realpathSync } from "node:fs";
-import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, isAbsolute, resolve, sep } from "node:path";
 import type { AcpRuntimeEvent } from "acpx/runtime";
+import { localTarget, workspaceRelativePath } from "../../live/workspace-file-reference.js";
 
 /**
  * Google Antigravity (the registry ACP server and the CLI's swarm alike) links
@@ -18,26 +19,23 @@ const UNFINISHED_LINK = /^\[[^\]\n]{0,300}(?:\]\((?:<[^>\n]*|[^)\s]*))?\]?$/;
 const UNFINISHED_FILE_URL = /(?:f(?:i(?:l(?:e(?::(?:\/(?:\/[^\s)\]>"'`]*)?)?)?)?)?)?)$/;
 const HOLD_MAX = 4_096;
 
+/** A file:// or absolute link target, decoded with the shared workspace file-reference rules; null for anything else. */
 function decodeTarget(raw: string): { path: string; fileUrl: boolean } | null {
-  let target = raw.trim();
-  if (target.startsWith("<") && target.endsWith(">")) target = target.slice(1, -1);
-  const fileUrl = /^file:\/\//i.test(target);
-  if (fileUrl) {
-    try { target = decodeURIComponent(new URL(target).pathname); } catch { return null; }
-  } else if (!target.startsWith("/")) {
-    return null;
-  }
-  target = target.replace(/#L\d+(?:C\d+)?$/i, "").replace(/:\d+(?::\d+)?$/, "");
-  return target ? { path: target, fileUrl } : null;
+  const fileUrl = /^<?file:\/\//i.test(raw.trim());
+  const parsed = localTarget(raw);
+  if (!parsed || (!fileUrl && !isAbsolute(parsed.target))) return null;
+  return { path: parsed.target, fileUrl };
 }
 
 function insideRoot(roots: readonly string[], path: string): string | null {
   for (const root of roots) {
-    const candidate = relative(root, resolve(root, path));
-    if (candidate && candidate !== ".." && !candidate.startsWith(`..${sep}`) && !isAbsolute(candidate)) return candidate.split(sep).join("/");
+    const candidate = workspaceRelativePath(root, resolve(root, path));
+    if (candidate) return candidate;
   }
   return null;
 }
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const code = (path: string) => `\`${path}\``;
 
@@ -57,7 +55,11 @@ export function neutralizeAntigravityLocalLinks(text: string, roots: readonly st
     if (!decoded) return match;
     return code(insideRoot(roots, decoded.path) ?? basename(decoded.path)) + match.slice(url.length);
   });
-  for (const root of roots) value = value.split(`${root}/`).join("");
+  for (const root of roots) {
+    value = value.split(`${root}/`).join("");
+    // The task folder itself, not followed by more of a path.
+    value = value.replace(new RegExp(`${escapeRegExp(root)}(?![\\w/-]|\\.\\w)`, "g"), "the task folder");
+  }
   return value;
 }
 
