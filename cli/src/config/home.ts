@@ -71,3 +71,10 @@ export function describeLocalInstancePaths(instanceId?: string) {
     storageDir: resolveDefaultStorageDir(resolvedInstanceId),
   };
 }
+
+/** The instance a config file belongs to, when it sits in `<home>/instances/<id>/`. */
+export function instanceIdForConfigPath(configPath: string, homeDir = resolvePaperclipHomeDir()): string | null {
+  const directory = path.dirname(path.resolve(configPath));
+  if (path.dirname(directory) !== path.join(path.resolve(homeDir), "instances")) return null;
+  return path.basename(directory);
+}

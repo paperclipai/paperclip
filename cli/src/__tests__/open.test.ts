@@ -105,6 +105,15 @@ describe("paperclipai open", () => {
     expect(localBoardEntryUrl("http://127.0.0.1:3100", defaultTarget)).toBe("http://127.0.0.1:3100");
   });
 
+  it("resolves the same instance as \`paperclipai run\` for the same config file", async () => {
+    const { resolveRunInstanceId } = await import("../commands/run.js");
+    const fooConfig = writeInstanceConfig("foo", "local_trusted");
+    expect(resolveRunInstanceId({ config: fooConfig })).toBe("foo");
+    expect(resolveRunInstanceId({ config: fooConfig })).toBe(resolveLocalBoardTarget({ config: fooConfig }).instanceId);
+    expect(resolveRunInstanceId({ config: fooConfig, instance: "bar" })).toBe("bar");
+    expect(resolveRunInstanceId({ config: "/elsewhere/config.json" })).toBe("default");
+  });
+
   it("follows the server's deployment mode override from the environment", () => {
     writeInstanceConfig("default", "local_trusted");
     process.env.PAPERCLIP_DEPLOYMENT_MODE = "authenticated";

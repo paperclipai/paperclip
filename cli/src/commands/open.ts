@@ -10,7 +10,9 @@ import {
   resolveLocalOperatorKeyPathForConfig,
 } from "@paperclipai/shared/local-operator-credential";
 import { openUrl } from "../client/board-auth.js";
-import { resolveDefaultConfigPath, resolvePaperclipHomeDir, resolvePaperclipInstanceId } from "../config/home.js";
+import { instanceIdForConfigPath, resolveDefaultConfigPath, resolvePaperclipInstanceId } from "../config/home.js";
+
+export { instanceIdForConfigPath };
 import { readConfig, resolveConfigPath } from "../config/store.js";
 import { readRuntimeInfo } from "../runtime-info.js";
 import { inferApiBaseFromConfig, normalizeApiBase } from "./client/common.js";
@@ -46,13 +48,6 @@ function processIsRunning(pid: number): boolean {
   } catch (error) {
     return (error as NodeJS.ErrnoException).code === "EPERM";
   }
-}
-
-/** The instance a config file belongs to, when it sits in `<home>/instances/<id>/`. */
-export function instanceIdForConfigPath(configPath: string, homeDir = resolvePaperclipHomeDir()): string | null {
-  const directory = path.dirname(path.resolve(configPath));
-  if (path.dirname(directory) !== path.join(path.resolve(homeDir), "instances")) return null;
-  return path.basename(directory);
 }
 
 /** The deployment mode the server resolves: the environment first, then the config file. */

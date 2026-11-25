@@ -225,9 +225,12 @@ describe.skipIf(!supported)("operator browser sign-in", () => {
       }).on("error", reject);
     });
     const socketPath = `${base}/api/plugins/p1/api/socket?operator=${encodeURIComponent(token)}`;
-    const upgrade = { upgrade: "websocket", connection: "keep-alive" };
+    const upgrade = { upgrade: "websocket", connection: "Upgrade" };
     expect(await whoamiOver(socketPath, upgrade)).toEqual({ type: "board", source: "local_implicit" });
     expect(await whoamiOver(socketPath, {})).toEqual({ type: "none", source: "none" });
+    // An Upgrade header without a real upgrade handshake is a plain request.
+    expect(await whoamiOver(socketPath, { upgrade: "websocket", connection: "keep-alive" }))
+      .toEqual({ type: "none", source: "none" });
     expect(await whoamiOver(`${base}/api/plugins/p1/api/socket`, { ...upgrade, cookie }))
       .toEqual({ type: "none", source: "none" });
   });

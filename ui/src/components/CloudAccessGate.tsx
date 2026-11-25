@@ -75,13 +75,13 @@ function NoBoardAccessPage() {
 function LocalOperatorSignIn() {
   return (
     <div className="mx-auto max-w-xl py-10">
-      <Card className="block p-6">
+      <Card className="flex flex-col gap-3 p-6">
         <h1 className="text-xl font-semibold">Open Paperclip from your terminal</h1>
-        <p className="mt-2 text-sm text-muted-foreground">
+        <p className="text-sm text-muted-foreground">
           This board only opens in a browser you signed in from this computer. Run this command in a terminal:
         </p>
-        <pre className="mt-3 rounded-md bg-muted px-3 py-2 text-sm"><code>paperclipai open</code></pre>
-        <p className="mt-3 text-sm text-muted-foreground">
+        <pre className="rounded-md bg-muted px-3 py-2 text-sm"><code>paperclipai open</code></pre>
+        <p className="text-sm text-muted-foreground">
           It opens the board here and keeps this browser signed in.
         </p>
       </Card>

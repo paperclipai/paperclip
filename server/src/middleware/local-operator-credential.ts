@@ -107,8 +107,10 @@ export function createLocalOperatorCredential(options: LocalOperatorCredentialOp
    * A browser cannot set headers on a WebSocket, so the board page sends its
    * token as a query parameter, which is accepted on upgrade requests only.
    */
-  function hasSocketToken(headers: IncomingHttpHeaders, query: Record<string, unknown>): boolean {
-    if (headers.upgrade?.toLowerCase() !== "websocket") return false;
+  function hasSocketToken(method: string, headers: IncomingHttpHeaders, query: Record<string, unknown>): boolean {
+    if (method !== "GET" || headers.upgrade?.toLowerCase() !== "websocket") return false;
+    const connection = headers.connection?.toLowerCase().split(",").map((part) => part.trim()) ?? [];
+    if (!connection.includes("upgrade")) return false;
     return hasBrowserToken(query[LOCAL_OPERATOR_SOCKET_PARAM] as string | undefined);
   }
 
