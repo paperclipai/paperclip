@@ -4,7 +4,7 @@ import { expect, type Locator } from "@playwright/test";
 import { continuationScenario } from "../continuation-cases.js";
 import { continuationAnswerCommitted, continuationCheckpointReady } from "../continuation-readiness.js";
 import type { ContinuationCheckpoint } from "../continuation-scoring.js";
-import { submittedReferencePattern } from "../question-resume-scoring.js";
+import { submittedReferencePattern } from "../submitted-reference.js";
 import { answerResumeQuestionThroughUi } from "../question-resume-ui.js";
 import { createTaskThroughUi } from "../user-actions.js";
 import { validateAgentTaskState } from "./agent-flows.js";

@@ -1,5 +1,6 @@
-import { gradeQuestionResume, includesSubmittedReference, questionPath, validResumeQuestionForm, validResumeReferenceForm } from "../question-resume-scoring.js";
+import { gradeQuestionResume, questionPath, validResumeQuestionForm, validResumeReferenceForm } from "../question-resume-scoring.js";
 import type { ContinuationCheckpoint } from "../continuation-scoring.js";
+import { includesSubmittedReference } from "../submitted-reference.js";
 import { validateAgentTaskState } from "./agent-flows.js";
 import type { JourneyContext } from "./types.js";
 

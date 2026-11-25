@@ -1,22 +1,13 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ContinuationCheckpoint } from "./continuation-scoring.js";
 import { isSingleClaudeQuestion } from "./runtime-question-readiness.js";
+import { includesSubmittedReference } from "./submitted-reference.js";
 
 type Row = Record<string, any>;
 export type QuestionPath = "provider" | "semantic" | "api";
 const nonempty = (v: unknown): v is string => typeof v === "string" && v.trim().length > 0;
 const questions = (c?: ContinuationCheckpoint): Row[] =>
   (c?.interactions ?? []).filter((i: any) => i.kind === "ask_user_questions") as Row[];
-// The board answers "Use <marker>."; agents may save the instruction or only the
-// reference, so a document passes when it holds the complete marker token.
-export const submittedReferencePattern = (marker: string) => {
-  if (!marker) throw new Error("A submitted reference marker is required");
-  // "_" may be Markdown emphasis (_X_ or __X__) but not a joined word (old_X, X_extra).
-  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`(?<![A-Za-z0-9-])(?<![A-Za-z0-9-]_+)${escaped}(?![A-Za-z0-9-])(?!_+[A-Za-z0-9-])`);
-};
-export const includesSubmittedReference = (body: unknown, marker: string) =>
-  !!marker && typeof body === "string" && submittedReferencePattern(marker).test(body);
 export const resumeQuestionFields = (i?: Row): Row[] =>
   Array.isArray(i?.payload?.questionSet?.questions) ? i.payload.questionSet.questions : [];
 

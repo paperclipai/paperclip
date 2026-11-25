@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { gradeQuestionResume, includesSubmittedReference, questionPath, submittedReferencePattern, validResumeQuestionForm, type QuestionPath } from "./question-resume-scoring.js";
+import { gradeQuestionResume, questionPath, validResumeQuestionForm, type QuestionPath } from "./question-resume-scoring.js";
+import { includesSubmittedReference, submittedReferencePattern } from "./submitted-reference.js";
 import { gradeContinuation } from "./continuation-scoring.js";
 import { gradeLifecycleBaseline } from "./lifecycle-baseline.js";
 import { continuationScenario } from "./continuation-cases.js";
