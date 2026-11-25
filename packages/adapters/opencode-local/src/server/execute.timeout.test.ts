@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 
+vi.mock("./version.js", () => ({ usesOpenCodeV2: async () => false }));
+
 const mocks = vi.hoisted(() => ({
   process: vi.fn(), restore: vi.fn(), stop: vi.fn(),
 }));

@@ -101,7 +101,7 @@ Core fields:
 - cwd (string, optional): default absolute working directory fallback for the agent process (created if missing when possible)
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt
 - model (string, required): OpenCode model id in provider/model format (for example anthropic/claude-sonnet-4-5)
-- variant (string, optional): provider-specific reasoning/profile variant passed as --variant (for example minimal|low|medium|high|xhigh|max)
+- variant (string, optional): provider-specific reasoning/profile variant (for example minimal|low|medium|high|xhigh|max). OpenCode 1 receives --variant; OpenCode 2 receives it as a model suffix.
 - dangerouslySkipPermissions (boolean, optional): inject a runtime OpenCode config with \`permission=allow\` for all tools and connections; defaults to true for unattended Paperclip runs
 - promptTemplate (string, optional): run prompt template
 - command (string, optional): defaults to "opencode"
@@ -116,6 +116,7 @@ Notes:
 - OpenCode supports multiple providers and models. Use \
   \`opencode models\` to list available options in provider/model format.
 - Paperclip requires an explicit \`model\` value for \`opencode_local\` agents.
+- The adapter probes the installed OpenCode version. An unavailable version probe uses OpenCode 1 syntax.
 - Runs are executed with: opencode run --format json ...
 - Sessions are resumed with --session when stored session cwd matches current cwd.
 - The adapter sets OPENCODE_DISABLE_PROJECT_CONFIG=true to prevent OpenCode from \
