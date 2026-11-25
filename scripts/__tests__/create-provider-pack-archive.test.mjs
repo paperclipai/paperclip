@@ -1,26 +1,42 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { lutimes, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createProviderPackLayers } from "../create-provider-pack-archive.mjs";
 
 const DIGEST = `sha256:${"b".repeat(64)}`;
+const FIXED_TIME = new Date("2026-01-01T00:00:00.000Z");
 
 async function makePack(rootDir) {
   const pack = path.join(rootDir, "provider-pack");
-  await mkdir(path.join(pack, "dist"), { recursive: true });
-  await mkdir(path.join(pack, "node_modules", "pkg"), { recursive: true });
-  await writeFile(
-    path.join(pack, "provider-pack.json"),
-    JSON.stringify({ schema: "paperclip-runner/remote-provider-pack/v1", digest: DIGEST }),
-  );
-  await writeFile(path.join(pack, "node_modules", "pkg", "dep-a.bin"), Buffer.alloc(1024 * 1024 + 17, 11));
-  await writeFile(path.join(pack, "node_modules", "pkg", "dep-b.bin"), Buffer.alloc(1024 * 1024 + 29, 22));
-  await writeFile(path.join(pack, "node_modules", "pkg", "dep-c.bin"), Buffer.alloc(1024 * 1024 + 41, 33));
-  await writeFile(path.join(pack, "dist", "runner.bin"), Buffer.alloc(1024 * 1024 + 53, 44));
-  await writeFile(path.join(pack, "dist", "small.js"), "export const ok = true;\n");
-  await symlink("small.js", path.join(pack, "dist", "link.js"));
+  const distDir = path.join(pack, "dist");
+  const nodeModulesDir = path.join(pack, "node_modules");
+  const pkgDir = path.join(nodeModulesDir, "pkg");
+  await mkdir(distDir, { recursive: true });
+  await mkdir(pkgDir, { recursive: true });
+
+  const files = [
+    [path.join(pack, "provider-pack.json"), JSON.stringify({ schema: "paperclip-runner/remote-provider-pack/v1", digest: DIGEST })],
+    [path.join(pkgDir, "dep-a.bin"), Buffer.alloc(1024 * 1024 + 17, 11)],
+    [path.join(pkgDir, "dep-b.bin"), Buffer.alloc(1024 * 1024 + 29, 22)],
+    [path.join(pkgDir, "dep-c.bin"), Buffer.alloc(1024 * 1024 + 41, 33)],
+    [path.join(distDir, "runner.bin"), Buffer.alloc(1024 * 1024 + 53, 44)],
+    [path.join(distDir, "small.js"), "export const ok = true;\n"],
+  ];
+  for (const [filePath, content] of files) {
+    await writeFile(filePath, content);
+    await utimes(filePath, FIXED_TIME, FIXED_TIME);
+  }
+  const linkPath = path.join(distDir, "link.js");
+  await symlink("small.js", linkPath);
+  await lutimes(linkPath, FIXED_TIME, FIXED_TIME);
+
+  // Pin directory timestamps bottom-up after all children are written so tar
+  // headers cannot differ across wall-clock second boundaries.
+  for (const dirPath of [pkgDir, nodeModulesDir, distDir, pack]) {
+    await utimes(dirPath, FIXED_TIME, FIXED_TIME);
+  }
   return pack;
 }
 
