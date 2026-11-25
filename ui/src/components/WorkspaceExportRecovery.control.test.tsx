@@ -392,6 +392,26 @@ describe("governed retained-file recovery", () => {
     expect(api.recover).not.toHaveBeenCalled();
   });
 
+  it("hands an in-progress Git operation save rest to the task's Retry instead of its own recovery button", async () => {
+    const gitOp = { ...action, ownerType: "board", evidence: { ...action.evidence, systemRecovery: {
+      state: "exhausted", preservationOperationIds: [], failure: { code: "export_interrupted",
+        retryClass: "user_action_required", cause: { label: "git_operation_in_progress", code: null, status: null } } } },
+    } as unknown as IssueRecoveryAction;
+    api.inspect.mockResolvedValue(inspection(gitOp));
+    const owns = vi.fn();
+    await act(async () => root.render(<QueryClientProvider client={client}>
+      <WorkspaceExportRecovery action={gitOp} issueId="issue-1" companyId="company-1" onRecoveryControlChange={owns} />
+    </QueryClientProvider>));
+    await settle();
+    expect(button("Recover saved files")).toBeUndefined();
+    expect(button("Try file recovery again")).toBeUndefined();
+    expect(owns).toHaveBeenLastCalledWith(false);
+    expect(owns).not.toHaveBeenCalledWith(true);
+    expect(container.textContent).toContain("Git operation");
+    expect(container.textContent).toContain("use Retry to save them");
+    expect(api.recover).not.toHaveBeenCalled();
+  });
+
   it("only reports recovered files after the durable preservation receipt is present", async () => {
     const recovered = { ...action, evidence: { ...action.evidence, workspaceRecovery: {
       ...(action.evidence.workspaceRecovery as object), status: "recovered",

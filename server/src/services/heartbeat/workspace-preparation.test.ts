@@ -2014,6 +2014,83 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(acquire).not.toHaveBeenCalled();
   });
 
+  it("names incompatible Core project storage when a storage-plugin environment refuses a Core Git worktree", async () => {
+    const { input, issue, envOrchestrator } = await fixture(true);
+    const coreProjectId = issue.projectId!;
+    const coreProjectWorkspaceId = issue.projectWorkspaceId!;
+    const storage = await createPluginWorkspaceFixture(db, input.agent.companyId);
+    const [plugin] = await db.select().from(plugins).where(eq(plugins.id, storage.pluginId));
+    await db.update(plugins).set({
+      manifestJson: {
+        ...plugin.manifestJson,
+        capabilities: [...plugin.manifestJson.capabilities, "environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "tasks", supportsTasks: true, displayName: "Agent Computer", configSchema: { type: "object", properties: {} } }],
+      },
+    }).where(eq(plugins.id, storage.pluginId));
+    const [pluginProject] = await db.insert(projects).values({
+      companyId: input.agent.companyId,
+      name: "Plugin-storage project",
+      executionWorkspacePolicy: { enabled: true, storageProviderPluginId: storage.pluginId },
+    }).returning();
+    await db.update(issues).set({
+      projectId: pluginProject.id,
+      projectWorkspaceId: coreProjectWorkspaceId,
+      workspaceSelection: { version: 1, source: "project", selection: { kind: "configured_source", mode: "managed_isolated", projectWorkspaceId: coreProjectWorkspaceId } },
+    }).where(eq(issues.id, issue.id));
+    input.task.issueRef = { ...issue, projectId: pluginProject.id, projectWorkspaceId: coreProjectWorkspaceId };
+    input.task.workspaceSelection = { version: 1, source: "project", selection: { kind: "configured_source", mode: "managed_isolated", projectWorkspaceId: coreProjectWorkspaceId } };
+    input.task.context = { issueId: issue.id, projectId: pluginProject.id };
+    input.agent.adapterType = "paperclip_runner";
+    const pluginEnvironment = {
+      ...input.environment.localEnvironment,
+      id: randomUUID(),
+      name: "Agent Computer",
+      driver: "plugin" as const,
+      config: { pluginKey: plugin.pluginKey, driverKey: "tasks", driverConfig: {} },
+    };
+    input.environment.selectedEnvironmentId = pluginEnvironment.id;
+    input.environment.selectedEnvironmentForConfig = pluginEnvironment;
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
+
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      name: "ConfigurationIncompleteFailure",
+      code: "configuration_incomplete",
+      message: `This project's workspace storage (Core / local) does not support the environment "Agent Computer". Use an agent in a compatible environment, or choose a workspace source from a project for this environment.`,
+      resultJson: {
+        configurationIncomplete: {
+          reason: "project_storage_environment_incompatible",
+          companyId: input.agent.companyId,
+          agentId: input.agent.id,
+          issueId: issue.id,
+          projectId: coreProjectId,
+          storageProviderPluginId: null,
+          environmentId: pluginEnvironment.id,
+          fingerprint: `project_storage_environment:core:${pluginEnvironment.id}`,
+          actionUrl: `/agents/${input.agent.id}/runtime`,
+        },
+      },
+    });
+    expect(acquire).not.toHaveBeenCalled();
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, input.agent.companyId))).toHaveLength(0);
+
+    await db.update(plugins).set({ status: "disabled" }).where(eq(plugins.id, storage.pluginId));
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: { reason: "plugin_workspace_strategy_unsupported" },
+    });
+
+    await db.update(plugins).set({ status: "ready" }).where(eq(plugins.id, storage.pluginId));
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null, workspaceSelection: null }).where(eq(issues.id, issue.id));
+    input.task.issueRef = { ...issue, projectId: null, projectWorkspaceId: null };
+    input.task.workspaceSelection = null;
+    input.task.context = { issueId: issue.id };
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: { reason: "plugin_workspace_strategy_unsupported" },
+    });
+    expect(acquire).not.toHaveBeenCalled();
+  });
+
   it.each([true, false])("forwards only authorized plugin project IDs without staging (remote enabled: %s)", async enabled => {
     const { input, issue, envOrchestrator } = await fixture();
     vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "true");

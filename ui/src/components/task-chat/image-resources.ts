@@ -69,3 +69,12 @@ export function groupImageResources<T extends TaskChatItem>(items: readonly T[])
   }
   return rows;
 }
+
+export function runFileCardAttachments(products: readonly IssueWorkProduct[]): ReadonlyMap<string, string> {
+  const byAttachment = new Map<string, string>();
+  for (const product of products) {
+    const attachmentId = fileRowSourceFromWorkProduct(product)?.attachmentId;
+    if (attachmentId && product.createdByRunId) byAttachment.set(attachmentId, product.createdByRunId);
+  }
+  return byAttachment;
+}

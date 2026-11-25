@@ -3,11 +3,20 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { activityLog, agents, agentWakeupRequests, authUsers, companies, companyMemberships, createDb, executionWorkspaces,
-  heartbeatRuns, issueRecoveryActions, issueRelations, issues, statusDecisions } from "@paperclipai/db";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { activityLog, agents, agentWakeupRequests, authUsers, companies, companyMemberships, completionContracts, createDb, environments,
+  environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issueRelations, issues, nativeRunFinalizations,
+  nativeRunResults, projects, projectWorkspaces, statusDecisions, workspaceOperations } from "@paperclipai/db";
+import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
+import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
+import { createStorageService } from "../storage/service.js";
+import { createReusableLeaseHandoff } from "../services/environment-lease-handoff.js";
 import { heartbeatService } from "../services/heartbeat.js";
-import { REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE } from "../services/remote-workspace-writer-hold.js";
+import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { readRemoteWorkspaceWriterHold, REMOTE_WORKSPACE_WRITER_PENDING_MESSAGE, remoteWorkspaceHoldRefusesStart }
+  from "../services/remote-workspace-writer-hold.js";
+import { REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA } from "../services/remote-workspace-epoch-abandonment.js";
+import { reserveRemoteWorkspace } from "../services/remote-workspaces.js";
 import { continueTasksAfterWorkspaceWriterReleased, RELEASED_WORKSPACE_WRITER_OUTCOME }
   from "../services/recovery/released-writer-escalation.js";
 import { recoveryActionSweepCondition } from "../services/recovery/blocker-stall-wakeups.js";
@@ -49,6 +58,10 @@ describePostgres("a task stranded behind its own workspace's ended writer", () =
     process.env.PAPERCLIP_HOME = home;
     heartbeat = heartbeatService(db);
   }, 240_000);
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
 
   afterAll(async () => {
     await heartbeat?.drainActiveRunExecutions();
@@ -238,4 +251,326 @@ describePostgres("a task stranded behind its own workspace's ended writer", () =
     expect(await action(f.actionId)).toMatchObject({ status: "active" });
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
   }, 60_000);
+
+  it("abandons a superseded ended writer's stale epoch and continues the stranded task", async () => {
+    const f = await seedStrandedTask();
+    const leaseId = randomUUID();
+    const location = { environmentId: randomUUID(), leaseId, providerLeaseId: randomUUID(),
+      remoteCwd: `/work/.paperclip-workspaces/${f.workspaceId}-3-${leaseId}` };
+    const [wsBefore] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    const currentAuthority = readRemoteWorkspaceAuthority(wsBefore!.metadata)!;
+    await db.update(executionWorkspaces).set({ metadata: { ...wsBefore!.metadata,
+      remoteWorkspace: { ...currentAuthority, location } } }).where(eq(executionWorkspaces.id, f.workspaceId));
+    const successorId = randomUUID();
+    const [writerRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.writerRunId));
+    await db.update(heartbeatRuns).set({ errorCode: "native_continuation_requires_reconciliation" })
+      .where(eq(heartbeatRuns.id, f.writerRunId));
+    await db.insert(heartbeatRuns).values({ id: successorId, companyId: f.companyId, agentId: f.agentId,
+      issueId: f.task.id, nativeIssueId: f.task.id, runtimeMode: "native", status: "failed",
+      errorCode: "controller_lease_lost",
+      createdAt: new Date(writerRun!.finishedAt!.getTime() + 60_000),
+      finishedAt: new Date(writerRun!.finishedAt!.getTime() + 5 * 60_000),
+      contextSnapshot: { issueId: f.task.id } });
+    await db.insert(nativeRunFinalizations).values({ runId: f.writerRunId, companyId: f.companyId,
+      issueId: f.task.id, phase: "terminal_failure", attempt: 1,
+      failureCode: "native_continuation_requires_reconciliation",
+      failureDetail: { successorRunId: successorId } });
+
+    expect(await scheduledRecoveryPass(f.companyId)).toBe(true);
+
+    expect(await issue(f.task.id)).toMatchObject({ status: "todo", blockedTransitionAt: null, executionWorkspaceId: f.workspaceId });
+    expect(await action(f.actionId)).toMatchObject({ status: "resolved", outcome: "restored",
+      resolutionNote: RELEASED_WORKSPACE_WRITER_OUTCOME });
+    const [wsAfter] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    expect(readRemoteWorkspaceAuthority(wsAfter!.metadata)).toMatchObject({
+      epoch: 4, writerRunId: null, dirty: false, location: null, snapshotId: currentAuthority.snapshotId,
+    });
+    expect(wsAfter!.metadata?.remoteWorkspaceAbandonedEpochs).toEqual([expect.objectContaining({
+      schema: REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA, epoch: 3, runId: f.writerRunId, location,
+    })]);
+    expect(wakesFor(f.task.id)).toHaveLength(1);
+  }, 60_000);
+
+  it("keeps a stranded task blocked when the writer holds unsaved files for a board-owned export recovery", async () => {
+    const f = await seedStrandedTask();
+    const leaseId = randomUUID();
+    const location = { environmentId: randomUUID(), leaseId, providerLeaseId: randomUUID(),
+      remoteCwd: `/work/.paperclip-workspaces/${f.workspaceId}-3-${leaseId}` };
+    const [wsBefore] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    const currentAuthority = readRemoteWorkspaceAuthority(wsBefore!.metadata)!;
+    const heldMetadata = { ...wsBefore!.metadata, remoteWorkspace: { ...currentAuthority, location } };
+    await db.update(executionWorkspaces).set({ metadata: heldMetadata }).where(eq(executionWorkspaces.id, f.workspaceId));
+    const [contract] = await db.insert(completionContracts).values({
+      companyId: f.companyId, issueId: f.task.id, revision: 1,
+      schemaVersion: "paperclip.completion-contract/v1", policyVersion: "v1", risk: "low",
+      completionAuthority: "agent", incompleteCriteriaPolicy: "block",
+      contractJson: {}, canonicalSha256: "a".repeat(64),
+      createdByActorType: "system", createdByActorId: "test",
+    }).returning();
+    await db.update(heartbeatRuns).set({ errorCode: "native_workspace_sync_out_retry_exhausted", completionContractId: contract!.id })
+      .where(eq(heartbeatRuns.id, f.writerRunId));
+    const [res] = await db.insert(nativeRunResults).values({ companyId: f.companyId, issueId: f.task.id,
+      runId: f.writerRunId, completionContractId: contract!.id, serverFingerprint: `fp-${f.writerRunId}`,
+      schemaStatus: "accepted", resultJson: { terminalState: "succeeded" }, canonicalSha256: "b".repeat(64) }).returning();
+    await db.insert(nativeRunFinalizations).values({ runId: f.writerRunId, companyId: f.companyId,
+      issueId: f.task.id, phase: "terminal_failure", attempt: 3, resultId: res!.id,
+      failureCode: "native_workspace_sync_out_retry_exhausted" });
+
+    expect(await scheduledRecoveryPass(f.companyId)).toBe(true);
+
+    expect(await issue(f.task.id)).toMatchObject({ status: "blocked" });
+    expect(await action(f.actionId)).toMatchObject({ status: "active", ownerType: "board" });
+    const [wsAfter] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspaceId));
+    expect(readRemoteWorkspaceAuthority(wsAfter!.metadata)).toEqual({ ...currentAuthority, location });
+    expect(wakesFor(f.task.id)).toEqual([]);
+  }, 60_000);
+
+  async function seedReservationWorkspace() {
+    vi.stubEnv("DATABASE_URL", temporary.connectionString);
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "62".repeat(32));
+    const [company] = await db.insert(companies).values({ name: "Writer hold reservation", issuePrefix: `R${randomUUID().slice(0, 6)}` }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Worker", adapterType: "paperclip_runner" }).returning();
+    const [project] = await db.insert(projects).values({ companyId: company!.id, name: "Source project" }).returning();
+    const [source] = await db.insert(projectWorkspaces).values({ companyId: company!.id, projectId: project!.id,
+      name: "Task files", sourceType: "empty" }).returning();
+    const [environment] = await db.insert(environments).values({ name: `Reservation ${randomUUID()}`, driver: "sandbox", config: {} }).returning();
+    const [task] = await db.insert(issues).values({ companyId: company!.id, projectId: project!.id,
+      projectWorkspaceId: source!.id, title: "Continue saved work", status: "todo", assigneeAgentId: agent!.id }).returning();
+    const snapshotId = randomUUID();
+    const authority = { schema: "paperclip.remote-workspace.v1" as const, epoch: 3, snapshotId,
+      source: { kind: "empty" as const }, location: null, writerRunId: null, dirty: false };
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: company!.id, sourceIssueId: task!.id,
+      projectId: project!.id, projectWorkspaceId: source!.id, name: "Task files", mode: "isolated_workspace",
+      strategyType: "project_primary", providerType: "cloud_sandbox", cwd: `/workspaces/${randomUUID()}`,
+      metadata: { remoteWorkspace: authority } }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace!.id, executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" } }).where(eq(issues.id, task!.id));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: company!.id, agentId: agent!.id,
+      issueId: task!.id, status: "running", runtimeMode: "legacy" }).returning();
+    const storage = { ...createStorageService(createLocalDiskStorageProvider(path.join(home, company!.id))), provider: "s3" as const };
+    const input = { db, storage, companyId: company!.id, issueId: task!.id, runId: run!.id, agentId: agent!.id,
+      environmentId: environment!.id, projectId: project!.id, projectWorkspaceId: source!.id,
+      existingWorkspaceId: workspace!.id, source: authority.source };
+    const readWorkspace = async () => (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id)))[0]!;
+    return { input, company: company!, agent: agent!, task: task!, workspace: workspace!, authority, run: run!, readWorkspace };
+  }
+
+  it.each(["destroyed-tip", "stopped-tip", "active-tip"] as const)
+  ("resolves an expired reusable lease through its destroyed tip before holding an unused reservation (%s)", async mode => {
+    const f = await seedReservationWorkspace();
+    const endedAt = new Date(Date.now() - 2 * 60 * 60_000);
+    const handoffAt = new Date(endedAt.getTime() + 60_000);
+    const [writer] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      issueId: f.task.id, status: "failed", finishedAt: endedAt }).returning();
+    const [tipRun] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      issueId: f.task.id, status: mode === "active-tip" ? "running" : "succeeded",
+      finishedAt: mode === "active-tip" ? null : new Date(handoffAt.getTime() + 60_000) }).returning();
+    const providerLeaseId = randomUUID();
+    const [expiredLease] = await db.insert(environmentLeases).values({ companyId: f.company.id, environmentId: f.input.environmentId,
+      executionWorkspaceId: f.workspace.id, heartbeatRunId: writer!.id, issueId: f.task.id, provider: "daytona", providerLeaseId,
+      status: "expired", cleanupStatus: "success", leasePolicy: "reuse_by_environment",
+      acquiredAt: new Date(endedAt.getTime() - 60_000), releasedAt: handoffAt,
+      metadata: { agentId: f.agent.id } }).returning();
+    const [tipLease] = await db.insert(environmentLeases).values({ companyId: f.company.id, environmentId: f.input.environmentId,
+      executionWorkspaceId: f.workspace.id, heartbeatRunId: tipRun!.id, issueId: f.task.id, provider: "daytona", providerLeaseId,
+      status: mode === "active-tip" ? "active" : "released",
+      cleanupStatus: mode === "active-tip" ? null : "success",
+      leasePolicy: "reuse_by_environment",
+      acquiredAt: handoffAt, releasedAt: mode === "active-tip" ? null : new Date(handoffAt.getTime() + 60_000),
+      metadata: { agentId: f.agent.id } }).returning();
+    const handoff = createReusableLeaseHandoff(expiredLease!, tipLease!);
+    await db.update(environmentLeases).set({ metadata: { agentId: f.agent.id, reusableLeaseSuccessor: handoff } })
+      .where(eq(environmentLeases.id, expiredLease!.id));
+    const tipTermination = mode === "destroyed-tip"
+      ? remoteTerminationReceipt(tipLease!, { providerLeaseId, state: "destroyed" })
+      : mode === "stopped-tip"
+        ? remoteTerminationReceipt(tipLease!, { providerLeaseId, state: "stopped" })
+        : undefined;
+    await db.update(environmentLeases).set({ metadata: {
+      agentId: f.agent.id, reusableLeasePredecessor: handoff,
+      ...(tipTermination ? { remoteExecutionTermination: tipTermination } : {}),
+    } }).where(eq(environmentLeases.id, tipLease!.id));
+    const held = { ...f.authority, writerRunId: writer!.id, dirty: false };
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: held } }).where(eq(executionWorkspaces.id, f.workspace.id));
+
+    const hold = await readRemoteWorkspaceWriterHold(db, { companyId: f.company.id, authority: held, runId: f.run.id });
+    if (mode === "destroyed-tip") {
+      expect(hold).toEqual({ kind: "free" });
+      await expect(reserveRemoteWorkspace(f.input)).resolves.toMatchObject({ id: f.workspace.id });
+      expect(readRemoteWorkspaceAuthority((await f.readWorkspace()).metadata)).toMatchObject({ writerRunId: f.run.id, epoch: 4 });
+    } else {
+      expect(hold.kind).toBe("held");
+      await expect(reserveRemoteWorkspace(f.input)).rejects.toThrow("unfinished writer");
+    }
+  });
+
+  async function seedDirtyEndedWriter(options: {
+    supersession: "coordinator" | "explicit_continuation" | "reconciliation" | "none";
+    writerStatus?: "failed" | "succeeded";
+    successorStatus?: "failed" | "running" | "queued";
+    uncommittedAcceptedResult?: boolean;
+    openRecoveryAction?: boolean;
+    pendingSystemRecovery?: boolean;
+    unsettledNoReplayHold?: boolean;
+    unsafeArchiveHold?: boolean;
+    runningSnapshotOp?: boolean;
+    liveControllerLease?: boolean;
+    liveFinalizerLease?: boolean;
+  }) {
+    const f = await seedReservationWorkspace();
+    const endedAt = new Date(Date.now() - 2 * 60 * 60_000);
+    const leaseId = randomUUID();
+    const location = { environmentId: f.input.environmentId, leaseId, providerLeaseId: randomUUID(),
+      remoteCwd: `/work/.paperclip-workspaces/${f.workspace.id}-3-${leaseId}` };
+    let contractId: string | null = null;
+    if (options.uncommittedAcceptedResult) {
+      const [contract] = await db.insert(completionContracts).values({
+        companyId: f.company.id, issueId: f.task.id, revision: 1,
+        schemaVersion: "paperclip.completion-contract/v1", policyVersion: "v1", risk: "low",
+        completionAuthority: "agent", incompleteCriteriaPolicy: "block",
+        contractJson: {}, canonicalSha256: "a".repeat(64),
+        createdByActorType: "system", createdByActorId: "test",
+      }).returning();
+      contractId = contract!.id;
+    }
+    const [writer] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      issueId: f.task.id, nativeIssueId: f.task.id, completionContractId: contractId, runtimeMode: "native",
+      status: options.writerStatus ?? "failed",
+      errorCode: options.uncommittedAcceptedResult ? "native_workspace_sync_out_retry_exhausted" : "native_continuation_requires_reconciliation",
+      createdAt: new Date(endedAt.getTime() - 10 * 60_000), startedAt: new Date(endedAt.getTime() - 9 * 60_000),
+      finishedAt: endedAt,
+      controllerLeaseExpiresAt: options.liveControllerLease ? new Date(Date.now() + 10 * 60_000) : null,
+      contextSnapshot: { issueId: f.task.id },
+      runnerProfileJson: { remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1", workspaceId: f.workspace.id,
+        leaseId, providerLeaseId: location.providerLeaseId, remoteCwd: location.remoteCwd,
+        epoch: f.authority.epoch, state: "prepared", snapshotId: f.authority.snapshotId } } }).returning();
+    const [successor] = options.supersession !== "none" ? await db.insert(heartbeatRuns).values({
+      companyId: f.company.id, agentId: f.agent.id, issueId: f.task.id, nativeIssueId: f.task.id,
+      runtimeMode: "native", status: options.successorStatus ?? "failed", errorCode: options.successorStatus ? null : "controller_lease_lost",
+      createdAt: new Date(endedAt.getTime() + 60_000),
+      finishedAt: (options.successorStatus ?? "failed") === "failed" ? new Date(endedAt.getTime() + 5 * 60_000) : null,
+      contextSnapshot: { issueId: f.task.id } }).returning() : [];
+    const held = { ...f.authority, writerRunId: writer!.id, dirty: true, location };
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: held } }).where(eq(executionWorkspaces.id, f.workspace.id));
+    let resultId: string | null = null;
+    if (options.uncommittedAcceptedResult && contractId) {
+      const [res] = await db.insert(nativeRunResults).values({ companyId: f.company.id, issueId: f.task.id,
+        runId: writer!.id, completionContractId: contractId, serverFingerprint: `fp-${writer!.id}`,
+        schemaStatus: "accepted", resultJson: { terminalState: "succeeded" }, canonicalSha256: "b".repeat(64) }).returning();
+      resultId = res!.id;
+    }
+    await db.insert(nativeRunFinalizations).values({
+      runId: writer!.id, companyId: f.company.id, issueId: f.task.id,
+      phase: "terminal_failure", attempt: 1, resultId,
+      leaseOwner: options.liveFinalizerLease ? "native-finalizer:live" : null,
+      leaseExpiresAt: options.liveFinalizerLease ? new Date(Date.now() + 10 * 60_000) : null,
+      failureCode: options.uncommittedAcceptedResult ? "native_workspace_sync_out_retry_exhausted" : "native_continuation_requires_reconciliation",
+      failureDetail: options.supersession === "coordinator" && successor ? { successorRunId: successor.id } : {},
+    });
+    if (options.supersession === "explicit_continuation" && successor) {
+      await db.insert(issueRecoveryActions).values({ companyId: f.company.id, sourceIssueId: f.task.id,
+        kind: "active_run_watchdog", status: "resolved", outcome: "cancelled", ownerType: "system",
+        cause: "native_continuation_requires_reconciliation", fingerprint: `explicit:${writer!.id}`,
+        nextAction: "User started a fresh continuation.",
+        evidence: { runId: writer!.id, automaticRecovery: { policy: "preserve_without_replay_v1", replay: "explicit_user_continuation", runId: writer!.id },
+          explicitUserContinuation: { previousRunId: writer!.id, runId: successor.id,
+            readiness: { mode: "fresh_isolated_workspace", retryIntentId: randomUUID(), sourceRunId: writer!.id, retainedSourceIds: [] } } } });
+    }
+    if (options.supersession === "reconciliation" && successor) {
+      await db.insert(issueRecoveryActions).values({ companyId: f.company.id, sourceIssueId: f.task.id,
+        kind: "active_run_watchdog", status: "resolved", outcome: "restored", ownerType: "system",
+        cause: "native_continuation_requires_reconciliation", fingerprint: `reconciled:${writer!.id}`,
+        nextAction: "Continued in a fresh run.",
+        evidence: { runId: writer!.id, executionReconciliation: { runId: writer!.id, providerStopped: true, actionOutcome: "mixed", outcomeEvidence: "continued" },
+          continuationDelivery: "delivered", continuationRunId: successor.id } });
+    }
+    if (options.openRecoveryAction) {
+      await db.insert(issueRecoveryActions).values({ companyId: f.company.id, sourceIssueId: f.task.id,
+        kind: "active_run_watchdog", status: "active", ownerType: "board",
+        cause: options.uncommittedAcceptedResult ? "native_workspace_sync_out_retry_exhausted" : "native_continuation_requires_reconciliation",
+        fingerprint: `open:${writer!.id}`, nextAction: "Retry to save files.", evidence: { runId: writer!.id } });
+    }
+    if (options.pendingSystemRecovery) {
+      await db.insert(issueRecoveryActions).values({ companyId: f.company.id, sourceIssueId: f.task.id,
+        kind: "active_run_watchdog", status: "resolved", outcome: "blocked", ownerType: "system",
+        cause: "native_continuation_requires_reconciliation", fingerprint: `sysrec:${writer!.id}`,
+        nextAction: "Saving files.",
+        evidence: { runId: writer!.id, systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1,
+          sourceRunId: writer!.id, revision: 1, generationId: randomUUID(), intentId: null, phase: "preserve_files",
+          state: "running", attemptId: randomUUID(), attempts: 1, retriesUsed: 0, firstFailureAt: null,
+          nextAttemptAt: null, deadlineAt: null, providerCooldownAt: null, failure: null,
+          preservationOperationIds: [], freshAttemptRunId: null } } });
+    }
+    if (options.unsettledNoReplayHold) {
+      await db.insert(issueRecoveryActions).values({ companyId: f.company.id, sourceIssueId: f.task.id,
+        kind: "active_run_watchdog", status: "resolved", outcome: "blocked", ownerType: "board",
+        cause: "native_continuation_requires_reconciliation", fingerprint: `noreplay:${writer!.id}`,
+        nextAction: "Stopped.",
+        evidence: { runId: writer!.id, automaticRecovery: { policy: "preserve_without_replay_v1", replay: "blocked", runId: writer!.id } } });
+    }
+    if (options.unsafeArchiveHold) {
+      await db.insert(issueRecoveryActions).values({ companyId: f.company.id, sourceIssueId: f.task.id,
+        kind: "active_run_watchdog", status: "resolved", outcome: "blocked", ownerType: "board",
+        cause: "native_continuation_requires_reconciliation", fingerprint: `unsafe:${writer!.id}`,
+        nextAction: "Archive refused.",
+        evidence: { runId: writer!.id, workspaceRestoreFailure: "restore_unsafe_archive" } });
+    }
+    if (options.runningSnapshotOp) {
+      await db.insert(workspaceOperations).values({ companyId: f.company.id, issueId: f.task.id, heartbeatRunId: writer!.id,
+        executionWorkspaceId: f.workspace.id, phase: "remote_workspace_snapshot", status: "running",
+        metadata: { epoch: String(f.authority.epoch), boundary: "final" } });
+    }
+    return { ...f, writer: writer!, successor, held, location };
+  }
+
+  it.each(["coordinator", "explicit_continuation", "reconciliation"] as const)
+  ("abandons a superseded ended writer's dirty epoch on reservation once its successor has ended (%s)", async supersession => {
+    const f = await seedDirtyEndedWriter({ supersession });
+    const reserved = await reserveRemoteWorkspace(f.input);
+    expect(reserved.id).toBe(f.workspace.id);
+    // Epoch advances once for abandonment (3 -> 4) and once for reservation (4 -> 5),
+    // clearing dirty and location so the next run restores the last committed snapshot into a new root.
+    expect(readRemoteWorkspaceAuthority(reserved.metadata)).toEqual({
+      ...f.authority, epoch: 5, writerRunId: f.run.id, dirty: false, location: null,
+    });
+    const abandoned = (reserved.metadata?.remoteWorkspaceAbandonedEpochs ?? []) as Array<Record<string, unknown>>;
+    expect(abandoned).toEqual([expect.objectContaining({
+      schema: REMOTE_WORKSPACE_ABANDONED_EPOCH_SCHEMA,
+      epoch: 3, runId: f.writer.id, snapshotId: f.authority.snapshotId, location: f.location,
+    })]);
+  });
+
+  it("abandons a succeeded superseded dirty writer's epoch once its successor has ended", async () => {
+    const f = await seedDirtyEndedWriter({ supersession: "coordinator", writerStatus: "succeeded" });
+    const reserved = await reserveRemoteWorkspace(f.input);
+    expect(readRemoteWorkspaceAuthority(reserved.metadata)).toEqual({
+      ...f.authority, epoch: 5, writerRunId: f.run.id, dirty: false, location: null,
+    });
+  });
+
+  it("keeps a board-owned unsaved-files export hold fenced during reservation", async () => {
+    const f = await seedDirtyEndedWriter({ supersession: "none", uncommittedAcceptedResult: true, openRecoveryAction: true });
+    const hold = await readRemoteWorkspaceWriterHold(db, { companyId: f.company.id, authority: f.held, runId: f.run.id });
+    expect(hold.kind).toBe("held");
+    expect(remoteWorkspaceHoldRefusesStart(hold)).toBe(true);
+    await expect(reserveRemoteWorkspace(f.input)).rejects.toThrow("unfinished writer");
+    expect(readRemoteWorkspaceAuthority((await f.readWorkspace()).metadata)).toEqual(f.held);
+  });
+
+  it.each([
+    ["live successor running", { supersession: "explicit_continuation" as const, successorStatus: "running" as const }],
+    ["live successor queued", { supersession: "explicit_continuation" as const, successorStatus: "queued" as const }],
+    ["open recovery action", { supersession: "coordinator" as const, openRecoveryAction: true }],
+    ["pending system recovery", { supersession: "coordinator" as const, pendingSystemRecovery: true }],
+    ["unsettled no-replay hold", { supersession: "coordinator" as const, unsettledNoReplayHold: true }],
+    ["unsafe archive hold", { supersession: "coordinator" as const, unsafeArchiveHold: true }],
+    ["uncommitted accepted result", { supersession: "coordinator" as const, uncommittedAcceptedResult: true }],
+    ["running snapshot save", { supersession: "coordinator" as const, runningSnapshotOp: true }],
+    ["live controller lease", { supersession: "coordinator" as const, liveControllerLease: true }],
+    ["live finalizer lease", { supersession: "coordinator" as const, liveFinalizerLease: true }],
+  ])("refuses to abandon a superseded writer while safety guard holds (%s)", async (_label, opts) => {
+    const f = await seedDirtyEndedWriter(opts);
+    await expect(reserveRemoteWorkspace(f.input)).rejects.toThrow("unfinished writer");
+    expect(readRemoteWorkspaceAuthority((await f.readWorkspace()).metadata)).toEqual(f.held);
+  });
 });

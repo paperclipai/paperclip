@@ -31,7 +31,7 @@ import {
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
 import { TaskChatReasoningSummary } from "./TaskChatReasoningSummary";
 import { latestReasoningHeadline } from "./reasoning-summary";
-import { retriedLabel, SUBJECT_FAMILIES, subjectRowLabel, toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
+import { retriedLabel, sentenceRowLabel, SUBJECT_FAMILIES, subjectRowLabel, toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 import { useTaskReferenceLabel, withTaskReference } from "./task-reference";
@@ -124,9 +124,11 @@ function presentation(item: Activity, active: boolean, taskLabel?: string): Acti
     // A finished command needs no verb at all: the icon and "$" say it ran.
     // A failure or stop keeps its marker ("Read · failed") unless an exit
     // chip already says how a command ended. Live rows use the same helper.
-    const verb = subject && SUBJECT_FAMILIES.has(tool.family)
-      ? subjectRowLabel(label, terminal && !running && (item.status === "completed" || item.exitCode != null))
-      : label;
+    const verb = subject && tool.sentenceSubject
+      ? sentenceRowLabel(label)
+      : subject && SUBJECT_FAMILIES.has(tool.family)
+        ? subjectRowLabel(label, terminal && !running && (item.status === "completed" || item.exitCode != null))
+        : label;
     // Exit 0 is only news for commands; for reads and searches it is noise.
     const exitCode = item.exitCode ?? null;
     const shownExit = exitCode === 0 && !terminal ? null : exitCode;
