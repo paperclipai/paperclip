@@ -711,6 +711,10 @@ export const chatActions = pgTable(
         and ${table.status} = 'cancelled' and ${table.result}->>'code' = 'stale_head'`),
     index("chat_actions_github_check_work_idx").on(table.id).where(sql`${table.kind} = 'github_review_check'
       and (${table.status} = 'received' or (${table.status} = 'failed' and ${table.result}->>'retryable' = 'true'))`),
+    index("chat_actions_github_task_publications_idx")
+      .on(table.companyId, table.endpointId, sql`(${table.payload}->'session'->>'issueId')`, table.updatedAt)
+      .where(sql`${table.kind} = 'github_review_publication' and ${table.status} = 'processed'`)
+      .concurrently(),
     index("chat_actions_github_terminal_work_idx").on(table.id).where(sql`${table.kind} = 'github_response_comment'
       and ${table.status} = 'processed' and ${table.deliveryId} is not null
       and coalesce(${table.result}->>'final', 'false') <> 'true'`),

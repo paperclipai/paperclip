@@ -154,6 +154,14 @@ describe("execution workspace policy helpers", () => {
     ).toEqual({ type: "git_worktree", existingBranch: "PAP-14754-run-redaction" });
   });
 
+  it("admits a fresh isolated continuation of a projectless task whose binding the fallback cleared", () => {
+    const issue = { projectId: null, projectWorkspaceId: null, executionWorkspaceId: null,
+      executionWorkspacePreference: "reuse_existing" };
+    expect(isUnrunnableWorktreeCombo({ issue, resolvedMode: "isolated_workspace", resolvedStrategy: "git_worktree" })).toBe(true);
+    expect(isUnrunnableWorktreeCombo({ issue, resolvedMode: "isolated_workspace", resolvedStrategy: "git_worktree",
+      freshIsolatedContinuation: true })).toBe(false);
+  });
+
   it("centralizes unrunnable isolated worktree detection", () => {
     expect(
       isUnrunnableWorktreeCombo({

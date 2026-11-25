@@ -1,26 +1,35 @@
 import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
+import type { secretService } from "../../secrets.js";
 import type { ConnectionManagementContext } from "../../connection-management.js";
 import { connectionActorUserId } from "../actor.js";
 import { toConnectionGrant } from "./projection.js";
 import { actorBinding } from "../actor.js";
 import { vercelConnectResourcesFor } from "../vercel-credentials.js";
 import type { ActorInfo } from "../types.js";
-import { oauthConfig } from "../oauth/metadata.js";
 import { and, asc, desc, eq, inArray, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, connectionGrantMembers, connectionGrantDelegations, connectionGrants, authUsers, companyMemberships, toolAccessAuditEvents, toolConnections } from "@paperclipai/db";
 import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../../errors.js";
-import { isPaperclipCloudConnectorStrategy } from "../../paperclip-cloud-connector.js";
+import type { PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
+import { createManagedGoogleAccessRemoval } from "./google-access-removal.js";
+import { contentDeletionActor, deleteGoogleContentWhenAccessEnds } from "./google-content-retention.js";
+import type { ConnectionGrantRevocationResult } from "@paperclipai/shared";
 import { vercelTokenRequest, type VercelConnectClient } from "../../vercel-connect.js";
 
 import type { createConnectionCredentialValidation } from "./credential-validation.js";
+import { releaseProviderLimitWaits } from "../../heartbeat/provider-limit-wait.js";
+import { publishActivity } from "../../activity-log.js";
+import type { ActivityPublication } from "../../../types/activity-publication.js";
 type GrantDependencies = {
   getConnectionRow(idOrUid: string, companyId?: string): Promise<typeof toolConnections.$inferSelect>;
   assertSecretRefs: ReturnType<typeof createConnectionCredentialValidation>;
   vercelConnect: VercelConnectClient | null;
+  currentCloudConnector: () => PaperclipCloudConnector | null;
+  secrets: Pick<ReturnType<typeof secretService>, "remove">;
 };
 
-export function createConnectionGrants(db: Db, { getConnectionRow, assertSecretRefs, vercelConnect }: GrantDependencies) {
+export function createConnectionGrants(db: Db, { getConnectionRow, assertSecretRefs, vercelConnect, currentCloudConnector, secrets }: GrantDependencies) {
+  const managedGoogleAccess = createManagedGoogleAccessRemoval(db, { currentCloudConnector });
   return {
     listConnectionGrants: async (idOrUid: string, companyId?: string) => {
       const connection = await getConnectionRow(idOrUid, companyId);
@@ -487,7 +496,7 @@ replaceConnectionGrantMembers: async (
       idOrUid: string,
       grantId: string,
       actor?: ActorInfo,
-    ) => {
+    ): Promise<ConnectionGrantRevocationResult> => {
       await actor?.managementContext?.reauthorize();
       const connection = await getConnectionRow(idOrUid);
       const binding = actorBinding(actor);
@@ -504,6 +513,11 @@ replaceConnectionGrantMembers: async (
         .limit(1);
       if (!currentGrant) throw notFound("Connection grant not found");
       let providerRevocation = "not_applicable";
+      const providerAccessRemoval = await managedGoogleAccess.prepare(connection, [currentGrant], actor, {
+        grantId: currentGrant.id,
+        removingConnection: false,
+        removeSecret: (secretId, expectedVersion) => secrets.remove(secretId, { expectedVersion }),
+      });
       if (
         connection.credentialSource === "vercel_connect" &&
         connection.externalCredential
@@ -527,16 +541,8 @@ replaceConnectionGrantMembers: async (
             providerRevocation = "failed";
           }
         }
-      } else if (
-        isPaperclipCloudConnectorStrategy(oauthConfig(connection).strategy)
-      ) {
-        // Google revocation is client-wide for a user. The managed Workspace
-        // profiles intentionally share one Paperclip-owned client, so revoking
-        // one token here could invalidate unrelated Gmail, Drive, and Calendar
-        // grants. A per-profile removal is therefore local-only. A future
-        // provider-level disconnect must warn that it removes every profile.
-        providerRevocation = "local_only_shared_client";
       }
+      const releasedWaitPublications: ActivityPublication[] = [];
       const grant = await db.transaction(async (tx) => {
         await notifyGitHubCredentialChange(tx, connection);
         const [lockedGrant] = await tx.select({ id: connectionGrants.id }).from(connectionGrants)
@@ -576,6 +582,7 @@ replaceConnectionGrantMembers: async (
           )
           .returning();
         if (!updated) throw notFound("Connection grant not found");
+        await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, connection, "access_revoked", contentDeletionActor(actor));
         if (removedDelegations.length > 0) {
           await tx.insert(toolAccessAuditEvents).values(
             removedDelegations.map((delegation) => ({
@@ -594,9 +601,17 @@ replaceConnectionGrantMembers: async (
             })),
           );
         }
+        // Usage limits reported on this account no longer hold work. The release
+        // commits with the revocation, so waiting work never outlives it.
+        if (updated) await releaseProviderLimitWaits(tx as unknown as Db, {
+          companyId: connection.companyId, reason: "ai_connection_revoked", grantIds: [grantId],
+          publications: releasedWaitPublications,
+          ...(binding.actorType && binding.actorId ? { actor: { actorType: binding.actorType, actorId: binding.actorId } } : {}),
+        });
         return updated;
       });
       if (!grant) throw notFound("Connection grant not found");
+      const providerAccess = providerAccessRemoval ? await providerAccessRemoval.send() : null;
       await db.insert(toolAccessAuditEvents).values({
         companyId: connection.companyId,
         connectionId: connection.id,
@@ -607,7 +622,8 @@ replaceConnectionGrantMembers: async (
         reasonCode: "grant_revoked",
         details: { grantId: grant.id, kind: grant.kind, providerRevocation },
       });
-      return toConnectionGrant(grant);
+      releasedWaitPublications.forEach(publishActivity);
+      return { ...toConnectionGrant(grant), ...(providerAccess ? { providerAccess } : {}) };
     }
   };
 }

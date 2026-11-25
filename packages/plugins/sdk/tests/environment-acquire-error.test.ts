@@ -3,17 +3,23 @@ import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { definePlugin } from "../src/define-plugin.js";
 import { readEnvironmentAcquireErrorDiagnostic } from "../src/environment-acquire-error.js";
-import { PluginEnvironmentCreationCleanupError, readEnvironmentCreationCleanupError } from "../src/environment-creation-cleanup.js";
+import {
+  PluginEnvironmentAcquisitionError,
+  PluginEnvironmentCreationCleanupError,
+  readEnvironmentAcquisitionDiagnostic,
+  readEnvironmentCreationCleanupError,
+} from "../src/environment-creation-cleanup.js";
 import { createRequest, isJsonRpcResponse, JsonRpcCallError, parseMessage, serializeMessage, type JsonRpcResponse } from "../src/protocol.js";
 import { startWorkerRpcHost } from "../src/worker-rpc-host.js";
 
-async function acquire(error: unknown) {
+async function acquire(error: unknown, method: "environmentAcquireLease" | "environmentStartInteractiveSetup" = "environmentAcquireLease") {
   const stdin = new PassThrough();
   const stdout = new PassThrough();
   const lines = createInterface({ input: stdout });
   const worker = startWorkerRpcHost({ stdin, stdout, plugin: definePlugin({
     async setup() {},
     async onEnvironmentAcquireLease() { throw error; },
+    async onEnvironmentStartInteractiveSetup() { throw error; },
   }) });
   try {
     const response = new Promise<JsonRpcResponse>((resolve) => {
@@ -22,7 +28,7 @@ async function acquire(error: unknown) {
         if (isJsonRpcResponse(message)) resolve(message);
       });
     });
-    stdin.write(serializeMessage(createRequest("environmentAcquireLease", {}, "acquire-test")));
+    stdin.write(serializeMessage(createRequest(method, {}, "acquire-test")));
     const result = await response;
     if (!("error" in result) || !result.error) throw new Error("Expected RPC error");
     return new JsonRpcCallError(result.error);
@@ -54,12 +60,41 @@ describe("environment acquisition refusal diagnostics", () => {
     expect(readEnvironmentCreationCleanupError(callError)).toMatchObject({ providerLeaseId: cleanup.providerLeaseId, attemptId: cleanup.attemptId });
   });
 
+  it("keeps the cleanup envelope and create status when an interactive setup create fails", async () => {
+    const createError = Object.assign(new Error("Bad gateway at https://private.example/api"), { statusCode: 502 });
+    const callError = await acquire(new PluginEnvironmentCreationCleanupError([createError, new Error("lookup failed")],
+      "Daytona sandbox creation failed (HTTP 502); cleanup could not be confirmed for paperclip-create-05f81d77", cleanup),
+    "environmentStartInteractiveSetup");
+    expect(readEnvironmentAcquireErrorDiagnostic(callError)).toEqual({ httpStatus: 502 });
+    expect(readEnvironmentCreationCleanupError(callError)).toMatchObject({ providerLeaseId: cleanup.providerLeaseId, attemptId: cleanup.attemptId });
+    expect(JSON.stringify(callError.data)).not.toContain("private.example");
+  });
+
   it("carries a closed connection errno and omits unstructured failures", async () => {
     expect(readEnvironmentAcquireErrorDiagnostic(await acquire(Object.assign(new Error("reset"), { code: "ECONNRESET" }))))
       .toEqual({ errorCode: "ECONNRESET" });
     const plain = await acquire(new Error("Daytona sandbox creation failed (HTTP 502)"));
     expect(plain.data).toBeUndefined();
     expect(readEnvironmentAcquireErrorDiagnostic(plain)).toBeNull();
+  });
+
+  it("carries the observed step of a removed failed allocation without provider text", async () => {
+    const callError = await acquire(new PluginEnvironmentAcquisitionError("Daytona could not start the sandbox.",
+      { phase: "create", elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" },
+      new Error("Sandbox private-sandbox-id failed to start with status: error")));
+    expect(readEnvironmentAcquisitionDiagnostic(callError)).toEqual({ phase: "create", elapsedMs: 38_000, budgetMs: 90_000, providerState: "error" });
+    expect(readEnvironmentCreationCleanupError(callError)).toBeNull();
+    expect(readEnvironmentAcquireErrorDiagnostic(callError)).toBeNull();
+    expect(JSON.stringify(callError.data)).not.toContain("private-sandbox-id");
+  });
+
+  it("reads no acquisition step from an unstructured or forged refusal", async () => {
+    expect(readEnvironmentAcquisitionDiagnostic(await acquire(new Error("plain")))).toBeNull();
+    const forged = (data: unknown) => Object.assign(new Error("x"), { data });
+    expect(readEnvironmentAcquisitionDiagnostic(forged({ schema: "other",
+      acquisitionDiagnostic: { phase: "create", elapsedMs: 1, budgetMs: 2 } }))).toBeNull();
+    expect(readEnvironmentAcquisitionDiagnostic(forged({ schema: "paperclip/environment-acquire-error/v1",
+      acquisitionDiagnostic: { phase: "anything", elapsedMs: 1, budgetMs: 2 } }))).toBeNull();
   });
 
   it("rejects forged or out-of-range envelopes", () => {

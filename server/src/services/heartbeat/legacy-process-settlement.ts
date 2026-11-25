@@ -1,7 +1,10 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { environmentLeases, heartbeatRuns, type Db } from "@paperclipai/db";
 import { hasPendingRunCleanup } from "../execution-blocker.js";
-import { legacyControllerBootId } from "../legacy-controller-lease.js";
+import { finishedLegacyControllerOwnerStamp, legacyControllerBootId } from "../legacy-controller-lease.js";
+import { currentProcessProbe, proveOwnerGone } from "../owner-proof.js";
+import { proveRunProcessGone } from "../run-process-owner.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 
 const schema = "paperclip.legacy-process-settlement.v1";
 const statuses = ["failed", "timed_out", "interrupted"];
@@ -81,10 +84,11 @@ export async function recordLegacyProcessSettlement(db: Db, observed: LegacyProc
       eq(heartbeatRuns.processPid, observed.processPid!), eq(heartbeatRuns.processGroupId, observed.processGroupId!),
       eq(heartbeatRuns.processStartedAt, observed.processStartedAt!), isNull(heartbeatRuns.nativeIssueId),
       isNull(heartbeatRuns.nativeSessionId), isNull(heartbeatRuns.executionControlDeadlineAt),
-      eq(heartbeatRuns.costAccountingPending, false),
       sql`NOT COALESCE(${heartbeatRuns.resultJson} ?| ARRAY['startupCancellation','cancellation','executionCancellation','nativeCancellation'], false)`,
     )).for("update");
     if (!current || !canCommit() || await hasPendingRunCleanup(tx, current.companyId, current.id) || !canCommit()) return false;
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, current.companyId);
+    if (!canCommit()) return false;
     const updated = await tx.update(heartbeatRuns).set({ legacyProcessSettlement: receipt(current) })
       .where(and(eq(heartbeatRuns.id, current.id), eq(heartbeatRuns.companyId, current.companyId)))
       .returning({ id: heartbeatRuns.id });
@@ -118,6 +122,68 @@ export async function recordLegacyPreparationSettlement(db: Db, observed: Legacy
       await hasPendingRunCleanup(tx, current.companyId, current.id) || !canCommit()) return false;
     const updated = await tx.update(heartbeatRuns).set({ legacyProcessSettlement: preparationReceipt(current) })
       .where(and(eq(heartbeatRuns.id, current.id), eq(heartbeatRuns.companyId, current.companyId)))
+      .returning({ id: heartbeatRuns.id });
+    return updated.length === 1;
+  });
+}
+
+export async function recoverLegacyProcessSettlement(db: Db, companyId: string, runId: string,
+  currentBootIdle?: (runId: string) => boolean): Promise<boolean> {
+  const readLeases = (tx: Db, lock = false) => {
+    const query = tx.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, runId),
+    )).orderBy(asc(environmentLeases.id));
+    return lock ? query.for('update', { skipLocked: true }) : query;
+  };
+  const [observed] = await db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId),
+    eq(heartbeatRuns.runtimeMode, 'legacy'), eq(heartbeatRuns.costAccountingPending, true),
+    isNull(heartbeatRuns.costAccountedAt),
+    sql`${heartbeatRuns.usageJson}->>'accountingReceiptReady' = 'false'`,
+  )).limit(1);
+  if (!observed || !observed.costAccountingPending || observed.costAccountedAt
+      || observed.usageJson?.accountingReceiptReady !== false || observed.usageJson?.accountingCaptureFailed === true
+      || observed.usageJson?.accountingProviderWorkStarted === false
+      || (observed.resultJson?.executionRecovery as Record<string, unknown> | undefined)?.providerWorkStarted === false
+      || !identityIsComplete(observed) || observed.nativeIssueId || observed.nativeSessionId
+      || observed.executionControlDeadlineAt
+      || observed.scheduledRetryAt && observed.scheduledRetryAt > observed.finishedAt!
+      || ['startupCancellation','cancellation','executionCancellation','nativeCancellation']
+        .some(key => observed.resultJson && Object.hasOwn(observed.resultJson, key))) return false;
+  if (matchesReceipt(observed.legacyProcessSettlement, receipt(observed))) return true;
+  if (observed.legacyProcessSettlement !== null) return false;
+  const leases = await readLeases(db);
+  if (leases.length === 0 || leases.some(lease => lease.provider !== 'local' || lease.providerLeaseId !== null
+      || lease.metadata?.driver !== 'local' || !lease.releasedAt
+      || !['released','expired','failed'].includes(lease.status))) return false;
+  const owner = finishedLegacyControllerOwnerStamp(observed);
+  if (!owner?.processStartedAt) return false;
+  const probe = { ...currentProcessProbe(), readOnly: true };
+  if (probe.processSpace === 'unknown' || observed.processHostHash !== probe.processSpace
+      || owner.processSpace !== probe.processSpace) return false;
+  const sameBoot = observed.controllerBootId === legacyControllerBootId;
+  const locallyIdle = () => currentBootIdle ? currentBootIdle(runId) : !sameBoot;
+  if (!locallyIdle()) return false;
+  const controller = await proveOwnerGone(owner, probe);
+  if (!(controller.verdict === 'gone'
+      || sameBoot && controller.verdict === 'alive' && controller.reason === 'current_process'
+        && locallyIdle())) return false;
+  const child = await proveRunProcessGone(observed, 'legacy_accounting_receipt', probe);
+  if (child?.verdict !== 'gone') return false;
+  return db.transaction(async transaction => {
+    const tx = transaction as unknown as Db;
+    const [current] = await tx.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId),
+    )).for('update');
+    if (!current || JSON.stringify(current) !== JSON.stringify(observed)
+        || JSON.stringify(await readLeases(tx, true)) !== JSON.stringify(leases)
+        || !locallyIdle()
+        || await hasPendingRunCleanup(tx, companyId, runId)
+        || !locallyIdle()) return false;
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
+    if (!locallyIdle()) return false;
+    const updated = await tx.update(heartbeatRuns).set({ legacyProcessSettlement: receipt(current) })
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)))
       .returning({ id: heartbeatRuns.id });
     return updated.length === 1;
   });

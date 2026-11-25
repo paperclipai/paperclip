@@ -3,7 +3,7 @@ import { heartbeatExternalProvider, nativeExecutionUsesTaskWorkspace } from "./e
 import { heartbeatRuns, issues, type Db, type agents } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { readGitCacheExpiration } from "../git-workspace-restoration.js";
-import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings, ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
+import { readRemoteWorkspaceAuthority, type ExecutionWorkspace, type InstanceSettings, type IssueExecutionWorkspaceSettings, type ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
 import { parseObject } from "../../adapters/utils.js";
 import { logger } from "../../middleware/logger.js";
 import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
@@ -38,6 +38,30 @@ import { ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { resolveNativeRecoveryExecutionWorkspaceBinding, resolveExecutionWorkspaceReuseRequestForIssue, WorkspaceValidationFailure } from "./workspaces.js";
 
 type Issue = typeof issues.$inferSelect;
+
+function gitCacheExpirationRemovedWorkspace(workspace: Parameters<typeof readGitCacheExpiration>[0]) {
+  if (!readRemoteWorkspaceAuthority(workspace.metadata)) return readGitCacheExpiration(workspace)?.workspaceRemoved === true;
+  const expiration = parseObject(workspace.metadata?.gitCacheExpiration);
+  return expiration.schema === "paperclip.git-cache-expiration.v1" && expiration.workspaceRemoved === true
+    && Number.isSafeInteger(expiration.generation) && expiration.generation === workspace.metadata?.lifecycleGeneration;
+}
+
+export async function resolveSshAuthenticationBeforeRouting(input: {
+  agentDefaultEnvironmentId: string | null;
+  lowTrustIssueEnvironmentId: string | null;
+  environmentsSvc: Pick<ReturnType<typeof environmentService>, "getById">;
+  instanceSettings: { get(): Promise<{
+    defaultEnvironmentId: InstanceSettings["defaultEnvironmentId"];
+    general: Pick<InstanceSettings["general"], "executionMode">;
+  }> };
+}): Promise<"host" | "managed" | null> {
+  const settings = await input.instanceSettings.get();
+  if (isExecutionForcedToKubernetes({ executionMode: settings.general.executionMode })) return null;
+  const id = input.lowTrustIssueEnvironmentId ?? input.agentDefaultEnvironmentId ?? settings.defaultEnvironmentId;
+  if (!id) return null;
+  const environment = await input.environmentsSvc.getById(id);
+  return environment?.driver === "ssh" ? environment.config.useHostAuth === false ? "managed" : "host" : null;
+}
 
 /** Selects policy and reuse inputs; lease acquisition and cleanup belong to the executor. */
 export interface HeartbeatEnvironmentSelectionInput {
@@ -122,7 +146,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   if (existingExecutionWorkspace && issueId && !controllerOnly && !fresh
     && existingExecutionWorkspace.id === readNonEmptyString(issueRef?.executionWorkspaceId)
     && (existingExecutionWorkspace.status === "archived" || existingExecutionWorkspace.status === "cleanup_failed")
-    && (readGitCacheExpiration(existingExecutionWorkspace as Parameters<typeof readGitCacheExpiration>[0])?.workspaceRemoved
+    && (gitCacheExpirationRemovedWorkspace(existingExecutionWorkspace as Parameters<typeof readGitCacheExpiration>[0])
       || readTaskDirectoryRetention(existingExecutionWorkspace) !== null
       || (existingExecutionWorkspace.sourceIssueId === issueId
         && existingExecutionWorkspace.cleanupReason?.startsWith("issue_terminal") === true))) {

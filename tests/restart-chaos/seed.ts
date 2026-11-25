@@ -199,6 +199,7 @@ export async function seedChaosLab(input: {
   repositoryPath?: string;
   /** Called as soon as the wave owns external resources that need cleanup. */
   onEnvironment?: (lab: Pick<ChaosLab, "companyId" | "environmentId" | "environmentKind">) => void;
+  maxConcurrentRunsByAdapter?: Partial<Record<AdapterId, number>>;
 }): Promise<ChaosLab> {
   const { api, timeline } = input;
   if (input.env === "daytona") {
@@ -267,7 +268,7 @@ export async function seedChaosLab(input: {
       name,
       title: "Restart chaos worker",
       runtimeConfig: { ...runtimeConfig, heartbeat: { ...((runtimeConfig.heartbeat ?? {}) as Record<string, unknown>),
-        enabled: false, maxConcurrentRuns: Math.max(1, input.concurrency) } },
+        enabled: false, maxConcurrentRuns: input.maxConcurrentRunsByAdapter?.[adapter] ?? Math.max(1, input.concurrency) } },
     };
     const created = await api.post<{ id: string; name: string }>(`/api/companies/${company.id}/agents`, body);
     agents[adapter] = { id: created.id, name, body };

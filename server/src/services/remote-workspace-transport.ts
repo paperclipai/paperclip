@@ -1,9 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
-import { createReadStream } from "node:fs";
-import { mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { lstat, mkdtemp, realpath, rm, stat } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
+import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
+import { createSshCommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/ssh";
 import type { RemoteWorkspaceSource } from "@paperclipai/shared";
 import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, remoteWorkspaceCaptureFailureMessage, remoteWorkspaceFailureDetail } from "./remote-workspace-snapshot-archive.js";
 import { readWorkspaceInventory, readonlyWorkspaceInventoryScript } from "./remote-workspace-readonly-inventory.js";
@@ -12,9 +13,10 @@ import { measureRunPhase } from "./execution-preparation-timing.js";
 import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { classifyWorkspaceRestoreFailure } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { MAX_SANDBOX_SYNC_TIMEOUT_MS, type SandboxSyncOperation } from "@paperclipai/adapter-utils/sandbox-managed-runtime";
-import { WORKSPACE_ARCHIVE_IO_BUFFER_BYTES } from "./remote-workspace-archive-io.js";
+import { REMOTE_WORKSPACE_CAPTURE_TRANSFER_MISMATCH } from "./remote-workspace-archive-io.js";
 
-export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
+export type RemoteWorkspaceTarget = Extract<AdapterExecutionTarget, { transport: "sandbox" }>
+  | (Extract<AdapterExecutionTarget, { transport: "ssh" }> & { runner: CommandManagedRuntimeRunner });
 
 async function transferArchive(target: RemoteWorkspaceTarget, direction: "syncIn" | "syncOut",
   operations: SandboxSyncOperation[], byteSize: number) {
@@ -31,21 +33,55 @@ const checkoutConfiguredRefScript = String.raw`if(input.ref){const remoteRef=inp
  await git(['checkout','--detach',selected.stdout.trim()]);}`;
 
 export function requireRemoteWorkspaceTarget(target: AdapterExecutionTarget | null): RemoteWorkspaceTarget {
+  if (target?.kind === "remote" && target.transport === "ssh") {
+    return { ...target, runner: createSshCommandManagedRuntimeRunner({ spec: { ...target.spec, remoteCwd: target.remoteCwd }, fileSync: true }) };
+  }
   if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask
     || !target.runner.syncIn || !target.runner.syncOut) throw new Error("remote_workspace_transport_unsupported");
   return target;
+}
+
+export async function syncRemoteWorkspaceRecoveryDirectory(input: {
+  target: RemoteWorkspaceTarget; sourcePath: string; targetPath: string;
+}) {
+  if (input.target.transport === "sandbox") {
+    await input.target.runner!.syncIn!([{ operationId: randomUUID(), files: [{
+      kind: "directory", sourcePath: input.sourcePath, targetPath: input.targetPath,
+    }] }]);
+    return;
+  }
+  const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-recovery-transfer-"));
+  try {
+    const archivePath = path.join(scratch, "recovery.pcws");
+    const captured = await captureRemoteWorkspaceDirectory({ cwd: input.sourcePath, archivePath });
+    const restorationIdentity = createHash("sha256").update(JSON.stringify([input.targetPath, captured.manifestDigest])).digest("hex");
+    const restored = await restoreRemoteWorkspaceDirectory({ target: input.target, remoteCwd: input.targetPath,
+      archivePath, manifestDigest: captured.manifestDigest, restorationIdentity });
+    await cleanupRemoteWorkspaceArchive({ target: input.target, remoteCwd: restored.stagingRoot, operationId: restored.operationId });
+  } finally { await removeTaskDirectoryTree(scratch); }
 }
 
 /** The workspace archive is built inside the sandbox, so a full sandbox disk stops the save. */
 export const REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE = "remote_workspace_sandbox_disk_full";
 export const REMOTE_WORKSPACE_SANDBOX_DISK_FULL =
   `${REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE}: the sandbox disk is full; free space in the sandbox before saving the workspace`;
+
+export function isRemoteWorkspaceSandboxDiskFullError(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth++) {
+    if (current.message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL) return true;
+    current = current.cause;
+  }
+  return false;
+}
 // Node reports ENOSPC or EDQUOT. Git and tar child processes report the text.
 const DISK_FULL_CHECK = String.raw`const diskFull=e=>['ENOSPC','EDQUOT'].includes(e?.code)||/No space left on device|Disk quota exceeded/i.test(String(e?.stderr??'')+String(e?.message??''));`;
 const CAPTURE_FAILURE_CHECK = `const captureFailure=${remoteWorkspaceCaptureFailureMessage.toString()};const failureDetail=${remoteWorkspaceFailureDetail.toString()};`;
 // The only sandbox text a capture failure may add: a fixed stage plus bounded
 // structured fields from remoteWorkspaceFailureDetail. Anything else is dropped.
 const SANDBOX_CAPTURE_CAUSE = /^remote_workspace_capture_failed: stage=(?:helper|archive|publish)(?: (?:helper_)?(?:code|exit|signal|syscall|killed|program|name|reason)=[A-Za-z0-9_]{1,64}){0,16}$/;
+// The sandbox inventory script's own refusal: a fixed token or an errno code.
+const READONLY_INVENTORY_FAILURE = /^remote_workspace_readonly_capture_(?:unsafe|budget|fs_e[a-z0-9]{2,15})$/;
 // Setup scripts name the step they were in plus closed, structured fields. A
 // reason is only a script's own snake_case refusal code; Git output selects a
 // fixed label and is never copied. The server drops anything outside this grammar.
@@ -90,13 +126,19 @@ export class RemoteWorkspaceOperationError extends Error {
  * error text is not one of these redacted forms and must stay off the record.
  */
 const READONLY_CAPTURE_FAILURE_CAUSE =
-  /^remote_workspace_readonly_capture_failed: stage=(?:inspect|transfer|verify|archive) reason=[a-z_]{1,32} transport=[a-z_]{1,48}(?: code=[A-Z][A-Z0-9_]{1,31})?$/;
+  /^remote_workspace_readonly_capture_failed: stage=(?:inspect|transfer|verify|archive) reason=[a-z0-9_]{1,32} transport=[a-z_]{1,48}(?: code=[A-Z][A-Z0-9_]{1,31})?$/;
 
 export function remoteWorkspaceFailureCause(error: unknown): string | null {
   if (error instanceof RemoteWorkspaceOperationError || error instanceof RemoteWorkspaceOperationTimeoutError
     || error instanceof RemoteWorkspaceRestoreError) return error.message;
   if (!(error instanceof Error)) return null;
-  if (remoteWorkspaceCaptureFailureMessage({ message: error.message }) === error.message) return error.message;
+  if (remoteWorkspaceCaptureFailureMessage({ message: error.message }) === error.message) {
+    // A full disk keeps its exact message for retry and cache reclaim; the
+    // record also names where the read-only fallback stopped.
+    const fallback = error.message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL && error.cause instanceof Error
+      && READONLY_CAPTURE_FAILURE_CAUSE.test(error.cause.message) ? error.cause.message : null;
+    return fallback ? `${error.message}; ${fallback}` : error.message;
+  }
   // A read-only capture failure is server-built from closed fields.
   if (READONLY_CAPTURE_FAILURE_CAUSE.test(error.message)) return error.message;
   const operation = providerRefusals.get(error);
@@ -108,10 +150,11 @@ export const REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE = "remote_workspace_prepa
 export class RemoteWorkspacePreparationTimeoutError extends RemoteWorkspaceOperationTimeoutError {
   readonly code = REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE;
 
-  constructor(error: RemoteWorkspaceOperationTimeoutError) {
+  constructor(error: RemoteWorkspaceOperationTimeoutError, message?: string) {
     super("prepare", error.timeoutMs);
     this.name = "RemoteWorkspacePreparationTimeoutError";
     this.cause = error;
+    if (message) this.message = message;
   }
 }
 
@@ -231,7 +274,8 @@ async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspace
     const output = [result.stderr.trim(), result.stdout.trim()];
     const reported = output.find(value => [gitOperation, REMOTE_WORKSPACE_SANDBOX_DISK_FULL].includes(value))
       ?? (operation === "capture" || operation === "archive_helper"
-        ? output.find(value => remoteWorkspaceCaptureFailureMessage({ message: value }) === value) : undefined);
+        ? output.find(value => remoteWorkspaceCaptureFailureMessage({ message: value }) === value || READONLY_INVENTORY_FAILURE.test(value))
+        : undefined);
     if (reported) throw new Error(reported);
     const cause = operation === "capture" || operation === "archive_helper"
       ? output.find(value => value.length <= 1024 && SANDBOX_CAPTURE_CAUSE.test(value))
@@ -474,8 +518,6 @@ export type RemoteWorkspaceSavePhaseTiming = {
   captureMs?: number;
   /** Provider download of the captured archive. */
   transferMs?: number;
-  /** Server-side re-hash of the downloaded archive. */
-  verifyMs?: number;
   byteSize?: number;
   entries?: number;
 };
@@ -560,9 +602,13 @@ export async function captureReadOnlyWorkspaceArchive(input: {
     return { ...receipt, archivePath, cleanup: () => removeTaskDirectoryTree(savedRoot) };
   } catch (error) {
     if (root) await removeTaskDirectoryTree(root);
-    const reason = error instanceof Error && error.message === "remote_workspace_readonly_capture_unsafe" ? "unsafe_source"
-      : error instanceof Error && error.message === "remote_workspace_readonly_capture_changed" ? "source_changed"
-        : error instanceof Error && error.message === "remote_workspace_readonly_capture_budget" ? "budget_exceeded" : "operation_failed";
+    const message = error instanceof Error ? error.message : "";
+    const reason = message === "remote_workspace_readonly_capture_unsafe" ? "unsafe_source"
+      : message === "remote_workspace_readonly_capture_changed" ? "source_changed"
+        : message === "remote_workspace_readonly_capture_budget" ? "budget_exceeded"
+          : message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL ? "disk_full"
+            : /^remote_workspace_(?:readonly_capture|archive)_(fs_e[a-z0-9]{2,15})$/.exec(message)?.[1]
+              ?? (error instanceof RemoteWorkspaceOperationTimeoutError ? "timed_out" : "operation_failed");
     const { label, code } = sandboxProviderFailureLabel(error);
     throw new Error(`remote_workspace_readonly_capture_failed: stage=${stage} reason=${reason} transport=${label}${code ? ` code=${code}` : ""}`);
   }
@@ -626,15 +672,12 @@ async function captureSandboxWorkspaceArchive(input: {
       files: [{ kind: "file", sourcePath: layout === "captured" ? path.posix.join(staged.directory, "captured", "workspace.pcws") : staged.archive, targetPath: archivePath }],
     }], receipt.byteSize);
     timing.transferMs = elapsedSince(transferStarted);
-    const verifyStarted = performance.now();
-    const hash = createHash("sha256"); let bytes = 0;
-    for await (const chunk of createReadStream(archivePath, { highWaterMark: WORKSPACE_ARCHIVE_IO_BUFFER_BYTES })) { hash.update(chunk); bytes += chunk.length; }
-    timing.verifyMs = elapsedSince(verifyStarted);
-    if (hash.digest("hex") !== receipt.sha256 || bytes !== receipt.byteSize) throw new Error("remote_workspace_capture_transfer_mismatch");
+    const transferred = await lstat(archivePath);
+    if (!transferred.isFile() || transferred.size !== receipt.byteSize) throw new Error(REMOTE_WORKSPACE_CAPTURE_TRANSFER_MISMATCH);
     return { ...receipt, archivePath, cleanup: () => rm(root, { recursive: true, force: true }) };
   } catch (error) {
     await rm(root, { recursive: true, force: true });
-    if (!(error instanceof Error && error.message === "remote_workspace_capture_transfer_mismatch")) noteProviderRefusal("download", error);
+    if (!(error instanceof Error && error.message === REMOTE_WORKSPACE_CAPTURE_TRANSFER_MISMATCH)) noteProviderRefusal("download", error);
     throw error;
   }
 }

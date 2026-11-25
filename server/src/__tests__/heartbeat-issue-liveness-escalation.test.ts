@@ -20,11 +20,15 @@ import {
   issueComments,
   issueRelations,
   issueRecoveryActions,
+  issueThreadInteractions,
   issueTreeHoldMembers,
   issueTreeHolds,
   issues,
   projects,
   projectWorkspaces,
+  toolActionDeliveries,
+  toolActionRequests,
+  toolInvocations,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -74,6 +78,7 @@ vi.mock("../adapters/index.ts", async () => {
 import { heartbeatService } from "../services/heartbeat.ts";
 import { attentionService } from "../services/attention.ts";
 import { issueService } from "../services/issues.ts";
+import { toolActionDeliveryService } from "../services/tool-action-delivery.ts";
 import { escalateExhaustedIssueReviewPathRecovery } from "../services/recovery/review-path-recovery-escalation.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import {
@@ -125,6 +130,10 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
     await db.delete(issueTreeHolds);
     await db.delete(issueRelations);
     await db.delete(issueRecoveryActions);
+    await db.delete(toolActionDeliveries);
+    await db.delete(toolActionRequests);
+    await db.delete(toolInvocations);
+    await db.delete(issueThreadInteractions);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -497,6 +506,121 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
       ]),
     });
   });
+
+  it("keeps a card accepted while its run settles as the review path and queues no recovery run", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const issuePrefix = `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    await db.insert(companies).values({
+      id: companyId, name: "Review Accept Co", issuePrefix, defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture user", email: "responsible-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Review Agent", role: "engineer", status: "idle", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Create the issue once approved", status: "in_review", priority: "medium",
+      assigneeAgentId: agentId, responsibleUserId: "responsible-user", issueNumber: 1, identifier: `${issuePrefix}-1`,
+    });
+    const [interaction] = await db.insert(issueThreadInteractions).values({
+      companyId, issueId, kind: "request_confirmation", status: "accepted", createdByAgentId: agentId,
+      payload: { version: 1, prompt: "Run the tool?" }, result: { version: 1, outcome: "accepted" }, resolvedAt: new Date(),
+    }).returning();
+    const [invocation] = await db.insert(toolInvocations).values({
+      companyId, agentId, issueId, toolName: "create_issue", approvalState: "approved", status: "pending",
+    }).returning();
+    const [request] = await db.insert(toolActionRequests).values({
+      companyId, invocationId: invocation!.id, issueId, interactionId: interaction!.id, status: "executing",
+      canonicalArgumentsHash: "hash", canonicalArgumentsSummary: { type: "object" } as never,
+      requestedByAgentId: agentId, decidedByUserId: "responsible-user", decidedAt: new Date(),
+    }).returning();
+    await db.insert(toolActionDeliveries).values({
+      actionRequestId: request!.id, companyId, issueId, interactionId: interaction!.id,
+    });
+
+    const heartbeat = heartbeatService(db);
+    const sourceRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId },
+      requestedByActorType: "user",
+      requestedByActorId: "responsible-user",
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_commented" },
+    });
+    expect(sourceRun).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRun!.id)).then((rows) => rows[0]?.status))
+      .toBe("succeeded");
+    expect(await db.select().from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, companyId),
+      eq(agentWakeupRequests.reason, "issue_review_path_lost"),
+    ))).toHaveLength(0);
+    expect(await db.select().from(toolActionDeliveries).where(eq(toolActionDeliveries.actionRequestId, request!.id))
+      .then((rows) => rows[0]?.deliveredAt)).toBeNull();
+
+    await db.update(toolInvocations).set({ runId: sourceRun!.id, status: "succeeded" }).where(eq(toolInvocations.id, invocation!.id));
+    await db.update(toolActionRequests).set({ status: "executed", resolvedAt: new Date() }).where(eq(toolActionRequests.id, request!.id));
+    expect(await toolActionDeliveryService(db, heartbeat).deliver(request!.id)).toBe(true);
+    await heartbeat.drainActiveRunExecutions();
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(wakes.filter((wake) => wake.idempotencyKey === `tool-action-response:${request!.id}`)).toHaveLength(1);
+    expect(wakes.filter((wake) => wake.reason === "issue_review_path_lost"
+      && wake.payload?.sourceRunId === sourceRun!.id)).toHaveLength(0);
+  });
+
+  it.each(["undelivered", "delivered_with_queued_continuation", "delivered_with_listed_wake", "pending_card", "terminated_assignee", "delivered_and_consumed"] as const)(
+    "reads the accepted tool review continuation as a review path only while it can still run (%s)",
+    async (state) => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Review Path Co", issuePrefix: `R${companyId.slice(0, 6)}` });
+      await db.insert(agents).values({
+        id: agentId, companyId, name: "Reviewer", role: "engineer", adapterType: "codex_local",
+        status: state === "terminated_assignee" ? "terminated" : "idle",
+      });
+      await db.insert(issues).values({ id: issueId, companyId, title: "Review", status: "in_review", assigneeAgentId: agentId });
+      const [interaction] = await db.insert(issueThreadInteractions).values({
+        companyId, issueId, kind: "request_confirmation", createdByAgentId: agentId,
+        payload: { version: 1, prompt: "Run the tool?" },
+        ...(state === "pending_card" ? { status: "pending" } : { status: "accepted", result: { version: 1, outcome: "accepted" }, resolvedAt: new Date() }),
+      }).returning();
+      const [invocation] = await db.insert(toolInvocations).values({ companyId, agentId, issueId, toolName: "create_issue" }).returning();
+      const [request] = await db.insert(toolActionRequests).values({
+        companyId, invocationId: invocation!.id, issueId, interactionId: interaction!.id,
+        status: state === "pending_card" ? "pending" : "executed",
+        canonicalArgumentsHash: "hash", canonicalArgumentsSummary: { type: "object" } as never, requestedByAgentId: agentId,
+      }).returning();
+      const delivered = state === "delivered_with_queued_continuation" || state === "delivered_with_listed_wake"
+        || state === "delivered_and_consumed";
+      await db.insert(toolActionDeliveries).values({
+        actionRequestId: request!.id, companyId, issueId, interactionId: interaction!.id,
+        deliveredAt: delivered ? new Date() : null,
+      });
+      if (delivered) {
+        await db.insert(agentWakeupRequests).values({
+          companyId, agentId, source: "automation", reason: "issue_commented",
+          status: state === "delivered_and_consumed" ? "completed" : "queued",
+          idempotencyKey: `tool-action-response:${request!.id}`,
+          payload: state === "delivered_with_listed_wake" ? { issueId, taskId: issueId } : {},
+        });
+      }
+
+      const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+      const attention = (await issueService(db).listReviewAttention(companyId, [issue])).get(issueId)!;
+      const continuation = state === "undelivered" || state === "delivered_with_queued_continuation"
+        || state === "delivered_with_listed_wake";
+      expect(attention.state).toBe(continuation || state === "pending_card" ? "covered" : "stalled");
+      expect(attention.paths.filter((path) => path.kind === "queued_wake")).toHaveLength(continuation ? 1 : 0);
+      expect(attention.paths.filter((path) => path.kind === "interaction")).toHaveLength(state === "pending_card" ? 1 : 0);
+    },
+  );
 
   it.each(["monitor", "completed", "reassigned", "newer_run", "other_company"] as const)(
     "does not escalate a stale review recovery after %s",
@@ -1188,6 +1312,174 @@ describeEmbeddedPostgres("heartbeat resolved dependency wake reconciliation", ()
 
     expect(result.healed).toBe(0);
     expect(result.existingWakeSkipped).toBe(1);
+  });
+
+  async function seedFailedDependencyWakes(input: {
+    companyId: string;
+    agentId: string;
+    blockedIssueId: string;
+    blockerIssueId: string;
+    count: number;
+    lastFinishedAt: Date;
+    contextOnly?: boolean;
+  }) {
+    // Production shape: the blocker finished long ago, then each woken run failed
+    // and left the task blocked in a new cycle, so every wake carries a different
+    // cycle-aware idempotency key.
+    const blockerChangedAt = new Date(input.lastFinishedAt.getTime() - 60 * 60_000);
+    await db.update(issues).set({ status: "done", completedAt: blockerChangedAt })
+      .where(eq(issues.id, input.blockerIssueId));
+    await db.update(issueRelations).set({ createdAt: blockerChangedAt })
+      .where(eq(issueRelations.relatedIssueId, input.blockedIssueId));
+    for (let index = input.count - 1; index >= 0; index -= 1) {
+      const finishedAt = new Date(input.lastFinishedAt.getTime() - index * 20_000);
+      const requestedAt = new Date(finishedAt.getTime() - 15_000);
+      const [run] = await db.insert(heartbeatRuns).values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        // Promoted wakes bind the task only in the context snapshot.
+        issueId: input.contextOnly ? null : input.blockedIssueId,
+        status: "failed",
+        errorCode: "native_session_interrupted",
+        startedAt: requestedAt,
+        finishedAt,
+        contextSnapshot: { issueId: input.blockedIssueId, wakeReason: "issue_blockers_resolved" },
+      }).returning();
+      await db.insert(agentWakeupRequests).values({
+        companyId: input.companyId,
+        agentId: input.agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_blockers_resolved",
+        payload: {
+          issueId: input.blockedIssueId,
+          resolvedBlockerIssueId: input.blockerIssueId,
+          blockerIssueIds: [input.blockerIssueId],
+        },
+        status: "completed",
+        runId: run.id,
+        requestedAt,
+        finishedAt,
+        idempotencyKey: buildIssueBlockersResolvedWakeStateKey({
+          dependentIssueId: input.blockedIssueId,
+          blockerIssueIds: [input.blockerIssueId],
+          blockedTransitionAt: new Date(requestedAt.getTime() - 1_000),
+        }),
+      });
+    }
+    await db.update(issues).set({ blockedTransitionAt: new Date(input.lastFinishedAt.getTime() + 1_000) })
+      .where(eq(issues.id, input.blockedIssueId));
+  }
+
+  async function countDependencyWakes(companyId: string) {
+    const rows = await db.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.reason, "issue_blockers_resolved")));
+    return rows.length;
+  }
+
+  it("backs off re-waking a blocked task whose resolved-dependency runs keep failing", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await seedFailedDependencyWakes({ ...fixture, count: 3, lastFinishedAt: new Date(Date.now() - 30_000) });
+    const deadlines: number[] = [];
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({
+      issueId: fixture.blockedIssueId, onDeferredDeadline: (at: number) => deadlines.push(at),
+    });
+
+    expect(result.healed).toBe(0);
+    expect(result.failedWakeBackoffSkipped).toBe(1);
+    expect(result.repeatedFailureIssueIds).toEqual([fixture.blockedIssueId]);
+    expect(deadlines).toHaveLength(1);
+    expect(deadlines[0]).toBeGreaterThan(Date.now() + 20 * 60_000);
+    expect(await countDependencyWakes(fixture.companyId)).toBe(3);
+  });
+
+  it("counts failed runs bound to the task only through their context", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await seedFailedDependencyWakes({ ...fixture, count: 2, lastFinishedAt: new Date(Date.now() - 30_000), contextOnly: true });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });
+
+    expect(result.healed).toBe(0);
+    expect(result.failedWakeBackoffSkipped).toBe(1);
+  });
+
+  it("wakes again once the failure backoff has passed", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await seedFailedDependencyWakes({ ...fixture, count: 1, lastFinishedAt: new Date(Date.now() - 10 * 60_000) });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });
+
+    expect(result.healed).toBe(1);
+  });
+
+  it("resets the failure backoff after a later successful run on the task", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await seedFailedDependencyWakes({ ...fixture, count: 3, lastFinishedAt: new Date(Date.now() - 60_000) });
+    await db.insert(heartbeatRuns).values({
+      companyId: fixture.companyId, agentId: fixture.agentId, issueId: fixture.blockedIssueId, status: "succeeded",
+      startedAt: new Date(Date.now() - 30_000), finishedAt: new Date(Date.now() - 20_000),
+      contextSnapshot: { issueId: fixture.blockedIssueId, wakeReason: "issue_assigned" },
+    });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });
+
+    expect(result.healed).toBe(1);
+  });
+
+  it("resets the failure backoff when the blocker set is edited", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await seedFailedDependencyWakes({ ...fixture, count: 3, lastFinishedAt: new Date(Date.now() - 60_000) });
+    await db.insert(activityLog).values({
+      companyId: fixture.companyId, actorType: "user", actorId: "board-user", action: "issue.blockers_updated",
+      entityType: "issue", entityId: fixture.blockedIssueId,
+      details: { blockedByIssueIds: [fixture.blockerIssueId], removedBlockedByIssueIds: [randomUUID()] },
+      createdAt: new Date(Date.now() - 10_000),
+    });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });
+
+    expect(result.healed).toBe(1);
+  });
+
+  it("resets the failure backoff when a blocker finalizes newer work", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "finalized" });
+    await seedFailedDependencyWakes({ ...fixture, count: 3, lastFinishedAt: new Date(Date.now() - 60_000) });
+    await db.update(workspaceOperations).set({ finishedAt: new Date(Date.now() - 2 * 60 * 60_000) })
+      .where(eq(workspaceOperations.issueId, fixture.blockerIssueId));
+    await db.insert(workspaceOperations).values({
+      companyId: fixture.companyId, executionWorkspaceId: fixture.executionWorkspaceId, issueId: fixture.blockerIssueId,
+      phase: "workspace_finalize", status: "succeeded", startedAt: new Date(Date.now() - 20_000),
+      finishedAt: new Date(Date.now() - 10_000),
+    });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });
+
+    expect(result.healed).toBe(1);
+  });
+
+  it("resets the failure backoff when workspace recovery saves newer blocker work", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await seedFailedDependencyWakes({ ...fixture, count: 3, lastFinishedAt: new Date(Date.now() - 60_000) });
+    await db.insert(workspaceOperations).values({
+      companyId: fixture.companyId, executionWorkspaceId: null, issueId: fixture.blockerIssueId,
+      phase: "workspace_finalize", status: "succeeded", metadata: { owningService: "workspace_recovery" },
+      startedAt: new Date(Date.now() - 20_000), finishedAt: new Date(Date.now() - 10_000),
+    });
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });
+
+    expect(result.healed).toBe(1);
+  });
+
+  it("resets the failure backoff when a blocker produces a newer result", async () => {
+    const fixture = await seedResolvedDependencyBackstopFixture({ workspaceState: "none" });
+    await seedFailedDependencyWakes({ ...fixture, count: 3, lastFinishedAt: new Date(Date.now() - 60_000) });
+    await db.update(issues).set({ completedAt: new Date(Date.now() - 10_000) }).where(eq(issues.id, fixture.blockerIssueId));
+
+    const result = await heartbeatService(db).reconcileResolvedDependencyWakes({ issueId: fixture.blockedIssueId });
+
+    expect(result.healed).toBe(1);
   });
 
   it("does not re-wake an assignee agent that opened the current blocked cycle itself", async () => {

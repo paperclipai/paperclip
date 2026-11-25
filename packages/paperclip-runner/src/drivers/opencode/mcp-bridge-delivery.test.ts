@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Agent, request } from "node:http";
 import { afterEach, expect, it } from "vitest";
 import { startOpenCodeMcpBridge, type OpenCodeMcpBridge } from "./mcp-bridge.js";
+import { createOpenCodeFinishDiagnosticForwarder } from "../../cli/opencode-proxy-finish-diagnostics.js";
 
 const bridges: OpenCodeMcpBridge[] = [];
 const agents: Agent[] = [];
@@ -88,6 +89,9 @@ it("answers each tool call, including a parallel pair on a pooled keep-alive cli
       socketRequestIndex: expect.any(Number),
       socketIdleMs: delivery.socketRequestIndex === 1 ? null : expect.any(Number),
       handlerMs: expect.any(Number),
+      argumentNames: [],
+      argumentNamesTruncated: false,
+      undeclaredArgumentCount: 0,
       outcome: "result",
       written: true,
     });
@@ -139,4 +143,57 @@ it("records a rejected call as an answered error", async () => {
   expect(JSON.parse(messages[0]!)).toMatchObject({
     callIdSha256: createHash("sha256").update("11").digest("hex"), outcome: "error", written: true,
   });
+});
+
+it("records the declared argument names a call delivered, never their values or undeclared names", async () => {
+  const messages: string[] = [];
+  const bridge = await startOpenCodeMcpBridge({
+    tools: [{ name: "call_api", inputSchema: { type: "object", properties: {
+      operationId: { type: "string" }, pathParams: { type: "object" }, query: { type: "object" }, body: {}, responseText: { type: "object" },
+    } } }],
+    handler: async () => ({ ok: false, status: 400 }),
+    onDiagnostic: message => { if (message.includes("tool-delivery-diagnostic")) messages.push(message); },
+  });
+  bridges.push(bridge);
+  await (await fetch(bridge.url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "call_api", arguments: {
+      operationId: "PATCH /api/issues/{id}", pathParams: { id: "secret-issue" }, query: {}, responseText: { limitBytes: 8192 }, PRIVATE_FIELD: 1,
+    } } }),
+  })).json();
+  await expect.poll(() => messages.length).toBe(1);
+  expect(JSON.parse(messages[0]!)).toMatchObject({ argumentNames: ["operationId", "pathParams", "query", "responseText"],
+    argumentNamesTruncated: false, undeclaredArgumentCount: 1, outcome: "result" });
+  expect(messages[0]).not.toMatch(/PATCH|secret-issue|8192|PRIVATE_FIELD/);
+});
+
+it("bounds many long argument names so the forwarder keeps the whole delivery record", async () => {
+  const names = Array.from({ length: 32 }, (_, n) => `${String(n).padStart(2, "0")}${"a".repeat(62)}`);
+  const messages: string[] = [];
+  const bridge = await startOpenCodeMcpBridge({
+    tools: [{ name: "wide_tool", inputSchema: { type: "object", properties: Object.fromEntries(names.map(name => [name, {}])) } }],
+    handler: async () => ({ ok: true }),
+    onDiagnostic: message => { if (message.includes("tool-delivery-diagnostic")) messages.push(message); },
+  });
+  bridges.push(bridge);
+  await (await fetch(bridge.url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 13, method: "tools/call", params: { name: "wide_tool",
+      arguments: Object.fromEntries(names.map(name => [name, 1])) } }),
+  })).json();
+  await expect.poll(() => messages.length).toBe(1);
+  const record = JSON.parse(messages[0]!);
+  expect(record.argumentNamesTruncated).toBe(true);
+  expect(record.argumentNames.length).toBeGreaterThan(0);
+  expect(record.argumentNames.length).toBeLessThan(names.length);
+  expect(record.argumentNames).toEqual(names.slice(0, record.argumentNames.length));
+  expect(JSON.stringify(record.argumentNames).length).toBeLessThanOrEqual(1_024);
+  expect(messages[0]!.length).toBeLessThanOrEqual(2_048);
+  const frames: unknown[] = [];
+  const forward = createOpenCodeFinishDiagnosticForwarder(frame => frames.push(frame));
+  forward.bind("session");
+  forward.diagnostic(messages[0]!);
+  expect(frames).toHaveLength(1);
 });

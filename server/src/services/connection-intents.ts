@@ -12,8 +12,8 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
-import { aiConnectionBindingSchema, aiConnectionRouterBindingSchema } from "@paperclipai/shared";
-import { aiBindingForAuthRecovery, isAiAuthenticationFailure, isAiAuthenticationRepairable } from "./ai-auth-failure.js";
+import { aiConnectionBindingSchema, aiConnectionCatalogSlug, aiConnectionRouterBindingSchema, aiConnectionSourceSlug } from "@paperclipai/shared";
+import { aiBindingForAuthRecovery, isAiAuthenticationRepairable } from "./ai-auth-failure.js";
 import { and, eq, desc, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -111,11 +111,21 @@ function sourceSlugForApplication(application: ToolApplication | undefined) {
   return text(application?.metadata?.sourceTemplateKey) ?? text(application?.metadata?.galleryKey);
 }
 
+function aiBindingMatchesService(provider: string, serviceSlug: string) {
+  return provider === serviceSlug || aiConnectionCatalogSlug(provider) === serviceSlug;
+}
+
+/** AI intents saved before a provider had its own catalog entry still name the provider. */
+function intentCatalogSlug(payload: { serviceSlug: string; purpose?: string }) {
+  return payload.purpose === "ai" ? aiConnectionCatalogSlug(payload.serviceSlug) : payload.serviceSlug;
+}
+
 function sourceSlugForConnection(
   connection: ToolConnection,
   applications: ReadonlyMap<string, ToolApplication>,
 ) {
-  const source = text(connection.config?.sourceTemplateKey)
+  const source = aiConnectionSourceSlug(connection)
+    ?? text(connection.config?.sourceTemplateKey)
     ?? text(connection.transportConfig?.sourceTemplateKey)
     ?? sourceSlugForApplication(applications.get(connection.applicationId));
   return source && getAppStoreDefinition(source) ? source : `connection:${connection.id}`;
@@ -133,6 +143,10 @@ function availableToolConnectionMethods(
 // Large enough for first-party catalogs such as GitHub's; aggregator catalogs
 // stay bounded and still report their total.
 const MAX_SCOPED_REQUEST_TOOL_NAMES = 100;
+// A message that opens with a setup verb, such as "Connect Notion" or "Can you
+// set up Slack?". Questions and data requests ("What is the easiest way to
+// connect Notion?", "Read my Notion") do not match and get the setup card.
+const SETUP_REQUEST_PATTERN = /^(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+(?:please\s+)?)?(?:connect|reconnect|set\s*up|configure|install|link|hook\s+up)\b/i;
 
 /** Tells an agent outside a connection's grant how to request scoped access to it. */
 function scopedToolRequestGuidance(connectionId: string, catalog: ReadonlyArray<{ toolName: string }>) {
@@ -319,7 +333,7 @@ export function connectionIntentService(db: Db) {
       // account. Legacy direct-account cards remain readable across upgrades.
       if (!options.agentSetupOperationId && aiConnectionRouterBindingSchema.safeParse(agent.runtimeConfig.aiConnection).success) return null;
       const managed = await queuedSetupManagedAgent(agent, client);
-      return managed?.binding.provider === serviceSlug ? managed : null;
+      return managed && aiBindingMatchesService(managed.binding.provider, serviceSlug) ? managed : null;
     }
     const router = aiConnectionRouterBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
     if (router) {
@@ -329,15 +343,15 @@ export function connectionIntentService(db: Db) {
       const [source] = await client.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.id, options.sourceRunId)));
       const taskKey = text(source?.contextSnapshot?.aiRouterTaskKey);
       const evidence = record(source?.contextSnapshot?.aiRouterSelection);
-      if (!source || !isAiAuthenticationFailure(source.errorCode) || source.status !== "failed" || evidence?.poolId !== router.connectionId || !taskKey) return null;
+      if (!source || !isAiAuthenticationRepairable(source) || source.status !== "failed" || evidence?.poolId !== router.connectionId || !taskKey) return null;
       const [pin] = await client.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.companyId, companyId), eq(aiConnectionTaskPins.poolId, router.connectionId), eq(aiConnectionTaskPins.agentId, agentId), eq(aiConnectionTaskPins.taskKey, taskKey)));
       const binding = pin?.selection.binding;
-      if (!pin || binding?.provider !== serviceSlug || JSON.stringify(evidence.binding) !== JSON.stringify(binding)) return null;
+      if (!pin || !binding || !aiBindingMatchesService(binding.provider, serviceSlug) || JSON.stringify(evidence.binding) !== JSON.stringify(binding)) return null;
       return { agent, binding, adapterConfig: { ...agent.adapterConfig, ...pin.selection.runtimeConfig }, requiresAdoption: false };
     }
     const saved = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
     const binding = saved ?? options.fallback;
-    return binding?.provider === serviceSlug ? { agent, binding, adapterConfig: agent.adapterConfig, requiresAdoption: !saved } : null;
+    return binding && aiBindingMatchesService(binding.provider, serviceSlug) ? { agent, binding, adapterConfig: agent.adapterConfig, requiresAdoption: !saved } : null;
   }
 
   async function usableConnectionForAgent(input: {
@@ -444,7 +458,7 @@ export function connectionIntentService(db: Db) {
 
   async function resolveService(service: string, companyId: string, userId: string, agentId: string, purpose?: "ai" | "channel") {
     if (!service.startsWith("connection:")) {
-      const app = getAppStoreDefinition(service);
+      const app = getAppStoreDefinition(purpose === "ai" ? aiConnectionCatalogSlug(service) : service);
       if (!app) throw notFound("Connection service was not found");
       if (app.experimentalFeatureKey && !isConnectorFeatureEnabled(app, await instanceSettingsService(db).getExperimental())) {
         throw notFound("Connection service was not found");
@@ -536,12 +550,16 @@ export function connectionIntentService(db: Db) {
         && (aiOnly ? connection.connectionPurpose === "ai" : connection.connectionPurpose !== "ai"));
       // Indexed descriptions can contain private workspace metadata, including
       // for catalog providers. Check each configured connection's audience first.
+      const reauthorizationRequired: ToolConnection[] = [];
       const catalogs = await Promise.all(matching.map(async (connection) => {
         const { grants } = await access.listConnectionGrants(connection.id, run.companyId);
-        const authorized = grants.some((grant) => grant.status === "active" && (
+        const audience = grants.filter((grant) =>
           grant.kind === "organization" || (grant.kind === "user" && grant.subjectUserId === run.responsibleUserId)
-          || (grant.kind === "agent" && grant.subjectAgentId === agent.id)
-        ));
+          || (grant.kind === "agent" && grant.subjectAgentId === agent.id));
+        const authorized = audience.some((grant) => grant.status === "active");
+        // A rejected refresh marks the grant. Name only connections in this
+        // caller's audience so the agent can report the exact human action.
+        if (!authorized && audience.some((grant) => grant.status === "needs_reauthorization")) reauthorizationRequired.push(connection);
         const entries = authorized ? await indexedCatalog(connection.id, run.companyId) : [];
         authorizedCatalogs.set(connection.id, entries);
         return entries;
@@ -577,6 +595,7 @@ export function connectionIntentService(db: Db) {
         state: ready ? "ready" : (denied && !isRemoteMcpConnectorId(service)) || !app.available || !app.methods.length ? "unavailable"
           : matching.length ? "needs_user_action" : "available",
         reason: ready ? "Connection is installed and usable by this agent" : denied ? "Ask the responsible user to grant this agent access with connection_request" : !app.available ? "Connection is disabled or unavailable"
+          : reauthorizationRequired.length ? `"${reauthorizationRequired[0]!.name}" must be signed in again. A person who manages this connection must reconnect it on its app page`
           : matching.some((connection) => isToolConnectionAttentionHealth(connection.healthStatus)) ? "Connection needs attention"
           : matching.length ? "Review identity and access for this agent" : "Connect this service to continue",
         connectionId: ready?.id ?? null,
@@ -640,9 +659,13 @@ export function connectionIntentService(db: Db) {
     const ranked = () => [...candidates, ...yieldedRoutes].sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
       .slice(0, 40).map(({ item }) => item);
     // Aggregator routes need a recorded provider choice before connection_request.
-    const rankedResult = (suggestions = false) => {
+    const rankedResult = async (suggestions = false) => {
       const results = ranked();
-      return results.some(item => item.source === "aggregator") ? discoverySuggestions(results) : directSearchResult(query, results, company.prefix, suggestions);
+      if (results.some(item => item.source === "aggregator")) return discoverySuggestions(results);
+      // Only a single unconnected tool result can tell the agent to configure it.
+      const setupRequested = !suggestions && results.length === 1
+        && await latestHumanMessageRequestsSetup(run.companyId, issue.id, run.responsibleUserId!, results[0]!);
+      return directSearchResult(query, results, company.prefix, suggestions, setupRequested);
     };
     const targetService = publicService?.slug ?? (indexedMatches.length === 1 ? indexedMatches[0]!.slug : normalizeConnectionQuery(serviceQuery).replaceAll(" ", "-"));
     // Indexed-only app labels must be identical when requests re-search the slug.
@@ -650,8 +673,11 @@ export function connectionIntentService(db: Db) {
     const previous = await providerSelections(run.companyId, issue.id, agent.id, run.responsibleUserId!, `connection-provider:${targetService}`);
     const explicitConsent = explicit && await hasExplicitProviderRequest(run.companyId, issue.id, run.responsibleUserId!, targetService, explicit.provider, previous[0]);
     if (exact.length && (!explicitConsent || exact.some(({ item }) => item.state === "unavailable"))) {
+      // An aggregator listing such as "Circleback MCP" is the same app as the
+      // built-in "Circleback"; compare its aliases too, not only its listed name.
       const otherApps = bestMatches.filter(({ service, nameScore }) => nameScore >= 200 && !exact.some(({ item }) =>
-        item.service === service.slug || scoreConnectionSearch(service.name, [item.name]).nameScore === 1000));
+        item.service === service.slug || [service.name, ...service.aliases].some(name =>
+          scoreConnectionSearch(name, [item.name]).nameScore === 1000)));
       if (otherApps.length && !exact.some(({ item }) => item.state === "unavailable")) {
         const otherRoutes = (await Promise.all(otherApps.slice(0, 10).map(({ service }) =>
           aggregatorAlternatives(service.slug, service.name, service)))).flat();
@@ -750,7 +776,7 @@ export function connectionIntentService(db: Db) {
     }
   }
 
-  function directSearchResult(query: string, results: ConnectionSearchResultItem[], prefix: string, suggestions = false): ConnectionsSearchResult {
+  function directSearchResult(query: string, results: ConnectionSearchResultItem[], prefix: string, suggestions = false, setupRequested = false): ConnectionsSearchResult {
     const ownServer = `the person adds it as their own MCP server on [Connect your own MCP server](/${prefix}/apps/byo): they enter the URL and type any API key into that page's secure field themselves. `
       + "An agent cannot enter the key. Do not create the connection yourself, ask for the key in chat or search for another route; link that page and reply.";
     return { version: 1, query, results, instruction: !results.length
@@ -758,7 +784,7 @@ export function connectionIntentService(db: Db) {
       : !suggestions && isRemoteMcpConnectorId(results[0]!.service) && results[0]!.state !== "unavailable"
         ? `${results[0]!.name} is an external service. When the user explicitly names this provider, disclose that it handles the connection and requests to the requested app; no additional provider-choice question is necessary. ${results[0]!.state === "ready" ? aggregatorContinuationInstruction(results[0]!.service, "The requested app") : "Call connection_request with the returned service identifier and follow its instruction. Provider setup does not yet verify underlying app access."}`
       : (!suggestions || results.length === 1) && results[0]!.state === "unavailable" ? "This connection is unavailable or administratively restricted. Explain the reason. Do not bypass it using another provider."
-      : suggestions || results.length > 1 ? `These are ranked connection matches. Choose the relevant service and method using their descriptions and purposes; extra query words need not match. For user-requested configuration, inspect method.management and use search_api/call_api with nextApiOperation when allowed. Hand off only required authentication, consent, credentials, or decisions at the saved setupPath destination. Use connection_request when human setup or access is required. Use ready tools as installed; ready AI authentication is available for the agent's next execution and does not need reconnection. Respect unavailable states and recorded user choices. Clarify only if the intended service is still ambiguous; unrelated matches are not evidence of support. If none of these is the service the person named and they gave that service's own server URL, ${ownServer}`
+      : suggestions || results.length > 1 ? `These are ranked connection matches. Choose the relevant service and method using their descriptions and purposes; extra query words need not match. For user-requested configuration, inspect method.management and use search_api/call_api with nextApiOperation when allowed. Hand off only required authentication, consent, credentials, or decisions at the saved setupPath destination. Use connection_request when human setup or access is required for data or actions the person asked for. When the person asked how to connect an app or about its setup options, answer in plain words from these results, naming each method and any prerequisite, and, for a catalog app (a service without the connection: prefix), link its setup page as [Connect <app name>](/${prefix}/apps/connect?source=<service>) instead, because connection_request ends your turn before your answer is shown. A saved connection (service connection:<id>) has no catalog setup page: use connection_request for it. Do not create a connection or saved draft unless the person asked you to set it up. Use ready tools as installed; ready AI authentication is available for the agent's next execution and does not need reconnection. Respect unavailable states and recorded user choices. Clarify only if the intended service is still ambiguous; unrelated matches are not evidence of support. If none of these is the service the person named and they gave that service's own server URL, ${ownServer}`
       : results[0]!.state === "ready" && results[0]!.methods.every(method => method.purpose === "ai")
         ? "AI authentication is available for this agent's next execution. Do not create another connection request or ask the user to reconnect."
       : results[0]!.service === "agentmail"
@@ -768,7 +794,31 @@ export function connectionIntentService(db: Db) {
       : results[0]!.methods.every(method => method.purpose && method.purpose !== "tool")
         ? "Choose the method relevant to the task using its purpose and label. If method.management.allowed, configure through search_api/call_api using nextApiOperation. Hand off only required human authentication or consent at the saved setupPath. These methods do not use the tool connection_request card. Do not claim tools or an inbox are ready before setup finishes."
       : results[0]!.state === "ready" ? "Use the installed connection. Do not create another connection request."
-      : "The user asked to connect. If method.management.allowed, use search_api/call_api with nextApiOperation to configure it. Reuse a saved draft. Use connection_request only for required human input or access. Do not ask a generic confirmation or silently change policy to bypass a failed tool call." };
+      : setupRequested
+        ? "The person asked you to set up this connection. If method.management.allowed, use search_api/call_api with nextApiOperation to configure it. Reuse a saved draft. Use connection_request only for required human input or access. Do not ask a generic confirmation or silently change policy to bypass a failed tool call."
+        : results[0]!.service.startsWith("connection:")
+        ? `The person has not asked you to set up this connection. Do not create a connection or a saved draft yourself. Call connection_request with service ${results[0]!.service} to show the inline setup card, and until the connection is ready, do not claim access to ${results[0]!.name} or report its data.`
+        : `The person has not asked you to set up this connection. Do not create a connection or a saved draft yourself. If they asked how to connect ${results[0]!.name} or about its setup options, answer in plain words from these results, naming each method and any prerequisite, and link its setup page as [Connect ${results[0]!.name}](/${prefix}/apps/connect?${new URLSearchParams({ source: results[0]!.service })}); do not call connection_request for that, because its card ends your turn before your answer is shown. If they need ${results[0]!.name} data for their request, call connection_request with service ${results[0]!.service} to show the inline setup card, which lets them connect or decline. Until the connection is ready, do not claim access to ${results[0]!.name} or report its data.` };
+  }
+
+  /** Conservative: a false negative only shows the setup card instead of configuring. */
+  async function latestHumanMessageRequestsSetup(companyId: string, issueId: string, userId: string, target: Pick<ConnectionSearchResultItem, "service" | "name">) {
+    // Use a persisted human-authored message, never the agent-supplied query.
+    const [message] = await db.select({ body: issueComments.body }).from(issueComments).where(and(
+      eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+      eq(issueComments.authorUserId, userId), isNull(issueComments.authorAgentId),
+      isNull(issueComments.createdByRunId), isNull(issueComments.derivedAuthorAgentId), isNull(issueComments.deletedAt),
+    )).orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
+    if (!message) return false;
+    // The setup verb must govern this app: "Connect Slack, then read my Notion"
+    // asks to set up Slack, so a Notion result still gets the setup card.
+    const clause = message.body.trim().split(/[,.;:!?\n]|\s+(?:then|and|but)\s+/i)[0] ?? "";
+    if (!SETUP_REQUEST_PATTERN.test(clause)) return false;
+    const words = ` ${normalizeConnectionQuery(clause)} `;
+    return [target.name, target.service].some(name => {
+      const normalized = normalizeConnectionQuery(name);
+      return !!normalized && words.includes(` ${normalized} `);
+    });
   }
 
   async function providerSelections(companyId: string, issueId: string, agentId: string, userId: string, questionId: string) {
@@ -944,7 +994,8 @@ export function connectionIntentService(db: Db) {
     const outcomeId = context.run.contextSnapshot?.interactionId;
     if (typeof outcomeId === "string") {
       const [outcome] = await db.select().from(issueThreadInteractions).where(and(eq(issueThreadInteractions.id, outcomeId), eq(issueThreadInteractions.companyId, context.run.companyId), eq(issueThreadInteractions.issueId, context.issue.id)));
-      if (outcome?.kind === "connection_intent" && outcome.status === "rejected" && connectionIntentPayloadSchema.parse(outcome.payload).serviceSlug === app.slug && connectionIntentPayloadSchema.parse(outcome.payload).purpose === options.purpose) {
+      const declined = outcome?.kind === "connection_intent" && outcome.status === "rejected" ? connectionIntentPayloadSchema.parse(outcome.payload) : null;
+      if (declined && intentCatalogSlug(declined) === app.slug && declined.purpose === options.purpose) {
         throw conflict("The user declined this connection. Pursue alternatives; do not request it again in this continuation.");
       }
     }
@@ -1220,7 +1271,7 @@ export function connectionIntentService(db: Db) {
       if (sourceSlugForConnection(
         selectedConnection,
         new Map([[selectedApplication.id, selectedApplication]]),
-      ) !== payload.serviceSlug) {
+      ) !== intentCatalogSlug(payload)) {
         throw notFound("Connection does not match this intent");
       }
       if (selectedConnection.status !== "active" || !selectedConnection.enabled || isToolConnectionAttentionHealth(selectedConnection.healthStatus)) {
@@ -1256,7 +1307,7 @@ export function connectionIntentService(db: Db) {
             throw conflict("The agent changed during validation. Reload the task and try again.");
           }
           const binding = options.validatedAdoption.binding;
-          if (binding.provider !== payload.serviceSlug || binding.mode !== "responsible_user") throw conflict("Invalid legacy adoption binding");
+          if (!aiBindingMatchesService(binding.provider, payload.serviceSlug) || binding.mode !== "responsible_user") throw conflict("Invalid legacy adoption binding");
           const updated = await updateAgentConfigurationInTransaction(txDb, agent.id, {
             runtimeConfig: { ...agent.runtimeConfig, aiConnection: binding },
           }, { recordRevision: { createdByUserId: userId, source: "patch" } });
@@ -1435,7 +1486,7 @@ export function connectionIntentService(db: Db) {
         eq(issueThreadInteractions.sourceRunId, run.id),
         operationId ? sql`${issueThreadInteractions.payload}->>'agentSetupOperationId' = ${operationId}` : undefined,
         sql`${issueThreadInteractions.payload}->>'agentSetup' = 'true'`,
-        sql`${issueThreadInteractions.payload}->>'serviceSlug' = ${binding.provider}`,
+        sql`${issueThreadInteractions.payload}->>'serviceSlug' in (${binding.provider}, ${aiConnectionCatalogSlug(binding.provider)})`,
       )).limit(1);
       if (pending) continue;
       if (!await canActorReadIssuePrivacy(db, { type: "board", userId: verificationUserId, ignoreInstanceAdmin: true }, issue)) continue;
@@ -1486,6 +1537,9 @@ export function connectionIntentService(db: Db) {
       const binding = router ? managed?.binding : saved ?? aiBindingForAuthRecovery(agent.adapterType, agent.adapterConfig, run);
       if (!binding) return null;
       const attribution = record(run.contextSnapshot?.aiConnection);
+      // The recorded account is authoritative for routed/proxy connections:
+      // a driver's provider name can identify the upstream protocol instead.
+      if (!attribution && !isAiAuthenticationRepairable(run, binding.provider)) return null;
       if (attribution && attribution.provider !== binding.provider) return null;
       if ((saved || managed) && attribution && typeof attribution.identity === "string" && typeof attribution.connectionId === "string" && typeof attribution.grantId === "string") {
         await aiConnectionService(db).markAuthenticationFailed({ companyId: run.companyId, runId: run.id, agentId: run.agentId,

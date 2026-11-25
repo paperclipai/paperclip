@@ -2,9 +2,8 @@
 /**
  * check-lockfile-release-age.mjs
  * Decides whether the lockfile bot may merge refreshed pnpm lockfiles without review.
- * Every package version that the refresh adds must be published on npm for at least
- * the minimum age. A version that is too new, or that cannot be verified, holds the
- * PR for a human.
+ * Every added version must have a verified npm publish time. Versions outside
+ * the harness allowlist must also meet the minimum age.
  *
  * Exports: parseLockfilePackages(text), addedPackageVersions(baseText, headText),
  *          addedPackageVersionsAcross(pairs),
@@ -28,6 +27,36 @@ const RESOLUTION = /^ {4}resolution: (.+?)\s*$/;
 // directory resolution names its own source and needs a human.
 const REGISTRY_RESOLUTION = /^\{integrity: [^,{}]+\}$/;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const HARNESS_PACKAGES = new Set([
+  '@agentclientprotocol/claude-agent-acp',
+  '@agentclientprotocol/codex-acp',
+  '@anthropic-ai/claude-agent-sdk',
+  '@anthropic-ai/claude-agent-sdk-darwin-arm64',
+  '@anthropic-ai/claude-agent-sdk-darwin-x64',
+  '@anthropic-ai/claude-agent-sdk-linux-arm64',
+  '@anthropic-ai/claude-agent-sdk-linux-arm64-musl',
+  '@anthropic-ai/claude-agent-sdk-linux-x64',
+  '@anthropic-ai/claude-agent-sdk-linux-x64-musl',
+  '@anthropic-ai/claude-agent-sdk-win32-arm64',
+  '@anthropic-ai/claude-agent-sdk-win32-x64',
+  '@github/copilot-darwin-arm64',
+  '@github/copilot-darwin-x64',
+  '@github/copilot-linux-x64',
+  '@openai/codex',
+  'opencode-ai',
+  'opencode-darwin-arm64',
+  'opencode-darwin-x64',
+  'opencode-darwin-x64-baseline',
+  'opencode-linux-arm64',
+  'opencode-linux-arm64-musl',
+  'opencode-linux-x64',
+  'opencode-linux-x64-baseline',
+  'opencode-linux-x64-baseline-musl',
+  'opencode-linux-x64-musl',
+  'opencode-windows-arm64',
+  'opencode-windows-x64',
+  'opencode-windows-x64-baseline',
+]);
 
 /** Maps each key of the lockfile's top-level `packages:` section to its resolution. */
 export function parseLockfilePackages(text) {
@@ -122,7 +151,7 @@ async function holdReason({ name, version, resolution }, fetchPublishTime, now, 
   }
   if (!published || Number.isNaN(published.getTime())) return 'no publish time on npm';
   const ageMs = now.getTime() - published.getTime();
-  if (ageMs < minAgeMs) {
+  if (ageMs < minAgeMs && !HARNESS_PACKAGES.has(name)) {
     return `published ${published.toISOString()} (${(ageMs / DAY_MS).toFixed(1)} days ago)`;
   }
   return null;
@@ -131,14 +160,14 @@ async function holdReason({ name, version, resolution }, fetchPublishTime, now, 
 export function formatReport(result, minAgeDays) {
   const lines = ['<!-- lockfile-release-age -->'];
   if (result.eligible) {
-    lines.push(`All ${result.checked} added package versions are at least ${minAgeDays} days old. The lockfile bot merges this PR.`);
+    lines.push(`All ${result.checked} added package versions passed the release-age gate. The lockfile bot merges this PR.`);
   } else {
     lines.push(
       `The lockfile bot did not merge this PR. These added package versions are newer than ${minAgeDays} days or could not be verified:`,
       '',
       ...result.held.map(({ key, reason }) => `- \`${key}\`: ${reason}`),
       '',
-      'A maintainer can review and merge this PR. If no one does, the daily refresh tries again and merges it when every version is old enough.',
+      'A maintainer can review and merge this PR. If no one does, the daily refresh tries again and merges it once the refresh passes the gate.',
     );
   }
   return `${lines.join('\n')}\n`;

@@ -1,4 +1,4 @@
-import { attentionReceiptText, type AttentionItem, type AttentionPersonalView, type DecisionHistoryItem, type DecisionHistoryOutcomeFilter, type DecisionHistoryScope } from "@paperclipai/shared";
+import { attentionReceiptText, type AttentionItem, type AttentionFeedView, type AttentionPersonalView, type DecisionHistoryItem, type DecisionHistoryOutcomeFilter, type DecisionHistoryScope } from "@paperclipai/shared";
 import { queryKeys } from "./queryKeys";
 import { isInlineResolvable } from "./attention";
 
@@ -8,7 +8,7 @@ import { isInlineResolvable } from "./attention";
  * cached list. The "For you" key is shared by the page, the sidebar, the mobile
  * navigation and the Tasks filter, so the badge always agrees with the list.
  */
-export const coordinatorAttentionQueryKey = (companyId: string, userId?: string | null, view?: AttentionPersonalView) =>
+export const coordinatorAttentionQueryKey = (companyId: string, userId?: string | null, view?: AttentionFeedView) =>
   userId === undefined && view === undefined
     ? [...queryKeys.attention(companyId), "coordinator", "pending"] as const
     : [...queryKeys.attention(companyId), userId, view, "coordinator", "pending"] as const;
@@ -56,8 +56,8 @@ export function coordinatorCardDetail(item: AttentionItem, detailLine: string | 
   }
   return detailLine ?? item.whyNow;
 }
-export const coordinatorAttentionSummaryQueryKey = (companyId: string) => [...queryKeys.attention(companyId), "coordinator", "summary"] as const;
-export const coordinatorAttentionTasksQueryKey = (companyId: string) => [...queryKeys.attention(companyId), "coordinator", "tasks"] as const;
+export const coordinatorAttentionSummaryQueryKey = (companyId: string, userId: string | null) => [...queryKeys.attention(companyId), userId, "coordinator", "summary"] as const;
+export const coordinatorAttentionTasksQueryKey = (companyId: string, userId: string | null) => [...queryKeys.attention(companyId), userId, "coordinator", "tasks"] as const;
 
 /** Presentation-only assumption from the prototype, never a retention policy. */
 export const COORDINATOR_RECENT_DECISION_MS = 24 * 60 * 60 * 1_000;

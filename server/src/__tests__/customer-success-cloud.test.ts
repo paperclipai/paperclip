@@ -154,6 +154,18 @@ describe.skipIf(!cloudDist)("customer-success managed agent / Cloud / tenant qua
           transactionReads++;
           return registry.getCustomerSuccessAccount(id);
         },
+        getStacks: async (ids: readonly string[]) => {
+          await client.query("SELECT 1");
+          transactionReads++;
+          return (await Promise.all(ids.map((id) => registry.getStack(id)))).filter(Boolean);
+        },
+        getAccounts: async (ids: readonly string[]) => {
+          await client.query("SELECT 1");
+          transactionReads++;
+          return (
+            await Promise.all(ids.map((id) => registry.getCustomerSuccessAccount(id)))
+          ).filter(Boolean);
+        },
         listStackIds: async () => registry.listCustomerSuccessStackIds(),
       });
       const store = new PostgresInspectionStore(pool, registryForClient);
@@ -272,7 +284,9 @@ describe.skipIf(!cloudDist)("customer-success managed agent / Cloud / tenant qua
         const grant=await call('grant',{stackId:'qualification-stack'});
         const tasks=await call('read',{stackId:'qualification-stack',grantToken:grant.token,query:{operation:'list',resource:'tasks',companyId:${JSON.stringify(customer.id)}}});
         const file=await call('read',{stackId:'qualification-stack',grantToken:grant.token,query:{operation:'files.download',companyId:${JSON.stringify(customer.id)},resourceId:${JSON.stringify(task.id)},context:{projectId:${JSON.stringify(project.id)},workspaceId:${JSON.stringify(workspace.id)}},path:'result.bin',range:{start:2,end:5}}});
-        console.log(JSON.stringify({stackCount:discovery.items.length,titles:tasks.items.map(t=>t.title),fileBytes:[...Buffer.from(file.content,'base64')]}));
+        const taskCount=await call('read',{stackId:'qualification-stack',grantToken:grant.token,query:{operation:'count',resource:'tasks',companyId:${JSON.stringify(customer.id)}}});
+        const latestRuns=await call('read',{stackId:'qualification-stack',grantToken:grant.token,query:{operation:'list',resource:'runs',companyId:${JSON.stringify(customer.id)},order:'newest',view:'summary',limit:1}});
+        console.log(JSON.stringify({stackCount:discovery.items.length,titles:tasks.items.map(t=>t.title),fileBytes:[...Buffer.from(file.content,'base64')],taskCount,latestRuns}));
       `;
       const programFile = join(directory, "qualify.mjs");
       await writeFile(programFile, program);
@@ -298,6 +312,9 @@ describe.skipIf(!cloudDist)("customer-success managed agent / Cloud / tenant qua
       expect(result.exitCode, [...output, ...serverErrors].join("\n")).toBe(0);
       expect(output.join("")).toContain("First successful task");
       expect(output.join("")).toContain('"fileBytes":[2,3,4,5]');
+      // Count and newest-first summary reads travel the extended tenant path.
+      expect(output.join("")).toContain('"taskCount":{"total":1,"byStatus":{');
+      expect(output.join("")).toContain('"latestRuns":{"items":[],"nextOffset":null}');
       expect((await stat(filePath)).mtimeMs).toBe(fileBefore.mtimeMs);
       expect(await readFile(filePath)).toEqual(Buffer.from([0, 1, 2, 3, 4, 5]));
       const audit = await pool.query(

@@ -4,6 +4,7 @@ import type {
 } from "@paperclipai/shared";
 import { normalizeIssueThreadInteractionResolverPolicy } from "@paperclipai/shared";
 import { HttpError } from "../errors.js";
+import { dashboardConversationReadable, type DashboardConversationFields } from "./responsibility-privacy.js";
 
 export const ISSUE_THREAD_INTERACTION_RESOLUTION_DENIAL_CODES = [
   "interaction_not_found",
@@ -18,6 +19,7 @@ export const ISSUE_THREAD_INTERACTION_RESOLUTION_DENIAL_CODES = [
   "interaction_issue_closed",
   "interaction_governed_action_denied",
   "review_policy_denied",
+  "interaction_conversation_owner_required",
 ] as const;
 
 export type IssueThreadInteractionResolutionDenialCode =
@@ -146,14 +148,14 @@ function reviewPolicyDeniedDecision(
     status: 403,
     code: "review_policy_denied",
     message: requesterKnown
-      ? "Review policy `not_creator` requires someone other than the writer who moved the issue into `in_review` to approve or reject it."
-      : "Review policy `not_creator` requires a different writer, but the review requester could not be determined.",
+      ? "Whoever sent this task for review cannot also approve or reject it; someone else must submit the verdict."
+      : "Someone other than whoever sent this task for review must decide it, and Paperclip could not tell who sent it.",
     details: {
       policy: "not_creator",
       allowedActor: "writer_other_than_review_requester",
       remediation: requesterKnown
-        ? "Have another writer with issue write access submit the verdict, or change reviewPolicy to `anyone`."
-        : "Change reviewPolicy to `anyone`, or move the issue out of and back into `in_review` to record a requester before another writer submits the verdict.",
+        ? "Have someone else with access to this task submit the verdict, or let anyone review it by setting the task's review policy to anyone."
+        : "Let anyone review it by setting the task's review policy to anyone, or move the task out of review and back into review so Paperclip records who sent it, then have someone else submit the verdict.",
     },
   };
 }
@@ -426,4 +428,53 @@ export function issueThreadInteractionAttentionAgentAllowed(input: {
     additionalRestriction: input.additionalRestriction,
     governedAction: input.governedAction,
   }).allowed;
+}
+
+export function conversationInteractionResponderAllowed(
+  issue: { conversationAgentId?: string | null; conversationUserId?: string | null },
+  userId: string | null | undefined,
+) {
+  return !issue.conversationAgentId || (Boolean(userId) && userId === issue.conversationUserId);
+}
+
+export type HumanToolReviewResolutionDecision =
+  | { allowed: true }
+  | {
+      allowed: false;
+      status: 403 | 404 | 422;
+      code: IssueThreadInteractionResolutionDenialCode;
+      message: string;
+      details?: Record<string, unknown>;
+    };
+
+export function evaluateHumanToolReviewResolution(input: {
+  userId: string;
+  issue: DashboardConversationFields & { conversationAgentId?: string | null; conversationUserId?: string | null };
+  interaction: IssueThreadInteractionResolverAudienceInput["interaction"];
+}): HumanToolReviewResolutionDecision {
+  if (!dashboardConversationReadable({ type: "board", userId: input.userId }, input.issue)) {
+    return { allowed: false, status: 404, code: "interaction_not_found", message: "Issue not found" };
+  }
+  if (!conversationInteractionResponderAllowed(input.issue, input.userId)) {
+    return {
+      allowed: false,
+      status: 403,
+      code: "interaction_conversation_owner_required",
+      message: "Only the conversation owner can respond to chat interactions",
+    };
+  }
+  const decision = evaluateIssueThreadInteractionResolverAudience({
+    actor: { type: "user", userId: input.userId },
+    interaction: input.interaction,
+    governedAction: true,
+  });
+  if (decision.allowed) return { allowed: true };
+  return { allowed: false, status: decision.status, code: decision.code, message: decision.message, details: decision.details };
+}
+
+export function assertHumanToolReviewResolution(input: Parameters<typeof evaluateHumanToolReviewResolution>[0]) {
+  const decision = evaluateHumanToolReviewResolution(input);
+  if (!decision.allowed) {
+    throw issueThreadInteractionResolutionError(decision.status, decision.code, decision.message, decision.details);
+  }
 }

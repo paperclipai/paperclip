@@ -26,6 +26,16 @@ import { createRunPreparationTiming, drainRunPreparationPhases, measureRunPhase 
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { readWorkspaceInventory, readonlyWorkspaceInventoryScript } from "./remote-workspace-readonly-inventory.js";
 
+const archiveReads = vi.hoisted(() => ({ paths: [] as string[] }));
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const createReadStream = ((file: Parameters<typeof actual.createReadStream>[0], ...rest: unknown[]) => {
+    archiveReads.paths.push(String(file));
+    return (actual.createReadStream as (...args: unknown[]) => ReturnType<typeof actual.createReadStream>)(file, ...rest);
+  }) as typeof actual.createReadStream;
+  return { ...actual, createReadStream, default: { ...actual, createReadStream } };
+});
+
 const exec = promisify(execFile);
 
 describe("remote workspace transport safety with real sandbox commands", () => {
@@ -241,6 +251,28 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       await restoreRemoteWorkspaceArchive({ archivePath: captured.archivePath, targetDir, expectedManifestDigest: captured.manifestDigest });
       expect((await fs.readFile(path.join(targetDir, "large.bin"))).equals(content)).toBe(true);
     } finally { await captured.cleanup(); }
+  });
+
+  it("leaves the downloaded archive's single full read to the encrypting upload", async () => {
+    await fs.writeFile(path.join(workspace, "large.bin"), randomBytes(2 * 1024 * 1024 + 11));
+    archiveReads.paths.length = 0;
+    const captured = await captureRemoteWorkspaceArchive({ target: target().remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      expect(archiveReads.paths.filter(file => file === captured.archivePath)).toEqual([]);
+      expect((await fs.stat(captured.archivePath)).size).toBe(captured.byteSize);
+    } finally { await captured.cleanup(); }
+  });
+
+  it("rejects a downloaded archive whose size differs from the sandbox receipt", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "saved work\n");
+    const remote = target().remote, syncOut = remote.runner!.syncOut!;
+    remote.runner!.syncOut = async (operations, options) => {
+      const result = await syncOut(operations, options);
+      for (const operation of operations) for (const file of operation.files) await fs.appendFile(file.targetPath, "x");
+      return result;
+    };
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow("remote_workspace_capture_transfer_mismatch");
   });
 
   it("times the restore's sandbox upload and extraction as separate run-log steps", async () => {
@@ -1148,17 +1180,41 @@ return result};`);
   });
 
   it.skipIf(process.platform === "win32").each(["split", "one-shot"] as const)("retains a closed capture validation failure with %s output", async outputMode => {
-    const privateName = "SYNTHETIC_PRIVATE_FILENAME";
+    const privateName = "SYNTHETIC\\PRIVATE_FILENAME";
     await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
-    await exec("mkfifo", [path.join(workspace, privateName)]);
+    await fs.writeFile(path.join(workspace, privateName), "private bytes\n");
     const { remote, execute } = target({}, outputMode), operationId = randomUUID();
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId }))
-      .rejects.toThrow(/^remote_workspace_archive_unsupported_entry$/);
+      .rejects.toThrow(/^remote_workspace_archive_unsupported_filename$/);
     expect(execute).toHaveBeenCalledTimes(2);
     expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained source bytes\n");
-    expect((await fs.lstat(path.join(workspace, privateName))).isFIFO()).toBe(true);
+    expect(await fs.readFile(path.join(workspace, privateName), "utf8")).toBe("private bytes\n");
     const directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
     expect(await fs.readdir(directory)).toEqual(["archive.cjs"]);
+  });
+
+  it.skipIf(process.platform === "win32").each(["split", "one-shot"] as const)("captures beside a named pipe through the remote helper with %s output", async outputMode => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
+    await exec("mkfifo", [path.join(workspace, "pipe")]);
+    const { remote } = target({}, outputMode), operationId = randomUUID();
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId });
+    expect((await fs.lstat(path.join(workspace, "pipe"))).isFIFO()).toBe(true);
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained source bytes\n");
+    const archive = await fs.readFile(captured.archivePath), start = Buffer.from("PCWS1\n").length;
+    const manifest = JSON.parse(archive.subarray(start + 4, start + 4 + archive.readUInt32BE(start)).toString());
+    expect(manifest.excluded).toContain("pipe");
+    const restored = path.join(scratch, `restored-${outputMode}`);
+    await restoreRemoteWorkspaceArchive({ archivePath: captured.archivePath, targetDir: restored, expectedManifestDigest: captured.manifestDigest });
+    expect(await fs.readdir(restored)).toEqual(["saved.txt"]);
+    expect(await fs.readFile(path.join(restored, "saved.txt"), "utf8")).toBe("retained source bytes\n");
+  });
+
+  it.skipIf(process.platform === "win32")("inventories beside a named pipe, excluding the pipe in both inventory modes", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
+    await exec("mkfifo", [path.join(workspace, "pipe")]);
+    const inventory = await readWorkspaceInventory(workspace);
+    expect(inventory.exclude).toContain("pipe");
+    expect(await readWorkspaceInventory(workspace, true)).toEqual(inventory);
   });
 
   /**

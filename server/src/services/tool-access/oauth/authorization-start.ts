@@ -7,14 +7,15 @@ import { createOAuthEndpointPolicy } from "./endpoint-policy.js";
 import { createOAuthDiscovery } from "./discovery.js";
 import { asRecord, oauthConfig, normalizeOauthScopes, originOf } from "./metadata.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
-import { googleWorkspaceDraftRequestedScopes, googleWorkspaceSelectedScopes, type GoogleWorkspaceServiceSelection, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE, googleWorkspaceDraftRequestedScopes, googleWorkspaceSelectedScopes, type GoogleWorkspaceServiceSelection, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
+import { paperclipGoogleSignInAvailable } from "../../google-sign-in-availability.js";
 import { and, eq, lt } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, agents, connectionGrants, issueThreadInteractions, toolConnections, toolOauthStates } from "@paperclipai/db";
 import type { ConnectionGrantKind, ToolOAuthStartResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition } from "@paperclipai/shared";
-import { badRequest, conflict, forbidden, notFound, unprocessable } from "../../../errors.js";
-import { isPaperclipCloudConnectorStrategy, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
+import { badRequest, conflict, forbidden, notFound, tooManyRequests, unprocessable } from "../../../errors.js";
+import { isPaperclipCloudConnectorStrategy, PaperclipCloudConnectorError, paperclipCloudConnectorConsentAllowed, type PaperclipCloudConnector } from "../../paperclip-cloud-connector.js";
 import { deriveVercelConnectSubject, vercelConnectCallbackUrl, VercelConnectClientError, type VercelConnectClient } from "../../vercel-connect.js";
 
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
@@ -23,6 +24,7 @@ import { assertSupportedConnection } from "../connections/setup-policy.js";
 import { actorBinding } from "../actor.js";
 import { assertOAuthRedirectConstraints, randomOauthToken, base64UrlSha256 } from "./authorization-constraints.js";
 import type { createPersonalConnectionIdentity } from "../connections/personal-identity.js";
+import { connectionRemovedOrSignInCancelled } from "../connections/first-sign-in.js";
 
 type Dependencies = {
   now: () => Date;
@@ -35,6 +37,23 @@ type Dependencies = {
   oauthEndpointsForConnection: ReturnType<typeof createOAuthDiscovery>["oauthEndpointsForConnection"];
   assertOAuthEndpointUrl: ReturnType<typeof createOAuthEndpointPolicy>["assertOAuthEndpointUrl"];
 };
+
+function googleSignInCloudOnlyError() {
+  return unprocessable(GOOGLE_SIGN_IN_CLOUD_ONLY_MESSAGE, { code: "google_sign_in_cloud_only" });
+}
+
+function cloudConnectorStartHttpError(error: unknown, provider: string, providerName: string, at: Date): unknown {
+  if (!(error instanceof PaperclipCloudConnectorError)) return error;
+  if (provider === "google" && error.brokerReason === "PROVIDER_CLOUD_ONLY") return googleSignInCloudOnlyError();
+  if (error.status !== 429 && error.brokerReason !== "RATE_LIMITED") return error;
+  const retryAfterSeconds = error.retryAt === undefined
+    ? undefined
+    : Math.max(1, Math.ceil((error.retryAt - at.getTime()) / 1000));
+  return tooManyRequests(`${providerName} sign-in is busy right now. Try again in a moment.`, {
+    code: "paperclip_cloud_connector_rate_limited",
+    ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
+  });
+}
 
 export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies) {
   const { now, getConnectionRow, setupPolicy, fixedPersonalIdentityForReconnect, currentCloudConnector, vercelConnect, ensureOAuthClient, oauthEndpointsForConnection, assertOAuthEndpointUrl } = dependencies;
@@ -59,7 +78,7 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
     assertSupportedConnection(connection);
     await assertConnectorConnectionSetupEnabled(connection);
     await assertExperimentalConnectorSetupEnabled(connection.config.sourceTemplateKey, connection.status !== "draft");
-    if (connection.status === "archived")
+    if (connectionRemovedOrSignInCancelled(connection))
       throw conflict("Archived app connections cannot start sign in");
     const sourceTemplateKey =
       typeof connection.config.sourceTemplateKey === "string"
@@ -213,13 +232,13 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       }
       const [company] = await db.select({ prefix: companies.issuePrefix }).from(companies).where(eq(companies.id, companyId));
       if (!company) throw notFound("Company not found");
-      const destination = new URL(input.redirectUri);
-      destination.pathname = `/${encodeURIComponent(company.prefix)}/apps/${connection.credentialSource === "vercel_connect" ? "vercel-connect" : "connect"}`;
-      destination.search = new URLSearchParams({ [connection.status === "draft" ? "resume" : "reconnect"]: connection.id,
-        ...(sourceTemplateKey ? { source: sourceTemplateKey } : {}), ...(intentLink ? { intent: intentLink.id } : {}) }).toString();
-      destination.hash = "";
+      // A relative app route: the agent links it in chat, where it opens on
+      // whichever host the person uses, never the server's own listen address.
+      const destination = `/${encodeURIComponent(company.prefix)}/apps/${connection.credentialSource === "vercel_connect" ? "vercel-connect" : "connect"}?${new URLSearchParams({
+        [connection.status === "draft" ? "resume" : "reconnect"]: connection.id,
+        ...(sourceTemplateKey ? { source: sourceTemplateKey } : {}), ...(intentLink ? { intent: intentLink.id } : {}) })}`;
       return { connectionId: connection.id, provider: sourceTemplateKey ?? "oauth",
-        authorizationUrl: destination.toString(), expiresAt: null };
+        authorizationUrl: destination, expiresAt: null };
     }
     if (sourceTemplateKey === "google-workspace" && connection.status === "draft") {
       const workspaceSetup = { version: 1, ...workspaceDraftBinding, requestedScopes };
@@ -348,6 +367,13 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       if (!managedProfile)
         throw badRequest("This app has an invalid managed connector profile");
       const providerName = galleryEntry?.name ?? "Google Workspace";
+      if (managedProfile.provider === "google" && !paperclipGoogleSignInAvailable()) throw googleSignInCloudOnlyError();
+      if (!paperclipCloudConnectorConsentAllowed(managedProfile.id)) {
+        throw unprocessable(
+          `${providerName} can no longer be connected through Paperclip with these permissions. Connect Google Workspace, or set up ${providerName} with your own Google OAuth app.`,
+          { code: "paperclip_cloud_connector_scope_not_offered" },
+        );
+      }
       const cloudConnector = currentCloudConnector();
       if (!cloudConnector) {
         throw unprocessable(
@@ -389,16 +415,21 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
       returnUri.pathname = "/api/tools/oauth/cloud-connector/callback";
       returnUri.search = "";
       returnUri.hash = "";
-      const session = await cloudConnector.startAuthorization({
-        subject: authorizationSubjectAgentId
-          ? `agent:${authorizationSubjectAgentId}`
-          : subjectUserId!,
-        companyId,
-        profile: managedProfile.id,
-        ...(managedProfile.id === "workspace.all" ? { scopes: requestedScopes! } : {}),
-        returnUri: returnUri.toString(),
-        returnState: state,
-      });
+      let session;
+      try {
+        session = await cloudConnector.startAuthorization({
+          subject: authorizationSubjectAgentId
+            ? `agent:${authorizationSubjectAgentId}`
+            : subjectUserId!,
+          companyId,
+          profile: managedProfile.id,
+          ...(managedProfile.id === "workspace.all" ? { scopes: requestedScopes! } : {}),
+          returnUri: returnUri.toString(),
+          returnState: state,
+        });
+      } catch (error) {
+        throw cloudConnectorStartHttpError(error, managedProfile.provider, providerName, now());
+      }
       const remoteExpiry = new Date(session.expiresAt);
       const expiresAt = Number.isFinite(remoteExpiry.getTime())
         ? new Date(
@@ -703,10 +734,13 @@ export function createOAuthAuthorizationStart(db: Db, dependencies: Dependencies
         // refresh/reconnect/revoke reuse the same pair rather than re-deriving it.
         issuer: endpoints.issuer ?? oauthConfig(saved).issuer ?? null,
         expectedIssuer: endpoints.issuer ?? null,
+        // RFC 9207: when the server promises `iss`, a callback without it is refused.
+        expectIssParameter: Boolean(endpoints.issuer) && endpoints.issParameterSupported === true,
         resource:
           endpoints.resource ?? oauthConfig(saved).resource ?? null,
         clientIdMetadataDocumentSupported:
           endpoints.clientIdMetadataDocumentSupported === true,
+        issParameterSupported: endpoints.issParameterSupported === true,
       };
       const nextConfig = { ...saved.config, oauth: { ...oauthConfig(saved), ...oauth } };
       const nextTransportConfig = { ...saved.transportConfig, oauth: { ...asRecord(saved.transportConfig.oauth), ...oauth } };

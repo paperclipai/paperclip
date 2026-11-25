@@ -21,8 +21,18 @@ export class NativePredecessorRetirementUnprovenError extends Error {
     cause: unknown,
   ) {
     super(`The previous run's session on this sandbox could not be retired (${
-      cause instanceof Error ? cause.message : String(cause)}). The next attempt starts on a fresh sandbox.`, { cause });
+      cause instanceof Error ? cause.message : String(cause)}).`, { cause });
     this.name = "NativePredecessorRetirementUnprovenError";
+  }
+}
+
+export const NATIVE_PREDECESSOR_RETIREMENT_DIRECTORY_BUSY_CODE = "native_predecessor_retirement_directory_busy";
+
+export class NativePredecessorRetirementDirectoryBusyError extends Error {
+  readonly code = NATIVE_PREDECESSOR_RETIREMENT_DIRECTORY_BUSY_CODE;
+  constructor(readonly predecessorRunId: string | null, cause: unknown) {
+    super("Another run of this agent kept its files busy while the previous run's session was retired. Retry the run.", { cause });
+    this.name = "NativePredecessorRetirementDirectoryBusyError";
   }
 }
 
@@ -46,6 +56,7 @@ export type PredecessorRetirementFallback = {
   providerWorkStarted: false;
   predecessorRunId: string | null;
   replacedProviderLeaseIds: string[];
+  issueStatusAtFailure?: string;
 };
 
 export function readPredecessorRetirementFallback(resultJson: unknown): PredecessorRetirementFallback | null {

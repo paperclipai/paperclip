@@ -1,3 +1,4 @@
+import { PaperclipRunnerProviderProfileError } from "../native-runtime/provider-profile.js";
 import { promises as fs } from "node:fs";
 import { createDurableRunLogStore } from "../run-log-store.js";
 import { createServer } from "node:http";
@@ -12,7 +13,7 @@ import { callbacks as controlCallbacks } from "./__tests__/run-control-fixtures.
 import { objectLogFixture } from "./__tests__/object-log-fixture.js";
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
 import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { createNativeRunLogCoverageVerifier, formatNativeRunLogEvent } from "../native-runtime/native-run-log-export.js";
 import type { Db } from "@paperclipai/db";
@@ -26,12 +27,12 @@ import { UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
 import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { requestedRunCancellation } from "../run-cancellation.js";
 import { ProjectAccessDeniedError } from "../project-access-denial.js";
-import { RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, RemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
+import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL, RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, RemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
 import { EnvironmentRunError, environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
 import { ReviewedChatBindingDeniedError, ReviewedChatBindingNotReadyError } from "../reviewed-chat-binding-diagnostics.js";
-import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
+import { environmentTaskErrorCodeData, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
 import { STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE, STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_HELD_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
 import { withS3FailureDiagnostics } from "../../storage/s3-failure.js";
@@ -642,6 +643,27 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     } else expect(f.deps.finalizeAgentStatus).not.toHaveBeenCalled();
   });
 
+  it.each(["completeRun", "failRun"] as const)("finalizes the run log in %s only after a reattach's deferred log recovery settles", async operation => {
+    const f = await fixture();
+    let finishRecovery!: () => void;
+    const recovery = new Promise<void>(resolve => { finishRecovery = resolve; });
+    let recovered = false;
+    const output = { ...f.input.output, settleDeferredLogRecovery: () => recovery.then(() => { recovered = true; }) };
+    const finalizedAfterRecovery: boolean[] = [];
+    f.deps.runLogStore.finalize.mockImplementation(async () => {
+      finalizedAfterRecovery.push(recovered);
+      return { bytes: 123, sha256: "log-hash", compressed: true };
+    });
+    const completion = operation === "completeRun" ? f.completion.completeRun({ ...f.input, output })
+      : f.completion.failRun({ ...f.failure(new Error("reattach preparation failed")), output });
+    await new Promise(resolve => setTimeout(resolve, 50));
+    const finalizedEarly = f.deps.runLogStore.finalize.mock.calls.length;
+    finishRecovery();
+    await completion;
+    expect(finalizedEarly).toBe(0);
+    expect(finalizedAfterRecovery).toEqual([true]);
+  });
+
   it("attributes an adapter stop caused by a lost controller lease", async () => {
     const f = await fixture();
     Object.assign(f.input.adapterResult, { exitCode: null, errorCode: "cancelled", errorMessage: "Grok execution was cancelled" });
@@ -720,6 +742,27 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await f.completion.completeRun(f.input);
     expect(await read(f.run.id)).toMatchObject({ status: "succeeded", finishedAt, sessionIdAfter: providerSessionId, resultJson: { durable: "accepted" }, usageJson: { durableReceipt: "native", inputTokens: 20 } });
     expect(f.deps.updateRuntimeState).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the committed native finalization record when the stored result is larger than the read projection", async () => {
+    const decisionId = randomUUID();
+    const diagnostics = randomBytes(120_000).toString("base64");
+    const f = await fixture({ runtimeMode: "native", resultJson: { finalizationPhase: "committed",
+      finalizationReasonCode: "conversation_turn_finished", decisionId, diagnostics } });
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, f.agent.id));
+    f.agent.adapterType = "paperclip_runner";
+    f.input.sessionCodec = getAdapterSessionCodec(f.agent.adapterType);
+    const nativeSessionId = randomUUID(), providerSessionId = randomUUID();
+    f.input.adapterResult.sessionId = nativeSessionId;
+    delete f.input.adapterResult.sessionParams;
+    f.input.adapterResult.sessionDisplayId = providerSessionId;
+    f.input.adapterResult.nativeFinalization = { schema: "paperclip.native-finalization.v1", runtimeMode: "native", runId: f.run.id, companyId: f.run.companyId, issueId: "unused", result: {}, terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed", runTerminalState: "succeeded", reportedWorkDisposition: "yielded" }, turnId: null, sourceInstanceId: "test", normalizedSessionId: nativeSessionId, providerSessionId, driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, workspaceFinalizeStatus: "succeeded" };
+    expect((await f.deps.getRun(f.run.id))?.resultJson).toMatchObject({ truncated: true });
+    await f.completion.completeRun(f.input);
+    const completed = await read(f.run.id);
+    expect(completed.status).toBe("succeeded");
+    expect(completed.resultJson).toMatchObject({ finalizationReasonCode: "conversation_turn_finished", decisionId, diagnostics });
+    expect(completed.resultJson).not.toHaveProperty("truncated");
   });
 
   it("reports trace completion before a later write throws and reads output after log finalization", async () => {
@@ -1089,6 +1132,73 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.finalizeIssueCommentPolicy).not.toHaveBeenCalled();
   });
 
+  it("settles a refused /swarm as its own failure that nothing retries automatically", async () => {
+    const f = await fixture();
+    const refusal = new PaperclipRunnerProviderProfileError("antigravity_swarm_unavailable",
+      "The swarm did not finish after three attempts, so Paperclip stopped retrying it. Send /swarm again to start a new one.");
+    await f.completion.failRun(f.failure(refusal));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "antigravity_swarm_unavailable", error: refusal.message });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("gives a swarm the route refused at session.open a plain run error and agent error reason, which clears on the next success", async () => {
+    const f = await fixture();
+    const plain = "Swarm is not available with Gemini 4 Neon (Low) yet, so nothing was changed: choose another model for this agent, such as Gemini 4 Argon, and send /swarm again.";
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "startup", category: "model_unavailable",
+      message: plain, retryability: "requires_action" };
+    const raw = `PRP command session.open failed: {"commandType":"session.open","result":{"code":"command_execution_failed","message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=antigravity_swarm_unavailable)","providerFailure":${JSON.stringify(providerFailure)}},"status":"failed"}`;
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Swarm", status: "in_progress", assigneeAgentId: f.agent.id }).returning();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issue!.id, contextSnapshot: { issueId: issue!.id } }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.run.companyId, issueId: issue!.id, runId: f.run.id,
+      phase: "terminal_failure", failureCode: "antigravity_swarm_unavailable" });
+    const statuses = createHeartbeatAgentStatus(db);
+    f.deps.finalizeAgentStatus.mockImplementation(statuses.finalizeAgentStatus);
+    await f.completion.failRun(f.failure(Object.assign(new Error(raw), { runnerCommandResult: { result: { providerFailure } } })));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "antigravity_swarm_unavailable", error: plain });
+    const [refused] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
+    expect(refused!.errorReason ?? null).not.toMatch(/PRP command|[{}]|antigravity_swarm/);
+    if (refused!.status === "error") expect(refused!.errorReason).toBe(plain);
+    await statuses.finalizeAgentStatus(f.agent.id, "succeeded");
+    const [recovered] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
+    expect(recovered).toMatchObject({ status: "idle", errorReason: null });
+  });
+
+  it("names a full sandbox disk that the sandbox provider reported during setup", async () => {
+    const f = await fixture();
+    const refusal = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+      message: "internal server error: failed to create session config directory: "
+        + "mkdir /home/daytona/.daytona/sessions/paperclip-78f6ce53: no space left on device" });
+    await f.completion.failRunSetup(f.setup(new Error("Could not reconnect to the running agent", { cause: refusal })));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "sandbox_disk_full" });
+    expect(failed?.resultJson).not.toHaveProperty("failureCause");
+  });
+
+  it.each([
+    ["the save", () => new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL)],
+    ["the save and its read-only fallback", () => new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL, { cause: new Error(
+      "remote_workspace_readonly_capture_failed: stage=transfer reason=operation_failed transport=unknown") })],
+  ])("names a full sandbox disk that stopped %s of the workspace during setup", async (_name, failure) => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(failure()));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "sandbox_disk_full", error: REMOTE_WORKSPACE_SANDBOX_DISK_FULL });
+    expect(failed?.resultJson).not.toHaveProperty("failureCause");
+  });
+
+  it("keeps another failed workspace save as a setup failure", async () => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(new Error("remote_workspace_archive_changed")));
+    expect((await read(f.run.id))?.errorCode).toBe("setup_failed");
+  });
+
+  it("keeps a full disk on the Paperclip host out of the sandbox disk code", async () => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" })));
+    expect((await read(f.run.id))?.errorCode).not.toBe("sandbox_disk_full");
+  });
+
   it("records a setup configuration gap without inventing provider work or applying comment policy", async () => {
     const f = await fixture();
     await f.completion.failRunSetup(f.setup(new ConfigurationIncompleteFailure("missing credential", { configurationIncomplete: { reason: "missing_binding" } })));
@@ -1326,6 +1436,18 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
       expect(f.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(expect.objectContaining({ id: f.run.id }), f.agent);
     } else expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+  });
+
+  it.each(["before_adapter", "adapter_entered", "untrusted", "native"] as const)("names a remote preparation timeout raised %s during execution", async scenario => {
+    const f = await fixture({ runtimeMode: scenario === "native" ? "native" : "legacy" });
+    const cause = new RemoteWorkspaceOperationTimeoutError("prepare", 30_000);
+    const message = "Could not exclude agent files from task Git staging (reason=timed_out)";
+    const error = scenario === "untrusted" ? new Error(message) : new RemoteWorkspacePreparationTimeoutError(cause, message);
+    await f.completion.failRun({ ...f.failure(error), requiredWorkspaceRestoreEvidence: {}, legacyAdapterEntered: scenario === "adapter_entered" });
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", error: message,
+      errorCode: scenario === "before_adapter" ? "remote_workspace_prepare_timeout" : expect.not.stringMatching(/^remote_workspace_prepare_timeout$/) });
+    if (scenario === "before_adapter") expect(failed.resultJson).toMatchObject({ executionRecovery: { kind: "bootstrap", providerWorkStarted: false } });
   });
 
   it.each(["fresh", "started", "untrusted", "retained"] as const)("routes a %s preserved sandbox resume failure through bounded bootstrap recovery", async scenario => {
@@ -1771,7 +1893,7 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(actions[0]).toMatchObject({ status: "active", ownerType: "board", cause: "remote_workspace_restore_failed",
       kind: "stranded_assigned_issue", returnOwnerAgentId: f.agent.id });
     expect(actions[0]!.evidence).toMatchObject({ runId: f.run.id, restoreFailure: failed.error });
-    expect(actions[0]!.nextAction).toContain("saved workspace version was kept");
+    expect(actions[0]!.nextAction).toContain("The saved version was kept");
   });
 
   it("keeps an active recovery action that another writer created for the task", async () => {
@@ -1809,6 +1931,23 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await f.completion.failRunSetup(f.setup(new Error("environment acquisition aborted")));
     expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "controller_lease_lost",
       resultJson: { cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_deadline)" } } });
+  });
+
+  it.each([
+    { name: "a rejected AI selection keeps its owner action", selectionFailure: "ai_connection_credential_not_shared", errorCode: "configuration_incomplete" },
+    { name: "an unclassified AI preparation error stays a retryable lease loss", selectionFailure: undefined, errorCode: "controller_lease_lost" },
+  ] as const)("records a lease lost during AI selection: $name", async ({ selectionFailure, errorCode }) => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_deadline",
+      { sinceRenewalMs: 37_725, renewalPendingMs: 29_418, deadlineLateMs: 52, renewalCount: 2 }));
+    await f.completion.failRunSetup(f.setup(new ConfigurationIncompleteFailure("This credential is not shared with the responsible user", {
+      configurationIncomplete: { reason: "ai_connection_unavailable", ...(selectionFailure ? { selectionFailure } : {}) } })));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode,
+      error: "This credential is not shared with the responsible user", resultJson: {
+        configurationIncomplete: { reason: "ai_connection_unavailable" },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        controllerLeaseLoss: { cause: "renewal_deadline", renewalPendingMs: 29_418, renewalCount: 2 },
+        cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_deadline)" } } });
   });
 
   it("does not make a lease loss retryable once provider work has started", async () => {

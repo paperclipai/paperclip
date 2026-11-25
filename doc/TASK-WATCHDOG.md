@@ -30,7 +30,7 @@ Agents can stop work for the wrong reasons: misreading a blocker, accepting a st
 
 A task watchdog gives you a second pass on stopped work without rerunning the original assignee. It is verification-shaped, not execution-shaped: the watchdog reads what other agents claimed, checks it against the evidence in the thread, and either accepts the stop or restores a live path.
 
-It is **not** an output-silence monitor for active runs. That is a separate mechanism — the silent active-run watchdog described in [`doc/execution-semantics.md`](execution-semantics.md) §12. Task watchdog only fires when the whole watched subtree has come to rest.
+It is **not** an output-silence monitor for active runs. That is a separate mechanism — the silent active-run watchdog in `server/src/modules/active-run-watchdog/`. Task watchdog only fires when the whole watched subtree has come to rest.
 
 ---
 
@@ -112,7 +112,7 @@ The mandate also enforces safety constraints that custom instructions **cannot o
 - No creating another watchdog for the watched subtree. No waking itself. Exactly one reusable review task per watched issue.
 - Custom instructions can narrow focus or veto specific shortcuts. They cannot grant authority the server does not already give the watchdog.
 
-The formal authority contract (the full list of allowed and disallowed mutations) is in [Authority contract](#authority-contract) below. The ordinary interaction resolver contract is in [execution semantics](execution-semantics.md#issue-thread-interaction-resolution).
+The formal authority contract (the full list of allowed and disallowed mutations) is in [Authority contract](#authority-contract) below.
 
 ### Writing custom instructions
 
@@ -198,10 +198,6 @@ Within the watched subtree, a watchdog run may perform only mutations that resto
 
 Every watchdog-triggered mutation must write activity with the watchdog id, source issue id, watchdog issue id when present, run id, and stop fingerprint. Mutations still use the normal status-transition, blocker, assignment, budget, and company-boundary guards.
 
-The atomic recovery batch, restoration verification and escalation, and interaction
-resolution rules for watchdog runs are in
-[execution semantics §11](execution-semantics.md#11-task-watchdog-for-issue-trees).
-
 ### Disallowed watchdog mutations
 
 A task watchdog must not:
@@ -229,8 +225,7 @@ Deliberately deferred and disallowed for the first implementation: letting watch
 | Topic                            | File                                                                  |
 | -------------------------------- | --------------------------------------------------------------------- |
 | Authority contract (formal)      | [Authority contract](#authority-contract) (this doc)                  |
-| Execution semantics (formal)     | [`doc/execution-semantics.md`](execution-semantics.md) §11           |
-| Silent active-run watchdog       | [`doc/execution-semantics.md`](execution-semantics.md) §12           |
+| Silent active-run watchdog       | `server/src/modules/active-run-watchdog/`                             |
 | Database schema                  | `packages/db/src/schema/issue_watchdogs.ts`                           |
 | Server service                   | `server/src/services/task-watchdogs.ts`                               |
 | Scope enforcement                | `server/src/services/task-watchdog-scope.ts`                          |

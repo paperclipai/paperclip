@@ -1198,6 +1198,23 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(serialized).not.toContain("runtimeConfig");
   });
 
+  it("returns only the same agent's earlier api receipt when it retries its key as a manual run", async () => {
+    const { companyId, routine, svc, agentId } = await seedFixture();
+    await db.update(routines).set({ concurrencyPolicy: "always_enqueue" }).where(eq(routines.id, routine.id));
+    const boardApi = await svc.runRoutine(routine.id, { source: "api", idempotencyKey: "shared-key" }, { userId: "operator" });
+    await db.insert(activityLog).values({ companyId, actorType: "user", actorId: "operator", action: "routine.run_triggered", entityType: "routine_run", entityId: boardApi.id });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, boardApi.linkedIssueId!));
+    const agentRun = await svc.runRoutine(routine.id, { source: "manual", idempotencyKey: "shared-key" }, { agentId });
+    expect(agentRun.id).not.toBe(boardApi.id);
+    const earlier = await svc.runRoutine(routine.id, { source: "api", idempotencyKey: "agent-retry" }, { agentId });
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentId, agentId, action: "routine.run_triggered", entityType: "routine_run", entityId: earlier.id });
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, earlier.linkedIssueId!));
+    const retry = await svc.runRoutine(routine.id, { source: "manual", idempotencyKey: "agent-retry" }, { agentId });
+    expect(retry.id).toBe(earlier.id);
+    const board = await svc.runRoutine(routine.id, { source: "manual", idempotencyKey: "agent-retry" }, { userId: "operator" });
+    expect(board.id).not.toBe(earlier.id);
+  });
+
   it("versions responsibility transfers and uses the new person only for future automatic tasks", async () => {
     const { companyId, routine, svc } = await seedFixture();
     const userId = "new-responsible-person";
@@ -1711,7 +1728,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
           payload: { issueId: run.linkedIssueId, mutation: "create" },
           requestedByActorType: undefined,
           requestedByActorId: null,
-          contextSnapshot: { issueId: run.linkedIssueId, source: "routine.dispatch" },
+          contextSnapshot: { issueId: run.linkedIssueId, source: "routine.dispatch", responsibleUserId: routine.responsibleUserId },
         },
       },
     ]);
@@ -2886,6 +2903,54 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(dispatchedRun(first).triggerPayload).toEqual(meeting);
 
   });
+
+  it.each([
+    "both signature headers",
+    "SHA-256 header only",
+    "legacy header only",
+  ])("accepts a signed app webhook with %s", async (headers) => {
+    const { svc, routine, trigger, secretMaterial } = await firefliesFixture(false, "app_webhook");
+    const payload = { event: "deployment.completed", deployment_id: "deploy-headers" };
+    const rawBody = Buffer.from(JSON.stringify(payload));
+    const secret = secretMaterial!.webhookSecret;
+    const signature = `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
+    const result = await svc.firePublicTrigger(trigger.publicId!, {
+      rawBody,
+      payload,
+      hubSignatureHeader: headers === "legacy header only" ? undefined : signature,
+      firefliesSignatureHeader: headers === "SHA-256 header only"
+        ? undefined
+        : headers === "legacy header only"
+          ? signature
+          : `sha1=${createHmac("sha1", secret).update(rawBody).digest("hex")}`,
+    });
+
+    expect(result.status).toBe("issue_created");
+    const runs = await svc.listRuns(routine.id);
+    expect(runs).toHaveLength(1);
+    expect(runs[0].triggerPayload).toEqual(payload);
+  });
+
+  it.each(["invalid SHA-256 header", "SHA-1 header only"])(
+    "rejects an app webhook with %s despite valid bearer authorization",
+    async (headers) => {
+      const { svc, routine, trigger, secretMaterial } = await firefliesFixture(false, "app_webhook");
+      const payload = { event: "deployment.completed", deployment_id: "deploy-invalid" };
+      const rawBody = Buffer.from(JSON.stringify(payload));
+      const secret = secretMaterial!.webhookSecret;
+
+      await expect(svc.firePublicTrigger(trigger.publicId!, {
+        rawBody,
+        payload,
+        authorizationHeader: `Bearer ${secret}`,
+        hubSignatureHeader: headers === "SHA-1 header only" ? undefined : `sha256=${"0".repeat(64)}`,
+        firefliesSignatureHeader: headers === "SHA-1 header only"
+          ? `sha1=${createHmac("sha1", secret).update(rawBody).digest("hex")}`
+          : `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`,
+      })).rejects.toMatchObject({ status: 401 });
+      expect(await svc.listRuns(routine.id)).toEqual([]);
+    },
+  );
 
   it("dispatches one Fireflies run for concurrent retries and passes meeting metadata", async () => {
     const { svc, routine, trigger, delivery, wakeups } = await firefliesFixture();

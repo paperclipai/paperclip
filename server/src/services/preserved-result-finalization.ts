@@ -1,4 +1,5 @@
 import { notifyNativeFinalizationWork } from "./native-finalization-notifications.js";
+import { nativeEffectiveRunTerminalStateSql } from "./native-runtime/native-accepted-outcome.js";
 import { and, desc, eq, gte, ne, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { readSystemRecovery } from "./system-recovery-state.js";
@@ -60,8 +61,9 @@ async function readApplicableResult(db: Db, companyId: string, runId: string, lo
   const coordinatorQuery = db.select().from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, runId)));
   const [coordinator] = lock ? await coordinatorQuery.for("update") : await coordinatorQuery;
+  // A result retired as superseded is never applied, even after its files are saved.
   if (!coordinator?.resultId || coordinator.phase !== "terminal_failure" || coordinator.leaseOwner ||
-      coordinator.failureDetail?.successorRunId) return null;
+      coordinator.failureDetail?.successorRunId || coordinator.failureCode === "native_finalization_superseded") return null;
   const issueQuery = db.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, coordinator.issueId)));
   const [issue] = lock === "nowait" ? await issueQuery.for("update", { noWait: true })
     : lock ? await issueQuery.for("update") : await issueQuery;
@@ -82,7 +84,7 @@ async function readApplicableResult(db: Db, companyId: string, runId: string, lo
     eq(nativeRunResults.companyId, companyId), eq(nativeRunResults.issueId, issue.id),
     eq(nativeRunResults.runId, runId), eq(nativeRunResults.id, coordinator.resultId),
     eq(nativeRunResults.schemaStatus, "accepted"),
-    sql`${nativeRunResults.resultJson}#>>'{terminal,runTerminalState}' = 'succeeded'`,
+    sql`${nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson)} = 'succeeded'`,
   ));
   return result ? { coordinator, issue, run, result } : null;
 }

@@ -46,6 +46,11 @@ export interface RunFailureReportOptions {
    * decision; a scheduled retry owns recovery and reports its own outcome.
    */
   reviewedChatRetry?: "pending" | "scheduled" | "not_scheduled";
+  /**
+   * The bounded retry decision for a saved-sandbox resume that the provider
+   * answered with an HTTP 5xx, with the same `pending` handshake.
+   */
+  sandboxResumeRetry?: "pending" | "scheduled" | "not_scheduled";
 }
 
 export interface RunFailureException {
@@ -380,7 +385,10 @@ export function collectRunFailureDiagnostics(run: Run, options: RunFailureReport
       break;
     }
     if (typeof error !== "object") break;
-    const acquisition = options.phase === "setup" && run.errorCode === "setup_failed"
+    // A lease acquisition timeout is retried as a transient provider failure;
+    // it needs the same phase and provider state as a plain setup failure.
+    const acquisition = options.phase === "setup" && (run.errorCode === "setup_failed"
+      || run.errorCode === "environment_provider_unavailable")
       ? getEnvironmentAcquisitionDiagnostic(error, run) : null;
     if (acquisition && execution.environmentAcquisitionPhase === undefined) {
       execution.environmentAcquisitionPhase = acquisition.phase;

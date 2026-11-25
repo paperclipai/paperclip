@@ -48,7 +48,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Enab
 
 ### `case-list`
 
-Automated: [case list](../../ui/src/pages/Cases.test.tsx) covers the four header controls, read-only column visibility, URL filters/view state, server sort/group queries before pagination, group headers, detail/back navigation and loading/failure with mocked data.
+Automated: covered end-to-end by the browser regression below (mocked `Cases` page unit tests were removed).
 
 Provider-free browser regression: [cases read-only journey](../../tests/e2e/cases-read-only.spec.ts) seeds passive cases, nested objects, singleton/multiple object arrays, a related unassigned task and two document revisions through production APIs, then checks column visibility, server-backed title sorting/type grouping, Filter popover/count, semantic key/value table rows and dotted paths, Work-before-Details layout, document revision previews, case-scoped Audit history/action filtering and return navigation in Chromium. It creates no agents. Run `env -u DATABASE_URL -u DATABASE_MIGRATION_URL pnpm exec playwright test --config tests/e2e/playwright.config.ts tests/e2e/cases-read-only.spec.ts --project chromium` on an unused `PAPERCLIP_E2E_PORT`. The existing harness starts an isolated instance; this journey does not qualify agent handoffs or live agent avatars.
 
@@ -56,7 +56,7 @@ Manual: Hide/show a field through Columns, choose a sort/direction, group by typ
 
 ### `case-record`
 
-Automated: [case routes](../../server/src/__tests__/cases-routes.test.ts) covers API behavior; [case fields](../../ui/src/components/CaseFieldsPanel.test.tsx) covers field UI separately.
+Automated: [case routes](../../server/src/__tests__/cases-routes.test.ts) covers API behavior (mocked `CaseFieldsPanel` UI unit tests were removed; see the browser regression above and Storybook stories for field UI coverage).
 
 Manual: Inspect Work above Details in one column. Read nested values as compact dotted key/value rows; a singleton item has `items.quantity`, while multiple items use `items[0].quantity` and `items[1].quantity`. Verify keys/values remain legible on mobile without horizontal page overflow and scalar references still link to their destinations. Preview a document, inspect its revisions, and close with Escape; focus returns to the document link. Follow View in Audit to the case's retained history; filter by Cases actions or Case entities in Audit and verify agents use their configured avatars. Read attachments, follow parent/child/task links, and inspect a passive case. Case pages have no editing controls, including status, labels, documents, or handoff retry/cancel. Verify inaccessible cases fail clearly and remain distinct from pipeline-owned items.
 
@@ -80,7 +80,7 @@ Start a standalone case through the agent's `handoff_case` operation or the case
 
 The final agent may hand off to `done`. While ordinary task completion is pending, the case remains open and shows that it will close when the task completes. Accepted completion closes the case and records a completed terminal handoff. Review and user waits do not close it. Case pages remain read-only.
 
-Automated: shared schema tests, case route privacy tests, case handoff service/delivery tests, native lifecycle tests, and `CaseDetail.test.tsx` exercise their individual boundaries. The registered explicit-only case-handoffs Product E2E suite covers the full native journey; registration is not a live pass.
+Automated: shared schema tests, case route privacy tests, case handoff service/delivery tests, and native lifecycle tests exercise their individual boundaries (mocked `CaseDetail` UI component tests were removed; verify case-detail UI manually or via browser checks). The registered explicit-only case-handoffs Product E2E suite covers the full native journey; registration is not a live pass.
 
 Manual: hand the task through implementation, verification, and correction. Its ID, workspace, thread, and review gates must remain stable. Repeat a request and restart delivery; neither may duplicate work. Try private cases with an unauthorized actor and verify documents, assets, activity, and handoff history remain inaccessible.
 
@@ -117,7 +117,7 @@ Three agents use four bounded runs to save, review, and correct a tiny case rece
 on the same task. Two API-seeded passive cases exercise read-only list filters;
 the browser reads the saved document, its revisions and handoff history. The
 independent oracle checks actual native document reads and revision attribution.
-See [fixture and limits](../../tests/runner-e2e/README.md#persistent-case-handoffs-explicit-only).
+See [fixture and limits](../../tests/runner-e2e/SUITES.md#persistent-case-handoffs-explicit-only).
 
 ## Gotchas
 
@@ -136,7 +136,7 @@ Capability ID: `cases/browse`.
 Scope: ui
 Storybook: Mount the production Cases page in its real shell: Columns/Filter/Sort/Group header controls, URL view state, search/status/type/project filters, No project, result paging, list-to-detail return, keyboard navigation and empty/loading/error recovery. The ListControls story changes columns, title sorting and type grouping using fixture query responses.
 Production: GET /companies/{id}/cases and /cases/types scope/filter behavior and ordering before pagination require production evidence; rendered fixtures establish presentation only. Mutation/permission scenarios need real API checks separately.
-Sources: Source: [Cases.tsx](../../ui/src/pages/Cases.tsx), [cases.ts](../../server/src/routes/cases.ts). Tests: [Cases.test.tsx](../../ui/src/pages/Cases.test.tsx), [cases-routes.test.ts](../../server/src/__tests__/cases-routes.test.ts)
+Sources: Source: [Cases.tsx](../../ui/src/pages/Cases.tsx), [cases.ts](../../server/src/routes/cases.ts). Tests: [cases-routes.test.ts](../../server/src/__tests__/cases-routes.test.ts), [cases-read-only.spec.ts](../../tests/e2e/cases-read-only.spec.ts)
 
 #### `structure`
 
@@ -145,7 +145,7 @@ Capability ID: `cases/structure`.
 Scope: ui
 Storybook: Mount read-only CaseDetail and CaseFieldsTable with nested objects, singleton/multiple object arrays and scalar reference links in a compact monospace key/value table, alongside documents, attachments, parent/children and unavailable references. Dotted leaf paths omit the index for a singleton object array and retain it for multiple entries. CaseDetail shows Work above Details in one column. The older CaseFieldsPanel arbitrary/empty examples retain their generic component scope. Do not invent a general field editor or typed field validation.
 Production: GET /cases/{id} and the parent-filtered case list must return permitted company records and correct relationships; changes/persistence require route tests separately.
-Sources: Source: [CaseDetail.tsx](../../ui/src/pages/CaseDetail.tsx), [CaseFieldsPanel.tsx](../../ui/src/components/CaseFieldsPanel.tsx), [Cases.tsx](../../ui/src/pages/Cases.tsx), [cases.ts](../../server/src/routes/cases.ts). Tests: [CaseFieldsPanel.test.tsx](../../ui/src/components/CaseFieldsPanel.test.tsx), [Cases.test.tsx](../../ui/src/pages/Cases.test.tsx), [CaseDetail.test.tsx](../../ui/src/pages/CaseDetail.test.tsx), [cases-routes.test.ts](../../server/src/__tests__/cases-routes.test.ts)
+Sources: Source: [CaseDetail.tsx](../../ui/src/pages/CaseDetail.tsx), [CaseFieldsPanel.tsx](../../ui/src/components/CaseFieldsPanel.tsx), [Cases.tsx](../../ui/src/pages/Cases.tsx), [cases.ts](../../server/src/routes/cases.ts). Tests: [cases-routes.test.ts](../../server/src/__tests__/cases-routes.test.ts), [cases-read-only.spec.ts](../../tests/e2e/cases-read-only.spec.ts)
 
 #### `history`
 
@@ -154,7 +154,7 @@ Capability ID: `cases/history`.
 Scope: ui
 Storybook: Mount CaseDetail's View in Audit link with the case UUID query scope, and document revisions. Preserve the historical ActivityHistory export/ID for its Audit-navigation example. The destination Audit feed is a separate production surface, not reproduced in the case fixture shell.
 Production: The case-scoped Audit query must include retained historical case events, enforce the same case access boundary, and deduplicate events also recorded in the activity log. Case/Case action filters and configured agent avatars need real Audit/browser checks. GET /cases/{id}/events and /cases/{id}/documents/{key}/revisions still require company/access filtering; fixtures do not establish durable creation, privacy or restoration.
-Sources: Source: [CaseDetail.tsx](../../ui/src/pages/CaseDetail.tsx), [cases.ts](../../server/src/routes/cases.ts). Tests: [CaseDetail.test.tsx](../../ui/src/pages/CaseDetail.test.tsx), [cases-routes.test.ts](../../server/src/__tests__/cases-routes.test.ts)
+Sources: Source: [CaseDetail.tsx](../../ui/src/pages/CaseDetail.tsx), [cases.ts](../../server/src/routes/cases.ts). Tests: [cases-routes.test.ts](../../server/src/__tests__/cases-routes.test.ts), [cases-read-only.spec.ts](../../tests/e2e/cases-read-only.spec.ts)
 
 #### `task-links`
 
@@ -163,7 +163,7 @@ Capability ID: `cases/task-links`.
 Scope: ui
 Storybook: Mount CaseDetail and IssueCasesPanel related-task/case links in both directions, missing links and unavailable targets.
 Production: GET /issues/{id}/cases and /cases/{id}/issue-links must enforce permitted task/case relationships; production browser cold links verify destination and company context.
-Sources: Source: [CaseDetail.tsx](../../ui/src/pages/CaseDetail.tsx), [IssueCasesPanel.tsx](../../ui/src/components/IssueCasesPanel.tsx), [cases.ts](../../server/src/routes/cases.ts). Tests: [IssueCasesPanel.test.tsx](../../ui/src/components/IssueCasesPanel.test.tsx), [CaseDetail.test.tsx](../../ui/src/pages/CaseDetail.test.tsx), [cases-routes.test.ts](../../server/src/__tests__/cases-routes.test.ts)
+Sources: Source: [CaseDetail.tsx](../../ui/src/pages/CaseDetail.tsx), [IssueCasesPanel.tsx](../../ui/src/components/IssueCasesPanel.tsx), [cases.ts](../../server/src/routes/cases.ts). Tests: [cases-routes.test.ts](../../server/src/__tests__/cases-routes.test.ts)
 
 #### `handoffs`
 
@@ -172,4 +172,4 @@ Capability ID: `cases/handoffs`.
 Scope: ui
 Storybook: Read-only pages and CaseWorkSummary mount production task/phase/history with waiting and paused-recipient API fixtures. No handoff mutation controls are exposed on these pages.
 Production: POST /companies/{id}/case-handoffs and GET /cases/{id}/handoffs require company/task authorization, retained-source privacy, observed revisions, and durable admission. Retry/cancel retain task-control authority. Native and legacy provider/workspace settlement require runtime evidence.
-Sources: Source: [CaseWorkSummary.tsx](../../ui/src/components/cases/CaseWorkSummary.tsx), [case-handoffs.ts](../../server/src/services/case-handoffs.ts), [case-handoff-delivery.ts](../../server/src/services/case-handoff-delivery.ts). Tests: [CaseDetail.test.tsx](../../ui/src/pages/CaseDetail.test.tsx)
+Sources: Source: [CaseWorkSummary.tsx](../../ui/src/components/cases/CaseWorkSummary.tsx), [case-handoffs.ts](../../server/src/services/case-handoffs.ts), [case-handoff-delivery.ts](../../server/src/services/case-handoff-delivery.ts)

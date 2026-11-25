@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
+import { eq } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -213,6 +214,31 @@ describeEmbeddedPostgres("issue access grant and locked edge routes", { concurre
       openIssue,
     };
   }
+
+  it("protects personal dashboard conversations from break-glass and title writes by teammates", async () => {
+    const fixture = await seedFixture();
+    const issueId = fixture.privateIssueId;
+    await db.update(issues).set({
+      originKind: "responsibility_dashboard",
+      originId: fixture.ownerId,
+      projectId: null,
+    }).where(eq(issues.id, issueId));
+    const owner = await createApp(db, boardActor(fixture.companyId, fixture.ownerId));
+    const admin = await createApp(db, boardActor(fixture.companyId, fixture.adminId));
+    const member = await createApp(db, boardActor(fixture.companyId, fixture.memberId));
+
+    await request(admin).get(`/api/issues/${issueId}?breakGlass=true&view=core`).expect(404);
+    await request(member).put(`/api/issues/${issueId}/title`).send({ title: "Another title" }).expect(404);
+    await request(member).put(`/api/issues/${issueId}/title`).send({
+      title: "Another title", onlyIfProvisional: true,
+    }).expect(404);
+    await request(admin).post(`/api/issues/${issueId}/admin/force-release`).expect(404);
+    const original = await request(owner).get(`/api/issues/${issueId}?view=core`).expect(200);
+    expect(original.body.title).toBe("Confidential root");
+    const renamed = await request(owner).put(`/api/issues/${issueId}/title`).send({ title: "My dashboard" }).expect(200);
+    expect(renamed.body.title).toBe("My dashboard");
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "issue.break_glass_read"))).toEqual([]);
+  });
 
   it("requires explicit owner/admin break-glass and records both audit evidence and an owner-visible notice", async () => {
     const fixture = await seedFixture();

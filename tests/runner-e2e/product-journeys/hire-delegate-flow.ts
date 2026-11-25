@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
@@ -172,6 +173,10 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
     }
     throw new JourneyError("failed", awaitingReply ? "hire_completion_reply_missing" : "hire_chat_not_completed");
   };
+  const messageChecks: Row[] = [];
+  const bodyReceipt = (body: unknown) => typeof body === "string" ? {
+    byteSize: Buffer.byteLength(body), sha256: createHash("sha256").update(body).digest("hex"),
+  } : null;
   const turn = async (text: string, count: number, handoff?: ReturnType<typeof hireHandoffMentions>) => {
     await page.goto(chatUrl, { waitUntil: "domcontentloaded" });
     const before = await api.get<Row | null>(chatPath);
@@ -181,7 +186,13 @@ export async function hireDelegateReuse(context: JourneyContext, session: Target
     const state = await waitForIdle(count);
     const comments = await api.get<Row[]>(`/api/issues/${state.chat.id}/comments?order=asc`);
     const added = comments.filter(row => row.authorUserId === context.user.id && !prior.some(old => old.id === row.id));
-    check("hire-user-messages-stored-once", added.length === 1 && added[0].body === text);
+    const matches = added.length === 1 && added[0].body === text;
+    messageChecks.push({ turn: messageChecks.length + 1, expected: bodyReceipt(text), matches,
+      added: added.map(row => ({ id: row.id, body: bodyReceipt(row.body), matches: row.body === text })) });
+    // Keep the actual comparison inputs before a failed grade, without copying
+    // message bodies, private session state or credentials into this receipt.
+    await retain("hire-user-message-checks.json", { schema: "paperclip.product-journey.hire-user-messages/v1", checks: messageChecks });
+    check("hire-user-messages-stored-once", matches);
     return state;
   };
   await session.own({ kind: "agent", name: names.hire, journeyId: "hire-delegate-reuse" });

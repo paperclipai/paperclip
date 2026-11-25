@@ -61,6 +61,30 @@ before that bot's PR merges. Verification must install and test that commit
 without waiting for another merge. The generated lockfile stays in the job's
 workspace; these checks do not commit it back to the repository.
 
+## GitHub API quota recovery
+
+The Actions reader reuses ETags for unchanged polls. A primary quota response
+waits until `x-ratelimit-reset`, with a one-second margin. `Retry-After` also sets
+a minimum wait, including on transient service errors such as HTTP 503.
+Without either value, a throttled request waits at least one
+minute, then uses exponential backoff. A permission-denied 403 is not retried.
+
+A wait must fit the caller deadline and the per-read budget. The default reader
+budget is 15 minutes. The Docker observer shares its 40-minute deadline with the
+reader; its final proof recheck has a five-minute budget. If the reset falls
+outside that budget, the step fails with `GitHub API rate limited` instead of
+retrying early. The error can include the quota limit, remaining requests,
+resource and reset time. It never includes the token or response body. Docker
+sets `GITHUB_TOKEN_SOURCE=github.token` beside the automatic token binding; other
+callers are described as a configured credential unless they supply that hint.
+
+Docker tags and OCI labels are generated from checkout and workflow inputs by
+`scripts/docker-image-metadata.mjs`, without a repository API read. Stable,
+beta, nightly and immutable SHA tag rules stay the same. Labels retain source,
+revision, version, creation time, local license and migration metadata; the
+GitHub repository description is no longer fetched. Source proof, migrator
+proof and attestation checks remain required.
+
 ## Consumer contract and retirement boundary
 
 Accept `Cloud source verified v1` only from the latest attempt of the canonical

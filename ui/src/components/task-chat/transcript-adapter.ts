@@ -35,6 +35,7 @@ import {
   toolActivityPresentation,
   toolTaxonomy,
 } from "./tool-taxonomy";
+import { safeExternalHttpUrl } from "@/lib/safe-url";
 
 const TERMINAL_STATUSES = new Set([
   "failed",
@@ -179,6 +180,9 @@ const TARGET_KEYS = [
   "description",
   "skill",
   "subject",
+  // A file a tool attaches or saves ("Attached u1.txt").
+  "filename",
+  "title",
 ] as const;
 
 const TARGET_MAX = 96;
@@ -189,20 +193,34 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const TASK_REF_KEYS = ["taskId", "task_id", "issueId", "issue_id"] as const;
 
 /** A raw id is an internal handle, never something a person reads. */
+/** A content digest ("7692c3ad…", "sha256:…") identifies bytes, not anything a person reads. */
+const DIGEST_RE = /^(?:sha(?:1|256|512):)?[0-9a-f]{40,128}$/i;
+
 function isOpaqueId(value: unknown): boolean {
-  return typeof value === "string" && UUID_RE.test(value.trim());
+  return typeof value === "string" && (UUID_RE.test(value.trim()) || DIGEST_RE.test(value.trim()));
 }
 
 /**
  * The task a tool call is about, when its input names one by UUID. The row
  * shows that task's identifier (resolved at render time) instead of the id.
  */
+/** Runners without direct app tools call them through this wrapper, naming the tool in its input. */
+const WRAPPED_APP_TOOL = "paperclip_call_assigned_tool";
+
+/** The app tool a wrapper call runs (its input's `name`), or undefined for any other call. */
+export function wrappedAppToolName(rawName: string | null | undefined, input: unknown): string | undefined {
+  if (!rawName || !(rawName === WRAPPED_APP_TOOL || rawName.endsWith(`_${WRAPPED_APP_TOOL}`) || rawName.endsWith(`.${WRAPPED_APP_TOOL}`))) return undefined;
+  if (input == null || typeof input !== "object" || Array.isArray(input)) return undefined;
+  const name = (input as Record<string, unknown>).name;
+  return typeof name === "string" && name.trim() ? name.trim() : undefined;
+}
+
 export function toolInputTaskRef(input: unknown): string | undefined {
   if (input == null || typeof input !== "object" || Array.isArray(input)) return undefined;
   const record = input as Record<string, unknown>;
   for (const key of TASK_REF_KEYS) {
     const value = record[key];
-    if (isOpaqueId(value)) return (value as string).trim();
+    if (typeof value === "string" && UUID_RE.test(value.trim())) return value.trim();
   }
   return undefined;
 }
@@ -318,17 +336,6 @@ function titleCaseKey(value: string): string {
     .replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function safeHttpHref(value: unknown): string | null {
-  const href = stringValue(value);
-  if (!href) return null;
-  try {
-    const url = new URL(href);
-    return url.protocol === "http:" || url.protocol === "https:" ? href : null;
-  } catch {
-    return null;
-  }
-}
-
 const PROVIDER_DETAIL_KEYS: Record<
   TaskChatProviderActivityItem["family"],
   readonly string[]
@@ -339,6 +346,7 @@ const PROVIDER_DETAIL_KEYS: Record<
     "transport",
     "operation",
     "name",
+    "subject",
     "target",
     "namespace",
     "readOnly",
@@ -450,6 +458,8 @@ function providerActivityItem(
           (entry.family === "verification" && key === "detail")
           ? 4000
           : key === "message" || key === "summary" || key === "reason" ? 320
+            // As long as a settled tool row's subject (applyToolDetail).
+            : key === "subject" ? 400
             : entry.family === "safety" && key === "action" ? 1000 : 160,
       ),
       mono: /(?:id|model|target|reference|url|code|bytes)$/i.test(key),
@@ -493,7 +503,7 @@ function providerActivityItem(
           .map(objectRecord)
           .slice(0, 64)
           .flatMap((source) => {
-            const href = safeHttpHref(source.url);
+            const href = safeExternalHttpUrl(source.url);
             return href
               ? [
                   {
@@ -908,6 +918,7 @@ export function transcriptToTaskChatItems(
             }
           }
           if (entry.detail) applyToolDetail(existing, entry.detail);
+          existing.appToolName ??= wrappedAppToolName(existing.rawName, entry.input);
           lastToolIndex = existingIndex!;
         } else {
           const tool: TaskChatToolItem = {
@@ -917,6 +928,7 @@ export function transcriptToTaskChatItems(
             rawName: entry.name ?? undefined,
             target: summarizeToolInput(entry.input),
             ...(toolInputTaskRef(entry.input) ? { taskRefId: toolInputTaskRef(entry.input) } : {}),
+            ...(wrappedAppToolName(entry.name, entry.input) ? { appToolName: wrappedAppToolName(entry.name, entry.input) } : {}),
             status: "in_progress",
             ...(entry.parentToolUseId ? { parentToolUseId: entry.parentToolUseId } : {}),
           };
@@ -1464,7 +1476,7 @@ export function paperclipRunnerActivityItems(
   const hasAggregateWorkspaceChange = parsed.some(
     (item) => item.kind === "protocol" && item.surface === "workspace_change",
   );
-  return parsed.filter((item) => {
+  return markRetriedTools(parsed.filter((item) => {
     switch (item.kind) {
       case "message":
         return Boolean(item.interstitial && item.text.trim());
@@ -1524,7 +1536,7 @@ export function paperclipRunnerActivityItems(
       case "plan_document":
         return false;
     }
-  });
+  }));
 }
 
 /**
@@ -1548,13 +1560,50 @@ export function paperclipRunnerTimelineItems(
   const activityIds = new Set(
     paperclipRunnerActivityItems(parsed).map((item) => item.id),
   );
-  return parsed.filter(
+  return markRetriedTools(parsed.filter(
     (item) =>
       activityIds.has(item.id) ||
       (item.kind === "thinking" && Boolean(item.streaming)) ||
       item.kind === "plan_document" ||
       (item.kind === "protocol" && item.surface === "runtime_request"),
-  );
+  ));
+}
+
+/**
+ * A tool row's identity and subject, for matching a retry of the same call.
+ * A shortened subject ("…") no longer identifies the call, so it never matches.
+ */
+function retryKey(item: TaskChatItem): string | null {
+  const key = (name: string | undefined, target: string | undefined) => {
+    const subject = target?.trim();
+    return name && subject && !subject.endsWith("…") ? `${name.toLowerCase()}\u0000${subject}` : null;
+  };
+  if (item.kind === "tool") return item.blockedReason ? null : key(item.rawName ?? item.name, item.target);
+  if (item.kind === "protocol" && item.surface === "provider_activity" && item.family === "tool_execution") {
+    return key(providerItemDetail(item, "Name"), providerItemDetail(item, "Subject") ?? providerItemDetail(item, "Target"));
+  }
+  return null;
+}
+
+/**
+ * A failed call is "retried", not "failed", when a later call of the same tool
+ * on the same target succeeded in the run (for example a read the CLI first
+ * tried with a relative path). A failure nothing recovered stays failed.
+ */
+export function markRetriedTools(items: TaskChatItem[]): TaskChatItem[] {
+  const lastSuccess = new Map<string, number>();
+  items.forEach((item, index) => {
+    const key = retryKey(item);
+    if (key && "status" in item && item.status === "completed") lastSuccess.set(key, index);
+  });
+  if (lastSuccess.size === 0) return items;
+  return items.map((item, index) => {
+    if (!("status" in item) || item.status !== "failed") return item;
+    const key = retryKey(item);
+    return key && (lastSuccess.get(key) ?? -1) > index && (item.kind === "tool" || item.kind === "protocol")
+      ? { ...item, retried: true } as TaskChatItem
+      : item;
+  });
 }
 
 /**
