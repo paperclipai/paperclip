@@ -13727,6 +13727,18 @@ export function issueService(db: Db) {
       if (dbOrTx === db) {
         const append = () =>
           measureRunTransaction(db, "response", async (tx) => {
+            if (actor.agentId) {
+              // Acquire the company privacy-tree lock before locking any issue row
+              // so peer-chat source privacy checks stay in the same lock order as
+              // issue/project privacy mutations and sendAgentChatMessage.
+              const [target] = await tx
+                .select({ companyId: issues.companyId, conversationAgentId: issues.conversationAgentId })
+                .from(issues)
+                .where(eq(issues.id, issueId));
+              if (target?.conversationAgentId && target.conversationAgentId !== actor.agentId) {
+                await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${target.companyId}`}, 0))`);
+              }
+            }
             // Serialize run-authored comments on the issue so a provider retry
             // cannot publish the same visible result twice. This needs no schema
             // change: the issue row is the transaction fence, and the recursive
@@ -13811,6 +13823,7 @@ export function issueService(db: Db) {
             || (actor.onBehalfOfUserId !== undefined && actor.onBehalfOfUserId !== current.conversationUserId)) {
             throw forbidden("An agent can post in another agent's chat only while it acts for the person who owns that chat");
           }
+          await dbOrTx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${issue.companyId}`}, 0))`);
           const [source] = typeof runTaskId === "string" && isUuidLike(runTaskId)
             ? await dbOrTx.select().from(issues).where(and(eq(issues.id, runTaskId), eq(issues.companyId, issue.companyId)))
             : [];

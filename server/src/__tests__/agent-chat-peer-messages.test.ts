@@ -31,7 +31,7 @@ import { issueRoutes } from "../routes/issues.js";
     await instanceSettingsService(db).updateExperimental({ enableAgentChat: true });
   }, 90_000);
   afterAll(async () => {
-    await db?.$client.end({ timeout: 0 });
+    await db?.$client.end({ timeout: 5 });
     await database?.cleanup();
   });
 
@@ -251,6 +251,87 @@ import { issueRoutes } from "../routes/issues.js";
     })).rejects.toThrow(/own running run/);
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.assistantChat.id))).toEqual([]);
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.company.id))).toEqual([]);
+  });
+
+  it("admits a real chat run for the receiving agent when wake-on-demand is enabled", async () => {
+    const f = await seed();
+    await db.update(agents).set({
+      adapterConfig: { command: process.execPath, args: ["-e", ""] },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
+    }).where(eq(agents.id, f.assistant.id));
+    const response = await request(chiefApp(f))
+      .post(`/api/issues/${f.assistantChat.id}/comments`)
+      .send({ body: message });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    const run = await vi.waitFor(async () => {
+      const [row] = await db.select().from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, f.company.id),
+        eq(heartbeatRuns.agentId, f.assistant.id),
+        sql`${heartbeatRuns.contextSnapshot}->>'wakeCommentId' = ${response.body.id}`,
+      ));
+      expect(row).toBeDefined();
+      return row!;
+    }, { timeout: 10_000, interval: 50 });
+    expect(run.contextSnapshot).toMatchObject({
+      issueId: f.assistantChat.id,
+      wakeCommentId: response.body.id,
+      wakeReason: "issue_commented",
+    });
+    // Wait for the trivial no-op process run and its finalization cleanup to settle.
+    await vi.waitFor(async () => {
+      const [settled] = await db.select({
+        status: heartbeatRuns.status,
+        controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
+      }).from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      const chat = await issueService(db).getById(f.assistantChat.id);
+      expect(["succeeded", "failed", "cancelled"]).toContain(settled?.status);
+      expect(settled?.controllerLeaseExpiresAt).toBeNull();
+      expect(chat?.executionRunId).toBeNull();
+    }, { timeout: 10_000, interval: 50 });
+  });
+
+  it("serializes peer source privacy checks with concurrent privacy transitions", async () => {
+    const f = await seed();
+    const svc = issueService(db);
+    const sourceTask = await svc.create(f.company.id, {
+      title: "Soon private source", assigneeAgentId: f.chief.id, status: "in_progress", createdByUserId: f.person,
+    });
+    const [sourceRun] = await db.insert(heartbeatRuns).values({
+      companyId: f.company.id, agentId: f.chief.id, status: "running", responsibleUserId: f.person,
+      contextSnapshot: { issueId: sourceTask.id },
+    }).returning();
+    let unlock!: () => void;
+    let ready!: (pid: number) => void;
+    const locked = new Promise<number>((resolve) => { ready = resolve; });
+    const release = new Promise<void>((resolve) => { unlock = resolve; });
+    const gate = db.transaction(async (tx) => {
+      const [{ pid }] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${f.company.id}`}, 0))`);
+      ready(pid);
+      await release;
+      await tx.update(issues).set({ visibility: "private" }).where(eq(issues.id, sourceTask.id));
+    });
+    const pid = await locked;
+    let peerPost: Promise<unknown> | undefined;
+    try {
+      peerPost = svc.addComment(f.assistantChat.id, message, {
+        agentId: f.chief.id, runId: sourceRun.id, onBehalfOfUserId: f.person,
+      });
+      await vi.waitFor(async () => {
+        const [row] = await db.execute<{ blocked: boolean }>(sql`select exists(
+          select 1 from pg_stat_activity where datname = current_database() and ${pid} = any(pg_blocking_pids(pid))
+        ) as blocked`);
+        expect(row.blocked).toBe(true);
+      }, { timeout: 5_000, interval: 20 });
+      unlock();
+      await gate;
+      await expect(peerPost).rejects.toThrow(/Restricted task content/);
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.assistantChat.id))).toEqual([]);
+    } finally {
+      unlock();
+      await gate.catch(() => {});
+      await peerPost?.catch(() => {});
+    }
   });
 
   it("labels another agent's chat message as other_agent in fresh-session history", async () => {
