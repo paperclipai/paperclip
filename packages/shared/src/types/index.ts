@@ -571,6 +571,7 @@ export type {
   ToolConnectionStoredContentCounts,
   ToolConnectionContentDeletion,
   ToolConnectionContentDeletionCounts,
+  ToolConnectionContentDeletionReason,
   ToolConnectionContentDeletionStatus,
   ConnectionTokenAttribution,
   ConnectionRecoverableErrorCode,
