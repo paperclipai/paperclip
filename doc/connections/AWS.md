@@ -6,7 +6,8 @@ AWS key for the role method. For each connection, the control plane mints a
 one-hour bearer token at call time. Agents see the AWS tools like any other
 connector's tools and never receive AWS credentials.
 
-It is behind the `enableAwsConnector` experimental setting (off by default).
+It is available on every instance. The former `enableAwsConnector` experimental
+setting is a compatibility key whose value is ignored.
 The design and the spike that proved it are in
 [the AWS connector plan](../plans/2026-11-17-aws-connector-and-minted-credentials.md)
 and [the workload identity issuer](../plans/2026-11-17-workload-identity-issuer.md).
