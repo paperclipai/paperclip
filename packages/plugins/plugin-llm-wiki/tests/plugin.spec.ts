@@ -441,8 +441,6 @@ beforeEach(() => {
             "div",
             { key: routine.key },
             createElement("span", null, routine.title),
-            createElement("button", null, "Run now"),
-            createElement("button", { role: "switch" }, "On"),
             routine.href ? createElement("a", { href: `/PAP${routine.href}` }, "Configure") : null,
             routine.defaultDrift?.changedFields.length
               ? createElement("span", null, `Plugin defaults changed: ${routine.defaultDrift.changedFields.join(", ")}`)
@@ -566,11 +564,14 @@ function paperclipIssue(overrides: Partial<Issue> = {}): Issue {
     projectWorkspaceId: null,
     goalId: null,
     parentId: null,
+    visibility: "open",
+    privacyRootIssueId: null,
     title: "Design event ingestion controls",
     description: "Decide which Paperclip issues, comments, and documents can be ingested into the wiki.",
     status: "todo",
     workMode: "standard",
     priority: "medium",
+    reviewPolicy: null,
     assigneeAgentId: null,
     assigneeUserId: null,
     responsibleUserId: null,
@@ -650,6 +651,46 @@ function mockPersistedWikiSpace(harness: ReturnType<typeof createTestHarness>, s
       return [defaultWikiSpaceRow(), row] as T[];
     }
     return originalQuery<T>(sql, params);
+  };
+}
+
+function renderWikiPage(): string {
+  return renderToStaticMarkup(createElement(WikiPage, {
+    context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
+  } as never));
+}
+
+function captureWikiWrites(harness: ReturnType<typeof createTestHarness>) {
+  const writes: Array<{ path: string; contents: string }> = [];
+  harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
+    writes.push({ path: relativePath, contents });
+    return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
+  };
+  return writes;
+}
+
+function managedSpaceRow(created: {
+  space: { id: string; companyId: string; wikiId: string; slug: string; displayName: string; pathPrefix: string | null };
+}): Record<string, unknown> {
+  return {
+    id: created.space.id,
+    company_id: created.space.companyId,
+    wiki_id: created.space.wikiId,
+    slug: created.space.slug,
+    display_name: created.space.displayName,
+    space_type: "local_folder",
+    folder_mode: "managed_subfolder",
+    root_folder_key: "wiki-root",
+    path_prefix: created.space.pathPrefix,
+    configured_root_path: null,
+    access_scope: "shared",
+    owner_user_id: null,
+    owner_agent_id: null,
+    team_key: null,
+    settings: {},
+    status: "active",
+    created_at: null,
+    updated_at: null,
   };
 }
 
@@ -811,9 +852,7 @@ describe("LLM Wiki plugin scaffold", () => {
 
   it("routes legacy Wiki operations URLs to the History issue table", () => {
     mockPathname = "/PAP/wiki/operations";
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("Issues table · project-1 · plugin:paperclipai.plugin-llm-wiki:operation");
     expect(markup).not.toContain("Recent runs");
@@ -822,9 +861,7 @@ describe("LLM Wiki plugin scaffold", () => {
 
   it("loads AGENTS.md from the Wiki page and exposes an edit affordance", () => {
     mockPathname = "/PAP/wiki/page/templates/AGENTS.md";
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("AGENTS");
     expect(markup).toContain(">AGENTS.md</h1>");
@@ -848,9 +885,7 @@ describe("LLM Wiki plugin scaffold", () => {
       sourceRefs: [{ kind: "issue", issueIdentifier: "PAP-FOOTER-1" }],
     };
 
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("Current project state.");
     expect(markup).not.toContain(">Sources</");
@@ -875,9 +910,7 @@ updated: 2026-05-04
 Route sidebar state stays attached to the selected wiki page.
 `;
 
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("<summary");
     expect(markup).toContain("Properties");
@@ -915,9 +948,7 @@ Wiki links preserve normal browser navigation.
 Duplicate headings receive stable suffixes.
 `;
 
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain('aria-label="On this page"');
     expect(markup).toContain('aria-expanded="true"');
@@ -956,9 +987,7 @@ Duplicate headings receive stable suffixes.
       checkedAt: new Date().toISOString(),
     };
 
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("Repair wiki root folder");
     expect(markup).toContain("/tmp/deleted-wiki-root");
@@ -994,9 +1023,7 @@ Duplicate headings receive stable suffixes.
 
   it("renders the maintainer settings without plugin metadata or inline AGENTS.md editing", () => {
     mockPathname = "/PAP/wiki/settings/maintainer";
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("Wiki Maintainer");
     expect(markup).toContain("Adapter: claude local");
@@ -1021,9 +1048,7 @@ Duplicate headings receive stable suffixes.
       details: { name: "Wiki Maintainer", status: "pending_approval", adapterType: "claude_local", icon: "book-open", urlKey: "wiki-maintainer" },
     };
 
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("pending approval");
     expect(markup).toContain("Approve the agent");
@@ -1032,9 +1057,7 @@ Duplicate headings receive stable suffixes.
 
   it("renders root settings as a compact health checklist with the shared path picker", () => {
     mockPathname = "/PAP/wiki/settings";
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain(">Setup</");
     expect(markup).toContain("Base Folder");
@@ -1104,9 +1127,7 @@ Duplicate headings receive stable suffixes.
       checkedAt: new Date().toISOString(),
     };
 
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("configuration errors detected, fix them all?");
     expect(markup).toContain("Wiki root folder");
@@ -1129,9 +1150,7 @@ Duplicate headings receive stable suffixes.
       },
     }];
 
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("Managed Skills");
     expect(markup).toContain("skill issue(s) need attention");
@@ -1153,9 +1172,7 @@ Duplicate headings receive stable suffixes.
       },
     }];
 
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("skill issue(s) need attention");
     expect(markup).toContain("LLM Wiki Maintainer differs from the plugin default: SKILL.md.");
@@ -1175,9 +1192,7 @@ Duplicate headings receive stable suffixes.
 
   it("renders project settings as a project picker without managed-resource metadata", () => {
     mockPathname = "/PAP/wiki/settings/project";
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("Use existing project");
     expect(markup).toContain("LLM Wiki");
@@ -1196,9 +1211,7 @@ Duplicate headings receive stable suffixes.
   it("renders space settings with health line styling and disabled access controls", () => {
     mockPathname = "/PAP/wiki/settings/spaces/default";
 
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("Space folder health checklist");
     expect(markup).toContain("left:8px");
@@ -1212,7 +1225,7 @@ Duplicate headings receive stable suffixes.
     expect(markup).not.toContain("Permissions are stored but not enforced");
   });
 
-  it("renders distillation settings with assigned-agent model selection and cheap path without budget controls", () => {
+  it("renders distillation settings with assigned-agent execution without budget controls", () => {
     mockPathname = "/PAP/wiki/settings/distillation";
     mockDistillationOverviewData = {
       counts: { cursors: 1, runningRuns: 0, failedRuns24h: 0, reviewRequired: 0 },
@@ -1228,15 +1241,11 @@ Duplicate headings receive stable suffixes.
       runs: [],
     };
 
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("Agent execution");
     expect(markup).toContain("Assigned maintainer");
     expect(markup).toContain("Wiki Maintainer · claude local");
-    expect(markup).toContain("Cheap path");
-    expect(markup).toContain("assigneeAdapterOverrides.modelProfile = cheap");
     expect(markup).toContain("All sections — apply when source hash matches and confidence");
     expect(markup).not.toContain("Per-task budget");
     expect(markup).not.toContain("Project total budget");
@@ -1247,7 +1256,7 @@ Duplicate headings receive stable suffixes.
     expect(markup).not.toContain("Monthly plugin cap");
   });
 
-  it("renders managed routines as normal routine rows with run, toggle, and configure controls", () => {
+  it("passes managed routine titles, bindings, and configuration links to the host list", () => {
     mockPathname = "/PAP/wiki/settings/routines";
     mockSettingsManagedRoutines = [{
       status: "resolved",
@@ -1264,14 +1273,10 @@ Duplicate headings receive stable suffixes.
       },
       details: { cronExpression: "0 3 * * *" },
     }];
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("Run LLM Wiki lint");
-    expect(markup).toContain("Run now");
     expect(markup).toContain("Configure");
-    expect(markup).toContain("role=\"switch\"");
     expect(markup).toContain("LLM Wiki · Wiki Maintainer");
     expect(markup).toContain("href=\"/PAP/routines/routine-1\"");
   });
@@ -1298,9 +1303,7 @@ Duplicate headings receive stable suffixes.
       details: { cronExpression: "0 3 * * *" },
     }];
 
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("Routine defaults changed");
     expect(markup).toContain("Plugin defaults changed: description");
@@ -1318,9 +1321,7 @@ Duplicate headings receive stable suffixes.
       details: { name: "Wiki Maintainer", status: "idle", adapterType: "claude_local", icon: "book-open", urlKey: "wiki-maintainer" },
     };
 
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("Wiki Maintainer instructions differ from the plugin default: AGENTS.md.");
     expect(markup).toContain("Wiki Maintainer instruction defaults changed: AGENTS.md");
@@ -1343,9 +1344,7 @@ Duplicate headings receive stable suffixes.
       details: { cronExpression: "0 3 * * *" },
     }];
 
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("Routine setup needs repair");
     expect(markup).toContain("Fix routines");
@@ -1357,9 +1356,7 @@ Duplicate headings receive stable suffixes.
 
   it("renders legacy lint routes inside the Wiki settings section", () => {
     mockPathname = "/PAP/wiki/lint";
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("Run lint now");
     expect(markup).toContain("Recent lint runs");
@@ -1368,9 +1365,7 @@ Duplicate headings receive stable suffixes.
 
   it("does not expose IDEA.md pattern editing as a settings section", () => {
     mockPathname = "/PAP/wiki/settings";
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("LLM Wiki settings sections");
     expect(markup).not.toContain(">Pattern</span>");
@@ -1380,9 +1375,7 @@ Duplicate headings receive stable suffixes.
 
   it("does not expose plugin capabilities as a settings section", () => {
     mockPathname = "/PAP/wiki/settings";
-    const markup = renderToStaticMarkup(createElement(WikiPage, {
-      context: { companyId: COMPANY_ID, companyPrefix: "PAP" },
-    } as never));
+    const markup = renderWikiPage();
 
     expect(markup).toContain("LLM Wiki settings sections");
     expect(markup).not.toContain("Plugin capabilities");
@@ -1391,11 +1384,7 @@ Duplicate headings receive stable suffixes.
 
   it("reconciles managed maintenance routines through stable agent and project refs", async () => {
     const harness = createTestHarness({ manifest });
-    const writes: Array<{ path: string; contents: string }> = [];
-    harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
-      writes.push({ path: relativePath, contents });
-      return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
-    };
+    const writes = captureWikiWrites(harness);
 
     await plugin.definition.setup(harness.ctx);
 
@@ -1650,11 +1639,7 @@ Duplicate headings receive stable suffixes.
     const harness = createTestHarness({ manifest });
     const issue = paperclipIssue();
     harness.seed({ issues: [issue] });
-    const writes: Array<{ path: string; contents: string }> = [];
-    harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
-      writes.push({ path: relativePath, contents });
-      return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
-    };
+    const writes = captureWikiWrites(harness);
 
     await plugin.definition.setup(harness.ctx);
     await harness.emit("issue.created", { identifier: issue.identifier }, {
@@ -1673,11 +1658,7 @@ Duplicate headings receive stable suffixes.
     const harness = createTestHarness({ manifest });
     const issue = paperclipIssue();
     harness.seed({ issues: [issue] });
-    const writes: Array<{ path: string; contents: string }> = [];
-    harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
-      writes.push({ path: relativePath, contents });
-      return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
-    };
+    const writes = captureWikiWrites(harness);
 
     await plugin.definition.setup(harness.ctx);
     const policy = await harness.performAction<{ enabled: boolean; sources: { issues: boolean; comments: boolean; documents: boolean } }>(
@@ -1968,6 +1949,7 @@ Duplicate headings receive stable suffixes.
         authorType: "user",
         authorAgentId: null,
         authorUserId: null,
+        onBehalfOfUserId: null,
         body: "Comment evidence for the source bundle.",
         presentation: null,
         metadata: null,
@@ -2033,6 +2015,7 @@ Duplicate headings receive stable suffixes.
         authorType: "user",
         authorAgentId: null,
         authorUserId: null,
+        onBehalfOfUserId: null,
         body: "Authorization: Bearer ghp_supersecretcommenttoken1234567890",
         presentation: null,
         metadata: null,
@@ -2276,12 +2259,11 @@ Duplicate headings receive stable suffixes.
     await plugin.definition.setup(harness.ctx);
     const result = await harness.performAction<{
       status: string;
-      operation: { issue: { originKind: string; billingCode: string | null; assigneeAgentId: string | null; assigneeAdapterOverrides: { modelProfile?: string } | null; description: string | null } };
+      operation: { issue: { originKind: string; billingCode: string | null; assigneeAgentId: string | null; assigneeAdapterOverrides: Record<string, unknown> | null; description: string | null } };
       workItem: { kind: string; workItemId: string };
     }>("distill-paperclip-now", {
       companyId: COMPANY_ID,
       autoApply: false,
-      useCheapModelProfile: true,
       includeSupportingPages: false,
     });
 
@@ -2290,7 +2272,7 @@ Duplicate headings receive stable suffixes.
     expect(result.operation.issue.originKind).toBe(`${OPERATION_ORIGIN_KIND}:distill`);
     expect(result.operation.issue.billingCode).toBe("plugin-llm-wiki:default");
     expect(result.operation.issue.assigneeAgentId).toBe(wikiMaintainerAgent().id);
-    expect(result.operation.issue.assigneeAdapterOverrides).toEqual({ modelProfile: "cheap" });
+    expect(result.operation.issue.assigneeAdapterOverrides).toBeNull();
     expect(result.operation.issue.description).toContain("Prompt source: LLM Wiki plugin action `distill-paperclip-now`");
     expect(result.operation.issue.description).toContain(`Required skill: use the installed \`${PAPERCLIP_DISTILL_SKILL_KEY}\` skill`);
     expect(result.operation.issue.description).toContain("Do not hardcode a single project");
@@ -2532,6 +2514,7 @@ Duplicate headings receive stable suffixes.
         authorType: "user",
         authorAgentId: null,
         authorUserId: null,
+        onBehalfOfUserId: null,
         body: "Authorization: Bearer ghp_patchsecretcommenttoken1234567890",
         presentation: null,
         metadata: null,
@@ -2765,11 +2748,7 @@ Duplicate headings receive stable suffixes.
 
   it("bootstraps required local wiki files through the local folder API", async () => {
     const harness = createTestHarness({ manifest });
-    const writes: Array<{ path: string; contents: string }> = [];
-    harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
-      writes.push({ path: relativePath, contents });
-      return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
-    };
+    const writes = captureWikiWrites(harness);
 
     await plugin.definition.setup(harness.ctx);
     const result = await harness.performAction<{ writtenFiles: string[]; managedSkills: WikiSkillResource[] }>("bootstrap-root", {
@@ -3006,11 +2985,7 @@ Duplicate headings receive stable suffixes.
 
   it("captures raw sources into local files and plugin metadata", async () => {
     const harness = createTestHarness({ manifest });
-    const writes: Array<{ path: string; contents: string }> = [];
-    harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
-      writes.push({ path: relativePath, contents });
-      return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
-    };
+    const writes = captureWikiWrites(harness);
 
     await plugin.definition.setup(harness.ctx);
     const result = await harness.performAction<{ rawPath: string; hash: string }>("capture-source", {
@@ -3028,11 +3003,7 @@ Duplicate headings receive stable suffixes.
 
   it("preserves manual source ingest for non-default spaces while refusing Paperclip distillation there", async () => {
     const harness = createTestHarness({ manifest });
-    const writes: Array<{ path: string; contents: string }> = [];
-    harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
-      writes.push({ path: relativePath, contents });
-      return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
-    };
+    const writes = captureWikiWrites(harness);
     harness.seed({
       agents: [wikiMaintainerAgent()],
       projects: [existingProject()],
@@ -3054,26 +3025,7 @@ Duplicate headings receive stable suffixes.
       companyId: COMPANY_ID,
       displayName: "Team Research",
     });
-    spaces.set(created.space.slug, {
-      id: created.space.id,
-      company_id: created.space.companyId,
-      wiki_id: created.space.wikiId,
-      slug: created.space.slug,
-      display_name: created.space.displayName,
-      space_type: "local_folder",
-      folder_mode: "managed_subfolder",
-      root_folder_key: "wiki-root",
-      path_prefix: created.space.pathPrefix,
-      configured_root_path: null,
-      access_scope: "shared",
-      owner_user_id: null,
-      owner_agent_id: null,
-      team_key: null,
-      settings: {},
-      status: "active",
-      created_at: null,
-      updated_at: null,
-    });
+    spaces.set(created.space.slug, managedSpaceRow(created));
 
     const source = await harness.performAction<{ rawPath: string; spaceSlug: string }>("capture-source", {
       companyId: COMPANY_ID,
@@ -3296,26 +3248,7 @@ Duplicate headings receive stable suffixes.
       companyId: COMPANY_ID,
       displayName: "Research Space",
     });
-    spaces.set(created.space.slug, {
-      id: created.space.id,
-      company_id: created.space.companyId,
-      wiki_id: created.space.wikiId,
-      slug: created.space.slug,
-      display_name: created.space.displayName,
-      space_type: "local_folder",
-      folder_mode: "managed_subfolder",
-      root_folder_key: "wiki-root",
-      path_prefix: created.space.pathPrefix,
-      configured_root_path: null,
-      access_scope: "shared",
-      owner_user_id: null,
-      owner_agent_id: null,
-      team_key: null,
-      settings: {},
-      status: "active",
-      created_at: null,
-      updated_at: null,
-    });
+    spaces.set(created.space.slug, managedSpaceRow(created));
     await harness.performAction("bootstrap-space", {
       companyId: COMPANY_ID,
       spaceSlug: created.space.slug,
@@ -3361,6 +3294,8 @@ Duplicate headings receive stable suffixes.
 
     const pageWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("wiki_pages"));
     const sourceWrites = harness.dbExecutes.filter((execute) => execute.sql.includes("wiki_sources"));
+    expect(pageWrites).toHaveLength(4);
+    expect(sourceWrites).toHaveLength(2);
     expect(pageWrites.every((write) => write.sql.includes("space_id"))).toBe(true);
     expect(sourceWrites.every((write) => write.sql.includes("space_id"))).toBe(true);
   });
@@ -3368,11 +3303,7 @@ Duplicate headings receive stable suffixes.
   it("ingests source metadata and creates a hidden plugin-operation issue", async () => {
     const harness = createTestHarness({ manifest });
     harness.seed({ agents: [wikiMaintainerAgent()] });
-    const writes: Array<{ path: string; contents: string }> = [];
-    harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
-      writes.push({ path: relativePath, contents });
-      return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
-    };
+    const writes = captureWikiWrites(harness);
 
     await plugin.definition.setup(harness.ctx);
     const result = await harness.performAction<{
@@ -3426,11 +3357,7 @@ Duplicate headings receive stable suffixes.
   it("rejects oversized source capture before raw writes or operation creation", async () => {
     const harness = createTestHarness({ manifest, config: { maxSourceBytes: 16 } });
     harness.seed({ agents: [wikiMaintainerAgent()] });
-    const writes: Array<{ path: string; contents: string }> = [];
-    harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
-      writes.push({ path: relativePath, contents });
-      return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
-    };
+    const writes = captureWikiWrites(harness);
 
     await plugin.definition.setup(harness.ctx);
     await expect(harness.performAction("ingest-source", {
@@ -3565,26 +3492,7 @@ Duplicate headings receive stable suffixes.
       companyId: COMPANY_ID,
       displayName: "Research Space",
     });
-    spaces.set(created.space.slug, {
-      id: created.space.id,
-      company_id: created.space.companyId,
-      wiki_id: created.space.wikiId,
-      slug: created.space.slug,
-      display_name: created.space.displayName,
-      space_type: "local_folder",
-      folder_mode: "managed_subfolder",
-      root_folder_key: "wiki-root",
-      path_prefix: created.space.pathPrefix,
-      configured_root_path: null,
-      access_scope: "shared",
-      owner_user_id: null,
-      owner_agent_id: null,
-      team_key: null,
-      settings: {},
-      status: "active",
-      created_at: null,
-      updated_at: null,
-    });
+    spaces.set(created.space.slug, managedSpaceRow(created));
 
     const result = await harness.performAction<{
       operationId: string;
@@ -3666,6 +3574,13 @@ Duplicate headings receive stable suffixes.
   it("starts query sessions, records run ids, and forwards session events to plugin streams", async () => {
     const harness = createTestHarness({ manifest });
     harness.seed({ agents: [wikiMaintainerAgent()] });
+    let issuedRunId: string | undefined;
+    const originalSendMessage = harness.ctx.agents.sessions.sendMessage.bind(harness.ctx.agents.sessions);
+    harness.ctx.agents.sessions.sendMessage = async (...args) => {
+      const receipt = await originalSendMessage(...args);
+      issuedRunId = receipt.runId;
+      return receipt;
+    };
     const streamEvents: unknown[] = [];
     harness.ctx.streams.emit = (_channel, event) => {
       streamEvents.push(event);
@@ -3686,7 +3601,15 @@ Duplicate headings receive stable suffixes.
     expect(result.querySessionId).toBe(result.operationId);
     expect(result.channel).toBe(`llm-wiki:query:${result.operationId}`);
     expect(harness.dbExecutes.some((execute) => execute.sql.includes("wiki_query_sessions"))).toBe(true);
-    expect(harness.dbExecutes.some((execute) => execute.sql.includes("run_ids"))).toBe(true);
+    expect(issuedRunId).toEqual(expect.any(String));
+    expect(issuedRunId).not.toBe("");
+    expect(result.runId).toBe(issuedRunId);
+    const runUpdate = harness.dbExecutes.find((execute) =>
+      /UPDATE .*wiki_operations/.test(execute.sql) && execute.sql.includes("run_ids"),
+    );
+    expect(runUpdate?.params?.slice(0, 4)).toEqual([
+      COMPANY_ID, result.operationId, "running", JSON.stringify([issuedRunId]),
+    ]);
 
     harness.simulateSessionEvent(result.sessionId, {
       runId: result.runId,
@@ -3719,11 +3642,7 @@ Duplicate headings receive stable suffixes.
   it("files a streamed query answer as a page through a hidden file-as-page operation", async () => {
     const harness = createTestHarness({ manifest });
     harness.seed({ agents: [wikiMaintainerAgent()] });
-    const writes: Array<{ path: string; contents: string }> = [];
-    harness.ctx.localFolders.writeTextAtomic = async (_companyId, _folderKey, relativePath, contents) => {
-      writes.push({ path: relativePath, contents });
-      return harness.ctx.localFolders.status(COMPANY_ID, "wiki-root");
-    };
+    const writes = captureWikiWrites(harness);
     await plugin.definition.setup(harness.ctx);
 
     const result = await harness.performAction<{ path: string; operationId: string; page: { revisionId: string } }>(

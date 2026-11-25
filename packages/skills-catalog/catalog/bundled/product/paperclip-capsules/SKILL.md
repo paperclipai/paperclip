@@ -1,6 +1,6 @@
 ---
 name: paperclip-capsules
-description: Generate, implement, or review Paperclip capsule visuals. Use when the user asks for Paperclip capsule art, capsule banks, agent capsule visuals, heartbeat status capsules, capsule identicons, capsule graphic-generator output, or validation of Paperclip capsule brand usage.
+description: Generate, implement, or review Paperclip capsule visuals. Use for capsule art, agent capsules, heartbeat status capsules, identicons, capsule banks, or brand-usage validation.
 key: paperclipai/bundled/product/paperclip-capsules
 recommendedForRoles:
   - designer

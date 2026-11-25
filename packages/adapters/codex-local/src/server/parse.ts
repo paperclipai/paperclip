@@ -1,6 +1,5 @@
 import {
   asString,
-  asNumber,
   parseObject,
   parseJson,
 } from "@paperclipai/adapter-utils/server-utils";
@@ -12,66 +11,124 @@ const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
 const CODEX_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit|model (?:is )?at capacity|at capacity for this model|capacity limit)/i;
+const CODEX_REFRESH_TOKEN_REUSED_RE =
+  /(?:refresh[_\s-]?token[_\s-]?reused|refresh token (?:has )?already been used|token reuse detected)/i;
+const CODEX_REFRESH_TOKEN_EXPIRED_RE =
+  /(?:refresh[_\s-]?token[_\s-]?expired|refresh token (?:has )?expired|expired refresh token)/i;
+const CODEX_REFRESH_TOKEN_INVALIDATED_RE =
+  /(?:refresh[_\s-]?token[_\s-]?(?:invalidated|revoked|invalid)|refresh token (?:has been )?(?:invalidated|revoked|invalid)|invalid refresh token|missing bearer)/i;
+const CODEX_OAUTH_INVALID_GRANT_RE = /\binvalid_grant\b/i;
+const CODEX_CONTEXTUAL_REFRESH_AUTH_INVALIDATED_RE =
+  /(?:(?:oauth|refresh|access[_\s-]?token|bearer|credential).{0,80}(?:\b401\b|unauthori[sz]ed|\binvalid[\s-]grant\b)|(?:\b401\b|unauthori[sz]ed|\binvalid[\s-]grant\b).{0,80}(?:oauth|refresh|access[_\s-]?token|bearer|credential))/i;
+
+export type CodexAuthRefreshFailureClass =
+  | "refresh_token_reused"
+  | "refresh_token_expired"
+  | "refresh_token_invalidated";
 
 export function parseCodexJsonl(stdout: string) {
+  return createCodexJsonlParser()(stdout);
+}
+
+/** Consume complete JSONL records once, retaining protocol accounting state. */
+export function createCodexJsonlParser() {
   let sessionId: string | null = null;
   let finalMessage: string | null = null;
   let errorMessage: string | null = null;
+  let sawProtocolEvent = false;
+  let sawProtocolTerminalEvent = false;
+  let usageReported = false;
+  let usageComplete = false;
   const usage = {
     inputTokens: 0,
     cachedInputTokens: 0,
     outputTokens: 0,
   };
 
-  for (const rawLine of stdout.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
+  return (stdout: string) => {
+    for (const rawLine of stdout.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) continue;
 
-    const event = parseJson(line);
-    if (!event) continue;
+      const event = parseJson(line);
+      if (!event) continue;
 
-    const type = asString(event.type, "");
-    if (type === "thread.started") {
-      sessionId = asString(event.thread_id, sessionId ?? "") || sessionId;
-      continue;
-    }
-
-    if (type === "error") {
-      const msg = asString(event.message, "").trim();
-      if (msg) errorMessage = msg;
-      continue;
-    }
-
-    if (type === "item.completed") {
-      const item = parseObject(event.item);
-      if (asString(item.type, "") === "agent_message") {
-        const text = asString(item.text, "");
-        if (text) finalMessage = text;
+      const type = asString(event.type, "");
+      if (type) sawProtocolEvent = true;
+      if (type === "error" || type === "turn.completed" || type === "turn.failed") {
+        sawProtocolTerminalEvent = true;
+        const reported = parseObject(event.usage);
+        const validCount = (value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+        const cached = reported.cached_input_tokens ?? 0;
+        usageComplete = validCount(reported.input_tokens) && validCount(reported.output_tokens)
+          && validCount(cached) && cached <= reported.input_tokens;
+        if (usageComplete) {
+          usage.inputTokens = reported.input_tokens as number;
+          usage.cachedInputTokens = cached as number;
+          usage.outputTokens = reported.output_tokens as number;
+          usageReported = true;
+        }
       }
-      continue;
+      if (type === "turn.started") usageComplete = false;
+      if (type === "thread.started") {
+        sessionId = asString(event.thread_id, sessionId ?? "") || sessionId;
+        continue;
+      }
+
+      if (type === "error") {
+        const msg = asString(event.message, "").trim();
+        if (msg) errorMessage = msg;
+        continue;
+      }
+
+      if (type === "item.completed") {
+        const item = parseObject(event.item);
+        if (asString(item.type, "") === "agent_message") {
+          const text = asString(item.text, "");
+          if (text) finalMessage = text;
+        }
+        continue;
+      }
+
+      if (type === "turn.failed") {
+        const err = parseObject(event.error);
+        const msg = asString(err.message, "").trim();
+        if (msg) errorMessage = msg;
+      }
     }
 
-    if (type === "turn.completed") {
-      const usageObj = parseObject(event.usage);
-      usage.inputTokens = asNumber(usageObj.input_tokens, usage.inputTokens);
-      usage.cachedInputTokens = asNumber(usageObj.cached_input_tokens, usage.cachedInputTokens);
-      usage.outputTokens = asNumber(usageObj.output_tokens, usage.outputTokens);
-      continue;
-    }
-
-    if (type === "turn.failed") {
-      const err = parseObject(event.error);
-      const msg = asString(err.message, "").trim();
-      if (msg) errorMessage = msg;
-    }
-  }
-
-  return {
-    sessionId,
-    summary: finalMessage?.trim() ?? "",
-    usage,
-    errorMessage,
+    return {
+      sessionId,
+      summary: finalMessage?.trim() ?? "",
+      // Codex includes cache hits in input_tokens; Paperclip stores them separately.
+      usage: { ...usage, inputTokens: Math.max(0, usage.inputTokens - usage.cachedInputTokens) },
+      usageBasis: "per_run" as const,
+      errorMessage,
+      sawProtocolEvent,
+      sawProtocolTerminalEvent,
+      usageReported,
+      usageComplete,
+    };
   };
+}
+
+/**
+ * Structural crash detection: the codex CLI can only report an agent-level
+ * failure through the JSONL protocol (an `error` event, `turn.failed`, or a
+ * finished `turn.completed` followed by a nonzero exit). A nonzero exit after
+ * the protocol stream started but before any terminal event means the process
+ * died out from under the agent (MCP transport crash, worker panic, killed
+ * tool server) — retriable infrastructure, not agent behavior. This
+ * deliberately does not match error text: transport failure strings vary, and
+ * stdout/stderr can quote agent output that merely discusses network errors.
+ */
+export function isCodexHarnessCrash(input: {
+  exitCode: number | null;
+  sawProtocolEvent: boolean;
+  sawProtocolTerminalEvent: boolean;
+}): boolean {
+  if ((input.exitCode ?? 0) === 0) return false;
+  return input.sawProtocolEvent && !input.sawProtocolTerminalEvent;
 }
 
 export function isCodexUnknownSessionError(stdout: string, stderr: string): boolean {
@@ -100,6 +157,21 @@ function buildCodexErrorHaystack(input: {
     .map((line) => line.trim())
     .filter(Boolean)
     .join("\n");
+}
+
+export function classifyCodexAuthRefreshFailure(input: {
+  stdout?: string | null;
+  stderr?: string | null;
+  errorMessage?: string | null;
+}): CodexAuthRefreshFailureClass | null {
+  const haystack = buildCodexErrorHaystack(input);
+
+  if (CODEX_REFRESH_TOKEN_REUSED_RE.test(haystack)) return "refresh_token_reused";
+  if (CODEX_REFRESH_TOKEN_EXPIRED_RE.test(haystack)) return "refresh_token_expired";
+  if (CODEX_REFRESH_TOKEN_INVALIDATED_RE.test(haystack)) return "refresh_token_invalidated";
+  if (CODEX_OAUTH_INVALID_GRANT_RE.test(haystack)) return "refresh_token_invalidated";
+  if (CODEX_CONTEXTUAL_REFRESH_AUTH_INVALIDATED_RE.test(haystack)) return "refresh_token_invalidated";
+  return null;
 }
 
 function readTimeZoneParts(date: Date, timeZone: string) {

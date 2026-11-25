@@ -105,6 +105,27 @@ function buildApp() {
     res.write(chunk.slice(0, chunk.length / 2));
     res.end(chunk.slice(chunk.length / 2));
   });
+  // Mirrors better-call's setResponse (Better Auth sign-in/sign-up): headers
+  // are committed with writeHead() first, then the web-stream body arrives as
+  // Uint8Array chunks.
+  app.get("/api/auth-bridge", (req, res) => {
+    const body = JSON.stringify({
+      token: "t".repeat(Number(req.query.pad ?? 0)),
+      user: { name: "Dotta", email: "dotta@example.test" },
+    });
+    res.setHeader("content-type", "application/json");
+    res.setHeader("set-cookie", "workspace.session_token=abc; Max-Age=604800; Path=/; HttpOnly; SameSite=Lax");
+    res.writeHead(200);
+    const bytes = new TextEncoder().encode(body);
+    res.write(bytes.subarray(0, 16));
+    res.write(bytes.subarray(16));
+    res.end();
+  });
+  app.get("/api/uint8-json", (req, res) => {
+    const body = JSON.stringify(issueListFixture(Number(req.query.count ?? 1)));
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.end(new TextEncoder().encode(body));
+  });
   return app;
 }
 
@@ -183,5 +204,38 @@ describe("API compression middleware", () => {
     expect(res.headers["content-disposition"]).toBe("attachment; filename=\"issues.json\"");
     expect(res.headers["content-encoding"]).toBeUndefined();
     expect(JSON.parse(res.body.toString("utf8"))).toHaveLength(500);
+  });
+
+  it("delivers small writeHead+Uint8Array auth responses byte-for-byte", async () => {
+    const res = await requestRaw(buildApp(), "/api/auth-bridge", {
+      "accept-encoding": "gzip, deflate",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["set-cookie"]).toBeDefined();
+    expect(res.headers["content-encoding"]).toBeUndefined();
+    expect(JSON.parse(res.body.toString("utf8")).user.email).toBe("dotta@example.test");
+  });
+
+  it("does not drop the connection for large writeHead+Uint8Array auth responses", async () => {
+    const res = await requestRaw(buildApp(), "/api/auth-bridge?pad=2000", {
+      "accept-encoding": "gzip, deflate",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-encoding"]).toBeUndefined();
+    const parsed = JSON.parse(res.body.toString("utf8"));
+    expect(parsed.token).toHaveLength(2000);
+    expect(parsed.user.email).toBe("dotta@example.test");
+  });
+
+  it("compresses large Uint8Array bodies without corrupting them", async () => {
+    const res = await requestRaw(buildApp(), "/api/uint8-json?count=500", {
+      "accept-encoding": "gzip",
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers["content-encoding"]).toBe("gzip");
+    expect(JSON.parse(gunzipSync(res.body).toString("utf8"))).toHaveLength(500);
   });
 });

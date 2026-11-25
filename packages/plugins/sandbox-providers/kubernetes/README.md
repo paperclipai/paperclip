@@ -44,7 +44,7 @@ The plugin supports two backend modes, selected via the `backend` config field:
 
 ### Migrating from `job` to `sandbox-cr`
 
-1. Install the agent-sandbox controller: `kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/latest/download/install.yaml`
+1. Install the agent-sandbox controller: `kubectl apply -f https://github.com/kubernetes-sigs/agent-sandbox/releases/latest/download/sandbox.yaml`
 2. Update your environment config to set `backend: "sandbox-cr"` (or remove `backend` since `sandbox-cr` is the default)
 3. New leases will use the Sandbox CR backend. Existing leases created with `job` mode continue to use job semantics until they are released.
 
@@ -76,6 +76,23 @@ Common optional fields:
 | `podActivityDeadlineSec` | `3600` | Hard ceiling on a single run's wall-clock time. |
 
 Full JSON Schema in `src/manifest.ts`.
+
+### Task-scoped egress grants
+
+Keep provider-level egress defaults narrow, then grant only the destinations a task needs through its execution workspace settings:
+
+```json
+{
+  "executionWorkspaceSettings": {
+    "networkEgress": {
+      "allowFqdns": ["github.com", "pypi.org"],
+      "allowCidrs": []
+    }
+  }
+}
+```
+
+The provider creates a workload-owned policy selected by the task run label, so the additional destinations do not become reachable from other concurrent agent pods. Cilium mode enforces FQDNs directly. Standard NetworkPolicy mode cannot express FQDNs, so an FQDN grant permits public IPv4 TCP 80/443 for that run while excluding private, loopback, link-local, CGNAT, and multicast ranges. Network failures that look policy-related include the grant path in stderr, and the sandbox exposes the effective policy through `PAPERCLIP_NETWORK_EGRESS_*` environment variables.
 
 ## What gets created in your cluster
 

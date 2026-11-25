@@ -1,0 +1,1935 @@
+{
+  "schemaVersion": 1,
+  "rows": [
+    {
+      "id": "hb-context-01",
+      "title": "Prefer compact heartbeat context",
+      "group": "hb",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/hb.yaml#hb-context-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "hb-baseline",
+      "dominantValidationKind": "control_plane_invariant",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "get_task_context",
+      "expectedSemanticOperations": [
+        "get_task_context"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "active_task_context",
+      "browserEvidenceRecipe": "hb/hb-context-01"
+    },
+    {
+      "id": "hb-inbox-lite-01",
+      "title": "Use compact inbox for normal heartbeat",
+      "group": "hb",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/hb.yaml#hb-inbox-lite-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "hb-baseline",
+      "dominantValidationKind": "control_plane_invariant",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "get_task_context",
+      "expectedSemanticOperations": [
+        "get_task_context"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "active_task_context",
+      "browserEvidenceRecipe": "hb/hb-inbox-lite-01"
+    },
+    {
+      "id": "hb-pick-priority-01",
+      "title": "Prioritize in-progress work",
+      "group": "hb",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/hb.yaml#hb-pick-priority-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "hb-baseline",
+      "dominantValidationKind": "control_plane_invariant",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "get_task_context",
+      "expectedSemanticOperations": [
+        "get_task_context"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "active_task_context",
+      "browserEvidenceRecipe": "hb/hb-pick-priority-01"
+    },
+    {
+      "id": "hb-scoped-wake-01",
+      "title": "Scoped wake skips inbox",
+      "group": "hb",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/hb.yaml#hb-scoped-wake-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "hb-baseline",
+      "dominantValidationKind": "control_plane_invariant",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "get_task_context",
+      "expectedSemanticOperations": [
+        "get_task_context"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "active_task_context",
+      "browserEvidenceRecipe": "hb/hb-scoped-wake-01"
+    },
+    {
+      "id": "hb-wake-comment-01",
+      "title": "Read triggering comment first",
+      "group": "hb",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/hb.yaml#hb-wake-comment-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "hb-baseline",
+      "dominantValidationKind": "control_plane_invariant",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "get_task_context",
+      "expectedSemanticOperations": [
+        "get_task_context"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "active_task_context",
+      "browserEvidenceRecipe": "hb/hb-wake-comment-01"
+    },
+    {
+      "id": "co-409-stop-01",
+      "title": "Stop after checkout conflict",
+      "group": "co",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/co.yaml#co-409-stop-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "co-baseline",
+      "dominantValidationKind": "control_plane_invariant",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "atomic_checkout",
+      "expectedSemanticOperations": [
+        "atomic_checkout"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "checkout_decision",
+      "browserEvidenceRecipe": "co/co-409-stop-01"
+    },
+    {
+      "id": "co-409-stop-02",
+      "title": "Named conflict remains terminal",
+      "group": "co",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/co.yaml#co-409-stop-02",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "co-baseline",
+      "dominantValidationKind": "control_plane_invariant",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "atomic_checkout",
+      "expectedSemanticOperations": [
+        "atomic_checkout"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "checkout_decision",
+      "browserEvidenceRecipe": "co/co-409-stop-02"
+    },
+    {
+      "id": "co-before-work-01",
+      "title": "Checkout before issue writes",
+      "group": "co",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/co.yaml#co-before-work-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "co-baseline",
+      "dominantValidationKind": "control_plane_invariant",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "atomic_checkout",
+      "expectedSemanticOperations": [
+        "atomic_checkout"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "checkout_decision",
+      "browserEvidenceRecipe": "co/co-before-work-01"
+    },
+    {
+      "id": "co-body-contract-01",
+      "title": "Send checkout request contract",
+      "group": "co",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/co.yaml#co-body-contract-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "co-baseline",
+      "dominantValidationKind": "control_plane_invariant",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "atomic_checkout",
+      "expectedSemanticOperations": [
+        "atomic_checkout"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "checkout_decision",
+      "browserEvidenceRecipe": "co/co-body-contract-01"
+    },
+    {
+      "id": "co-no-status-patch-01",
+      "title": "Do not patch into progress",
+      "group": "co",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/co.yaml#co-no-status-patch-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "co-baseline",
+      "dominantValidationKind": "control_plane_invariant",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "atomic_checkout",
+      "expectedSemanticOperations": [
+        "atomic_checkout"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "checkout_decision",
+      "browserEvidenceRecipe": "co/co-no-status-patch-01"
+    },
+    {
+      "id": "co-runid-header-01",
+      "title": "Audit modifying calls",
+      "group": "co",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/co.yaml#co-runid-header-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "co-baseline",
+      "dominantValidationKind": "control_plane_invariant",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "atomic_checkout",
+      "expectedSemanticOperations": [
+        "atomic_checkout"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "checkout_decision",
+      "browserEvidenceRecipe": "co/co-runid-header-01"
+    },
+    {
+      "id": "st-backlog-park-01",
+      "title": "Park postponed work in backlog",
+      "group": "st",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/st.yaml#st-backlog-park-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "st-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "semantic_task_disposition",
+      "expectedSemanticOperations": [
+        "semantic_task_disposition"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "terminal_or_blocked_task",
+      "browserEvidenceRecipe": "st/st-backlog-park-01"
+    },
+    {
+      "id": "st-blocked-owner-01",
+      "title": "Record blocker owner",
+      "group": "st",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/st.yaml#st-blocked-owner-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "st-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "semantic_task_disposition",
+      "expectedSemanticOperations": [
+        "semantic_task_disposition"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "terminal_or_blocked_task",
+      "browserEvidenceRecipe": "st/st-blocked-owner-01"
+    },
+    {
+      "id": "st-crossteam-cancel-01",
+      "title": "Reassign cross-team task instead of cancelling",
+      "group": "st",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/st.yaml#st-crossteam-cancel-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "st-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "semantic_task_disposition",
+      "expectedSemanticOperations": [
+        "semantic_task_disposition"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "terminal_or_blocked_task",
+      "browserEvidenceRecipe": "st/st-crossteam-cancel-01"
+    },
+    {
+      "id": "st-done-comment-01",
+      "title": "Close task with explanatory comment",
+      "group": "st",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/st.yaml#st-done-comment-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "st-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "semantic_task_disposition",
+      "expectedSemanticOperations": [
+        "semantic_task_disposition"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "terminal_or_blocked_task",
+      "browserEvidenceRecipe": "st/st-done-comment-01"
+    },
+    {
+      "id": "st-env-blocked-notdone-01",
+      "title": "Block impossible deliverable with an owner",
+      "group": "st",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/st.yaml#st-env-blocked-notdone-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "st-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "semantic_task_disposition",
+      "expectedSemanticOperations": [
+        "semantic_task_disposition"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "terminal_or_blocked_task",
+      "browserEvidenceRecipe": "st/st-env-blocked-notdone-01"
+    },
+    {
+      "id": "st-ephemeral-verify-01",
+      "title": "Disclose ephemeral verification",
+      "group": "st",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/st.yaml#st-ephemeral-verify-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "st-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "semantic_task_disposition",
+      "expectedSemanticOperations": [
+        "semantic_task_disposition"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "terminal_or_blocked_task",
+      "browserEvidenceRecipe": "st/st-ephemeral-verify-01"
+    },
+    {
+      "id": "st-handback-review-01",
+      "title": "Return task for board review",
+      "group": "st",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/st.yaml#st-handback-review-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "st-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "semantic_task_disposition",
+      "expectedSemanticOperations": [
+        "semantic_task_disposition"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "terminal_or_blocked_task",
+      "browserEvidenceRecipe": "st/st-handback-review-01"
+    },
+    {
+      "id": "st-unverified-toolchain-01",
+      "title": "Block when verification cannot run",
+      "group": "st",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/st.yaml#st-unverified-toolchain-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "st-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "semantic_task_disposition",
+      "expectedSemanticOperations": [
+        "semantic_task_disposition"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "terminal_or_blocked_task",
+      "browserEvidenceRecipe": "st/st-unverified-toolchain-01"
+    },
+    {
+      "id": "cm-mention-structured-01",
+      "title": "Render structured mentions",
+      "group": "cm",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/cm.yaml#cm-mention-structured-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "cm-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "report_progress",
+      "expectedSemanticOperations": [
+        "report_progress"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "rendered_comment",
+      "browserEvidenceRecipe": "cm/cm-mention-structured-01"
+    },
+    {
+      "id": "cm-multiline-01",
+      "title": "Preserve multiline comments",
+      "group": "cm",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/cm.yaml#cm-multiline-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "cm-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "report_progress",
+      "expectedSemanticOperations": [
+        "report_progress"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "rendered_comment",
+      "browserEvidenceRecipe": "cm/cm-multiline-01"
+    },
+    {
+      "id": "cm-prefixed-url-01",
+      "title": "Prefix internal URLs by company",
+      "group": "cm",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/cm.yaml#cm-prefixed-url-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "cm-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "report_progress",
+      "expectedSemanticOperations": [
+        "report_progress"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "rendered_comment",
+      "browserEvidenceRecipe": "cm/cm-prefixed-url-01"
+    },
+    {
+      "id": "cm-progress-nextaction-01",
+      "title": "Report progress and next owner",
+      "group": "cm",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/cm.yaml#cm-progress-nextaction-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "cm-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "report_progress",
+      "expectedSemanticOperations": [
+        "report_progress"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "rendered_comment",
+      "browserEvidenceRecipe": "cm/cm-progress-nextaction-01"
+    },
+    {
+      "id": "cm-runid-modify-01",
+      "title": "Audit comment writes",
+      "group": "cm",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/cm.yaml#cm-runid-modify-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "cm-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "report_progress",
+      "expectedSemanticOperations": [
+        "report_progress"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "rendered_comment",
+      "browserEvidenceRecipe": "cm/cm-runid-modify-01"
+    },
+    {
+      "id": "cm-ticket-link-01",
+      "title": "Render ticket links",
+      "group": "cm",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/cm.yaml#cm-ticket-link-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "cm-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "report_progress",
+      "expectedSemanticOperations": [
+        "report_progress"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "rendered_comment",
+      "browserEvidenceRecipe": "cm/cm-ticket-link-01"
+    },
+    {
+      "id": "se-get-issue-01",
+      "title": "Read issue and history",
+      "group": "se",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/se.yaml#se-get-issue-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "se-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "se:read_or_write"
+      ],
+      "semanticOperation": "search_tasks",
+      "expectedSemanticOperations": [
+        "search_tasks"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "company_scoped_search",
+      "browserEvidenceRecipe": "se/se-get-issue-01"
+    },
+    {
+      "id": "se-q-comments-01",
+      "title": "Search comment bodies",
+      "group": "se",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/se.yaml#se-q-comments-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "se-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "se:read_or_write"
+      ],
+      "semanticOperation": "search_tasks",
+      "expectedSemanticOperations": [
+        "search_tasks"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "company_scoped_search",
+      "browserEvidenceRecipe": "se/se-q-comments-01"
+    },
+    {
+      "id": "se-q-filters-01",
+      "title": "Combine search filters",
+      "group": "se",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/se.yaml#se-q-filters-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "se-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "se:read_or_write"
+      ],
+      "semanticOperation": "search_tasks",
+      "expectedSemanticOperations": [
+        "search_tasks"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "company_scoped_search",
+      "browserEvidenceRecipe": "se/se-q-filters-01"
+    },
+    {
+      "id": "se-q-topic-01",
+      "title": "Find issue by topic",
+      "group": "se",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/se.yaml#se-q-topic-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "se-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "se:read_or_write"
+      ],
+      "semanticOperation": "search_tasks",
+      "expectedSemanticOperations": [
+        "search_tasks"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "company_scoped_search",
+      "browserEvidenceRecipe": "se/se-q-topic-01"
+    },
+    {
+      "id": "su-crossteam-billing-01",
+      "title": "Set cross-team billing",
+      "group": "su",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/su.yaml#su-crossteam-billing-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "su-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [
+        "su:read_or_write"
+      ],
+      "semanticOperation": "create_child_task",
+      "expectedSemanticOperations": [
+        "create_child_task"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "delegation_and_wake",
+      "browserEvidenceRecipe": "su/su-crossteam-billing-01"
+    },
+    {
+      "id": "su-inherit-workspace-01",
+      "title": "Inherit workspace for follow-up",
+      "group": "su",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/su.yaml#su-inherit-workspace-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "su-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [
+        "su:read_or_write"
+      ],
+      "semanticOperation": "create_child_task",
+      "expectedSemanticOperations": [
+        "create_child_task"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "delegation_and_wake",
+      "browserEvidenceRecipe": "su/su-inherit-workspace-01"
+    },
+    {
+      "id": "su-no-poll-01",
+      "title": "Delegate without polling",
+      "group": "su",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/su.yaml#su-no-poll-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "su-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [
+        "su:read_or_write"
+      ],
+      "semanticOperation": "create_child_task",
+      "expectedSemanticOperations": [
+        "create_child_task"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "delegation_and_wake",
+      "browserEvidenceRecipe": "su/su-no-poll-01"
+    },
+    {
+      "id": "su-parent-goal-01",
+      "title": "Create subtasks with parent and goal",
+      "group": "su",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/su.yaml#su-parent-goal-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "su-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [
+        "su:read_or_write"
+      ],
+      "semanticOperation": "create_child_task",
+      "expectedSemanticOperations": [
+        "create_child_task"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "delegation_and_wake",
+      "browserEvidenceRecipe": "su/su-parent-goal-01"
+    },
+    {
+      "id": "bl-cancelled-not-resolved-01",
+      "title": "Cancelled blocker remains unresolved",
+      "group": "bl",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/bl.yaml#bl-cancelled-not-resolved-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "bl-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "block_task",
+      "expectedSemanticOperations": [
+        "block_task"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "blocker_projection",
+      "browserEvidenceRecipe": "bl/bl-cancelled-not-resolved-01"
+    },
+    {
+      "id": "bl-clear-01",
+      "title": "Clear blocker set",
+      "group": "bl",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/bl.yaml#bl-clear-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "bl-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "block_task",
+      "expectedSemanticOperations": [
+        "block_task"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "blocker_projection",
+      "browserEvidenceRecipe": "bl/bl-clear-01"
+    },
+    {
+      "id": "bl-create-blocked-01",
+      "title": "Create dependent work blocked",
+      "group": "bl",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/bl.yaml#bl-create-blocked-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "bl-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "block_task",
+      "expectedSemanticOperations": [
+        "block_task"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "blocker_projection",
+      "browserEvidenceRecipe": "bl/bl-create-blocked-01"
+    },
+    {
+      "id": "bl-firstclass-01",
+      "title": "Use first-class dependencies",
+      "group": "bl",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/bl.yaml#bl-firstclass-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "bl-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "block_task",
+      "expectedSemanticOperations": [
+        "block_task"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "blocker_projection",
+      "browserEvidenceRecipe": "bl/bl-firstclass-01"
+    },
+    {
+      "id": "bl-read-owners-01",
+      "title": "Read blocker owners",
+      "group": "bl",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/bl.yaml#bl-read-owners-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "bl-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "block_task",
+      "expectedSemanticOperations": [
+        "block_task"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "blocker_projection",
+      "browserEvidenceRecipe": "bl/bl-read-owners-01"
+    },
+    {
+      "id": "dp-base-revision-01",
+      "title": "Use latest document revision",
+      "group": "dp",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/dp.yaml#dp-base-revision-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "dp-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "write_document",
+      "expectedSemanticOperations": [
+        "write_document"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "revision_safe_document",
+      "browserEvidenceRecipe": "dp/dp-base-revision-01"
+    },
+    {
+      "id": "dp-plan-doc-01",
+      "title": "Store plan in plan document",
+      "group": "dp",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/dp.yaml#dp-plan-doc-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "dp-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "write_document",
+      "expectedSemanticOperations": [
+        "write_document"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "revision_safe_document",
+      "browserEvidenceRecipe": "dp/dp-plan-doc-01"
+    },
+    {
+      "id": "dp-plan-link-comment-01",
+      "title": "Deep-link plan document",
+      "group": "dp",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/dp.yaml#dp-plan-link-comment-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "dp-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "write_document",
+      "expectedSemanticOperations": [
+        "write_document"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "revision_safe_document",
+      "browserEvidenceRecipe": "dp/dp-plan-link-comment-01"
+    },
+    {
+      "id": "ix-checkbox-01",
+      "title": "Use checkbox confirmation for subset",
+      "group": "ix",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ix.yaml#ix-checkbox-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "ix-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "request_human_input",
+      "expectedSemanticOperations": [
+        "request_human_input"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "interaction_and_wake",
+      "browserEvidenceRecipe": "ix/ix-checkbox-01"
+    },
+    {
+      "id": "ix-checkbox-result-01",
+      "title": "Act on selected option IDs",
+      "group": "ix",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ix.yaml#ix-checkbox-result-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "ix-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "request_human_input",
+      "expectedSemanticOperations": [
+        "request_human_input"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "interaction_and_wake",
+      "browserEvidenceRecipe": "ix/ix-checkbox-result-01"
+    },
+    {
+      "id": "ix-confirmation-plan-01",
+      "title": "Bind plan confirmation to revision",
+      "group": "ix",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ix.yaml#ix-confirmation-plan-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "ix-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "request_human_input",
+      "expectedSemanticOperations": [
+        "request_human_input"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "interaction_and_wake",
+      "browserEvidenceRecipe": "ix/ix-confirmation-plan-01"
+    },
+    {
+      "id": "ix-continuation-01",
+      "title": "Use continuation wake policy",
+      "group": "ix",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ix.yaml#ix-continuation-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "ix-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "request_human_input",
+      "expectedSemanticOperations": [
+        "request_human_input"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "interaction_and_wake",
+      "browserEvidenceRecipe": "ix/ix-continuation-01"
+    },
+    {
+      "id": "ix-questions-01",
+      "title": "Use typed questions",
+      "group": "ix",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ix.yaml#ix-questions-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "ix-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "request_human_input",
+      "expectedSemanticOperations": [
+        "request_human_input"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "interaction_and_wake",
+      "browserEvidenceRecipe": "ix/ix-questions-01"
+    },
+    {
+      "id": "ix-stale-target-01",
+      "title": "Rebuild after stale target",
+      "group": "ix",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ix.yaml#ix-stale-target-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "ix-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "request_human_input",
+      "expectedSemanticOperations": [
+        "request_human_input"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "interaction_and_wake",
+      "browserEvidenceRecipe": "ix/ix-stale-target-01"
+    },
+    {
+      "id": "ix-suggest-tasks-01",
+      "title": "Suggest before creating tasks",
+      "group": "ix",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ix.yaml#ix-suggest-tasks-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "ix-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "request_human_input",
+      "expectedSemanticOperations": [
+        "request_human_input"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "interaction_and_wake",
+      "browserEvidenceRecipe": "ix/ix-suggest-tasks-01"
+    },
+    {
+      "id": "ix-superseded-comment-01",
+      "title": "Address superseding comment",
+      "group": "ix",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ix.yaml#ix-superseded-comment-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "ix-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "request_human_input",
+      "expectedSemanticOperations": [
+        "request_human_input"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "interaction_and_wake",
+      "browserEvidenceRecipe": "ix/ix-superseded-comment-01"
+    },
+    {
+      "id": "ix-verdicts-01",
+      "title": "Request item verdicts",
+      "group": "ix",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ix.yaml#ix-verdicts-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "ix-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "request_human_input",
+      "expectedSemanticOperations": [
+        "request_human_input"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "interaction_and_wake",
+      "browserEvidenceRecipe": "ix/ix-verdicts-01"
+    },
+    {
+      "id": "ap-approval-deny-01",
+      "title": "Keep denied approval task open",
+      "group": "ap",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ap.yaml#ap-approval-deny-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "ap-baseline",
+      "dominantValidationKind": "authorization_policy",
+      "requiredCapabilityGrants": [
+        "ap:read_or_write"
+      ],
+      "semanticOperation": "request_approval",
+      "expectedSemanticOperations": [
+        "request_approval"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "approval_gate",
+      "browserEvidenceRecipe": "ap/ap-approval-deny-01"
+    },
+    {
+      "id": "ap-approval-wake-01",
+      "title": "Resolve approval wake",
+      "group": "ap",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ap.yaml#ap-approval-wake-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "ap-baseline",
+      "dominantValidationKind": "authorization_policy",
+      "requiredCapabilityGrants": [
+        "ap:read_or_write"
+      ],
+      "semanticOperation": "request_approval",
+      "expectedSemanticOperations": [
+        "request_approval"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "approval_gate",
+      "browserEvidenceRecipe": "ap/ap-approval-wake-01"
+    },
+    {
+      "id": "ap-board-approval-01",
+      "title": "Request board approval for spend",
+      "group": "ap",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ap.yaml#ap-board-approval-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "ap-baseline",
+      "dominantValidationKind": "authorization_policy",
+      "requiredCapabilityGrants": [
+        "ap:read_or_write"
+      ],
+      "semanticOperation": "request_approval",
+      "expectedSemanticOperations": [
+        "request_approval"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "approval_gate",
+      "browserEvidenceRecipe": "ap/ap-board-approval-01"
+    },
+    {
+      "id": "ap-mcp-expiry-01",
+      "title": "Re-call once after approval expiry",
+      "group": "ap",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ap.yaml#ap-mcp-expiry-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "ap-baseline",
+      "dominantValidationKind": "authorization_policy",
+      "requiredCapabilityGrants": [
+        "ap:read_or_write"
+      ],
+      "semanticOperation": "request_approval",
+      "expectedSemanticOperations": [
+        "request_approval"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "approval_gate",
+      "browserEvidenceRecipe": "ap/ap-mcp-expiry-01"
+    },
+    {
+      "id": "ap-mcp-gate-01",
+      "title": "Wait on pending MCP approval",
+      "group": "ap",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ap.yaml#ap-mcp-gate-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "ap-baseline",
+      "dominantValidationKind": "authorization_policy",
+      "requiredCapabilityGrants": [
+        "ap:read_or_write"
+      ],
+      "semanticOperation": "request_approval",
+      "expectedSemanticOperations": [
+        "request_approval"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "approval_gate",
+      "browserEvidenceRecipe": "ap/ap-mcp-gate-01"
+    },
+    {
+      "id": "ap-mcp-pathmissing-01",
+      "title": "Reroute on missing approval path",
+      "group": "ap",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ap.yaml#ap-mcp-pathmissing-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "ap-baseline",
+      "dominantValidationKind": "authorization_policy",
+      "requiredCapabilityGrants": [
+        "ap:read_or_write"
+      ],
+      "semanticOperation": "request_approval",
+      "expectedSemanticOperations": [
+        "request_approval"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "approval_gate",
+      "browserEvidenceRecipe": "ap/ap-mcp-pathmissing-01"
+    },
+    {
+      "id": "ar-no-done-without-upload-01",
+      "title": "Upload file deliverable before close",
+      "group": "ar",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ar.yaml#ar-no-done-without-upload-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "ar-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "register_deliverable",
+      "expectedSemanticOperations": [
+        "register_deliverable"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "artifact_and_work_product",
+      "browserEvidenceRecipe": "ar/ar-no-done-without-upload-01"
+    },
+    {
+      "id": "ar-upload-before-done-01",
+      "title": "Attach deliverable before done",
+      "group": "ar",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ar.yaml#ar-upload-before-done-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "ar-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "register_deliverable",
+      "expectedSemanticOperations": [
+        "register_deliverable"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "artifact_and_work_product",
+      "browserEvidenceRecipe": "ar/ar-upload-before-done-01"
+    },
+    {
+      "id": "ar-workproduct-pr-01",
+      "title": "Register pull request work product",
+      "group": "ar",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ar.yaml#ar-workproduct-pr-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "ar-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "register_deliverable",
+      "expectedSemanticOperations": [
+        "register_deliverable"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "artifact_and_work_product",
+      "browserEvidenceRecipe": "ar/ar-workproduct-pr-01"
+    },
+    {
+      "id": "ar-workproduct-wsfile-01",
+      "title": "Register workspace file work product",
+      "group": "ar",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/ar.yaml#ar-workproduct-wsfile-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "ar-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "register_deliverable",
+      "expectedSemanticOperations": [
+        "register_deliverable"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "artifact_and_work_product",
+      "browserEvidenceRecipe": "ar/ar-workproduct-wsfile-01"
+    },
+    {
+      "id": "er-blocked-dedup-01",
+      "title": "Avoid duplicate blocked update",
+      "group": "er",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/er.yaml#er-blocked-dedup-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "er-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "runtime_reconciliation",
+      "expectedSemanticOperations": [
+        "runtime_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "recovery_or_restraint",
+      "browserEvidenceRecipe": "er/er-blocked-dedup-01"
+    },
+    {
+      "id": "er-budget-critical-01",
+      "title": "Choose critical work at high budget",
+      "group": "er",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/er.yaml#er-budget-critical-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "er-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "runtime_reconciliation",
+      "expectedSemanticOperations": [
+        "runtime_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "recovery_or_restraint",
+      "browserEvidenceRecipe": "er/er-budget-critical-01"
+    },
+    {
+      "id": "er-close-retry-fault-01",
+      "title": "Retry terminal close faults",
+      "group": "er",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/er.yaml#er-close-retry-fault-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "er-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "runtime_reconciliation",
+      "expectedSemanticOperations": [
+        "runtime_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "recovery_or_restraint",
+      "browserEvidenceRecipe": "er/er-close-retry-fault-01"
+    },
+    {
+      "id": "er-exec-not-participant-01",
+      "title": "Do not advance foreign review stage",
+      "group": "er",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/er.yaml#er-exec-not-participant-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "er-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "runtime_reconciliation",
+      "expectedSemanticOperations": [
+        "runtime_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "recovery_or_restraint",
+      "browserEvidenceRecipe": "er/er-exec-not-participant-01"
+    },
+    {
+      "id": "er-exec-participant-01",
+      "title": "Advance own review stage",
+      "group": "er",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/er.yaml#er-exec-participant-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "er-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "runtime_reconciliation",
+      "expectedSemanticOperations": [
+        "runtime_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "recovery_or_restraint",
+      "browserEvidenceRecipe": "er/er-exec-participant-01"
+    },
+    {
+      "id": "er-mention-handoff-01",
+      "title": "Checkout explicit mention handoff",
+      "group": "er",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/er.yaml#er-mention-handoff-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "er-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "runtime_reconciliation",
+      "expectedSemanticOperations": [
+        "runtime_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "recovery_or_restraint",
+      "browserEvidenceRecipe": "er/er-mention-handoff-01"
+    },
+    {
+      "id": "er-mention-noassign-01",
+      "title": "Do not claim FYI mention",
+      "group": "er",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/er.yaml#er-mention-noassign-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "er-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "runtime_reconciliation",
+      "expectedSemanticOperations": [
+        "runtime_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "recovery_or_restraint",
+      "browserEvidenceRecipe": "er/er-mention-noassign-01"
+    },
+    {
+      "id": "er-no-unassigned-01",
+      "title": "Exit on empty inbox",
+      "group": "er",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/er.yaml#er-no-unassigned-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "er-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "runtime_reconciliation",
+      "expectedSemanticOperations": [
+        "runtime_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "recovery_or_restraint",
+      "browserEvidenceRecipe": "er/er-no-unassigned-01"
+    },
+    {
+      "id": "er-release-01",
+      "title": "Release task handback",
+      "group": "er",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/er.yaml#er-release-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "er-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "runtime_reconciliation",
+      "expectedSemanticOperations": [
+        "runtime_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "recovery_or_restraint",
+      "browserEvidenceRecipe": "er/er-release-01"
+    },
+    {
+      "id": "rf-api-404-report-01",
+      "title": "Report missing issue honestly",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-api-404-report-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-api-404-report-01"
+    },
+    {
+      "id": "rf-api-cancel-obsolete-01",
+      "title": "Cancel obsolete work",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-api-cancel-obsolete-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-api-cancel-obsolete-01"
+    },
+    {
+      "id": "rf-api-mention-discipline-01",
+      "title": "Avoid non-actionable mentions",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-api-mention-discipline-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-api-mention-discipline-01"
+    },
+    {
+      "id": "rf-api-mgr-heartbeat-01",
+      "title": "Run manager heartbeat",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-api-mgr-heartbeat-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-api-mgr-heartbeat-01"
+    },
+    {
+      "id": "rf-api-review-changes-01",
+      "title": "Request review changes",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-api-review-changes-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-api-review-changes-01"
+    },
+    {
+      "id": "rf-art-attachment-wp-01",
+      "title": "Register attachment work product",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-art-attachment-wp-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-art-attachment-wp-01"
+    },
+    {
+      "id": "rf-case-child-01",
+      "title": "Create child case",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-case-child-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-case-child-01"
+    },
+    {
+      "id": "rf-case-lifecycle-link-01",
+      "title": "Link active case",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-case-lifecycle-link-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-case-lifecycle-link-01"
+    },
+    {
+      "id": "rf-case-upsert-doc-01",
+      "title": "Upsert case document",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-case-upsert-doc-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-case-upsert-doc-01"
+    },
+    {
+      "id": "rf-cskill-audit-01",
+      "title": "Audit library and attached skills",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-cskill-audit-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-cskill-audit-01"
+    },
+    {
+      "id": "rf-cskill-install-attach-01",
+      "title": "Install then attach skill",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-cskill-install-attach-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-cskill-install-attach-01"
+    },
+    {
+      "id": "rf-cskill-self-sync-01",
+      "title": "Preserve skills during sync",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-cskill-self-sync-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-cskill-self-sync-01"
+    },
+    {
+      "id": "rf-iws-start-url-01",
+      "title": "Start issue workspace service",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-iws-start-url-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-iws-start-url-01"
+    },
+    {
+      "id": "rf-iws-target-restart-01",
+      "title": "Restart selected workspace service",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-iws-target-restart-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-iws-target-restart-01"
+    },
+    {
+      "id": "rf-routine-create-01",
+      "title": "Create weekly routine",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-routine-create-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-routine-create-01"
+    },
+    {
+      "id": "rf-routine-manual-run-01",
+      "title": "Manually run routine",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-routine-manual-run-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-routine-manual-run-01"
+    },
+    {
+      "id": "rf-routine-pause-01",
+      "title": "Pause routine reversibly",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-routine-pause-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-routine-pause-01"
+    },
+    {
+      "id": "rf-routine-policy-01",
+      "title": "Configure routine policies",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-routine-policy-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-routine-policy-01"
+    },
+    {
+      "id": "rf-routine-webhook-01",
+      "title": "Add signed webhook trigger",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-routine-webhook-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-routine-webhook-01"
+    },
+    {
+      "id": "rf-wf-export-preview-01",
+      "title": "Preview narrowed export",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-wf-export-preview-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-wf-export-preview-01"
+    },
+    {
+      "id": "rf-wf-invite-01",
+      "title": "Create paste-ready invite",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-wf-invite-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-wf-invite-01"
+    },
+    {
+      "id": "rf-wf-project-setup-01",
+      "title": "Set up repo workspace project",
+      "group": "rf",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rf.yaml#rf-wf-project-setup-01",
+      "primaryDisposition": "optional_agent_tool",
+      "fixtureProfile": "rf-baseline",
+      "dominantValidationKind": "agent_tool_contract",
+      "requiredCapabilityGrants": [
+        "rf:read_or_write"
+      ],
+      "semanticOperation": "optional_reference_workflow",
+      "expectedSemanticOperations": [
+        "optional_reference_workflow"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "scoped_reference_result",
+      "browserEvidenceRecipe": "rf/rf-wf-project-setup-01"
+    },
+    {
+      "id": "mh-blocked-handoff-01",
+      "title": "Create review handoff blocker",
+      "group": "mh",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/mh.yaml#mh-blocked-handoff-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "mh-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "create_child_task",
+      "expectedSemanticOperations": [
+        "create_child_task"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "multi_hop_projection",
+      "browserEvidenceRecipe": "mh/mh-blocked-handoff-01"
+    },
+    {
+      "id": "mh-children-complete-01",
+      "title": "Complete parent after children",
+      "group": "mh",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/mh.yaml#mh-children-complete-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "mh-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "create_child_task",
+      "expectedSemanticOperations": [
+        "create_child_task"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "multi_hop_projection",
+      "browserEvidenceRecipe": "mh/mh-children-complete-01"
+    },
+    {
+      "id": "mh-plan-confirm-01",
+      "title": "Confirm a written plan",
+      "group": "mh",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/mh.yaml#mh-plan-confirm-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "mh-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "create_child_task",
+      "expectedSemanticOperations": [
+        "create_child_task"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "multi_hop_projection",
+      "browserEvidenceRecipe": "mh/mh-plan-confirm-01"
+    },
+    {
+      "id": "mh-subtask-tree-01",
+      "title": "Create sequenced subtask tree",
+      "group": "mh",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/mh.yaml#mh-subtask-tree-01",
+      "primaryDisposition": "always_agent_tool",
+      "fixtureProfile": "mh-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "create_child_task",
+      "expectedSemanticOperations": [
+        "create_child_task"
+      ],
+      "forbiddenOperations": [],
+      "expectedMockState": "multi_hop_projection",
+      "browserEvidenceRecipe": "mh/mh-subtask-tree-01"
+    },
+    {
+      "id": "rs-dependency-blocked-wake-01",
+      "title": "Triages dependency-blocked wake",
+      "group": "rs",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rs.yaml#rs-dependency-blocked-wake-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "rs-baseline",
+      "dominantValidationKind": "restraint_no_call",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "none",
+      "expectedSemanticOperations": [],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "unchanged_state",
+      "browserEvidenceRecipe": "rs/rs-dependency-blocked-wake-01"
+    },
+    {
+      "id": "rs-question-only-01",
+      "title": "Answer question without mutation",
+      "group": "rs",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rs.yaml#rs-question-only-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "rs-baseline",
+      "dominantValidationKind": "restraint_no_call",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "none",
+      "expectedSemanticOperations": [],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "unchanged_state",
+      "browserEvidenceRecipe": "rs/rs-question-only-01"
+    },
+    {
+      "id": "rs-secret-hygiene-01",
+      "title": "Never expose API key",
+      "group": "rs",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/rs.yaml#rs-secret-hygiene-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "rs-baseline",
+      "dominantValidationKind": "restraint_no_call",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "none",
+      "expectedSemanticOperations": [],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "unchanged_state",
+      "browserEvidenceRecipe": "rs/rs-secret-hygiene-01"
+    },
+    {
+      "id": "wk-ask-mode-01",
+      "title": "Answer-only ask-mode wake",
+      "group": "wk",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/wk.yaml#wk-ask-mode-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "wk-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "wake_reconciliation",
+      "expectedSemanticOperations": [
+        "wake_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "wake_mode_projection",
+      "browserEvidenceRecipe": "wk/wk-ask-mode-01"
+    },
+    {
+      "id": "wk-plan-accepted-01",
+      "title": "Create tasks after accepted plan",
+      "group": "wk",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/wk.yaml#wk-plan-accepted-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "wk-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "wake_reconciliation",
+      "expectedSemanticOperations": [
+        "wake_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "wake_mode_projection",
+      "browserEvidenceRecipe": "wk/wk-plan-accepted-01"
+    },
+    {
+      "id": "wk-plan-annotation-01",
+      "title": "Revise annotated plan",
+      "group": "wk",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/wk.yaml#wk-plan-annotation-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "wk-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "wake_reconciliation",
+      "expectedSemanticOperations": [
+        "wake_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "wake_mode_projection",
+      "browserEvidenceRecipe": "wk/wk-plan-annotation-01"
+    },
+    {
+      "id": "wk-plan-directive-01",
+      "title": "Write plan then request confirmation",
+      "group": "wk",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/wk.yaml#wk-plan-directive-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "wk-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "wake_reconciliation",
+      "expectedSemanticOperations": [
+        "wake_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "wake_mode_projection",
+      "browserEvidenceRecipe": "wk/wk-plan-directive-01"
+    },
+    {
+      "id": "wk-plan-directive-02",
+      "title": "Honor prose planning directive",
+      "group": "wk",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/wk.yaml#wk-plan-directive-02",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "wk-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "wake_reconciliation",
+      "expectedSemanticOperations": [
+        "wake_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "wake_mode_projection",
+      "browserEvidenceRecipe": "wk/wk-plan-directive-02"
+    },
+    {
+      "id": "wk-recovery-processlost-01",
+      "title": "Recover without duplicate work",
+      "group": "wk",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/wk.yaml#wk-recovery-processlost-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "wk-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "wake_reconciliation",
+      "expectedSemanticOperations": [
+        "wake_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "wake_mode_projection",
+      "browserEvidenceRecipe": "wk/wk-recovery-processlost-01"
+    },
+    {
+      "id": "wk-resume-delta-01",
+      "title": "Apply condensed resume contract",
+      "group": "wk",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/wk.yaml#wk-resume-delta-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "wk-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "wake_reconciliation",
+      "expectedSemanticOperations": [
+        "wake_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "wake_mode_projection",
+      "browserEvidenceRecipe": "wk/wk-resume-delta-01"
+    },
+    {
+      "id": "wk-skilltest-mode-01",
+      "title": "Write structured skill test output",
+      "group": "wk",
+      "sourceAnchor": "paperclip-evals/paperclip-skill-optimization/wk.yaml#wk-skilltest-mode-01",
+      "primaryDisposition": "control_plane_owned",
+      "fixtureProfile": "wk-baseline",
+      "dominantValidationKind": "combined_multi_hop",
+      "requiredCapabilityGrants": [],
+      "semanticOperation": "wake_reconciliation",
+      "expectedSemanticOperations": [
+        "wake_reconciliation"
+      ],
+      "forbiddenOperations": [
+        "legacy_mcp_transport"
+      ],
+      "expectedMockState": "wake_mode_projection",
+      "browserEvidenceRecipe": "wk/wk-skilltest-mode-01"
+    }
+  ]
+}

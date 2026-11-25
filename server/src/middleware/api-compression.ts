@@ -75,6 +75,10 @@ function shouldPassthroughWrite(res: Parameters<RequestHandler>[1]): boolean {
   const contentType = res.getHeader("Content-Type");
   const alreadyEncoded = res.hasHeader("Content-Encoding") && String(res.getHeader("Content-Encoding")).toLowerCase() !== "identity";
   return (
+    // writeHead() may already have committed the response head (better-call
+    // does this before streaming the body); headers can no longer change, so
+    // buffering for compression would only risk corrupting the stream.
+    res.headersSent ||
     alreadyEncoded ||
     !statusAllowsBody(res.statusCode) ||
     shouldSkipForCacheControl(res.getHeader("Cache-Control")) ||
@@ -95,6 +99,15 @@ function weakenStrongEtag(res: Parameters<RequestHandler>[1]): void {
   }
 
   res.setHeader("ETag", weaken(String(etag)));
+}
+
+function toBodyBuffer(chunk: unknown, encoding: BufferEncoding | undefined): Buffer {
+  if (Buffer.isBuffer(chunk)) return chunk;
+  // Handlers bridged from web Response streams (e.g. Better Auth via
+  // better-call) write Uint8Array chunks; String(chunk) would serialize them
+  // as comma-separated byte values and corrupt the body.
+  if (chunk instanceof Uint8Array) return Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+  return Buffer.from(String(chunk), encoding);
 }
 
 function normalizeEndArgs(args: unknown[]): {
@@ -160,7 +173,7 @@ export function apiCompression(options: ApiCompressionOptions = {}): RequestHand
         return originalWrite(chunk as never, encodingOrCallback as never, callback as never);
       }
       if (chunk !== undefined) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), typeof encodingOrCallback === "string" ? encodingOrCallback : undefined));
+        chunks.push(toBodyBuffer(chunk, typeof encodingOrCallback === "string" ? encodingOrCallback : undefined));
       }
       const writeCallback = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
       if (writeCallback) writeCallbacks.push(() => writeCallback(null));
@@ -171,13 +184,14 @@ export function apiCompression(options: ApiCompressionOptions = {}): RequestHand
       restore();
       const { chunk, encoding, callback } = normalizeEndArgs(args);
       if (chunk !== undefined) {
-        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk), encoding));
+        chunks.push(toBodyBuffer(chunk, encoding));
       }
 
       const body = Buffer.concat(chunks);
       const alreadyEncoded = res.hasHeader("Content-Encoding") && String(res.getHeader("Content-Encoding")).toLowerCase() !== "identity";
       const shouldCompress =
         !passthrough &&
+        !res.headersSent &&
         !alreadyEncoded &&
         statusAllowsBody(res.statusCode) &&
         body.length >= thresholdBytes &&
@@ -204,7 +218,14 @@ export function apiCompression(options: ApiCompressionOptions = {}): RequestHand
           originalEnd(compressed, callback);
           for (const writeCallback of writeCallbacks) writeCallback();
         } catch (error) {
-          res.destroy(error instanceof Error ? error : new Error(String(error)));
+          // Compression is best-effort: never turn a healthy response into a
+          // dropped connection. Send the original body if the head allows it.
+          try {
+            originalEnd(body, callback);
+            for (const writeCallback of writeCallbacks) writeCallback();
+          } catch {
+            res.destroy(error instanceof Error ? error : new Error(String(error)));
+          }
         }
       })();
       return res;

@@ -21,7 +21,7 @@ export const ToggleSwitch = React.forwardRef<
   ToggleSwitchProps
 >(
   (
-    { checked, onCheckedChange, size = "default", className, disabled, ...props },
+    { checked, onCheckedChange, size = "default", className, disabled, onClick, ...props },
     ref,
   ) => {
     const isLg = size === "lg";
@@ -44,8 +44,14 @@ export const ToggleSwitch = React.forwardRef<
             : "border-transparent bg-input/90",
           className,
         )}
-        onClick={() => onCheckedChange(!checked)}
         {...props}
+        // Run the caller's onClick first (e.g. stopPropagation in a clickable
+        // row) but always fire the toggle — spreading `props` must not clobber
+        // the state change, so this handler stays after the spread.
+        onClick={(event) => {
+          onClick?.(event);
+          onCheckedChange(!checked);
+        }}
       >
         <span
           className={cn(

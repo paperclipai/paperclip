@@ -1,6 +1,4 @@
-import type { Goal, Project } from "@paperclipai/shared";
-
-export const ONBOARDING_PROJECT_NAME = "Onboarding";
+import type { Goal } from "@paperclipai/shared";
 
 function goalCreatedAt(goal: Goal) {
   const createdAt = goal.createdAt instanceof Date ? goal.createdAt : new Date(goal.createdAt);
@@ -22,44 +20,4 @@ export function selectDefaultCompanyGoalId(goals: Goal[]): string | null {
     pickEarliestGoal(companyGoals)?.id ??
     null
   );
-}
-
-export function buildOnboardingProjectPayload(goalId: string | null) {
-  return {
-    name: ONBOARDING_PROJECT_NAME,
-    status: "in_progress" as const,
-    ...(goalId ? { goalIds: [goalId] } : {}),
-  };
-}
-
-export function selectReusableOnboardingProject<T extends Pick<Project, "name" | "status">>(
-  projects: T[],
-): T | null {
-  return (
-    projects.find(
-      (project) =>
-        project.status !== "cancelled" &&
-        project.name.trim().toLowerCase() === ONBOARDING_PROJECT_NAME.toLowerCase(),
-    ) ?? null
-  );
-}
-
-export function buildOnboardingIssuePayload(input: {
-  title: string;
-  description: string;
-  assigneeAgentId: string;
-  projectId: string;
-  goalId: string | null;
-}) {
-  const title = input.title.trim();
-  const description = input.description.trim();
-
-  return {
-    title,
-    ...(description ? { description } : {}),
-    assigneeAgentId: input.assigneeAgentId,
-    projectId: input.projectId,
-    ...(input.goalId ? { goalId: input.goalId } : {}),
-    status: "todo" as const,
-  };
 }

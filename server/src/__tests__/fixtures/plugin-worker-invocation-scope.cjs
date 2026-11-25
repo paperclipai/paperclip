@@ -9,16 +9,52 @@ function send(message) {
 
 function sendNestedHostRequest(originalRequest, invocationId) {
   const nestedId = `nested-${nextRequestId++}`;
-  const params = originalRequest.params?.params ?? {};
+  const params = originalRequest.params?.params ?? originalRequest.params?.parameters ?? {};
   const mode = params.mode;
   const requestedCompanyId = params.requestedCompanyId;
+  const hostMethod = params.hostMethod || "companies.get";
+  const nestedParams = hostMethod === "secrets.resolve"
+    ? {
+        companyId: requestedCompanyId,
+        secretRef: {
+          type: "secret_ref",
+          secretId: params.secretId || "11111111-1111-4111-8111-111111111111",
+        },
+        configPath: params.configPath || "apiKeyRef",
+      }
+    : hostMethod === "projects.resolveGitCredential"
+    ? {
+        companyId: requestedCompanyId,
+        projectId: originalRequest.params.projectId,
+        workspaceId: originalRequest.params.operation.source.id,
+      }
+    : hostMethod === "state.get"
+    ? {
+        // Company-scoped state key — the shape a proactive gateway loop uses
+        // (ctx.state.get with scopeKind "company"). The host derives the
+        // requested company from scopeId, not companyId.
+        scopeKind: "company",
+        scopeId: requestedCompanyId,
+        namespace: params.namespace || "ns",
+        stateKey: params.stateKey || "key",
+      }
+    : hostMethod === "events.subscribe"
+    ? {
+        // The subscribe shape the SDK issues from setup() via
+        // ctx.events.on(name, { companyId }, fn): the requested company lives in
+        // filter.companyId, NOT a top-level companyId. The host resolver must
+        // mirror the SDK gate and read it from there (LOOA-695).
+        eventPattern: params.eventPattern || "issue.updated",
+        filter: { companyId: requestedCompanyId },
+      }
+    : {
+        companyId: requestedCompanyId,
+      };
   const nestedRequest = {
     jsonrpc: "2.0",
     id: nestedId,
-    method: "companies.get",
-    params: {
-      companyId: requestedCompanyId,
-    },
+    method: hostMethod,
+    params: nestedParams,
   };
 
   if (mode === "echo") {
@@ -27,7 +63,13 @@ function sendNestedHostRequest(originalRequest, invocationId) {
     nestedRequest.paperclipInvocationId = "unknown-invocation";
   }
 
-  pendingNested.set(nestedId, originalRequest.id);
+  pendingNested.set(nestedId, {
+    id: originalRequest.id,
+    ...(hostMethod === "projects.resolveGitCredential" ? { identity: {
+      runId: originalRequest.params.runId,
+      agentId: originalRequest.params.agentId,
+    } } : {}),
+  });
   send(nestedRequest);
 }
 
@@ -41,12 +83,12 @@ rl.on("line", (line) => {
   const message = JSON.parse(line);
 
   if (message.id && pendingNested.has(message.id)) {
-    const originalId = pendingNested.get(message.id);
+    const original = pendingNested.get(message.id);
     pendingNested.delete(message.id);
     if (message.error) {
       send({
         jsonrpc: "2.0",
-        id: originalId,
+        id: original.id,
         error: message.error,
       });
       return;
@@ -54,8 +96,8 @@ rl.on("line", (line) => {
 
     send({
       jsonrpc: "2.0",
-      id: originalId,
-      result: message.result,
+      id: original.id,
+      result: original.identity ? { identity: original.identity, credential: message.result } : message.result,
     });
     return;
   }
@@ -68,13 +110,13 @@ rl.on("line", (line) => {
       id: message.id,
       result: {
         ok: true,
-        supportedMethods: ["getData", "performAction"],
+        supportedMethods: ["getData", "performAction", "resourceLifecycle", "workspaceOperation", "workspacePrepare", "executeTool"],
       },
     });
     return;
   }
 
-  if (method === "getData" || method === "performAction") {
+  if (["getData", "performAction", "resourceLifecycle", "workspaceOperation", "workspacePrepare", "executeTool"].includes(method)) {
     sendNestedHostRequest(message, message.paperclipInvocation?.id);
     return;
   }

@@ -1,4 +1,6 @@
+import { describeError } from "@/api/errors";
 import { useMemo, useState } from "react";
+import { agentHarnessType } from "@paperclipai/shared";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -22,6 +24,7 @@ import {
   builtInAgentsApi,
   type BuiltInAgentState,
 } from "@/api/builtInAgents";
+import { adapterCuratesModelOrder } from "../lib/model-utils";
 
 /** Adapters whose config completeness is keyed on a non-empty `model`. */
 function isModelBasedAdapter(adapterType: string): boolean {
@@ -29,7 +32,7 @@ function isModelBasedAdapter(adapterType: string): boolean {
 }
 
 function defaultAdapterType(state: BuiltInAgentState): string {
-  return state.definition.allowedAdapterTypes?.[0] ?? "codex_local";
+  return state.definition.defaultAdapterType ?? state.definition.allowedAdapterTypes?.[0] ?? "codex_local";
 }
 
 function parseBudgetMonthlyCents(value: string): number | undefined {
@@ -64,13 +67,16 @@ export function ConfigureBuiltInAgentModal({
   const { definition } = state;
 
   const [adapterType, setAdapterType] = useState<string>(
-    () => state.agent?.adapterType ?? defaultAdapterType(state),
+    () => state.agent && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(agentHarnessType(state.agent.adapterType, state.agent.adapterConfig)) ? agentHarnessType(state.agent.adapterType, state.agent.adapterConfig) : state.agent?.adapterType ?? defaultAdapterType(state),
   );
   const [model, setModel] = useState<string>(() => {
     const config = state.agent?.adapterConfig;
-    return typeof config === "object" && config !== null && typeof (config as Record<string, unknown>).model === "string"
-      ? ((config as Record<string, unknown>).model as string)
-      : "";
+    const configuredModel = typeof config === "object" && config !== null
+      ? (config as Record<string, unknown>).model
+      : null;
+    if (typeof configuredModel === "string") return configuredModel;
+    const defaultModel = state.definition.defaultAdapterConfig?.model;
+    return typeof defaultModel === "string" ? defaultModel : "";
   });
   const [modelOpen, setModelOpen] = useState(false);
   const [budgetDollars, setBudgetDollars] = useState<string>(() => {
@@ -101,9 +107,20 @@ export function ConfigureBuiltInAgentModal({
   const models = fetchedModels ?? [];
 
   const modelRequired = setupSupportedInModal;
+  const normalizedModel = model.trim();
+  const modelKnown =
+    !normalizedModel ||
+    models.length === 0 ||
+    models.some((candidate) => candidate.id === normalizedModel);
+  const modelError = modelKnown
+    ? null
+    : `Model “${normalizedModel}” is not available for ${adapterType}. Choose a known model.`;
   const budgetMonthlyCents = parseBudgetMonthlyCents(budgetDollars);
   const budgetValid = !budgetDollars.trim() || budgetMonthlyCents !== undefined;
-  const canSubmit = budgetValid && (setupSupportedInModal ? !modelRequired || model.trim().length > 0 : true);
+  const canSubmit =
+    budgetValid &&
+    modelKnown &&
+    (setupSupportedInModal ? !modelRequired || normalizedModel.length > 0 : true);
   const submitLabel = setupSupportedInModal
     ? `Configure & enable ${definition.displayName}`
     : `Provision ${definition.displayName}`;
@@ -112,9 +129,15 @@ export function ConfigureBuiltInAgentModal({
     mutationFn: async () => {
       const adapterConfig: Record<string, unknown> = {};
       if (model.trim()) adapterConfig.model = model.trim();
+      const existing = state.agent;
+      const sameHarness = existing && agentHarnessType(existing.adapterType, existing.adapterConfig) === adapterType;
+      const savedModel = typeof existing?.adapterConfig.model === "string" ? existing.adapterConfig.model.trim() : "";
+      const alreadyConfigured = state.status === "ready" || state.status === "paused";
+      const adapterInput = alreadyConfigured && sameHarness && normalizedModel === savedModel ? {}
+        : sameHarness ? { adapterType: existing.adapterType, adapterConfig: { ...existing.adapterConfig, ...adapterConfig } }
+        : { adapterType, adapterConfig };
       const result = await builtInAgentsApi.provision(companyId, definition.key, {
-        adapterType,
-        adapterConfig,
+        ...adapterInput,
         ...(budgetMonthlyCents !== undefined ? { budgetMonthlyCents } : {}),
       });
       return result;
@@ -144,11 +167,11 @@ export function ConfigureBuiltInAgentModal({
         <div className="space-y-4">
           <InlineBanner tone="info" compact>
             Creates <strong>{definition.displayName}</strong> in your roster, badged{" "}
-            <strong>Built-in</strong>. Companies that require hire approval will queue this for the
+            <strong>Built-in</strong>. Organizations that require hire approval will queue this for the
             board.
           </InlineBanner>
 
-          <Field label="Adapter type">
+          <Field label="Harness">
             <AdapterTypeDropdown
               value={adapterType}
               onChange={(next) => {
@@ -170,8 +193,15 @@ export function ConfigureBuiltInAgentModal({
               allowDefault={adapterType !== "opencode_local"}
               required
               groupByProvider={false}
+              preserveOrder={adapterCuratesModelOrder(adapterType)}
               creatable
             />
+          )}
+
+          {modelError && (
+            <p className="text-sm text-destructive" role="alert">
+              {modelError}
+            </p>
           )}
 
           {!setupSupportedInModal && (

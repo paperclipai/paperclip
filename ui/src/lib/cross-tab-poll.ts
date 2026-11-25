@@ -184,6 +184,93 @@ export class LeaderElection {
   }
 }
 
+function stableFingerprint(value: unknown): string {
+  const seen = new WeakSet<object>();
+  let hashA = 0xdeadbeef;
+  let hashB = 0x41c6ce57;
+
+  const write = (chunk: string) => {
+    for (let index = 0; index < chunk.length; index += 1) {
+      const code = chunk.charCodeAt(index);
+      hashA = Math.imul(hashA ^ code, 2654435761);
+      hashB = Math.imul(hashB ^ code, 1597334677);
+    }
+  };
+
+  const visit = (entry: unknown, inArray = false): void => {
+    if (entry === null) {
+      write("null");
+      return;
+    }
+    switch (typeof entry) {
+      case "string":
+        write(JSON.stringify(entry));
+        return;
+      case "boolean":
+        write(entry ? "true" : "false");
+        return;
+      case "number":
+        write(Number.isFinite(entry) ? String(entry) : "null");
+        return;
+      case "undefined":
+        write(inArray ? "null" : "undefined");
+        return;
+      case "bigint":
+        write(`bigint:${entry}`);
+        return;
+      case "symbol":
+        write(`symbol:${String(entry)}`);
+        return;
+      case "function":
+        write(`function:${String(entry)}`);
+        return;
+      case "object":
+        break;
+    }
+
+    const object = entry as Record<string, unknown>;
+    if (seen.has(object)) {
+      write("[Circular]");
+      return;
+    }
+    seen.add(object);
+    const toJSON = object.toJSON;
+    if (typeof toJSON === "function") {
+      visit(toJSON.call(object), inArray);
+      return;
+    }
+    if (Array.isArray(object)) {
+      write("[");
+      for (const item of object) {
+        visit(item, true);
+        write(",");
+      }
+      write("]");
+      return;
+    }
+
+    write("{");
+    for (const key of Object.keys(object).sort()) {
+      const item = object[key];
+      if (item === undefined || typeof item === "function" || typeof item === "symbol") continue;
+      write(JSON.stringify(key));
+      write(":");
+      visit(item);
+      write(",");
+    }
+    write("}");
+  };
+
+  try {
+    visit(value);
+    hashA = Math.imul(hashA ^ (hashA >>> 16), 2246822507) ^ Math.imul(hashB ^ (hashB >>> 13), 3266489909);
+    hashB = Math.imul(hashB ^ (hashB >>> 16), 2246822507) ^ Math.imul(hashA ^ (hashA >>> 13), 3266489909);
+    return `${(hashB >>> 0).toString(36)}${(hashA >>> 0).toString(36)}`;
+  } catch {
+    return String(value);
+  }
+}
+
 /** Build a `LeaseStore` backed by a Storage-like object under one key. */
 export function createLeaseStore(
   storage: Pick<Storage, "getItem" | "setItem" | "removeItem">,
@@ -242,6 +329,8 @@ export interface SharedMessage {
   from: string;
   /** Epoch ms the payload was produced. */
   at: number;
+  /** React Query `dataUpdatedAt` for result freshness comparisons. */
+  dataUpdatedAt?: number;
   /** Present on `result` messages. */
   data?: unknown;
 }
@@ -364,11 +453,15 @@ export interface SharedPollingCoordinatorOptions {
   election?: LeaderElection;
   leaseTtlMs?: number;
   tickMs?: number;
+  publishDebounceMs?: number;
   now?: () => number;
   getVisible?: () => boolean;
 }
 
 const DEFAULT_COORDINATOR_TICK_MS = 1_000;
+const DEFAULT_PUBLISH_DEBOUNCE_MS = 1_000;
+const MAX_COORDINATOR_CACHE_ENTRIES = 32;
+const COORDINATOR_CACHE_TTL_MS = 5 * 60_000;
 const TAB_ID_STORAGE_KEY = "paperclip:shared-poll:tab-id";
 
 function sanitizeCompanyId(companyId: string): string {
@@ -434,10 +527,27 @@ export class SharedPollingCoordinator {
   private readonly election: LeaderElection;
   private readonly localOnlyFallback: boolean;
   private readonly tickMs: number;
+  private readonly publishDebounceMs: number;
+  private readonly now: () => number;
   private readonly getVisible: () => boolean;
   private readonly listeners = new Set<SharedPollingListener>();
   private readonly resourceListeners = new Map<string, Set<SharedPollingResourceListener>>();
-  private readonly latestResults = new Map<string, SharedMessage>();
+  private readonly latestResults = new Map<string, {
+    message: SharedMessage;
+    lastAccessedAt: number;
+  }>();
+  private readonly lastPublished = new Map<string, {
+    dataUpdatedAt: number;
+    fingerprint: string;
+    sentAt: number;
+    lastAccessedAt: number;
+  }>();
+  private readonly pendingPublishes = new Map<string, {
+    data: unknown;
+    dataUpdatedAt: number;
+    fingerprint: string;
+    timer: ReturnType<typeof setTimeout>;
+  }>();
   private unsubscribeChannel: (() => void) | null = null;
   private intervalId: ReturnType<typeof setInterval> | null = null;
   private releaseListeners: Array<() => void> = [];
@@ -447,12 +557,14 @@ export class SharedPollingCoordinator {
     this.tabId = options.tabId ?? getSharedPollingTabId();
     this.channel = options.channel ?? createSharedChannel(sharedPollingChannelName(companyId));
     this.tickMs = options.tickMs ?? DEFAULT_COORDINATOR_TICK_MS;
+    this.publishDebounceMs = options.publishDebounceMs ?? DEFAULT_PUBLISH_DEBOUNCE_MS;
+    this.now = options.now ?? (() => Date.now());
     this.getVisible = options.getVisible ?? getBrowserVisible;
     const leaseStore = createBrowserLeaseStore(companyId);
     this.localOnlyFallback = !options.election && !leaseStore;
     this.election = options.election ?? new LeaderElection(
       {
-        now: options.now ?? (() => Date.now()),
+        now: this.now,
         store: leaseStore ?? {
           read: () => null,
           write: () => {},
@@ -485,6 +597,7 @@ export class SharedPollingCoordinator {
     }
     this.unsubscribeChannel?.();
     this.unsubscribeChannel = null;
+    this.clearPendingPublishes();
     for (const release of this.releaseListeners) release();
     this.releaseListeners = [];
     this.election.release();
@@ -507,11 +620,14 @@ export class SharedPollingCoordinator {
       this.resourceListeners.set(key, listeners);
     }
     listeners.add(listener);
-    const latest = this.latestResults.get(key);
+    const latest = this.getLatestResult(key);
     if (latest) listener(latest);
     return () => {
       listeners?.delete(listener);
-      if (listeners?.size === 0) this.resourceListeners.delete(key);
+      if (listeners?.size === 0) {
+        this.resourceListeners.delete(key);
+        this.markInactive(key);
+      }
     };
   }
 
@@ -520,24 +636,81 @@ export class SharedPollingCoordinator {
       type: "request",
       key,
       from: this.tabId,
-      at: Date.now(),
+      at: this.now(),
     });
   }
 
-  publish(key: string, data: unknown): void {
+  publish(key: string, data: unknown, dataUpdatedAt = this.now()): void {
     if (!this.snapshot.isLeader) return;
+    if (dataUpdatedAt <= 0) return;
+    const last = this.getLastPublished(key);
+    if (last && dataUpdatedAt <= last.dataUpdatedAt) return;
+    const pending = this.pendingPublishes.get(key);
+    if (pending && dataUpdatedAt < pending.dataUpdatedAt) return;
+    const fingerprint = stableFingerprint(data);
+    if (last && fingerprint === last.fingerprint) {
+      this.cancelPendingPublish(key);
+      return;
+    }
+    if (pending) {
+      if (dataUpdatedAt < pending.dataUpdatedAt) return;
+      if (dataUpdatedAt === pending.dataUpdatedAt && fingerprint === pending.fingerprint) return;
+      this.pendingPublishes.set(key, {
+        ...pending,
+        data,
+        dataUpdatedAt,
+        fingerprint,
+      });
+      return;
+    }
+
+    const elapsedSinceLastPublish = last ? this.now() - last.sentAt : Number.POSITIVE_INFINITY;
+    if (elapsedSinceLastPublish >= this.publishDebounceMs) {
+      this.postResult(key, data, dataUpdatedAt, fingerprint);
+      return;
+    }
+
+    const delay = Math.max(this.publishDebounceMs - elapsedSinceLastPublish, 0);
+    const timer = setTimeout(() => this.flushPendingPublish(key), delay);
+    this.pendingPublishes.set(key, { data, dataUpdatedAt, fingerprint, timer });
+  }
+
+  private postResult(key: string, data: unknown, dataUpdatedAt: number, fingerprint: string): void {
+    const sentAt = this.now();
     const message: SharedMessage = {
       type: "result",
       key,
       from: this.tabId,
-      at: Date.now(),
+      at: sentAt,
+      dataUpdatedAt,
       data,
     };
-    this.latestResults.set(key, message);
+    this.setLastPublished(key, { dataUpdatedAt, fingerprint, sentAt, lastAccessedAt: sentAt });
+    this.setLatestResult(key, message);
     this.channel.post(message);
   }
 
+  private flushPendingPublish(key: string): void {
+    const pending = this.pendingPublishes.get(key);
+    if (!pending) return;
+    this.pendingPublishes.delete(key);
+    this.postResult(key, pending.data, pending.dataUpdatedAt, pending.fingerprint);
+  }
+
+  private cancelPendingPublish(key: string): void {
+    const pending = this.pendingPublishes.get(key);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.pendingPublishes.delete(key);
+  }
+
+  private clearPendingPublishes(): void {
+    for (const pending of this.pendingPublishes.values()) clearTimeout(pending.timer);
+    this.pendingPublishes.clear();
+  }
+
   private tick(): void {
+    this.evictIdleEntries();
     if (this.localOnlyFallback) {
       this.setSnapshot({ isLeader: this.getVisible() });
       return;
@@ -550,15 +723,88 @@ export class SharedPollingCoordinator {
     if (message.from === this.tabId) return;
     if (message.type === "request") {
       if (!this.snapshot.isLeader) return;
-      const latest = this.latestResults.get(message.key);
-      if (latest) this.channel.post({ ...latest, from: this.tabId, at: Date.now() });
+      const latest = this.getLatestResult(message.key);
+      if (latest) this.channel.post({ ...latest, from: this.tabId });
       return;
     }
 
-    this.latestResults.set(message.key, message);
+    this.setLatestResult(message.key, message);
     const listeners = this.resourceListeners.get(message.key);
-    if (!listeners) return;
+    if (!listeners || listeners.size === 0) return;
     for (const listener of listeners) listener(message);
+  }
+
+  private getLatestResult(key: string): SharedMessage | undefined {
+    const entry = this.latestResults.get(key);
+    if (!entry) return undefined;
+    entry.lastAccessedAt = this.now();
+    this.latestResults.delete(key);
+    this.latestResults.set(key, entry);
+    return entry.message;
+  }
+
+  private setLatestResult(key: string, message: SharedMessage): void {
+    this.latestResults.delete(key);
+    this.latestResults.set(key, { message, lastAccessedAt: this.now() });
+    this.evictLeastRecentlyUsed(this.latestResults);
+  }
+
+  private getLastPublished(key: string): {
+    dataUpdatedAt: number;
+    fingerprint: string;
+    sentAt: number;
+    lastAccessedAt: number;
+  } | undefined {
+    const entry = this.lastPublished.get(key);
+    if (!entry) return undefined;
+    entry.lastAccessedAt = this.now();
+    this.lastPublished.delete(key);
+    this.lastPublished.set(key, entry);
+    return entry;
+  }
+
+  private setLastPublished(key: string, entry: {
+    dataUpdatedAt: number;
+    fingerprint: string;
+    sentAt: number;
+    lastAccessedAt: number;
+  }): void {
+    this.lastPublished.delete(key);
+    this.lastPublished.set(key, entry);
+    this.evictLeastRecentlyUsed(this.lastPublished);
+  }
+
+  private evictLeastRecentlyUsed<T>(entries: Map<string, T>): void {
+    const inactiveKeys = Array.from(entries.keys()).filter(
+      (key) => (this.resourceListeners.get(key)?.size ?? 0) === 0,
+    );
+    while (inactiveKeys.length > MAX_COORDINATOR_CACHE_ENTRIES) {
+      const oldestInactiveKey = inactiveKeys.shift();
+      if (oldestInactiveKey === undefined) return;
+      entries.delete(oldestInactiveKey);
+    }
+  }
+
+  private evictIdleEntries(): void {
+    const expiresBefore = this.now() - COORDINATOR_CACHE_TTL_MS;
+    for (const [key, entry] of this.latestResults) {
+      if ((this.resourceListeners.get(key)?.size ?? 0) > 0) continue;
+      if (entry.lastAccessedAt < expiresBefore) this.latestResults.delete(key);
+    }
+    for (const [key, entry] of this.lastPublished) {
+      if ((this.resourceListeners.get(key)?.size ?? 0) > 0) continue;
+      if (entry.lastAccessedAt < expiresBefore) this.lastPublished.delete(key);
+    }
+  }
+
+  private markInactive(key: string): void {
+    const inactiveAt = this.now();
+    const latest = this.latestResults.get(key);
+    if (latest) latest.lastAccessedAt = inactiveAt;
+    const published = this.lastPublished.get(key);
+    if (published) published.lastAccessedAt = inactiveAt;
+    this.evictLeastRecentlyUsed(this.latestResults);
+    this.evictLeastRecentlyUsed(this.lastPublished);
   }
 
   private setSnapshot(snapshot: SharedPollingSnapshot): void {

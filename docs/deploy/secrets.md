@@ -27,6 +27,16 @@ you bind to an agent as exposed to that agent. Limit blast radius with bindings
 provider supports them, and rotation when an agent transcript or downstream
 system might have captured a value.
 
+Paperclip masks the resolved value of each secret-bound environment variable in
+the run output that it stores: the run log, the run excerpts, and the run
+transcript events. This applies to local and native runs. The mask is
+`***REDACTED***`. Paperclip masks only exact text: the full value, the value
+without outer whitespace, its JSON-escaped form, and each line of a multi-line
+value. Paperclip does not mask a value or line that has fewer than 8
+characters. This mask prevents accidental leaks. It is not a security boundary:
+an agent can change a value (for example, encode it in base64) before it prints
+it.
+
 ## Using Secrets In Runs
 
 Creating a company secret does not automatically create an environment variable.
@@ -50,6 +60,13 @@ can be human-readable; the binding key is what the agent process receives.
 Project env applies to every issue run in that project. When a project env key
 matches an agent env key, the project value wins before Paperclip injects its
 own `PAPERCLIP_*` runtime variables.
+
+Separately from env bindings, the **server itself** consumes a company secret
+named `GITHUB_TOKEN`, `GH_TOKEN`, or `PAPERCLIP_GITHUB_TOKEN` (by name, no
+binding needed) to authenticate server-side git operations — cloning private
+GitHub repos for repo-only project workspaces and refreshing worktree base
+refs. See
+[Execution workspaces](../guides/board-operator/execution-workspaces-and-runtime-services.md#private-repositories-and-repo-only-project-workspaces).
 
 ## User-Specific Secrets
 
@@ -196,7 +213,7 @@ Validate secrets config:
 
 ```sh
 pnpm paperclipai doctor
-pnpm paperclipai secrets doctor --company-id <company-id>
+npx paperclipai secrets doctor --company-id <company-id>
 ```
 
 ### Environment Overrides
@@ -247,7 +264,7 @@ default provider — no migration is required.
 
 ### Where to configure
 
-Open `Company Settings → Secrets` in the board UI and switch to the
+Open `Organization Settings → Secrets` in the board UI and switch to the
 `Provider vaults` tab. From there you can:
 
 - Create a vault for any supported provider family.
@@ -468,8 +485,8 @@ store.
 If you have existing agents with inline API keys in their config, migrate them to encrypted secret refs:
 
 ```sh
-pnpm paperclipai secrets migrate-inline-env --company-id <company-id>
-pnpm paperclipai secrets migrate-inline-env --company-id <company-id> --apply
+npx paperclipai secrets migrate-inline-env --company-id <company-id>
+npx paperclipai secrets migrate-inline-env --company-id <company-id> --apply
 
 # low-level script for direct database maintenance
 pnpm secrets:migrate-inline-env         # dry run
@@ -486,7 +503,7 @@ Company exports include only environment declarations. They do not include
 secret IDs, provider references, encrypted material, or plaintext values.
 
 ```sh
-pnpm paperclipai secrets declarations --company-id <company-id> --kind secret
+npx paperclipai secrets declarations --company-id <company-id> --kind secret
 ```
 
 Before importing a package into another instance, use those declarations to

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { tailscaleConnectionService } from "./connectors/tailscale/connections.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import type {
@@ -17,7 +18,7 @@ import { unprocessable } from "../errors.js";
 import { parseObject } from "../adapters/utils.js";
 import { secretService } from "./secrets.js";
 import {
-  resolvePluginSandboxProviderDriverByKey,
+  resolvePluginSandboxProviderConfigSchema,
   validatePluginEnvironmentDriverConfig,
   validatePluginSandboxProviderConfig,
 } from "./plugin-environment-driver.js";
@@ -25,6 +26,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import {
   collectSecretRefPaths,
   isUuidSecretRef,
+  parseSecretRefBindingObject,
   readConfigValueAtPath,
   writeConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
@@ -32,16 +34,22 @@ import { resolveActiveEnvironmentCustomImageTemplateForRuntime } from "./environ
 
 const secretRefSchema = z.object({
   type: z.literal("secret_ref"),
-  secretId: z.string().uuid(),
+  secretId: z.string().guid(),
   version: z.union([z.literal("latest"), z.number().int().positive()]).optional().default("latest"),
 }).strict();
 
 const sshEnvironmentConfigSchema = z.object({
-  host: z.string({ required_error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
+  useHostAuth: z.boolean().optional(),
+  tailscaleConnectionId: z.string().uuid().optional(),
+  tailscaleDeviceId: z.string().trim().min(1).max(256).optional(),
+  network: z.enum(["direct", "tailscale"]).optional(),
+  tailscaleAuthKey: z.null().optional(),
+  tailscaleAuthKeySecretRef: secretRefSchema.extend({ version: z.literal("latest").optional().default("latest") }).optional().nullable(),
+  host: z.string({ error: "SSH environments require a host." }).trim().min(1, "SSH environments require a host."),
   port: z.coerce.number().int().min(1).max(65535).default(22),
-  username: z.string({ required_error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
+  username: z.string({ error: "SSH environments require a username." }).trim().min(1, "SSH environments require a username."),
   remoteWorkspacePath: z
-    .string({ required_error: "SSH environments require a remote workspace path." })
+    .string({ error: "SSH environments require a remote workspace path." })
     .trim()
     .min(1, "SSH environments require a remote workspace path.")
     .refine((value) => value.startsWith("/"), "SSH remote workspace path must be absolute."),
@@ -67,6 +75,16 @@ const sshEnvironmentConfigProbeSchema = sshEnvironmentConfigSchema.extend({
 
 const sshEnvironmentConfigPersistenceSchema = sshEnvironmentConfigProbeSchema;
 
+function assertTailscaleSelection(config: Record<string, unknown>) {
+  if (!config.tailscaleConnectionId || !config.tailscaleDeviceId || config.network !== "tailscale" || config.tailscaleAuthKey) {
+    throw unprocessable("Connect Tailscale and select a machine before saving this environment.");
+  }
+}
+
+function validateTailscaleSelection(config: Record<string, unknown>) {
+  if (config.network === "tailscale" || config.tailscaleConnectionId !== undefined || config.tailscaleDeviceId !== undefined) assertTailscaleSelection(config);
+}
+
 const fakeSandboxEnvironmentConfigSchema = z.object({
   provider: z.literal("fake").default("fake"),
   image: z
@@ -76,6 +94,14 @@ const fakeSandboxEnvironmentConfigSchema = z.object({
     .default("ubuntu:24.04"),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
+  runnerLifecycleMode: z.enum(["inherit", "per_turn", "warm"]).optional(),
+  runnerIdleTimeoutMs: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(86_400_000)
+    .optional(),
+  archiveOnRelease: z.boolean().optional(),
 }).strict();
 
 const pluginSandboxProviderKeySchema = z.string()
@@ -91,16 +117,33 @@ const pluginSandboxEnvironmentConfigSchema = z.object({
   timeoutMs: z.coerce.number().int().min(1).max(86_400_000).optional(),
   reuseLease: z.boolean().optional().default(false),
   streamRunLogs: z.boolean().optional(),
+  runnerLifecycleMode: z.enum(["inherit", "per_turn", "warm"]).optional(),
+  runnerIdleTimeoutMs: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(86_400_000)
+    .optional(),
+  archiveOnRelease: z.boolean().optional(),
 }).catchall(z.unknown());
 
 const pluginEnvironmentConfigSchema = z.object({
+  runnerLifecycleMode: z.enum(["inherit", "per_turn", "warm"]).optional(),
+  runnerIdleTimeoutMs: z.number().int().positive().max(86_400_000).optional(),
   pluginKey: z.string().min(1),
   driverKey: z.string().min(1).regex(
     /^[a-z0-9][a-z0-9._-]*$/,
     "Environment driver key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
   ),
-  driverConfig: z.record(z.unknown()).optional().default({}),
+  driverConfig: z.record(z.string(), z.unknown()).optional().default({}),
 }).strict();
+
+export const ENVIRONMENT_CONFIG_SCHEMA_KEYS = {
+  ssh: Object.keys(sshEnvironmentConfigPersistenceSchema.shape),
+  fakeSandbox: Object.keys(fakeSandboxEnvironmentConfigSchema.shape),
+  pluginSandbox: Object.keys(pluginSandboxEnvironmentConfigSchema.shape),
+  plugin: Object.keys(pluginEnvironmentConfigSchema.shape),
+} as const;
 
 export type ParsedEnvironmentConfig =
   | { driver: "local"; config: LocalEnvironmentConfig }
@@ -118,10 +161,29 @@ function getSandboxProvider(raw: Record<string, unknown>) {
   return typeof raw.provider === "string" && raw.provider.trim().length > 0 ? raw.provider.trim() : "fake";
 }
 
+// Operator flags removed when session-output streaming moved to the verified
+// capability snapshot. A saved environment config can still carry a removed key.
+// The server now decides session-output streaming from the effective capability
+// snapshot alone, so no consumer reads these flags. Strip a removed key before
+// validation so a strict schema (the fake sandbox) still loads an old config,
+// and so the removed flag never reaches the parsed config.
+const REMOVED_SANDBOX_CONFIG_KEYS = ["streamAgentSessionOutput"] as const;
+
+function stripRemovedSandboxConfigKeys(raw: Record<string, unknown>): Record<string, unknown> {
+  if (!REMOVED_SANDBOX_CONFIG_KEYS.some((key) => key in raw)) {
+    return raw;
+  }
+  const next = { ...raw };
+  for (const key of REMOVED_SANDBOX_CONFIG_KEYS) {
+    delete next[key];
+  }
+  return next;
+}
+
 function parseSandboxEnvironmentConfig(
   input: Record<string, unknown> | null | undefined,
 ) {
-  const raw = parseObject(input);
+  const raw = stripRemovedSandboxConfigKeys(parseObject(input));
   const provider = getSandboxProvider(raw);
 
   if (provider === "fake") {
@@ -141,14 +203,10 @@ async function getSandboxProviderConfigSchema(
   db: Db,
   provider: string,
 ): Promise<Record<string, unknown> | null> {
-  const resolved = await resolvePluginSandboxProviderDriverByKey({
+  return resolvePluginSandboxProviderConfigSchema({
     db,
     driverKey: provider,
   });
-  const schema = resolved?.driver.configSchema;
-  return schema && typeof schema === "object" && !Array.isArray(schema)
-    ? schema as Record<string, unknown>
-    : null;
 }
 
 export async function resolveSandboxProviderSecretRefPaths(
@@ -198,6 +256,25 @@ async function createEnvironmentSecret(input: {
   };
 }
 
+/**
+ * Secret pickers submit `{ type: "secret_ref", secretId, version }` binding
+ * objects for `format: "secret-ref"` fields, while persisted configs store the
+ * bare secret id. Collapse binding objects to the secret id so every consumer
+ * downstream deals with one shape. Sandbox provider references always resolve
+ * the latest version, so pinned bindings are rejected rather than silently
+ * resolved to a different version than the caller asked for.
+ */
+function canonicalizeSecretRefValue(value: unknown, path: string): unknown {
+  const binding = parseSecretRefBindingObject(value);
+  if (!binding) return value;
+  if (binding.version !== "latest") {
+    throw unprocessable(
+      `Secret binding at ${path} pins version ${binding.version}; sandbox provider secret references always resolve the latest version.`,
+    );
+  }
+  return binding.secretId;
+}
+
 async function persistConfigSecretRefs(input: {
   db: Db;
   companyId: string;
@@ -210,7 +287,7 @@ async function persistConfigSecretRefs(input: {
 }): Promise<Record<string, unknown>> {
   let nextConfig = { ...input.config };
   for (const path of collectSecretRefPaths(input.schema)) {
-    const rawValue = readConfigValueAtPath(nextConfig, path);
+    const rawValue = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
     if (typeof rawValue !== "string") continue;
     const trimmed = rawValue.trim();
     if (trimmed.length === 0) {
@@ -241,6 +318,7 @@ async function resolveConfigSecretRefsForRuntime(input: {
   companyId: string;
   config: Record<string, unknown>;
   schema: Record<string, unknown> | null;
+  readOnlyInspection?: boolean;
   context: {
     consumerId: string;
     issueId?: string | null;
@@ -250,7 +328,7 @@ async function resolveConfigSecretRefsForRuntime(input: {
   const secrets = secretService(input.db);
   let nextConfig = { ...input.config };
   for (const path of collectSecretRefPaths(input.schema)) {
-    const current = readConfigValueAtPath(nextConfig, path);
+    const current = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
     if (typeof current !== "string") continue;
     const trimmed = current.trim();
     if (!isUuidSecretRef(trimmed)) continue;
@@ -260,7 +338,10 @@ async function resolveConfigSecretRefsForRuntime(input: {
     nextConfig = writeConfigValueAtPath(
       nextConfig,
       path,
-      await secrets.resolveSecretValue(input.companyId, trimmed, "latest", {
+      input.readOnlyInspection ? await secrets.resolveSecretValueForReadOnlyEnvironmentInspection(input.companyId, trimmed, "latest", {
+        environmentId: input.context.consumerId, configPath: path,
+        issueId: input.context.issueId, heartbeatRunId: input.context.heartbeatRunId,
+      }) : await secrets.resolveSecretValue(input.companyId, trimmed, "latest", {
         consumerType: "environment",
         consumerId: input.context.consumerId,
         actorType: "system",
@@ -282,14 +363,14 @@ async function resolveConfigSecretRefsForProbe(input: {
   accessContext?: {
     actorType: "agent" | "user";
     actorId: string;
-    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant";
     heartbeatRunId?: string | null;
   };
 }): Promise<Record<string, unknown>> {
   const secrets = secretService(input.db);
   let nextConfig = { ...input.config };
   for (const path of collectSecretRefPaths(input.schema)) {
-    const current = readConfigValueAtPath(nextConfig, path);
+    const current = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
     if (typeof current !== "string") continue;
     const trimmed = current.trim();
     if (!isUuidSecretRef(trimmed)) continue;
@@ -318,18 +399,20 @@ export async function collectEnvironmentSecretRefs(input: {
   environment: Pick<Environment, "id" | "driver" | "config">;
 }): Promise<Array<{ secretId: string; configPath: string; versionSelector?: SecretVersionSelector }>> {
   const parsed = parseEnvironmentDriverConfig(input.environment);
-  if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef) {
-    return [{
-      secretId: parsed.config.privateKeySecretRef.secretId,
-      configPath: "privateKeySecretRef",
-      versionSelector: parsed.config.privateKeySecretRef.version ?? "latest",
-    }];
+  if (parsed.driver === "ssh") {
+    const binding = parsed.config.privateKeySecretRef;
+    return binding ? [{ secretId: binding.secretId, configPath: "privateKeySecretRef", versionSelector: binding.version ?? "latest" }] : [];
   }
   if (parsed.driver === "sandbox" && parsed.config.provider !== "fake") {
     const schema = await getSandboxProviderConfigSchema(input.db, parsed.config.provider);
     const refs: Array<{ secretId: string; configPath: string; versionSelector?: SecretVersionSelector }> = [];
     for (const path of collectSecretRefPaths(schema)) {
       const current = readConfigValueAtPath(parsed.config as Record<string, unknown>, path);
+      const binding = parseSecretRefBindingObject(current);
+      if (binding) {
+        refs.push({ secretId: binding.secretId, configPath: path, versionSelector: binding.version });
+        continue;
+      }
       if (typeof current === "string" && isUuidSecretRef(current.trim())) {
         refs.push({ secretId: current.trim(), configPath: path, versionSelector: "latest" });
       }
@@ -340,8 +423,37 @@ export async function collectEnvironmentSecretRefs(input: {
 }
 
 export function stripSandboxProviderEnvelope(config: SandboxEnvironmentConfig): Record<string, unknown> {
-  const { provider: _provider, ...driverConfig } = config as Record<string, unknown>;
+  const {
+    provider: _provider,
+    streamRunLogs: _streamRunLogs,
+    ...driverConfig
+  } = config as Record<string, unknown>;
   return driverConfig;
+}
+
+// The host owns these sandbox run-behavior flags, not the provider plugin. The
+// host passes the whole config to the plugin, so a plugin that allowlists only
+// its provider fields may drop them from its normalized config. Re-apply them
+// from the parsed envelope after plugin normalization. Otherwise a saved
+// environment can silently fall back to per-turn runner behavior even though
+// the caller explicitly selected a warm lifecycle.
+const HOST_OWNED_SANDBOX_FLAGS = [
+  "streamRunLogs",
+  "runnerLifecycleMode",
+  "runnerIdleTimeoutMs",
+] as const;
+
+function applyHostOwnedSandboxFlags(
+  normalizedConfig: Record<string, unknown>,
+  envelope: Record<string, unknown>,
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...normalizedConfig };
+  for (const key of HOST_OWNED_SANDBOX_FLAGS) {
+    if (envelope[key] !== undefined) {
+      merged[key] = envelope[key];
+    }
+  }
+  return merged;
 }
 
 export function normalizeEnvironmentConfig(input: {
@@ -353,6 +465,7 @@ export function normalizeEnvironmentConfig(input: {
   }
 
   if (input.driver === "ssh") {
+    validateTailscaleSelection(parseObject(input.config));
     const parsed = sshEnvironmentConfigSchema.safeParse(parseObject(input.config));
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
@@ -393,12 +506,13 @@ export function normalizeEnvironmentConfigForProbe(input: {
   accessContext?: {
     actorType: "agent" | "user";
     actorId: string;
-    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "cloud_tenant";
+    actorSource?: "local_implicit" | "session" | "board_key" | "agent_key" | "agent_jwt" | "mcp_oauth" | "cloud_tenant";
     heartbeatRunId?: string | null;
   };
   pluginWorkerManager?: PluginWorkerManager;
 }): Promise<Record<string, unknown>> | Record<string, unknown> {
   if (input.driver === "ssh") {
+    validateTailscaleSelection(parseObject(input.config));
     const parsed = sshEnvironmentConfigProbeSchema.safeParse(parseObject(input.config));
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
@@ -431,7 +545,10 @@ export function normalizeEnvironmentConfigForProbe(input: {
       ...(await resolveConfigSecretRefsForProbe({
         db: input.db,
         companyId: input.companyId,
-        config: validated.normalizedConfig,
+        config: applyHostOwnedSandboxFlags(
+          validated.normalizedConfig,
+          parsed.data,
+        ),
         accessContext: input.accessContext,
         schema:
           validated.driver.configSchema &&
@@ -451,6 +568,7 @@ export function normalizeEnvironmentConfigForProbe(input: {
 
 export async function normalizeEnvironmentConfigForPersistence(input: {
   db: Db;
+  operation?: "create" | "update";
   companyId: string;
   environmentName: string;
   driver: EnvironmentDriver;
@@ -460,7 +578,12 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
   pluginWorkerManager?: PluginWorkerManager;
 }): Promise<Record<string, unknown>> {
   if (input.driver === "ssh") {
-    const parsed = sshEnvironmentConfigPersistenceSchema.safeParse(parseObject(input.config));
+    const raw = { ...parseObject(input.config) };
+    if (raw.network === "direct") {
+      for (const field of ["tailscaleConnectionId", "tailscaleDeviceId", "tailscaleAuthKeySecretRef", "tailscaleAuthKey"]) delete raw[field];
+    }
+    validateTailscaleSelection(raw);
+    const parsed = sshEnvironmentConfigPersistenceSchema.safeParse(raw);
     if (!parsed.success) {
       throw unprocessable(toErrorMessage(parsed.error), {
         issues: parsed.error.issues,
@@ -468,6 +591,11 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
     }
     const secrets = secretService(input.db);
     const { privateKey, ...stored } = parsed.data;
+    if (stored.tailscaleConnectionId) {
+      const binding = await tailscaleConnectionService(input.db).environmentBinding(input.companyId, stored.tailscaleConnectionId, stored.tailscaleDeviceId!);
+      stored.host = binding.host;
+      stored.tailscaleAuthKeySecretRef = { type: "secret_ref", secretId: binding.secretId, version: "latest" };
+    }
     let nextPrivateKeySecretRef = stored.privateKeySecretRef;
     if (privateKey) {
       nextPrivateKeySecretRef = await createEnvironmentSecret({
@@ -489,6 +617,8 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
     }
     return {
       ...stored,
+      ...(input.operation === "create" ? { useHostAuth: stored.useHostAuth ?? false } : {}),
+      ...(stored.tailscaleAuthKeySecretRef ? { tailscaleAuthKey: null } : {}),
       privateKey: null,
       privateKeySecretRef: nextPrivateKeySecretRef,
     } satisfies SshEnvironmentConfig;
@@ -523,7 +653,7 @@ export async function normalizeEnvironmentConfigForPersistence(input: {
       secretProvider: input.secretProvider,
       config: {
         provider: parsed.data.provider,
-        ...validated.normalizedConfig,
+        ...applyHostOwnedSandboxFlags(validated.normalizedConfig, parsed.data),
       },
       schema:
         validated.driver.configSchema && typeof validated.driver.configSchema === "object" && !Array.isArray(validated.driver.configSchema)
@@ -568,39 +698,46 @@ export async function resolveEnvironmentDriverConfigForRuntime(
     // but must still resolve the active custom image as prepared runtime
     // configuration and tooling so the test reflects what real agent runs use.
     applyCustomImageTemplate?: boolean;
+    readOnlyCustomImageTemplate?: boolean;
+    readOnlyInspection?: boolean;
+    onResolvedCustomImageTemplate?: (identity: { id: string; capturedAt: string | null; templateKind: string; bindingField: string }) => void;
   },
 ): Promise<ParsedEnvironmentConfig> {
   const parsed = parseEnvironmentDriverConfig(environment);
   const secrets = secretService(db);
   const environmentId = environment.id;
-  if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef && !environmentId) {
-    throw unprocessable("Runtime secret resolution requires an environment id");
-  }
-
-  if (parsed.driver === "ssh" && parsed.config.privateKeySecretRef) {
-    if (!companyId) {
-      throw unprocessable("Runtime secret resolution requires a companyId context");
+  if (parsed.driver === "ssh") {
+    const config = { ...parsed.config };
+    const connectionService = config.tailscaleConnectionId ? tailscaleConnectionService(db) : null;
+    if (connectionService) {
+      if (!companyId) throw unprocessable("Tailscale requires a company context.");
+      const connection = await connectionService.get(companyId, config.tailscaleConnectionId!);
+      if (!connection.secretId || connection.status !== "connected" || connection.secretId !== config.tailscaleAuthKeySecretRef?.secretId) {
+        throw unprocessable("Reconnect Tailscale and save this environment again.", { code: "tailscale_reauthorization_required" });
+      }
     }
-    return {
-      driver: "ssh",
-      config: {
-        ...parsed.config,
-        privateKey: await secrets.resolveSecretValue(
-          companyId,
-          parsed.config.privateKeySecretRef.secretId,
-          parsed.config.privateKeySecretRef.version ?? "latest",
-          {
-            consumerType: "environment",
-            consumerId: environmentId!,
-            actorType: "system",
-            actorId: null,
-            issueId: context?.issueId ?? null,
-            heartbeatRunId: context?.heartbeatRunId ?? null,
-            configPath: "privateKeySecretRef",
-          },
-        ),
-      },
+    const bindingContext = (configPath: string) => {
+      if (!environmentId || !companyId) throw unprocessable("Runtime secret resolution requires an environment and company context");
+      return { consumerType: "environment" as const, consumerId: environmentId,
+        actorType: "system" as const, actorId: null, issueId: context?.issueId ?? null,
+        heartbeatRunId: context?.heartbeatRunId ?? null, configPath };
     };
+    if (config.privateKeySecretRef) {
+      const binding = config.privateKeySecretRef;
+      config.privateKey = await secrets.resolveSecretValue(companyId!, binding.secretId,
+        binding.version ?? "latest", bindingContext("privateKeySecretRef"));
+    }
+    if (config.network === "tailscale" && !context?.readOnlyInspection) {
+      const binding = config.tailscaleAuthKeySecretRef;
+      if (!binding) throw unprocessable("Connect Tailscale before running tasks in this environment.");
+      bindingContext("tailscaleAuthKeySecretRef");
+      if (!connectionService) throw unprocessable("Connect Tailscale and select a machine before running tasks.");
+      const connection = await connectionService.environmentBinding(companyId!, config.tailscaleConnectionId!, config.tailscaleDeviceId!, binding.secretId);
+      config.host = connection.host;
+      config.tailscaleIdentity = `${companyId}:${connection.secretId}`;
+      config.tailscaleSocket = connection.socket;
+    }
+    return { driver: "ssh", config };
   }
 
   if (parsed.driver === "sandbox" && parsed.config.provider !== "fake") {
@@ -612,6 +749,7 @@ export async function resolveEnvironmentDriverConfigForRuntime(
         companyId,
         config: parsed.config as Record<string, unknown>,
         schema,
+        readOnlyInspection: context?.readOnlyInspection,
         context: {
           consumerId: environmentId!,
           issueId: context?.issueId ?? null,
@@ -621,7 +759,7 @@ export async function resolveEnvironmentDriverConfigForRuntime(
     } else {
       for (const path of collectSecretRefPaths(schema)) {
         const current = readConfigValueAtPath(parsed.config as Record<string, unknown>, path);
-        if (typeof current === "string" && isUuidSecretRef(current.trim())) {
+        if (parseSecretRefBindingObject(current) || (typeof current === "string" && isUuidSecretRef(current.trim()))) {
           throw unprocessable("Runtime secret resolution requires a companyId context");
         }
       }
@@ -633,12 +771,57 @@ export async function resolveEnvironmentDriverConfigForRuntime(
             environmentId,
             baseConfig: parsed.config,
             runtimeConfig,
+            // Match the capture-time fingerprint exclusions: secret-ref paths
+            // are excluded when the template's source fingerprint is computed,
+            // so they must be excluded when re-checking it here.
+            secretRefExcludePaths: collectSecretRefPaths(schema),
+            readOnly: context?.readOnlyCustomImageTemplate,
+            onResolvedTemplate: context?.onResolvedCustomImageTemplate,
           })
         : runtimeConfig,
     };
   }
 
   return parsed;
+}
+
+/**
+ * Resolve the connection secrets of a recorded sandbox config for a durable
+ * orphan-sandbox teardown. The retry reads the recorded config from the durable
+ * `pending_cleanup` lease row, not from the current environment. So this
+ * resolver must not require the environment binding: a delete removed the
+ * environment, or a provider change replaced the binding. It resolves each
+ * schema-declared secret ref by id at the latest version through
+ * `resolveSecretValueForSandboxCleanup`, which authorizes the read from the
+ * durable orphan record and skips the binding check. The resolved values are
+ * used once for the teardown RPC and never persisted.
+ */
+export async function resolveSandboxCleanupConfigSecrets(
+  db: Db,
+  companyId: string,
+  config: SandboxEnvironmentConfig,
+  context?: { issueId?: string | null; heartbeatRunId?: string | null },
+): Promise<SandboxEnvironmentConfig> {
+  if (config.provider === "fake") return config;
+  const schema = await getSandboxProviderConfigSchema(db, config.provider);
+  const secrets = secretService(db);
+  let nextConfig = { ...config } as Record<string, unknown>;
+  for (const path of collectSecretRefPaths(schema)) {
+    const current = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
+    if (typeof current !== "string") continue;
+    const trimmed = current.trim();
+    if (!isUuidSecretRef(trimmed)) continue;
+    nextConfig = writeConfigValueAtPath(
+      nextConfig,
+      path,
+      await secrets.resolveSecretValueForSandboxCleanup(companyId, trimmed, "latest", {
+        configPath: path,
+        issueId: context?.issueId ?? null,
+        heartbeatRunId: context?.heartbeatRunId ?? null,
+      }),
+    );
+  }
+  return nextConfig as SandboxEnvironmentConfig;
 }
 
 export function readSshEnvironmentPrivateKeySecretId(
@@ -661,6 +844,7 @@ export function parseEnvironmentDriverConfig(
   }
 
   if (environment.driver === "ssh") {
+    validateTailscaleSelection(parseObject(environment.config));
     const parsed = sshEnvironmentConfigSchema.parse(parseObject(environment.config));
     return {
       driver: "ssh",

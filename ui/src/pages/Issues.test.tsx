@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Issue } from "@paperclipai/shared";
-import { buildIssuesSearchUrl, getNextIssuesPageOffset, mergeIssuePagesStable } from "./Issues";
+import {
+  ISSUES_ROW_PRESENTATION,
+  ISSUES_TOOLBAR_PRESENTATION,
+  buildIssuesSearchUrl,
+  getNextIssuesPageOffset,
+  mergeIssuePagesStable,
+  resolveIssuesPresentation,
+} from "./Issues";
 
 function createIssue(id: string, title: string): Issue {
   return { id, title } as Issue;
@@ -21,6 +28,25 @@ describe("buildIssuesSearchUrl", () => {
 });
 
 describe("issues page pagination helpers", () => {
+  it("opts the Tasks route into the canonical shared task-row presentation", () => {
+    expect(ISSUES_ROW_PRESENTATION).toBe("task");
+  });
+
+  it("opts the Tasks route into the shared collection toolbar", () => {
+    expect(ISSUES_TOOLBAR_PRESENTATION).toBe("collection");
+  });
+
+  it("restores the retained legacy list and toolbar when Streamlined UI is off", () => {
+    expect(resolveIssuesPresentation(false)).toEqual({
+      rowPresentation: "legacy",
+      toolbarPresentation: "legacy",
+    });
+    expect(resolveIssuesPresentation(true)).toEqual({
+      rowPresentation: "task",
+      toolbarPresentation: "collection",
+    });
+  });
+
   it("advances to the next offset when the current page is full", () => {
     expect(getNextIssuesPageOffset(100, 0)).toBe(100);
     expect(getNextIssuesPageOffset(100, 100)).toBe(200);

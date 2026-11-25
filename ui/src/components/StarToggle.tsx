@@ -14,7 +14,7 @@ export interface StarToggleProps {
   error?: boolean;
   /**
    * "row" — quiet icon-only control for sidebar and browse-list rows.
-   * "button" — labelled Star/Starred button for detail headers.
+   * "button" — always-visible icon-only control for detail headers.
    */
   size?: "row" | "button";
   /** Called with the desired next starred value. */
@@ -63,12 +63,11 @@ export function StarToggle({
   }
 
   if (size === "button") {
-    const label = pending ? "Saving..." : error ? "Retry star" : starred ? "Starred" : "Star";
     return (
       <Button
         type="button"
-        size="sm"
-        variant="outline"
+        size="icon-sm"
+        variant="ghost"
         aria-label={ariaLabel}
         aria-pressed={starred}
         aria-busy={pending ? "true" : undefined}
@@ -92,7 +91,6 @@ export function StarToggle({
             !pending && error && "text-red-500",
           )}
         />
-        <span>{label}</span>
       </Button>
     );
   }

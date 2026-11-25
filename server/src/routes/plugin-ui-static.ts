@@ -32,8 +32,11 @@ import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import type { Db } from "@paperclipai/db";
+import type { PluginRecord } from "@paperclipai/shared";
 import { pluginRegistryService } from "../services/plugin-registry.js";
 import { logger } from "../middleware/logger.js";
+import { assertCompanyAccess } from "./authz.js";
+import { badRequest } from "../errors.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -50,6 +53,7 @@ import { logger } from "../middleware/logger.js";
  * The hash portion must be at least 8 hex characters to avoid false positives.
  */
 const CONTENT_HASH_PATTERN = /[.-][a-fA-F0-9]{8,}\.\w+$/;
+const UUID_INPUT_PATTERN = /^[0-9a-f]{4}(?:-?[0-9a-f]{4}){7}$/i;
 
 /**
  * Cache-Control header for content-hashed files.
@@ -190,6 +194,7 @@ export interface PluginUiStaticRouteOptions {
    * Defaults to the standard `~/.paperclip/plugins/` location.
    */
   localPluginDir: string;
+  resolvePackageRoot?: (plugin: PluginRecord) => string;
 }
 
 /**
@@ -243,16 +248,11 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
 
     // Step 1: Look up the plugin
     let plugin = null;
-    try {
+    const uuidInput = pluginId.startsWith("{") && pluginId.endsWith("}")
+      ? pluginId.slice(1, -1)
+      : pluginId;
+    if (UUID_INPUT_PATTERN.test(uuidInput)) {
       plugin = await registry.getById(pluginId);
-    } catch (error) {
-      const maybeCode =
-        typeof error === "object" && error !== null && "code" in error
-          ? (error as { code?: unknown }).code
-          : undefined;
-      if (maybeCode !== "22P02") {
-        throw error;
-      }
     }
     if (!plugin) {
       plugin = await registry.getByKey(pluginId);
@@ -277,11 +277,23 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
       return;
     }
 
-    // Step 2b: Check for devUiUrl in plugin config — proxy to local dev server
-    // when a plugin author has configured a dev server URL for hot-reload.
+    const rawCompanyId = req.query.companyId;
+    if (
+      Array.isArray(rawCompanyId) ||
+      (rawCompanyId !== undefined && typeof rawCompanyId !== "string")
+    ) {
+      throw badRequest('"companyId" must be a string when provided');
+    }
+    const companyId = typeof rawCompanyId === "string" ? rawCompanyId.trim() : "";
+    if (companyId) {
+      assertCompanyAccess(req, companyId);
+    }
+
+    // Step 2b: Check for devUiUrl in company-scoped plugin config — proxy to
+    // local dev server when a plugin author has configured hot-reload.
     // See PLUGIN_SPEC.md §27.2 — Local Development Workflow
     try {
-      const configRow = await registry.getConfig(plugin.id);
+      const configRow = companyId ? await registry.getConfig(plugin.id, companyId) : null;
       const devUiUrl =
         configRow &&
         typeof configRow === "object" &&
@@ -290,7 +302,7 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
 
       if (typeof devUiUrl === "string" && devUiUrl.length > 0) {
         // Dev proxy is only available in development mode
-        if (process.env.NODE_ENV === "production") {
+        if (options.resolvePackageRoot || process.env.NODE_ENV === "production") {
           log.warn(
             { pluginId: plugin.id },
             "plugin-ui-static: devUiUrl ignored in production",
@@ -391,12 +403,15 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     }
 
     // Step 3: Resolve the plugin's UI directory
-    const uiDir = resolvePluginUiDir(
-      options.localPluginDir,
-      plugin.packageName,
-      manifest.entrypoints.ui,
-      plugin.packagePath,
-    );
+    let uiDir: string | null;
+    try {
+      uiDir = options.resolvePackageRoot
+        ? path.resolve(options.resolvePackageRoot(plugin), manifest.entrypoints.ui)
+        : resolvePluginUiDir(options.localPluginDir, plugin.packageName, manifest.entrypoints.ui, plugin.packagePath);
+    } catch {
+      res.status(503).json({ error: "Plugin package is unavailable in the current image" });
+      return;
+    }
 
     if (!uiDir) {
       log.warn(

@@ -1,3 +1,4 @@
+import { isAiAuthenticationRepairable } from "./ai-auth-failure.js";
 import type { HeartbeatRunStatus, IssueStatus, RunLivenessState } from "@paperclipai/shared";
 
 export type RunLivenessActionability =
@@ -11,6 +12,7 @@ export interface RunLivenessIssueInput {
   status: IssueStatus | string;
   title: string;
   description: string | null;
+  workMode?: string | null;
 }
 
 export interface RunLivenessEvidenceInput {
@@ -36,6 +38,8 @@ export interface RunLivenessClassificationInput {
   errorCode?: string | null;
   continuationAttempt?: number | null;
   evidence?: Partial<RunLivenessEvidenceInput> | null;
+  /** Set by the controller only after creating a durable connection card. */
+  authenticationRepairRequested?: boolean;
 }
 
 export interface RunLivenessClassification {
@@ -72,9 +76,8 @@ const MANAGER_REVIEW_RE =
   /\b(?:manager review|human review|manual review|security review|escalate|production deploy|deploy(?:ing)? to production|deploy(?:ing)? to prod|prod deploy|production access|rotate .{0,40}\b(?:secret|key|token)|delete .{0,40}\bproduction|security-sensitive|credentialed operation|budget-sensitive|cost approval|spend approval)\b/i;
 const RUNNABLE_RE =
   /\b(?:(?:run|rerun|execute)\s+(?:pnpm|npm|yarn|bun|vitest|jest|pytest|cargo|go test|curl|tests?|typecheck|build|lint|package|verification)|(?:inspect|check|review|look|investigate|analy[sz]e|open|read|start|begin|continue|implement|fix|test|update|create|add|write|verify|validate|report)\b)/i;
-const PLAN_TASK_TITLE_RE = /\b(?:plan|planning|analysis|investigation|research|report|proposal|design doc|write-?up)\b/i;
-const PLAN_TASK_DESCRIPTION_RE =
-  /\b(?:create|write|produce|draft|update|revise|prepare)\s+(?:a\s+|the\s+)?(?:plan|analysis|investigation|research report|report|proposal|design doc|write-?up)\b/i;
+const UNMANAGED_BACKGROUND_TASK_STOP_REASON = "unmanaged_background_task_stopped";
+const UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON = "unmanaged background task stopped; no durable live path";
 
 function compactReason(reason: string) {
   return reason.length <= 500 ? reason : `${reason.slice(0, 497)}...`;
@@ -92,6 +95,17 @@ function readText(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+}
+
+function hasUnmanagedBackgroundTaskEvidence(resultJson: Record<string, unknown> | null | undefined) {
+  if (!resultJson) return false;
+  if (resultJson.stopReason === UNMANAGED_BACKGROUND_TASK_STOP_REASON) return true;
+  const evidence = resultJson.unmanagedBackgroundTask;
+  if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)) return false;
+  const record = evidence as Record<string, unknown>;
+  return record.stopped === true &&
+    (record.stopReason === UNMANAGED_BACKGROUND_TASK_STOP_REASON ||
+      record.reason === UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON);
 }
 
 function resultFinalText(resultJson: Record<string, unknown> | null | undefined) {
@@ -161,12 +175,6 @@ export function looksLikePlanningOnly(input: RunLivenessClassificationInput) {
   const text = actionabilityText(input);
   if (!text) return false;
   return PLANNING_ONLY_RE.test(text) || NEXT_STEPS_RE.test(text) || /^\s*next(?: steps?| action)?\s*:/im.test(text);
-}
-
-export function isPlanningOrDocumentTask(issue: RunLivenessIssueInput | null | undefined) {
-  if (!issue) return false;
-  if (PLAN_TASK_TITLE_RE.test(issue.title)) return true;
-  return PLAN_TASK_DESCRIPTION_RE.test(issue.description ?? "");
 }
 
 function normalizeEvidence(evidence: Partial<RunLivenessEvidenceInput> | null | undefined): RunLivenessEvidenceInput {
@@ -297,7 +305,9 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
   const issueStatus = input.issue?.status ?? null;
   const usefulOutput = hasUsefulOutput(input);
   const concreteEvidence = hasConcreteActionEvidence(evidence);
-  const planExempt = isPlanningOrDocumentTask(input.issue) || evidence.planDocumentRevisionsCreated > 0;
+  // This is a diagnostic only. Requested deliverables (including plans) do not
+  // select a work mode; only the persisted field grants the planning exemption.
+  const planExempt = input.issue?.workMode === "planning" || evidence.planDocumentRevisionsCreated > 0;
   const lastUsefulActionAt = concreteEvidence ? evidence.latestEvidenceAt : null;
 
   const output = (state: RunLivenessState, reason: string, nextAction: string | null = null): RunLivenessClassification => ({
@@ -313,7 +323,14 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
     return output("needs_followup", input.errorCode ? `Run interrupted (${input.errorCode})` : "Run interrupted");
   }
 
+  if (input.runStatus === "failed" && input.authenticationRepairRequested && isAiAuthenticationRepairable(input)) {
+    return output("blocked", "Waiting for provider authentication repair", "Complete the connection request to continue this task");
+  }
+
   if (input.runStatus !== "succeeded") {
+    if (hasUnmanagedBackgroundTaskEvidence(input.resultJson)) {
+      return output("failed", UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON);
+    }
     return output("failed", input.errorCode ? `Run ended with ${input.runStatus} (${input.errorCode})` : `Run ended with ${input.runStatus}`);
   }
 
@@ -334,7 +351,7 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
   }
 
   if (planExempt && usefulOutput) {
-    return output("advanced", "Planning/document task produced useful output and is exempt from plan-only classification");
+    return output("advanced", "Explicit planning mode or a saved plan revision is exempt from plan-only classification");
   }
 
   if (looksLikePlanningOnly(input) || nextAction) {

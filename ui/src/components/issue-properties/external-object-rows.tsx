@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import type { IssueExternalObjectGroup } from "../../hooks/useIssueExternalObjects";
 import {
-  externalObjectCategoryLabel,
+  externalObjectDisplayStatusLabel,
   externalObjectDisplayLabel,
   externalObjectIconForKey,
   externalObjectProviderLabel,
@@ -16,6 +16,7 @@ import { cn } from "../../lib/utils";
 import { ExternalObjectStatusIcon } from "../ExternalObjectStatusIcon";
 import { PropertyRow } from "./primitives";
 import { ExpandRelationListButton } from "./relation-controls";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const EXTERNAL_OBJECT_PROPERTY_PREVIEW_COUNT = 5;
 
@@ -32,7 +33,7 @@ function externalObjectRowDisplayKey(group: IssueExternalObjectGroup): string {
   const displayKey = pill.displayKey?.trim();
   if (displayKey) return displayKey;
   if (pill.providerKey === "github") {
-    if (pill.objectType === "pull_request") return "Github Pull Request";
+    if (pill.objectType === "pull_request") return "Github PR";
     if (pill.objectType === "issue") return "Github Issue";
   }
   return externalObjectDisplayLabel(pill.providerKey, pill.objectType);
@@ -45,7 +46,7 @@ function externalObjectRowLabel(group: IssueExternalObjectGroup): ReactNode {
   return (
     <span className="inline-flex min-w-0 items-start gap-1" title={displayKey}>
       {Icon ? <Icon aria-hidden="true" className="h-3.5 w-3.5 shrink-0 mt-0.5" /> : null}
-      <span className="truncate">{displayKey}</span>
+      <span className={cn("truncate", ANALYTICS_MASK_CLASS)}>{displayKey}</span>
     </span>
   );
 }
@@ -66,7 +67,7 @@ function githubObjectPropertyValue(url: string | null | undefined): string | nul
 }
 
 function externalObjectPropertyStatusLabel(group: IssueExternalObjectGroup): string {
-  return group.pill.statusLabel ?? externalObjectCategoryLabel(group.pill.statusCategory);
+  return externalObjectDisplayStatusLabel(group.pill);
 }
 
 function externalObjectPropertyValue(group: IssueExternalObjectGroup): string {
@@ -101,7 +102,7 @@ function externalObjectPropertyTitle(group: IssueExternalObjectGroup): string {
 }
 
 function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGroup }) {
-  const { pill, mentionCount } = group;
+  const { pill } = group;
   const statusLabel = externalObjectPropertyStatusLabel(group);
   const providerLabel = externalObjectProviderLabel(pill.providerKey);
   const typeLabel = externalObjectTypeLabel(pill.objectType);
@@ -115,10 +116,7 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
         sizeClassName="h-3.5 w-3.5"
         label={`${providerLabel}: ${statusLabel}`}
       />
-      <span className="min-w-0 truncate">{value}</span>
-      {mentionCount > 1 ? (
-        <span className="tabular-nums text-xs text-muted-foreground">×{mentionCount}</span>
-      ) : null}
+      <span className={cn("min-w-0 truncate", ANALYTICS_MASK_CLASS)}>{value}</span>
     </>
   );
   const className = cn(

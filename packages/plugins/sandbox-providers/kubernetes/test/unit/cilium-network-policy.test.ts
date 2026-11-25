@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { buildCiliumNetworkPolicyManifest } from "../../src/cilium-network-policy.js";
+import { buildCiliumNetworkPolicyManifest as buildRawCiliumNetworkPolicyManifest, type BuildCiliumNetworkPolicyInput } from "../../src/cilium-network-policy.js";
+import type { CiliumNetworkPolicyView } from "./manifest-views.js";
+
+const buildCiliumNetworkPolicyManifest = (input: BuildCiliumNetworkPolicyInput) =>
+  buildRawCiliumNetworkPolicyManifest(input) as unknown as CiliumNetworkPolicyView;
 
 describe("buildCiliumNetworkPolicyManifest", () => {
   const baseInput = {
@@ -27,7 +31,7 @@ describe("buildCiliumNetworkPolicyManifest", () => {
     });
     const fqdnRule = cnp.spec.egress.find((e: { toFQDNs?: { matchName: string }[] }) => e.toFQDNs);
     expect(fqdnRule).toBeDefined();
-    expect(fqdnRule.toFQDNs.map((f: { matchName: string }) => f.matchName).sort()).toEqual([
+    expect(fqdnRule!.toFQDNs!.map((f: { matchName: string }) => f.matchName).sort()).toEqual([
       "api.anthropic.com",
       "api.openai.com",
     ]);
@@ -55,6 +59,22 @@ describe("buildCiliumNetworkPolicyManifest", () => {
       egressAllowCidrs: ["10.0.0.0/8"],
     });
     const cidrRule = cnp.spec.egress.find((e: { toCIDRSet?: { cidr: string }[] }) => e.toCIDRSet);
-    expect(cidrRule.toCIDRSet[0].cidr).toBe("10.0.0.0/8");
+    expect(cidrRule?.toCIDRSet?.[0]?.cidr).toBe("10.0.0.0/8");
+  });
+
+  it("targets only the granted run when building a scoped policy", () => {
+    const cnp = buildCiliumNetworkPolicyManifest({
+      ...baseInput,
+      name: "pc-run-egress",
+      endpointSelector: { "paperclip.io/run-id": "run-123" },
+      includeBaseRules: false,
+      ownerReferences: [{ apiVersion: "batch/v1", kind: "Job", name: "pc-run", uid: "uid-1" }],
+      egressAllowFqdns: ["github.com", "pypi.org"],
+    });
+
+    expect(cnp.metadata.name).toBe("pc-run-egress");
+    expect(cnp.metadata.ownerReferences).toHaveLength(1);
+    expect(cnp.spec.endpointSelector.matchLabels).toEqual({ "paperclip.io/run-id": "run-123" });
+    expect(cnp.spec.egress).toHaveLength(1);
   });
 });

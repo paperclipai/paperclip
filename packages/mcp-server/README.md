@@ -15,6 +15,8 @@ The server reads its configuration from environment variables:
 - `PAPERCLIP_AGENT_ID` - optional default agent for checkout helpers
 - `PAPERCLIP_RUN_ID` - optional run id forwarded on mutating requests
 
+Inside an active heartbeat, Paperclip also injects `PAPERCLIP_RUNTIME_TOOLS_*` variables. They enable the run-scoped `connections_search` and `connection_request` tools and expire with the run.
+
 ## Usage
 
 ```sh
@@ -29,6 +31,11 @@ node packages/mcp-server/dist/stdio.js
 ```
 
 ## Tool Surface
+
+Run-scoped connection tools:
+
+- `connections_search`
+- `connection_request`
 
 Read tools:
 

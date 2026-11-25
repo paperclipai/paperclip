@@ -1,6 +1,6 @@
 ---
 name: reflection-coach
-description: Reflect on another agent's recent execution record, name evidence-backed patterns, and propose the smallest durable change to their AGENTS.md, a reusable skill, or a tool description — as a reviewable, interaction-gated proposal, never a same-run hot-swap.
+description: Reflect on another agent's recent execution record and propose the smallest durable instruction, skill, or tool-description change. Use for evidence-backed coaching proposals, never hot-swaps.
 key: paperclipai/bundled/paperclip-operations/reflection-coach
 recommendedForRoles:
   - manager
@@ -176,7 +176,7 @@ Server-enforced mutation target keys:
 When the interaction resolves **accepted**, apply the change in a *separate* run:
 
 - **AGENTS.md** — update the target's managed instruction file exactly as the accepted diff specified.
-- **Skill** — install/update the skill in the company library, then `POST /api/agents/<targetAgentId>/skills/sync` when the target should receive it.
+- **Skill** — install/update the skill in the company library, then `POST /api/agents/<targetAgentId>/skills/sync` with `{"mode":"add","desiredSkills":["<skill-ref>"]}` when the target should receive it. Use `remove` only for the named assignments. Use `replace` only after explicit confirmation to overwrite the complete desired skill set.
 - **Tool description** — update the target agent's description/profile field that the accepted diff named.
 
 The server rejects Reflection Coach mutations unless the accepted `request_confirmation` was created by Reflection Coach in a previous run, has a displayed diff, and is bound to the resource by one of the target keys above. If the interaction was rejected or is still pending, apply nothing. If you were asked to apply without a reviewed diff and an accepted interaction, refuse and name the gate — no-same-run-apply is load-bearing.

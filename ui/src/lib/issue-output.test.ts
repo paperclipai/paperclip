@@ -7,6 +7,7 @@ import {
   getOutputFileGlyph,
   getPromotedOutputAttachmentIds,
   isOutputEligibleContentType,
+  isImageLikeOutput,
 } from "./issue-output";
 
 function makeWorkProduct(overrides: Partial<IssueWorkProduct> & { id: string }): IssueWorkProduct {
@@ -233,5 +234,16 @@ describe("getPromotedOutputAttachmentIds", () => {
     ]);
 
     expect(Array.from(ids)).toEqual([videoAttachmentId]);
+  });
+});
+
+describe("isImageLikeOutput", () => {
+  it.each(["image/png", "application/octet-stream", "binary/octet-stream", "application/x-binary", ""])("recognizes images with %s MIME type", (contentType) => {
+    expect(isImageLikeOutput(contentType, "Cover.PNG")).toBe(true);
+  });
+  it("respects specific non-image MIME types and unsupported filenames", () => {
+    expect(isImageLikeOutput("text/plain", "cover.png")).toBe(false);
+    expect(isImageLikeOutput("application/octet-stream", "archive.zip")).toBe(false);
+    expect(isImageLikeOutput("application/octet-stream", "image.heic")).toBe(false);
   });
 });

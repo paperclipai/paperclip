@@ -11,7 +11,6 @@ const BAYER_4X4 = [
 interface CompanyPatternIconProps {
   companyName: string;
   logoUrl?: string | null;
-  brandColor?: string | null;
   className?: string;
   logoFit?: "cover" | "contain";
 }
@@ -75,22 +74,7 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
   ];
 }
 
-function hexToHue(hex: string): number {
-  const r = parseInt(hex.slice(1, 3), 16) / 255;
-  const g = parseInt(hex.slice(3, 5), 16) / 255;
-  const b = parseInt(hex.slice(5, 7), 16) / 255;
-  const max = Math.max(r, g, b);
-  const min = Math.min(r, g, b);
-  const d = max - min;
-  if (d === 0) return 0;
-  let h = 0;
-  if (max === r) h = ((g - b) / d) % 6;
-  else if (max === g) h = (b - r) / d + 2;
-  else h = (r - g) / d + 4;
-  return ((h * 60) + 360) % 360;
-}
-
-function makeCompanyPatternDataUrl(seed: string, brandColor?: string | null, logicalSize = 22, cellSize = 2): string {
+function makeCompanyPatternDataUrl(seed: string, logicalSize = 22, cellSize = 2): string {
   if (typeof document === "undefined") return "";
 
   const canvas = document.createElement("canvas");
@@ -102,7 +86,7 @@ function makeCompanyPatternDataUrl(seed: string, brandColor?: string | null, log
 
   const rand = mulberry32(hashString(seed));
 
-  const hue = brandColor ? hexToHue(brandColor) : Math.floor(rand() * 360);
+  const hue = Math.floor(rand() * 360);
   const [offR, offG, offB] = hslToRgb(
     hue,
     54 + Math.floor(rand() * 14),
@@ -165,7 +149,6 @@ function makeCompanyPatternDataUrl(seed: string, brandColor?: string | null, log
 export function CompanyPatternIcon({
   companyName,
   logoUrl,
-  brandColor,
   className,
   logoFit = "cover",
 }: CompanyPatternIconProps) {
@@ -176,8 +159,8 @@ export function CompanyPatternIcon({
     setImageError(false);
   }, [logoUrl]);
   const patternDataUrl = useMemo(
-    () => makeCompanyPatternDataUrl(companyName.trim().toLowerCase(), brandColor),
-    [companyName, brandColor],
+    () => makeCompanyPatternDataUrl(companyName.trim().toLowerCase()),
+    [companyName],
   );
 
   return (
