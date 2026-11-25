@@ -14,6 +14,9 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { readFileSync } from "node:fs";
 import { QUALIFIED_ACPX_PROFILES } from "../vendor/paperclip-runner/index.js";
 import { ANTIGRAVITY_CANDIDATE_ADMISSION_ENV } from "../services/native-runtime/acpx-qualification.js";
+import { prepareAntigravityRunnerCredentials } from "../services/native-runtime/antigravity-runner-credentials.js";
+import { resolveHeartbeatNativeLifecyclePolicy } from "../services/heartbeat/native-lifecycle.js";
+import { resolveRunnerEnvironmentForRun } from "../services/runner-environment-lifecycle.js";
 
 const distributions = JSON.parse(readFileSync(new URL("../../../packages/paperclip-runner/antigravity-distributions.json", import.meta.url), "utf8"));
 /** The operator's pending grant for one company, model and platform. */
@@ -224,5 +227,28 @@ describePostgres("Google Antigravity connection refusal at agent save", () => {
     expect(response.body.defaultEnvironmentId).toBe(pluginEnv.id);
     expect(response.body.adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-high" });
     expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("saves an agent on a warm cloud task environment that then runs every turn per-turn", async () => {
+    release.pending = false;
+    const [warmTasks] = await db.insert(environments).values({ name: `Warm tasks ${agent.companyId}`, driver: "plugin",
+      config: { pluginKey: "fixture", driverKey: "tasks", driverConfig: {}, runnerLifecycleMode: "warm" } }).returning();
+    await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig, lifecycleMode: "warm" } }).where(eq(agents.id, agent.id));
+    const binding = await saveGoogleConnection("api_key");
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: warmTasks.id, runtimeConfig: { aiConnection: binding } });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const saved = await readAgent();
+    expect(saved.defaultEnvironmentId).toBe(warmTasks.id);
+
+    const runEnvironment = resolveRunnerEnvironmentForRun({ ...warmTasks, driver: "plugin" as const }, saved.adapterType, saved.adapterConfig, undefined, "google:api-key:1");
+    expect(runEnvironment.config.runnerLifecycleMode).toBe("per_turn");
+    const session = resolveHeartbeatNativeLifecyclePolicy({ adapterType: saved.adapterType, backend: "acpx_runtime", acpxAgent: "antigravity",
+      agentMode: saved.adapterConfig.lifecycleMode, agentIdleTimeoutMs: undefined, managedAiSelected: true, taskOwned: true,
+      environmentPolicy: runEnvironment.config.runnerLifecycleMode === "warm" ? { mode: "warm", idleTimeoutMs: 300_000 } : { mode: "per_turn", idleTimeoutMs: null } });
+    expect(session.mode).toBe("per_turn");
+    for (const lifecycleMode of [runEnvironment.config.runnerLifecycleMode as "warm" | "per_turn", session.mode]) {
+      await expect(prepareAntigravityRunnerCredentials({ environment: { GEMINI_API_KEY: "fixture-gemini-key" }, remote: true, lifecycleMode }))
+        .resolves.toMatchObject({ home: null });
+    }
   });
 });
