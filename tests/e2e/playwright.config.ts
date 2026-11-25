@@ -49,6 +49,7 @@ if (SKIP_UI_BUILD && !fs.existsSync(UI_DIST_INDEX)) {
 // `scripts/e2e-shard.mjs` — `scripts/__tests__/e2e-shard.test.mjs` fails if
 // the two ever drift.
 export const SERIAL_SPECS = [
+  "agent-chat-projects-handoff.spec.ts",
   "agent-chat-projects.spec.ts",
   "agent-chat-sessions.spec.ts",
   "agent-configuration.spec.ts",

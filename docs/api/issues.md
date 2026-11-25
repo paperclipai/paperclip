@@ -224,6 +224,22 @@ Saves a Retry request for the task's latest stopped run. The same `idempotencyKe
 
 Every answer includes `presentation`, the task's current interruption state.
 
+## Check Now
+
+```
+POST /api/issues/{issueId}/monitor/check-now
+```
+
+Starts the task's next check now. This is the "Check now" button on the task banner.
+
+- When the task has a scheduled monitor, the monitor check starts. The answer is `200` with `{ "ok": true }`.
+- When the task has no monitor but its run waits in a scheduled retry (for example, a wait for provider usage), the retry starts now. Before any work, the retry checks again whether the agent's current AI account has usage. If that account is still limited, the run waits again with a plain message. The caller must be a board user who can read the task and has `issue:mutate` access to it, the same access as Retry now. The answer is `200` with `{ "ok": true, "outcome": "promoted" | "already_promoted" | "waiting", "message": "..." }`.
+
+Refusals:
+
+- `403` or `404`: the caller cannot start work on this task. A private task that the caller cannot see answers `404`.
+- `409` with `details.code: "issue_monitor_check_deferred"`: the check did not start. `error` gives the reason in plain words, for example that nothing waits to be checked anymore or that the task changed. Refresh the task.
+
 ## Comments
 
 ### List Comments
