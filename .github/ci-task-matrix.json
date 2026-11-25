@@ -147,16 +147,23 @@
     },
     {
       "group": "general-chat",
-      "group_label": "chat (1/2)",
+      "group_label": "chat (1/3)",
       "shard_index": 0,
-      "shard_count": 2,
+      "shard_count": 3,
       "task": "ci:chat"
     },
     {
       "group": "general-chat",
-      "group_label": "chat (2/2)",
+      "group_label": "chat (2/3)",
       "shard_index": 1,
-      "shard_count": 2,
+      "shard_count": 3,
+      "task": "ci:chat"
+    },
+    {
+      "group": "general-chat",
+      "group_label": "chat (3/3)",
+      "shard_index": 2,
+      "shard_count": 3,
       "task": "ci:chat"
     },
     {
@@ -247,8 +254,14 @@
       "task": "ci:runner-package"
     },
     {
-      "lane_label": "vitest native server",
-      "command": "test:typescript:vitest --native-server",
+      "lane_label": "vitest native server (1/2)",
+      "command": "test:typescript:vitest --native-server=1/2",
+      "release_crate": true,
+      "task": "ci:runner-vitest"
+    },
+    {
+      "lane_label": "vitest native server (2/2)",
+      "command": "test:typescript:vitest --native-server=2/2",
       "release_crate": true,
       "task": "ci:runner-vitest"
     }

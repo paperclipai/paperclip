@@ -1131,6 +1131,7 @@ export const LIVE_EVENT_TYPES = [
   "plugin.worker.crashed",
   "plugin.worker.restarted",
   "agent_setup_progress.updated",
+  "cloud_trial.status.updated",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 

@@ -76,6 +76,7 @@ export const createAgentInstructionsBundleSchema = z.object({
 export const agentRuntimeConfigSchema = z.object({
   harnessPool: harnessPoolBindingSchema.optional(),
   aiConnection: aiConnectionBindingSchema.optional(),
+  cloudTrialInference: z.boolean().optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),

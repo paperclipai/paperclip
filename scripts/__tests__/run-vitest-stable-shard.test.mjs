@@ -405,6 +405,7 @@ test("12 PR without-chat shards plus the dedicated chat and native-runner lanes 
   }
   assert.ok(!files.includes(nativeRunnerSuitePath));
   assert.ok(!files.includes(ingressRetrySuitePath));
+  assert.ok(!files.includes("server/src/services/native-runtime/native-ingress-bootstrap-retry-opencode.integration.test.ts"));
   assert.ok(!files.includes(dotRunnerSuitePath));
   assert.ok(!files.includes(restartRecoverySuitePath));
   assert.ok(!files.includes(cutTurnStartRetrySuitePath));
@@ -419,7 +420,7 @@ test("12 PR without-chat shards plus the dedicated chat and native-runner lanes 
   for (const shard of shards) {
     assert.deepEqual(shard.excludedNightlySuites ?? [], excludedNightly, "nightly exclusions must agree across shards");
   }
-  assert.deepEqual([...files, ...excludedNightly, ...allChatSuites, nativeRunnerSuitePath, ingressRetrySuitePath, dotRunnerSuitePath, restartRecoverySuitePath, ...restartWaitSuites, cutTurnStartRetrySuitePath, usageDeliverySuitePath, warmCheckpointOwnershipSuitePath, warmSuccessorRunnerReleaseSuitePath, pluginWarmOwnerSuitePath, ...pluginReleaseResumeSuitePaths, ...pluginEvictionSuitePaths, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
+  assert.deepEqual([...files, ...excludedNightly, ...allChatSuites, nativeRunnerSuitePath, ingressRetrySuitePath, "server/src/services/native-runtime/native-ingress-bootstrap-retry-opencode.integration.test.ts", dotRunnerSuitePath, restartRecoverySuitePath, ...restartWaitSuites, cutTurnStartRetrySuitePath, usageDeliverySuitePath, warmCheckpointOwnershipSuitePath, warmSuccessorRunnerReleaseSuitePath, pluginWarmOwnerSuitePath, ...pluginReleaseResumeSuitePaths, ...pluginEvictionSuitePaths, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
   assert.equal(new Set(files).size, files.length);
   const defaultRun = dryRunJson([], prEnv);
   assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
@@ -475,6 +476,7 @@ test("the native-runner lane runs exactly the cargo-dependent suites", () => {
     "server/src/services/native-runtime/plugin-runner-probe.test.ts",
     "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
     ingressRetrySuitePath,
+    "server/src/services/native-runtime/native-ingress-bootstrap-retry-opencode.integration.test.ts",
     dotRunnerSuitePath,
     restartRecoverySuitePath,
     ...restartWaitSuites,
@@ -488,16 +490,22 @@ test("the native-runner lane runs exactly the cargo-dependent suites", () => {
   ]);
 });
 
-test("shard flags are rejected for the native-runner group", () => {
-  const result = dryRun(["--mode", "general", "--group", "general-server-native-runner", "--shard-index", "0", "--shard-count", "2"]);
-  assert.notEqual(result.status, 0, "the native-runner lane is a single suite and must not accept shard flags");
+test("the native-runner group shards cleanly into a complete non-overlapping partition", () => {
+  const full = dryRunJson(["--mode", "general", "--group", "general-server-native-runner"]);
+  const shard0 = dryRunJson(["--mode", "general", "--group", "general-server-native-runner", "--shard-index", "0", "--shard-count", "2"]);
+  const shard1 = dryRunJson(["--mode", "general", "--group", "general-server-native-runner", "--shard-index", "1", "--shard-count", "2"]);
+  assert.ok(shard0.selectedGeneralServerSuites.length > 0 && shard1.selectedGeneralServerSuites.length > 0);
+  const combined = [...shard0.selectedGeneralServerSuites, ...shard1.selectedGeneralServerSuites];
+  assert.equal(new Set(combined).size, combined.length, "native-runner shards must not overlap");
+  assert.deepEqual([...combined].sort(), [...full.selectedGeneralServerSuites].sort(), "native-runner shards must cover all suites");
 });
 
 // The PR-side exclusion above is safe only while the wiring it assumes holds:
 // pr.yml (the caller whose name reusable pr-trusted.yml jobs see as
 // GITHUB_WORKFLOW) is named PR, the package vitest lanes cover every
-// partition exactly once, exactly one lane runs the native-runner group, and
-// those lanes' package script routes through the wrapper.
+// partition exactly once, the native-server vitest lanes cover every native
+// partition exactly once with release_crate: true, and those lanes' package
+// script routes through the wrapper.
 test("the PR workflow wiring for the native-runner lane holds", () => {
   const prWorkflow = readFileSync(path.join(repoRoot, ".github/workflows/pr.yml"), "utf8");
   assert.match(prWorkflow, /^name: PR$/m,
@@ -506,10 +514,11 @@ test("the PR workflow wiring for the native-runner lane holds", () => {
   const matrix = JSON.parse(readFileSync(path.join(repoRoot, ".github/ci-task-matrix.json"), "utf8"));
   const vitestLanes = matrix.verify_paperclip_runner.filter((entry) => entry.command.startsWith("test:typescript:vitest"));
   for (const entry of vitestLanes) {
-    assert.match(entry.command, /^test:typescript:vitest (--package-lane=\d+\/\d+|--native-server)$/, entry.lane_label);
+    assert.match(entry.command, /^test:typescript:vitest (--package-lane=\d+\/\d+|--native-server(?:=\d+\/\d+)?)$/, entry.lane_label);
+    const isNative = /--native-server(?:=\d+\/\d+)?$/.test(entry.command);
     assert.equal(
       entry.task,
-      entry.command.endsWith("--native-server") ? "ci:runner-vitest" : "ci:runner-package",
+      isNative ? "ci:runner-vitest" : "ci:runner-package",
       entry.lane_label,
     );
   }
@@ -524,9 +533,25 @@ test("the PR workflow wiring for the native-runner lane holds", () => {
     Array.from({ length: laneCount }, (_, index) => index + 1),
     "package lanes must cover every partition exactly once",
   );
-  const native = vitestLanes.filter((entry) => entry.command.endsWith("--native-server"));
-  assert.equal(native.length, 1, "exactly one vitest lane carries the native-runner group");
-  assert.equal(native[0].release_crate, true, "the native-runner lane needs the release crate");
+  const native = vitestLanes.filter((entry) => /--native-server(?:=\d+\/\d+)?$/.test(entry.command));
+  assert.ok(native.length >= 1, "at least one vitest lane carries the native-runner group");
+  for (const entry of native) {
+    assert.equal(entry.release_crate, true, `${entry.lane_label} needs the release crate`);
+  }
+  if (native.length === 1) {
+    assert.match(native[0].command, /--native-server(?:=1\/1)?$/);
+  } else {
+    const nativeShards = native
+      .map((entry) => /--native-server=(\d+)\/(\d+)$/.exec(entry.command))
+      .filter(Boolean).map((match) => [Number(match[1]), Number(match[2])]);
+    assert.equal(nativeShards.length, native.length, "multi-lane native-server entries must use --native-server=K/N");
+    assert.equal(new Set(nativeShards.map(([, count]) => count)).size, 1, "native-server lanes must agree on the shard count");
+    assert.deepEqual(
+      nativeShards.map(([index]) => index).sort((left, right) => left - right),
+      Array.from({ length: native.length }, (_, index) => index + 1),
+      "native-server lanes must cover every partition exactly once",
+    );
+  }
 
   const runnerPackage = JSON.parse(
     readFileSync(path.join(repoRoot, "packages/paperclip-runner/package.json"), "utf8"),
@@ -598,13 +623,26 @@ test("the master-pinned --shard lane commands plan exactly what they did before 
   }
 });
 
-test("--native-server runs only the native group under any workflow", () => {
+test("--native-server runs only the native group under any workflow and supports K/N sharding", () => {
   for (const envOverrides of [{ GITHUB_WORKFLOW: "PR" }, {}]) {
     const plan = wrapperPlan(["--native-server"], envOverrides);
     assert.deepEqual(plan.plannedCommands, [...prepCommands, nativeCommand]);
     assert.equal(plan.runPackageTests, false);
     assert.equal(plan.runNativeRunnerGroup, true);
   }
+  const single = wrapperPlan(["--native-server=1/1"], { GITHUB_WORKFLOW: "PR" });
+  assert.deepEqual(single.plannedCommands, [...prepCommands, nativeCommand]);
+  assert.deepEqual(single.nativeServerLane, { index: 1, count: 1 });
+  const first = wrapperPlan(["--native-server=1/2"], { GITHUB_WORKFLOW: "PR" });
+  assert.deepEqual(first.plannedCommands, [
+    ...prepCommands,
+    { command: "pnpm", args: ["test:run:general", "--", "--group", "general-server-native-runner", "--shard-index", "0", "--shard-count", "2"], cwd: repoRoot },
+  ]);
+  const second = wrapperPlan(["--native-server=2/2"], { GITHUB_WORKFLOW: "PR" });
+  assert.deepEqual(second.plannedCommands, [
+    ...prepCommands,
+    { command: "pnpm", args: ["test:run:general", "--", "--group", "general-server-native-runner", "--shard-index", "1", "--shard-count", "2"], cwd: repoRoot },
+  ]);
 });
 
 test("the package lane manifest uses the general server duration schema", () => {
@@ -631,7 +669,8 @@ test("the package lane manifest uses the general server duration schema", () => 
 test("package lane arguments fail rather than guess a lane", () => {
   for (const args of [["--package-lane=0/3"], ["--package-lane=4/3"], ["--package-lane=abc"], ["--package-lane", "1/3"],
     ["--package-lane=1/3", "--package-lane=2/3"], ["--package-lane=1/3", "--shard=1/2"], ["--native-server", "--shard=2/2"],
-    ["--native-server", "--package-lane=1/3"], ["--native-server", "src/foo.test.ts"]]) {
+    ["--native-server", "--package-lane=1/3"], ["--native-server", "src/foo.test.ts"],
+    ["--native-server=0/2"], ["--native-server=3/2"], ["--native-server=abc"], ["--native-server=1/2", "--native-server=2/2"]]) {
     const result = spawnSync(process.execPath, [laneWrapper, ...args, "--dry-run"], {
       cwd: repoRoot, encoding: "utf8", env: workflowEnv({ GITHUB_WORKFLOW: "PR" }),
     });

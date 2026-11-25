@@ -370,7 +370,8 @@ test("the Verify Paperclip Runner job restores the crate only in the lanes that 
     ["vitest package (4/6)", false],
     ["vitest package (5/6)", false],
     ["vitest package (6/6)", false],
-    ["vitest native server", true],
+    ["vitest native server (1/2)", true],
+    ["vitest native server (2/2)", true],
   ]);
   for (const stepName of [KEY_STEP, RESTORE_STEP]) {
     assert.match(step(body, stepName), /if: \$\{\{ matrix\.release_crate == true \}\}/, stepName);

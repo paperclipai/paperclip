@@ -101,6 +101,11 @@ import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-ident
 import { cloudControlMiddleware } from "./middleware/cloud-control.js";
 import { runnerCallOutcomeMiddleware } from "./middleware/runner-call-outcome.js";
 import { cloudRoutes } from "./routes/cloud.js";
+import { cloudInferenceInternalProxyRoutes, cloudInferenceRoutes } from "./routes/cloud-inference.js";
+import {
+  createCloudTrialInferenceController,
+  setDefaultCloudTrialInferenceController,
+} from "./services/cloud-trial-inference.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
@@ -752,6 +757,17 @@ export async function createApp(
         })
       : undefined;
 
+  // Internal OpenRouter trial inference proxy (authenticated strictly by
+  // ephemeral per-run bearer token; never requires board session cookies).
+  const cloudTrialInferenceController = createCloudTrialInferenceController();
+  setDefaultCloudTrialInferenceController(cloudTrialInferenceController);
+  // Warm resolved experimental settings at startup so staging overrides sync
+  // into PostHog cohort properties before the first request or event.
+  void instanceSettingsService(db)
+    .getExperimental()
+    .catch(() => {});
+  app.use("/api/internal/cloud-inference", cloudInferenceInternalProxyRoutes(cloudTrialInferenceController));
+
   // Mount API routes
   const api = Router();
   const agentAvatars = agentAvatarRoutes();
@@ -760,6 +776,7 @@ export async function createApp(
   api.use("/health", health);
   api.use(openApiRoutes());
   api.use("/cloud", cloudRoutes());
+  api.use(cloudInferenceRoutes(db, cloudTrialInferenceController));
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(folderRoutes(db));
