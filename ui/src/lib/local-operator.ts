@@ -65,7 +65,21 @@ export function installLocalOperatorFetch(target: typeof globalThis = globalThis
   };
 }
 
-/** Adds the operator token to a same-origin live-events socket address. */
+/**
+ * Adds the operator token to every same-origin socket this page opens,
+ * including plugin sockets, since a browser cannot set headers on a WebSocket.
+ */
+export function installLocalOperatorWebSocket(target: typeof globalThis = globalThis): void {
+  const Original = target.WebSocket;
+  if (!Original) return;
+  target.WebSocket = class LocalOperatorWebSocket extends Original {
+    constructor(url: string | URL, protocols?: string | string[]) {
+      super(withLocalOperatorSocketToken(String(url)), protocols);
+    }
+  };
+}
+
+/** Adds the operator token to a same-origin socket address. */
 export function withLocalOperatorSocketToken(url: string): string {
   const token = localOperatorToken();
   if (!token) return url;

@@ -370,6 +370,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       if (req.actor.source === "local_implicit") {
         const operatorPresent = !operatorCredential?.required
           || operatorCredential.hasOperatorHeader(req.headers)
+          || operatorCredential.hasSocketToken(req.headers, req.query as Record<string, unknown>)
           || operatorCredential.hasDirectReadCookie(req.method, req.path, req.headers);
         const granted = operatorPresent && (await localBoundary?.grantsImplicitBoard(req.socket)) === true;
         if (!granted) req.actor = { type: "none", source: "none" };

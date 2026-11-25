@@ -4,6 +4,7 @@ import {
   LOCAL_OPERATOR_CREDENTIAL_ENV,
   LOCAL_OPERATOR_FRAGMENT_KEY,
   LOCAL_OPERATOR_HEADER,
+  LOCAL_OPERATOR_SOCKET_PARAM,
   LOCAL_OPERATOR_SIGN_IN_TTL_MS,
   createLocalOperatorSignInLink,
   ensureLocalOperatorKey,
@@ -102,6 +103,15 @@ export function createLocalOperatorCredential(options: LocalOperatorCredentialOp
     return hasBrowserToken(headers[LOCAL_OPERATOR_HEADER]);
   }
 
+  /**
+   * A browser cannot set headers on a WebSocket, so the board page sends its
+   * token as a query parameter, which is accepted on upgrade requests only.
+   */
+  function hasSocketToken(headers: IncomingHttpHeaders, query: Record<string, unknown>): boolean {
+    if (headers.upgrade?.toLowerCase() !== "websocket") return false;
+    return hasBrowserToken(query[LOCAL_OPERATOR_SOCKET_PARAM] as string | undefined);
+  }
+
   /** The read-only cookie, accepted only for downloads the browser loads directly. */
   function hasDirectReadCookie(method: string, path: string, headers: IncomingHttpHeaders): boolean {
     if (method !== "GET" && method !== "HEAD") return false;
@@ -179,6 +189,7 @@ export function createLocalOperatorCredential(options: LocalOperatorCredentialOp
     required: mode === "required",
     hasBrowserToken,
     hasOperatorHeader,
+    hasSocketToken,
     hasDirectReadCookie,
     signInUrl,
     consumeSignIn,

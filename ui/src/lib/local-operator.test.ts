@@ -75,3 +75,18 @@ describe("the read cookie refresh", () => {
     expect(calls).toEqual(["/api/local-operator/read-cookie"]);
   });
 });
+
+describe("sockets the board page opens", () => {
+  it("carry the token to the board's own server, including plugin sockets", async () => {
+    window.localStorage.setItem("paperclip.localOperatorToken", "v1.token");
+    const opened: string[] = [];
+    class FakeSocket { constructor(url: string) { opened.push(url); } }
+    const target = { WebSocket: FakeSocket } as unknown as typeof globalThis;
+    const { installLocalOperatorWebSocket } = await import("./local-operator");
+    installLocalOperatorWebSocket(target);
+    new target.WebSocket(`ws://${window.location.host}/api/plugins/p1/api/socket`);
+    new target.WebSocket("wss://elsewhere.test/socket");
+    expect(new URL(opened[0]!).searchParams.get("operator")).toBe("v1.token");
+    expect(opened[1]).toBe("wss://elsewhere.test/socket");
+  });
+});

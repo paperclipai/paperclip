@@ -37,12 +37,18 @@ import { captureQueryException } from "./lib/sentry";
 import { startPersistedQueryCache } from "./lib/persisted-query-cache";
 import { adoptHardLoadChatBootstrap } from "./lib/issue-chat-bootstrap";
 import { hasPendingWrites, subscribePendingWrites } from "./lib/reload-safety";
-import { captureLocalOperatorToken, installLocalOperatorFetch, startLocalOperatorReadCookieRefresh } from "./lib/local-operator";
+import {
+  captureLocalOperatorToken,
+  installLocalOperatorFetch,
+  installLocalOperatorWebSocket,
+  startLocalOperatorReadCookieRefresh,
+} from "./lib/local-operator";
 import "@mdxeditor/editor/style.css";
 import "./index.css";
 
 captureLocalOperatorToken();
 installLocalOperatorFetch();
+installLocalOperatorWebSocket();
 startLocalOperatorReadCookieRefresh();
 initPluginBridge(React, ReactDOM);
 

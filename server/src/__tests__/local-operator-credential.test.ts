@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import http from "node:http";
 import { mkdtempSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
@@ -45,6 +46,7 @@ function startServer(operator: LocalOperatorCredential): Promise<{ server: Serve
   app.get("/api/heartbeat-runs/:id/provider-trace/download", whoami);
   app.get("/api/companies/:id/audit/agent-actions.csv", whoami);
   app.get("/api/plugins/:id/bridge/stream/:channel", whoami);
+  app.get("/api/plugins/:id/api/socket", whoami);
   app.post("/api/attachments/:id/content", whoami);
   return new Promise((resolve) => {
     const server = app.listen(0, "127.0.0.1", () => {
@@ -211,6 +213,23 @@ describe.skipIf(!supported)("operator browser sign-in", () => {
     });
     expect(renewed.status).toBe(204);
     expect(renewed.headers.get("set-cookie")).toMatch(/HttpOnly/i);
+  });
+
+  it("accepts the token on a socket upgrade, where a browser cannot set headers, and nowhere else", async () => {
+    const { token, cookie } = await signIn();
+    const whoamiOver = (url: string, headers: Record<string, string>) => new Promise<unknown>((resolve, reject) => {
+      http.get(url, { headers }, (res) => {
+        let body = "";
+        res.on("data", (chunk) => { body += chunk; });
+        res.on("end", () => resolve(JSON.parse(body)));
+      }).on("error", reject);
+    });
+    const socketPath = `${base}/api/plugins/p1/api/socket?operator=${encodeURIComponent(token)}`;
+    const upgrade = { upgrade: "websocket", connection: "keep-alive" };
+    expect(await whoamiOver(socketPath, upgrade)).toEqual({ type: "board", source: "local_implicit" });
+    expect(await whoamiOver(socketPath, {})).toEqual({ type: "none", source: "none" });
+    expect(await whoamiOver(`${base}/api/plugins/p1/api/socket`, { ...upgrade, cookie }))
+      .toEqual({ type: "none", source: "none" });
   });
 
   it("accepts each sign-in link only once", async () => {
