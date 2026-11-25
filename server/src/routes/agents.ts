@@ -4448,8 +4448,13 @@ export function agentRoutes(
       );
     }
 
-    const rollbackWarnings = await checkAgentProtectedEnvironmentKeys(db, rollbackAdapterConfig,
-      typeof rollbackConfig.defaultEnvironmentId === "string" ? rollbackConfig.defaultEnvironmentId : null);
+    const rollbackEnvironmentId = typeof rollbackConfig.defaultEnvironmentId === "string" ? rollbackConfig.defaultEnvironmentId : null;
+    // A restored Runner harness must still be one its environment supports.
+    await assertRunnerTaskEnvironmentSupportsHarness(db, existing.companyId, {
+      adapterType: rollbackAdapterType, adapterConfig: rollbackAdapterConfig,
+      defaultEnvironmentId: rollbackEnvironmentId, pluginWorkers: options.pluginWorkerManager,
+    });
+    const rollbackWarnings = await checkAgentProtectedEnvironmentKeys(db, rollbackAdapterConfig, rollbackEnvironmentId);
 
     const actor = getActorInfo(req);
     const updated = await svc.rollbackConfigRevision(id, revisionId, {
