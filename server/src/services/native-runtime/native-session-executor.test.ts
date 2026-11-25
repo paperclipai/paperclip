@@ -18056,7 +18056,9 @@ describe("runnerd provider runtime wiring", () => {
         runnerEnvironment: { GEMINI_HOME: "/ambient", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "spoofed" } });
       state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
       const transport = state.createTransport.mock.calls.at(-1)![0];
-      expect(transport.environment).toMatchObject({ PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: credential() });
+      // The staged credential carries the swarm route's run facts (dropped by the Runner's sanitizer before any write).
+      expect(JSON.parse(transport.environment!.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET!))
+        .toEqual({ ...JSON.parse(credential()), paperclip: { swarmChannel: "provider_default" } });
       expect(transport.environment?.GEMINI_HOME).toBeUndefined();
       await mkdir(transport.acpxRuntimeDirectory!, { recursive: true, mode: 0o700 });
       const runtimeHome = join(await resolveAcpxRuntimeRoot(transport.acpxRuntimeDirectory!, execution.session.normalizedSessionId!), "antigravity-home", "antigravity-acp");
