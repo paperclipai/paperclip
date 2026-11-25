@@ -654,6 +654,9 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+export const PROJECT_REPOSITORY_CHECKOUTS = ["all", "primary", "none"] as const;
+export type ProjectRepositoryCheckout = (typeof PROJECT_REPOSITORY_CHECKOUTS)[number];
+
 /** Responsibilities (experimental, `enableResponsibilities`). */
 export const RESPONSIBILITY_STATUSES = ["proposed", "active", "let_go", "dismissed"] as const;
 export type ResponsibilityStatus = (typeof RESPONSIBILITY_STATUSES)[number];

@@ -9,3 +9,8 @@ export const prepareWorkspaceRepositorySchema = z.object({
   requestKey: z.string().min(1).max(240),
 }).strict();
 export type PrepareWorkspaceRepository = z.infer<typeof prepareWorkspaceRepositorySchema>;
+
+export const requestProjectRepositorySchema = z.object({
+  projectWorkspaceId: z.string().uuid(),
+}).strict();
+export type RequestProjectRepository = z.infer<typeof requestProjectRepositorySchema>;
