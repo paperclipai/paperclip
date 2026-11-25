@@ -1,6 +1,7 @@
 # Runner activity review
 
 Open **Tasks / Runner activity preview / 01 · Desktop live · animated** in Storybook.
+Compare **05 · Legacy live · animated**, which uses the actual legacy live renderer.
 Use Pause / Next to step through the fixture, or Replay to watch the transitions.
 
 From this worktree, start the preview with:
@@ -24,7 +25,12 @@ pnpm --filter @paperclipai/ui exec storybook dev --port 6024 --host 127.0.0.1 --
   not leave the desktop animation squeezed into a mobile preview.
 - Reduced motion uses immediate replacement instead of the rolling transition.
 
-The fixture renders the production `TaskChatRunnerTurn` and activity group, with
-simulated event timing. It does not invoke a runner. Production integration tests
+Native stories render `TaskChatRunnerTurn`. Live legacy stories feed raw CLI
+transcript events through `transcriptToTaskChatItems` into `TaskChatLiveTail` and
+`TaskChatLiveRunPill`. Both use the same production activity group. Legacy stories
+cover live playback, expanded history, narrow long labels, light mode, and completed
+turns. Only the completed story uses the saved-thread renderer from the start.
+
+Event timing is simulated; the fixture does not invoke a runner. Production integration tests
 cover commentary boundaries, approvals, final replies, retained expansion,
 neutral failures, and reduced motion.

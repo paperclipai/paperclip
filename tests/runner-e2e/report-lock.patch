@@ -1,0 +1,14 @@
+diff --git a/pnpm-lock.yaml b/pnpm-lock.yaml
+index b925688a..ad688a5c 100644
+--- a/pnpm-lock.yaml
++++ b/pnpm-lock.yaml
+@@ -1121,6 +1121,9 @@ importers:
+       tar-stream:
+         specifier: 3.2.0
+         version: 3.2.0
++      tldts:
++        specifier: 7.4.10
++        version: 7.4.10
+       ws:
+         specifier: ^8.22.0
+         version: 8.22.0
