@@ -552,8 +552,8 @@ test("release verify workflow covers the same split test surface as stable PR ve
     assert.deepEqual(rows.map((row) => [Number(row[1]), Number(row[2])]),
       Array.from({ length: count }, (_, index) => [index, count]));
   }
-  for (const shardIndex of [0, 1, 2, 3, 4]) {
-    assert.match(verifyWorkflow, new RegExp(`shard_index: ${shardIndex}[\\s\\S]*?shard_count: 5`));
+  for (const shardIndex of [0, 1, 2, 3, 4, 5, 6, 7, 8]) {
+    assert.match(verifyWorkflow, new RegExp(`shard_index: ${shardIndex}[\\s\\S]*?shard_count: 9`));
   }
 
   // workspaces-a splits with Vitest native --shard in pr.yml; release

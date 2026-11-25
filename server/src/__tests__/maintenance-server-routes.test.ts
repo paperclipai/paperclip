@@ -20,8 +20,10 @@ const describeDatabase = databaseSupport.supported ? describe : describe.skip;
 if (!databaseSupport.supported) console.warn(`Skipping maintenance PostgreSQL tests: ${databaseSupport.reason ?? "unsupported environment"}`);
 // Each case already owns its server process, home, proxy, ports and provider.
 // Give it an owned database too, so the real observation windows can overlap.
+// Most of each test's wall time is real-clock sleep windows (30-90s), so four
+// isolated instances overlap cleanly without saturating CI CPUs.
 // An explicitly shared external database retains the original serial behavior.
-vi.setConfig({ maxConcurrency: externalDatabaseUrl ? 1 : 2 });
+vi.setConfig({ maxConcurrency: externalDatabaseUrl ? 1 : 4 });
 const maintenanceTest = it.extend<{ databaseUrl: string }>({
   databaseUrl: async ({}, use) => {
     const temporary = externalDatabaseUrl ? undefined : await startEmbeddedPostgresTestDatabase("maintenance-server-");
