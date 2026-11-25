@@ -9,6 +9,7 @@ import {
   issueUpdatedServerBefore,
   issueUpdatedTimeRange,
   issueUpdatedWithinPatch,
+  nextIssueUpdatedFilterExpiryMs,
   normalizeIssueFilterState,
   readIssueUpdatedParams,
   writeIssueUpdatedParams,
@@ -398,5 +399,19 @@ describe("Updated filter", () => {
     expect(params.toString()).toBe("view=all&updated=7d");
     writeIssueUpdatedParams(params, { updatedWithin: null, updatedFrom: null, updatedTo: null });
     expect(params.toString()).toBe("view=all");
+  });
+
+  it("computes the earliest expiry timestamp for relative windows only", () => {
+    const issues = [
+      makeIssue({ id: "already-old", updatedAt: hoursAgo(30) }),
+      makeIssue({ id: "expiring-soon", updatedAt: hoursAgo(23) }),
+      makeIssue({ id: "fresh", updatedAt: hoursAgo(1) }),
+    ];
+    expect(nextIssueUpdatedFilterExpiryMs(issues, "24h", now.getTime())).toBe(
+      hoursAgo(23).getTime() + 24 * 60 * 60 * 1000 + 1,
+    );
+    expect(nextIssueUpdatedFilterExpiryMs(issues, null, now.getTime())).toBeNull();
+    expect(nextIssueUpdatedFilterExpiryMs(issues, "custom", now.getTime())).toBeNull();
+    expect(nextIssueUpdatedFilterExpiryMs([makeIssue({ id: "old", updatedAt: hoursAgo(30) })], "24h", now.getTime())).toBeNull();
   });
 });

@@ -229,4 +229,44 @@ describeEmbeddedPostgres("issue list routes updatedSince filter", () => {
       error: "updatedBefore must be a valid ISO 8601 timestamp when provided",
     });
   });
+
+  it("applies updatedBefore and updatedSince when attention=blocked", async () => {
+    const companyId = randomUUID();
+    const olderBlockedId = randomUUID();
+    const edgeBlockedId = randomUUID();
+    const newerBlockedId = randomUUID();
+    const before = new Date("2026-07-01T00:00:00.000Z");
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: uniqueIssuePrefix(),
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values([
+      { id: olderBlockedId, companyId, title: "Older blocked", status: "blocked", priority: "medium", updatedAt: new Date("2026-06-30T23:59:59.000Z") },
+      { id: edgeBlockedId, companyId, title: "Edge blocked", status: "blocked", priority: "medium", updatedAt: before },
+      { id: newerBlockedId, companyId, title: "Newer blocked", status: "blocked", priority: "medium", updatedAt: new Date("2026-07-02T00:00:00.000Z") },
+    ]);
+
+    const app = createApp(companyId);
+    const res = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({ attention: "blocked", updatedBefore: before.toISOString(), limit: "20" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body.map((issue: { id: string }) => issue.id)).toEqual([olderBlockedId]);
+
+    const between = await request(app)
+      .get(`/api/companies/${companyId}/issues`)
+      .query({
+        attention: "blocked",
+        updatedSince: "2026-06-30T23:59:59.000Z",
+        updatedBefore: "2026-07-02T00:00:00.000Z",
+        limit: "20",
+      });
+    expect(between.status, JSON.stringify(between.body)).toBe(200);
+    expect(between.body.map((issue: { id: string }) => issue.id)).toEqual([edgeBlockedId]);
+  });
 });

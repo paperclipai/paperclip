@@ -139,6 +139,31 @@ export function issueUpdatedTimeRange(
 }
 
 /**
+ * The earliest wall-clock timestamp (ms) at which one of `issues` will age out
+ * of a relative Updated window (`24h`, `3d`, `7d`, `30d`), or null when no
+ * relative window is active or no remaining issue can cross the boundary.
+ */
+export function nextIssueUpdatedFilterExpiryMs(
+  issues: ReadonlyArray<Pick<Issue, "updatedAt" | "lastActivityAt" | "lastExternalCommentAt">>,
+  updatedWithin: IssueUpdatedWithin | null | undefined,
+  nowMs: number = Date.now(),
+): number | null {
+  if (!updatedWithin || updatedWithin === "custom") return null;
+  const windowMs = ISSUE_UPDATED_WINDOW_MS[updatedWithin];
+  const cutoff = nowMs - windowMs;
+  let earliestExpiry: number | null = null;
+  for (const issue of issues) {
+    const time = new Date(issueUpdatedTime(issue)).getTime();
+    if (!Number.isFinite(time) || time < cutoff) continue;
+    const expiry = time + windowMs + 1;
+    if (earliestExpiry === null || expiry < earliestExpiry) {
+      earliestExpiry = expiry;
+    }
+  }
+  return earliestExpiry;
+}
+
+/**
  * The server `updatedBefore` bound for a custom range's end, or undefined. The row
  * time is never older than the stored `updatedAt`, so this bound never drops a task
  * the range keeps. A start bound on `updatedAt` could, so the start stays in the browser.

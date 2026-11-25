@@ -6834,6 +6834,18 @@ async function blockedInboxIssueConditions(
       ),
     );
   }
+  if (filters?.updatedSince) {
+    const since = new Date(filters.updatedSince);
+    if (Number.isFinite(since.getTime())) {
+      conditions.push(gt(issues.updatedAt, since));
+    }
+  }
+  if (filters?.updatedBefore) {
+    const before = new Date(filters.updatedBefore);
+    if (Number.isFinite(before.getTime())) {
+      conditions.push(lt(issues.updatedAt, before));
+    }
+  }
   if (
     filters?.excludeRoutineExecutions &&
     !filters?.originKind &&

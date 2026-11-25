@@ -22,6 +22,7 @@ import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
+import { useIssueUpdatedFilterNow } from "../hooks/useIssueUpdatedFilterNow";
 import {
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
@@ -1153,6 +1154,7 @@ export function IssuesList({
     && externalObjectSummariesLoading
     && !externalObjectSummariesReady;
 
+  const updatedFilterNow = useIssueUpdatedFilterNow(searchScopedIssues, viewState.updatedWithin);
   const filtered = useMemo(() => {
     const filteredByControls = applyIssueFilters(
       searchScopedIssues,
@@ -1161,6 +1163,7 @@ export function IssuesList({
       enableAgentCreatedVisibilityFilter,
       liveIssueIds,
       issueFilterContext,
+      updatedFilterNow,
     );
     const byId = new Map(searchScopedIssues.map(issue => [issue.id, issue]));
     return sortIssues(filteredByControls, viewState, issue => {
@@ -1179,6 +1182,7 @@ export function IssuesList({
     enableAgentCreatedVisibilityFilter,
     liveIssueIds,
     issueFilterContext,
+    updatedFilterNow,
     agentName,
     companyUserLabelMap,
     projectById,

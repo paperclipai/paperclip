@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 
-import { act, useState, type ReactNode } from "react";
+import { act, useMemo, useState, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Issue } from "@paperclipai/shared";
 import { IssueFiltersPopover } from "./IssueFiltersPopover";
+import { useIssueUpdatedFilterNow } from "../hooks/useIssueUpdatedFilterNow";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
@@ -175,5 +176,43 @@ describe("IssueFiltersPopover Updated time filter", () => {
     expect(visibleIds()).toEqual(["fresh", "commented", "mid", "old"]);
 
     act(() => root.unmount());
+  });
+
+  it("drops a task from Last 24 hours automatically when wall-clock time crosses the window", () => {
+    vi.useFakeTimers({ now: new Date("2026-11-15T12:00:00.000Z") });
+    const root = createRoot(container);
+    try {
+      const tasks = [
+        makeIssue("aging", "Aging task", new Date("2026-11-14T13:00:00.000Z")), // 23h old
+        makeIssue("fresh", "Fresh task", new Date("2026-11-15T11:00:00.000Z")), // 1h old
+      ];
+      const filters: IssueFilterState = { ...defaultIssueFilterState, updatedWithin: "24h" };
+
+      function MemoizedListHarness() {
+        const updatedNow = useIssueUpdatedFilterNow(tasks, filters.updatedWithin);
+        const visible = useMemo(
+          () => applyIssueFilters(tasks, filters, null, false, undefined, {}, updatedNow),
+          [updatedNow],
+        );
+        return (
+          <ul data-testid="aging-tasks">
+            {visible.map((task) => <li key={task.id}>{task.id}</li>)}
+          </ul>
+        );
+      }
+
+      act(() => root.render(<MemoizedListHarness />));
+      const ids = () => Array.from(container.querySelectorAll('[data-testid="aging-tasks"] li')).map(el => el.textContent);
+      expect(ids()).toEqual(["aging", "fresh"]);
+
+      // Advance 2 hours with no task data changes: "aging" is now 25h old and drops out.
+      act(() => {
+        vi.advanceTimersByTime(2 * 60 * 60 * 1000);
+      });
+      expect(ids()).toEqual(["fresh"]);
+    } finally {
+      act(() => root.unmount());
+      vi.useRealTimers();
+    }
   });
 });
