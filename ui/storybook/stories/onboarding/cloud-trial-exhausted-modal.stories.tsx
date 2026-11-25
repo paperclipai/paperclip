@@ -15,6 +15,7 @@ const singleAgentExhaustedStatus: CloudTrialInferenceStatus = {
   spentUsdCents: 100,
   remainingUsdCents: 0,
   defaultModel: "openrouter/openai/gpt-6-luna",
+  canMigrate: true,
   trialAgentIds: ["11111111-1111-4111-8111-111111111111"],
   trialAgents: [
     {
@@ -292,5 +293,25 @@ export const MigrationError: Story = {
     await waitFor(() => {
       expect(screen.getByText("OpenAI")).toBeInTheDocument();
     });
+  },
+};
+
+export const ViewerNonBlocking: Story = {
+  args: {
+    open: true,
+    companyId: COMPANY_ID,
+    status: {
+      ...singleAgentExhaustedStatus,
+      canMigrate: false,
+    },
+    required: false,
+  },
+  play: async () => {
+    await waitFor(() => {
+      expect(
+        screen.getByText(/company administrator needs to connect a model provider/i),
+      ).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: /Dismiss/i })).toBeEnabled();
   },
 };

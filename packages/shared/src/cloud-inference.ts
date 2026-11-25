@@ -7,6 +7,16 @@ export const CLOUD_TRIAL_EXHAUSTED_ERROR_CODE = "cloud_trial_exhausted" as const
 export const CLOUD_TRIAL_DEFAULT_MODEL = "openrouter/openai/gpt-6-luna" as const;
 export const CLOUD_TRIAL_DEFAULT_LIMIT_USD_CENTS = 100 as const;
 
+/**
+ * Canonical starter-trial model normalizer used across onboarding seed, UI,
+ * and server proxy/key-store so every layer agrees on the `openrouter/` prefix.
+ */
+export function resolveCloudTrialModel(raw?: string | null): string {
+  const trimmed = raw?.trim();
+  if (!trimmed) return CLOUD_TRIAL_DEFAULT_MODEL;
+  return trimmed.startsWith("openrouter/") ? trimmed : `openrouter/${trimmed}`;
+}
+
 export const CLOUD_TRIAL_INFERENCE_STATUSES = [
   "unavailable",
   "not_issued",
@@ -34,6 +44,8 @@ export interface CloudTrialInferenceStatus {
   spentUsdCents: number;
   remainingUsdCents: number;
   defaultModel: string;
+  /** Whether the requesting user has permission to migrate all trial agents in this company. */
+  canMigrate: boolean;
   /** Non-terminated agents in this company currently configured to use Cloud starter inference. */
   trialAgentIds: string[];
   /** Human-readable summaries of trial-bound agents for modal copy. */
@@ -80,6 +92,7 @@ export interface MigratedCloudTrialAgentSummary {
   name: string;
   adapterType: string;
   runnerProvider?: string;
+  acpxAgent?: string;
   model: string;
 }
 
@@ -93,56 +106,127 @@ export interface MigrateCloudTrialAgentsResult {
 export interface CloudTrialMigrationTarget {
   adapterType: string;
   runnerProvider?: string;
+  acpxAgent?: string;
   model: string;
 }
 
+export type CloudTrialMigrationTargetOverrides = Partial<
+  Record<AiProvider, Partial<CloudTrialMigrationTarget>>
+>;
+
+const cloudTrialMigrationTargetOverrideSchema = z
+  .object({
+    adapterType: z.string().trim().min(1).max(100).optional(),
+    runnerProvider: z.string().trim().min(1).max(100).optional(),
+    acpxAgent: z.string().trim().min(1).max(100).optional(),
+    model: z.string().trim().min(1).max(200).optional(),
+  })
+  .strict();
+
 /**
- * Maps a newly connected user AI provider to the default harness + model used
- * when migrating agents off the Cloud OpenRouter starter trial.
+ * Parses deployment-owned migration target overrides from a JSON string
+ * (e.g. `PAPERCLIP_CLOUD_TRIAL_MIGRATION_TARGETS`). Fails closed to `{}` on
+ * invalid input so a malformed env value never crashes startup.
+ */
+export function parseCloudTrialMigrationTargetsEnv(
+  raw?: string | null,
+): CloudTrialMigrationTargetOverrides {
+  const trimmed = raw?.trim();
+  if (!trimmed) return {};
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    const result: CloudTrialMigrationTargetOverrides = {};
+    for (const provider of AI_PROVIDERS) {
+      const candidate = (parsed as Record<string, unknown>)[provider];
+      if (!candidate) continue;
+      const validated = cloudTrialMigrationTargetOverrideSchema.safeParse(candidate);
+      if (validated.success) {
+        result[provider] = validated.data;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Maps a newly connected user AI provider to the runner harness + model used
+ * when migrating agents off starter inference. Deployment repositories may
+ * supply `configuredTargets` (via `PAPERCLIP_CLOUD_TRIAL_MIGRATION_TARGETS`)
+ * to override adapter/provider/model defaults without a Core release.
  */
 export function defaultMigrationTargetForProvider(
   provider: AiProvider,
   _method: AiAuthMethod,
   overrideModel?: string,
+  configuredTargets?: CloudTrialMigrationTargetOverrides,
 ): CloudTrialMigrationTarget {
   const customModel = overrideModel?.trim() || undefined;
+  const configured = configuredTargets?.[provider];
+  let base: CloudTrialMigrationTarget;
   switch (provider) {
     case "openai":
-      return {
+      base = {
         adapterType: "paperclip_runner",
         runnerProvider: "codex",
-        model: customModel ?? "gpt-6-luna",
+        model: "gpt-6-luna",
       };
+      break;
     case "anthropic":
-      return {
+      base = {
         adapterType: "paperclip_runner",
         runnerProvider: "claude",
-        model: customModel ?? "claude-sonnet-4-6",
+        model: "claude-sonnet-4-6",
       };
+      break;
     case "google":
-      return {
+      base = {
         adapterType: "paperclip_runner",
-        runnerProvider: "antigravity",
-        model: customModel ?? "gemini-2.5-pro",
+        runnerProvider: "acpx",
+        acpxAgent: "antigravity",
+        model: "gemini-2.5-pro",
       };
+      break;
     case "xai":
-      return {
+      base = {
         adapterType: "grok_local",
-        model: customModel ?? "grok-4",
+        model: "grok-4",
       };
+      break;
     case "openrouter":
-      return {
+      base = {
         adapterType: "paperclip_runner",
         runnerProvider: "opencode",
-        model: customModel ?? CLOUD_TRIAL_DEFAULT_MODEL,
+        model: CLOUD_TRIAL_DEFAULT_MODEL,
       };
+      break;
     case "github":
-      return {
+      base = {
         adapterType: "paperclip_runner",
-        runnerProvider: "copilot",
-        model: customModel ?? "gpt-5.6-luna",
+        runnerProvider: "acpx",
+        acpxAgent: "copilot",
+        model: "gpt-5.6-luna",
       };
+      break;
   }
+
+  const merged: CloudTrialMigrationTarget = {
+    adapterType: configured?.adapterType ?? base.adapterType,
+    ...(configured?.runnerProvider !== undefined
+      ? { runnerProvider: configured.runnerProvider }
+      : base.runnerProvider !== undefined
+        ? { runnerProvider: base.runnerProvider }
+        : {}),
+    ...(configured?.acpxAgent !== undefined
+      ? { acpxAgent: configured.acpxAgent }
+      : base.acpxAgent !== undefined
+        ? { acpxAgent: base.acpxAgent }
+        : {}),
+    model: customModel ?? configured?.model ?? base.model,
+  };
+  return merged;
 }
 
 export function isAgentUsingCloudTrialInference(runtimeConfig: unknown): boolean {

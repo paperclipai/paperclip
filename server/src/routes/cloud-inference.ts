@@ -49,7 +49,12 @@ export function cloudInferenceRoutes(
     assertCompanyAccess(req, companyId);
     const refreshUsage = req.query.refresh === "1" || req.query.refresh === "true";
     res.setHeader("Cache-Control", "no-store");
-    res.json(await controller.getCompanyStatus(db, companyId, { refreshUsage }));
+    res.json(
+      await controller.getCompanyStatus(db, companyId, {
+        refreshUsage,
+        actor: req.actor,
+      }),
+    );
   });
 
   router.post(
@@ -62,13 +67,14 @@ export function cloudInferenceRoutes(
       const membership = req.actor.memberships?.find(
         (m) => m.companyId === companyId && m.status === "active",
       );
-      if (membership?.membershipRole === "viewer") {
+      if (membership?.membershipRole === "viewer" && !req.actor.isInstanceAdmin) {
         throw forbidden("Viewers cannot migrate agent AI connections");
       }
       const actor = getActorInfo(req);
       try {
         const result = await controller.migrateTrialAgents(db, companyId, req.body, {
           userId: actor.actorId,
+          actor: req.actor,
         });
         res.setHeader("Cache-Control", "no-store");
         res.json(result);

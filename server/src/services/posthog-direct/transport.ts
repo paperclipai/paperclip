@@ -76,6 +76,8 @@ export type WorkspaceStartup = {
 export type PostHogDirectTransport = TelemetryTransport & {
   /** Whether the stack has the Cloud starter-inference experiment enabled. */
   readonly cloudTrialInferenceEnabled: boolean;
+  /** Syncs the resolved instance setting (including staging overrides) into all future events. */
+  setCloudTrialInferenceEnabled(enabled: boolean): void;
   /** Sends `$groupidentify` and `cloud.workspace_started` for this start. */
   announceWorkspace(startup: WorkspaceStartup): Promise<void>;
   /** Captures a Cloud-only direct PostHog event (not in the self-hosted collector contract). */
@@ -96,6 +98,12 @@ export function createPostHogDirectTransport(
   const now = options.now ?? (() => new Date());
   let clientPromise: Promise<PostHogNodeClient> | null = null;
   let pendingAnnouncement: { startup: WorkspaceStartup; occurredAt: string } | null = null;
+  let resolvedCloudTrialInferenceEnabled = config.cloudTrialInferenceEnabled;
+
+  const currentConfig = (): CloudPostHogConfig =>
+    resolvedCloudTrialInferenceEnabled === config.cloudTrialInferenceEnabled
+      ? config
+      : { ...config, cloudTrialInferenceEnabled: resolvedCloudTrialInferenceEnabled };
 
   const getClient = () => {
     clientPromise ??= factory(config).catch((error) => {
@@ -128,16 +136,17 @@ export function createPostHogDirectTransport(
     client: PostHogNodeClient,
     { startup, occurredAt }: { startup: WorkspaceStartup; occurredAt: string },
   ) {
+    const activeConfig = currentConfig();
     client.groupIdentify({
       groupType: POSTHOG_WORKSPACE_GROUP_TYPE,
-      groupKey: config.stackId,
+      groupKey: activeConfig.stackId,
       disableGeoip: true,
       properties: {
         stack_slug: startup.stackSlug,
         primary_host: startup.primaryHost,
-        environment: config.environment,
-        cloud_trial_inference_enabled: config.cloudTrialInferenceEnabled,
-        cloud_trial_inference_cohort: cloudTrialInferenceCohort(config.cloudTrialInferenceEnabled),
+        environment: activeConfig.environment,
+        cloud_trial_inference_enabled: activeConfig.cloudTrialInferenceEnabled,
+        cloud_trial_inference_cohort: cloudTrialInferenceCohort(activeConfig.cloudTrialInferenceEnabled),
       },
     });
     capture(
@@ -151,19 +160,26 @@ export function createPostHogDirectTransport(
           version: startup.version,
           ingestedAt: occurredAt,
         },
-        config,
+        activeConfig,
       ),
     );
   }
 
   return {
-    cloudTrialInferenceEnabled: config.cloudTrialInferenceEnabled,
+    get cloudTrialInferenceEnabled() {
+      return resolvedCloudTrialInferenceEnabled;
+    },
+
+    setCloudTrialInferenceEnabled(enabled: boolean) {
+      resolvedCloudTrialInferenceEnabled = enabled;
+    },
 
     hashesPrivateRefs: false,
 
     captureEventContext: () => capturePostHogEventContext(),
 
     async send(batch: TelemetryOutgoingBatch): Promise<TelemetrySendResult> {
+      const activeConfig = currentConfig();
       const meta = {
         app: batch.app,
         schemaVersion: batch.schemaVersion,
@@ -173,7 +189,7 @@ export function createPostHogDirectTransport(
       };
       const messages = batch.events
         .map(({ event, context }) =>
-          buildPostHogDirectEvent(event, context as PostHogEventContext | undefined, meta, config),
+          buildPostHogDirectEvent(event, context as PostHogEventContext | undefined, meta, activeConfig),
         )
         .filter((message): message is PostHogDirectEvent => message !== null);
       if (messages.length === 0) return { kind: "ok" };
@@ -244,7 +260,7 @@ export function createPostHogDirectTransport(
           setOncePersonProperties: input.setOncePersonProperties,
         },
         mergedContext,
-        config,
+        currentConfig(),
       );
       capture(client, message);
       try {

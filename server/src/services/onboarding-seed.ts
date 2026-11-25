@@ -1,7 +1,7 @@
 import { and, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, companyOnboardingSeeds, goals, toolConnections } from "@paperclipai/db";
-import { CLOUD_TRIAL_DEFAULT_MODEL, type ApplyOnboardingSeed } from "@paperclipai/shared";
+import { resolveCloudTrialModel, type ApplyOnboardingSeed } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { findActiveServerAdapter } from "../adapters/registry.js";
@@ -170,8 +170,7 @@ export function onboardingSeedService(db: Db) {
         const useCloudTrial =
           experimental.enableCloudTrialInference && existingAiConnections.length === 0;
         const adapterType = useCloudTrial ? "paperclip_runner" : seededAgentAdapterType();
-        const trialModel =
-          process.env.PAPERCLIP_CLOUD_TRIAL_MODEL?.trim() || CLOUD_TRIAL_DEFAULT_MODEL;
+        const trialModel = resolveCloudTrialModel(process.env.PAPERCLIP_CLOUD_TRIAL_MODEL);
         const adapterConfig = useCloudTrial
           ? {
               ...seededAgentAdapterConfig("paperclip_runner"),

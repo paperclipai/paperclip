@@ -287,9 +287,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
       ...stripAiAuthBindings(currentEnv),
       ...cloudTrialRuntime.env,
     };
-    if (typeof resolvedConfig.model !== "string" || !resolvedConfig.model.trim()) {
-      resolvedConfig.model = cloudTrialRuntime.defaultModel;
-    }
+    resolvedConfig.model = cloudTrialRuntime.defaultModel;
     for (const key of AI_AUTH_ENV_KEYS) secretKeys.add(key);
     identityRedactor.addSecretValues(cloudTrialRuntime.secretValues);
   }

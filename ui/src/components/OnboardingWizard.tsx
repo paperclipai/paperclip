@@ -32,7 +32,7 @@ import type {
   Environment,
   InstanceSettings,
 } from "@paperclipai/shared";
-import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import { AGENT_ROLES, AGENT_ROLE_LABELS, ADAPTER_AUTH_MISSING_CHECK_CODE, resolveCloudTrialModel } from "@paperclipai/shared";
 import { AdapterLoginPanel, ModelDropdown } from "./AgentConfigForm";
 import {
   CONNECT_SOURCE_NAMES,
@@ -989,7 +989,7 @@ function OnboardingWizardInner({
     setError(null);
     try {
       const hireName = agentName.trim() || AGENT_ROLE_LABELS[agentRole];
-      const trialModel = cloudTrialStatus?.defaultModel || "openrouter/openai/gpt-6-luna";
+      const trialModel = resolveCloudTrialModel(cloudTrialStatus?.defaultModel);
       await setupSave.current.catch(() => {});
       const hire = await agentsApi.hire(createdCompanyId, {
         ...(setupAgentId ? { setupAgentId } : {}),
@@ -3152,8 +3152,8 @@ function OnboardingWizardInner({
                             <span className="text-sm font-semibold text-foreground">
                               Start right away
                             </span>
-                            <Badge variant="secondary" className="rounded-full text-[11px]">
-                              GPT-6 Luna
+                            <Badge variant="secondary" className="rounded-full text-xs">
+                              {resolveCloudTrialModel(cloudTrialStatus?.defaultModel).split("/").pop() ?? "Starter"}
                             </Badge>
                           </div>
                           <p className="text-xs text-muted-foreground">

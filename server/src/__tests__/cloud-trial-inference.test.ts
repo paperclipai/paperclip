@@ -1,15 +1,31 @@
+import { generateKeyPairSync, verify } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import express from "express";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  CLOUD_TRIAL_DEFAULT_MODEL,
   CLOUD_TRIAL_EXHAUSTED_ERROR_CODE,
   defaultMigrationTargetForProvider,
+  parseCloudTrialMigrationTargetsEnv,
+  resolveCloudTrialModel,
 } from "@paperclipai/shared";
 import {
   CloudTrialExhaustedError,
   createCloudTrialInferenceController,
 } from "../services/cloud-trial-inference.js";
 import { cloudInferenceInternalProxyRoutes } from "../routes/cloud-inference.js";
+import { resolveBrowserAnalyticsConfig } from "../services/cloud-posthog-browser.js";
+import { createPostHogDirectTransport } from "../services/posthog-direct/transport.js";
+
+function generateTestEd25519Pair() {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const privDer = privateKey.export({ format: "der", type: "pkcs8" });
+  const rawSeed = privDer.subarray(privDer.length - 32);
+  return {
+    publicKey,
+    privateKeyBase64Url: rawSeed.toString("base64url"),
+  };
+}
 
 async function listenExpress(app: express.Express): Promise<{ baseUrl: string; close: () => Promise<void> }> {
   const server: Server = createServer(app);
@@ -52,11 +68,13 @@ describe("cloud-trial-inference", () => {
     vi.restoreAllMocks();
   });
 
-  it("proxies OpenRouter requests with ephemeral run token, hides raw key, guards model, and detects HTTP 402 exhaustion", async () => {
+  it("signs Cloud requests with Ed25519 only, enforces strict starter model, renews active run tokens, and detects HTTP 402 exhaustion", async () => {
+    const keypair = generateTestEd25519Pair();
     const seenAuthHeaders: string[] = [];
     const seenAttributionHeaders: Array<string | undefined> = [];
     let return402 = false;
     let keyRemainingUsd = 0.75;
+    let fakeNow = 1_700_000_000_000;
 
     // Mock upstream OpenRouter server
     const mockOpenRouter = express();
@@ -83,13 +101,21 @@ describe("cloud-trial-inference", () => {
     const upstream = await listenExpress(mockOpenRouter);
     closers.push(upstream.close);
 
-    // Mock Cloud Harness server
+    // Mock Cloud Harness server verifying Ed25519 signature (no shared bearer token)
     let exhaustedReportedToCloud = false;
     const mockCloud = express();
     mockCloud.use(express.json());
+    const verifySignature = (req: express.Request, pathname: string) => {
+      expect(req.headers.authorization).toBeUndefined();
+      const stackId = String(req.headers["x-paperclip-cloud-stack-id"] ?? "");
+      const ts = String(req.headers["x-paperclip-cloud-stack-timestamp"] ?? "");
+      const sig = String(req.headers["x-paperclip-cloud-stack-signature"] ?? "");
+      expect(stackId).toBe("stack-test-1");
+      const payload = Buffer.from(`POST\n${pathname}\n${stackId}\n${ts}`, "utf8");
+      expect(verify(null, payload, keypair.publicKey, Buffer.from(sig, "base64url"))).toBe(true);
+    };
     mockCloud.post("/v1/tenant/inference-key", (req, res) => {
-      expect(req.headers["x-paperclip-cloud-stack-id"]).toBe("stack-test-1");
-      expect(req.headers.authorization).toBe("Bearer test-tenant-token");
+      verifySignature(req, "/v1/tenant/inference-key");
       res.status(200).json({
         provider: "openrouter",
         status: "active",
@@ -100,9 +126,16 @@ describe("cloud-trial-inference", () => {
         defaultModel: "openrouter/openai/gpt-6-luna",
       });
     });
-    mockCloud.post("/v1/tenant/inference-key/exhausted", (_req, res) => {
+    mockCloud.post("/v1/tenant/inference-key/exhausted", (req, res) => {
+      verifySignature(req, "/v1/tenant/inference-key/exhausted");
       exhaustedReportedToCloud = true;
-      res.status(200).json({ provider: "openrouter", status: "exhausted", limitUsdCents: 100, spentUsdCents: 100, remainingUsdCents: 0 });
+      res.status(200).json({
+        provider: "openrouter",
+        status: "exhausted",
+        limitUsdCents: 100,
+        spentUsdCents: 100,
+        remainingUsdCents: 0,
+      });
     });
     const cloud = await listenExpress(mockCloud);
     closers.push(cloud.close);
@@ -111,10 +144,12 @@ describe("cloud-trial-inference", () => {
       env: {
         PAPERCLIP_CLOUD_STACK_ID: "stack-test-1",
         PAPERCLIP_CLOUD_API_ORIGIN: cloud.baseUrl,
-        PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "test-tenant-token",
+        PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "shared-token-must-not-be-sent",
+        PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY: keypair.privateKeyBase64Url,
         PAPERCLIP_CLOUD_TRIAL_OPENROUTER_BASE_URL: `${upstream.baseUrl}/api/v1`,
         PAPERCLIP_API_URL: "http://127.0.0.1:3100",
       },
+      now: () => fakeNow,
     });
 
     // Mount internal proxy
@@ -124,6 +159,20 @@ describe("cloud-trial-inference", () => {
     closers.push(proxy.close);
 
     const db = fakeDbWithFlag(true);
+
+    // 0. Non-starter model is rejected at run preparation (cannot bypass starter model cap)
+    await expect(
+      controller.prepareCloudTrialRuntime(db, {
+        companyId: "comp-1",
+        agentId: "agent-1",
+        runId: "run-bad-model",
+        model: "openrouter/anthropic/claude-opus-4",
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({ code: "cloud_trial_model_not_allowed" }),
+    });
+
     const runtime = await controller.prepareCloudTrialRuntime(db, {
       companyId: "comp-1",
       agentId: "agent-1",
@@ -139,13 +188,24 @@ describe("cloud-trial-inference", () => {
 
     const token = runtime.env.PAPERCLIP_OPENROUTER_PROXY_TOKEN!;
 
-    // 1. Invalid token fails closed (401)
+    // 1. Invalid token fails closed (401), unknown pctrial_ token reports distinct instance error
     const badAuth = await fetch(`${proxy.baseUrl}/api/internal/cloud-inference/v1/chat/completions`, {
       method: "POST",
       headers: { authorization: "Bearer bogus", "content-type": "application/json" },
       body: JSON.stringify({ model: "openai/gpt-6-luna", messages: [] }),
     });
     expect(badAuth.status).toBe(401);
+    expect(((await badAuth.json()) as { error: { code: string } }).error.code).toBe("unauthorized");
+
+    const unknownRunToken = await fetch(`${proxy.baseUrl}/api/internal/cloud-inference/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: "Bearer pctrial_unknown_from_other_instance", "content-type": "application/json" },
+      body: JSON.stringify({ model: "openai/gpt-6-luna", messages: [] }),
+    });
+    expect(unknownRunToken.status).toBe(401);
+    expect(((await unknownRunToken.json()) as { error: { code: string } }).error.code).toBe(
+      "proxy_token_not_found_on_instance",
+    );
 
     // 2. Disallowed model fails closed (403)
     const badModel = await fetch(`${proxy.baseUrl}/api/internal/cloud-inference/v1/chat/completions`, {
@@ -155,7 +215,8 @@ describe("cloud-trial-inference", () => {
     });
     expect(badModel.status).toBe(403);
 
-    // 3. Allowed model succeeds and injects real upstream key server-side
+    // 3. Allowed model succeeds and sliding idle TTL keeps long active runs working past 30 minutes
+    fakeNow += 20 * 60_000;
     const okRes = await fetch(`${proxy.baseUrl}/api/internal/cloud-inference/v1/chat/completions`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -166,6 +227,15 @@ describe("cloud-trial-inference", () => {
     expect(okBody.choices[0]!.message.content).toBe("Hello from Luna!");
     expect(seenAuthHeaders[0]).toBe("Bearer sk-or-v1-real-secret-key-never-sent-to-sandbox");
     expect(seenAttributionHeaders[0]).toBe("Paperclip");
+
+    // Advance another 20 minutes (40 min total since run launch) — still valid because previous request renewed it!
+    fakeNow += 20 * 60_000;
+    const renewedRes = await fetch(`${proxy.baseUrl}/api/internal/cloud-inference/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ model: "openai/gpt-6-luna", messages: [{ role: "user", content: "Still running" }] }),
+    });
+    expect(renewedRes.status).toBe(200);
 
     // 4. Upstream HTTP 402 immediately triggers exhaustion + Cloud notification + 402 response
     return402 = true;
@@ -192,7 +262,11 @@ describe("cloud-trial-inference", () => {
     await runtime.cleanup();
   });
 
-  it("maps connected subscription providers to expected migration harnesses and models", () => {
+  it("normalizes starter model slugs consistently and maps providers including acpx Google/GitHub and deployment overrides", () => {
+    expect(resolveCloudTrialModel(undefined)).toBe(CLOUD_TRIAL_DEFAULT_MODEL);
+    expect(resolveCloudTrialModel("openai/gpt-6-luna")).toBe("openrouter/openai/gpt-6-luna");
+    expect(resolveCloudTrialModel("openrouter/openai/gpt-6-luna")).toBe("openrouter/openai/gpt-6-luna");
+
     expect(defaultMigrationTargetForProvider("openai", "subscription")).toEqual({
       adapterType: "paperclip_runner",
       runnerProvider: "codex",
@@ -205,12 +279,82 @@ describe("cloud-trial-inference", () => {
     });
     expect(defaultMigrationTargetForProvider("google", "subscription")).toEqual({
       adapterType: "paperclip_runner",
-      runnerProvider: "antigravity",
+      runnerProvider: "acpx",
+      acpxAgent: "antigravity",
       model: "gemini-2.5-pro",
+    });
+    expect(defaultMigrationTargetForProvider("github", "subscription")).toEqual({
+      adapterType: "paperclip_runner",
+      runnerProvider: "acpx",
+      acpxAgent: "copilot",
+      model: "gpt-5.6-luna",
     });
     expect(defaultMigrationTargetForProvider("xai", "subscription")).toEqual({
       adapterType: "grok_local",
       model: "grok-4",
     });
+
+    const overrides = parseCloudTrialMigrationTargetsEnv(
+      JSON.stringify({
+        openai: { model: "gpt-6.5-pro" },
+        google: { acpxAgent: "antigravity", model: "gemini-3-pro" },
+      }),
+    );
+    expect(defaultMigrationTargetForProvider("openai", "subscription", undefined, overrides)).toEqual({
+      adapterType: "paperclip_runner",
+      runnerProvider: "codex",
+      model: "gpt-6.5-pro",
+    });
+    expect(defaultMigrationTargetForProvider("google", "subscription", undefined, overrides)).toEqual({
+      adapterType: "paperclip_runner",
+      runnerProvider: "acpx",
+      acpxAgent: "antigravity",
+      model: "gemini-3-pro",
+    });
+    expect(parseCloudTrialMigrationTargetsEnv("not-json")).toEqual({});
+  });
+
+  it("keeps PostHog server and browser experiment cohort synced with resolved staging overrides", async () => {
+    const captured: Array<{ event: string; properties?: Record<string, unknown> }> = [];
+    const transport = createPostHogDirectTransport(
+      {
+        token: "phc_test",
+        host: "https://us.i.posthog.com",
+        environment: "staging",
+        stackId: "stack-staging-1",
+        directEnabled: true,
+        browserEnabled: true,
+        replayEnabled: false,
+        cloudTrialInferenceEnabled: false,
+      },
+      {
+        factory: async () => ({
+          capture: (msg) => captured.push({ event: msg.event, properties: msg.properties }),
+          groupIdentify: () => {},
+          flush: async () => {},
+          shutdown: async () => {},
+        }),
+      },
+    );
+
+    expect(transport.cloudTrialInferenceEnabled).toBe(false);
+    transport.setCloudTrialInferenceEnabled(true);
+    expect(transport.cloudTrialInferenceEnabled).toBe(true);
+    await transport.captureCloudEvent({ event: "cloud_trial.started", properties: { source: "test" } });
+    expect(captured[0]?.properties?.cloud_trial_inference_enabled).toBe(true);
+    expect(captured[0]?.properties?.["$feature/cloud-trial-inference"]).toBe("treatment");
+
+    const browserCfg = resolveBrowserAnalyticsConfig(
+      {
+        PAPERCLIP_CLOUD_STACK_ID: "stack-staging-1",
+        PAPERCLIP_CLOUD_HOSTED: "1",
+        PAPERCLIP_POSTHOG_PROJECT_TOKEN: "phc_test",
+        PAPERCLIP_POSTHOG_BROWSER_ENABLED: "1",
+        PAPERCLIP_MANAGED_CONFIG: JSON.stringify({ features: { enableCloudTrialInference: false } }),
+      },
+      {},
+      { cloudTrialInferenceEnabled: true },
+    );
+    expect(browserCfg?.cloudTrialInferenceEnabled).toBe(true);
   });
 });

@@ -113,6 +113,14 @@ export function isPostHogDirectTelemetryActive(): boolean {
 }
 
 /**
+ * Keeps direct PostHog event properties aligned with the resolved instance
+ * experimental setting (including staging database overrides).
+ */
+export function syncCloudTrialInferenceCohort(enabled: boolean): void {
+  directTransport?.setCloudTrialInferenceEnabled(enabled);
+}
+
+/**
  * Emits a Cloud-only direct PostHog event (never sent through the self-hosted
  * collector). Fire-and-forget; never throws to callers.
  */
@@ -167,6 +175,9 @@ export function trackCloudTrialExposure(input: {
     typeof input.enabledOverride === "boolean"
       ? input.enabledOverride
       : transport.cloudTrialInferenceEnabled;
+  if (typeof input.enabledOverride === "boolean") {
+    transport.setCloudTrialInferenceEnabled(input.enabledOverride);
+  }
   const cohort = cloudTrialInferenceCohort(enabled);
   void transport
     .captureCloudEvent({

@@ -110,7 +110,8 @@ export function CloudTrialExhaustedModal({
     },
   });
 
-  const canClose = !required || phase === "done";
+  const canMigrate = status.canMigrate !== false;
+  const canClose = !required || !canMigrate || phase === "done";
   const agentCount = status.trialAgents.length;
 
   return (
@@ -132,7 +133,7 @@ export function CloudTrialExhaustedModal({
         onInteractOutside={(event) => {
           if (!canClose) event.preventDefault();
         }}
-        className="max-h-[90vh] sm:max-w-2xl overflow-y-auto p-0 gap-0"
+        className="max-h-(--sz-85vh) sm:max-w-2xl overflow-y-auto p-0 gap-0"
       >
         {/* Header */}
         <div className="border-b border-border bg-card px-6 py-4">
@@ -141,7 +142,7 @@ export function CloudTrialExhaustedModal({
               className={cn(
                 "mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-lg border",
                 phase === "done"
-                  ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                  ? "border-(--status-task-icon-done)/30 bg-(--diff-add-bg) text-(--diff-add-fg)"
                   : "border-border bg-muted/50 text-foreground",
               )}
             >
@@ -162,17 +163,21 @@ export function CloudTrialExhaustedModal({
               <DialogDescription className="text-sm text-muted-foreground">
                 {phase === "done"
                   ? "Your agents have been updated to use your connected model provider."
-                  : `You need to connect a model provider to continue. We’ll automatically update ${
-                      agentCount === 1
-                        ? status.trialAgents[0]?.name || "your agent"
-                        : agentCount > 1
-                          ? `all ${agentCount} agents`
-                          : "your agents"
-                    } and pick up where you left off.`}
+                  : !canMigrate
+                    ? "A company administrator needs to connect a model provider before these agents can continue running."
+                    : `You need to connect a model provider to continue. We’ll automatically update ${
+                        agentCount === 1
+                          ? status.trialAgents[0]?.name || "your agent"
+                          : agentCount > 1
+                            ? `all ${agentCount} agents`
+                            : "your agents"
+                      } and pick up where you left off.`}
               </DialogDescription>
               {phase !== "done" && status.trialAgents.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1.5 pt-2">
-                  <span className="text-xs text-muted-foreground mr-1">Will update:</span>
+                  <span className="text-xs text-muted-foreground mr-1">
+                    {canMigrate ? "Will update:" : "Waiting on provider:"}
+                  </span>
                   {status.trialAgents.map((agent) => (
                     <span
                       key={agent.id}
@@ -193,7 +198,20 @@ export function CloudTrialExhaustedModal({
 
         {/* Body */}
         <div className="px-6 py-4">
-          {phase === "connect" && (
+          {phase === "connect" && !canMigrate && (
+            <div className="space-y-4 py-2">
+              <p className="text-sm text-muted-foreground">
+                You have read-only access to agent model settings in this company. Ask an administrator to connect a model provider so paused agent work can resume.
+              </p>
+              <div className="flex justify-end">
+                <Button variant="outline" onClick={() => onOpenChange?.(false)}>
+                  Dismiss
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {phase === "connect" && canMigrate && (
             <AiProviderSetup
               companyId={companyId}
               hideCancel={!canClose}
@@ -276,7 +294,7 @@ export function CloudTrialExhaustedModal({
               )}
 
               {migrationResult && migrationResult.resumedRunIds.length > 0 && (
-                <div className="flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3.5 py-2.5 text-xs text-emerald-300">
+                <div className="flex items-center gap-2 rounded-lg border border-(--status-task-icon-done)/30 bg-(--diff-add-bg) px-3.5 py-2.5 text-xs text-(--diff-add-fg)">
                   <Sparkles className="size-3.5 shrink-0" />
                   <span>Your paused work has been automatically resumed.</span>
                 </div>

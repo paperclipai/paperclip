@@ -71,7 +71,7 @@ export function CloudTrialGate() {
       open={shouldShowModal}
       companyId={selectedCompanyId}
       status={modalStatus}
-      required={!migrationComplete}
+      required={!migrationComplete && modalStatus.canMigrate !== false}
       onOpenChange={(open) => {
         if (!open) {
           setHoldingMigrationSuccess(false);
