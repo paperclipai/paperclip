@@ -15,6 +15,7 @@ import {
 import type { AgentApiKeyScope } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
+import { accessService } from "../services/access.js";
 import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { assertBoard, assertBoardUser, assertCompanyAccess, assertInstanceAdmin, boardAuthorityUserId } from "../routes/authz.js";
@@ -166,6 +167,25 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(response.status).toBe(200);
       expect(response.body).not.toHaveProperty("boardOperator");
     }
+  });
+
+  it("lets only the grant route add or remove the key, so imports and member edits cannot", async () => {
+    const access = accessService(db);
+    const keys = async (agentId: string) => (await db.select().from(principalPermissionGrants)
+      .where(eq(principalPermissionGrants.principalId, agentId))).map((row) => row.permissionKey).sort();
+
+    await access.setPrincipalPermission(companyId, "agent", peerId, "board:operate", true, ownerUserId);
+    await access.setPrincipalGrants(companyId, "agent", lowTrustId, [{ permissionKey: "board:operate" }], ownerUserId);
+    expect(await keys(peerId)).toEqual([]);
+    expect(await keys(lowTrustId)).toEqual([]);
+
+    await grant(operatorId);
+    await access.setPrincipalGrants(companyId, "agent", operatorId, [{ permissionKey: "tasks:assign" }], ownerUserId);
+    expect(await keys(operatorId)).toEqual(["board:operate", "tasks:assign"]);
+    const [membership] = await db.select().from(companyMemberships).where(and(
+      eq(companyMemberships.principalType, "agent"), eq(companyMemberships.principalId, operatorId)));
+    await access.setMemberPermissions(companyId, membership!.id, [], ownerUserId);
+    expect(await keys(operatorId)).toEqual(["board:operate"]);
   });
 
   it("stops counting the grant once the agent leaves the company", async () => {

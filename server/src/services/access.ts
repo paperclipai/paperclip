@@ -25,7 +25,7 @@ import {
   toolConnections,
   userSecretDeclarations,
 } from "@paperclipai/db";
-import type { PermissionKey, PrincipalType } from "@paperclipai/shared";
+import { BOARD_ONLY_AGENT_PERMISSION_KEYS, isBoardOnlyAgentPermissionKey, type PermissionKey, type PrincipalType } from "@paperclipai/shared";
 import { conflict } from "../errors.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
@@ -37,6 +37,16 @@ type GrantInput = {
   permissionKey: PermissionKey;
   scope?: Record<string, unknown> | null;
 };
+
+function writableGrants(principalType: string, grants: GrantInput[]) {
+  return principalType === "agent" ? grants.filter((grant) => !isBoardOnlyAgentPermissionKey(grant.permissionKey)) : grants;
+}
+
+function replaceableGrantKeys(principalType: string) {
+  return principalType === "agent"
+    ? [notInArray(principalPermissionGrants.permissionKey, [...BOARD_ONLY_AGENT_PERMISSION_KEYS])]
+    : [];
+}
 
 type MemberArchiveInput = {
   reassignment?: {
@@ -519,11 +529,13 @@ export function accessService(db: Db) {
             eq(principalPermissionGrants.companyId, companyId),
             eq(principalPermissionGrants.principalType, member.principalType),
             eq(principalPermissionGrants.principalId, member.principalId),
+            ...replaceableGrantKeys(member.principalType),
           ),
         );
-      if (grants.length > 0) {
+      const writable = writableGrants(member.principalType, grants);
+      if (writable.length > 0) {
         await tx.insert(principalPermissionGrants).values(
-          grants.map((grant) => ({
+          writable.map((grant) => ({
             companyId,
             principalType: member.principalType,
             principalId: member.principalId,
@@ -626,11 +638,13 @@ export function accessService(db: Db) {
             eq(principalPermissionGrants.companyId, companyId),
             eq(principalPermissionGrants.principalType, existing.principalType),
             eq(principalPermissionGrants.principalId, existing.principalId),
+            ...replaceableGrantKeys(existing.principalType),
           ),
         );
-      if (data.grants.length > 0) {
+      const writable = writableGrants(existing.principalType, data.grants);
+      if (writable.length > 0) {
         await tx.insert(principalPermissionGrants).values(
-          data.grants.map((grant) => ({
+          writable.map((grant) => ({
             companyId,
             principalType: existing.principalType,
             principalId: existing.principalId,
@@ -1014,11 +1028,13 @@ export function accessService(db: Db) {
             eq(principalPermissionGrants.companyId, companyId),
             eq(principalPermissionGrants.principalType, principalType),
             eq(principalPermissionGrants.principalId, principalId),
+            ...replaceableGrantKeys(principalType),
           ),
         );
-      if (grants.length === 0) return;
+      const writable = writableGrants(principalType, grants);
+      if (writable.length === 0) return;
       await tx.insert(principalPermissionGrants).values(
-        grants.map((grant) => ({
+        writable.map((grant) => ({
           companyId,
           principalType,
           principalId,
@@ -1093,6 +1109,7 @@ export function accessService(db: Db) {
     grantedByUserId: string | null,
     scope: Record<string, unknown> | null = null,
   ) {
+    if (enabled && principalType === "agent" && isBoardOnlyAgentPermissionKey(permissionKey)) return;
     if (!enabled) {
       await db
         .delete(principalPermissionGrants)
