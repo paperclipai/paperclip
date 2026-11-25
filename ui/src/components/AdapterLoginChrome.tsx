@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Copy, Check, Loader2 } from "lucide-react";
 
@@ -365,6 +365,7 @@ export function OnboardingCardField({
   onPaste,
   disabled,
   label = "Authorization code",
+  description,
   placeholder = "Paste authorization code here",
   masked = false,
   autoFocus = false,
@@ -376,6 +377,7 @@ export function OnboardingCardField({
   onPaste?: (event: ClipboardEvent<HTMLInputElement>) => void;
   disabled?: boolean;
   label?: string;
+  description?: string;
   placeholder?: string;
   /**
    * Dots instead of the value. The key card asks for it because a provider key
@@ -395,11 +397,13 @@ export function OnboardingCardField({
   autoFocus?: boolean;
   className?: string;
 }) {
-  return (
+  const descriptionId = useId();
+  const input = (
     <input
       // eslint-disable-next-line jsx-a11y/no-autofocus -- see the prop's note
       autoFocus={autoFocus}
       aria-label={label}
+      aria-describedby={description ? descriptionId : undefined}
       type={masked ? "password" : "text"}
       autoComplete="off"
       spellCheck={false}
@@ -416,6 +420,14 @@ export function OnboardingCardField({
       }}
       className={className ? cn(onboardingCardInputClass, className) : onboardingCardInputClass}
     />
+  );
+  if (!description) return input;
+
+  return (
+    <div className="flex flex-col gap-2">
+      {input}
+      <p id={descriptionId} className="px-5 text-xs text-muted-foreground">{description}</p>
+    </div>
   );
 }
 
