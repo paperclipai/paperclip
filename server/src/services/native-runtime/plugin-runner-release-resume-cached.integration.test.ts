@@ -1,3 +1,3 @@
-import { registerPluginRunnerReleaseResumeSuite } from "./plugin-runner-release-resume.test-helper.js";
+import { registerPluginRunnerReleaseResumeSuite } from "../../__tests__/helpers/plugin-runner-release-resume.js";
 
 registerPluginRunnerReleaseResumeSuite("cached");

@@ -16,10 +16,10 @@ import {
   type RunnerProcessLaunchSpec,
 } from "../../vendor/paperclip-runner/index.js";
 import { registerRunnerPrpAuthority } from "../../realtime/runner-prp-ws.js";
-import { readProcessStartedAt } from "../hot-restart.js";
-import { loadNativeRunnerCheckpoint, registerNativeRunnerCheckpoint, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
-import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
-import { claimNativeRestartRecoveries } from "./native-restart-recovery.js";
+import { readProcessStartedAt } from "../../services/hot-restart.js";
+import { loadNativeRunnerCheckpoint, registerNativeRunnerCheckpoint, restoreNativeRunnerCheckpoint } from "../../services/native-runtime/native-runner-checkpoint.js";
+import { REMOTE_RUNNER_RECONNECT_GRACE_MS } from "../../services/native-runtime/native-runner-recovery-contract.js";
+import { claimNativeRestartRecoveries } from "../../services/native-runtime/native-restart-recovery.js";
 import {
   nativeRestartFixture,
   describeEmbeddedPostgres,
@@ -28,7 +28,7 @@ import {
   processAlive,
   waitForCondition,
   stopOwnedProcessGroup,
-} from "../../__tests__/helpers/native-restart.js";
+} from "./native-restart.js";
 
 export function registerNativeRunnerRestartDisklessSuite(preparedTask: boolean): void {
   describeEmbeddedPostgres(`native runner restart recovery: diskless (prepared task: ${preparedTask})`, () => {

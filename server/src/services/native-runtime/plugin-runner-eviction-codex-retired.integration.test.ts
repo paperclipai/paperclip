@@ -1,3 +1,3 @@
-import { registerPluginRunnerEvictionSuite } from "./plugin-runner-eviction.test-helper.js";
+import { registerPluginRunnerEvictionSuite } from "../../__tests__/helpers/plugin-runner-eviction.js";
 
 registerPluginRunnerEvictionSuite("codex", "retired");

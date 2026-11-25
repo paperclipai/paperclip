@@ -1,3 +1,3 @@
-import { registerNativeRunnerRestartDisklessSuite } from "./native-runner-restart-diskless.test-helper.js";
+import { registerNativeRunnerRestartDisklessSuite } from "../../__tests__/helpers/native-runner-restart-diskless.js";
 
 registerNativeRunnerRestartDisklessSuite(true);
