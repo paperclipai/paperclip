@@ -124,6 +124,16 @@ export default meta;
 type Story = StoryObj;
 export const AllAgents: Story = { render: () => <PersonaPage path="/PAP/agents/all" /> };
 export const AgentOverview: Story = { render: () => <PersonaPage path="/PAP/agents/codexcoder/overview" /> };
+export const AgentOverviewMobile: Story = {
+  render: () => <PersonaPage path="/PAP/agents/codexcoder/overview" />,
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: { layout: "fullscreen", waitForViewport: true },
+};
+export const AgentRuntimeMobile: Story = {
+  render: () => <PersonaPage path="/PAP/agents/codexcoder/runtime" />,
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: { layout: "fullscreen", waitForViewport: true },
+};
 export const Task: Story = { render: () => <PersonaPage path={`/PAP/issues/${issue.identifier}`} /> };
 export const CompanyDashboard: Story = { name: "Dashboard", render: () => <PersonaPage path="/PAP/dashboard" /> };
 export const MeetYourNextAgent: Story = { render: () => <PersonaPage path="/PAP/agents/all" meet /> };

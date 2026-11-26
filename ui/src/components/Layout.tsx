@@ -8,15 +8,16 @@ import { BoardDialogs } from "./BoardDialogs";
 import { CloudTrialGate } from "./CloudTrialGate";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { ArrowLeft } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
-import { AppsSidebar, useAppsDeveloperTabs } from "./AppsSidebar";
+import { AppsMobileNav, AppsSidebar, useAppsDeveloperTabs } from "./AppsSidebar";
 import { appsRouteHasRail } from "../pages/apps/apps-rail";
-import { AppDetailSidebar } from "./AppConnectionSidebar";
-import { AgentContextualSidebar } from "./AgentContextualSidebar";
+import { AppDetailMobileNav, AppDetailSidebar } from "./AppConnectionSidebar";
+import { AgentContextualMobileNav, AgentContextualSidebar } from "./AgentContextualSidebar";
 import { SkillsContextualSidebar } from "./SkillsContextualSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
@@ -242,6 +243,35 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     <AgentContextualSidebar agentRef={agentId} />
   ) : sharedSecondarySidebar;
   const hasSecondarySidebar = secondarySidebar != null;
+  const mobileContextualNav = !isMobile ? null : isCompanySettingsRoute ? (
+    <div className="border-b border-border px-4 pb-3">
+      <CompanySettingsNav />
+    </div>
+  ) : isAgentChatRoute ? (
+    <AgentConversationsSidebar mobileSwitcher />
+  ) : shellRoute.builtInContextualSurface === "agent" && agentId ? (
+    <AgentContextualMobileNav agentRef={agentId} />
+  ) : appDetailConnectionId ? (
+    <AppDetailMobileNav kind="connection" connectionId={appDetailConnectionId} />
+  ) : appDetailApplicationId ? (
+    <AppDetailMobileNav kind="application" applicationId={appDetailApplicationId} />
+  ) : appsRouteHasRail(companyPathSegments, appsDeveloperTabs.length > 0) ? (
+    <AppsMobileNav />
+  ) : null;
+  const mobileDrawerContextualLabel = isAgentChatRoute
+    ? "Chats"
+    : shellRoute.builtInContextualSurface === "agent"
+      ? "Agent"
+      : isCompanySettingsRoute
+        ? "Settings"
+        : appDetailConnectionId || appDetailApplicationId || isAppsRoute || isToolsRoute
+          ? "Apps"
+          : shellRoute.builtInContextualSurface === "skills"
+            ? "Skills"
+            : routeSidebarSlot?.displayName ?? "Section";
+  const defaultMobileDrawerPane: "workspace" | "contextual" =
+    hasSecondarySidebar && mobileContextualNav == null ? "contextual" : "workspace";
+  const [mobileDrawerPane, setMobileDrawerPane] = useState<"workspace" | "contextual">(defaultMobileDrawerPane);
   const keepsPrimarySidebar = streamlinedUiEnabled && hasSecondarySidebar && (
     isAgentChatRoute
     || shellRoute.builtInContextualSurface === "agent"
@@ -255,6 +285,14 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     : routeSidebarSlot && !shellRoute.builtInContextualSurface
       ? `plugin:${routeSidebarSlot.id}`
       : shellRoute.builtInContextualSurface;
+  useEffect(() => {
+    setMobileDrawerPane(defaultMobileDrawerPane);
+  }, [contextualSurface, defaultMobileDrawerPane]);
+  useEffect(() => {
+    if (!sidebarOpen) {
+      setMobileDrawerPane(defaultMobileDrawerPane);
+    }
+  }, [sidebarOpen, defaultMobileDrawerPane]);
   const previousShellRoute = useRef<{
     pathname: string;
     surface: ContextualSidebarSurface | null;
@@ -521,36 +559,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       <WorktreeBanner />
       <DevRestartBanner devServer={health?.devServer} />
       <div className={cn("app-main-row min-h-0 flex-1", isMobile ? "w-full" : "flex overflow-clip")}>
-        {isMobile && sidebarOpen && (
-          <button
-            type="button"
-            className="fixed inset-0 z-40 bg-black/50"
-            onClick={() => setSidebarOpen(false)}
-            aria-label="Close sidebar"
-          />
-        )}
-
-        {isMobile ? (
-          <div
-            className={cn(
-              "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden pt-(--sz-safe-top) transition-transform duration-100 ease-out",
-              sidebarOpen ? "translate-x-0" : "-translate-x-full"
-            )}
-          >
-            <div className="flex flex-1 min-h-0 overflow-hidden">
-              <div className="w-60 shrink-0 overflow-hidden">
-                {hasSecondarySidebar ? (
-                  <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
-                ) : (
-                  <Sidebar>{sidebarSections}</Sidebar>
-                )}
-              </div>
-            </div>
-            <SidebarAccountMenu
-              deploymentMode={health?.deploymentMode}
-            />
-          </div>
-        ) : (
+        {!isMobile ? (
           <SidebarShell
             open={sidebarOpen}
             resizable
@@ -572,7 +581,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
               />
             </>}
           </SidebarShell>
-        )}
+        ) : null}
 
         {!isMobile && !isAgentChatRoute && ((showsAdjacentSecondarySidebar && !keepsPrimarySidebar) || (designSandbox && replacesPrimarySidebar)) ? (
           <SecondarySidebar className="w-60 shrink-0">
@@ -590,11 +599,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
           >
             <StandaloneBrowserControls mobile={isMobile} />
             <BreadcrumbBar showPropertiesToggle={isAgentChatRoute} toolbarAction={chatListCollapsed ? <AgentConversationsSidebar compact /> : undefined} />
-            {isMobile && isCompanySettingsRoute ? (
-              <div className="border-b border-border px-4 pb-3">
-                <CompanySettingsNav />
-              </div>
-            ) : null}
+            {mobileContextualNav}
           </div>
           <div className={cn(
             "app-content-row",
@@ -678,7 +683,75 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
           </div>
         </div>
       </div>
-      {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
+      {isMobile && <MobileBottomNav visible={mobileNavVisible && !sidebarOpen} />}
+      {isMobile && sidebarOpen && (
+        <button
+          type="button"
+          data-slot="mobile-drawer-backdrop"
+          className="fixed inset-0 z-40 bg-black/50"
+          onClick={() => setSidebarOpen(false)}
+          aria-label="Close sidebar"
+        />
+      )}
+      {isMobile ? (
+        <div
+          data-mobile-drawer="true"
+          inert={!sidebarOpen}
+          className={cn(
+            "fixed inset-y-0 left-0 z-50 flex flex-col overflow-hidden bg-background pt-(--sz-safe-top) transition-transform duration-100 ease-out",
+            sidebarOpen ? "translate-x-0" : "-translate-x-full",
+          )}
+        >
+          {hasSecondarySidebar ? (
+            <div
+              data-slot="mobile-drawer-switcher"
+              className="flex w-60 shrink-0 items-center gap-1 border-b border-r border-border bg-muted p-2"
+            >
+              <button
+                type="button"
+                aria-pressed={mobileDrawerPane === "workspace"}
+                onClick={() => setMobileDrawerPane("workspace")}
+                className={cn(
+                  "flex min-w-0 flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  mobileDrawerPane === "workspace"
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
+                )}
+              >
+                {mobileDrawerPane === "contextual" ? (
+                  <ArrowLeft className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                ) : null}
+                <span className="truncate">Workspace</span>
+              </button>
+              <button
+                type="button"
+                aria-pressed={mobileDrawerPane === "contextual"}
+                onClick={() => setMobileDrawerPane("contextual")}
+                className={cn(
+                  "flex min-w-0 flex-1 items-center justify-center rounded-md px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                  mobileDrawerPane === "contextual"
+                    ? "bg-background text-foreground shadow-xs"
+                    : "text-muted-foreground hover:bg-background/60 hover:text-foreground",
+                )}
+              >
+                <span className="truncate">{mobileDrawerContextualLabel}</span>
+              </button>
+            </div>
+          ) : null}
+          <div className="flex flex-1 min-h-0 overflow-hidden">
+            <div className="w-60 shrink-0 overflow-hidden">
+              {hasSecondarySidebar && mobileDrawerPane === "contextual" ? (
+                <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
+              ) : (
+                <Sidebar>{sidebarSections}</Sidebar>
+              )}
+            </div>
+          </div>
+          <SidebarAccountMenu
+            deploymentMode={health?.deploymentMode}
+          />
+        </div>
+      ) : null}
       <CommandPalette />
       <BoardDialogs />
       <CloudTrialGate />

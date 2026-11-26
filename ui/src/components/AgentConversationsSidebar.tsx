@@ -13,7 +13,7 @@ import { useDialogActions } from "@/context/DialogContext";
 import { AgentChatPin, agentChatPinKey, useAgentChatPins } from "./AgentChatPin";
 
 /** Account- and company-scoped data for the secondary chat navigation. */
-export function AgentConversationsSidebar({ compact = false }: { compact?: boolean } = {}) {
+export function AgentConversationsSidebar({ compact = false, mobileSwitcher = false }: { compact?: boolean; mobileSwitcher?: boolean } = {}) {
   const { companyId, userId, agents, chats, session } = useAgentChatNavigation();
   const agentChatPins = useAgentChatPins();
   const unreadMessageCounts = useMemo(() => new Map((chats.data ?? [])
@@ -66,6 +66,7 @@ export function AgentConversationsSidebar({ compact = false }: { compact?: boole
   }, [companyId, agentChatPins.orderedKeys]);
   return <AgentConversationSidebar key={`${companyId}:${userId}`} agents={[...conversations, ...teammates]} availableAgents={roster}
     compact={compact}
+    mobileSwitcher={mobileSwitcher}
     existingChatAgentIds={existingChatAgentIds}
     activeId={active?.id} previews={previews}
     unreadAgentIds={unreadAgentIds}
@@ -82,7 +83,7 @@ export function AgentConversationsSidebar({ compact = false }: { compact?: boole
     historyLoading={historyAgents.some(result => result.isPending)}
     historyError={historyAgents.find(result => queryViewKind(result) === "error")?.error}
     onRetryHistory={() => { historyAgents.filter(result => result.isError).forEach(result => { void result.refetch(); }); }}
-    onAddChat={compact ? undefined : openChat}
+    onAddChat={compact || mobileSwitcher ? undefined : openChat}
     onSelect={agent => {
       navigate(`/chats/${encodeURIComponent(agent.status === "terminated" ? agent.id : agentRouteRef(agent))}`);
       if (isMobile) setSidebarOpen(false);
