@@ -144,11 +144,22 @@ This mode does not start Hermes. It creates runs with `POST /v1/runs`, streams
 Hermes events with SSE, polls run status as a fallback, and stops timed-out runs
 with `POST /v1/runs/{run_id}/stop`.
 
-For a named profile, set `adapterConfig.expectedProfile` to its canonical name and
-end `apiBaseUrl` with `/p/<profile>`. Paperclip then checks the authenticated
-`/health/detailed` route for that profile and requires the gateway to be ready
-and idle. Use a direct Hermes route or a proxy that preserves the named prefix
-and Hermes authentication responses.
+### Check a named profile
+
+To connect to a profile named `researcher`, set these fields in `adapterConfig`
+alongside your API key.
+
+```json
+{
+  "apiBaseUrl": "https://hermes.example.com/p/researcher",
+  "expectedProfile": "researcher"
+}
+```
+
+Paperclip uses the saved API key to check `/health/detailed` for that profile.
+The check passes when Hermes serves `researcher` and its gateway is ready and
+idle. If you use a reverse proxy, forward the `/p/researcher` path and preserve
+Hermes's authentication responses.
 
 ### Compatibility with the old gateway package
 

@@ -167,8 +167,7 @@ async function reserveConnection(db: Db, snapshot: LifecycleAgent, policy: Polic
       ...adapterConfig, apiBaseUrl: endpoint.toString(), apiKey: reference(gateway.id),
       expectedProfile: profile, paperclipApiUrl: policy.paperclipApiUrl,
     }, { adapterType: "hermes_gateway" });
-    // This write is part of the operation that holds the lease. Normal agent
-    // edits reset verification and would invalidate the worker's own lease.
+    // Save the binding under this lease. A normal edit resets verification.
     await storeBinding(tx, agent, config);
     await audit(tx, agent, "agent.hermes_gateway_bound");
     return true;
@@ -196,8 +195,7 @@ async function prepareProfile(tx: Db, agent: AgentRow, policy: Policy, admin: He
   const { config } = await secrets.resolveAdapterConfigForRuntime(agent.companyId, {
     apiKey: reference(gateway.id),
   }, context, { adapterType: "hermes_gateway" });
-  // The reporting credential has a separate, operator-owned purpose. Resolve
-  // only the exact secret identified by this agent's immutable ownership marker.
+  // Resolve only the reporting key saved for this agent.
   const report = await secrets.resolveAdapterConfigForRuntime(agent.companyId, {
     env: { PAPERCLIP_BRIDGE_API_KEY: reference(reporting.id) },
   }, context, { userSecretMediation: "owner_scoped" });
@@ -262,8 +260,8 @@ export async function reconcileManagedHermesGateway(db: Db, snapshot: LifecycleA
   const admin = new HermesAdmin(origin(policy.adminUrl), token);
   return db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
-    // Serialize local writes across phases. Hermes orders supervisor commands
-    // separately because an HTTP timeout does not cancel the remote work.
+    // This lock covers Paperclip writes. Hermes orders gateway commands because
+    // an HTTP timeout does not cancel the remote work.
     const agent = await lockedAgent(tx, snapshot);
     if (!agent) return "pending" as const;
     return snapshot.lifecycleState === "preparing"

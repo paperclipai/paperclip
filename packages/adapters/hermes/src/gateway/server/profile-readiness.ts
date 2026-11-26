@@ -44,9 +44,7 @@ export async function testNamedProfile(baseUrl: URL, apiKey: string): Promise<Ad
         : failure("profile_probe_failed", `Hermes Gateway readiness returned HTTP ${response.status}.`);
     }
 
-    // Hermes validates the /p/<name> prefix against the runtime it can serve,
-    // then authenticates that route. A model label or a public health response
-    // cannot establish either property.
+    // Hermes checks the profile in /p/<name> before it checks the API key.
     const health = parseObject(await response.json());
     const readiness = parseObject(health.readiness);
     const queues = parseObject(parseObject(readiness.checks).background_queues);
