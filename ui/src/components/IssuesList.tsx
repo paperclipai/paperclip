@@ -1,6 +1,7 @@
 import { PERSONAL_ARCHIVE_QUERY_KEY } from "@/lib/inboxArchiveCache";
 import { QueryErrorState } from "./QueryView";
 import { ISSUE_SORT_FIELDS, sortIssues, type IssueSort, type IssueSortField } from "../lib/issue-sort";
+import { claimViewportFill } from "../lib/issue-list-viewport-fill";
 import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { topRenderedNavEntryRefs, usePreloadTaskChats } from "../hooks/usePreloadTaskChats";
@@ -866,9 +867,7 @@ function StreamlinedIssuesList({
   const [hierarchyRowBudget, setHierarchyRowBudget] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(initialPreferences.columns);
   const renderedIssueIdsRef = useRef("");
-  // The loaded issue set that the last viewport fill asked to extend. A fill
-  // that succeeds changes the set and allows the next fill. A failed fill
-  // keeps the set, so it does not retry in a loop.
+  // See claimViewportFill.
   const initialServerFillRequestedRef = useRef<Issue[] | null>(null);
   const deferredIssueSearch = useDeferredValue(issueSearch);
   const normalizedIssueSearch = deferredIssueSearch.trim().toLowerCase();
@@ -1753,8 +1752,7 @@ function StreamlinedIssuesList({
         const threshold = scrollHeight - ISSUE_SCROLL_LOAD_THRESHOLD_PX;
         if (scrollBottom >= threshold) {
           if (trigger === "initial" && !hasMoreRenderedRows && hasMoreIssues && !hasScrollableOverflow) {
-            if (initialServerFillRequestedRef.current === issues) return;
-            initialServerFillRequestedRef.current = issues;
+            if (!claimViewportFill(initialServerFillRequestedRef, issues)) return;
           }
           loadMoreIssueRows();
         }
