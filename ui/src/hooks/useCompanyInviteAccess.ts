@@ -35,7 +35,7 @@ export function canInviteCompanyMembers(
  * Whether the signed-in board may invite people to the selected company on a
  * self-hosted instance. Pass `enabled: false` on Cloud, where invitations live
  * in the stack's People settings and use a different rule
- * (see `useCloudInviteUrl`).
+ * (see `useCloudSidebarLinks`).
  */
 export function useCanInviteCompanyMembers(enabled = true): boolean {
   const company = useOptionalCompany();

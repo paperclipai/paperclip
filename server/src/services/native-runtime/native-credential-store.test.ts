@@ -8,7 +8,7 @@ import { createNativeCredentialStore } from "./native-credential-store.js";
 
 const execute = promisify(execFile), roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
-async function fixture(target: "local" | "ssh" | "sandbox", provider: "codex" | "grok" = "codex") {
+async function fixture(target: "local" | "ssh" | "sandbox", provider: "codex" | "grok" | "antigravity" = "codex") {
   const root = await realpath(await mkdtemp(join(tmpdir(), "native-credential-store-"))); roots.push(root);
   const localHome = join(root, "local"), remoteHome = join(root, "remote");
   await mkdir(localHome); await mkdir(remoteHome);
@@ -35,10 +35,18 @@ it.each(["local", "ssh", "sandbox"] as const)("exports %s snapshots only on dema
   await expect(store.read()).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-it.each((["codex", "grok"] as const).flatMap(provider => (["local", "ssh", "sandbox"] as const).map(target => ({ provider, target }))))("uses the $provider close handoff for $target when auth.json is absent", async ({ target, provider }) => {
+it.each((["codex", "grok", "antigravity"] as const).flatMap(provider => (["local", "ssh", "sandbox"] as const).map(target => ({ provider, target }))))("uses the $provider close handoff for $target when primary token file is absent", async ({ target, provider }) => {
   const { home, store } = await fixture(target, provider);
   await writeFile(join(home, "auth-refresh.json"), '{"synthetic":"refresh"}', { mode: 0o600 });
   expect(await store.read()).toBe('{"synthetic":"refresh"}');
+  await store.remove();
+  await expect(store.read()).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it.each(["local", "ssh", "sandbox"] as const)("reads and removes antigravity acp_token.json on %s targets", async target => {
+  const { home, store } = await fixture(target, "antigravity");
+  await writeFile(join(home, "acp_token.json"), '{"refresh_token":"synthetic"}', { mode: 0o600 });
+  expect(await store.read()).toBe('{"refresh_token":"synthetic"}');
   await store.remove();
   await expect(store.read()).rejects.toMatchObject({ code: "ENOENT" });
 });

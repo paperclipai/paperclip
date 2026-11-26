@@ -4,6 +4,7 @@ import { NATIVE_FINALIZATION_SCHEMA, type NativeFinalizationResult } from "@pape
 import type { AdapterExecutionResult } from "../../adapters/index.js";
 import { readAcceptedRunUsageCheckpoint } from "../usage-receipts.js";
 import type { NativePostResultFailureDiagnostic } from "./native-post-result-failure.js";
+import { nativeEffectiveTerminal } from "./native-accepted-outcome.js";
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -42,7 +43,7 @@ export async function acceptedNativeAdapterResult(db: Db, input: {
     )).limit(1);
   if (!row) return null;
   const result = record(row.resultJson.result);
-  const terminal = record(row.resultJson.terminal);
+  const terminal = nativeEffectiveTerminal(row.resultJson, record(row.resultJson.terminal));
   if (terminal.schema !== "paperclip.prp.terminal.v1" || !RUN_TERMINAL_STATES.has(String(terminal.runTerminalState))) return null;
   const nativeTerminal = terminal as unknown as NativeFinalizationResult["terminal"];
   const succeeded = nativeTerminal.runTerminalState === "succeeded";

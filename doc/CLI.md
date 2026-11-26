@@ -577,12 +577,17 @@ npx paperclipai agent inbox-mine --user-id <board-user-id>
 npx paperclipai agent wake <agent-id-or-shortname> [--company-id <company-id>] [--reason "..."] [--payload '{"issueId":"..."}']
 npx paperclipai agent pause <agent-id>
 npx paperclipai agent resume <agent-id>
+npx paperclipai agent clear-error <agent-id>
 npx paperclipai agent approve <agent-id>
 npx paperclipai agent terminate <agent-id>
 npx paperclipai agent heartbeat:invoke <agent-id>
 npx paperclipai agent claude-login <agent-id>
 npx paperclipai agent local-cli <agent-id-or-shortname> --company-id <company-id>
 ```
+
+`agent clear-error` uses the server's existing clear-error action. The server
+checks permissions and the agent state. Use it to clear an error after addressing
+its cause; use `agent resume` to resume a paused agent.
 
 Agent configuration and runtime endpoints:
 
@@ -895,7 +900,7 @@ bootstrap credentials in Paperclip secrets.
 
 Per-company provider vaults (multiple vault instances per provider, default
 vault selection, coming-soon GCP/Vault) can be configured from the board UI under
-`Organization Settings → Secrets → Provider vaults` or through the provider-config CLI
+`Organization Settings → Secrets → Vaults` or through the provider-config CLI
 commands above. See the
 [secrets deploy guide](../docs/deploy/secrets.md#provider-vaults) and
 [API reference](../docs/api/secrets.md#provider-vaults) for the contract.

@@ -16,6 +16,10 @@ describeDatabase("pending profile tools through profile and attention services",
     const now = () => new Date("2026-02-01T00:00:00Z"), service = createToolProfileService(db, now), attention = createToolAppAttention(db, now);
     const assertCounts = async (expected: number) => {
       const profiles = await service.listProfiles(f.company.id);
+      expect(await service.listProfileSummaries(f.company.id)).toEqual(
+        profiles.map(({ id, name, status, updatedAt, summary, newToolsPendingCount }) =>
+          ({ id, name, status, updatedAt, summary, newToolsPendingCount })),
+      );
       expect(profiles.find(p => p.id === f.profiles[0].id)?.newToolsPendingCount).toBe(expected);
       expect(profiles.find(p => p.id === f.profiles[1].id)?.newToolsPendingCount).toBe(0);
       expect((await service.listProfileNewTools(f.profiles[0].id, f.company.id)).pendingCount).toBe(expected);
@@ -29,8 +33,42 @@ describeDatabase("pending profile tools through profile and attention services",
     await assertCounts(2);
     await db.update(toolProfiles).set({ newToolsReviewedAt: now() }).where(eq(toolProfiles.id, f.profiles[0].id));
     await assertCounts(0);
+    await db.update(toolProfiles).set({ status: "archived" }).where(eq(toolProfiles.id, f.profiles[0].id));
+    await assertCounts(0);
     const foreign = await createProfileProjectionFixture(db, { profiles: 2, tools: 5, rules: 2 });
     expect((await service.listProfiles(foreign.company.id)).map(p => p.companyId)).toEqual([foreign.company.id, foreign.company.id]);
+    expect((await service.listProfileSummaries(foreign.company.id)).map(p => p.id).sort()).toEqual(foreign.profiles.map(p => p.id).sort());
     expect((await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.id, exclude.id)))[0].effect).toBe("exclude");
+  });
+  it("keeps independent effects, null keys, and duplicate and unknown selectors across shared groups", async () => {
+    const f = await createProfileProjectionFixture(db, { profiles: 6, tools: 8, rules: 0 });
+    const service = createToolProfileService(db, () => new Date());
+    const [application, connection, catalogEntry, toolName, riskLevel] = f.profiles;
+    const [first, second] = f.catalog;
+    await db.update(toolCatalogEntries).set({ applicationId: null }).where(eq(toolCatalogEntries.id, first.id));
+    type Entry = typeof toolProfileEntries.$inferInsert;
+    const add = (profileId: string, selector: Pick<Entry, "selectorType"> & Partial<Entry>): Entry =>
+      ({ companyId: f.company.id, profileId, effect: "include", ...selector });
+    const includeName = { selectorType: "tool_name", toolName: second.toolName } as const;
+    await db.insert(toolProfileEntries).values([
+      add(application.id, { selectorType: "application", applicationId: f.application.id }),
+      add(application.id, { selectorType: "application", applicationId: null }),
+      add(connection.id, { selectorType: "connection", connectionId: f.connection.id }),
+      add(connection.id, { selectorType: "catalog_entry", effect: "exclude", catalogEntryId: first.id }),
+      add(catalogEntry.id, { selectorType: "catalog_entry", catalogEntryId: first.id, applicationId: f.application.id }),
+      add(catalogEntry.id, { selectorType: "catalog_entry", catalogEntryId: first.id }),
+      add(catalogEntry.id, { selectorType: "legacy_unknown" as Entry["selectorType"], catalogEntryId: second.id }),
+      add(toolName.id, includeName),
+      add(toolName.id, includeName),
+      add(riskLevel.id, includeName),
+      add(riskLevel.id, { ...includeName, effect: "exclude" }),
+      add(riskLevel.id, { selectorType: "risk_level", riskLevel: "read" }),
+    ]);
+    const detail = await service.listProfiles(f.company.id);
+    const summaries = await service.listProfileSummaries(f.company.id);
+    expect(summaries).toEqual(detail.map(({ id, name, status, updatedAt, summary, newToolsPendingCount }) =>
+      ({ id, name, status, updatedAt, summary, newToolsPendingCount })));
+    const counts = new Map(summaries.map(({ id, summary }) => [id, summary.allowedToolCount]));
+    expect(f.profiles.map(({ id }) => counts.get(id))).toEqual([8, 7, 1, 1, 7, 0]);
   });
 });

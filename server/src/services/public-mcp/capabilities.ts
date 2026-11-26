@@ -76,6 +76,14 @@ export const publicMcpCapabilities: Capability[] = [
     run: async (p, a, api) => ({ agents: rows(await api(p, "GET", `/companies/${a.companyId}/agents`)).map((v) => pick(v, ["id", "name", "role", "title", "status", "capabilities"])) }),
   },
   {
+    name: "paperclip_list_people", description: "List the people (active human members) of the authorized company. Use a returned userId as assigneeUserId to give a task to a person instead of an agent.",
+    schema: z.object(company).strict(),
+    run: async (p, a, api) => ({ people: rows(object(await api(p, "GET", `/companies/${a.companyId}/user-directory`)).users).map((v) => {
+      const member = object(v);
+      return { userId: member.principalId, name: object(member.user).name ?? null, role: member.membershipRole ?? null };
+    }) }),
+  },
+  {
     name: "paperclip_list_projects", description: "List projects in the authorized company.",
     schema: z.object(company).strict(),
     run: async (p, a, api) => ({ projects: rows(await api(p, "GET", `/companies/${a.companyId}/projects`)).map((v) => pick(v, ["id", "name", "description", "status"])) }),
@@ -106,16 +114,23 @@ export const publicMcpCapabilities: Capability[] = [
   },
   {
     name: "paperclip_create_task", write: true,
-    description: "Delegate work by creating one durable task assigned to a Paperclip agent. This may schedule autonomous execution and consume the company's configured model budget. Normal permissions, approval gates and agent availability apply. Returns immediately; retrieve progress later. Never retry with a new requestId after an uncertain result.",
-    schema: z.object({ ...company, requestId, title: z.string().trim().min(1).max(200), description: z.string().max(50000), assigneeAgentId: z.uuid(), projectId: z.uuid().optional() }).strict(),
+    description: "Create one durable task. Assign it to a Paperclip agent (assigneeAgentId from paperclip_list_agents), to a person (assigneeUserId from paperclip_list_people), or to no one by omitting both. An agent assignee may start work and consume the company's configured model budget; a person or no assignee does not start an agent run. Normal permissions, approval gates and agent availability apply. Returns immediately; retrieve progress later. Never retry with a new requestId after an uncertain result.",
+    schema: z.object({ ...company, requestId, title: z.string().trim().min(1).max(200), description: z.string().max(50000),
+      assigneeAgentId: z.uuid().optional().describe("Agent to assign. May start an agent run that consumes budget. Omit when assigning a person or no one."),
+      assigneeUserId: z.string().trim().min(1).max(200).optional().describe("Person to assign, as the userId from paperclip_list_people. Does not start an agent run. Omit when assigning an agent or no one."),
+      projectId: z.uuid().optional() }).strict()
+      .refine((a) => !(a.assigneeAgentId && a.assigneeUserId), { message: "Assign either assigneeAgentId or assigneeUserId, not both. Omit both to leave the task unassigned.", path: ["assigneeUserId"] }),
     run: async (p, a, api, origin) => {
       const result = await api(p, "POST", `/companies/${a.companyId}/issues`, {
-        title: a.title, description: a.description, assigneeAgentId: a.assigneeAgentId,
+        title: a.title, description: a.description,
+        ...(a.assigneeAgentId ? { assigneeAgentId: a.assigneeAgentId } : {}),
+        ...(a.assigneeUserId ? { assigneeUserId: a.assigneeUserId } : {}),
         ...(a.projectId ? { projectId: a.projectId } : {}), status: "todo",
         idempotencyKey: `mcp:${hashMcpSecret(p.grant.companyId + ":" + p.grant.userId)}:${a.requestId}`,
       });
       return { task: pick(result, taskFields), url: origin + "/" + pathId(p.company.issuePrefix) + "/issues/" + pathId(object(result).identifier ?? object(result).id),
-        scheduling: "Submitted to normal Paperclip scheduling. Creation does not guarantee execution has started." };
+        scheduling: a.assigneeAgentId ? "Submitted to normal Paperclip scheduling. Creation does not guarantee execution has started."
+          : a.assigneeUserId ? "Assigned to a person. No agent run was started." : "Left unassigned. No agent run was started." };
     },
   },
   {

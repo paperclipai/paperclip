@@ -13,7 +13,7 @@ import { isProductDeliveredSecret, trackedPrivateSecrets } from "./private-diagn
 import { findChatCatalogCase } from "./chat-catalog-registry.js";
 import { runChatBoundaryFlow } from "./chat-boundary-flow.js";
 import { chatCatalogScenarios } from "./chat-catalog-inventory.js";
-import { kimiCandidateAdmissionForExecution } from "./server-restart-request.js";
+import { candidateAdmissionForExecution } from "./server-restart-request.js";
 import { runPlanRevisionAcceptance, isPendingPlanConfirmation, normalizePlanMarkdown, expectPlanStageVisible } from "./plan-revision-flow.js";
 import { createWorkerTiming } from "./worker-timing.js";
 import { captureTaskChat, type TaskChatEvidence } from "./task-chat.js";
@@ -58,6 +58,7 @@ import { ownedActiveCleanupRunIds, mayAllocateRemoteResources, runCleanupWithObs
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
 import { runInstructionPersistenceFlow } from "./instruction-persistence.js";
 import { gradeApiResponsePaging, readResponseProof, responseEvidenceDescription } from "./api-response-reading.js";
+import { CODEX_PLANNING_READ_ONLY_SUITE, gradePlanningWriteRefusal } from "./codex-planning-read-only.js";
 import { artifactTransferDescription, gradeApiArtifactTransfer, readArtifactTransferSource, usesApiResponseProof } from "./api-artifact-transfer.js";
 import { runBlockerFlow } from "./blocker-flow.js";
 import { largeJournalEvidence } from "./journal-evidence.js";
@@ -642,9 +643,9 @@ for (const execution of executions) {
     }) : undefined;
     const saveTrace = async () => { if (trace) await writeSanitizedJson(snapshotsDir, "braintrust-trace.json", trace.snapshot(), secrets); };
     const onCompanyCreated = async (id: string) => {
-      const admission = kimiCandidateAdmissionForExecution(execution, id);
+      const admission = candidateAdmissionForExecution(execution, id);
       if (admission) {
-        await restartIsolatedPaperclipServer({ api, requestId: `kimi-startup-${nonce}`,
+        await restartIsolatedPaperclipServer({ api, requestId: `${admission.agent}-startup-${nonce}`,
           kimiCandidateAdmission: admission, deadlineAt: startedAtMs + deadlineMs });
         if (execution.environment.id === "daytona") {
           await waitForFixtureDaytonaProvider(api, { companyId: id, deadlineAt: startedAtMs + deadlineMs });
@@ -1817,6 +1818,14 @@ for (const execution of executions) {
         if (!normalizePlanMarkdown(plan.body).includes(planMarkers.draft)) {
           throw new Error(`Plan document did not contain ${planMarkers.draft}`);
         }
+        if (execution.suite.id === CODEX_PLANNING_READ_ONLY_SUITE) {
+          const planningEvents = (await Promise.all(pendingState.taskRuns.map(candidate =>
+            collectRunEvents<RunEventRecord>((afterSeq, limit) =>
+              api.get(`/api/heartbeat-runs/${candidate.id}/events?afterSeq=${afterSeq}&limit=${limit}`))))).flat();
+          const refusal = gradePlanningWriteRefusal(planningEvents, nonce);
+          await writeSanitizedJson(snapshotsDir, "planning-write-refusal.json", refusal, secrets);
+          if (!refusal.passed) throw new Error(`Planning write refusal was not proven: ${refusal.failure}`);
+        }
         if (numberedPlanStepCount(plan.body) !== 2) {
           throw new Error("Plan must contain exactly two numbered steps");
         }
@@ -2040,7 +2049,7 @@ for (const execution of executions) {
           await expect(turnReply).toBeVisible({ timeout: reviewUiTimeout() });
           const pendingReview = waitingState.interactions.find(isPendingWarmConfirmation)!;
           const reviewCard = page.getByTestId("task-chat-interaction")
-            .and(page.locator(`[id=${JSON.stringify(`interaction-${pendingReview.id}`)}]`));
+            .and(page.locator(`[data-interaction-id=${JSON.stringify(pendingReview.id)}]`));
           await expect(reviewCard).toBeVisible({ timeout: reviewUiTimeout() });
           await expect(reviewCard.getByRole("button", { name: "Continue work", exact: true }))
             .toBeEnabled({ timeout: reviewUiTimeout() });
@@ -2395,6 +2404,10 @@ for (const execution of executions) {
         }
       }
 
+      if (execution.suite.id === CODEX_PLANNING_READ_ONLY_SUITE) {
+        const refusal = gradePlanningWriteRefusal(runEventsByRun.flatMap(captured => captured.events), nonce);
+        if (refusal.attempts.some(attempt => attempt.succeeded)) invariantFailures.push(`Planning write refusal was not proven: ${refusal.failure}`);
+      }
       if (execution.suite.id === "api-response-reading") {
         const paging = gradeApiResponsePaging(runEventsByRun.flatMap(captured => captured.events), apiResponseSourceId ?? "");
         await writeSanitizedJson(snapshotsDir, "api-response-pagination.json", paging, secrets);

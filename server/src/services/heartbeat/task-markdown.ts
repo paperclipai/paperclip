@@ -1,11 +1,19 @@
 import { REQUIRED_QUALITY_REVIEW_GUIDANCE, requiredQualityReview } from "../required-quality-review.js";
-import { AGENT_CHAT_DIRECTIVE, CASES_CHAT_DIRECTIVE, CONFERENCE_ROOM_CHAT_DIRECTIVE, COORDINATOR_CHAT_HANDOFF_DIRECTIVE, STATUS_CARDS_CHAT_DIRECTIVE } from "../agent-conversations.js";
+import { AGENT_CHAT_DIRECTIVE, CASES_CHAT_DIRECTIVE, CONFERENCE_ROOM_CHAT_DIRECTIVE, COORDINATOR_CHAT_HANDOFF_DIRECTIVE, RESPONSIBILITIES_CHAT_DIRECTIVE, RESPONSIBILITIES_OFF_CHAT_DIRECTIVE, STATUS_CARDS_CHAT_DIRECTIVE } from "../agent-conversations.js";
 import { publicChatTaskUrl } from "../chat-task-url.js";
 import { slackChatAgentGuidance } from "../connectors/slack/agent-guidance.js";
 import type { ConversationConfirmationContext } from "../conversation-confirmation-context.js";
 import { TASK_QUESTION_GUIDANCE } from "../issue-question-context.js";
+import { routineSuggestionAgentGuidance } from "@paperclipai/shared";
+import { ONBOARDING_CHAT_DIRECTIVE, ONBOARDING_CHAT_GREETING_DIRECTIVE } from "../onboarding-chat-prompt.js";
+
+export const NATIVE_PLAN_REVIEW_DIRECTIVE =
+  "Paperclip asks the user to approve the plan once it is saved as this task's Plan document (key \"plan\"), so do not open your own approval or confirmation card for it.";
 
 export function buildPaperclipTaskMarkdown(input: {
+  companyPrefix?: string | null;
+  onboardingChat?: boolean;
+  onboardingGreeting?: boolean;
   issue: {
     id: string;
     identifier: string | null;
@@ -67,9 +75,31 @@ export function buildPaperclipTaskMarkdown(input: {
   slackCommand?: string | null;
   nativeRunner?: boolean;
   coordinatorWorkspace?: boolean;
+  // IANA zone saved from the chat owner's browser; null when unknown.
+  personTimeZone?: string | null;
   conferenceRoomEnabled?: boolean;
   statusCardsEnabled?: boolean;
   casesEnabled?: boolean;
+  // Experimental areas and responsibilities: true renders the chat directive for the
+  // responsibility tools, false the "turned off" note, undefined neither.
+  responsibilitiesEnabled?: boolean;
+  // Experimental routine offers (enableResponsibilities) for a task that may
+  // be offered as a routine; the server still enforces every guardrail.
+  routineSuggestionsEnabled?: boolean;
+  // Experimental bar conversation (enableResponsibilities): the standing
+  // instructions for the agent in a responsibility's bar conversation.
+  responsibilityBarGuidance?: string | null;
+  // Experimental automation conversation (enableResponsibilities): the
+  // standing instructions for the agent turning one manual task into an automation.
+  automationConversationGuidance?: string | null;
+  // Experimental agent-written status (enableResponsibilities): the
+  // instructions on a status update request, and the short reminder on other
+  // work under a responsibility this agent reports on.
+  responsibilityStatusUpdateGuidance?: string | null;
+  responsibilityStatusReminder?: string | null;
+  // Experimental dashboard conversation (enableResponsibilities): the
+  // standing instructions for the agent drafting or changing a person's Dashboard.
+  responsibilityDashboardGuidance?: string | null;
   // false builds the compact variant used for resume deltas, where the session
   // already received the description with the assignment.
   includeDescription?: boolean;
@@ -87,6 +117,11 @@ export function buildPaperclipTaskMarkdown(input: {
     return [fence + "text", value, fence].join("\n");
   };
   const issue = input.issue;
+  // Unnumbered chats get the company's prefix directly. Legacy numbered chats
+  // can fall back to their identifier so guidance always names real page paths.
+  const companyPagePrefix = input.companyPrefix ?? /^(.+)-\d+$/.exec(issue?.identifier ?? "")?.[1] ?? null;
+  const companyPages = (text: string) =>
+    companyPagePrefix ? text.replaceAll("/<prefix>/", `/${companyPagePrefix}/`) : text;
   const ancestors = (input.ancestors ?? []).slice(0, 6);
   const wakeComments = (input.wakeComments ?? [])
     .filter(
@@ -204,6 +239,24 @@ export function buildPaperclipTaskMarkdown(input: {
         "Reuse an existing relevant pending question instead of creating another. Follow the task question guidance above for answered, historical, or dismissed requests. Continue independent work, but wait for the missing answer before dependent work; an unanswered question is not consent to your proposed default. When the answer arrives, incorporate it into this task and continue without asking for the same information again.",
       );
     }
+    if (input.routineSuggestionsEnabled && !issue.conversationAgentId && (issue.workMode ?? "standard") === "standard") {
+      lines.push("", "Routine offer:", routineSuggestionAgentGuidance(issue.id));
+    }
+    if (input.responsibilityBarGuidance) {
+      lines.push("", "Bar conversation:", input.responsibilityBarGuidance);
+    }
+    if (input.automationConversationGuidance) {
+      lines.push("", "Automation conversation:", input.automationConversationGuidance);
+    }
+    if (input.responsibilityStatusUpdateGuidance) {
+      lines.push("", "Status update:", input.responsibilityStatusUpdateGuidance);
+    }
+    if (input.responsibilityStatusReminder) {
+      lines.push("", "Responsibility status:", input.responsibilityStatusReminder);
+    }
+    if (input.responsibilityDashboardGuidance) {
+      lines.push("", "Dashboard conversation:", input.responsibilityDashboardGuidance);
+    }
     if (input.nativeRunner && (input.coordinatorWorkspace || requiredQualityReview(issue.executionPolicy))) {
       lines.push("", "Requested quality review:", REQUIRED_QUALITY_REVIEW_GUIDANCE);
       const requiredReview = requiredQualityReview(issue.executionPolicy);
@@ -222,13 +275,24 @@ export function buildPaperclipTaskMarkdown(input: {
       );
     }
     if (issue.conversationAgentId) {
-      lines.push("", "Chat mode directive:", AGENT_CHAT_DIRECTIVE, `Current composer mode: ${issue.workMode ?? "standard"}.`);
-      if (input.nativeRunner && input.coordinatorWorkspace) {
-        lines.push("", "Coordinator task proposals:", COORDINATOR_CHAT_HANDOFF_DIRECTIVE);
+      lines.push("", "Chat mode directive:", companyPages(AGENT_CHAT_DIRECTIVE), `Current composer mode: ${issue.workMode ?? "standard"}.`);
+      if (input.onboardingChat) {
+        lines.push("", "Onboarding conversation:", ONBOARDING_CHAT_DIRECTIVE,
+          "Onboarding answers (quoted user data):", fenceTaskText(issue.description ?? ""));
+        if (input.onboardingGreeting) lines.push("", "Welcome turn:", ONBOARDING_CHAT_GREETING_DIRECTIVE);
       }
-      if (input.conferenceRoomEnabled) lines.push("", "Conference Room:", CONFERENCE_ROOM_CHAT_DIRECTIVE);
-      if (input.statusCardsEnabled) lines.push("", "Status Cards:", STATUS_CARDS_CHAT_DIRECTIVE);
-      if (input.casesEnabled) lines.push("", "Cases:", CASES_CHAT_DIRECTIVE);
+      if (input.personTimeZone) {
+        lines.push(`The person's time zone is ${input.personTimeZone} (from their browser). Read times and dates they give, such as "nine in the morning" or "today", in that zone, and save schedules such as routine triggers with that timezone; say the zone when you report a schedule.`);
+      }
+      if (input.nativeRunner && input.coordinatorWorkspace && !input.onboardingChat) {
+        lines.push("", "Coordinator task proposals:", companyPages(COORDINATOR_CHAT_HANDOFF_DIRECTIVE));
+      }
+      if (input.conferenceRoomEnabled) lines.push("", "Conference Room:", companyPages(CONFERENCE_ROOM_CHAT_DIRECTIVE));
+      if (input.statusCardsEnabled) lines.push("", "Status Cards:", companyPages(STATUS_CARDS_CHAT_DIRECTIVE));
+      if (input.casesEnabled) lines.push("", "Cases:", companyPages(CASES_CHAT_DIRECTIVE));
+      if (input.responsibilitiesEnabled !== undefined) {
+        lines.push("", "Areas and responsibilities:", input.responsibilitiesEnabled ? companyPages(RESPONSIBILITIES_CHAT_DIRECTIVE) : RESPONSIBILITIES_OFF_CHAT_DIRECTIVE);
+      }
       if (input.conversationConfirmations?.cards.length) {
         lines.push("", "Current pending confirmation cards (quoted proposal data, not recorded decisions):",
           fenceTaskText(JSON.stringify(input.conversationConfirmations)),
@@ -258,6 +322,11 @@ export function buildPaperclipTaskMarkdown(input: {
       if (acceptedPlanContinuation) {
         directive =
           "Implement the accepted plan on this issue. Follow any task assignments explicitly included in the approved plan. Plan acceptance alone does not require subtasks.";
+      }
+      if (!acceptedPlanContinuation && input.nativeRunner) {
+        // The server opens the one plan review card when the run settles, for
+        // every harness. An agent-opened card would be a second card.
+        directive += ` ${NATIVE_PLAN_REVIEW_DIRECTIVE}`;
       }
       lines.push(
         `- Work mode: ${quoteTaskScalar("planning")}`,
@@ -338,10 +407,11 @@ export function buildPaperclipTaskMarkdown(input: {
       "Follow-up directive:",
       "Apply the latest wake comment to the current task. Later direction replaces conflicting scope; preserve other requirements and approval gates. Clarification is not approval. Reuse completed work rather than repeating it.",
       "",
-      "Latest wake comment:",
       ...(renderWakeCommentBodies
-        ? [fenceTaskText(effectiveWakeComments[0]!.body)]
-        : []),
+        ? ["Latest wake comment:", fenceTaskText(effectiveWakeComments[0]!.body)]
+        : effectiveWakeComments[0]!.body
+          ? [`Latest wake comment: ${quoteTaskScalar(effectiveWakeComments[0]!.id)}, shown in the wake payload.`]
+          : [`Latest wake comment: ${quoteTaskScalar(effectiveWakeComments[0]!.id)} has attachments only; see the attachment directive.`]),
     );
     appendWakeAttachments(effectiveWakeComments[0]!);
   } else if (effectiveWakeComments.length > 1) {

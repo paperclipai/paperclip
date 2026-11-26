@@ -3,6 +3,7 @@ import {
   cloudConnectorEnrollmentReturnPath,
   cloudConnectorEnrollmentOutcomeHtml,
   connectionIntentOAuthOutcomeHtml,
+  githubInstallationRecovery,
 } from "./tool-access.js";
 
 describe("Cloud connector enrollment return path", () => {
@@ -24,6 +25,23 @@ describe("Cloud connector enrollment return path", () => {
       "/apps/connect?source=google-drive&stage=setup",
     )).toBe(
       "/APP/apps/connect?source=google-drive&stage=setup&cloud_connector=enrolled",
+    );
+  });
+
+  it.each(["APP", "QA / Apps"])("returns Tailscale enrollment to the verified company once: %s", (prefix) => {
+    expect(cloudConnectorEnrollmentReturnPath(prefix, "/apps/tailscale")).toBe(
+      `/${encodeURIComponent(prefix)}/apps/tailscale?cloud_connector=enrolled`,
+    );
+  });
+
+  it.each([
+    "https://evil.example/apps/tailscale",
+    "//evil.example/apps/tailscale",
+    "/OTHER/apps/tailscale",
+    "/apps/tailscale/unknown",
+  ])("rejects an untrusted Tailscale enrollment destination: %s", (returnTo) => {
+    expect(cloudConnectorEnrollmentReturnPath("APP", returnTo)).toBe(
+      "/APP/apps/connections?cloud_connector=enrolled",
     );
   });
 
@@ -65,6 +83,62 @@ describe("connection intent OAuth callback document", () => {
       );
     },
   );
+
+  it("tells the opener why a failed sign-in failed, using only safe codes", () => {
+    const failed = connectionIntentOAuthOutcomeHtml({
+      interactionId: "interaction-123",
+      issueId: null,
+      outcome: "failed",
+      code: "oauth_state_expired",
+    });
+    expect(failed).toContain('"code":"oauth_state_expired"');
+
+    const unsafe = connectionIntentOAuthOutcomeHtml({
+      interactionId: "interaction-123",
+      issueId: null,
+      outcome: "failed",
+      code: "</script><b>",
+    });
+    expect(unsafe).not.toContain('"code"');
+
+    const connected = connectionIntentOAuthOutcomeHtml({
+      interactionId: "interaction-123",
+      issueId: null,
+      outcome: "connected",
+      code: "oauth_state_expired",
+    });
+    expect(connected).not.toContain('"code"');
+  });
+
+  it("sends GitHub install links only for a missing GitHub installation", () => {
+    const recovery = githubInstallationRecovery("github_installation_required", {
+      installationUrl: "https://github.com/apps/paperclip-for-github/installations/new",
+      managementUrl: "https://evil.test/settings",
+    });
+    expect(recovery).toEqual({
+      installationUrl: "https://github.com/apps/paperclip-for-github/installations/new",
+      managementUrl: null,
+    });
+    expect(githubInstallationRecovery("oauth_state_expired", { installationUrl: "https://github.com/x" })).toBeNull();
+
+    const html = connectionIntentOAuthOutcomeHtml({
+      interactionId: "interaction-123",
+      issueId: null,
+      outcome: "failed",
+      code: "github_installation_required",
+      recovery,
+    });
+    expect(html).toContain('"recovery":{"installationUrl":"https://github.com/apps/paperclip-for-github/installations/new","managementUrl":null}');
+
+    const other = connectionIntentOAuthOutcomeHtml({
+      interactionId: "interaction-123",
+      issueId: null,
+      outcome: "failed",
+      code: "oauth_state_expired",
+      recovery,
+    });
+    expect(other).not.toContain('"recovery"');
+  });
 
   it("can return a localhost callback outcome to the numeric-loopback opener", () => {
     const html = connectionIntentOAuthOutcomeHtml({

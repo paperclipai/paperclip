@@ -16,6 +16,7 @@ import {
   projects,
 } from "@paperclipai/db";
 import {
+  ARTIFACT_REVIEW_DOCUMENT_KEY_PREFIX,
   attachmentArtifactWorkProductMetadataSchema,
   COMPANY_ARTIFACTS_MAX_LIMIT,
   companyArtifactsQuerySchema,
@@ -322,7 +323,13 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
       companyId: string,
       rawQuery: Partial<CompanyArtifactsQuery> = {},
       /** `readCondition` limits artifacts and group tasks to tasks the caller can read. */
-      options: { issueConditions?: SQL[]; readCondition?: SQL; userId?: string } = {},
+      options: {
+        issueConditions?: SQL[];
+        readCondition?: SQL;
+        userId?: string;
+        /** Leave out the `artifact-review-*` documents materialized to review a work product (the work product is listed). */
+        excludeArtifactReviewDocuments?: boolean;
+      } = {},
     ): Promise<CompanyArtifactsResponse> => {
       const query = companyArtifactsQuerySchema.parse(rawQuery);
       const cursor = decodeCursor(query.cursor);
@@ -369,6 +376,9 @@ export function companyArtifactsService(db: Db, storage?: StorageService) {
               or(isNotNull(documents.createdByAgentId), isNotNull(documents.updatedByAgentId))!,
               notInArray(issueDocuments.key, [...SYSTEM_ISSUE_DOCUMENT_KEYS]),
             ]),
+          ...(options.excludeArtifactReviewDocuments
+            ? [sql`${issueDocuments.key} not like ${`${ARTIFACT_REVIEW_DOCUMENT_KEY_PREFIX}%`}`]
+            : []),
         ];
         const documentSortDate = query.starred
           ? sql<Date>`${documentMemberships.starredAt}`

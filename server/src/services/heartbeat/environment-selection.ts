@@ -1,9 +1,9 @@
 import { assertProviderApiPlacementPolicy, resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { heartbeatExternalProvider, nativeExecutionUsesTaskWorkspace } from "./external-provider.js";
-import { heartbeatRuns, issues, projects, type Db, type agents } from "@paperclipai/db";
+import { heartbeatRuns, issues, type Db, type agents } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { readGitCacheExpiration } from "../git-workspace-restoration.js";
-import type { ExecutionWorkspace, IssueExecutionWorkspaceSettings, ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
+import { readRemoteWorkspaceAuthority, type ExecutionWorkspace, type InstanceSettings, type IssueExecutionWorkspaceSettings, type ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
 import { parseObject } from "../../adapters/utils.js";
 import { logger } from "../../middleware/logger.js";
 import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
@@ -20,7 +20,7 @@ import {
 import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../task-workspace-access.js";
 import { isBoundIsolatedTaskDirectory, shouldUseIsolatedTaskDirectory } from "../isolated-task-directory.js";
 import { readTaskDirectoryRetention } from "../isolated-task-directory-retention.js";
-import { isBoundFreshPluginTaskDirectory } from "../provider-fresh-workspace.js";
+import { isBoundPluginTaskDirectory } from "../provider-fresh-workspace.js";
 import {
   findNativeChatWorkspaceScope,
   nativeChatWorkspaceCwd,
@@ -39,6 +39,30 @@ import { resolveNativeRecoveryExecutionWorkspaceBinding, resolveExecutionWorkspa
 
 type Issue = typeof issues.$inferSelect;
 
+function gitCacheExpirationRemovedWorkspace(workspace: Parameters<typeof readGitCacheExpiration>[0]) {
+  if (!readRemoteWorkspaceAuthority(workspace.metadata)) return readGitCacheExpiration(workspace)?.workspaceRemoved === true;
+  const expiration = parseObject(workspace.metadata?.gitCacheExpiration);
+  return expiration.schema === "paperclip.git-cache-expiration.v1" && expiration.workspaceRemoved === true
+    && Number.isSafeInteger(expiration.generation) && expiration.generation === workspace.metadata?.lifecycleGeneration;
+}
+
+export async function resolveSshAuthenticationBeforeRouting(input: {
+  agentDefaultEnvironmentId: string | null;
+  lowTrustIssueEnvironmentId: string | null;
+  environmentsSvc: Pick<ReturnType<typeof environmentService>, "getById">;
+  instanceSettings: { get(): Promise<{
+    defaultEnvironmentId: InstanceSettings["defaultEnvironmentId"];
+    general: Pick<InstanceSettings["general"], "executionMode">;
+  }> };
+}): Promise<"host" | "managed" | null> {
+  const settings = await input.instanceSettings.get();
+  if (isExecutionForcedToKubernetes({ executionMode: settings.general.executionMode })) return null;
+  const id = input.lowTrustIssueEnvironmentId ?? input.agentDefaultEnvironmentId ?? settings.defaultEnvironmentId;
+  if (!id) return null;
+  const environment = await input.environmentsSvc.getById(id);
+  return environment?.driver === "ssh" ? environment.config.useHostAuth === false ? "managed" : "host" : null;
+}
+
 /** Selects policy and reuse inputs; lease acquisition and cleanup belong to the executor. */
 export interface HeartbeatEnvironmentSelectionInput {
   run: Pick<typeof heartbeatRuns.$inferSelect,
@@ -47,7 +71,7 @@ export interface HeartbeatEnvironmentSelectionInput {
     "id" | "companyId" | "adapterType" | "adapterConfig" | "defaultEnvironmentId">;
   task: {
     freshWorkspace?: import("../fresh-workspace-continuation.js").ContinuationReadiness | null;
-    issueRef: Pick<Issue, "id" | "projectWorkspaceId" | "executionWorkspaceId" | "executionWorkspacePreference"> & { projectId?: string | null } | null;
+    issueRef: Pick<Issue, "id" | "projectWorkspaceId" | "executionWorkspaceId" | "executionWorkspacePreference"> | null;
     issueContext: Pick<Issue, "assigneeAgentId" | "executionWorkspaceSettings"> | null;
     issueId: string | null;
     context: Record<string, unknown>;
@@ -122,7 +146,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   if (existingExecutionWorkspace && issueId && !controllerOnly && !fresh
     && existingExecutionWorkspace.id === readNonEmptyString(issueRef?.executionWorkspaceId)
     && (existingExecutionWorkspace.status === "archived" || existingExecutionWorkspace.status === "cleanup_failed")
-    && (readGitCacheExpiration(existingExecutionWorkspace as Parameters<typeof readGitCacheExpiration>[0])?.workspaceRemoved
+    && (gitCacheExpirationRemovedWorkspace(existingExecutionWorkspace as Parameters<typeof readGitCacheExpiration>[0])
       || readTaskDirectoryRetention(existingExecutionWorkspace) !== null
       || (existingExecutionWorkspace.sourceIssueId === issueId
         && existingExecutionWorkspace.cleanupReason?.startsWith("issue_terminal") === true))) {
@@ -203,12 +227,6 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   const managedSandboxEnvironment = managedSandboxOnly && !providerApiPlacement
     ? await environmentsSvc.findManagedSandboxEnvironment(agent.companyId)
     : null;
-  const placementProjectId = issueRef ? issueRef.projectId ?? null : executionProjectId;
-  const [projectEnvironment] = placementProjectId && !controllerOnly && !persistedNativeExecutionInput
-    ? await db.select({ environmentId: projects.environmentId }).from(projects)
-      .where(and(eq(projects.id, placementProjectId), eq(projects.companyId, agent.companyId)))
-    : [];
-  // A project edit affects new admissions, never a surviving provider process.
   const savedEnvironment = parseObject(parseObject(run.contextSnapshot).paperclipEnvironment);
   const admittedLeaseId = persistedNativeExecutionInput && !controllerOnly
     ? readNonEmptyString(savedEnvironment.leaseId) ?? readNativeWorkspaceSyncReference(persistedRunnerProfile.nativeWorkspaceSync)?.leaseId
@@ -227,7 +245,6 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     : resolveExecutionWorkspaceEnvironmentId({
     lowTrustIssueEnvironmentId: trustPreset.kind === "low_trust_review"
       ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings, {includeEnvironmentId: true})?.environmentId : null,
-    projectEnvironmentId: projectEnvironment?.environmentId,
     agentDefaultEnvironmentId: agent.defaultEnvironmentId,
     instanceDefaultEnvironmentId:
       resolvedInstanceSettings.defaultEnvironmentId ?? null,
@@ -527,7 +544,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     (await isBoundIsolatedTaskDirectory({ companyId: agent.companyId, issueId,
       workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace }) ||
       (selectedEnvironmentForConfig?.driver === "plugin" && agent.adapterType === "paperclip_runner" &&
-        isBoundFreshPluginTaskDirectory({ companyId: agent.companyId, issueId,
+        isBoundPluginTaskDirectory({ companyId: agent.companyId, issueId,
           workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace,
           owner: { agentId: agent.id, environmentId: selectedEnvironmentForConfig.id,
             pluginKey: parseObject(selectedEnvironmentForConfig.config).pluginKey ?? null,
@@ -545,6 +562,8 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     mode: requestedExecutionWorkspaceMode,
     hasProjectWorkspace: workspaceProjectContext?.hasWorkspace ?? false,
     projectWorkspaceId: issueRef.projectWorkspaceId,
+    hasSelectedExecutionWorkspace: Boolean(issueRef.executionWorkspaceId || boundSourceWorkspace) ||
+      requestedShouldReuseExisting || taskWorkspaceIntent?.selection.kind === "existing",
     workspaceStrategies: [
       config.workspaceStrategy,
       issueAssigneeOverrides?.adapterConfig?.workspaceStrategy,

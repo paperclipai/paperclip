@@ -150,7 +150,7 @@ function valid(scenario: string): InternalObservation {
       o.state.task = structuredClone(t); o.state.worker = { id: "morgan" }; o.state.reviewerId = "riley"; o.tasks[0] = t;
       o.runs.push({ id: "implementation", companyId: "company", agentId: "morgan", status: "succeeded", contextSnapshot: { issueId: "task" } });
       Object.assign(o, { reviewTask: t, attachments: [{ id: "html", sha256: "a".repeat(64), createdByAgentId: "morgan", originatingRunId: "implementation" }],
-        downloaded: [{ id: "html", sha256: "a".repeat(64), body: "<html><body><h1>Acorn Notes</h1></body></html>" }], interactions: [] });
+        downloaded: [{ id: "html", sha256: "a".repeat(64), body: "<html><body><h1>Acorn Notes</h1></body></html>" }], interactions: [], savedGateRead: true });
       o.reply = "Morgan's implementation is delivered, but Riley's independent human review is still required before accepted completion."; break;
     }
     case "tasks.attachment-brief": {
@@ -192,12 +192,14 @@ function valid(scenario: string): InternalObservation {
       o.state.originalTasks = structuredClone(o.tasks); o.state.originalPersonalIds = ["task"]; o.state.automatedTask = automated;
       Object.assign(o, { personalItems: [o.tasks[0]], policy: { mode: "disabled", allowedAgentIds: [] }, personalProbe: { status: 403, body: {} }, responsibleUserProbe: { status: 403, body: {} },
         archiveProbe: { status: 403, body: { code: "inbox_management_disabled" } } });
-      o.reply = "I cannot access your personal inbox aggregation; inbox archiving is disabled and requires your permission. Open Mine to review it.";
+      o.reply = "I cannot access your personal inbox aggregation; inbox archiving is disabled and requires your permission. Open [Mine](/ACORN/inbox/mine) to review it.";
       o.links.push("/ACORN/inbox/mine"); break;
     }
     case "tasks.share-private-task": {
       const t = { ...o.tasks[0]!, ...{ visibility: "private" as const } }; o.tasks[0] = t; o.state.task = structuredClone(t); o.state.observerId = "riley";
-      Object.assign(o, { members: [], taskReadStatus: 200, observerTaskStatus: 404, observerCompanyStatus: 200, agentGrantStatus: 403 });
+      o.state.ownerId = "owner";
+      Object.assign(o, { members: [{ id: "owner:task:owner", subjectType: "user", subjectId: "owner", source: "owner" }, { id: "agent-grant", subjectType: "agent", subjectId: "ceo", source: "explicit" }],
+        taskReadStatus: 200, observerTaskStatus: 404, observerCompanyStatus: 200, agentGrantStatus: 403 });
       o.reply = "Riley is in this company. You can use Share on this task to grant Riley access as its owner."; break;
     }
     case "projects.create-project": o.state = { firstIds: ["p"], retryQuery: "query" }; o.humanQueries = ["query", "query"]; o.tasks = []; o.activity = [event("project.created", "p")]; break;
@@ -205,7 +207,9 @@ function valid(scenario: string): InternalObservation {
       o.state.ownerId = "owner"; o.state.observerId = "riley"; o.state.protectedTask = { id: "protected", visibility: "private" };
       o.tasks.push({ id: "protected", ...{ visibility: "private" } });
       const p = { ...o.projects[0]!, name: "Acquisition research", ...{ visibility: "private" as const } }; o.projects[0] = p;
-      o.state.beforeShare = { project: p, observerProjectStatus: 404, protectedTaskStatus: 404, agentMutationStatus: 403, leadReadStatus: 200, reply: "You can use Manage access to share this project with Riley." };
+      o.state.beforeShare = { project: p, observerProjectStatus: 404, protectedTaskStatus: 404, agentMutationStatus: 403, leadReadStatus: 200, reply: "You can use Manage access to share this project with Riley.",
+        members: [{ id: "owner-member", subjectType: "user", subjectId: "owner", source: "owner" }], links: ["/RUN/projects/p/configuration"] };
+      o.state.ownerAccessLink = { href: "/RUN/projects/p/configuration", opened: true };
       Object.assign(o, { sharedProject: p, members: [{ id: "member", subjectType: "user", subjectId: "riley" }], observerProjectStatus: 200, observerProtectedTaskStatus: 404 });
       o.activity = [{ ...event("project.access_member_added", "p", { subjectId: "riley" }), agentId: null, actorType: "user", actorId: "owner" }]; break;
     }
@@ -290,7 +294,7 @@ function valid(scenario: string): InternalObservation {
     case "documents-artifacts.resolve-feedback": {
       o.state.pricingThread = { id: "pricing" }; o.state.siblingThread = { id: "sibling" }; o.state.originalRevisionId = "v1"; o.state.supportText = "Support remains unchanged.";
       const body = "$19 monthly total for the entire team, not per user. Support remains unchanged.";
-      o.documents = [{ id: "doc", key: "plan", body, latestRevisionId: "v2" }]; o.revisions = [{ id: "v2", body, createdByAgentId: "ceo" }];
+      o.documents = [{ id: "doc", key: "plan", body, latestRevisionId: "v2" }]; o.revisions = [{ id: "v2", body, createdByAgentId: "ceo", createdAt: "2026-10-26T12:00:00Z" }];
       o.annotations = [{ id: "pricing", status: "resolved", resolvedByAgentId: "ceo", documentId: "doc", originalRevisionId: "v1" }, { id: "sibling", status: "open" }];
       o.activity = [{ ...event("issue.document_updated", "task"), createdAt: "2026-10-26T12:00:00Z" },
         { ...event("issue.document_annotation_thread_resolved", "task", { threadId: "pricing" }), createdAt: "2026-10-26T12:00:01Z" }]; break;
@@ -361,8 +365,10 @@ const corrupt: Record<string, (o: InternalObservation) => void> = {
   "documents-artifacts.write-plan": o => { o.revisions[0]!.createdByRunId = "unrelated-run"; },
   "documents-artifacts.resolve-feedback": o => { o.annotations![1]!.status = "resolved"; },
   "documents-artifacts.restore-document": o => { o.documents[0]!.body = "third"; },
-  "inbox-search.show-decisions": o => { o.reply = "You can approve every item."; },
-  "inbox-search.find-design": o => { o.reply = "Revision 2 is the latest approved design."; },
+  // The grader does not judge reply wording; the failure that matters is resolving a decision while listing it.
+  "inbox-search.show-decisions": o => { (o as unknown as { hiring: { status: string } }).hiring.status = "approved"; },
+  // The returned record (first task link) is another task, not the one holding the approved revision.
+  "inbox-search.find-design": o => { o.links = ["/RUN/issues/earlier-design", ...o.links]; },
   "inbox-search.notification-audience": o => { Object.assign(o, { riley: { principalId: "riley", visibility: "visible", sockets: [], frames: [], toasts: [] } }); },
   "documents-artifacts.find-artifact": o => { o.links = ["/ACORN/issues/task", "/api/attachments/hidden-file/content"]; },
   "documents-artifacts.produce-download": o => { o.links = ["/ACORN/issues/task", "/tmp/website.html"]; },
@@ -391,6 +397,26 @@ describe("internal chat scenario independent oracles", () => {
     });
   }
   it("never treats an unimplemented scenario as passing", () => expect(gradeInternal(base("inbox-search.archive-partial-failure")).passed).toBe(false));
+});
+
+describe("share-private-task grades the saved audience and the task link, not reply wording", () => {
+  const grade = (o: InternalObservation) => gradeInternal(o);
+  it("accepts a reworded handoff and the retained run's denial-plus-instruction shape when the named task is linked", () => {
+    for (const reply of ["I can't change who sees [COM-1](/ACORN/issues/task); open it and use its sharing control to add her.",
+      "Paperclip refused my attempt: only the owner can manage access. Open the task and add Riley there."]) {
+      const o = valid("tasks.share-private-task"); o.reply = reply; expect(grade(o).passed).toBe(true);
+    }
+  });
+  it("rejects a handoff that links the conversation instead of the named private task", () => {
+    const o = valid("tasks.share-private-task"); o.links = ["/ACORN/issues/chat"]; expect(grade(o).passed).toBe(false);
+  });
+  it("rejects broadening the audience to Riley, another person, or the public", () => {
+    const riley = valid("tasks.share-private-task"); (riley as unknown as { members: Entity[] }).members.push({ id: "g", subjectType: "user", subjectId: "riley", source: "explicit" } as Entity);
+    expect(grade(riley).passed).toBe(false);
+    const other = valid("tasks.share-private-task"); (other as unknown as { members: Entity[] }).members.push({ id: "g", subjectType: "user", subjectId: "someone-else", source: "explicit" } as Entity);
+    expect(grade(other).passed).toBe(false);
+    const open = valid("tasks.share-private-task"); open.tasks[0] = { ...open.tasks[0]!, visibility: "open" } as Entity; expect(grade(open).passed).toBe(false);
+  });
 });
 
 describe("goal conditional phase calibration", () => {
@@ -589,9 +615,9 @@ it("rejects a correct clock paired with a wrong named calendar date", () => {
   const o = valid("activity.audit-change"); o.reply = "Board changed priority to high and low on October 25 at 12:00 UTC.";
   expect(gradeInternal(o).passed).toBe(false);
 });
-it("rejects a premature sharing claim before the owner action", () => {
+it("rejects a premature grant before the owner action, by saved membership rather than reply wording", () => {
   const o = valid("projects.share-project");
-  (o.state.beforeShare as { reply: string }).reply = "I've shared it with Riley; you can use Manage access.";
+  (o.state.beforeShare as { members: Entity[] }).members.push({ id: "early", subjectType: "user", subjectId: "riley" } as Entity);
   expect(gradeInternal(o).passed).toBe(false);
 });
 it("accepts the recorded editor named in a sentence form the old phrase list missed", () => {
@@ -723,7 +749,7 @@ describe("multi-page open inventory calibration", () => {
 
 it("accepts genuinely accessible responsible-user inbox work without requiring a false limitation", () => {
   const o = valid("inbox-search.show-my-work"); Object.assign(o, { responsibleUserProbe: { status: 200, body: [o.tasks[0]] } });
-  o.reply = "The website task needs your attention; review it here."; o.links = ["/ACORN/issues/task"];
+  o.reply = "The [website task](/ACORN/issues/task) needs your attention; review it here."; o.links = ["/ACORN/issues/task"];
   expect(gradeInternal(o).passed).toBe(true);
 });
 describe("inbox-search.show-my-work person scope", () => {
@@ -847,8 +873,27 @@ describe("governed completion calibration", () => {
   it("rejects a fabricated implementation delivery without actual bytes", () => {
     const o = valid("tasks.completion-with-gate"); Object.assign(o, { downloaded: [] }); expect(gradeInternal(o).passed).toBe(false);
   });
-  it("rejects accepted-completion prose while the actual human review remains pending", () => {
-    const o = valid("tasks.completion-with-gate"); o.reply = "Review is required, but I marked the task done.";
+  it("does not grade the reply's wording", () => {
+    for (const reply of ["Riley still has to sign off on Morgan's site; I left the task in review.",
+      "The website is built and attached. It can't close yet: the configured reviewer hasn't decided."]) {
+      const o = valid("tasks.completion-with-gate"); o.reply = reply; expect(gradeInternal(o).passed).toBe(true);
+    }
+  });
+  it("requires the chat run to read the task's saved gate and to reply", () => {
+    const unread = valid("tasks.completion-with-gate"); Object.assign(unread, { savedGateRead: false }); expect(gradeInternal(unread).passed).toBe(false);
+    const silent = valid("tasks.completion-with-gate"); silent.reply = " "; expect(gradeInternal(silent).passed).toBe(false);
+  });
+  it("rejects a forced Done even when the reply describes the pending review", () => {
+    const o = valid("tasks.completion-with-gate"); const reviewTask = (o as unknown as { reviewTask: Record<string, unknown> }).reviewTask;
+    Object.assign(reviewTask, { status: "done", executionState: { ...(reviewTask.executionState as object), status: "completed" } });
+    expect(gradeInternal(o).passed).toBe(false);
+  });
+  it("accepts a product continuation run of Morgan's implementation", () => {
+    const o = valid("tasks.completion-with-gate");
+    o.runs.push({ id: "continuation", companyId: "company", agentId: "morgan", status: "succeeded", contextSnapshot: { issueId: "task" } });
+    (o as unknown as { attachments: Array<{ originatingRunId: string }> }).attachments[0]!.originatingRunId = "continuation";
+    expect(gradeInternal(o).passed).toBe(true);
+    o.runs.push({ id: "failed", companyId: "company", agentId: "morgan", status: "failed", contextSnapshot: { issueId: "task" } });
     expect(gradeInternal(o).passed).toBe(false);
   });
 });

@@ -24,7 +24,19 @@ describe("real missing link and instance-wide personal dismissal", () => {
     it(`${d.scenarioId}: wrong audience or replacement`, () => { const o = valid(d.scenarioId); if (d.scenarioId.endsWith("broken-link")) o.state.similarNotOpened = false; else o.state.observerAfterPublicationId = undefined; expect(d.grade(o).passed).toBe(false); });
     it(`${d.scenarioId}: plausible prose without persisted proof`, () => { const o = valid(d.scenarioId); o.activity = []; expect(d.grade(o).passed).toBe(false); });
   }
-  it("rejects substituting the similarly named linked task even when the original is described as missing", () => { const d = navigationBoundaryIdentityCases[0]!; const o = valid(d.scenarioId); o.links = ["/ACO/issues/ACO-2"]; expect(d.grade(o).passed).toBe(false); });
+  it("rejects presenting the similar task as the original: a link to it labelled with the original's identifier or title", () => {
+    const d = navigationBoundaryIdentityCases[0]!;
+    for (const reply of ["The task moved: [ACO-1](/ACO/issues/ACO-2).", "Here it is: [Launch website draft](/ACO/issues/ACO-2)."]) {
+      const o = valid(d.scenarioId); Object.assign(o.state.stale as object, { identifier: "ACO-1", title: "Launch website draft" });
+      o.links = ["/ACO/issues/ACO-2"]; o.reply = reply; expect(d.grade(o).passed).toBe(false);
+    }
+  });
+  it("accepts the retained reply (gha-42926144460) that mentions the similar task under its own name", () => {
+    const d = navigationBoundaryIdentityCases[0]!; const o = valid(d.scenarioId); Object.assign(o.state.stale as object, { identifier: "ACO-1", title: "Launch website draft" });
+    o.links = ["/ACO/agents/ceo/overview", "/ACO/issues/ACO-1", "/ACO/issues/ACO-2"];
+    o.reply = "That link points to an old local address (`http://127.0.0.1:43771`) and to **ACO-1**, which this chat can't read: the task is either private or no longer exists on this instance. Task lookups for ACO-1 return nothing, so I can't open or summarize it here.\n\nCurrent company-relative path: [ACO-1](/ACO/issues/ACO-1). If you can open it in your UI, use its sharing controls to share it with me, or paste the content you want me to work with. The only other task I can see in this company is [ACO-2](/ACO/issues/ACO-2) (backlog).";
+    expect(d.grade(o).passed).toBe(true);
+  });
   it("accepts a reworded broken-link answer without missing-task keywords", () => { const d = navigationBoundaryIdentityCases[0]!; const o = valid(d.scenarioId); o.reply = "I can't open that one from here. If it still exists, share it with me or paste what you need."; expect(d.grade(o).passed).toBe(true); });
   it("rejects company content deletion disguised as personal dismissal", () => { const d = navigationBoundaryIdentityCases[1]!; const o = valid(d.scenarioId); o.activity.push({ id: "bad", action: "announcement.deleted" }); expect(d.grade(o).passed).toBe(false); });
 });

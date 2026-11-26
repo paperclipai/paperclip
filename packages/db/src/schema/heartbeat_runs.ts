@@ -76,6 +76,13 @@ export const heartbeatRuns = pgTable(
     completionContractId: uuid("completion_contract_id"),
     completionContractSha256: text("completion_contract_sha256"),
     nextEventSeq: bigint("next_event_seq", { mode: "number" }).notNull().default(1),
+    // Per native source instance, the highest source sequence below which the
+    // run stores every event: {"<source instance id>": <seq>}. The append that
+    // reserves the sequence keeps it, so an in-order event needs no count of
+    // the run's events. It is a lower bound: a missing or stale entry (rows
+    // saved before it existed, or by a writer that does not keep it) makes the
+    // next out-of-order append recount the source's events from the table.
+    nativeSourceCursors: jsonb("native_source_cursors").$type<Record<string, number>>(),
     nativePhase: text("native_phase"),
     nativePhaseUpdatedAt: timestamp("native_phase_updated_at", { withTimezone: true }),
     sessionIdBefore: text("session_id_before"),
@@ -176,6 +183,8 @@ export const heartbeatRuns = pgTable(
     companyWakeCommentIdx: index("heartbeat_runs_company_wake_comment_idx")
       .on(table.companyId, sql`(${table.contextSnapshot}->>'wakeCommentId')`)
       .concurrently(),
+    queuedCreatedIdx: index("heartbeat_runs_queued_created_idx").on(table.companyId, table.createdAt, table.id)
+      .where(sql`${table.status} = 'queued'`).concurrently(),
     costAccountingPendingIdx: index("heartbeat_runs_cost_accounting_pending_idx").on(table.updatedAt, table.id).where(sql`${table.costAccountingPending} = true`),
     costDataQualityIdx: index("heartbeat_runs_cost_data_quality_idx")
       .on(table.companyId, sql`coalesce(${table.finishedAt}, ${table.createdAt}) desc`, table.id)
@@ -239,10 +248,32 @@ export const heartbeatRuns = pgTable(
       table.status,
       table.processStartedAt,
     ),
+    companyFinishedIdx: index("heartbeat_runs_company_finished_idx").on(table.companyId, table.finishedAt.desc())
+      .where(sql`${table.finishedAt} is not null`).concurrently(),
+    settledProcessIdentityIdx: index("heartbeat_runs_settled_process_identity_idx")
+      .on(table.processHostHash, table.companyId, table.id)
+      .where(sql`${table.runtimeMode} = 'native' and ${table.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')
+        and ${table.finishedAt} is not null
+        and (${table.processPid} is not null or ${table.processGroupId} is not null or ${table.processStartedAt} is not null)`)
+      .concurrently(),
+    pendingApiStopIdx: index("heartbeat_runs_pending_api_stop_idx").on(table.companyId, table.id)
+      .where(sql`${table.status} = 'cancelled' and ${table.driverKind} = 'cursor_cloud_api'
+        and (${table.resultJson}->'executionCancellation'->>'state') = 'requested'`)
+      .concurrently(),
     companyCreatedAtDescIdx: index("heartbeat_runs_company_created_at_desc_idx").on(
       table.companyId,
       table.createdAt.desc(),
     ),
+    // Inbox recovery checks look for a newer successful or running attempt on the same task.
+    attentionResumedIdx: index("heartbeat_runs_attention_resumed_idx")
+      .on(table.companyId, sql`coalesce(${table.issueId}::text, ${table.nativeIssueId}::text,
+        ${table.contextSnapshot}->>'issueId', ${table.contextSnapshot}->>'taskId')`, table.createdAt)
+      .where(sql`${table.status} in ('running', 'succeeded')`)
+      .concurrently(),
+    attentionHistoryIdx: index("heartbeat_runs_attention_history_idx")
+      .on(table.companyId, table.createdAt.desc(), table.id.desc())
+      .where(sql`${table.status} in ('failed', 'timed_out') or ${table.errorCode} = 'provider_limit_wait'`)
+      .concurrently(),
     companyCtxIssueCreatedIdx: index("heartbeat_runs_company_ctx_issue_created_idx").on(
       table.companyId,
       sql`(${table.contextSnapshot} ->> 'issueId')`,

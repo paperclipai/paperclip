@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockApi = vi.hoisted(() => ({
   get: vi.fn(),
+  post: vi.fn(),
 }));
 
 vi.mock("./client", () => ({
@@ -17,6 +18,17 @@ import {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+describe("heartbeatsApi.cancel", () => {
+  it("sends an uncorrelated Stop so a run still waiting in line can be stopped", async () => {
+    // Correlated Stop (cancellationRequestId) is only for native runs; the
+    // server rejects it for a queued legacy run. Task Stop must not send it.
+    mockApi.post.mockReset();
+    mockApi.post.mockResolvedValue({ id: "waiting-run", status: "cancelled" });
+    await expect(heartbeatsApi.cancel("waiting-run")).resolves.toMatchObject({ status: "cancelled" });
+    expect(mockApi.post).toHaveBeenCalledWith("/heartbeat-runs/waiting-run/cancel", {});
+  });
 });
 
 describe("heartbeatsApi.list", () => {

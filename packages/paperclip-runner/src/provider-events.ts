@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { redactCodexDiagnostic } from "./drivers/codex/diagnostic-redaction.js";
 import { claudeHookCanonicalEvent, codexHookPayload, codexSafetyReviewPayload } from "./governance-events.js";
 import type { AcpxSubagentAnnotations, AcpxSubagentIdentity } from "./claude-subagent-lineage.js";
+import { acpxPlanSnapshot } from "./drivers/acpx/sidecar-protocol.js";
 import {
   toolFileChangesFromAcpContent,
   toolFileChangesFromCodexChanges,
@@ -1587,6 +1588,9 @@ export function canonicalProviderEventsFromAcpxRuntimeEvent(
   turnId?: string,
   context: CanonicalProviderEventContext = {},
 ): CanonicalProviderEvent[] {
+  // ACPX 0.22 reports a plan as a `status` event tagged `plan`.
+  const planEntries = acpxPlanSnapshot(event);
+  if (planEntries) event = { type: "plan", entries: planEntries } as AcpRuntimeEventShape;
   const runtimeType = text(record(event).type);
   if (
     !["text_delta", "status", "tool_call", "plan", "error", "done"].includes(

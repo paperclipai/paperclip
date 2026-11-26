@@ -56,7 +56,8 @@ export type SecretSensitiveRouteFamily =
   | "voice_sessions"
   | "mcp_oauth"
   | "api_mcp"
-  | "chat_endpoint_setup";
+  | "chat_endpoint_setup"
+  | "local_ai_login_code";
 
 const SECRET_SENSITIVE_HTTP_PATHS: ReadonlyArray<readonly [SecretSensitiveRouteFamily, RegExp]> = [
   ["voice_sessions", /^\/api\/companies\/[^/]+\/voice-sessions(?:\/|$)/],
@@ -72,6 +73,24 @@ export function isPrivateAgentCommentaryHttpRequest(url: string | undefined): bo
   // Express routes are case-insensitive and also accept absolute-form URLs.
   const pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
   return /^\/api\/companies\/[^/]+\/agent-commentary(?:\/|$)/i.test(pathname);
+}
+
+const TOOL_CALL_HTTP_PATHS = [
+  /^\/api\/tool-gateway\/tools\/call\/?$/i,
+  /^\/api\/tool-gateway\/gateways\/[^/]+\/mcp\/?$/i,
+  /^\/mcp\/gateways\/[^/]+\/?$/i,
+  /^\/mcp\/native-runs\/[^/]+\/?$/i,
+  /^\/mcp\/runtime-tools\/?$/i,
+  /^\/mcp\/runner\/?$/i,
+  /^\/api\/mcp\/project-tools\/?$/i,
+  /^\/api\/issues\/[^/]+\/mcp-app-views\/[^/]+\/tool-calls\/?$/i,
+  /^\/api\/tool-connections\/[^/]+\/test-calls\/?$/i,
+];
+
+export function isPrivateToolCallHttpRequest(url: string | undefined): boolean {
+  if (!url) return false;
+  const pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
+  return TOOL_CALL_HTTP_PATHS.some((pattern) => pattern.test(pathname));
 }
 
 /** Destination credentials stay private even on malformed settings requests. */
@@ -167,6 +186,7 @@ export function secretSensitiveRouteFamily(
   if (!method || !url) return null;
   if (/^\/api\/chat-slack\/(?:managed\/)?oauth(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""))) return "chat_slack_oauth";
   if (/^\/api\/chat-endpoints\/[^/]+\/slack(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""))) return "chat_endpoint_slack";
+  if (/^\/api\/companies\/[^/]+\/ai-connections\/local\/attempts\/[^/]+\/code(?:\/|$)/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""))) return "local_ai_login_code";
   if (!SECRET_SENSITIVE_HTTP_METHODS.has(method.toUpperCase())) return null;
   const pathname = normalizePath(url);
   return SECRET_SENSITIVE_HTTP_PATHS.find(([, pattern]) => pattern.test(pathname))?.[0] ?? null;

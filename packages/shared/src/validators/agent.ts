@@ -37,6 +37,7 @@ export type UpdateAgentInstructionsBundle = z.infer<typeof updateAgentInstructio
 
 export const upsertAgentInstructionsFileSchema = z.object({
   path: z.string().min(1).max(512),
+  renameTo: z.string().min(1).max(512).optional(),
   content: z.string().max(1024 * 1024),
   baseRevisionId: z.string().uuid().nullable().optional(),
   baseHash: z.string().regex(/^[a-f0-9]{64}$/).nullable().optional(),
@@ -73,6 +74,7 @@ export const createAgentInstructionsBundleSchema = z.object({
 
 export const agentRuntimeConfigSchema = z.object({
   aiConnection: aiConnectionBindingSchema.optional(),
+  cloudTrialInference: z.boolean().optional(),
   debug: z.object({
     providerTrace: z.literal("raw").optional(),
   }).strict().optional(),
@@ -278,7 +280,7 @@ export const wakeAgentSchema = z.object({
 export type WakeAgent = z.infer<typeof wakeAgentSchema>;
 
 export const resetAgentSessionSchema = z.object({
-  taskKey: z.string().min(1).optional().nullable(),
+  taskKey: z.string().trim().min(1).optional().nullable(),
 });
 
 export type ResetAgentSession = z.infer<typeof resetAgentSessionSchema>;

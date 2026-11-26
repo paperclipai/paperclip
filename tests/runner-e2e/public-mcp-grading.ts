@@ -33,7 +33,7 @@ export function gradeInvitation(value: InvitationEvidence | null) {
 /** Fail closed when the catalog grows: only known read operations count as read-only. */
 export function isReadOnlyMcpCall(call: { name: string; arguments: Record<string, unknown> }): boolean {
   if (call.name === "paperclip_call_api") return isReadOnlyMcpCall({ name: String(call.arguments.operationId), arguments: {} });
-  return ["paperclip_connection", "paperclip_list_agents", "paperclip_list_projects", "paperclip_search_tasks", "paperclip_read_task", "paperclip_read_document", "paperclip_list_deliverables", "paperclip_pending_approvals", "paperclip_list_document_revisions", "paperclip_get_download_url", "paperclip_get_agent", "paperclip_read_agent_instructions", "paperclip_list_agent_instruction_revisions", "paperclip_get_project", "paperclip_list_project_repositories", "paperclip_list_skills", "paperclip_get_skill", "paperclip_read_skill_file", "paperclip_search_api"].includes(call.name);
+  return ["paperclip_connection", "paperclip_list_agents", "paperclip_list_people", "paperclip_list_projects", "paperclip_search_tasks", "paperclip_read_task", "paperclip_read_document", "paperclip_list_deliverables", "paperclip_pending_approvals", "paperclip_list_document_revisions", "paperclip_get_download_url", "paperclip_get_agent", "paperclip_read_agent_instructions", "paperclip_list_agent_instruction_revisions", "paperclip_get_project", "paperclip_list_project_repositories", "paperclip_list_skills", "paperclip_get_skill", "paperclip_read_skill_file", "paperclip_search_api"].includes(call.name);
 }
 
 /** Both public retrieval operations return document bodies. Grade the returned

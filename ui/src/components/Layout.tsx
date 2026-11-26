@@ -1,10 +1,11 @@
 import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import { CoordinatorChatReferencesProvider } from "./coordinator/CoordinatorChatReferences";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
+import { useBrowserTimeZoneSync } from "@/hooks/useBrowserTimeZoneSync";
 import { useDesignSandbox } from "@/context/DesignSandboxContext";
 import { DesignSandboxSidebar } from "./DesignSandboxSidebar";
 import { BoardDialogs } from "./BoardDialogs";
-import { SetupWizardSidebarOutlet } from "./SetupWizard";
+import { CloudTrialGate } from "./CloudTrialGate";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -12,10 +13,10 @@ import { Outlet, useLocation, useNavigate, useNavigationType, useParams } from "
 import { Sidebar } from "./Sidebar";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
-import { AppsSidebar } from "./AppsSidebar";
+import { AppsSidebar, useAppsDeveloperTabs } from "./AppsSidebar";
+import { appsRouteHasRail } from "../pages/apps/apps-rail";
 import { AppDetailSidebar } from "./AppConnectionSidebar";
 import { AgentContextualSidebar } from "./AgentContextualSidebar";
-import { RoutineContextualSidebar } from "./RoutineContextualSidebar";
 import { SkillsContextualSidebar } from "./SkillsContextualSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
@@ -71,6 +72,8 @@ function getCompanyRouteSegment(pathname: string, companyPrefix: string | undefi
 }
 
 const RESERVED_APP_SUBPATHS = new Set([
+  "plugin",
+  "category",
   "browse",
   "connections",
   "assistant-connection",
@@ -90,14 +93,10 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     sidebarOpen,
     setSidebarOpen,
     toggleSidebar,
-    collapsed,
-    peeking,
-    setPeeking,
     isMobile,
-    setForceCollapsed,
   } = useSidebar();
   const { openNewIssue, openOnboarding } = useDialogActions();
-  const { togglePanelVisible, setPanelVisible } = usePanel();
+  const { panelContent, panelVisible, panelShowsArtifact, togglePanelVisible, setPanelVisible } = usePanel();
   // Optional: Layout also renders in harnesses without a ToastProvider.
   const pushToast = useOptionalToastActions()?.pushToast ?? null;
   const {
@@ -112,18 +111,17 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     companyPrefix,
     pluginRoutePath: matchedPluginRoutePath,
     agentId,
-    routineId,
   } = useParams<{
     companyPrefix: string;
     pluginRoutePath?: string;
     agentId?: string;
-    routineId?: string;
   }>();
   const navigate = useNavigate();
   const location = useLocation();
   const navigationType = useNavigationType();
   const { enabled: classicStreamlinedUiEnabled } = useStreamlinedUiEnabled();
-  const { enabled: coordinatorWorkspaceEnabled } = useCoordinatorWorkspaceEnabled();
+  const { enabled: coordinatorWorkspaceEnabled, userId: workspacePreferenceUserId } = useCoordinatorWorkspaceEnabled();
+  useBrowserTimeZoneSync(selectedCompanyId, workspacePreferenceUserId);
   const streamlinedUiEnabled = classicStreamlinedUiEnabled || coordinatorWorkspaceEnabled;
   const shellRoute = classifyShellRoute(location.pathname, companyPrefix);
   const isCompanySettingsRoute = shellRoute.builtInContextualSurface === "settings";
@@ -134,11 +132,31 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   }, [coordinatorWorkspaceEnabled, location.pathname, setPanelVisible]);
   const { enabled: agentChatEnabled } = useAgentChatEnabled();
   const isAgentChatRoute = agentChatEnabled && companyPathSegments[0]?.toLowerCase() === "chats";
+  const desktopAgentChat = !isMobile && isAgentChatRoute;
+  const measureChatSpace = desktopAgentChat && panelVisible && panelContent != null && panelShowsArtifact;
+  const chatAreaRef = useRef<HTMLDivElement>(null);
+  const [chatListTooWide, setChatListTooWide] = useState(false);
+  const chatListCollapsed = measureChatSpace && chatListTooWide;
+
+  useLayoutEffect(() => {
+    const area = chatAreaRef.current;
+    if (!measureChatSpace || !area) return;
+    const tokens = getComputedStyle(document.documentElement);
+    const listWidth = Number.parseFloat(tokens.getPropertyValue("--sz-280px"));
+    const conversationMinWidth = Number.parseFloat(tokens.getPropertyValue("--sz-420px"));
+    const measure = () => setChatListTooWide(area.clientWidth < listWidth + conversationMinWidth);
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(area);
+    return () => observer?.disconnect();
+  }, [measureChatSpace]);
+
   // Chat keeps its header beside the agent sidebar, including before an agent is selected.
   const useStreamlinedTaskDetailShell = streamlinedUiEnabled && (isTaskDetailRoute || isAgentChatRoute);
   const useInsetTaskDetailHeader = useStreamlinedTaskDetailShell && !isAgentChatRoute;
   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
   const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
+  const appsDeveloperTabs = useAppsDeveloperTabs();
   const appDetailConnectionId =
     isAppsRoute && companyPathSegments[1] && !RESERVED_APP_SUBPATHS.has(companyPathSegments[1].toLowerCase())
       ? companyPathSegments[1]
@@ -153,7 +171,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const scrollMemory = useRef(new NavigationScrollMemory());
   const activeScrollKey = useRef<string>(location.key);
   const mobileNavVisible = useMobileNavVisibility(isMobile, location.pathname);
-  const mobileViewportRef = useMobileVisualViewport(isMobile);
+  const mobileViewportRef = useMobileVisualViewport(true);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const matchedCompany = useMemo(() => {
     if (!companyPrefix) return null;
@@ -196,7 +214,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     <AppDetailSidebar kind="connection" connectionId={appDetailConnectionId} />
   ) : appDetailApplicationId ? (
     <AppDetailSidebar kind="application" applicationId={appDetailApplicationId} />
-  ) : isAppsRoute || isToolsRoute ? (
+  ) : appsRouteHasRail(companyPathSegments, appsDeveloperTabs.length > 0) ? (
     <AppsSidebar />
   ) : routeSidebarSlot ? (
     streamlinedUiEnabled ? (
@@ -222,14 +240,11 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   ) : null;
   const secondarySidebar = isAgentChatRoute ? <AgentConversationsSidebar /> : shellRoute.builtInContextualSurface === "agent" && agentId ? (
     <AgentContextualSidebar agentRef={agentId} />
-  ) : streamlinedUiEnabled && shellRoute.builtInContextualSurface === "routine" && routineId ? (
-    <SetupWizardSidebarOutlet><RoutineContextualSidebar routineId={routineId} /></SetupWizardSidebarOutlet>
   ) : sharedSecondarySidebar;
   const hasSecondarySidebar = secondarySidebar != null;
   const keepsPrimarySidebar = streamlinedUiEnabled && hasSecondarySidebar && (
     isAgentChatRoute
     || shellRoute.builtInContextualSurface === "agent"
-    || shellRoute.builtInContextualSurface === "routine"
     || isAppsRoute
     || isToolsRoute
   );
@@ -253,11 +268,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     },
     refetchIntervalInBackground: false,
   });
-
-  useLayoutEffect(() => {
-    setForceCollapsed(!streamlinedUiEnabled && hasSecondarySidebar);
-    return () => setForceCollapsed(false);
-  }, [hasSecondarySidebar, setForceCollapsed, streamlinedUiEnabled]);
 
   useEffect(() => {
     const previous = previousShellRoute.current;
@@ -361,102 +371,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       cancelable: true,
     }));
   }, []);
-
-  // Peek (hover flyout) triggers for the collapsed rail. Opening has a tiny
-  // delay so a pointer merely sweeping across the rail doesn't flash it open;
-  // closing is debounced to avoid flicker on the rail→overlay seam. Keyboard
-  // focus opens immediately so tabbing reaches the full nav. Context gates the
-  // effective `peeking` to desktop + collapsed + hover-capable pointers, so
-  // these handlers are inert otherwise.
-  const peekTimer = useRef<number | null>(null);
-  // Whether the pointer is currently over the peek panel. Used to keep the peek
-  // open across focus changes (e.g. navigation steals focus to <main>) as long as
-  // the user is still hovering — it should only close when they actually mouse off
-  // (PAP-10676).
-  const pointerInsidePanel = useRef(false);
-  // When the user explicitly collapses while the pointer is still over the panel,
-  // suppress re-peeking until the pointer actually leaves — otherwise the lingering
-  // hover immediately re-expands the rail and the collapse "doesn't take" until the
-  // mouse moves away (PAP-10676). Re-armed on the next genuine pointer-leave.
-  const suppressPeekRef = useRef(false);
-  const clearPeekTimer = useCallback(() => {
-    if (peekTimer.current !== null) {
-      window.clearTimeout(peekTimer.current);
-      peekTimer.current = null;
-    }
-  }, []);
-  const openPeek = useCallback(() => {
-    clearPeekTimer();
-    peekTimer.current = window.setTimeout(() => setPeeking(true), 50);
-  }, [clearPeekTimer, setPeeking]);
-  const openPeekImmediate = useCallback(() => {
-    clearPeekTimer();
-    setPeeking(true);
-  }, [clearPeekTimer, setPeeking]);
-  const closePeek = useCallback(() => {
-    clearPeekTimer();
-    peekTimer.current = window.setTimeout(() => setPeeking(false), 120);
-  }, [clearPeekTimer, setPeeking]);
-  // Tracked even while expanded so that, at the moment of collapse, we know
-  // whether the pointer is over the panel and should suppress the re-peek.
-  const handlePanelPointerEnter = useCallback(() => {
-    pointerInsidePanel.current = true;
-    if (collapsed && !suppressPeekRef.current) openPeek();
-  }, [collapsed, openPeek]);
-  const handlePanelPointerLeave = useCallback(() => {
-    pointerInsidePanel.current = false;
-    suppressPeekRef.current = false; // pointer left — re-arm peek for the next hover
-    closePeek();
-  }, [closePeek]);
-  const handlePanelFocus = useCallback(() => {
-    if (suppressPeekRef.current) return;
-    openPeekImmediate();
-  }, [openPeekImmediate]);
-  // Close on focus leaving the panel only when the pointer isn't hovering it.
-  // Clicking a rail/peek nav item moves focus to <main> on navigation; if the
-  // mouse is still over the flyout we keep it open until the pointer leaves.
-  const handlePanelBlur = useCallback(() => {
-    if (pointerInsidePanel.current) return;
-    closePeek();
-  }, [closePeek]);
-
-  // Tidy up any pending peek timer on unmount.
-  useEffect(() => clearPeekTimer, [clearPeekTimer]);
-
-  // An explicit collapse must be atomic: cancel any in-flight/active peek, and if
-  // the pointer is still over the panel suppress re-peeking until it leaves, so the
-  // rail doesn't immediately re-expand under the lingering hover (PAP-10676).
-  const wasCollapsed = useRef(collapsed);
-  useEffect(() => {
-    if (collapsed !== wasCollapsed.current) {
-      if (collapsed) {
-        clearPeekTimer();
-        setPeeking(false);
-        suppressPeekRef.current = pointerInsidePanel.current;
-      } else {
-        suppressPeekRef.current = false;
-      }
-      wasCollapsed.current = collapsed;
-    }
-  }, [collapsed, clearPeekTimer, setPeeking]);
-
-  // Intentionally do NOT close the peek on navigation: clicking a nav item means
-  // the pointer is still over the flyout, so it should stay open until the user
-  // actually mouses off (handled by onPanelMouseLeave) or blurs out / hits Escape
-  // (PAP-10676). Auto-closing here made the sidebar collapse on every page change.
-
-  // Escape closes an open peek without trapping the pointer.
-  useEffect(() => {
-    if (!peeking) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        clearPeekTimer();
-        setPeeking(false);
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [peeking, clearPeekTimer, setPeeking]);
 
   useCompanyPageMemory();
 
@@ -634,20 +548,13 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
             </div>
             <SidebarAccountMenu
               deploymentMode={health?.deploymentMode}
-              forceExpanded={replacesPrimarySidebar}
             />
           </div>
         ) : (
           <SidebarShell
             open={sidebarOpen}
-            collapsed={designSandbox || replacesPrimarySidebar ? false : collapsed}
-            peeking={designSandbox || replacesPrimarySidebar ? false : peeking}
             resizable
             storageKey={designSandbox ? "paperclip.design-proposals.sandbox.sidebar-width" : coordinatorWorkspaceEnabled ? "paperclip.coordinator.sidebar-width" : undefined}
-            onPanelMouseEnter={replacesPrimarySidebar ? undefined : handlePanelPointerEnter}
-            onPanelMouseLeave={replacesPrimarySidebar ? undefined : handlePanelPointerLeave}
-            onPanelFocusCapture={!replacesPrimarySidebar && collapsed ? handlePanelFocus : undefined}
-            onPanelBlurCapture={!replacesPrimarySidebar && collapsed ? handlePanelBlur : undefined}
           >
             {designSandbox ? <DesignSandboxSidebar /> : <>
               <div className="flex flex-1 min-h-0">
@@ -657,15 +564,11 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
                   <Sidebar>{sidebarSections}</Sidebar>
                 )}
               </div>
-              {/* Dock optional announcements in the sidebar column so they never
-                  cover the task thread or composer. While the sidebar is a rail
-                  the card waits until the sidebar is expanded again. */}
-              {sidebarOpen && (replacesPrimarySidebar || !collapsed) ? (
+              {sidebarOpen ? (
                 <AnnouncementWell health={health} placement="sidebar" />
               ) : null}
               <SidebarAccountMenu
                 deploymentMode={health?.deploymentMode}
-                forceExpanded={replacesPrimarySidebar}
               />
             </>}
           </SidebarShell>
@@ -686,7 +589,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
             )}
           >
             <StandaloneBrowserControls mobile={isMobile} />
-            <BreadcrumbBar showPropertiesToggle={isAgentChatRoute} />
+            <BreadcrumbBar showPropertiesToggle={isAgentChatRoute} toolbarAction={chatListCollapsed ? <AgentConversationsSidebar compact /> : undefined} />
             {isMobile && isCompanySettingsRoute ? (
               <div className="border-b border-border px-4 pb-3">
                 <CompanySettingsNav />
@@ -698,12 +601,20 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
             isMobile ? "block" : "flex flex-1 min-h-0",
             !isMobile && useStreamlinedTaskDetailShell && "streamlined-task-detail-surface",
           )}>
-            {!isMobile && (keepsPrimarySidebar || isAgentChatRoute) ? (
-              <SecondarySidebar className={cn(isAgentChatRoute ? "w-70" : "w-60", "shrink-0 bg-background")}>
+            {!isMobile && keepsPrimarySidebar && !isAgentChatRoute ? (
+              <SecondarySidebar className="w-60 shrink-0 bg-background">
                 {secondarySidebar}
               </SecondarySidebar>
             ) : null}
-            <div className={cn(!isMobile && useStreamlinedTaskDetailShell ? "flex min-w-0 flex-1 flex-col" : "contents")}>
+            <div
+              ref={desktopAgentChat ? chatAreaRef : undefined}
+              className={cn(desktopAgentChat ? "flex min-w-0 flex-1" : !isMobile && useStreamlinedTaskDetailShell ? "flex min-w-0 flex-1 flex-col" : "contents")}
+            >
+              {desktopAgentChat ? (
+                <SecondarySidebar className={cn("w-(--sz-280px) shrink-0 bg-background", chatListCollapsed && "hidden")}>
+                  {secondarySidebar}
+                </SecondarySidebar>
+              ) : null}
               {!isMobile && useInsetTaskDetailHeader ? (
                 <>
                   <StandaloneBrowserControls mobile={false} />
@@ -736,6 +647,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
               }
               className={cn(
                 "flex-1 p-4 outline-none md:p-6",
+                desktopAgentChat && "min-w-0",
                 // The task thread owns its scrollable top spacing. Leaving the
                 // page shell's top padding in place creates a stationary dark
                 // strip below the breadcrumb while messages scroll behind it.
@@ -762,13 +674,14 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
               )}
               </main>
             </div>
-            <PropertiesPanel taskDetailLayout={!isMobile && useStreamlinedTaskDetailShell} />
+            <PropertiesPanel taskDetailLayout={!isMobile && (useStreamlinedTaskDetailShell || (coordinatorWorkspaceEnabled && companyPathSegments[0]?.toLowerCase() === "decisions"))} />
           </div>
         </div>
       </div>
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />
       <BoardDialogs />
+      <CloudTrialGate />
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <ToastViewport />
       {isMobile ? <AnnouncementWell health={health} placement="floating" /> : null}

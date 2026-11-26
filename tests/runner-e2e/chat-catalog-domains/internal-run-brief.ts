@@ -2,13 +2,14 @@ import { createServer, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { listenOnFetchAllowedPort } from "../../e2e/fetch-allowed-port.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
+const WEBSITE_BRIEF = "The website brief is now available: Acorn Notes needs a semantic heading and an accessible signup link. For this prerequisite, record a short implementation note and complete the task. No website file or delivery is requested yet.";
 /** A real read-only app holds its first tool response while the product retains the actual worker checkout. */
-export async function startRunBriefGate(ctx: ChatCatalogContext, workerId: string) {
+export async function startRunBriefGate(ctx: ChatCatalogContext, workerId: string, briefText = WEBSITE_BRIEF) {
   const token = randomBytes(32).toString("hex"); ctx.input.privateSecrets?.push(token);
   const calls: Array<{ sequence: number; authorized: boolean; operation: string; receivedAt: string }> = [];
   let released = false; const pending: Array<{ response: ServerResponse; id: unknown }> = [];
   const reply = (response: ServerResponse, id: unknown, result: unknown) => { if (!response.destroyed) { response.writeHead(200, { "content-type": "application/json" }); response.end(JSON.stringify({ jsonrpc: "2.0", id, result })); } };
-  const brief = { content: [{ type: "text", text: "The website brief is now available: Acorn Notes needs a semantic heading and an accessible signup link. For this prerequisite, record a short implementation note and complete the task. No website file or delivery is requested yet." }] };
+  const brief = { content: [{ type: "text", text: briefText }] };
   const server = createServer(async (request, response) => {
     try {
       let size = 0; const chunks: Buffer[] = []; for await (const chunk of request) { size += chunk.length; if (size > 65536) throw new Error("Oversized app message"); chunks.push(chunk); }

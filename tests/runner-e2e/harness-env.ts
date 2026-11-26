@@ -9,6 +9,7 @@ import path from "node:path";
 import { isEvalRemoteOrigin } from "./eval-remote-gateway.js";
 import { chatNeedsApiTools, isManagedHiringCase } from "./chat-cases.js";
 import { CREDENTIAL_NAMES } from "./types.js";
+import { isAntigravityAdmittedExecution } from "./antigravity-admission.js";
 import type { MatrixExecution } from "./types.js";
 
 const DATABASE_KEYS = ["DATABASE_URL", "DATABASE_MIGRATION_URL", "PAPERCLIP_RUNNER_E2E_POSTGRES_ADMIN_URL"] as const;
@@ -38,7 +39,7 @@ const AMBIENT_EXTERNAL_STATE_KEYS = [
   "PAPERCLIP_STORAGE_S3_PREFIX",
   "PAPERCLIP_STORAGE_S3_FORCE_PATH_STYLE",
 ] as const;
-const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|BRAINTRUST|DAYTONA|XAI|GROK|KIMI|CURSOR|COPILOT|GITHUB|GH)(?:_|$)/;
+const PROVIDER_SECRET_KEY = /^(?:OPENAI|ANTHROPIC|OPENROUTER|BRAINTRUST|DAYTONA|XAI|GROK|KIMI|CURSOR|COPILOT|GITHUB|GH|GEMINI|GOOGLE)(?:_|$)/;
 
 /** Vault SDK authority is never ambient chat input. An explicitly selected
  * server-only vault handoff supplies its own finite overrides after scrubbing. */
@@ -176,6 +177,8 @@ export function buildRunnerE2EProcessEnvironment(
     if (!agent) continue;
     const admittedSuite = agent === "kimi"
       ? execution.suite.id === "kimi-qualification" && execution.profile.id === "runner-acpx-kimi"
+      : agent === "antigravity"
+      ? isAntigravityAdmittedExecution(execution)
       : execution.suite.id === "extended-harnesses"
       || execution.suite.id === "rich-acp-warm-continuity"
       || (execution.suite.id === "pi-native" && agent === "pi")
@@ -189,7 +192,9 @@ export function buildRunnerE2EProcessEnvironment(
     if (QUALIFIED_ACPX_PROFILES[agent].qualificationStatus !== "pending") {
       continue;
     }
-    if (agent === "kimi") continue;
+    // Kimi and Antigravity receive a company-bound grant per cell, never the
+    // shared operator list (server-restart-request.ts).
+    if (agent === "kimi" || agent === "antigravity") continue;
     const prior = candidates.get(agent);
     if (prior !== undefined && prior !== execution.profile.model) throw new Error("Conflicting candidate models");
     candidates.set(agent, execution.profile.model);
@@ -257,6 +262,7 @@ export function assertIsolatedServerEnvironment(
     paperclipHome: string;
     configPath: string;
     workspaceStorage?: NodeJS.ProcessEnv;
+    generatedSecretsMasterKey?: string;
   },
 ) {
   const home = env.PAPERCLIP_HOME;
@@ -285,6 +291,7 @@ export function assertIsolatedServerEnvironment(
     ...AMBIENT_PAPERCLIP_CREDENTIAL_KEYS,
     ...AMBIENT_EXTERNAL_STATE_KEYS,
   ]) {
+    if (key === "PAPERCLIP_SECRETS_MASTER_KEY" && expected.generatedSecretsMasterKey && env[key] === expected.generatedSecretsMasterKey) continue;
     if (env[key] && !(AMBIENT_EXTERNAL_STATE_KEYS.includes(key as typeof AMBIENT_EXTERNAL_STATE_KEYS[number])
       && expected.workspaceStorage?.[key] === env[key] && expected.workspaceStorage?.PAPERCLIP_STORAGE_PROVIDER === "s3"))
       throw new Error(

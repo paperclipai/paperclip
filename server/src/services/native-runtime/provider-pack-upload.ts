@@ -1,7 +1,8 @@
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { NativeRunTrace } from "./native-run-trace.js";
 import { readProviderPackArchive, stageProviderPackArchive } from "./provider-pack-archive.js";
-import type { ProviderPackIdentity } from "./remote-provider-pack-verification.js";
+import { requiredProviderAssetNames } from "./provider-pack-compatibility.js";
+import type { PackProvider, ProviderPackIdentity } from "./remote-provider-pack-verification.js";
 import { resolveProviderPackUploadSource } from "./retained-provider-pack-source.js";
 import { providerPackExtractionProbe } from "./provider-pack-extraction.js";
 import { providerPackLayersArgument } from "./provider-pack-layers.js";
@@ -16,6 +17,7 @@ export async function uploadVerifiedProviderPack(input: {
   /** Identity selected for this execution; a retained session can pin an older release. */
   expectedDigest: string;
   manifest?: ProviderPackIdentity;
+  provider?: PackProvider;
   signal?: AbortSignal;
   runner: CommandManagedRuntimeRunner;
   cwd: string;
@@ -24,6 +26,8 @@ export async function uploadVerifiedProviderPack(input: {
   trace?: NativeRunTrace;
   verifyDirectory: (root: string) => void | Promise<void>;
   stageDirectory: (root: string) => Promise<void>;
+  /** True when `targetPath` already holds a verified core pack for `expectedDigest` and can be supplemented in place. */
+  verifyStagedCore?: () => Promise<boolean>;
   verifyUploaded: () => Promise<void>;
 }): Promise<void> {
   if (input.sourceDigest !== input.expectedDigest && !input.manifest) {
@@ -44,7 +48,7 @@ export async function uploadVerifiedProviderPack(input: {
     readProviderPackArchive(source.root, input.expectedDigest, input.signal));
   if (source.archiveOnly) {
     if (!archive) throw Error("runner_remote_provider_source_invalid");
-    if ("kind" in archive && providerPackLayersArgument(archive, input.targetPath, input.reuseRoots) === null) {
+    if ("kind" in archive && providerPackLayersArgument(archive, input.targetPath, input.reuseRoots, input.provider, input.manifest) === null) {
       throw Error("runner_remote_provider_archive_transport_unavailable");
     }
     const capability = await measure("provider_pack.archive.probe", () => input.runner.execute({
@@ -52,6 +56,26 @@ export async function uploadVerifiedProviderPack(input: {
       bypassSession: true, timeoutMs: 10_000,
     }));
     if (capability.exitCode !== 0 || capability.timedOut) throw Error("runner_remote_provider_archive_transport_unavailable");
+  }
+  const requiredAssets = requiredProviderAssetNames(input.provider, input.manifest);
+  if (archive && requiredAssets && requiredAssets.length > 0 && input.verifyStagedCore) {
+    input.signal?.throwIfAborted();
+    if (await input.verifyStagedCore()) {
+      const supplemented = await measure("provider_pack.upload", () => stageProviderPackArchive({
+        archive,
+        runner: input.runner,
+        targetPath: input.targetPath,
+        reuseRoots: input.reuseRoots,
+        trace: input.trace,
+        provider: input.provider,
+        manifest: input.manifest,
+        supplementAssetsOnly: true,
+      }));
+      if (supplemented) {
+        await measure("provider_pack.verify_uploaded", input.verifyUploaded);
+        return;
+      }
+    }
   }
   if (!archive) await verifyDirectory();
   input.signal?.throwIfAborted();
@@ -66,9 +90,11 @@ export async function uploadVerifiedProviderPack(input: {
     if (archive && await stageProviderPackArchive({
       archive, runner: input.runner, targetPath: input.targetPath,
       reuseRoots: input.reuseRoots, trace: input.trace,
+      provider: input.provider, manifest: input.manifest,
     })) return;
     if (source.archiveOnly) throw Error("runner_remote_provider_archive_transport_unavailable");
     if (archive) await verifyDirectory();
+    // Directory fallback streams via syncIn without buffering the full pack in memory.
     await input.stageDirectory(source.root);
   });
   await measure("provider_pack.verify_uploaded", input.verifyUploaded);

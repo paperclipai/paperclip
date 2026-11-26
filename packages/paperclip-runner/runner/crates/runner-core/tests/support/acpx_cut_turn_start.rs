@@ -3,6 +3,7 @@
 //! journal decides whether the prompt could have reached the provider.
 
 use super::*;
+use paperclip_runner_core::durable::PROVIDER_SESSION_CLOSED;
 
 const JOURNAL: &str = "paperclip-turn-dispatch.jsonl";
 
@@ -27,8 +28,14 @@ fn kill(pid: &Value) {
 }
 
 /// Starts `turn` against a sidecar that freezes at `fault`, then kills the
-/// sidecar once the journal shows `phases`, and returns the start's error.
-fn cut_turn_start(harness: &mut Harness, turn: &str, fault: &str, phases: &[&str]) -> String {
+/// sidecar once the journal shows `phases`, and returns the start's error and
+/// its closed classification.
+fn cut_turn_start(
+    harness: &mut Harness,
+    turn: &str,
+    fault: &str,
+    phases: &[&str],
+) -> (String, Option<&'static str>) {
     harness.fixture.fault(fault);
     let sidecar = harness.fixture.process_starts().last().unwrap()["processStart"].clone();
     let root = harness.fixture.0.clone();
@@ -68,21 +75,23 @@ fn cut_turn_start(harness: &mut Harness, turn: &str, fault: &str, phases: &[&str
             "turn.start",
             json!({"turnId": turn, "text": "Write the brief."}),
         ))
-        .unwrap_err()
-        .to_string();
+        .unwrap_err();
     killer.join().unwrap();
     harness.fixture.fault("");
-    error
+    (error.to_string(), error.classification())
 }
 
 #[test]
 fn a_start_cut_off_before_the_prompt_left_reopens_and_sends_the_prompt_once() {
     let mut harness = Harness::new();
-    let error = cut_turn_start(&mut harness, "cut", "hang-before-dispatch", &["received"]);
+    let (error, classification) =
+        cut_turn_start(&mut harness, "cut", "hang-before-dispatch", &["received"]);
     assert!(
         error.contains("before its prompt reached the provider"),
         "{error}"
     );
+    // The run recovers by itself: the controller must keep retrying it.
+    assert_eq!(classification, None);
     let saved = harness.fixture.state();
     assert_eq!(saved["lifecycle"], "prepared", "{saved}");
     assert_eq!(saved["activeTurnId"], Value::Null);
@@ -107,13 +116,15 @@ fn a_start_cut_off_before_the_prompt_left_reopens_and_sends_the_prompt_once() {
 #[test]
 fn a_start_cut_off_after_the_prompt_left_stays_closed_and_never_resends() {
     let mut harness = Harness::new();
-    let error = cut_turn_start(
+    let (error, classification) = cut_turn_start(
         &mut harness,
         "cut",
         "hang-after-dispatch",
         &["received", "dispatched"],
     );
     assert!(error.contains("failed closed"), "{error}");
+    // No later start of this run can reopen it: the controller offers Retry at once.
+    assert_eq!(classification, Some(PROVIDER_SESSION_CLOSED));
     assert_eq!(harness.fixture.state()["lifecycle"], "closed");
     let starts = harness.fixture.process_starts().len();
     harness.sequence += 1;
@@ -124,9 +135,9 @@ fn a_start_cut_off_after_the_prompt_left_stays_closed_and_never_resends() {
             "turn.start",
             json!({"turnId": "resent", "text": "Write the brief."}),
         ))
-        .unwrap_err()
-        .to_string();
-    assert_eq!(refused, "ACPX session is not open");
+        .unwrap_err();
+    assert_eq!(refused.to_string(), "ACPX session is not open");
+    assert_eq!(refused.classification(), Some(PROVIDER_SESSION_CLOSED));
     assert_eq!(harness.fixture.process_starts().len(), starts);
 }
 

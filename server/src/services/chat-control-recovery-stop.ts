@@ -1,4 +1,4 @@
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, lt, ne, or, sql } from "drizzle-orm";
 import { runTaskContextColumn } from "./run-task-binding.js";
 import {
   agentWakeupRequests,
@@ -143,9 +143,18 @@ export async function readChatControlNativeParent(
         // A committed continuation or failed-turn retry effect that targets
         // this intent is its proof. Refusing the retry stranded the task
         // with no queued work.
-        inArray(statusDecisionEffects.effectKind, NATIVE_STATUS_WAKE_EFFECT_KINDS),
-        eq(statusDecisionEffects.targetType, "agent_wakeup_request"),
-        eq(statusDecisionEffects.targetId, intent.id),
+        // A bound blocker records the owner wake it queued in its payload.
+        or(
+          and(
+            inArray(statusDecisionEffects.effectKind, NATIVE_STATUS_WAKE_EFFECT_KINDS),
+            eq(statusDecisionEffects.targetType, "agent_wakeup_request"),
+            eq(statusDecisionEffects.targetId, intent.id),
+          ),
+          and(
+            eq(statusDecisionEffects.effectKind, "bind_blocker"),
+            sql`${statusDecisionEffects.payload}->>'wakeId' = ${intent.id}`,
+          ),
+        ),
         eq(statusDecisionEffects.deliveryState, "delivered"),
       ),
     )
@@ -197,6 +206,7 @@ export async function readChatControlRecoveryStop(
         nativeIssueId: heartbeatRuns.nativeIssueId,
         wakeupRequestId: heartbeatRuns.wakeupRequestId,
         retryOfRunId: heartbeatRuns.retryOfRunId,
+        createdAt: heartbeatRuns.createdAt,
         contextSnapshot: runTaskContextColumn,
       })
       .from(heartbeatRuns)
@@ -287,8 +297,29 @@ export async function readChatControlRecoveryStop(
             wake.reason ?? "",
           ));
       if (!automatic) return { kind: "clear" };
-      if (!id(run.retryOfRunId)) return { kind: "unresolved" };
-      runId = run.retryOfRunId;
+      if (id(run.retryOfRunId)) {
+        runId = run.retryOfRunId;
+        continue;
+      }
+      const [previous] = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.companyId, scope.companyId),
+            ne(heartbeatRuns.id, run.id),
+            lt(heartbeatRuns.createdAt, run.createdAt),
+            or(
+              eq(heartbeatRuns.issueId, scope.issueId),
+              eq(heartbeatRuns.nativeIssueId, scope.issueId),
+              sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${scope.issueId}`,
+            ),
+          ),
+        )
+        .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+        .limit(1);
+      if (!previous) return { kind: "clear" };
+      runId = previous.id;
       continue;
     }
     const payload = record(action.payload);

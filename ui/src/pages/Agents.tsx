@@ -4,7 +4,7 @@ import { AgentRosterFilters, useAgentRosterFilters } from "@/components/agents/A
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { AgentChatPin, useAgentChatPins } from "@/components/AgentChatPin";
 import { useAgentChatEnabled } from "../hooks/useAgentChatEnabled";
-import { useState, useEffect, useMemo, lazy, Suspense } from "react";
+import { useState, useEffect, useMemo, useRef, lazy, Suspense } from "react";
 import { Link, useNavigate, useLocation } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi, type OrgNode } from "../api/agents";
@@ -27,6 +27,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { OrgChart } from "./OrgChart";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
+import type { OrgChartActions } from "../components/OrgChartControls";
 import { AgentsToolbar } from "../components/AgentsToolbar";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -193,6 +194,13 @@ export type AgentsView = "list" | "org";
 export function Agents({ initialView = "list" }: { initialView?: AgentsView } = {}) {
   const agentChatPins = useAgentChatPins();
   const [query, setQuery] = useState("");
+  const chartActionsRef = useRef<OrgChartActions | null>(null);
+  const chartActions = useMemo<OrgChartActions>(() => ({
+    zoomIn: () => chartActionsRef.current?.zoomIn(),
+    zoomOut: () => chartActionsRef.current?.zoomOut(),
+    fit: () => chartActionsRef.current?.fit(),
+  }), []);
+  const [orgControlsContainer, setOrgControlsContainer] = useState<HTMLDivElement | null>(null);
   const agentChat = useAgentChatEnabled();
   const { selectedCompanyId } = useCompany();
   const { openNewAgent } = useDialogActions();
@@ -203,13 +211,14 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const pathSegment = location.pathname.split("/").pop() ?? "all";
   const requestedTab: FilterTab = isFilterTab(pathSegment) ? pathSegment : "all";
-  const [view, setView] = useState<AgentsView>(() => streamlinedUiEnabled ? initialView : "org");
+  const previewTasks = import.meta.env.DEV && new URLSearchParams(location.search).get("orgTasks") === "demo";
+  const [view, setView] = useState<AgentsView>(() => previewTasks ? "org" : streamlinedUiEnabled ? initialView : "org");
   const forceListView = !streamlinedUiEnabled && isMobile;
   const effectiveView: AgentsView = forceListView ? "list" : view;
 
   useEffect(() => {
-    setView(streamlinedUiEnabled ? initialView : "org");
-  }, [initialView, streamlinedUiEnabled]);
+    setView(previewTasks ? "org" : streamlinedUiEnabled ? initialView : "org");
+  }, [initialView, streamlinedUiEnabled, previewTasks]);
 
   const { data: instanceSettings } = useQuery({
     queryKey: queryKeys.instance.settings,
@@ -327,6 +336,13 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     }
   }, [navigate, requestedTab]);
 
+  const eligibleAgents = useMemo(() => (agents ?? []).filter(agent => !HIDDEN_AGENT_STATUSES.has(agent.status)), [agents]);
+  const filtered = useMemo(() => filterAgents(eligibleAgents, tab, builtInAgentIds, query)
+    .filter(rosterFilters.matches), [eligibleAgents, tab, builtInAgentIds, query, rosterFilters.matches]);
+  // Keep hierarchy placement stable while search/filter only changes card emphasis.
+  const visibleOrg = useMemo(() => filterOrgTree(orgTree ?? [], "all", builtInAgentIds), [orgTree, builtInAgentIds]);
+  const matchingAgentIds = useMemo(() => new Set(filtered.map(agent => agent.id)), [filtered]);
+
   if (!selectedCompanyId) {
     return <EmptyState icon={Bot} message="Select an organization to view agents." />;
   }
@@ -348,8 +364,6 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     );
   }
 
-  const filtered = filterAgents(agents ?? [], tab, builtInAgentIds, query).filter(rosterFilters.matches);
-  const filteredOrg = filterOrgTree(orgTree ?? [], tab, builtInAgentIds, query.trim() || rosterFilters.activeCount ? new Set(filtered.map(agent => agent.id)) : undefined);
   const environmentDataLoading = environmentsEnabled && environments === undefined;
   const showEnvironmentColumn = environmentsEnabled && (environments === undefined || environments.length > 1);
   const resolveRenderedEnvironment = (agentId: string) => (
@@ -432,15 +446,16 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
 
   return (
     <div className={cn(
-      "flex flex-col gap-4 @container",
-      effectiveView === "org" && "h-full min-h-0",
+      "agents-surface flex flex-col gap-4 @container",
+      effectiveView === "org" && "agents-org-surface h-full min-h-0",
     )}>
-      <AgentsToolbar query={query} onQueryChange={setQuery} view={effectiveView} onViewChange={setView}
-        hideViewToggle={forceListView} onNewAgent={openNewAgent} />
+      <div className={effectiveView === "org" ? "agents-org-toolbar" : undefined}>
+        <AgentsToolbar orgActions={visibleOrg.length ? chartActions : undefined} orgControlsRef={setOrgControlsContainer} query={query} onQueryChange={setQuery} view={effectiveView} onViewChange={setView}
+          hideViewToggle={forceListView} onNewAgent={openNewAgent}
+          filters={<AgentRosterFilters {...rosterFilters} count={filtered.length} compact />} />
+      </div>
 
-      <AgentRosterFilters {...rosterFilters} count={filtered.length} />
-
-      <div className={cn("min-h-0 space-y-4", effectiveView === "org" && "flex flex-1 flex-col")}>
+      <div className={cn("min-h-0 space-y-4", effectiveView === "org" && "agents-org-content flex flex-1 flex-col")}>
 
       {agents && agents.length === 0 && (
         <EmptyState
@@ -454,7 +469,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
       {/* List view */}
       {effectiveView === "list" && agents && agents.length > 0 && (
         <AgentBulkRoster key={selectedCompanyId} companyId={selectedCompanyId}
-          agents={agents}
+          agents={eligibleAgents}
           visibleAgents={filtered} renderAgent={renderAgentRow} renderStatus={renderAgentStatus}
           renderChat={agentChat.enabled ? agent => (
             // Use Radix's standard hover delay, isolated from the app's instant provider.
@@ -480,14 +495,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
 
 
       {/* Org chart view */}
-      {effectiveView === "org" && filteredOrg.length > 0 && (
-        <OrgChart embedded orgTree={filteredOrg} agents={agents ?? []} />
-      )}
-
-      {effectiveView === "org" && orgTree && orgTree.length > 0 && filteredOrg.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8">
-          No agents match your search and filters.
-        </p>
+      {effectiveView === "org" && visibleOrg.length > 0 && (
+        <OrgChart embedded actionsRef={chartActionsRef} controlsContainer={orgControlsContainer} orgTree={visibleOrg} agents={agents ?? []} matchingAgentIds={query.trim() || rosterFilters.activeCount ? matchingAgentIds : undefined} />
       )}
 
       {effectiveView === "org" && orgTree && orgTree.length === 0 && (

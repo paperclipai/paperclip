@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
-import { NEW_COMPANY_NATIVE_MODEL, NEW_COMPANY_PROVIDER_MODEL, nativeSetupRequest, requireNativeFirstAgentProof } from "./identity-new-company-native-proof.js";
+import { NEW_COMPANY_NATIVE_MODEL, NEW_COMPANY_PROVIDER_MODEL, NativeProofFailure, nativeSetupRequest, requireNativeFirstAgentProof } from "./identity-new-company-native-proof.js";
 import { aiRoutingModel } from "../../../packages/shared/src/ai-provider-routing.js";
 import { createAiConnectionSchema } from "../../../packages/shared/src/ai-connections.js";
 import { resolveRouteOnboardingOptions } from "../../../ui/src/lib/onboarding-route.js";
@@ -24,6 +24,13 @@ function proof(): Proof {
 }
 describe("native first-agent public setup custody", () => {
   it("accepts the same saved CEO/account/local model test and hire", () => expect(() => requireNativeFirstAgentProof(proof())).not.toThrow());
+  it("names a not-yet-ready agent by its closed lifecycle and status values", () => {
+    const reason = (mutate: (p: Proof) => void) => { const p = proof(); mutate(p); try { requireNativeFirstAgentProof(p); } catch (error) { return (error as NativeProofFailure).reason; } return null; };
+    expect(reason(p => { p.agent.lifecycleState = "verifying"; })).toBe("agent-lifecycle-verifying");
+    expect(reason(p => { p.agent.lifecycleState = "pending_approval"; })).toBe("agent-lifecycle-pending-approval");
+    expect(reason(p => { p.agent.status = "error"; })).toBe("agent-status-error");
+    expect(reason(p => { p.agent.lifecycleState = "not-a-state"; })).toBe("agent-lifecycle-unknown");
+  });
   for (const [name, mutate] of Object.entries<(p: Proof) => void>({
     "remote target": p => { p.environment.driver = "remote"; },
     "wrong selected target": p => { p.probes[0]!.environmentId = "other"; },

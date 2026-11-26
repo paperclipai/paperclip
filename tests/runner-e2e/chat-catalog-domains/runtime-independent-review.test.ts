@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { gradeIndependentReview, replyLinksTask } from "./runtime-independent-review.js";
+import { gradeIndependentReview, independentReviewRoles, replyLinksTask } from "./runtime-independent-review.js";
 function valid() {
   const policy = { stages: [{ id: "review-stage", type: "review", participants: [{ type: "agent", agentId: "riley" }] }] };
   return { scenarioId: "task-coordination.independent-review", companyId: "company", leadId: "ceo", agents: [], links: [], humanQueries: [], reply: "", tasks: [{ id: "website" }], activity: [],
@@ -46,3 +46,35 @@ it("rejects a review that overwrote Morgan's artifact", () => { const o = valid(
 it("rejects an unbound final chat report", () => { const o = valid(); o.state.finalReplyAttributed = false; expect(gradeIndependentReview(o).passed).toBe(false); });
 it("rejects duplicate review work", () => { const o = valid(); o.runs.push({ id: "duplicate", agentId: "riley", status: "succeeded" }); expect(gradeIndependentReview(o).passed).toBe(false); });
 it("rejects absent actual review evidence", () => expect(gradeIndependentReview(undefined).passed).toBe(false));
+
+// Retained gha-42926311551 (full cohort on 9296c74e8d): the CEO relayed the authorization as a comment on
+// COM-1, which woke Morgan (the brief names Morgan as unblock owner who routes the review); Morgan's run
+// moved the task to review and Riley's review run started as the fifth run.
+function retainedRoles() {
+  const runs = [
+    { id: "impl", agentId: "morgan", status: "succeeded", contextSnapshot: { issueId: "website", wakeReason: "issue_assigned" } },
+    { id: "ack", agentId: "ceo", status: "succeeded", contextSnapshot: { issueId: "chat", wakeReason: "issue_commented" } },
+    { id: "canonical", agentId: "ceo", status: "succeeded", contextSnapshot: { issueId: "chat", wakeReason: "issue_commented" } },
+    { id: "continuation", agentId: "morgan", status: "succeeded", nativeIssueId: "website", contextSnapshot: { issueId: "website", commentId: "authorization", wakeReason: "issue_reopened_via_comment" } },
+    { id: "review", agentId: "riley", status: "running", contextSnapshot: { issueId: "website", wakeReason: "native_completion_review" } },
+  ];
+  const comments = [{ id: "authorization", issueId: "website", createdByRunId: "canonical" }];
+  return { runs, comments, setupRunIds: ["impl", "ack"], leadId: "ceo", sourceId: "chat", workerId: "morgan", reviewerId: "riley", taskId: "website" };
+}
+it("admits the retained owner-routed path: one Morgan continuation woken by the CEO's comment, then one Riley review", () => {
+  const roles = independentReviewRoles(retainedRoles());
+  expect(roles.valid).toBe(true); expect(roles.canonical.map(run => run.id)).toEqual(["canonical"]);
+  expect(roles.continuation.map(run => run.id)).toEqual(["continuation"]); expect(roles.review.map(run => run.id)).toEqual(["review"]);
+  const o = valid(); (o.state as Record<string, unknown>).ownerContinuationRunId = "continuation";
+  o.runs.splice(3, 0, { id: "continuation", agentId: "morgan", status: "succeeded", nativeIssueId: "website" } as typeof o.runs[number]);
+  expect(gradeIndependentReview(o).passed).toBe(true);
+});
+it("still rejects extra or duplicate work around the owner-routed path", () => {
+  const unprompted = retainedRoles(); unprompted.comments = []; expect(independentReviewRoles(unprompted).valid).toBe(false);
+  const otherCause = retainedRoles(); otherCause.comments[0]!.createdByRunId = "ack"; expect(independentReviewRoles(otherCause).valid).toBe(false);
+  const twice = retainedRoles(); twice.runs.push({ ...twice.runs[3]!, id: "again" }); expect(independentReviewRoles(twice).valid).toBe(false);
+  const reviews = retainedRoles(); reviews.runs.push({ ...reviews.runs[4]!, id: "second-review" }); expect(independentReviewRoles(reviews).valid).toBe(false);
+  const stranger = retainedRoles(); stranger.runs.push({ id: "x", agentId: "other", status: "succeeded", contextSnapshot: { issueId: "website", wakeReason: "issue_assigned" } }); expect(independentReviewRoles(stranger).valid).toBe(false);
+  // The grade counts the continuation only when it was recorded as the admitted owner run.
+  const o = valid(); o.runs.splice(3, 0, { id: "continuation", agentId: "morgan", status: "succeeded" }); expect(gradeIndependentReview(o).passed).toBe(false);
+});

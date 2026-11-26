@@ -437,9 +437,13 @@ fn a_runner_restart_in_the_same_run_keeps_the_failed_turn_end_restart_closed() {
             "turn.start",
             json!({"turnId": "second", "text": "Complete the work."}),
         ))
-        .unwrap_err()
-        .to_string();
-    assert_eq!(failed, "ACPX session is not open");
+        .unwrap_err();
+    assert_eq!(failed.to_string(), "ACPX session is not open");
+    // No same-run start can reopen it: the controller offers Retry at once.
+    assert_eq!(
+        failed.classification(),
+        Some(paperclip_runner_core::durable::PROVIDER_SESSION_CLOSED)
+    );
     assert_eq!(harness.fixture.process_starts().len(), starts);
     // Neither session.open nor a same-run attach reopens it.
     let reopened = harness

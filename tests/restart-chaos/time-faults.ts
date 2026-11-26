@@ -178,7 +178,7 @@ export function descendantPids(rootPid: number, table: readonly ProcessRow[]): n
   return out;
 }
 
-function readProcessTable(): ProcessRow[] {
+export function readProcessTable(): ProcessRow[] {
   return parseProcessTable(execFileSync("ps", ["-A", "-o", "pid=,ppid=,command="], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 }));
 }
 

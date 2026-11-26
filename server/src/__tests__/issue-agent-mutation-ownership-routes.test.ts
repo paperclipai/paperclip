@@ -125,6 +125,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async (): Promise<unknown> => null),
   getActiveRunForAgent: vi.fn(async (): Promise<unknown> => null),
+  getQueuedAssignmentRunForIssue: vi.fn(async (): Promise<unknown> => null),
   cancelRun: vi.fn(async (): Promise<unknown> => null),
   resumeTaskRetry: vi.fn(async () => undefined),
 }));
@@ -171,9 +172,11 @@ const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null))
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
 const mockRequestWorkspaceRecovery = vi.hoisted(() => vi.fn());
 const mockRequestTaskRetry = vi.hoisted(() => vi.fn());
+const mockAgentTaskRetryActor = vi.hoisted(() => vi.fn());
 const mockOnboardingFirstTaskDependenciesAllowed = vi.hoisted(() => vi.fn(async () => undefined));
 const mockGetExperimental = vi.hoisted(() => vi.fn());
 const mockResumeWorkspaceFinalization = vi.hoisted(() => vi.fn());
+const mockRecordNativeHumanSelfHandoff = vi.hoisted(() => vi.fn(async () => true));
 
 function registerRouteMocks() {
   vi.doMock("../services/instance-settings.js", async () => {
@@ -183,6 +186,8 @@ function registerRouteMocks() {
     }) };
   });
   vi.doMock("../services/task-retry.js", () => ({ requestTaskRetry: mockRequestTaskRetry }));
+  vi.doMock("../services/agent-task-retry.js", () => ({ agentOwnsRun: async () => true,
+    agentTaskRetryActor: mockAgentTaskRetryActor, recordAgentTaskRetry: async () => undefined }));
   vi.doMock("../services/onboarding-first-task-admission.js", async () => ({
     ...await vi.importActual<typeof import("../services/onboarding-first-task-admission.js")>("../services/onboarding-first-task-admission.js"),
     assertOnboardingFirstTaskDependenciesAllowed: mockOnboardingFirstTaskDependenciesAllowed,
@@ -190,10 +195,12 @@ function registerRouteMocks() {
   vi.doMock("../services/task-interruption-presentation.js", () => ({
     taskInterruptionPresentation: vi.fn(async () => null),
     taskInterruptionPresentations: vi.fn(async () => new Map()),
+    taskRetryRefusal: vi.fn(async () => null),
   }));
   vi.doMock("../services/native-runtime/native-workspace-owner-recovery.js", () => ({ resumeNativeWorkspaceAfterOwnerStop: mockResumeWorkspaceFinalization }));
   vi.doMock("../services/native-runtime/native-workspace-export-retry.js", () => ({ retryNativeWorkspaceExport: mockRetryWorkspaceExport }));
   vi.doMock("../services/workspace-recovery.js", () => ({ requestWorkspaceRecovery: mockRequestWorkspaceRecovery }));
+  vi.doMock("../services/native-runtime/native-human-self-handoff.js", () => ({ recordNativeHumanSelfHandoff: mockRecordNativeHumanSelfHandoff }));
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackAgentTaskCompleted: vi.fn(),
     trackErrorHandlerCrash: vi.fn(),
@@ -538,6 +545,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockChatRunRetries.prepareFailedChatRunRetry.mockReset();
     mockChatRunRetries.processFailedChatRunRetry.mockReset();
     mockRequestTaskRetry.mockReset().mockResolvedValue({ requestId: recoveryActionId, accepted: true, stale: false });
+    mockAgentTaskRetryActor.mockReset().mockResolvedValue(null);
     mockGetExperimental.mockReset().mockResolvedValue({ enableAgentChat: true });
     mockAccessService.canUser.mockReset();
     mockAccessService.decide.mockReset();
@@ -914,7 +922,7 @@ describe("agent issue mutation checkout ownership", () => {
   it("admits ordinary Retry only for a board actor with task mutation permission", async () => {
     const body = { idempotencyKey: recoveryActionId, observedRunId: ownerRunId };
     const deniedAgent = await request(createApp(peerActor())).post(`/api/issues/${issueId}/retry`).send(body);
-    expect(deniedAgent.status).toBe(403);
+    expect(deniedAgent.status, JSON.stringify(deniedAgent.body)).toBe(403);
     expect(mockRequestTaskRetry).not.toHaveBeenCalled();
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action !== "issue:mutate", action: input.action, reason: "test_gate", explanation: "Task is read-only.",
@@ -930,6 +938,21 @@ describe("agent issue mutation checkout ownership", () => {
     }));
   });
 
+  it("keeps a granted agent's own write boundary on Retry", async () => {
+    mockAgentTaskRetryActor.mockResolvedValue({ ...boardActor(), source: "board_key",
+      memberships: [{ companyId, membershipRole: "owner", status: "active" }] });
+    mockAccessService.decide.mockImplementation(async (input: { action: string; actor: { type: string } }) =>
+      input.actor.type === "agent" && input.action === "issue:mutate"
+        ? { allowed: false, action: input.action, reason: "deny_low_trust_boundary", explanation: "Issue is outside this low-trust boundary." }
+        : { allowed: true, action: input.action, reason: "allow_test", explanation: "Allowed." });
+    const body = { idempotencyKey: recoveryActionId, observedRunId: ownerRunId };
+
+    const denied = await request(createApp(peerActor())).post(`/api/issues/${issueId}/retry`).send(body);
+
+    expect(denied.status, JSON.stringify(denied.body)).toBe(403);
+    expect(mockRequestTaskRetry).not.toHaveBeenCalled();
+  });
+
   it("rejects client-selected workspace strategy and certifications on ordinary Retry", async () => {
     const response = await request(createApp(boardActor())).post(`/api/issues/${issueId}/retry`).send({
       idempotencyKey: recoveryActionId, observedRunId: ownerRunId,
@@ -940,14 +963,12 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it.each([
-    { owner: "another-user", enabled: true, status: 403 },
-    { owner: "board-user", enabled: false, status: 404 },
-    { owner: "board-user", enabled: true, status: 202 },
-  ])("gates Agent Chat task Retry by owner and feature ($owner, $enabled)", async ({ owner, enabled, status }) => {
+    { owner: "another-user", status: 403 },
+    { owner: "board-user", status: 202 },
+  ])("gates Agent Chat task Retry by owner ($owner)", async ({ owner, status }) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({
       conversationAgentId: ownerAgentId, conversationUserId: owner,
     }));
-    mockGetExperimental.mockResolvedValue({ enableAgentChat: enabled });
     const response = await request(createApp(boardActor())).post(`/api/issues/${issueId}/retry`).send({
       idempotencyKey: recoveryActionId, observedRunId: ownerRunId,
     });
@@ -2936,8 +2957,11 @@ describe("agent issue mutation checkout ownership", () => {
       }));
     });
 
-    it.each(["in_progress", "in_review"])("persists a human handoff from %s without waiting for its own slow shutdown", async status => {
+    it.each([
+      ["legacy", "in_progress"], ["legacy", "in_review"], ["native", "in_progress"], ["native", "in_review"],
+    ])("persists a %s run's human handoff from %s without cancelling the run", async (runtimeMode, status) => {
       mockIssueService.getById.mockResolvedValue(makeIssue({ status, executionRunId: ownerRunId }));
+      mockHeartbeatService.getRun.mockResolvedValue({ ...runningRun, runtimeMode });
       mockHeartbeatService.cancelRun.mockRejectedValue(new Error("Execution is still stopping; termination has not been verified."));
 
       const res = await request(handoffApp({ ...ownerActor(), source: "agent_jwt" }))
@@ -2946,6 +2970,14 @@ describe("agent issue mutation checkout ownership", () => {
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(res.body).toMatchObject(handoff);
       expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+      if (runtimeMode === "native") {
+        expect(mockRecordNativeHumanSelfHandoff).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+          runId: ownerRunId, agentId: ownerAgentId, issueId, assigneeUserId: "board-user" }));
+        expect(mockRecordNativeHumanSelfHandoff.mock.invocationCallOrder[0])
+          .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
+      } else {
+        expect(mockRecordNativeHumanSelfHandoff).not.toHaveBeenCalled();
+      }
       expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({
         ...handoff,
         actorRunId: ownerRunId,
@@ -2957,6 +2989,17 @@ describe("agent issue mutation checkout ownership", () => {
         details: handoff,
       });
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    });
+
+    it("refuses a native hand-off when the run can no longer record it, without saving the assignment", async () => {
+      mockHeartbeatService.getRun.mockResolvedValue({ ...runningRun, runtimeMode: "native" });
+      mockRecordNativeHumanSelfHandoff.mockResolvedValueOnce(false);
+      const res = await request(handoffApp({ ...ownerActor(), source: "agent_jwt" }))
+        .patch(`/api/issues/${issueId}`).send(handoff);
+      expect(res.status, JSON.stringify(res.body)).toBe(409);
+      expect(res.body.code ?? res.body.details?.code).toBe("native_self_handoff_run_changed");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
     });
 
     it("recognizes the caller when the active run is resolved without an issue execution lock", async () => {
@@ -3011,15 +3054,15 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
     });
 
-    it.each(["board", "agent_key", "other_run", "native", "other_issue", "other_agent", "other_company"])(
+    it.each(["board", "agent_key", "other_run", "native_board", "other_issue", "other_agent", "other_company"])(
       "still requires a verified stop for %s reassignment", async scenario => {
         let actor: Record<string, unknown> = { ...ownerActor(), source: "agent_jwt" };
-        if (scenario === "board") actor = boardActor();
+        if (scenario === "board" || scenario === "native_board") actor = boardActor();
         if (scenario === "agent_key") actor = ownerActor();
         const run = {
           ...runningRun,
           ...(scenario === "other_run" ? { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } : {}),
-          ...(scenario === "native" ? { runtimeMode: "native" } : {}),
+          ...(scenario === "native_board" ? { runtimeMode: "native" } : {}),
           ...(scenario === "other_issue" ? { contextSnapshot: { issueId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } } : {}),
           ...(scenario === "other_agent" ? { agentId: peerAgentId } : {}),
           ...(scenario === "other_company" ? { companyId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" } : {}),
@@ -3301,10 +3344,7 @@ describe("agent issue mutation checkout ownership", () => {
       expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject({ status: "in_review" });
     });
 
-    it("does not intercept a native run handing its task to a human", async () => {
-      // A native handoff still stops the outgoing run first; confirm that stop
-      // so the request reaches the update instead of the stop-unconfirmed 409.
-      mockHeartbeatService.cancelRun.mockResolvedValue({ ...nativeRun, status: "cancelled" });
+    it("does not intercept a native run handing its task to a human, and does not cancel that run", async () => {
       const handoff = { assigneeAgentId: null, assigneeUserId: "board-user", status: "in_review" };
 
       const res = await request(createApp(runActor(), createRunContextDb({}, ownerAgentId, ownerRunId, [], true)))
@@ -3312,10 +3352,8 @@ describe("agent issue mutation checkout ownership", () => {
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(res.body).toMatchObject(handoff);
-      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(ownerRunId, expect.anything(), expect.anything());
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
       expect(mockIssueService.update).toHaveBeenCalledTimes(1);
-      expect(mockHeartbeatService.cancelRun.mock.invocationCallOrder[0])
-        .toBeLessThan(mockIssueService.update.mock.invocationCallOrder[0]!);
       expect(mockIssueService.update.mock.calls[0]?.[1]).toMatchObject(handoff);
     });
 

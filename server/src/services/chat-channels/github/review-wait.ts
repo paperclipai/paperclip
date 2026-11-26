@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { HttpError } from "../../../errors.js";
-import { chatRunSourceMessageId } from "../run-origin.js";
+import { chatRunSourceMessageId, chatRunSourceMessageIds } from "../run-origin.js";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import { chatActions, chatConversations, chatEndpointResources, chatEndpoints, chatGitHubReviews, chatMessageLinks, heartbeatRuns, toolConnections, type Db } from "@paperclipai/db";
 
@@ -141,6 +141,21 @@ async function inheritedSourceComment(db: Db, run: WaitRun): Promise<{ kind: "re
   return commentId ? { commentId } : null;
 }
 
+/** `inheritedSourceComment` for the runs of one pass. The lineage of every
+ * run is checked with the statements of one batch, not with separate reads
+ * for each run. */
+async function inheritedSourceComments(db: Db, runs: WaitRun[]) {
+  const candidates = runs.filter(run => run.activeIdentityContextId && run.nativeIssueId);
+  const checked = await chatRunSourceMessageIds(db, candidates, { provider: "github" });
+  const sources = new Map(candidates.map((run, index) => [run, checked[index]!]));
+  return runs.map((run): Awaited<ReturnType<typeof inheritedSourceComment>> => {
+    const source = sources.get(run);
+    if (!source) return null;
+    if ("forbidden" in source) return { kind: "revoked" };
+    return source.messageId ? { commentId: source.messageId } : null;
+  });
+}
+
 function inheritedReviewRevoked(run: WaitRun, review: InheritedReviewRow) {
   return !review.connectionEnabled || review.connectionStatus !== "active" || review.state !== "completed" ||
     review.reviewCompanyId !== run.companyId || review.reviewAgentId !== run.agentId ||
@@ -187,11 +202,13 @@ export async function readInheritedGitHubReviewWait(db: Db, run: WaitRun): Promi
 
 /** `readInheritedGitHubReviewWait` for the runs of one read-only pass, such
  * as the waits of an issue page. Each run gets the same result as a separate
- * call. The source lineage is still checked for each run. The reviews and the
- * publications of all the runs of one company are read with one statement
- * each, not with two statements for each run. */
+ * call. The source lineage is still checked for each run, with the same
+ * decision. The lineage reads of all the runs share their statements, and the
+ * reviews and the publications of all the runs of one company are read with
+ * one statement each, so the number of statements does not follow the number
+ * of runs. */
 export async function readInheritedGitHubReviewWaits(db: Db, runs: WaitRun[]): Promise<InheritedGitHubReviewWait[]> {
-  const sources = await Promise.all(runs.map(run => inheritedSourceComment(db, run)));
+  const sources = await inheritedSourceComments(db, runs);
   const results: InheritedGitHubReviewWait[] = sources.map(source => source && !("commentId" in source) ? source : null);
   const byCompany = new Map<string, Array<{ index: number; run: WaitRun; commentId: string }>>();
   runs.forEach((run, index) => {

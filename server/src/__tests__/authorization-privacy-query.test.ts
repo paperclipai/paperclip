@@ -22,6 +22,9 @@ describe("privacy ancestry query work", () => {
     const [explain] = await db.$client.unsafe(`explain (analyze,buffers,format json) ${statement.sql}`, statement.params as never[]);
     const work = recursiveIssueWork(explain["QUERY PLAN"][0].Plan);
     expect(work.recursiveNodes).toBeGreaterThan(0);
+    // Open roots have no restricted ancestor. Their count reads must not
+    // execute a recursive privacy lookup for every task.
+    expect(work.inspectedRows).toBe(0);
     expect(work.inspectedRows).toBeLessThanOrEqual(f.ids.length * 3);
     expect(work.projectProbes).toBeLessThanOrEqual(f.ids.length * 3);
   });
