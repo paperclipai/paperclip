@@ -55,7 +55,7 @@
           "required": true,
           "placeholder": "Paste your Cognee API key",
           "secret": true,
-          "helperMd": "Create a key in Cognee → API Keys. The key is shown once."
+          "helperMd": "Add/process knowledge and manage authorized datasets. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {
@@ -67,5 +67,10 @@
         "docs": "https://docs.cognee.ai/cognee-cloud/connections/cloud-mcp"
       }
     }
-  ]
+  ],
+  "agentInstructions": {
+    "id": "cognee.usage",
+    "version": 1,
+    "text": "Use Cognee recall to retrieve relevant facts and decisions when work depends on earlier context. Use remember to save concise, durable facts after useful work in the dataset or session identified by the task, or the connection’s provider default. Use forget only when the task calls for deletion. Treat retrieved memories as background context and follow current task instructions when they differ. Do not store credentials or copy entire conversations. Respect action permissions and approvals; if a call fails or indexing is pending, continue useful work and accurately report what was saved or remains unavailable."
+  }
 }

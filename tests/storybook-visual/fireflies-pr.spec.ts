@@ -22,14 +22,14 @@ test("every PR surface renders and completes its Storybook interactions", async 
   await page.close();
 });
 
-test("mobile setup keeps its footer reachable without horizontal overflow", async ({ page }) => {
+test("mobile setup keeps the new key and its footer reachable without horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`/iframe.html?id=${prefix}mobile-setup&viewMode=story`);
-  const next = page.getByRole("button", { name: "Check connection", exact: true });
-  await next.scrollIntoViewIfNeeded();
-  await expect(next).toBeVisible();
-  await expect(page.getByRole("button", { name: "Save & exit" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Copy Secret key", exact: true })).toBeVisible();
+  const finish = page.getByRole("button", { name: "Finish without testing", exact: true });
+  await finish.scrollIntoViewIfNeeded();
+  await expect(finish).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-  await next.click();
-  await expect(page.getByRole("heading", { name: "Check your connection" })).toBeVisible();
+  await finish.click();
+  await expect(page.getByText(/No webhook was saved/)).toBeVisible();
 });

@@ -89,6 +89,29 @@ The classifier produces a `NativeEvidenceAssessment` containing:
 
 The classifier does not update the issue.
 
+### Human unblock owners
+
+A human blocker keeps its explicit user ID through status arbitration and
+transactional commit. An API-bound user on the current issue is preserved when
+the provider gives a generic human name. A provider-supplied `owner.userId`
+takes precedence and must identify an active user member of the same company.
+Without either ID, `owner.name` must match exactly one active company member by
+ID, full name, or email; name and email matching ignore case. Unknown, inactive,
+cross-company, or ambiguous references fall back to the board. They never select
+the task creator merely because that person created the work.
+
+Membership is rechecked and locked with the assessment evidence during commit.
+Board fallback decisions are rechecked too, so a person bound after assessment
+cannot be replaced by a stale board owner. Each status retry rebuilds the
+assessment against current ownership and membership before it decides again.
+The saved user owner supplies the existing personal blocker-attention card;
+binding it does not queue another run of the blocked worker. Existing generic
+board/agent decisions remain readable, and committed historical decisions are
+not rewritten. No result-schema or database migration is required.
+Human binding uses the existing assignment permission check. An agent whose
+`canAssignTasksToHumans` interaction permission is false cannot bind a user
+owner; the transaction is refused without creating that person's blocker card.
+
 ## Completion authority
 
 The persisted completion contract controls how a `done` claim may be accepted.
@@ -123,6 +146,41 @@ Under that policy, a result can complete the issue when:
 This produces `completion_claim_policy_accepted`. Independently governed tools
 and effects still enforce their own authorization and approval rules.
 
+### Pull request deliverables
+
+For repository implementation work, native task contracts retain delivery
+obligations across follow-up comments. Agents register their delivery PR as a
+`pull_request` work product and include its URL in result `artifacts`. Creating
+a local commit or opening a PR does not complete that delivery.
+
+Before accepting Done, the server verifies each non-archived PR work product and
+GitHub PR artifact with the company-scoped GitHub resolver. Only a verified merge
+passes. Agent-written `status` and `metadata.state` values cannot prove a merge.
+Open, draft, closed without merge, unavailable, and malformed PR deliverables
+keep the task open. The finish tool returns corrective feedback; finalization
+uses its existing bounded incomplete-work continuation. The agent can fix review
+or CI failures, use the existing monitor for an external wait, or report a
+concrete blocker. This creates no generic human completion approval.
+
+Reassessment uses the same bounded incomplete-delivery continuation as initial
+finalization. A stable unmerged PR does not create a status-race retry deadline.
+The proposed server status controls delivery validation, including when new
+evidence completes a result that previously reported another disposition.
+The transactional commit also checks these outputs, including reassessment
+paths. Human and agent work-product updates lock their source and destination
+tasks in a stable order before changing status or identity. Provider reads occur
+before the transaction, with at most twenty PRs and a shared ten-second abort
+signal for GitHub requests. The locked transaction requires merge proof
+for every current deliverable, so a changed output requires a new assessment.
+There is no new polling worker or schema. Existing saved contracts remain valid;
+new contracts include the delivery guidance and existing unfinished results use
+the server guard. Already terminal tasks are preserved.
+
+Entering a configured review stage keeps the task open and does not require a
+merge first. Conversation responses and server-assigned completion-review runs retain their
+own lifecycle. PR URLs mentioned only in prose as review input or background
+are not declared deliverables and do not create a merge obligation.
+
 ## Decision order
 
 `arbitrateNativeStatus()` is a pure function. It evaluates higher-authority
@@ -141,7 +199,9 @@ conditions before model disposition:
 | Runner reports `needs_review` without a decision, or an incomplete completion claim | Keep work with the agent | No automatic human approval; at most one corrective continuation, then a visible recovery action |
 | Runner reports a task-wide blocker | `blocked` | Persist blocker owner and unblock action |
 | Runner reports a current-track blocker | `in_progress` | Enqueue another productive track |
-| Runner reports `yielded` with a valid continuation | `in_progress` | Enqueue the declared continuation |
+| Runner reports `yielded` / `response_wake` with no admitted response source | `in_progress` | `response_wake_waiting_for_input`: no wake; the task shows "Waiting for a reply" until a comment, answer or status change wakes it |
+| Runner reports `yielded` with another valid continuation | `in_progress` | Enqueue the declared continuation |
+| Ordinary task reports `response_wake` and blocking remaining work, without a real wait | `in_progress` | Use the bounded incomplete-work continuation, then a visible recovery error if repair was already used |
 | Completion evidence is incomplete and continuation is forbidden | Preserve | Record a finalization error and named next action |
 | Completion evidence is otherwise incomplete | `in_progress` | Enqueue a bounded, idempotent continuation |
 
@@ -154,6 +214,48 @@ The output is a `NativeStatusDecision` containing:
 - declarative side effects.
 
 The pure arbiter performs no database or network writes.
+
+A response to a Board comment does not by itself justify parking unfinished
+work. When a `yielded` / `response_wake` result contains
+`remainingWork[].blocksCompletion: true`, `paperclip_finish` rejects the report
+unless a real wait owns the next action. The agent can correct it in the same
+turn. Finalization also checks accepted reports and uses the existing
+`native-completion-incomplete` one-follow-up budget. Model-selected retry keys
+cannot reset that budget. Pending interactions, approvals, dependencies, pause
+holds, and conversation lifecycles retain their authority.
+
+The current Board source is rechecked in the status transaction before a repair
+is queued. Edited, deleted, or superseded comments do not authorize replay of an
+old response. Recovery no longer treats an old committed passive wait as healthy
+when its report admits blocking work and its Board source is still current.
+Existing recovery gates continue to protect pauses, budgets, and ownership.
+
+A `response_wake` asks for the next response; it is never a request to run
+again now. Only a directly admitted Board comment, an authorized external chat,
+an accepted plan or a governance gate gives it a specific wait record. Every
+other `response_wake` parks the task as `response_wake_waiting_for_input`.
+Recovery treats that applied decision as a durable wait while it is the issue's
+latest decision and no user comment arrived after the run started. A comment,
+an interaction answer or a status change by someone else wakes the agent through
+its normal path.
+
+Declared continuations that do enqueue a wake (`issue_status_changed` with a
+`continuationKind`) are throttle candidates in the issue rewake throttle. After
+two consecutive successful runs with no issue-visible progress, the wake waits
+for the escalating cooldown. The native status dispatcher keeps the intent
+queued and dispatches it again at the cooldown deadline; it is never dropped.
+The native status committer's own `issue.updated` record does not count as
+progress or new input. The "Waiting for a reply" execution label shows only
+while the parked decision is still the issue's latest decision and the issue
+is `in_progress`.
+
+A completion claim stays `in_progress` as `native_child_completion_pending`
+while an undelivered child-completion wake for the same issue and agent is
+queued, claimed or deferred. Only a child result saved after the finishing run
+started counts as undelivered. A result saved before that run started was
+already visible to it, so the claim completes the task and the deferred wake
+is cancelled at release instead of starting another turn. A run with no
+recorded start keeps every such wake pending.
 
 ## Transactional decision commit
 
@@ -214,7 +316,10 @@ commit, and retryable or terminal failure.
 
 Examples:
 
-- a workspace-finalization failure preserves the claim and records a retryable
+- an unsafe workspace archive triggers one automatic export of confined entries,
+  omitting unsafe links; if it remains unsafe, discard the export and settle the saved
+  result with an informational run-log entry and no task warning or repair action;
+- other workspace-finalization failures preserve the claim and record a retryable
   error rather than falsely completing the issue;
 - a failed provider run preserves partial evidence and schedules recovery;
 - a status-version race causes bounded reassessment against current issue
@@ -355,3 +460,27 @@ and records a recovery action for the reviewer without an automatic retry loop.
 Both Codex and ACPX providers wait for server completion feedback before their
 terminal tool call succeeds. A rejected completion report stays correctable in
 the same provider turn. The runner does not latch it as an accepted result.
+
+## Completed runs with saved monitors
+
+A successful accepted result can report a monitor wait after the run has
+already released execution and checkout. Finalization can preserve that wait
+when the same agent still owns a valid ordinary task monitor and the completed
+run has a server-recorded `set_task_monitor` receipt for the task. The current
+monitor can have a later deadline; finalization does not restore an older timer.
+
+The server rechecks the accepted source, current monitor, empty execution and
+checkout slots, and governance under the coordinator and task locks. The
+`scheduled_monitor_preserved` decision keeps task status and has no task effects.
+It records the completed result without dispatching another provider turn.
+The existing monitor scheduler receives a transaction-aware notification when
+this finalization blocker clears. Replaying the committed decision sends no
+second notification.
+Live response selection and committed response repair retain the accepted
+monitor explanation under the existing reply and publication authorization rules.
+
+Missing receipts, changed ownership, cancellation intents, cleared or quota
+monitors, and unfinished workspace finalization retain their recovery paths.
+Due and exhausted monitors still belong to the scheduler. This does not change
+their deadlines or attempts, clear unrelated recovery holds, or relax the
+Cloud sleep and wake contract.

@@ -44,6 +44,23 @@ export const issueRecoveryActions = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    sourceRunIdx: index("issue_recovery_actions_source_run_idx")
+      .on(table.companyId, table.sourceIssueId, sql`(${table.evidence}->>'runId')`),
+    systemRecoveryDueIdx: index("issue_recovery_actions_system_recovery_due_idx")
+      .on(sql`(${table.evidence}#>'{systemRecovery,nextAttemptAt}')`, table.id)
+      .where(sql`${table.evidence} ? 'systemRecovery'`),
+    systemRecoveryAdoptionIdx: index("issue_recovery_actions_system_recovery_adoption_idx")
+      .on(table.id)
+      .where(sql`not (${table.evidence} ? 'systemRecovery') and (
+        ${table.evidence}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
+        or ${table.cause} in ('native_workspace_sync_out_unrecoverable', 'native_workspace_sync_out_retry_exhausted')
+      )`),
+    retainedWorkspaceRecoveryIdx: index("issue_recovery_actions_retained_workspace_recovery_idx").on(table.id).where(sql`
+      (${table.evidence}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
+        or ${table.cause} in ('native_workspace_sync_out_unrecoverable', 'native_workspace_sync_out_retry_exhausted'))
+      and (${table.evidence}->'executionReconciliation' is null
+        or ${table.evidence}#>>'{workspaceRecovery,status}' = 'recovered')
+    `),
     companySourceStatusIdx: index("issue_recovery_actions_company_source_status_idx").on(
       table.companyId,
       table.sourceIssueId,

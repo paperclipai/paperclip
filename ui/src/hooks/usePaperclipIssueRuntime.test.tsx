@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, useLayoutEffect } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -10,9 +10,22 @@ import type {
 } from "@assistant-ui/react";
 import { usePaperclipIssueRuntime } from "./usePaperclipIssueRuntime";
 
-const { useExternalStoreRuntimeMock } = vi.hoisted(() => ({
-  useExternalStoreRuntimeMock: vi.fn(() => ({ kind: "runtime" })),
-}));
+const { externalStoreRuntimeState, useExternalStoreRuntimeMock } = vi.hoisted(
+  () => {
+    const state: {
+      adapter: ExternalStoreAdapter<ThreadMessage> | undefined;
+    } = { adapter: undefined };
+    return {
+      externalStoreRuntimeState: state,
+      useExternalStoreRuntimeMock: vi.fn(
+        (adapter: ExternalStoreAdapter<ThreadMessage>) => {
+          state.adapter = adapter;
+          return { kind: "runtime" };
+        },
+      ),
+    };
+  },
+);
 
 vi.mock("@assistant-ui/react", () => ({
   useExternalStoreRuntime: useExternalStoreRuntimeMock,
@@ -26,6 +39,7 @@ function HookHarness({
   isRunning,
   onSend,
   onCancel,
+  onLayout,
 }: {
   messages: readonly ThreadMessage[];
   isRunning: boolean;
@@ -38,6 +52,7 @@ function HookHarness({
     };
   }) => Promise<void>;
   onCancel?: (() => Promise<void>) | undefined;
+  onLayout?: ((adapter: ExternalStoreAdapter<ThreadMessage>) => void) | undefined;
 }) {
   usePaperclipIssueRuntime({
     messages,
@@ -45,6 +60,11 @@ function HookHarness({
     onSend,
     onCancel,
   });
+  useLayoutEffect(() => {
+    if (externalStoreRuntimeState.adapter && onLayout) {
+      onLayout(externalStoreRuntimeState.adapter);
+    }
+  }, [onLayout]);
   return null;
 }
 
@@ -86,6 +106,7 @@ function createAssistantMessage(id: string, text: string): ThreadMessage {
 describe("usePaperclipIssueRuntime", () => {
   afterEach(() => {
     useExternalStoreRuntimeMock.mockReset();
+    externalStoreRuntimeState.adapter = undefined;
   });
 
   it("forwards explicit upload selection separately from Markdown content", async () => {
@@ -170,6 +191,63 @@ describe("usePaperclipIssueRuntime", () => {
       reopen: undefined,
       reassignment: undefined,
     });
+
+    act(() => {
+      root.unmount();
+    });
+    container.remove();
+  });
+
+  it("uses the latest callbacks before passive effects run", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const messages: ThreadMessage[] = [createUserMessage("message-1", "hello")];
+    const firstOnSend = vi.fn(async () => {});
+    const secondOnSend = vi.fn(async () => {});
+    const firstOnCancel = vi.fn(async () => {});
+    const secondOnCancel = vi.fn(async () => {});
+
+    act(() => {
+      root.render(
+        <HookHarness
+          messages={messages}
+          isRunning={false}
+          onSend={firstOnSend}
+          onCancel={firstOnCancel}
+        />,
+      );
+    });
+
+    let immediateSend: Promise<void> | undefined;
+    let immediateCancel: Promise<void> | undefined;
+
+    act(() => {
+      root.render(
+        <HookHarness
+          messages={messages}
+          isRunning={false}
+          onSend={secondOnSend}
+          onCancel={secondOnCancel}
+          onLayout={(adapter) => {
+            immediateSend = adapter.onNew?.(
+              createAppendMessage("layout runtime callback"),
+            );
+            immediateCancel = adapter.onCancel?.();
+          }}
+        />,
+      );
+    });
+    await Promise.all([immediateSend, immediateCancel]);
+
+    expect(firstOnSend).not.toHaveBeenCalled();
+    expect(firstOnCancel).not.toHaveBeenCalled();
+    expect(secondOnSend).toHaveBeenCalledWith({
+      body: "layout runtime callback",
+      reopen: undefined,
+      reassignment: undefined,
+    });
+    expect(secondOnCancel).toHaveBeenCalledOnce();
 
     act(() => {
       root.unmount();

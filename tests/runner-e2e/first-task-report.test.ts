@@ -3,6 +3,7 @@ import { renderCaseOutcome } from "./case-outcome.js";
 import { renderRunnerE2EDashboard } from "./dashboard.js";
 import {
   firstTaskTranscript,
+  firstTaskUserRequest,
   renderFirstTaskTranscript,
 } from "./first-task-transcript.js";
 import type {
@@ -129,6 +130,27 @@ function result(): RunnerE2EResult {
 }
 
 describe("first-task conversation report", () => {
+  it("grounds requirements in submitted user comments and resolved form answers", () => {
+    const e = recording();
+    for (const checkpoint of e.checkpoints) {
+      for (const row of [...checkpoint.comments, ...checkpoint.interactions]) row.issueId = "task";
+      Object.assign(checkpoint.interactions[0], { resolvedByUserId: "board" });
+    }
+    e.checkpoints.at(-1)!.comments.push({ id: "user-scope", issueId: "task", authorUserId: "board", body: "Invite beginners explicitly." });
+    const request = firstTaskUserRequest(e);
+    expect(request).toContain("[comment:task:user-scope] Invite beginners explicitly.");
+    expect(request).toContain("[answer:question] Make a plan\nUse our garden club facts");
+    expect(request.match(/Use our garden club facts/g)).toHaveLength(1);
+    expect(request).not.toMatch(/Shall I proceed|Welcome|GARDENtest|two-sentence/);
+  });
+  it("does not infer requirements from scenario defaults, agent answers, or unrelated tasks", () => {
+    const e = recording();
+    for (const checkpoint of e.checkpoints) {
+      for (const row of checkpoint.interactions) Object.assign(row, { issueId: "task", resolvedByAgentId: "agent" });
+      checkpoint.comments.push({ id: "foreign", issueId: "other-task", authorUserId: "board", body: "Foreign requirement" });
+    }
+    expect(() => firstTaskUserRequest(e)).toThrow("Missing recorded user request");
+  });
   it("deduplicates observations, keeps first-observed time, and includes answers and each document revision", () => {
     const entries = firstTaskTranscript(recording());
     expect(entries.filter((e) => e.kind === "comment")).toHaveLength(2);
@@ -243,7 +265,7 @@ describe("first-task conversation report", () => {
     });
     const page = render();
     expect(page).toContain('data-gallery-status="incomplete"');
-    expect(page).toContain('data-gallery-matchers="1/1 matchers passed · 1 not reached"');
+    expect(page).toContain('data-gallery-matchers="1/1 checks passed · 1 not reached"');
     expect(page).toContain('data-gallery-label="Task state when recording stopped"');
     expect(page).toContain("Incomplete journey");
     expect(page).toContain('<strong>1</strong><span>Incomplete</span>');
@@ -282,9 +304,10 @@ describe("first-task conversation report", () => {
     expect(rendered).not.toContain(
       'href="evidence/codex/html-report/index.html"',
     );
-    expect(rendered.indexOf("Full run / tool-event JSON")).toBeLessThan(
-      rendered.indexOf("Matchers and test context</summary>"),
-    );
+    const diagnostics = rendered.indexOf('class="case-context case-diagnostics"');
+    expect(diagnostics).toBeGreaterThan(0);
+    expect(rendered.indexOf("Credential-persistence check failed")).toBeLessThan(diagnostics);
+    expect(rendered.indexOf("Full run / tool-event JSON")).toBeGreaterThan(diagnostics);
     expect(rendered).toContain(
       'id="first-task-first-task.legacy-codex.local.clear-task-first-response-response"',
     );
