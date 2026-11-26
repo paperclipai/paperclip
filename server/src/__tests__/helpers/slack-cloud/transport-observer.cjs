@@ -1,0 +1,27 @@
+const net = require('node:net');
+const tls = require('node:tls');
+const http = require('node:http');
+const dns = require('node:dns');
+const fs = require('node:fs');
+const key = Symbol.for('paperclip.slack.peer.control.transport');
+if (process[key]) throw new Error('Duplicate passive peer observer');
+let connects = 0, tlsCalls = 0, httpCalls = 0, dnsCalls = 0;
+const sockets = new Set();
+const connect = net.Socket.prototype.connect;
+net.Socket.prototype.connect = function (...args) {
+  connects++;
+  this.once('connect', () => sockets.add(this));
+  this.once('close', () => sockets.delete(this));
+  return Reflect.apply(connect, this, args);
+};
+const secure = tls.connect;
+tls.connect = function (...args) { tlsCalls++; return Reflect.apply(secure, this, args); };
+const request = http.request;
+http.request = function (...args) { httpCalls++; return Reflect.apply(request, this, args); };
+const lookup = dns.lookup;
+dns.lookup = function (...args) { dnsCalls++; return Reflect.apply(lookup, this, args); };
+const stats = () => ({ pid: process.pid, connects, tlsCalls, httpCalls, dnsCalls, sockets: sockets.size });
+process[key] = Object.freeze({ pid: process.pid, stats });
+const record = value => fs.appendFileSync(process.env.SLACK_PEER_CONTROL_LOG, JSON.stringify(value) + '\n');
+record({ phase: 'passive-observer-before-guard', pid: process.pid, node: process.version, argv: process.argv, execArgv: process.execArgv });
+process.on('exit', () => record({ phase: 'passive-observer-exit', ...stats(), exitCode: process.exitCode || 0 }));

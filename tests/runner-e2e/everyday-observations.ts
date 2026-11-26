@@ -1,3 +1,6 @@
+import type { IssueComment } from "../../packages/shared/src/types/issue.js";
+import { gradeRemoteRestart, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
+
 export interface StoryCheck {
   id: string;
   passed: boolean;
@@ -24,9 +27,8 @@ export interface StoryIssue {
   wakeDiagnostics?: StoryWakeDiagnostics;
   blockedTransitionAt?: string | null;
 }
-export interface StoryComment {
+export interface StoryComment extends Partial<Pick<IssueComment, "authorAgentId" | "createdByRunId">> {
   id?: string;
-  authorAgentId?: string | null;
   body?: unknown;
   createdAt?: string;
 }
@@ -36,6 +38,8 @@ export interface StoryActivityRecord {
   createdAt?: string;
 }
 export interface StoryInteraction {
+  sourceRunId?: string | null;
+  createdByAgentId?: string | null;
   id?: string;
   kind?: string;
   issueId?: string | null;
@@ -137,6 +141,7 @@ export interface StoryRun {
   lastOutputSeq?: number | null;
   errorCode?: string | null;
   error?: string | null;
+  nativePhase?: string | null;
 }
 
 export type StoryArtifactGradeMode = "base" | "separator" | "max-length";
@@ -208,21 +213,85 @@ export function isStoryWorkspaceDeferral(run: StoryRun) {
     !run.processPid
   );
 }
+/** Exempt the injected stop itself, never a later recovery/provider failure on that run. */
+export function isExpectedStoryInterruption(
+  run: StoryRun,
+  allowedRunIds: readonly string[],
+): boolean {
+  if (!allowedRunIds.includes(run.id)) return false;
+  return (
+    // Operator interrupts and reassignment are deliberate reliability-scenario stops.
+    (run.status === "cancelled" && (!run.errorCode || ["cancelled", "operator_interrupted", "issue_reassigned"].includes(run.errorCode))) ||
+    (run.status === "interrupted" && run.errorCode === "server_shutdown_interrupted") ||
+    (run.status === "failed" && run.errorCode === "process_lost")
+  );
+}
+
+/** `recoveredRunIds`: failures whose work a later run on the same task verifiably resumed. */
+export function storyUnexpectedRunFailure(runs: StoryRun[], allowedRunIds: readonly string[], recoveredRunIds: readonly string[] = []) {
+  return runs.find((run) =>
+    ["failed", "timed_out", "cancelled", "interrupted"].includes(run.status) &&
+    !isStoryWorkspaceDeferral(run) && !recoveredRunIds.includes(run.id) &&
+    !isExpectedStoryInterruption(run, allowedRunIds),
+  );
+}
+
+/** Called after the boundary matcher; reject only with durable proof of the wrong ordering. */
+export function storyUnexercisedReviewBoundary(
+  issues: StoryIssue[],
+  runs: StoryRun[],
+  parentId: string,
+  leadId: string,
+): string | undefined {
+  if (issues.length === 0 || runs.length === 0) return;
+  if (!issues.every((issue) =>
+    issue.status === "done" && !issue.scheduledRetry && !issue.activeRecoveryAction,
+  )) return;
+  if (!runs.every((run) => run.status === "succeeded")) return;
+  const child = issues.find((issue) => issue.parentId === parentId);
+  const accepted = child?.interactions?.flatMap((interaction) => {
+    const review = storyAcceptedAgentReview(child, interaction.id, leadId, runs);
+    return review ? [review] : [];
+  })[0];
+  const reviewRun = accepted && runs.find((run) => run.id === accepted.resolvedByRunId);
+  const reviewStartedAt = Date.parse(reviewRun?.startedAt ?? "");
+  const parentRuns = runs.filter((run) =>
+    run.nativeIssueId === parentId ||
+    run.contextSnapshot?.issueId === parentId ||
+    run.contextSnapshot?.taskId === parentId,
+  );
+  // Snapshots are fetched separately. Missing review evidence is not proof that it
+  // never happened; wait unless persisted timestamps rule out the required order.
+  if (!Number.isFinite(reviewStartedAt) || parentRuns.length === 0) return;
+  if (!parentRuns.every((run) => {
+    const finishedAt = Date.parse(run.finishedAt ?? "");
+    return Number.isFinite(finishedAt) && finishedAt > reviewStartedAt;
+  })) return;
+  return "Review handoff boundary not exercised: the accepted review started before any parent run finished, so the blocked-parent-before-review ordering was not tested.";
+}
+
 export function storyLifecycleChecks(input: {
   issues: StoryIssue[];
   runs: StoryRun[];
   parentId: string;
   leadId: string;
   allowedInterruptedRuns?: string[];
+  /** Failed runs whose work a later run on the same task verifiably resumed (reliability scenarios). */
+  recoveredRuns?: readonly string[];
+  /** Agents that may execute on the parent; defaults to the lead (reassignment adds the new owner). */
+  parentAgentIds?: readonly string[];
+  requireRemoteRestart?: boolean;
+  remoteRestart?: RemoteRestartEvidence;
 }): StoryCheck[] {
   const executed = input.runs.filter((r) => !isStoryWorkspaceDeferral(r));
-  const allowed = new Set(input.allowedInterruptedRuns ?? []);
+  const allowed = input.allowedInterruptedRuns ?? [];
   const check = (id: string, passed: boolean, detail: string): StoryCheck => ({
     id,
     passed,
     detail,
   });
   return [
+    ...(input.requireRemoteRestart ? gradeRemoteRestart(input.remoteRestart) : []),
     check(
       "tasks-done",
       input.issues.length > 0 && input.issues.every((i) => i.status === "done"),
@@ -244,8 +313,9 @@ export function storyLifecycleChecks(input: {
     ),
     check(
       "successful-runs",
-      executed.every((r) => r.status === "succeeded" || allowed.has(r.id)),
-      "Only explicitly interrupted runs may have a non-success terminal state.",
+      executed.every((r) => r.status === "succeeded" || isExpectedStoryInterruption(r, allowed)
+        || (input.recoveredRuns ?? []).includes(r.id)),
+      "Only the expected stop or process-loss outcome of an injected interruption is exempt.",
     ),
     check(
       "bounded-work",
@@ -258,7 +328,7 @@ export function storyLifecycleChecks(input: {
         (r) =>
           (r.contextSnapshot?.issueId === input.parentId ||
             r.contextSnapshot?.taskId === input.parentId) &&
-          r.agentId !== input.leadId,
+          !(input.parentAgentIds ?? [input.leadId]).includes(r.agentId),
       ),
       "A mentioned worker must not execute on the parent.",
     ),
@@ -281,17 +351,34 @@ export function storyRepliesConsumed(
   );
 }
 
+export type StoryReplyExpectation = string | ((body: string) => boolean);
+
+export function storyAgentReplyMatches(
+  comment: StoryComment | undefined,
+  agentId: string,
+  expected: StoryReplyExpectation,
+): boolean {
+  if (!comment || comment.authorAgentId !== agentId) return false;
+  const body = String(comment.body ?? "");
+  return typeof expected === "string" ? body.includes(expected) : expected(body);
+}
+
+/** The requested output is one exact token after this continuation's marker. */
+export function retainedControllerReplyMatcher(marker: string): (body: string) => boolean {
+  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`(?:^|\\s)${escaped}\\s+queue_r(?=\\s|$)`);
+  return body => pattern.test(body);
+}
+
 /** A terminal task is only ready for response assertions after its agent reply is visible. */
 export function storyHasAgentReply(
   issue: StoryIssue | undefined,
   agentId: string,
-  expectedText: string,
+  expectedText: StoryReplyExpectation,
 ): boolean {
   return (
     issue?.comments?.some(
-      (comment) =>
-        comment.authorAgentId === agentId &&
-        String(comment.body ?? "").includes(expectedText),
+      (comment) => storyAgentReplyMatches(comment, agentId, expectedText),
     ) ?? false
   );
 }
@@ -385,6 +472,34 @@ export function storyHasDurableAgentReviewContinuation(
       );
     }) ?? false),
   );
+}
+
+/** An executed approval or recorded rejection may enqueue its wake just after run finalization.
+ * Wait within the original deadline only for this task/run's recorded response.
+ * Once a follow-up run has consumed it, a new blocker is a real failure.
+ */
+export function storyHasDurableServiceContinuation(issues: StoryIssue[], parentId: string, agentId: string, runs: StoryRun[]): boolean {
+  const issue = issues.find(i => i.id === parentId);
+  if (issue?.status !== "blocked" || issue.assigneeAgentId !== agentId) return false;
+  return issue.interactions?.some(interaction => {
+    const source = runs.find(run => run.id === interaction.sourceRunId);
+    const action = interaction.payload?.toolAction as Record<string, unknown> | undefined;
+    const result = interaction.result?.toolAction as Record<string, unknown> | undefined;
+    const resolved = (interaction.status === "accepted" && interaction.result?.outcome === "accepted" && result?.status === "executed") ||
+      (interaction.status === "rejected" && interaction.result?.outcome === "rejected" && result === undefined);
+    if (interaction.issueId !== parentId || interaction.createdByAgentId !== agentId ||
+        interaction.kind !== "request_confirmation" || interaction.continuationPolicy !== "wake_assignee" ||
+        !resolved ||
+        action?.version !== 1 || typeof action.actionRequestId !== "string" || !action.actionRequestId.trim() ||
+        source?.agentId !== agentId || source.companyId !== issue.companyId || source.nativeIssueId !== parentId || source.status !== "succeeded" ||
+        (!Number.isFinite(Date.parse(source.finishedAt ?? "")) || !Number.isFinite(Date.parse(interaction.resolvedAt ?? "")))) return false;
+    return !runs.some(run => {
+      const input = run.runnerProfileJson?.nativeExecutionInput as
+        { interactionResponses?: Array<{ interactionId?: string }> } | undefined;
+      return run.id !== source.id && run.agentId === agentId && run.companyId === issue.companyId &&
+        input?.interactionResponses?.some(response => response.interactionId === interaction.id);
+    });
+  }) ?? false;
 }
 
 /** Timeout evidence requires a stranded leaf with durable accepted-review evidence. */

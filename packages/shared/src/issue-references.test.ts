@@ -23,6 +23,17 @@ describe("issue references", () => {
     expect(parseIssueReferenceHref("https://paperclip.ing/projects/PAP-789")).toBeNull();
   });
 
+  it.each([
+    "javascript:alert(1)//issues/PAP-1",
+    "JavaScript:void(0)//issues/PAP-1",
+    "data:text/html,x//issues/PAP-1",
+    "vbscript:x//issues/PAP-1",
+    "file:///issues/PAP-1",
+    "blob:https://paperclip.ing/issues/PAP-1",
+  ])("rejects issue hrefs with a non-http scheme: %s", (href) => {
+    expect(parseIssueReferenceHref(href)).toBeNull();
+  });
+
   it("builds canonical issue hrefs", () => {
     expect(buildIssueReferenceHref("pap-123")).toBe("/issues/PAP-123");
   });

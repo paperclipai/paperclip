@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   clearAllHeartbeatRunRuntimeStatuses,
   clearHeartbeatRunRuntimeStatus,
@@ -12,6 +12,7 @@ import {
 describe("heartbeat run runtime status store", () => {
   afterEach(() => {
     clearAllHeartbeatRunRuntimeStatuses();
+    vi.useRealTimers();
   });
 
   it("stores scoped ephemeral status and expires stale entries", () => {
@@ -164,6 +165,43 @@ describe("heartbeat run runtime status store", () => {
       message: "Receiving agent output",
       updatedAt: new Date("2026-06-24T00:05:00.000Z"),
     });
+  });
+
+  it("cleans unread abandoned statuses on later output without polling or expiring fresh context", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const start = new Date("2026-10-30T00:00:00Z");
+    vi.setSystemTime(start);
+    const write = (runId: string) => setHeartbeatRunRuntimeStatus({
+      companyId: "company-1", issueId: null, agentId: "agent-1", runId,
+      phase: "run_activity", message: "Using Bash",
+    });
+    write("abandoned");
+    write("active");
+    vi.setSystemTime(start.getTime() + 60_000);
+    touchHeartbeatRunRuntimeStatus({
+      companyId: "company-1", issueId: null, agentId: "agent-1", runId: "active",
+    });
+    vi.setSystemTime(start.getTime() + 90_000);
+    write("boundary");
+    expect(getHeartbeatRunRuntimeStatus("abandoned")).toMatchObject({ message: "Using Bash" });
+    expect(clearHeartbeatRunRuntimeStatus("boundary")).toBe(true);
+    vi.setSystemTime(start.getTime() + 90_001);
+    touchHeartbeatRunRuntimeStatus({
+      companyId: "company-1", issueId: null, agentId: "agent-1", runId: "active",
+    });
+    expect(clearHeartbeatRunRuntimeStatus("abandoned")).toBe(false);
+    expect(getHeartbeatRunRuntimeStatus("active")).toMatchObject({ message: "Using Bash" });
+    setHeartbeatRunRuntimeStatus({
+      companyId: "company-1", issueId: null, agentId: "agent-1", runId: "old-output",
+      phase: "run_activity", message: "Delayed output", updatedAt: start,
+    });
+    vi.setSystemTime(start.getTime() + 90_002);
+    write("next-output");
+    expect(clearHeartbeatRunRuntimeStatus("old-output")).toBe(true);
+    vi.setSystemTime(start.getTime() + 180_002);
+    write("new");
+    expect(clearHeartbeatRunRuntimeStatus("active")).toBe(false);
+    expect(getHeartbeatRunRuntimeStatus("new")).toMatchObject({ message: "Using Bash" });
   });
 
   it("sweeps expired statuses without touching fresh entries", () => {

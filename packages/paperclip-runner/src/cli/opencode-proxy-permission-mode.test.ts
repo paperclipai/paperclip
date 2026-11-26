@@ -10,9 +10,9 @@ describe("OpenCode runnerd proxy permission mode", () => {
     },
   );
 
-  it("defaults an unset or empty mode to ask", () => {
-    expect(parseOpenCodeProxyPermissionMode(undefined)).toBe("ask");
-    expect(parseOpenCodeProxyPermissionMode("  ")).toBe("ask");
+  it("defaults an unset or empty mode to allow", () => {
+    expect(parseOpenCodeProxyPermissionMode(undefined)).toBe("allow");
+    expect(parseOpenCodeProxyPermissionMode("  ")).toBe("allow");
   });
 
   it("rejects an unknown mode", () => {
