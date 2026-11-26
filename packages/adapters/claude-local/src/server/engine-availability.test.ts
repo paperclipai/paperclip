@@ -42,3 +42,34 @@ describe("claude engine availability", () => {
     expect(result.unavailableReason).toContain("not available");
   });
 });
+
+
+describe("cold sandbox ACP setup", () => {
+  it("installs the default ACP server inside the selected sandbox without switching engines", async () => {
+    Object.defineProperty(process, "version", { value: "v24.11.0" });
+    let installed = false;
+    const commands: string[] = [];
+    const runner = { execute: async (input: { args: string[]; env?: Record<string, string> }) => {
+      const command = input.args.join(" ");
+      commands.push(command);
+      expect(input.env?.ANTHROPIC_API_KEY).toBeUndefined();
+      if (command.includes("npm install")) installed = true;
+      return { exitCode: installed ? 0 : 1, timedOut: false, signal: null, stdout: installed ? "/usr/local/bin/claude-agent-acp" : "", stderr: "", pid: null, startedAt: new Date().toISOString() };
+    }};
+    await expect(resolveClaudeExecutionEngineForRun({ config: {}, executionTarget: {
+      kind: "remote", transport: "sandbox", providerKey: "daytona", remoteCwd: "/work", runner,
+    } as never })).resolves.toEqual({ engine: "acp", explicit: false });
+    expect(commands.filter(command => command.includes("npm install"))).toHaveLength(1);
+    expect(commands.some(command => command.includes("@agentclientprotocol/claude-agent-acp@0.73.0"))).toBe(true);
+  });
+
+  it("does not install or substitute for an operator's unavailable custom ACP command", async () => {
+    Object.defineProperty(process, "version", { value: "v24.11.0" });
+    const runner = { execute: vi.fn(async () => ({ exitCode: 1, timedOut: false, stdout: "", stderr: "", signal: null, pid: null, startedAt: new Date().toISOString() })) };
+    const result = await resolveClaudeExecutionEngineForRun({ config: { agentCommand: "custom-acp" }, executionTarget: {
+      kind: "remote", transport: "sandbox", providerKey: "daytona", remoteCwd: "/work", runner,
+    } as never });
+    expect(result).toMatchObject({ engine: "acp", unavailableReason: expect.stringContaining("custom-acp") });
+    expect(runner.execute).toHaveBeenCalledTimes(1);
+  });
+});

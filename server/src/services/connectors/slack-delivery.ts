@@ -1,3 +1,4 @@
+import { notifyChatPublicationWork } from "../chat-work-notifications.js";
 import { and, eq, sql, inArray } from "drizzle-orm";
 import { chatActions, type Db } from "@paperclipai/db";
 import { forbidden } from "../../errors.js";
@@ -40,17 +41,20 @@ export async function slackDelivery(
     action.status === "processing" &&
     Date.now() - action.updatedAt.getTime() > 5 * 60_000
   ) {
-    const [stale] = await db
-      .update(chatActions)
-      .set({ status: "uncertain", updatedAt: new Date() })
-      .where(
-        and(
-          eq(chatActions.id, action.id),
-          eq(chatActions.status, "processing"),
-          eq(chatActions.updatedAt, action.updatedAt),
-        ),
-      )
-      .returning();
+    const [stale] = await db.transaction(async (tx) => {
+      await notifyChatPublicationWork(tx);
+      return tx
+        .update(chatActions)
+        .set({ status: "uncertain", updatedAt: new Date() })
+        .where(
+          and(
+            eq(chatActions.id, action.id),
+            eq(chatActions.status, "processing"),
+            eq(chatActions.updatedAt, action.updatedAt),
+          ),
+        )
+        .returning();
+    });
     if (stale) action = stale;
   }
   const args = object(action.payload.args);
@@ -107,16 +111,19 @@ export async function slackDelivery(
         };
     }
     if (receipt) {
-      const [settled] = await db
-        .update(chatActions)
-        .set({ status: "processed", result: receipt, updatedAt: new Date() })
-        .where(
-          and(
-            eq(chatActions.id, action.id),
-            inArray(chatActions.status, ["uncertain", "processing"]),
-          ),
-        )
-        .returning();
+      const [settled] = await db.transaction(async (tx) => {
+        await notifyChatPublicationWork(tx);
+        return tx
+          .update(chatActions)
+          .set({ status: "processed", result: receipt, updatedAt: new Date() })
+          .where(
+            and(
+              eq(chatActions.id, action.id),
+              inArray(chatActions.status, ["uncertain", "processing"]),
+            ),
+          )
+          .returning();
+      });
       if (settled) action = settled;
     }
   }

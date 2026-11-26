@@ -3,6 +3,10 @@ import { expect, type Page } from "@playwright/test";
 import type { RunnerApi } from "./api.js";
 import { startReviewProvider } from "../fixtures/connection-review-provider.js";
 
+/** The button after the URL step: Check link today, Save and continue before #14811. */
+export const CONNECTOR_SETUP_NEXT_STEP = /^(Save and continue|Check link)$/i;
+const CHECK_LINK = /^Check link$/i;
+
 /** Uses the same production connection and permission screens as the fixture browser suite. */
 export async function setupConnectionReview(input: {
   page: Page;
@@ -48,22 +52,21 @@ export async function setupConnectionReview(input: {
       connection = { id: connected.connectionId };
     } else {
       await page.goto(`/${input.prefix}/apps`, { waitUntil: "domcontentloaded" });
-      const connector = page
-        .getByRole("list", { name: "Connector list" })
-        .getByRole("listitem")
-        .filter({ hasText: "Connect your own tool" });
-      await connector
-        .getByRole("button", { name: "Connect", exact: true })
-        .click();
-      await connector
-        .getByRole("button", { name: "Connect your own MCP server" })
-        .click();
+      await page.getByRole("button", { name: "Add", exact: true }).click();
+      await page.getByRole("menuitem", { name: /MCP server URL/ }).click();
       await page
         .getByPlaceholder("https://example.com/actions")
         .fill(provider.url);
       await page.getByRole("button", { name: "Continue", exact: true }).click();
-      await page.getByRole("button", { name: "Save and continue" }).click();
-      await page.getByRole("button", { name: /Check link/i }).click();
+      // #14811 made connector setup one screen: Continue now leads straight to
+      // Check link. Accept the older intermediate "Save and continue" step too,
+      // as connection-flow.ts does, so either layout reaches the link check.
+      const next = page
+        .getByRole("button", { name: CONNECTOR_SETUP_NEXT_STEP })
+        .first();
+      await expect(next).toBeVisible();
+      if (!CHECK_LINK.test((await next.textContent()) ?? "")) await next.click();
+      await page.getByRole("button", { name: CHECK_LINK }).click();
       await expect(
         page.getByRole("heading", { name: /is ready/i }),
       ).toBeVisible();

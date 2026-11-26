@@ -24,6 +24,7 @@ export type ExecutionWorkspaceMode =
 export type SharedWorkspaceConcurrency = "auto" | "serialize" | "allow";
 
 export type ExecutionWorkspaceProviderType =
+  | "plugin"
   | "local_fs"
   | "git_worktree"
   | "adapter_managed"
@@ -52,6 +53,7 @@ export type ExecutionWorkspaceCloseActionKind =
   | "stop_runtime_services"
   | "cleanup_command"
   | "teardown_command"
+  | "remove_provider_workspace"
   | "git_worktree_remove"
   | "git_branch_delete"
   | "remove_local_directory";
@@ -98,6 +100,7 @@ export interface ExecutionWorkspaceStrategy {
 
 export interface ExecutionWorkspaceConfig {
   environmentId?: string | null;
+  storageProviderPluginId?: string | null;
   provisionCommand: string | null;
   runtimeProvisionCommand?: string | null;
   teardownCommand: string | null;
@@ -135,6 +138,8 @@ export interface ExecutionWorkspaceCloseLinkedIssue {
 }
 
 export interface ExecutionWorkspaceCloseGitReadiness {
+  /** Verified remotely for provider-managed workspaces. */
+  headSha?: string | null;
   repoRoot: string | null;
   workspacePath: string | null;
   branchName: string | null;
@@ -166,6 +171,7 @@ export interface ExecutionWorkspaceCloseReadiness {
 
 export interface ProjectExecutionWorkspacePolicy {
   enabled: boolean;
+  storageProviderPluginId?: string | null;
   sharedWorkspaceConcurrency?: SharedWorkspaceConcurrency;
   defaultMode?: ProjectExecutionWorkspaceDefaultMode;
   allowIssueOverride?: boolean;
@@ -229,9 +235,9 @@ export interface WorkspaceOverviewItem {
   kind: "execution_workspace";
   workspaceId: string;
   workspaceName: string;
-  projectId: string;
-  projectUrlKey: string;
-  projectName: string;
+  projectId: string | null;
+  projectUrlKey: string | null;
+  projectName: string | null;
   mode: ExecutionWorkspaceSummary["mode"];
   strategyType: ExecutionWorkspaceStrategyType;
   cwd: string | null;
@@ -262,7 +268,7 @@ export interface WorkspaceOverviewResponse {
 export interface ExecutionWorkspace {
   id: string;
   companyId: string;
-  projectId: string;
+  projectId: string | null;
   projectWorkspaceId: string | null;
   sourceIssueId: string | null;
   mode: Exclude<ExecutionWorkspaceMode, "inherit" | "reuse_existing" | "agent_default"> | "adapter_managed" | "cloud_sandbox";
@@ -345,6 +351,8 @@ export interface WorkspaceRealizationRequest {
   source: {
     kind: "project_primary" | "task_session" | "agent_home";
     localPath: string;
+    /** When present, localPath is a logical execution location, never a Core filesystem root. */
+    providerBinding?: import("../workspace-provider.js").WorkspaceProviderBinding;
     projectId: string | null;
     projectWorkspaceId: string | null;
     repoUrl: string | null;
