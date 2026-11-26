@@ -2,7 +2,9 @@ import { isDeepStrictEqual } from "node:util";
 import { createRequire } from "node:module";
 import { applyCompanyPrefix } from "../../../ui/src/lib/company-routes.js";
 import { parseIssueReferenceFromHref, remarkLinkIssueReferences } from "../../../ui/src/lib/issue-reference.js";
+import { includesSubmittedReference } from "../submitted-reference.js";
 import { JourneyError } from "./types.js";
+import { isPendingNativeRecovery } from "./workspace-deferral.js";
 
 type Row = Record<string, any>;
 const uiRequire = createRequire(new URL("../../../ui/package.json", import.meta.url));
@@ -134,7 +136,9 @@ export function hireResultLinkMatches(scope: Pick<HireScope, "origin" | "issuePr
       && url.pathname === `/${scope.issuePrefix}/issues/${id}`);
   } catch { return false; }
 }
-export function assertHireRuns(scope: HireScope, hiredId: string | undefined, tasks: Row[], runs: Row[], count?: number, requestedCommentIds?: string[], comments?: Row[]) {
+/** With a deadline, a failed run whose exact-session retry is scheduled inside it is
+ * still in progress: callers keep observing until the same run succeeds. */
+export function assertHireRuns(scope: HireScope, hiredId: string | undefined, tasks: Row[], runs: Row[], count?: number, requestedCommentIds?: string[], comments?: Row[], deadlineAt?: number) {
   const bindings = new Map([[scope.chatId, scope.leadId], ...tasks.map(task => [task.id, hiredId] as [string, string | undefined])]);
   if (runs.length > 7 || count !== undefined && runs.length !== count || new Set(runs.map(run => run.id)).size !== runs.length) {
     throw new JourneyError("failed", "hire_run_limit_mismatch");
@@ -180,7 +184,8 @@ export function assertHireRuns(scope: HireScope, hiredId: string | undefined, ta
         requests.add(context.wakeCommentId);
       }
     }
-    if (!["queued", "running", "succeeded"].includes(run.status)) throw new JourneyError("failed", "hire_native_run_failed");
+    const recovering = deadlineAt !== undefined && isPendingNativeRecovery(run, deadlineAt);
+    if (!recovering && !["queued", "running", "succeeded"].includes(run.status)) throw new JourneyError("failed", "hire_native_run_failed");
     if (run.status === "succeeded" && (run.runtimeMode !== "native" || provider?.kind !== scope.provider || provider?.model !== scope.model
       || run.contextSnapshot?.paperclipEnvironment?.id !== scope.environmentId)) throw new JourneyError("failed", "hire_run_runtime_mismatch");
     if (run.status === "succeeded" && scope.connectionChoice) {
@@ -202,7 +207,7 @@ export function assertHireDocument(scope: HireScope, task: Row, document: Row, r
   const revision = revisions.find(row => row.id === document.latestRevisionId);
   if (task.companyId !== scope.companyId || task.assigneeAgentId !== hiredId || task.status !== "done" || task.projectId !== scope.projectId
     || work.length !== 1 || work[0]?.status !== "succeeded" || document.issueId !== task.id || document.companyId !== scope.companyId
-    || document.key === "plan" || !document.body?.includes(marker) || !revision || revision.body !== document.body
+    || document.key === "plan" || !includesSubmittedReference(document.body, marker) || !revision || revision.body !== document.body
     || revision.createdByAgentId !== hiredId || revision.createdByRunId !== work[0]?.id) {
     throw new JourneyError("failed", "hired_document_provenance_mismatch");
   }

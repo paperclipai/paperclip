@@ -427,7 +427,7 @@ export async function runChatFlow(input: ChatFlowInput) {
   let issue: ChatIssue;
   let runs: ChatRun[] = [];
   let catalogFinalRunVerifier: ChatCatalogFinalRunVerifier | void = undefined;
-  const admissionAccounting = execution.suite.id === "kimi-qualification" && caseId === "stop-new-resume" && execution.profile.generation === "native";
+  const admissionAccounting = ["kimi-qualification", "antigravity-qualification"].includes(execution.suite.id) && caseId === "stop-new-resume" && execution.profile.generation === "native";
   let admissionWaits: ChatAdmissionWait[] = [];
   let stoppedForSessionReset: string | undefined;
   // A catalog task's queued run retired by reassignment before it started, with

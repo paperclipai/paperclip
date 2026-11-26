@@ -13,6 +13,7 @@ import { PAPERCLIP_RUNNER_ACPX_PROFILES, PAPERCLIP_RUNNER_PERMISSION_CAPABILITIE
 import { PERMANENT_FAILURE_CODES, PERSON_OWNED_FAILURE_CODES, RESTART_CLASS_FAILURE_CODES, SETUP_FAILURE_CODES } from "../services/continuation-cause.ts";
 
 const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
+const mockTrackAgentTaskCompleted = vi.hoisted(() => vi.fn());
 const mockTrackAgentTaskRun = vi.hoisted(() => vi.fn());
 
 vi.mock("../telemetry.js", () => ({
@@ -25,11 +26,18 @@ vi.mock("@paperclipai/shared/telemetry", async () => {
   );
   return {
     ...actual,
+    trackAgentTaskCompleted: mockTrackAgentTaskCompleted,
     trackAgentTaskRun: mockTrackAgentTaskRun,
   };
 });
 
-import { agentRunFailureCause, emitAgentTaskRun, emitAgentTaskRunById, telemetryAdapterType } from "../services/agent-task-run-telemetry.ts";
+import {
+  agentRunFailureCause,
+  emitAgentTaskCompleted,
+  emitAgentTaskRun,
+  emitAgentTaskRunById,
+  telemetryAdapterType,
+} from "../services/agent-task-run-telemetry.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -382,6 +390,8 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
     { adapterConfig: {}, adapterType: "codex_local" },
     { adapterConfig: { provider: "acpx", acpxAgent: "claude" }, adapterType: "claude_local" },
     { adapterConfig: { provider: "opencode" }, adapterType: "opencode_local" },
+    { adapterConfig: { provider: "acpx", acpxAgent: "copilot" }, adapterType: "copilot_runtime" },
+    { adapterConfig: { provider: "acpx", acpxAgent: "antigravity" }, adapterType: "antigravity_runtime" },
   ])("reports a Paperclip runner agent's underlying harness $adapterType as adapterType", async ({ adapterConfig, adapterType }) => {
     await seedCompanyAndAgent({ adapterType: "paperclip_runner", adapterConfig });
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "succeeded" }).returning();
@@ -428,6 +438,61 @@ describeEmbeddedPostgres("emitAgentTaskRun", () => {
     expect(sent[2]).not.toHaveProperty("failureCause");
     expect(JSON.stringify(sent)).not.toContain("secret detail");
   });
+
+  it("emits agent.task_completed in company and person scope with underlying runner harness adapterType", async () => {
+    await seedCompanyAndAgent({
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-4-6" },
+    });
+    const issueId = randomUUID();
+    const observed: Array<{ companyId: string | undefined; person: unknown }> = [];
+    mockTrackAgentTaskCompleted.mockImplementationOnce(() => {
+      observed.push({ companyId: scopedTelemetryCompanyId(), person: scopedTelemetryPerson() });
+    });
+
+    await emitAgentTaskCompleted(db, {
+      companyId,
+      agentId,
+      issueId,
+      taskCreatedByUserId: "user-creator",
+      taskAssignedByUserId: "user-assigner",
+      runOwnerUserId: "user-owner",
+    });
+
+    expect(mockTrackAgentTaskCompleted).toHaveBeenCalledExactlyOnceWith(mockTelemetryClient, {
+      agentRole: "engineer",
+      agentId,
+      adapterType: "claude_local",
+      model: "claude-opus-4-6",
+      taskId: issueId,
+    });
+    expect(observed).toEqual([
+      { companyId, person: { userId: "user-creator", attributedVia: "task_creator" } },
+    ]);
+    expect(scopedTelemetryCompanyId()).toBeUndefined();
+    expect(scopedTelemetryPerson()).toBeUndefined();
+  });
+
+  it("does not emit agent.task_completed for an agent in another company and never throws on emit failure", async () => {
+    await seedCompanyAndAgent({ adapterConfig: {} });
+    const issueId = randomUUID();
+
+    await emitAgentTaskCompleted(db, { companyId: randomUUID(), agentId, issueId });
+    expect(mockTrackAgentTaskCompleted).not.toHaveBeenCalled();
+
+    mockTrackAgentTaskCompleted.mockImplementationOnce(() => {
+      throw new Error("telemetry backend unreachable");
+    });
+    await expect(
+      emitAgentTaskCompleted(db, { companyId, agentId, issueId, runOwnerUserId: "user-owner" }),
+    ).resolves.toBeUndefined();
+    expect(mockTrackAgentTaskCompleted).toHaveBeenCalledExactlyOnceWith(mockTelemetryClient, {
+      agentRole: "engineer",
+      agentId,
+      adapterType: "codex_local",
+      taskId: issueId,
+    });
+  });
 });
 
 describe("agentRunFailureCause", () => {
@@ -471,7 +536,7 @@ describe("agentRunFailureCause", () => {
 });
 
 describe("Paperclip runner adapter_type coverage", () => {
-  it.each(["agent.task_run", "agent.task_completed"] as const)("lists every runner harness in the %s adapter_type contract except the known gaps", (event) => {
+  it.each(["agent.task_run", "agent.task_completed"] as const)("lists every runner harness in the %s adapter_type contract", (event) => {
     const contract = Object.keys(PAPERCLIP_ENUM_DESCRIPTIONS[event].adapter_type);
     const harnesses = [
       ...Object.keys(PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES)
@@ -480,14 +545,33 @@ describe("Paperclip runner adapter_type coverage", () => {
       ...PAPERCLIP_RUNNER_ACPX_PROFILES.map(({ value }) => telemetryAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: value } })),
     ];
 
-    expect(harnesses.filter((harness) => !contract.includes(harness)).sort()).toEqual([
-      "acpx:copilot",
-      "antigravity_runtime",
-      "aws_agentcore",
-      "claude_managed",
-      "grok_bot",
-      "muse",
-      "openai_dot",
+    expect(harnesses.filter((harness) => !contract.includes(harness)).sort()).toEqual([]);
+  });
+
+  it("reports each runner harness as its expected adapter_type", () => {
+    const reported = Object.fromEntries([
+      ...Object.keys(PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES)
+        .filter((provider) => provider !== "acpx")
+        .map((provider) => [provider, telemetryAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider } })]),
+      ...PAPERCLIP_RUNNER_ACPX_PROFILES.map(({ value }) => [`acpx:${value}`, telemetryAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: value } })]),
     ]);
+
+    expect(reported).toEqual({
+      codex: "codex_local",
+      opencode: "opencode_local",
+      claude_managed: "claude_managed",
+      aws_agentcore: "aws_agentcore",
+      grok_bot: "grok_bot",
+      muse: "muse",
+      openai_dot: "openai_dot",
+      cursor_cloud: "cursor_cloud",
+      "acpx:grok": "grok_local",
+      "acpx:claude": "claude_local",
+      "acpx:cursor": "cursor",
+      "acpx:copilot": "copilot_runtime",
+      "acpx:pi": "pi_local",
+      "acpx:kimi": "kimi_local",
+      "acpx:antigravity": "antigravity_runtime",
+    });
   });
 });

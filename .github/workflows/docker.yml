@@ -33,6 +33,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  macos_runner_runtime:
+    uses: ./.github/workflows/macos-runner-runtime.yml
+    permissions:
+      contents: read
+      actions: read
+
   runner_image:
     name: Resolve the Runner image of this commit
     if: vars.RUNNER_IMAGE_CONSUME_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064'
@@ -45,6 +51,7 @@ jobs:
       attestations: read
     outputs:
       mode: ${{ steps.verify.outputs.mode || 'inline' }}
+      inputs_digest: ${{ steps.verify.outputs.inputs_digest }}
       build_contexts: ${{ steps.verify.outputs.build_contexts }}
       labels: ${{ steps.verify.outputs.labels }}
       build_args: ${{ steps.verify.outputs.build_args }}
@@ -98,6 +105,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           IMAGE: ${{ steps.resolve.outputs.image }}
+          INPUTS_DIGEST: ${{ steps.resolve.outputs.inputs_digest }}
           LABELS: ${{ steps.resolve.outputs.labels }}
           BUILD_ARGS: ${{ steps.resolve.outputs.build_args }}
         run: |
@@ -112,6 +120,7 @@ jobs:
           fi
           {
             echo "mode=published"
+            echo "inputs_digest=$INPUTS_DIGEST"
             echo "build_contexts=runner-artifacts=docker-image://$IMAGE"
             echo "build_args=$BUILD_ARGS"
             echo "labels<<runner-image-labels-end"
@@ -142,6 +151,7 @@ jobs:
         id: watch
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN_SOURCE: github.token
         run: node scripts/watch-release-source.mjs
 
   reuse_canary_image:
@@ -196,8 +206,8 @@ jobs:
   # digest; `merge` assembles the manifest list. Both architectures remain
   # available to self-hosted installations and downstream image composers.
   build-and-push:
-    needs: [reuse_canary_image, runner_image]
-    if: ${{ !cancelled() && (needs.reuse_canary_image.result == 'skipped' || (needs.reuse_canary_image.result == 'success' && needs.reuse_canary_image.outputs.reused == 'false')) }}
+    needs: [reuse_canary_image, runner_image, macos_runner_runtime]
+    if: ${{ !cancelled() && needs.macos_runner_runtime.result == 'success' && (needs.reuse_canary_image.result == 'skipped' || (needs.reuse_canary_image.result == 'success' && needs.reuse_canary_image.outputs.reused == 'false')) }}
     strategy:
       # Independent legs: one architecture failing should still publish
       # nothing, but it must not also hide the other's logs behind a
@@ -229,6 +239,12 @@ jobs:
           # Keep the version's full commit graph without downloading blobs
           # from every historical revision of this large repository.
           filter: blob:none
+
+      - name: Download the native macOS SSH runtime
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: ${{ needs.macos_runner_runtime.outputs.artifact_name }}
+          path: docker/remote-runtimes/
 
       # `.git` is dockerignored, so a running image cannot derive its own
       # version and otherwise reports the source package.json placeholder in
@@ -303,10 +319,17 @@ jobs:
           set -euo pipefail
           echo "Disk before cleanup:"
           df -h
+          avail_kb="$(df -Pk / | awk 'NR==2 {print $4}')"
+          if [ "${avail_kb:-0}" -ge 52428800 ]; then
+            echo "Root filesystem already has >= 50 GiB free; skipping cleanup."
+            exit 0
+          fi
 
-          pnpm store prune || true
-          sudo apt-get clean || true
-          sudo rm -rf \
+          pids=()
+          (pnpm store prune || true) & pids+=("$!")
+          (sudo apt-get clean || true) & pids+=("$!")
+          (docker system prune -af || true) & pids+=("$!")
+          for dir in \
             /usr/share/dotnet \
             /usr/share/swift \
             /usr/local/lib/android \
@@ -315,8 +338,12 @@ jobs:
             /opt/ghc \
             /opt/hostedtoolcache/CodeQL \
             /opt/hostedtoolcache/PyPy \
-            /opt/hostedtoolcache/Ruby || true
-          docker system prune -af || true
+            /opt/hostedtoolcache/Ruby; do
+            (sudo rm -rf "$dir" || true) & pids+=("$!")
+          done
+          for pid in "${pids[@]}"; do
+            wait "$pid" || true
+          done
 
           echo "Disk after cleanup:"
           df -h
@@ -330,20 +357,24 @@ jobs:
 
       # Build-before-merge. When the merge queue already built and probed this
       # exact commit (docker-merge-group.yml, with no registry credentials),
-      # push those bytes, unless a published Runner image is used. The script
-      # requires a successful merge-group run of this repository for this SHA
-      # and checks the record's commit, tree, architecture and archive digest.
-      # Any missing or mismatched proof, or any failure here, leaves
+      # push those bytes. The script requires a successful merge-group run of
+      # this repository for this SHA and checks the record's commit, tree,
+      # architecture, Runner inputs digest, and archive digest. Any missing or
+      # mismatched proof, or any failure here, leaves
       # `steps.promote.outputs.digest` empty and the build below runs as
       # before. The probe below and the exact-source gate apply either way.
       - name: Find the merge-queue build of this commit
         id: find
-        if: needs.runner_image.outputs.mode != 'published' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
         continue-on-error: true
         env:
           GITHUB_TOKEN: ${{ github.token }}
           BEFORE: ${{ github.event.before }}
           ARCH: ${{ matrix.arch }}
+          # When master runs on the fast AWS release fleet, promote an already-
+          # completed merge-queue build immediately instead of stalling 3 minutes
+          # behind a slower GitHub-hosted merge-queue runner.
+          MERGE_GROUP_FIND_WAIT_MS: ${{ vars.CORE_RELEASE_AWS_ENABLED == 'true' && '0' || '180000' }}
         # Master's copy from before this push selects the run; see the promote
         # step below.
         run: |
@@ -371,6 +402,7 @@ jobs:
           DIRECTORY: ${{ runner.temp }}/merge-group-image
           IMAGE_NAME: ghcr.io/${{ github.repository }}
           BEFORE: ${{ github.event.before }}
+          RUNNER_INPUTS_DIGEST: ${{ needs.runner_image.outputs.inputs_digest }}
         run: |
           set -euo pipefail
           # Say plainly when this runner image cannot promote, instead of
@@ -388,7 +420,7 @@ jobs:
           git show "$BEFORE:scripts/merge-group-image.mjs" > "$trusted"
           # Verify without writing a step output: the digest is set only after
           # the exact bytes are in the registry.
-          verified="$(GITHUB_OUTPUT='' node "$trusted" verify --arch "$ARCH" --dir "$DIRECTORY" --since "$BEFORE")"
+          verified="$(GITHUB_OUTPUT='' node "$trusted" verify --arch "$ARCH" --dir "$DIRECTORY" --since "$BEFORE" --runner-inputs-digest "$RUNNER_INPUTS_DIGEST")"
           digest="$(printf '%s\n' "$verified" | sed -n 's/^digest=//p')"
           printf '%s' "$digest" | grep -Eq '^sha256:[a-f0-9]{64}$'
           # --preserve-digests fails rather than re-encode, so the registry
@@ -429,20 +461,44 @@ jobs:
       - name: Docker meta
         id: meta
         if: steps.promote.outputs.digest == ''
-        uses: docker/metadata-action@v6
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=nightly,enable=${{ startsWith(github.ref, 'refs/tags/nightly/v') }}
-            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/beta/v') }}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=sha
-            type=raw,value=sha-${{ github.sha }},enable=${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-          labels: |
-            io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
-            io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
+        env:
+          LAST_MIGRATION: ${{ steps.schema.outputs.last }}
+          MIGRATION_COUNT: ${{ steps.schema.outputs.count }}
+        run: node scripts/docker-image-metadata.mjs
+
+      # Skip exporting mode=max registry cache (~2.5-3m after image push) on
+      # master commits when the content-addressed cache key (cacheable inputs +
+      # weekly CLI-tool epoch) matches the last published master image and no
+      # intermediate commit edited cacheable inputs. Tag builds stay read-only
+      # against :buildcache-<arch> so older release builds never clobber master.
+      - name: Compute BuildKit cache export policy
+        id: cache-policy
+        if: steps.promote.outputs.digest == ''
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          IMAGE_NAME: ghcr.io/${{ github.repository }}
+          CACHE_REF: ghcr.io/${{ github.repository }}:buildcache-${{ matrix.arch }}
+          PLATFORM: ${{ matrix.platform }}
+          RUNNER_IMAGE_MODE: ${{ needs.runner_image.outputs.mode }}
+          TOOLS_EPOCH: ${{ steps.tools-epoch.outputs.epoch }}
+        run: node scripts/docker-cache-export-policy.mjs
+
+      # Pre-warm the local Docker daemon with the most recent published master
+      # image's layers while Buildx builds and pushes, so the post-push PID 1
+      # orphan-reaping probe (`docker run --pull always`) only downloads and
+      # extracts the small changed top layers (~30s instead of ~3m).
+      - name: Pre-warm base layers for PID 1 probe
+        if: steps.promote.outputs.digest == '' && vars.CORE_RELEASE_AWS_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+        timeout-minutes: 1
+        continue-on-error: true
+        env:
+          IMAGE_NAME: ghcr.io/${{ github.repository }}
+          PLATFORM: ${{ matrix.platform }}
+          PID_FILE: ${{ runner.temp }}/pid1-prewarm.pid
+          LOG_FILE: ${{ runner.temp }}/pid1-prewarm.log
+        run: bash scripts/docker-pid1-prewarm.sh start
+
       - name: Build and push by digest
         id: build
         if: steps.promote.outputs.digest == ''
@@ -456,6 +512,7 @@ jobs:
           build-args: |
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
             PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
+            PAPERCLIP_MACOS_RUNTIME_INPUTS_DIGEST=${{ needs.macos_runner_runtime.outputs.inputs_digest }}
             CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}
             ${{ needs.runner_image.outputs.build_args }}
           build-contexts: ${{ needs.runner_image.outputs.build_contexts }}
@@ -473,9 +530,10 @@ jobs:
           # Per-arch refs now the legs are separate runners: a shared ref would
           # have each leg overwrite the other's cache on every build.
           cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.arch }}
-          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-${{ matrix.arch }},mode=max
+          cache-to: ${{ steps.cache-policy.outputs.cache_to }}
           labels: |
             ${{ steps.meta.outputs.labels }}
+            ${{ steps.cache-policy.outputs.cache_label }}
             ${{ needs.runner_image.outputs.labels }}
 
       # Exactly one of the two paths produced this leg's digest.
@@ -507,9 +565,11 @@ jobs:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
           IMAGE_NAME: ghcr.io/${{ github.repository }}
           PLATFORM: ${{ matrix.platform }}
+          PID_FILE: ${{ runner.temp }}/pid1-prewarm.pid
         run: |
           set -euo pipefail
           test -n "$IMAGE_DIGEST"
+          bash scripts/docker-pid1-prewarm.sh stop 15
           echo "Verifying orphan reaping in $IMAGE_NAME@$IMAGE_DIGEST ($PLATFORM)"
           docker run --rm -i --pull always --platform "$PLATFORM" "$IMAGE_NAME@$IMAGE_DIGEST" sh -s < scripts/assert-orphan-reaping.sh
 
@@ -531,6 +591,13 @@ jobs:
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
+
+      - name: Stop background base-layer pre-warm if still running
+        if: always()
+        continue-on-error: true
+        env:
+          PID_FILE: ${{ runner.temp }}/pid1-prewarm.pid
+        run: bash scripts/docker-pid1-prewarm.sh stop 0
 
   # Wait for proof on ephemeral verification capacity. Publication runners do
   # only registry/signing work. Each Spot observer stays below its 45m lifetime.
@@ -554,6 +621,7 @@ jobs:
       - name: Require source proof and migrator admission before publication
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN_SOURCE: github.token
         run: node scripts/watch-release-source.mjs --require-proof
 
   # Names the per-architecture digests as one manifest list under the real
@@ -593,8 +661,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
-      # Repeated from the build job rather than passed between them: job
-      # outputs would have to survive a matrix, and this is two `ls` calls.
+      - name: Setup Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+
       - name: Compute schema migration labels
         id: schema
         run: |
@@ -611,25 +682,10 @@ jobs:
       # so parallel canary-tag builds can never race the channel backwards.
       - name: Docker meta
         id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=raw,value=nightly,enable=${{ startsWith(github.ref, 'refs/tags/nightly/v') }}
-            type=raw,value=beta,enable=${{ startsWith(github.ref, 'refs/tags/beta/v') }}
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=sha
-            type=raw,value=sha-${{ github.sha }},enable=${{ github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master' }}
-          labels: |
-            io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
-            io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
-        with:
-          node-version: 24
+        env:
+          LAST_MIGRATION: ${{ steps.schema.outputs.last }}
+          MIGRATION_COUNT: ${{ steps.schema.outputs.count }}
+        run: node scripts/docker-image-metadata.mjs
 
       # Revalidate the latest attempt after runner assignment without waiting
       # here. A concurrent source retry must invalidate the earlier proof.
@@ -637,10 +693,13 @@ jobs:
         if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_TOKEN_SOURCE: github.token
         run: node scripts/watch-release-source.mjs --check-proof
 
       - name: Create manifest list and push
         working-directory: /tmp/digests
+        env:
+          DOCKER_METADATA_OUTPUT_JSON: ${{ steps.meta.outputs.json }}
         run: |
           set -euo pipefail
           docker buildx imagetools create \

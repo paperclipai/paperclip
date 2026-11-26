@@ -265,6 +265,93 @@ describe("tool content guards", () => {
     expect(result.findings).toContain("sensitive_value");
   });
 
+  it("returns a SigV4 presigned upload link from an MCP tool result unchanged while redacting sibling secrets", async () => {
+    const uploadUrl = "https://uploads-example.s3.us-east-1.amazonaws.com/receipts/r-1.pdf?" + [
+      "X-Amz-Algorithm=AWS4-HMAC-SHA256",
+      "X-Amz-Content-Sha256=UNSIGNED-PAYLOAD",
+      "X-Amz-Credential=ASIAEXAMPLEKEYID0001%2F20261118%2Fus-east-1%2Fs3%2Faws4_request",
+      "X-Amz-Date=20261118T063600Z",
+      "X-Amz-Expires=900",
+      "X-Amz-Security-Token=IQoJb3JpZ2luEXAMPLESESSION%2Ftoken%2Bvalue%3D",
+      `X-Amz-Signature=${"0123456789abcdef".repeat(4)}`,
+      "X-Amz-SignedHeaders=host",
+      "x-id=PutObject",
+    ].join("&");
+    const value = { content: [{ type: "text", text: JSON.stringify({ receiptId: "r-1", uploadUrl }) }] };
+
+    const classifier = vi.fn(async (_content: string) => safeModel);
+    const result = await validateToolContent({
+      value,
+      direction: "result",
+      sensitiveMode: "redact",
+      promptInjectionMode: "block",
+      classifier,
+    });
+
+    expect(result.value).toEqual(value);
+    expect(result.findings).not.toContain("sensitive_value");
+    expect(result.detectorMetadata?.detector).toBe("model");
+    expect(classifier).toHaveBeenCalledTimes(1);
+
+    // JSON-escaped query separators also survive double serialization in summaries.
+    const escapedValue = {
+      content: [{ type: "text", text: `{"receiptId":"r-1","uploadUrl":"${uploadUrl.replaceAll("&", "\\u0026")}"}` }],
+    };
+    const escapedResult = await validateToolContent({
+      value: escapedValue,
+      direction: "result",
+      sensitiveMode: "redact",
+      promptInjectionMode: "block",
+    });
+    expect(escapedResult.value).toEqual(escapedValue);
+    expect(escapedResult.findings).not.toContain("sensitive_value");
+
+    // Sibling secrets in the same MCP tool result remain redacted.
+    const mixed = {
+      content: [{
+        type: "text",
+        text: JSON.stringify({ receiptId: "r-1", uploadUrl, apiKey: "sk-sibling-secret-123456" }),
+      }],
+    };
+    const mixedResult = await validateToolContent({
+      value: mixed,
+      direction: "result",
+      sensitiveMode: "redact",
+      promptInjectionMode: "block",
+    });
+    const delivered = JSON.parse((mixedResult.value as { content: Array<{ text: string }> }).content[0].text);
+    expect(delivered.uploadUrl).toBe(uploadUrl);
+    expect(delivered.apiKey).toBe("***REDACTED***");
+    expect(mixedResult.findings).toContain("sensitive_value");
+
+    // Request identity hashing and approval encryption stay keyed/encrypted for
+    // arguments containing a SigV4 presigned URL so retried side-effecting calls
+    // preserve their HMAC-based idempotency keys across deploys.
+    const argsWithPresignedUrl = { uploadUrl };
+    const canonical = canonicalToolArguments(argsWithPresignedUrl);
+    const expectedHmac = createHmac("sha256", signingSecret)
+      .update("paperclip:tool-request-identity:v1\0")
+      .update(canonical)
+      .digest("hex");
+    expect(toolRequestIdentityHash(argsWithPresignedUrl, signingSecret)).toBe(expectedHmac);
+    expect(toolRequestIdentityHash(argsWithPresignedUrl, signingSecret)).not.toBe(
+      createHash("sha256").update(canonical).digest("hex"),
+    );
+    const signed = signToolArguments({
+      invocationId: "invocation-sigv4",
+      toolName: "upload_receipt",
+      canonicalArguments: canonical,
+      signingSecret,
+    });
+    expect(JSON.parse(Buffer.from(signed, "base64url").toString("utf8")).version).toBe(2);
+    expect(readSignedToolArguments({
+      signedArguments: signed,
+      invocationId: "invocation-sigv4",
+      toolName: "upload_receipt",
+      signingSecret,
+    })).toEqual(argsWithPresignedUrl);
+  });
+
   it("blocks prompt injection in tool results before returning to the agent", async () => {
     await expect(
       validateToolContent({

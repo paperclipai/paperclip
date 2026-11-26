@@ -129,11 +129,12 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: true,
   },
   enableGitHubReviewBots: {
-    title: "GitHub review bots",
-    description: "Show GitHub review bot setup and management independently of chat connectors. Existing bots keep running when hidden; GitHub tool connections are unaffected.",
+    title: "GitHub review bots (compatibility)",
+    description:
+      "Deprecated compatibility key. GitHub review bots are always enabled; stored and managed values are ignored.",
     tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableOpenAiDot: {
     title: "OpenAI Dot",
@@ -184,11 +185,11 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: false,
   },
   enableAwsConnector: {
-    title: "AWS connector",
-    description: "Show and allow the AWS connector, which reaches AWS's hosted MCP server with short-lived credentials minted for each connection.",
+    title: "AWS connector (compatibility)",
+    description: "Deprecated compatibility key. The AWS connector is always available; stored and managed values are ignored.",
     tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableMcpAggregators: {
     title: "MCP aggregators (compatibility)",
@@ -409,6 +410,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableAntigravitySwarm: {
+    title: "Google Antigravity swarm",
+    description:
+      "Let you start Google Antigravity's native swarm by starting a comment on a task with /swarm. Helper actions are approved automatically by Antigravity's auto mode. Paperclip does not sandbox the helpers: their shell commands can write outside the task folder, for example in temp directories. Local computers with a Google sign-in only.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableSandboxDuplexBridge: {
     title: "Sandbox Duplex Bridge",
     description:
@@ -438,6 +447,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     description:
       "When the user's first request is a single task, the chief of staff writes a short plan document and a checkbox card instead of a one-card confirmation. Applies to organizations created after the toggle is flipped.",
     tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableCloudTrialInference: {
+    title: "Cloud starter inference",
+    description:
+      "Lets new Cloud workspaces start their first agent right away (OpenCode / GPT-6 Luna via server proxy) before asking the user to connect a model provider.",
+    tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
   },

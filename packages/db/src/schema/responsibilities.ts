@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
   check,
+  foreignKey,
   index,
   integer,
   numeric,
@@ -18,17 +19,13 @@ import { issues } from "./issues.js";
 import { projects } from "./projects.js";
 import { routines } from "./routines.js";
 
-/**
- * A broad area a company cares about ("Fundraising", "Customers"). An area
- * has no owner and no deadline; responsibilities are filed under it. Agents
- * can only propose areas; a board user (or confirming a responsibility under
- * it) makes one active.
- */
+/** A person's dashboard grouping. Unattributable legacy areas have no owner and are hidden. */
 export const responsibilityAreas = pgTable(
   "responsibility_areas",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+    ownerUserId: text("owner_user_id"),
     title: text("title").notNull(),
     description: text("description"),
     status: text("status").notNull().default("active"),
@@ -40,9 +37,9 @@ export const responsibilityAreas = pgTable(
   },
   (table) => ({
     companyStatusIdx: index("responsibility_areas_company_status_idx").on(table.companyId, table.status),
-    // At most one non-archived area per company per case-insensitive title.
-    companyTitleUq: uniqueIndex("responsibility_areas_company_title_uq")
-      .on(table.companyId, sql`lower(${table.title})`)
+    ownerIdentity: uniqueIndex("responsibility_areas_identity_uq").on(table.companyId, table.ownerUserId, table.id),
+    ownerTitleUq: uniqueIndex("responsibility_areas_owner_title_uq")
+      .on(table.companyId, table.ownerUserId, sql`lower(${table.title})`)
       .where(sql`${table.status} <> 'archived'`),
     statusCheck: check(
       "responsibility_areas_status_check",
@@ -106,6 +103,11 @@ export const responsibilities = pgTable(
       table.ownerUserId,
       table.status,
     ),
+    ownedArea: foreignKey({
+      name: "responsibilities_owned_area_fk",
+      columns: [table.companyId, table.ownerUserId, table.areaId],
+      foreignColumns: [responsibilityAreas.companyId, responsibilityAreas.ownerUserId, responsibilityAreas.id],
+    }),
     areaIdx: index("responsibilities_area_idx").on(table.areaId),
     statusCheck: check(
       "responsibilities_status_check",

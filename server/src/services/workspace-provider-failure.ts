@@ -106,3 +106,59 @@ export function findWorkspaceProviderFailure(error: unknown): WorkspaceProviderF
   }
   return null;
 }
+
+export type WorkspaceProviderFailureSummary = {
+  kind: WorkspaceProviderFailureKind;
+  reason: PluginWorkspaceOperationFailureReason | null;
+  retryable: boolean;
+};
+
+const KINDS: ReadonlySet<WorkspaceProviderFailureKind> = new Set([
+  "worker_unavailable", "timeout", "worker_exited", "transport", "provider",
+]);
+
+const KIND_MESSAGES: Record<Exclude<WorkspaceProviderFailureKind, "provider">, string> = {
+  worker_unavailable: "Workspace storage provider is not running",
+  timeout: "Workspace storage operation timed out",
+  worker_exited: "Workspace storage provider stopped during the operation",
+  transport: "Workspace storage operation is incomplete",
+};
+
+/** Read the bounded workspace provider failure recorded on a failed run's `resultJson`. */
+export function readWorkspaceProviderFailure(
+  resultJson: unknown,
+): WorkspaceProviderFailureSummary | null {
+  if (!resultJson || typeof resultJson !== "object" || Array.isArray(resultJson)) return null;
+  const raw = (resultJson as Record<string, unknown>).workspaceProviderFailure;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  if (typeof record.kind !== "string" || !KINDS.has(record.kind as WorkspaceProviderFailureKind)) return null;
+  if (typeof record.retryable !== "boolean") return null;
+  const reason = typeof record.reason === "string" && Object.hasOwn(REASONS, record.reason)
+    ? (record.reason as PluginWorkspaceOperationFailureReason)
+    : null;
+  return {
+    kind: record.kind as WorkspaceProviderFailureKind,
+    reason,
+    retryable: record.retryable,
+  };
+}
+
+/** Resolve a closed, Core-owned human-readable message for a saved workspace provider failure or reason key. */
+export function workspaceProviderFailureMessage(
+  failureOrReason: WorkspaceProviderFailureSummary | string | null | undefined,
+): string | null {
+  if (!failureOrReason) return null;
+  if (typeof failureOrReason === "string") {
+    return Object.hasOwn(REASONS, failureOrReason)
+      ? REASONS[failureOrReason as PluginWorkspaceOperationFailureReason].message
+      : null;
+  }
+  if (failureOrReason.reason && Object.hasOwn(REASONS, failureOrReason.reason)) {
+    return REASONS[failureOrReason.reason].message;
+  }
+  if (failureOrReason.kind !== "provider") {
+    return KIND_MESSAGES[failureOrReason.kind];
+  }
+  return null;
+}

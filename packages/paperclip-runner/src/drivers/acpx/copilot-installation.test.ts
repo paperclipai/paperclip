@@ -708,7 +708,7 @@ describe("Copilot build-owned installation", () => {
         distributionRoot: root, manifestPath: `${root}/.paperclip-copilot-closure.json`,
         expectedClosureSha256: COPILOT_CLOSURE_SHA256[`${process.platform}-${process.arch}` as keyof typeof COPILOT_CLOSURE_SHA256],
         executable: "copilot", fixedArguments: COPILOT_LAUNCH_ARGUMENTS, isolatedCacheEnvironmentName: "COPILOT_PKG_CACHE_HOME",
-        copilotDistributionDirectory: "distribution",
+        copilotDistributionDirectory: "distribution", storeFamily: "copilot",
       });
       expect(result.commandDigest).toBe(QUALIFIED_ACPX_PROFILES.copilot.commandDigest);
       expect(result.openCommand).toBe(openCommand);

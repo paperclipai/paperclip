@@ -18,7 +18,7 @@ const CLOUD_STAGING_EXPERIMENTAL_KEYS: ReadonlySet<string> = new Set([
   "enableExternalObjects",
   "enableFastResponses",
   "enableFirstTaskPlanProposal",
-  "enableGitHubReviewBots",
+  "enableCloudTrialInference",
   "enableGoogleWorkspaceConnector",
   "enableAwsConnector",
   "enableGoalsSidebarLink",

@@ -43,6 +43,8 @@ type Seed = {
   /** How today's code leaves the run: an active hold (before disposition) or a settled-but-blocked hold (older releases). */
   hold?: "active" | "settled_blocked" | "none";
   coordinatorState?: string;
+  /** The hold's cause, when the run's own failure code blocked the task directly. */
+  holdCause?: string;
 };
 
 suite("fresh-continuation fallback", () => {
@@ -90,7 +92,7 @@ suite("fresh-continuation fallback", () => {
         : { runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } } }) });
     if (seed.runtime === "native") {
       await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "terminal_failure",
-        recoveryState: seed.coordinatorState ?? "blocked", failureCode: "native_continuation_requires_reconciliation", leaseOwner: null });
+        recoveryState: seed.coordinatorState ?? "blocked", failureCode: seed.holdCause ?? "native_continuation_requires_reconciliation", leaseOwner: null });
     }
     let actionId: string | null = null;
     if ((seed.hold ?? "active") !== "none") {
@@ -99,7 +101,7 @@ suite("fresh-continuation fallback", () => {
       const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
         status: settled ? "resolved" : "active", outcome: settled ? "blocked" : null, resolvedAt: settled ? finishedAt : null,
         ownerType: "board", returnOwnerAgentId: agentId,
-        cause: native ? "native_continuation_requires_reconciliation" : "legacy_execution_requires_reconciliation",
+        cause: seed.holdCause ?? (native ? "native_continuation_requires_reconciliation" : "legacy_execution_requires_reconciliation"),
         fingerprint: native ? `native-continuation:${runId}` : `legacy-execution:${runId}`,
         nextAction: "Inspect the original failure and reconcile the previous execution before continuing. Automatic recovery cannot start another incident.",
         maxAttempts: 3, createdAt: finishedAt,
@@ -122,6 +124,15 @@ suite("fresh-continuation fallback", () => {
     const heartbeat = heartbeatService(db);
     await deliverReconciledExecutions(db, heartbeat.wakeup);
     await deliverReconciledExecutions(db, heartbeat.wakeup);
+  }
+
+  async function deliverOneSuccessor(f: { issueId: string; runId: string }) {
+    expect(await getExecutionBlocker(db, companyId, f.issueId)).toBeNull();
+    await occupySlot();
+    await deliver();
+    const next = await successors(f.runId);
+    expect(next).toHaveLength(1);
+    return next[0]!;
   }
 
   async function expectOneFreshSuccessor(f: { issueId: string; runId: string }) {
@@ -175,6 +186,41 @@ suite("fresh-continuation fallback", () => {
     const f = await unfinishedRun({ runtime: "native", ...seed });
     await settleUnrecoverableExecutions(db);
     await expectOneFreshSuccessor(f);
+  }, 60_000);
+
+  // paperclip.staging, 2026-11-25: a replaced OpenCode session was built
+  // without its launch inputs, and the run failed as an incompatible provider
+  // pack. The pack was fine; a fresh run prepares those inputs again, so the
+  // task held by an older release continues without a Retry.
+  it.each([
+    "runner_remote_provider_artifact_incompatible: OpenCode executable is missing from the provider pack",
+    // As a wrapping layer records it, with a prefix and trailing detail.
+    "runner_ingress_unavailable: runnerd process failed: runner_remote_provider_artifact_incompatible: "
+      + "OpenCode executable is missing from the provider pack (attempt=2)",
+  ])("continues a task blocked because the controller left out the OpenCode launch inputs (%s)", async error => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "runner_remote_provider_artifact_incompatible",
+      error, holdCause: "runner_remote_provider_artifact_incompatible" });
+    await settleUnrecoverableExecutions(db);
+    // The continuation settles the hold it started from, so a second pass
+    // neither selects it again nor starts another run.
+    expect(await evidenceOf(f.actionId!)).toMatchObject({ status: "resolved" });
+    await settleUnrecoverableExecutions(db);
+    const next = await deliverOneSuccessor(f);
+    expect(next.contextSnapshot).toMatchObject({ issueId: f.issueId, previousRunId: f.runId, forceFreshSession: true });
+    await settleUnrecoverableExecutions(db);
+    await deliver();
+    expect(await successors(f.runId)).toHaveLength(1);
+    expect(await evidenceOf(f.actionId!)).toMatchObject({ status: "resolved" });
+  }, 60_000);
+
+  it("leaves a task blocked by a genuinely incompatible provider pack for a person", async () => {
+    const f = await unfinishedRun({ runtime: "native", errorCode: "runner_remote_provider_artifact_incompatible",
+      error: "runner_remote_provider_artifact_incompatible: provider pack manifest digest mismatch",
+      holdCause: "runner_remote_provider_artifact_incompatible" });
+    await settleUnrecoverableExecutions(db);
+    await deliver();
+    expect(await successors(f.runId)).toHaveLength(0);
+    expect(await issue(f.issueId)).toMatchObject({ status: "blocked" });
   }, 60_000);
 
   // Staging: the person had already pressed Retry, and the automatic successor
@@ -1561,5 +1607,48 @@ suite("fresh-continuation fallback", () => {
     expect((await holdRow(f.actionId!)).evidence.freshContinuation).toBeUndefined();
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" }))
       .toEqual({ kind: "person_owned", reason: "retry_needed" });
+  }, 60_000);
+
+  it("starts a fresh isolated workspace on auto-continuation after a non-retryable workspace binding_mismatch instead of reusing the broken workspace", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "setup_failed",
+      error: "Saved workspace storage no longer matches this workspace; retrying the same workspace will not help" });
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: f.issueId, mode: "isolated",
+      strategyType: "git_worktree", name: "Broken task workspace", providerType: "local_fs", cwd: "/tmp/broken-binding-workspace" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace!.id, workspaceBindingRevision: 1 }).where(eq(issues.id, f.issueId));
+    await db.update(heartbeatRuns).set({
+      resultJson: { workspaceProviderFailure: { kind: "provider", reason: "binding_mismatch", retryable: false } },
+    }).where(eq(heartbeatRuns.id, f.runId));
+
+    const decided = await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" });
+    expect(decided).toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace", delivery: "recorded" });
+    expect(await issue(f.issueId)).toMatchObject({ executionWorkspaceId: null, workspaceBindingRevision: 2, status: "todo" });
+
+    await occupySlot();
+    await deliver();
+    const [next] = await successors(f.runId);
+    expect(next).toBeDefined();
+    expect(next!.contextSnapshot).toMatchObject({ freshContinuationIsolation: f.actionId, forceFreshSession: true });
+    expect(await readFreshWorkspaceReadiness(db, next!)).toMatchObject({
+      mode: "fresh_isolated_workspace",
+      retryIntentId: f.actionId,
+      sourceRunId: f.runId,
+    });
+  }, 60_000);
+
+  it.each([
+    { reason: "storage_pending", retryable: true, error: "Project storage is still being prepared; retry the same workspace shortly" },
+    { reason: "credential_unavailable", retryable: false, error: "Workspace storage provider cannot use the project's Git credential; reconnect it before retrying" },
+  ])("keeps writer_ended isolation for non-binding workspaceProviderFailure ($reason)", async ({ reason, retryable, error }) => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "setup_failed", error });
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: f.issueId, mode: "isolated",
+      strategyType: "git_worktree", name: "Reusable task workspace", providerType: "local_fs", cwd: "/tmp/reusable-workspace" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace!.id, workspaceBindingRevision: 1 }).where(eq(issues.id, f.issueId));
+    await db.update(heartbeatRuns).set({
+      resultJson: { workspaceProviderFailure: { kind: "provider", reason, retryable } },
+    }).where(eq(heartbeatRuns.id, f.runId));
+
+    const decided = await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" });
+    expect(decided).toMatchObject({ kind: "continued", isolation: "writer_ended", delivery: "recorded" });
+    expect(await issue(f.issueId)).toMatchObject({ executionWorkspaceId: workspace!.id, workspaceBindingRevision: 1 });
   }, 60_000);
 });

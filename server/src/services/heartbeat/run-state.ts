@@ -58,6 +58,7 @@ import {
 import { isUuidLike } from "@paperclipai/shared";
 import { HEARTBEAT_RUN_LIST_DEFAULT_LIMIT, HEARTBEAT_RUN_LIST_MAX_LIMIT } from "@paperclipai/shared";
 import { isUnsafeSessionWorkspaceCwd } from "../session-workspace-cwd.js";
+import { RUN_CONTENT_DELETED_MARKER } from "../tool-access/connections/run-session-reset.js";
 import { presentStorageFailureMessage } from "../../storage/storage-unavailable.js";
 
 export const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON =
@@ -1601,6 +1602,7 @@ export function createHeartbeatRunState(db: Db) {
       )
       .then((rows) => rows[0] ?? null);
     if (!resumeRun) return null;
+    if (parseObject(resumeRun.resultJson)[RUN_CONTENT_DELETED_MARKER]) return null;
 
     const resumeContext = parseObject(resumeRun.contextSnapshot);
     const resumeTaskKey = deriveTaskKey(resumeContext, null) ?? taskKey;

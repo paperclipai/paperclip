@@ -1,6 +1,11 @@
 import type { IssueCommentMetadata, IssueCommentPresentation } from "@paperclipai/shared";
+import type { PluginWorkspaceOperationFailureReason } from "@paperclipai/plugin-sdk";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
 import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "../project-storage-environment-reason.js";
+import {
+  workspaceProviderFailureMessage,
+  type WorkspaceProviderFailureSummary,
+} from "../workspace-provider-failure.js";
 import {
   agentLinkRow,
   keyValueRow,
@@ -97,15 +102,24 @@ const SETUP_FAILURE_NOTICES: Record<string, StrandedRecoveryNoticeSeed> = {
 
 export const NO_RUNNING_EXECUTION_NOTICE_TITLE = "Task could not continue";
 
+export type StrandedWorkspaceProviderFailureInput =
+  | WorkspaceProviderFailureSummary
+  | PluginWorkspaceOperationFailureReason
+  | null
+  | undefined;
+
 export function buildNoRunningExecutionNoticeSeed(input: {
   status: "todo" | "in_progress";
   attempts?: number;
+  workspaceProviderFailure?: StrandedWorkspaceProviderFailureInput;
 }): StrandedRecoveryNoticeSeed {
   const tries = input.attempts && input.attempts > 1 ? ` after ${input.attempts} tries` : "";
+  const resolvedReason = workspaceProviderFailureMessage(input.workspaceProviderFailure);
+  const detail = resolvedReason ? ` ${resolvedReason.replace(/[.!?]+$/, "")}.` : "";
   return {
     body: input.status === "todo"
-      ? `Paperclip tried to start this task again, but it still could not start${tries}. Press Retry to start it again.`
-      : `Paperclip tried to continue this task again, but it still could not continue${tries}. `
+      ? `Paperclip tried to start this task again, but it still could not start${tries}.${detail} Press Retry to start it again.`
+      : `Paperclip tried to continue this task again, but it still could not continue${tries}.${detail} `
         + "Press Retry to start it again from the saved work.",
     title: NO_RUNNING_EXECUTION_NOTICE_TITLE,
     tone: "danger",
@@ -114,6 +128,7 @@ export function buildNoRunningExecutionNoticeSeed(input: {
 
 export function buildImmediateExecutionPathRecoveryNoticeSeed(input: {
   status: "todo" | "in_progress";
+  workspaceProviderFailure?: StrandedWorkspaceProviderFailureInput;
 }): StrandedRecoveryNoticeSeed {
   return buildNoRunningExecutionNoticeSeed(input);
 }
@@ -159,6 +174,13 @@ export function sandboxProviderPluginRemedy(pluginStatus: string): string {
  * names the specific gap for the reasons this notice knows, and falls back to
  * the secret/env-binding wording (the original and most common reason).
  */
+export const DOT_CONFIGURATION_INCOMPLETE_REASONS = new Set([
+  "dot_subscription_expired",
+  "dot_pairing_required",
+  "dot_disabled",
+  "dot_config_invalid",
+]);
+
 export function buildConfigurationIncompleteRecoveryNoticeSeed(
   configurationIncomplete?: Record<string, unknown> | null,
 ): StrandedRecoveryNoticeSeed {
@@ -233,6 +255,38 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
       title: "Workspace storage unavailable",
       body: "The agent did not start because the project that stores this task's files uses workspace storage that the agent's environment cannot use.",
       nextAction: PROJECT_STORAGE_ENVIRONMENT_NEXT_ACTION,
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "dot_subscription_expired") {
+    return {
+      title: "Dot event subscription expired",
+      body: "Paperclip stopped before starting the run because this Dot's event subscription expired. Event subscriptions last up to 24 hours; the existing pairing is still valid.",
+      nextAction: "Ask the Dot to subscribe to paperclip.dot.mailbox_updated again (no new pairing is needed), then press Retry.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "dot_pairing_required") {
+    return {
+      title: "Dot connection needs pairing",
+      body: "Paperclip stopped before starting the run because this Dot is not paired with a verified event subscription and completed event test. Automatic retries cannot repair a missing connection.",
+      nextAction: "Pair the Dot and complete the event test in the agent's connection settings, then press Retry.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "dot_disabled") {
+    return {
+      title: "OpenAI Dot is disabled",
+      body: "Paperclip stopped before starting the run because OpenAI Dot is disabled in experimental settings. Automatic retries cannot enable it.",
+      nextAction: "Enable OpenAI Dot in Instance settings → Experimental, then press Retry.",
+      tone: "danger",
+    };
+  }
+  if (readNonEmptyStringField(configurationIncomplete, "reason") === "dot_config_invalid") {
+    return {
+      title: "Dot configuration needs attention",
+      body: "Paperclip stopped before starting the run because this Dot agent's configuration is invalid (it requires per-turn lifecycle, externally billed provider acknowledgement, no custom model, and a paired binding).",
+      nextAction: "Update this Dot agent's configuration in its settings, then press Retry.",
       tone: "danger",
     };
   }

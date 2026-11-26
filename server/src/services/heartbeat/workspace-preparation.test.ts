@@ -1,7 +1,9 @@
+import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { preparePluginWorkspace } from "../plugin-workspaces.js";
+import { inspectPluginWorkspaceForFinalization } from "../native-runtime/native-plugin-workspace-finalization.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile, access, rename, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, writeFile, access, rename, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1512,6 +1514,132 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect((await readIssue(issue.id)).executionWorkspaceId).toBe(prepared.persistedExecutionWorkspace!.id);
   });
 
+  it("prepares a repository-free local task directory without a Git worktree", async () => {
+    const { input, issue } = await fixture();
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, issue.id));
+    input.task.issueRef = await readIssue(issue.id);
+    input.task.context = { issueId: issue.id };
+    input.policy.useIsolatedTaskDirectory = true;
+    input.policy.effectiveExecutionWorkspaceMode = "isolated_workspace";
+    input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
+    input.config.mergedConfig = { workspaceStrategy: { type: "git_worktree" } };
+    const prepared = await prepareHeartbeatWorkspace(db, input);
+    expect(await realpath(prepared.executionWorkspace.cwd)).toBe(
+      join(await realpath(resolvePaperclipInstanceRoot()), "isolated-workspaces", input.agent.companyId, issue.id),
+    );
+    expect(prepared.persistedExecutionWorkspace).toMatchObject({
+      mode: "isolated_workspace",
+      strategyType: "project_primary",
+      sourceIssueId: issue.id,
+    });
+  });
+
+  it("reuses a bound ordinary repository-free plugin task directory across turns without requiring a Git worktree", async () => {
+    const { input, issue, envOrchestrator } = await fixture();
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, issue.id));
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, input.agent.id));
+    const pluginEnvironment = await environmentService(db).create(input.agent.companyId, {
+      name: `Plugin task dir ${issue.id}`,
+      driver: "plugin",
+      status: "active",
+      envVars: {},
+      config: { pluginKey: "test.tasks", driverKey: "tasks" },
+    });
+    await db.update(agents).set({ defaultEnvironmentId: pluginEnvironment.id }).where(eq(agents.id, input.agent.id));
+    input.agent = { ...input.agent, adapterType: "paperclip_runner", defaultEnvironmentId: pluginEnvironment.id };
+    input.task.context = { issueId: issue.id };
+    input.policy.requestedExecutionWorkspaceMode = "isolated_workspace";
+    input.policy.effectiveExecutionWorkspaceMode = "isolated_workspace";
+
+    const selectForTurn = async (issueExecutionWorkspaceSettings: typeof input.policy.issueExecutionWorkspaceSettings) => {
+      const currentIssue = await readIssue(issue.id);
+      return selectHeartbeatEnvironment(db, {
+        run: input.run,
+        agent: input.agent,
+        task: {
+          issueRef: currentIssue,
+          issueContext: currentIssue,
+          issueId: issue.id,
+          context: input.task.context,
+          executionProjectId: null,
+          workspaceProjectContext: { hasWorkspace: false },
+          boundSourceWorkspace: null,
+          hasSelectedWorkspaceSource: false,
+          taskWorkspaceIntent: null,
+          responsibleUserId: null,
+        },
+        policy: {
+          ...input.policy,
+          issueExecutionWorkspaceSettings,
+        },
+        config: {
+          config: input.agent.adapterConfig,
+          sourceWorkspaceConfig: input.agent.adapterConfig,
+          issueAssigneeOverrides: null,
+        },
+        services: {
+          environmentsSvc: environmentService(db),
+          executionWorkspacesSvc: executionWorkspaceService(db),
+          instanceSettings: instanceSettingsService(db),
+          findSharedWorkspaceHolder: async () => null,
+          findExecutionWorkspaceHolder: async () => null,
+        },
+      });
+    };
+
+    const stopped = new Error("Plugin task directory acquisition boundary");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockRejectedValue(stopped);
+
+    const turn1 = await selectForTurn({ mode: "isolated_workspace" });
+    expect(turn1.useIsolatedTaskDirectory).toBe(true);
+    input.task.issueRef = await readIssue(issue.id);
+    input.policy.useIsolatedTaskDirectory = turn1.useIsolatedTaskDirectory;
+    input.environment = {
+      ...input.environment,
+      selectedEnvironmentId: turn1.selectedEnvironmentId,
+      selectedEnvironmentForConfig: turn1.selectedEnvironmentForConfig,
+      environmentResolution: turn1.environmentResolution,
+      resolvedInstanceSettings: turn1.resolvedInstanceSettings,
+    };
+    input.config.mergedConfig = { workspaceStrategy: { type: "git_worktree" } };
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(stopped);
+
+    const boundId = (await readIssue(issue.id)).executionWorkspaceId!;
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, boundId));
+    expect(workspace).toMatchObject({
+      cwd: `/workspaces/${issue.id}`,
+      mode: "isolated_workspace",
+      strategyType: "project_primary",
+      providerType: "adapter_managed",
+      projectWorkspaceId: null,
+      sourceIssueId: issue.id,
+    });
+
+    const turn2 = await selectForTurn({ mode: "isolated_workspace" });
+    expect(turn2.useIsolatedTaskDirectory).toBe(true);
+    input.task.issueRef = await readIssue(issue.id);
+    input.policy.useIsolatedTaskDirectory = turn2.useIsolatedTaskDirectory;
+    input.reuse.existingExecutionWorkspace = turn2.existingExecutionWorkspace;
+    input.reuse.reusableExistingExecutionWorkspace = turn2.reusableExistingExecutionWorkspace;
+    input.reuse.requestedShouldReuseExisting = turn2.requestedShouldReuseExisting;
+    input.reuse.workspaceReuseRequest = turn2.workspaceReuseRequest;
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(stopped);
+    expect((await readIssue(issue.id)).executionWorkspaceId).toBe(boundId);
+    expect(acquire).toHaveBeenCalledTimes(2);
+
+    const turn2ExplicitGit = await selectForTurn({
+      mode: "isolated_workspace",
+      workspaceStrategy: { type: "git_worktree" },
+    });
+    expect(turn2ExplicitGit.useIsolatedTaskDirectory).toBe(false);
+    input.policy.useIsolatedTaskDirectory = turn2ExplicitGit.useIsolatedTaskDirectory;
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: { reason: "plugin_workspace_strategy_unsupported" },
+    });
+    expect(acquire).toHaveBeenCalledTimes(2);
+  });
+
   it.each(["reuse", "explicit_git", "foreign_path", "missing_path", "symlink_path", "binding_changed", "canonical_retry", "canonical_warning", "canonical_unknown_warning", "canonical_provider_warning", "canonical_fresh", "canonical_lease", "canonical_result", "canonical_controller", "canonical_output", "canonical_measurement", "canonical_repaired_git"] as const)("recomputes ordinary-turn policy for a saved source-free fresh directory: %s", async scenario => {
     const { input, issue } = await fixture();
     const userId = `directory-owner-${randomUUID()}`;
@@ -1974,6 +2102,79 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
   });
 
+  it("provisions a separate plugin workspace when a task is reassigned or reviewed by another agent on the same plugin environment", async () => {
+    const { input, issue, envOrchestrator } = await fixture();
+    input.agent.adapterType = "paperclip_runner";
+    const pluginEnvironment = { ...input.environment.localEnvironment, driver: "plugin" as const, config: { pluginKey: "test.computer", driverKey: "tasks" } };
+    input.environment.selectedEnvironmentForConfig = pluginEnvironment;
+    const stopped = new Error("Plugin realization boundary");
+    const realize = vi.spyOn(envOrchestrator, "realizeForRun").mockRejectedValue(stopped);
+
+    // Agent A runs first and binds workspace W_A owned by Agent A.
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toBe(stopped);
+    const firstId = (await readIssue(issue.id)).executionWorkspaceId!;
+    const [workspaceA] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, firstId));
+    expect(workspaceA.metadata?.runnerTaskWorkspaceOwner).toMatchObject({ agentId: input.agent.id, environmentId: pluginEnvironment.id });
+
+    // Create Agent B in the same company on the same plugin environment.
+    const [agentB] = await db.insert(agents).values({
+      companyId: issue.companyId, name: "Agent B", adapterType: "paperclip_runner", status: "active",
+    }).returning();
+    const [runB] = await db.insert(heartbeatRuns).values({
+      companyId: issue.companyId, agentId: agentB.id, invocationSource: "on_demand", status: "running",
+    }).returning();
+
+    // Reviewer case: Agent B reviews Agent A's task (wasIssueAssignee = false).
+    await reuse(input, toExecutionWorkspace(workspaceA));
+    const reviewerInput: HeartbeatWorkspacePreparationInput = {
+      ...input,
+      agent: agentB,
+      run: runB,
+      task: { ...input.task, wasIssueAssignee: false },
+    };
+    await expect(prepareHeartbeatWorkspace(db, reviewerInput)).rejects.toBe(stopped);
+    // Issue stays bound to Agent A's workspace so Agent A's follow-up turns are undisturbed.
+    expect((await readIssue(issue.id)).executionWorkspaceId).toBe(firstId);
+    const afterReview = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, issue.companyId));
+    const reviewerWorkspace = afterReview.find(w => w.id !== firstId);
+    expect(reviewerWorkspace).toBeDefined();
+    expect(reviewerWorkspace!.providerType).toBe("adapter_managed");
+    expect(reviewerWorkspace!.metadata?.runnerTaskWorkspaceOwner).toMatchObject({ agentId: agentB.id, environmentId: pluginEnvironment.id });
+    await expect(inspectPluginWorkspaceForFinalization(db, undefined, reviewerWorkspace!, agentB.id, runB.id)).resolves.toMatchObject({
+      providerType: "adapter_managed", owner: { agentId: agentB.id },
+    });
+
+    // Reassignment case: task is reassigned to Agent B (wasIssueAssignee = true).
+    await db.update(issues).set({ assigneeAgentId: agentB.id }).where(eq(issues.id, issue.id));
+    await reuse(input, toExecutionWorkspace(workspaceA));
+    const [runC] = await db.insert(heartbeatRuns).values({
+      companyId: issue.companyId, agentId: agentB.id, invocationSource: "assignment", status: "running",
+    }).returning();
+    const reassignedInput: HeartbeatWorkspacePreparationInput = {
+      ...input,
+      agent: agentB,
+      run: runC,
+      task: { ...input.task, wasIssueAssignee: true },
+    };
+    await expect(prepareHeartbeatWorkspace(db, reassignedInput)).rejects.toBe(stopped);
+    const reassignedId = (await readIssue(issue.id)).executionWorkspaceId!;
+    expect(reassignedId).not.toBe(firstId);
+    const [workspaceB] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, reassignedId));
+    expect(workspaceB.providerType).toBe("adapter_managed");
+    expect(workspaceB.metadata?.runnerTaskWorkspaceOwner).toMatchObject({ agentId: agentB.id, environmentId: pluginEnvironment.id });
+    await expect(inspectPluginWorkspaceForFinalization(db, undefined, workspaceB, agentB.id, runC.id)).resolves.toMatchObject({
+      providerType: "adapter_managed", owner: { agentId: agentB.id },
+    });
+    // Agent A's original workspace record keeps its original owner untouched.
+    const [workspaceAAfter] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, firstId));
+    expect(workspaceAAfter.metadata?.runnerTaskWorkspaceOwner).toMatchObject({ agentId: input.agent.id });
+    // Subsequent run for Agent B reuses Agent B's newly bound workspace cleanly.
+    await reuse(reassignedInput, toExecutionWorkspace(workspaceB));
+    await expect(prepareHeartbeatWorkspace(db, reassignedInput)).rejects.toBe(stopped);
+    expect((await readIssue(issue.id)).executionWorkspaceId).toBe(reassignedId);
+    expect(realize).toHaveBeenCalledTimes(4);
+  });
+
   it.each(["services", "fresh"] as const)("rejects unsupported %s before plugin workspace preparation or acquisition", async mode => {
     const { input, envOrchestrator } = await fixture();
     input.agent.adapterType = "paperclip_runner";
@@ -2013,6 +2214,138 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     });
     expect(acquire).not.toHaveBeenCalled();
   });
+
+  it("names incompatible Core project storage when a storage-plugin environment refuses a Core Git worktree", async () => {
+    const { input, issue, envOrchestrator } = await fixture(true);
+    const coreProjectId = issue.projectId!;
+    const coreProjectWorkspaceId = issue.projectWorkspaceId!;
+    const storage = await createPluginWorkspaceFixture(db, input.agent.companyId);
+    const [plugin] = await db.select().from(plugins).where(eq(plugins.id, storage.pluginId));
+    await db.update(plugins).set({
+      manifestJson: {
+        ...plugin.manifestJson,
+        capabilities: [...plugin.manifestJson.capabilities, "environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "tasks", supportsTasks: true, displayName: "Agent Computer", configSchema: { type: "object", properties: {} } }],
+      },
+    }).where(eq(plugins.id, storage.pluginId));
+    const [pluginProject] = await db.insert(projects).values({
+      companyId: input.agent.companyId,
+      name: "Plugin-storage project",
+      executionWorkspacePolicy: { enabled: true, storageProviderPluginId: storage.pluginId },
+    }).returning();
+    await db.update(issues).set({
+      projectId: pluginProject.id,
+      projectWorkspaceId: coreProjectWorkspaceId,
+      workspaceSelection: { version: 1, source: "project", selection: { kind: "configured_source", mode: "managed_isolated", projectWorkspaceId: coreProjectWorkspaceId } },
+    }).where(eq(issues.id, issue.id));
+    input.task.issueRef = { ...issue, projectId: pluginProject.id, projectWorkspaceId: coreProjectWorkspaceId };
+    input.task.workspaceSelection = { version: 1, source: "project", selection: { kind: "configured_source", mode: "managed_isolated", projectWorkspaceId: coreProjectWorkspaceId } };
+    input.task.context = { issueId: issue.id, projectId: pluginProject.id };
+    input.agent.adapterType = "paperclip_runner";
+    const pluginEnvironment = {
+      ...input.environment.localEnvironment,
+      id: randomUUID(),
+      name: "Agent Computer",
+      driver: "plugin" as const,
+      config: { pluginKey: plugin.pluginKey, driverKey: "tasks", driverConfig: {} },
+    };
+    input.environment.selectedEnvironmentId = pluginEnvironment.id;
+    input.environment.selectedEnvironmentForConfig = pluginEnvironment;
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
+
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      name: "ConfigurationIncompleteFailure",
+      code: "configuration_incomplete",
+      message: `This project's workspace storage (Core / local) does not support the environment "Agent Computer". Use an agent in a compatible environment, or choose a workspace source from a project for this environment.`,
+      resultJson: {
+        configurationIncomplete: {
+          reason: "project_storage_environment_incompatible",
+          companyId: input.agent.companyId,
+          agentId: input.agent.id,
+          issueId: issue.id,
+          projectId: coreProjectId,
+          storageProviderPluginId: null,
+          environmentId: pluginEnvironment.id,
+          fingerprint: `project_storage_environment:core:${pluginEnvironment.id}`,
+          actionUrl: `/agents/${input.agent.id}/runtime`,
+        },
+      },
+    });
+    expect(acquire).not.toHaveBeenCalled();
+    expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, input.agent.companyId))).toHaveLength(0);
+
+    await db.update(plugins).set({ status: "disabled" }).where(eq(plugins.id, storage.pluginId));
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: { reason: "plugin_workspace_strategy_unsupported" },
+    });
+
+    await db.update(plugins).set({ status: "ready" }).where(eq(plugins.id, storage.pluginId));
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null, workspaceSelection: null }).where(eq(issues.id, issue.id));
+    input.task.issueRef = { ...issue, projectId: null, projectWorkspaceId: null };
+    input.task.workspaceSelection = null;
+    input.task.context = { issueId: issue.id };
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: { reason: "plugin_workspace_strategy_unsupported" },
+    });
+    expect(acquire).not.toHaveBeenCalled();
+  });
+
+  it.each(["fresh_retry", "project_primary"] as const)(
+    "refuses a %s run for a Core-storage project on a storage-plugin environment without reserving an empty workspace",
+    async scenario => {
+      const { input, issue, envOrchestrator } = await fixture(scenario === "fresh_retry");
+      const storage = await createPluginWorkspaceFixture(db, input.agent.companyId);
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, storage.pluginId));
+      await db.update(plugins).set({
+        manifestJson: {
+          ...plugin.manifestJson,
+          capabilities: [...plugin.manifestJson.capabilities, "environment.drivers.register"],
+          environmentDrivers: [{
+            driverKey: "tasks", supportsTasks: true, freshWorkspaceVersion: 1,
+            displayName: "Agent Computer", configSchema: { type: "object", properties: {} },
+          }],
+        },
+      }).where(eq(plugins.id, storage.pluginId));
+      input.agent.adapterType = "paperclip_runner";
+      const pluginEnvironment = {
+        ...input.environment.localEnvironment,
+        id: randomUUID(),
+        name: "Agent Computer",
+        driver: "plugin" as const,
+        config: { pluginKey: plugin.pluginKey, driverKey: "tasks", driverConfig: {} },
+      };
+      input.environment.selectedEnvironmentId = pluginEnvironment.id;
+      input.environment.selectedEnvironmentForConfig = pluginEnvironment;
+      if (scenario === "fresh_retry") {
+        input.task.freshWorkspace = {
+          mode: "fresh_isolated_workspace", retryIntentId: input.run.id, sourceRunId: input.run.id, retainedSourceIds: [],
+        };
+      } else {
+        input.policy.requestedExecutionWorkspaceMode = "shared_workspace";
+        input.policy.effectiveExecutionWorkspaceMode = "shared_workspace";
+        input.config.mergedConfig = { workspaceStrategy: { type: "project_primary" } };
+      }
+      const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
+
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+        name: "ConfigurationIncompleteFailure",
+        code: "configuration_incomplete",
+        resultJson: {
+          configurationIncomplete: {
+            reason: "project_storage_environment_incompatible",
+            projectId: issue.projectId,
+            storageProviderPluginId: null,
+            environmentId: pluginEnvironment.id,
+          },
+        },
+      });
+      expect(acquire).not.toHaveBeenCalled();
+      expect(await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, input.agent.companyId))).toHaveLength(0);
+      expect((await readIssue(issue.id)).executionWorkspaceId).toBeNull();
+    },
+  );
 
   it.each([true, false])("forwards only authorized plugin project IDs without staging (remote enabled: %s)", async enabled => {
     const { input, issue, envOrchestrator } = await fixture();

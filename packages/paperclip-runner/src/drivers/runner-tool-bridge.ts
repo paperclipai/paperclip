@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { re2PortableSchema } from "./re2-schema-patterns.js";
 import { appendSemanticToolReceipt, semanticCanonicalJson as canonicalJson, semanticInputSha256, type SemanticToolReceipt } from "./semantic-tool-receipt.js";
 import {
   createServer,
@@ -67,11 +68,17 @@ export interface RunnerToolBridgeOptions {
   scopeToken?: () => string | null;
   /** Receives one JSON diagnostic per call accepted after input coercion. */
   onDiagnostic?: (message: string) => void;
+  /** Regex dialect of the client reading tools/list. "re2" serves RE2-portable
+   * patterns (Antigravity CLI); calls are still validated with the originals. */
+  schemaPatternDialect?: "ecma" | "re2";
 }
 
 export interface RunnerToolBridge {
   readonly url: string;
   readonly secret: string;
+  /** Every tool name this bridge admits: the served catalog, its reserved
+   * finish and block tools, and any private tools. */
+  readonly admittedToolNames: readonly string[];
   close(): Promise<void>;
 }
 
@@ -164,12 +171,15 @@ export async function startRunnerToolBridge(
     }
   }
   const admittedTools = [...visibleTools, ...privateTools];
+  const servedTools = options.schemaPatternDialect === "re2"
+    ? visibleTools.map(tool => ({ ...tool, inputSchema: re2PortableSchema(tool.inputSchema) as Record<string, unknown> }))
+    : visibleTools;
   const calls = new Map<string, AdmittedCall>();
   const controllers = new Map<string, AbortController>();
   const context = {
     secret,
     preserveToolNames: options.preserveToolNames === true,
-    visibleTools,
+    visibleTools: servedTools,
     admittedTools: new Map(admittedTools.map((tool) => [tool.name, tool])),
     validators,
     rejections: new RepeatedToolInputRejectionGuard(),
@@ -243,6 +253,7 @@ export async function startRunnerToolBridge(
   return Object.freeze({
     url: typeof address === "string" ? "http://localhost/mcp" : `http://127.0.0.1:${address.port}/mcp`,
     secret,
+    admittedToolNames: Object.freeze(admittedTools.map((tool) => tool.name)),
     async close() {
       if (closed) return;
       closed = true;

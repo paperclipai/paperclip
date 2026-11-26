@@ -280,6 +280,7 @@ import {
 import { SourceTrustBadge } from "./SourceTrustBadge";
 import { CommentAttributionChip } from "./CommentAttributionChip";
 import { resolveCommentAttribution } from "../lib/comment-attribution";
+import { safeExternalHttpUrl } from "../lib/safe-url";
 
 interface IssueChatMessageContext {
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
@@ -642,6 +643,7 @@ interface IssueChatThreadProps {
     attachmentIds?: string[],
     clientRequestId?: string,
     runSettings?: ComposerRunSettings,
+    nativeCommand?: "swarm",
   ) => Promise<void>;
   onCancelRun?: () => Promise<void>;
   stopPending?: boolean;
@@ -1906,11 +1908,7 @@ function IssueChatProviderActivity({
                 typeof entry === "object" && entry !== null
                   ? (entry as Record<string, unknown>)
                   : {};
-              const href =
-                typeof source.url === "string" &&
-                /^https?:\/\//.test(source.url)
-                  ? source.url
-                  : null;
+              const href = safeExternalHttpUrl(source.url);
               return (
                 <div key={String(source.sourceId ?? index)}>
                   {href ? (
@@ -6229,12 +6227,14 @@ export function IssueChatThread({
     onRefresh: onRefreshLatestComments,
   });
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
-    async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
+    async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings, nativeCommand) => {
       pendingSubmitScrollRef.current = true;
       clientRequestId ??= createUuid();
       const attempt = beginSubmission(clientRequestId, undefined, reopen);
       try {
-        await (runSettings
+        await (nativeCommand
+          ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings, nativeCommand)
+          : runSettings
           ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
           : onAdd(body, reopen, reassignment, attachmentIds, clientRequestId));
       } catch (error) {

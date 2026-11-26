@@ -33,6 +33,7 @@ import {
   type SuggestedTaskDraft,
   type SuggestedTaskTreeNode,
 } from "../lib/issue-thread-interactions";
+import { safeNavigableUrl } from "../lib/safe-url";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
 import { InteractionPreparationNotice } from "./InteractionPreparationNotice";
 import { InteractionAudienceLine } from "./InteractionAudienceLine";
@@ -1746,7 +1747,8 @@ function requestConfirmationTargetHref({
   if (target.type === "issue_attachment") {
     return `/api/attachments/${encodeURIComponent(target.attachmentId)}/content`;
   }
-  if (target.href) return target.href;
+  const safeTargetHref = target.href ? normalizeRequestConfirmationTargetHref(target.href) : null;
+  if (safeTargetHref) return safeTargetHref;
   if (target.type === "issue_document") {
     const issueId = target.issueId ?? interaction.issueId;
     return `/issues/${issueId}#document-${encodeURIComponent(target.key)}`;
@@ -1972,6 +1974,22 @@ function ToolActionResolution({
       {detail ? <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Error details</summary><p className="mt-2 break-words">{detail}</p></details> : null}
     </div>;
   }
+  if (state === "failed" && result?.errorCode === "github_app_installation_suspended") {
+    const connectionId = interaction.payload.toolAction?.connectionId;
+    return <div role="alert" className="space-y-2 rounded-lg bg-destructive/10 p-3 text-sm text-foreground">
+      <p className="flex items-center gap-2 font-medium"><AlertTriangle className="size-4 shrink-0 text-destructive" aria-hidden="true" />GitHub App installation suspended</p>
+      <p>The Paperclip GitHub App installation for this account or organization is suspended. Ask an administrator to unsuspend it on GitHub, refresh access on the Permissions page, then ask the agent to continue.</p>
+      {connectionId ? <Button asChild size="sm" variant="outline"><Link to={appTabHref(connectionId, "permissions")}>Manage GitHub access</Link></Button> : null}
+      {detail ? <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Error details</summary><p className="mt-2 break-words">{detail}</p></details> : null}
+    </div>;
+  }
+  if (state === "failed" && result?.errorCode === "github_repo_outside_app_installations") {
+    return <div role="alert" className="space-y-2 rounded-lg bg-destructive/10 p-3 text-sm text-foreground">
+      <p className="flex items-center gap-2 font-medium"><AlertTriangle className="size-4 shrink-0 text-destructive" aria-hidden="true" />Repository outside GitHub App access</p>
+      <p>The Paperclip GitHub App is not installed on this repository’s organization or account, so refreshing access cannot grant write permission here. Post on GitHub directly, use a personal access token connection, or have an administrator of that organization install the Paperclip GitHub App.</p>
+      {detail ? <details className="text-xs text-muted-foreground"><summary className="cursor-pointer">Error details</summary><p className="mt-2 break-words">{detail}</p></details> : null}
+    </div>;
+  }
   const status = <>
     <Icon className={cn("h-3.5 w-3.5 shrink-0", state === "running" && "animate-spin", state === "failed" && "text-destructive")} />
     {labels[state]}
@@ -1992,8 +2010,8 @@ function ToolActionResolution({
         </Collapsible>
       ) : <p className="flex items-center gap-1.5">{status}</p>}
       {detail ? <p className={cn("break-words", state === "failed" && "text-destructive")}>{detail}</p> : null}
-      {state === "executed" && result?.resultHref?.trim() ? (
-        <a className="inline-flex items-center gap-1 underline underline-offset-4 hover:text-foreground" href={result.resultHref} target="_blank" rel="noreferrer">View result<ExternalLink className="h-3 w-3" /></a>
+      {state === "executed" && safeNavigableUrl(result?.resultHref) ? (
+        <a className="inline-flex items-center gap-1 underline underline-offset-4 hover:text-foreground" href={safeNavigableUrl(result?.resultHref) ?? undefined} target="_blank" rel="noreferrer">View result<ExternalLink className="h-3 w-3" /></a>
       ) : null}
     </div>
   );

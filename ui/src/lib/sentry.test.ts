@@ -542,6 +542,32 @@ describe("buildBrowserSentryInitOptions", () => {
     expect(buildBrowserSentryInitOptions(DSN).ignoreErrors).toEqual(["__firefox__"]);
   });
 
+  it("names the plugin whose blob module raised an error, without its URL", async () => {
+    const { buildBrowserSentryInitOptions } = await importFreshSentry();
+    const origins = await import("./plugin-module-origins");
+    const blobUrl = "blob:https://tenant.example/0b5f1f4e-module";
+    origins.rememberPluginModuleUrl(blobUrl, "acme.dashboard");
+    const beforeSend = buildBrowserSentryInitOptions(DSN).beforeSend!;
+    const eventFor = (filename: string) => ({
+      exception: { values: [{
+        type: "AbortError",
+        mechanism: { type: "auto.browser.global_handlers.onunhandledrejection", handled: false },
+        stacktrace: { frames: [{ filename: "/assets/index.js" }, { filename, abs_path: filename }] },
+      }] },
+    });
+    const reason = new DOMException("signal is aborted without reason", "AbortError");
+
+    const plugin = await beforeSend(eventFor(blobUrl) as never, { originalException: reason });
+    expect(plugin?.tags).toMatchObject({ browser_plugin_module: "acme.dashboard" });
+    expect(JSON.stringify(plugin?.tags)).not.toContain("blob:");
+
+    const unmapped = await beforeSend(eventFor("blob:https://tenant.example/other") as never, { originalException: reason });
+    expect(unmapped?.tags).toMatchObject({ browser_plugin_module: "unmapped" });
+
+    const host = await beforeSend(eventFor("/assets/other.js") as never, { originalException: reason });
+    expect(host?.tags).not.toHaveProperty("browser_plugin_module");
+  });
+
   it("adds diagnostics without a transaction filter", async () => {
     const { buildBrowserSentryInitOptions } = await importFreshSentry();
 

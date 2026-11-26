@@ -1,6 +1,6 @@
 {
   "name": "@paperclipai/plugin-daytona",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Daytona sandbox provider plugin for Paperclip environments",
   "license": "MIT",
   "homepage": "https://github.com/paperclipai/paperclip",
@@ -50,12 +50,12 @@
     "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"
   },
   "dependencies": {
-    "@daytonaio/sdk": "0.203.0"
+    "@daytonaio/sdk": "0.232.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "typescript": "^5.7.3",
-    "vitest": "^4.1.8"
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1"
   },
   "engines": {
     "node": ">=24.11.0"

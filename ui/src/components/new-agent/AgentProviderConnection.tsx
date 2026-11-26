@@ -74,12 +74,23 @@ export function AgentProviderConnection({
     onComplete: (result: { connectionId: string; grantId: string; method: "subscription" | "api_key" }) => void;
   };
 }) {
-  const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: localEnvironment });
+  const needsHealth = localEnvironment || adapterType === "antigravity_runtime";
+  const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: needsHealth });
   // Read health through the shared view: a transient failure keeps the saved
-  // local-login path usable,anda no-data failure shows readable copy.
+  // local-login path usable, and a no-data failure shows readable copy.
 
   const healthView = useQueryView(health);
-  const canUseLocalLogin = localEnvironment && (health.data?.localAiLoginSupported ?? health.data?.deploymentMode === "local_trusted");
+  const localAiLoginSupported = Boolean(health.data?.localAiLoginSupported ?? health.data?.deploymentMode === "local_trusted");
+  const hostedGoogleAiLoginSupported = Boolean(health.data?.hostedGoogleAiLoginSupported);
+  const canUseLocalLogin = adapterType === "antigravity_runtime"
+    ? (hostedGoogleAiLoginSupported || (localEnvironment && localAiLoginSupported))
+    : (localEnvironment && localAiLoginSupported);
+  // Keep the loopback redirect paste option available whenever relay sign-in is
+  // supported, including private/trusted-host servers where `localAiLoginSupported`
+  // is true but the user's browser may be on another machine.
+  const googleHostedRedirect: boolean | "optional" = adapterType === "antigravity_runtime" && hostedGoogleAiLoginSupported
+    ? (localAiLoginSupported ? "optional" : true)
+    : false;
   const epoch = useRef(0);
   useEffect(
     () => () => {
@@ -110,7 +121,7 @@ export function AgentProviderConnection({
   const [error, setError] = useState<string | null>(null);
   const [storedConnection, setStoredConnection] =
     useState<ProviderConnection | null>(null);
-  const provider = adapterType === "antigravity_runtime" ? "Google" : adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : "OpenAI";
+  const provider = adapterType === "antigravity_runtime" ? "Antigravity" : adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : "OpenAI";
   const envKey =
     adapterType === "antigravity_runtime" ? "GEMINI_API_KEY" : adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : adapterType === "grok_local" ? "XAI_API_KEY" : "OPENAI_API_KEY";
   const aiProvider = adapterType === "antigravity_runtime" ? "google" : adapterType === "claude_local" ? "anthropic" : adapterType === "grok_local" ? "xai" : "openai";
@@ -416,7 +427,7 @@ export function AgentProviderConnection({
                 }}
               />
             ) : savedSubscription ? null : canUseLocalLogin && !storedLogin.data ? (
-              <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }} />
+              <LocalProviderLoginInstructions adapterType={adapterType} hostedRedirect={googleHostedRedirect} login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }} />
             ) : (
               <p className="text-sm text-muted-foreground">
                 {storedLogin.data
@@ -439,7 +450,7 @@ export function AgentProviderConnection({
           {testError ?? error}
         </p>
       )}
-      {localEnvironment && healthView.kind === "error" && (
+      {needsHealth && healthView.kind === "error" && (
         <p role="alert" className="mt-4 text-sm text-destructive">Could not prepare sign-in. Reload this page to try again.</p>
       )}
       <FooterNav
@@ -464,7 +475,7 @@ export function AgentProviderConnection({
         primaryDisabled={
           managedAccount?.disabled ||
           (Boolean(managedAccount) && method === "subscription" && !canLogin && !canUseLocalLogin) ||
-          (localEnvironment && health.isPending) || localLogin.preparing || Boolean(localLogin.error) ||
+          (needsHealth && health.isPending) || localLogin.preparing || Boolean(localLogin.error) ||
           (method === "subscription" && canUseLocalLogin && !savedSubscription && !storedLogin.data && localLogin.status !== "ready") ||
           (!managedAccount && adapterType !== "antigravity_runtime" && auth.isPending) ||
           savedKeys.loading ||

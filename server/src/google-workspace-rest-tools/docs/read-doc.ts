@@ -44,6 +44,7 @@ export function readDocResult(document: RestDocument, input: ReadDocArgs, view: 
 export const readDoc = defineTool({
   definition: {
     name: "read_doc",
+    title: "Read a document",
     description: [
       "Reads a Google Doc, every tab included, and returns its content.",
       "content.text is the whole document as Markdown-style text: headings start with #, list items with - or their number, tables use | cells |, links are [text](url), footnote references are [^1] with the footnote text after the body, headers and footers follow the body under [Header] and [Footer], and each tab starts with === Tab: title === when there is more than one.",

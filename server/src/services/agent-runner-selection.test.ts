@@ -895,4 +895,26 @@ describe("Claude runner defaults", () => {
     state.overridden.clear(); state.disabled = ["claude_local"];
     expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac })).toThrow("Claude is disabled");
   });
+
+  it("retains native paperclip_runner Antigravity and Copilot selections on plugin Runner-task targets", async () => {
+    state.getEnvironment.mockResolvedValue({ id: "plugin-env", driver: "plugin", status: "active", config: { pluginKey: "agent-computer", driverKey: "tasks", driverConfig: {} } });
+    state.pluginByKey.mockResolvedValue({
+      pluginKey: "agent-computer",
+      manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true }] },
+    });
+    const pluginTarget = await resolveAgentRunnerTargetForCompany({} as never, "company-1", "plugin-env");
+    expect(pluginTarget).toEqual({ driver: "plugin", runnerTasks: true });
+    expect(agentRunnerAvailability("paperclip_runner", pluginTarget).supportedRunners.length).toBeGreaterThan(0);
+    for (const acpxAgent of ["copilot", "antigravity"] as const) {
+      const selected = await resolveNewAgentRunnerForCompany({} as never, "company-1", {
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "acpx", acpxAgent, model: "explicit-model" },
+        defaultEnvironmentId: "plugin-env",
+      });
+      expect(selected).toEqual({
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "acpx", acpxAgent, model: "explicit-model" },
+      });
+    }
+  });
 });

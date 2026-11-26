@@ -14,7 +14,27 @@ For each tool call an agent makes through a connection, Paperclip keeps:
 - Interactive app views that a tool showed in a task
 - The transcript of the run that made the call, which can contain the full result, and of the run that received an approved action's result
 
-This data stays until you delete it. Removing the connection alone does not delete it.
+For most apps, this data stays until you delete it, and removing the connection alone does not delete it. Google connections are different: see the next section.
+
+## Google connections: deleted when access ends
+
+When Paperclip's access to a Google account ends, Paperclip deletes what agents read through that Google connection on its own. You do not need to select **Delete data**. This happens when:
+
+- You remove the Google connection.
+- Someone revokes a Google identity on the connection, a person's own or the organization's.
+- Someone removes Paperclip from their Google account, or Google ends the access, and Paperclip sees this the next time it renews the access.
+- The person who connected their Google account leaves the company.
+- Paperclip Cloud removes your Paperclip instance.
+
+Deletion starts at once. Runs that are still working keep their data until they finish; Paperclip then deletes it too. While work is still running, Paperclip checks again every few minutes, and every hour after the first day. If a step fails, Paperclip keeps trying until it succeeds, also after a restart. The connection's activity shows when the deletion started and when it finished.
+
+The connection then shows **Needs attention**, and agents are not offered its tools until someone signs in to Google again. The deletion covers everything listed under "What is deleted" for that connection, for all people who used it. If you connect Google again later, Paperclip saves new data from new calls only. Data that was deleted does not come back. Agents also do not resume the conversations of those runs; their next run starts a new one.
+
+## Technical details from Google
+
+Paperclip keeps technical details it gets from Google, such as error messages and the descriptions of Google's tools, for at most 30 days. After that it deletes them on its own. When you remove a Google connection, it deletes them at once. The record that a call happened stays.
+
+Paperclip does not use content from Google to train or test AI models. Feedback you share with Paperclip and decision training examples leave out runs that read from Google.
 
 ## How to delete it
 
@@ -29,10 +49,12 @@ You need permission to manage the connection.
 **When you remove a connection:**
 
 1. Open **Connectors**, open the connection's menu, and select **Remove connection**.
-2. Select **Also delete data read through this connection**.
+2. Select **Also delete data read through this connection**. For a Google connection, this option is not shown, because the data is always deleted.
 3. Select **Remove connection**.
 
-For a Google connection that Paperclip set up for you, removing the connection also asks Google to end Paperclip's access to that Google account. The message after removal tells you whether access was ended. If other Paperclip connections still use the same Google account, Google keeps Paperclip's access until you remove those too. If Paperclip could not end access at Google, remove Paperclip from your Google account's [third-party connections](https://myaccount.google.com/connections). Connections that use your own Google OAuth app are removed only in Paperclip.
+For a Google connection that Paperclip set up for you, removing the connection also asks Google to end Paperclip's access to that Google account. The message after removal tells you whether access was ended. If other Paperclip connections still use the same Google account, Google keeps Paperclip's access until you remove those too. If Google could not be reached or did not confirm, the message says so and Paperclip keeps trying in the background, for up to 30 days, even if Paperclip restarts. You do not need to do anything. The connection's activity shows when access was ended, or that Paperclip stopped trying. If Google gave a final answer that Paperclip cannot end the access, the message says so, and you can remove Paperclip from your Google account's [third-party connections](https://myaccount.google.com/connections).
+
+When you delete a company, Paperclip also ends its access at Google for every Google connection Paperclip set up for that company. This continues in the background after the company is gone. Connections that use your own Google OAuth app are removed only in Paperclip.
 
 Deletion starts right away and continues in the background. It finishes even if Paperclip restarts while it runs. If a step fails, for example because file storage is unavailable, Paperclip keeps the request open and tries again until every step succeeds. It reports the deletion as finished only then. The connection's page shows when the data was last deleted.
 
@@ -42,6 +64,11 @@ Deletion starts right away and continues in the background. It finishes even if 
 - Approval previews, arguments and results for those calls, on the approval card and in what was passed back to the agent
 - Interactive app views from those calls
 - The whole transcript of every run that called the connection or received an approved action's result, including that run's other steps and its final summary
+- The final answer that run reported and the evidence it gave for it, such as links, quoted text and check details. The run page still shows the run's status and outcome.
+- Tool results too large to pass to the agent directly, which Paperclip saved as files for those runs
+- Error messages the app returned for those calls
+- The saved conversation that agents resume in later runs, for the runs whose transcript is deleted. The agent's next run starts a new conversation.
+- The run's error text, its copy in the task's continuation summary, the summary handed to the next run, and the run in any decision training example
 
 ## What is kept
 
@@ -50,6 +77,12 @@ Deletion starts right away and continues in the background. It finishes even if 
 - The connection's audit activity, which records counts only.
 - Transcripts of later runs that only read the context an interactive app view shared. Paperclip does not record which runs read it. Delete those tasks if you need that text gone.
 - Raw provider traces. An administrator must turn them on, and they expire on their own within 24 hours.
+
+## Deleting a task or a company
+
+Deleting a task also deletes this data for the task's runs, from every connected app. Comments, documents and files in the task are deleted with it, including the files in storage. If a run of the task is still working, or an approval for it is still open, Paperclip waits for up to a day and then deletes the data on its own. After a day, it stops waiting and leaves what is still open.
+
+Deleting a company deletes all of its data, including run transcripts and files in storage. Storage clean-up continues in the background after the company is gone, and Paperclip retries it until it succeeds.
 
 ## Runs that are still working
 

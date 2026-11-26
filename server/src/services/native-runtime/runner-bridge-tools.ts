@@ -4,6 +4,7 @@ import { constants, existsSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
+import { resolvePaperclipSkillReference } from "@paperclipai/adapter-utils/server-utils";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
 import { taskDocumentKeySchema } from "../../vendor/paperclip-runner/index.js";
 import { openRunnerApiWorkspaceFile, openRunnerWorkspaceFile } from "./runner-api-files.js";
@@ -122,7 +123,8 @@ async function readFilePage(file: string, offset: number) {
 }
 export async function readAssignedSkill(context: NativeRuntimeContextSnapshot, raw: unknown) {
   const args = RUNNER_BRIDGE_SCHEMAS.get("read_assigned_skill")!.parse(raw) as { skill: string; path: string; offset: number };
-  const skill = context.skills.find(skill => skill.key === args.skill || skill.runtimeName === args.skill);
+  const key = resolvePaperclipSkillReference(args.skill, context.skills);
+  const skill = key ? context.skills.find(entry => entry.key === key) : undefined;
   if (!skill) throw new Error("runner_skill_not_assigned");
   const manifestText = await fs.readFile(path.join(path.dirname(path.dirname(skill.bundle.rootPath)), "manifests", `${skill.bundle.digest}.json`), "utf8");
   if (digest(manifestText) !== skill.bundle.manifestDigest) throw new Error("runner_skill_manifest_digest_mismatch");

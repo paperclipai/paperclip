@@ -7,7 +7,7 @@ import { createTaskThroughUi } from "./user-actions.js";
 import { createDeniedTargetFixture, exists, observeRunProcesses } from "./copilot-local-fixtures.js";
 import { assertCopilotRemoteRetirement, copilotRemoteDeniedSample, prepareCopilotRemoteAction, type CopilotRemoteBootstrap, type CopilotRemoteFixture, type CopilotRemoteSnapshot } from "./copilot-protection-evidence.js";
 import { cursorDeniedCommand } from "./cursor-native-evidence.js";
-import { assertActiveStopRetirement, readActiveStopCaller, observeActiveStopPending, readActiveStopSettlement, type ActiveStopRemoteObservation, type ActiveStopCaller, type ActiveStopPending, type ActiveStopScope } from "./native-active-stop-evidence.js";
+import { assertActiveStopRetirement, readActiveStopCaller, observeActiveStopPending, readActiveStopSettlement, readDeniedPermissionSettlement, type ActiveStopRemoteObservation, type ActiveStopCaller, type ActiveStopPending, type ActiveStopScope } from "./native-active-stop-evidence.js";
 import type { BootstrapReadProof } from "./native-bootstrap-read-proof.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
@@ -51,7 +51,9 @@ export async function runNativeActiveStopFlow(input: {
   evidence(name: string, value: unknown): Promise<void>;
 }) {
   const { api, page, fixtures, execution, nonce } = input, provider = execution.profile.qualificationCandidate;
-  if ((provider !== "cursor" && provider !== "copilot") || execution.task.id !== "pending-permission-stop") throw new Error("Unknown native active Stop case");
+  // Browser denial before Stop has a canonical-stream oracle only for Antigravity.
+  const denyFirst = execution.task.id === "permission-deny-stop" && provider === "antigravity";
+  if ((provider !== "cursor" && provider !== "copilot" && provider !== "antigravity") || (execution.task.id !== "pending-permission-stop" && !denyFirst)) throw new Error("Unknown native active Stop case");
   const remote = execution.environment.id === "daytona";
   if ((!remote && execution.environment.id !== "local") || (remote && !input.remoteBootstrap)) throw new Error("Active Stop requires an isolated admitted environment");
   const checks: Check[] = []; let issue: Row = {}, runs: Row[] = [], events: Row[] = [];
@@ -67,6 +69,10 @@ export async function runNativeActiveStopFlow(input: {
   const samples: Array<{ phase: string; absent: boolean }> = [];
   let fixture: CopilotRemoteFixture | undefined, baseline: CopilotRemoteSnapshot | undefined, sealed: CopilotRemoteSnapshot | undefined;
   let completed: Awaited<ReturnType<typeof stopAtPendingPermission>> | undefined;
+  let denied: { pending: ActiveStopPending; stopDispatched: boolean; settlement: ReturnType<typeof readDeniedPermissionSettlement> } | undefined;
+  const settle = async () => denied
+    ? readDeniedPermissionSettlement({ ...await load(), pending: denied.pending, stopDispatched: denied.stopDispatched })
+    : readActiveStopSettlement({ ...await load(), ...completed!, bootstrap: bootstrap() });
   const observeProcesses = () => {
     const run = runs[0], authority = run?.processPid ? { pid: run.processPid, groupId: run.processGroupId, startedAt: run.processStartedAt, runId: run.id } : undefined;
     if (authority) { const key = JSON.stringify(authority); if (processIdentity && processIdentity !== key) processError = true; processIdentity ??= key; }
@@ -106,10 +112,10 @@ export async function runNativeActiveStopFlow(input: {
       }
       if (!remote) await sample("after-cleanup");
       const watch = remote ? sealed!.watcher : local!.watcher.finish();
-      retirement = assertActiveStopRetirement({ completed: Boolean(completed), identityChanged: processError, processes, watcher: watch,
+      retirement = assertActiveStopRetirement({ completed: Boolean(completed ?? denied), identityChanged: processError, processes, watcher: watch,
         ...(remote ? { environment: "daytona" as const, remote: { scope: scope(), observations: remoteObservations } } : { environment: "local" as const, samples }) });
-      if (!completed) throw new Error("Missing active Stop settlement");
-      readActiveStopSettlement({ ...await load(), ...completed, bootstrap: bootstrap() });
+      if (!completed && !denied) throw new Error("Missing active Stop settlement");
+      await settle();
       receipt.push({ id: "active-stop-retired-no-effects", passed: true, detail: remote ? "Exact run root/descendants retired with continuous no-effects proof through retirement; later UI/API checks do not claim fresh filesystem observation" : "Exact run root/descendants retired; unanswered target remained absent through cleanup" });
       return receipt;
     } finally {
@@ -153,15 +159,44 @@ export async function runNativeActiveStopFlow(input: {
     await page.goto(`/${fixtures.company.issuePrefix}/issues/${issue.identifier ?? issue.id}`);
     const card = page.getByTestId("task-chat-runtime-request").filter({ visible: true });
     await expect(card).toHaveCount(1); await expect(card.getByRole("button", { name: "Deny", exact: true })).toBeEnabled();
-    await input.capture("pending-permission", "Native permission left unanswered before Stop", "pending-permission.png"); await sample("pending");
-    completed = await stopAtPendingPermission({ scope: scope(), caller, bootstrap: bootstrap(), deadlineAt: input.deadlineAt, load,
-      retain: proof => input.evidence("native-active-stop-pending.json", proof), stop: (runId, cancellationRequestId) => api.post(`/api/heartbeat-runs/${runId}/cancel`, { cancellationRequestId }) });
-    check("pending-callback-cancelled", true, "Unanswered native permission closed through a cancelled provider turn and the exact caller-owned Stop acknowledgement");
-    await input.evidence("native-active-stop-settlement.json", completed);
-    // Only after confirmed cancellation: test the real public stale-response fence.
-    const response = await api.request.post(`/api/heartbeat-runs/${runs[0]!.id}/runtime-requests/${encodeURIComponent(completed.pending.requestId)}/resolve`, { data: { turnId: completed.pending.turnId, requestKind: "permission_approval", resolution: { action: "accept" } } });
+    await input.capture("pending-permission", denyFirst ? "Native permission awaiting the operator's denial" : "Native permission left unanswered before Stop", "pending-permission.png"); await sample("pending");
+    if (denyFirst) {
+      const cancellationRequestId = randomUUID();
+      const pending = observeActiveStopPending({ ...await load(), scope: scope(), caller, cancellationRequestId, bootstrap: bootstrap() });
+      await input.evidence("native-permission-denial-pending.json", pending);
+      const route = `/api/heartbeat-runs/${pending.scope.runId}/runtime-requests/${encodeURIComponent(pending.requestId)}/resolve`;
+      const posted = page.waitForRequest(request => new URL(request.url()).pathname === route && request.method() === "POST");
+      await card.getByRole("button", { name: "Deny", exact: true }).click();
+      const answer = (await posted).postDataJSON();
+      check("browser-exact-denial", answer.turnId === pending.turnId && answer.requestKind === "permission_approval" && answer.resolution?.action === "decline",
+        "The browser's Deny declines this exact run, turn and native request");
+      // The operator then stops the unfinished task. A turn the provider already
+      // ended after the denial leaves nothing to stop; the settlement says which.
+      let stopDispatched = false;
+      try {
+        const stopped = await api.post<Row>(`/api/heartbeat-runs/${pending.scope.runId}/cancel`, { cancellationRequestId });
+        stopDispatched = stopped.id === pending.scope.runId;
+      } catch { stopDispatched = false; }
+      const label = "denied native permission settlement";
+      const attempt = async () => readDeniedPermissionSettlement({ ...await load(), pending, stopDispatched });
+      const settlement = await pollUntil({ label, deadlineAt: input.deadlineAt, intervalMs: 200,
+        load: async () => { try { return await attempt(); } catch { return null; } }, accept: Boolean })
+        // Surface the exact unmet condition rather than a bare timeout.
+        .catch(() => attempt());
+      denied = { pending, stopDispatched, settlement: settlement! };
+      check("native-denial-delivered", true, `Decline reached the exact native request before the turn ended (${denied.settlement.branch})`);
+      await input.evidence("native-permission-denial-settlement.json", denied);
+    } else {
+      completed = await stopAtPendingPermission({ scope: scope(), caller, bootstrap: bootstrap(), deadlineAt: input.deadlineAt, load,
+        retain: proof => input.evidence("native-active-stop-pending.json", proof), stop: (runId, cancellationRequestId) => api.post(`/api/heartbeat-runs/${runId}/cancel`, { cancellationRequestId }) });
+      check("pending-callback-cancelled", true, "Unanswered native permission closed through a cancelled provider turn and the exact caller-owned Stop acknowledgement");
+      await input.evidence("native-active-stop-settlement.json", completed);
+    }
+    const answered = denied?.pending ?? completed!.pending;
+    // Only after confirmed settlement: test the real public stale-response fence.
+    const response = await api.request.post(`/api/heartbeat-runs/${runs[0]!.id}/runtime-requests/${encodeURIComponent(answered.requestId)}/resolve`, { data: { turnId: answered.turnId, requestKind: "permission_approval", resolution: { action: "accept" } } });
     check("stale-answer-refused", response.status() === 409, "Stopped permission rejects a later answer rather than replaying work");
-    await load(); readActiveStopSettlement({ ...await load(), ...completed, bootstrap: bootstrap() });
+    await settle();
     if (remote) {
       // finish drains the observer's automatic retirement seal. It does not
       // extend the remote watch through subsequent host UI/cleanup assertions.
@@ -177,20 +212,24 @@ export async function runNativeActiveStopFlow(input: {
     };
     // Absence of a permission button during React loading is not proof that a
     // stopped request is unanswerable. First observe the actual task/run UI.
-    await expect(page.getByTestId("issue-detail-header").getByRole("button", {
-      name: "Change status (current: In Progress)", exact: true,
-    })).toBeVisible({ timeout: finalUiTimeout() });
-    await expect(page.getByTestId("task-chat-thread").getByTestId("task-chat-collapsible-marker")
-      .filter({ has: page.getByText("Run cancelled", { exact: true }) }))
-      .toBeVisible({ timeout: finalUiTimeout() });
+    const stoppedRun = !denied || denied.settlement.branch === "denied_then_stopped";
+    if (stoppedRun) {
+      await expect(page.getByTestId("issue-detail-header").getByRole("button", {
+        name: "Change status (current: In Progress)", exact: true,
+      })).toBeVisible({ timeout: finalUiTimeout() });
+      await expect(page.getByTestId("task-chat-thread").getByTestId("task-chat-collapsible-marker")
+        .filter({ has: page.getByText("Run cancelled", { exact: true }) }))
+        .toBeVisible({ timeout: finalUiTimeout() });
+    }
     await expect(page.getByTestId("task-chat-history-loading"))
       .toHaveCount(0, { timeout: finalUiTimeout() });
     await expect(card.getByRole("button", { name: "Deny", exact: true }))
       .toHaveCount(0, { timeout: finalUiTimeout() });
-    await load(); readActiveStopSettlement({ ...await load(), ...completed, bootstrap: bootstrap() });
-    check("one-unfinished-cancelled-run", runs.length === 1 && issue.status === "in_progress" && runs[0]!.status === "cancelled", "No automatic follow-up run or false task completion");
+    await settle();
+    check("one-unfinished-cancelled-run", runs.length === 1 && (stoppedRun ? issue.status === "in_progress" && runs[0]!.status === "cancelled" : issue.status !== "done"),
+      "No automatic follow-up run or false task completion");
     await input.capture("final-state", "Stopped native permission is no longer answerable", "final-state.png");
-    await input.evidence("api-state.json", { issue, run: runs[0], runs, checks, samples, remoteObservations, runEvents: events, runEventsByRun: [{ runId: runs[0]!.id, events }], activeStop: completed });
+    await input.evidence("api-state.json", { issue, run: runs[0], runs, checks, samples, remoteObservations, runEvents: events, runEventsByRun: [{ runId: runs[0]!.id, events }], activeStop: completed, permissionDenial: denied });
     return { issue, runs, checks };
   } finally {
     // Local observation continues through cleanup. Remote cleanup revalidates

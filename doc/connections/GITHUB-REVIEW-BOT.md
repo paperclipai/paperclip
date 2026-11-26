@@ -11,30 +11,13 @@ required GitHub checks, read
 
 ## Set up a bot
 
-Enable **GitHub review bots** in instance **Experimental** settings, then open
-the GitHub Code Review Bot connector. This default-off setting is independent of
-**Chat connectors**. Hiding either feature does not pause existing provider delivery.
-
-1. Choose the bot agent. Prefer a
-   [low-trust review agent](https://docs.paperclip.ing/administration/trust-and-low-trust-review/)
-   with an isolated sandbox and a scoped task boundary. Standard-trust agents
-   show a warning with **Change <agent> to a low trust agent**. This explicitly
-   saves the low-trust preset; it does not configure a sandbox or task boundary.
-2. Choose **My account** or **An organization**. Enter the organization when
-   needed and review the App name suggested from your agent. Click
-   **Continue to GitHub**. Paperclip fills permissions, events, and callbacks.
-3. Confirm creation on GitHub, then select repositories and approve installation.
-   Paperclip stores the credentials securely and imports the initial selection,
-   including an explicit All repositories choice. Organization policies may
-   require administrator approval; resume the same draft when it is granted.
-4. Paperclip reuses your verified GitHub identity when available. Otherwise,
-   authorize the dedicated App and confirm the observed account once. Bot work
-   uses installation credentials, never your personal GitHub token.
-5. Connection verification and completion happen automatically. Paperclip opens
-   the bot's Settings with a connected confirmation modal showing the actual App
-   identity, enabled repository count, and a copyable optional review mention.
-   Dismiss it with **Done**, the close button, or Escape to stay in Settings.
-   Runtime and isolation readiness remain separate prerequisites.
+The canonical step-by-step operator setup guide lives in
+[GitHub Review Bots](../../docs/guides/board-operator/github-review-bots.md).
+Open the **GitHub Code Review Bot** connector from **Connectors** (no
+experimental setting is required), then follow the Quickstart there to choose
+an agent, create and install the dedicated GitHub App, and verify your
+identity. The sections below record internal connector semantics and
+implementation invariants.
 
 Installation may return before GitHub's separately delivered signed webhook
 ping. Paperclip keeps the same draft and credentials, shows a waiting state,

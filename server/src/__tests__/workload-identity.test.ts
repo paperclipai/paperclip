@@ -34,6 +34,7 @@ import {
   workloadIdentityIssuerOrigin,
   workloadIdentityService,
 } from "../services/workload-identity.js";
+import { uniqueIssuePrefix } from "./helpers/issue-prefix.js";
 
 const ORIGIN = "https://acme.paperclip.app";
 const actor = { actorType: "user" as const, actorId: "board-user" };
@@ -68,7 +69,7 @@ describe("company workload identity issuer", () => {
   async function company() {
     const id = randomUUID();
     await db.insert(companies).values({
-      id, name: `Identity ${id.slice(0, 6)}`, issuePrefix: `W${id.slice(0, 4).toUpperCase()}`,
+      id, name: `Identity ${id.slice(0, 6)}`, issuePrefix: uniqueIssuePrefix("W"),
       defaultResponsibleUserId: "workload-identity-owner",
     });
     return id;

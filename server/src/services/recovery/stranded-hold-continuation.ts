@@ -1,6 +1,14 @@
-import { continuesAutomatically } from "../continuation-cause.js";
+import { continuesAutomatically, isSetupFailureBeforeProviderWork } from "../continuation-cause.js";
+import { STALE_BLOCK_MS } from "./assigned-work-invariant.js";
 
 export const STRANDED_CONTINUATION_MAX_AGE_MS = 24 * 60 * 60_000;
+/**
+ * A task blocked by a setup failure before any provider work never started,
+ * so continuing it days later repeats nothing: it stays eligible for as long
+ * as the sweep continues blocks at all (STALE_BLOCK_MS), so tasks blocked
+ * before a release that fixed the cause continue after its deploy.
+ */
+export const STRANDED_PRE_PROVIDER_SETUP_MAX_AGE_MS = STALE_BLOCK_MS;
 export const STRANDED_KIND = "stranded_assigned_issue";
 
 export type StrandedHoldRun = {
@@ -24,7 +32,9 @@ export function strandedHoldContinuesAutomatically(
 ): boolean {
   if (hold.kind !== STRANDED_KIND || hold.ownerType !== "board") return false;
   if (!run || !assigneeAgentId || run.agentId !== assigneeAgentId || !run.finishedAt) return false;
-  if (now.getTime() - run.finishedAt.getTime() > STRANDED_CONTINUATION_MAX_AGE_MS) return false;
+  const maxAge = isSetupFailureBeforeProviderWork({ errorCode: run.errorCode, resultJson: { executionRecovery: run.executionRecovery } })
+    ? STRANDED_PRE_PROVIDER_SETUP_MAX_AGE_MS : STRANDED_CONTINUATION_MAX_AGE_MS;
+  if (now.getTime() - run.finishedAt.getTime() > maxAge) return false;
   return strandedRunCauseIsTemporary(run);
 }
 

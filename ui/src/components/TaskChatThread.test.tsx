@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ConnectivityProvider, createConnectivityStore } from "@/lib/connectivity";
 import { INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS, TaskChatThread } from "./TaskChatThread";
 import { IssueChatThread } from "./IssueChatThread";
+import { TaskChatAgentIdentity, TaskTranscriptAgents } from "./task-chat/TaskChatBubble";
 import type {
   Agent,
   IssueDocument,
@@ -30,6 +31,7 @@ import { CoordinatorPresentation } from "./coordinator/CoordinatorPresentation";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import type { HeartbeatRun } from "@paperclipai/shared";
 import { waitForStoppedRuns } from "@/lib/wait-for-stopped-runs";
+import { ApiError } from "@/api/api-error";
 
 const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
@@ -182,6 +184,21 @@ async function settleThreadLayout() {
     expect(container.querySelector('[data-testid="task-chat-thread"] > [aria-busy="false"]')).not.toBeNull();
   });
 }
+
+it("opens the agent's chat from a task and settings from the direct chat", () => {
+  const agent = { id: "agent-id", name: "Mira Vale", urlKey: "mira-vale-2" } as Agent;
+  const identity = <TaskChatAgentIdentity agentName={agent.name} agent={agent} />;
+  const link = () => container.querySelector("a")?.getAttribute("href");
+
+  render(<TaskTranscriptAgents.Provider value={new Map([[agent.id, agent]])}>{identity}</TaskTranscriptAgents.Provider>);
+  expect(link()).toBe("/chats/mira-vale-2");
+
+  render(<TaskTranscriptAgents.Provider value={new Map()}>{identity}</TaskTranscriptAgents.Provider>);
+  expect(link()).toBe("/chats/agent-id");
+
+  render(identity);
+  expect(link()).toBe("/agents/agent-id/overview");
+});
 
 describe.each(["legacy", "native"] as const)("historical %s system status", (runtimeMode) => {
   const run = (id: string, status: string, minute: number) => ({
@@ -637,6 +654,35 @@ it.each((["task", "legacy"] as const).flatMap(surface =>
   } finally {
     vi.useRealTimers();
   }
+});
+
+it("marks a message the server recorded as a /swarm request, and no other", () => {
+  const comment = (id: string, body: string, nativeCommand?: "swarm") => ({ id, companyId: "company", issueId: "issue", authorType: "user" as const,
+    authorAgentId: null, authorUserId: "board", body, presentation: null, metadata: null, ...(nativeCommand ? { nativeCommand } : {}),
+    createdAt: new Date("2026-11-25T05:51:00Z"), updatedAt: new Date("2026-11-25T05:51:00Z") });
+  render(<TaskChatThread comments={[comment("swarm", "Create u1.txt and u2.txt", "swarm"), comment("plain", "/swarm pasted as text")]}
+    issueId="issue" issueStatus="done" onAdd={async () => {}} />);
+  const markers = [...container.querySelectorAll('[data-testid="task-chat-swarm-marker"]')];
+  expect(markers.map(marker => marker.textContent)).toEqual(["Swarm"]);
+  expect(markers[0]!.closest("[data-conversation-message]")?.textContent).toContain("Create u1.txt and u2.txt");
+});
+
+it("explains a refused send under the composer until dismissed, and clears the optimistic Working row", async () => {
+  let refuse!: (error: unknown) => void;
+  const onAdd = vi.fn<ComponentProps<typeof TaskChatThread>["onAdd"]>(() => new Promise<void>((_, reject) => { refuse = reject; }));
+  const message = "Swarm is not available while the task is in Plan mode: helpers change files. Approve the plan first, then send /swarm.";
+  render(<TaskChatThread comments={[]} issueId="issue" issueAssigneeAgentId="agent" currentAssigneeValue="agent:agent" issueStatus="todo" onAdd={onAdd}
+    agentMap={new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]])} />);
+  await act(async () => { editorCallbacks.change("do something"); });
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')!.click(); });
+  // Sends stay instant: the Working row appears before the server answers.
+  expect(container.textContent).toContain("Working");
+  await act(async () => { refuse(new ApiError(message, 422, { error: message })); });
+  expect(container.textContent).not.toContain("Working");
+  const error = () => container.querySelector('[data-testid="task-chat-goal-error"]');
+  expect(error()?.textContent).toBe(message);
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-error-dismiss"]')!.click(); });
+  expect(error()).toBeNull();
 });
 
 it.each((["task", "legacy"] as const).flatMap(surface =>
@@ -1478,6 +1524,58 @@ describe("TaskChatThread draft pass-through", () => {
     // Native progress messages share the protocol marker and can have attachments.
     render(<TaskChatThread {...props} comments={[{ ...comments[0], body: "Keep this image context", metadata: { ...comments[0].metadata, attachmentPreparation: undefined } }, comments[1]]} />);
     expect(container.textContent).toContain("Keep this image context");
+  });
+
+  it("shows a run's prepared text file once, as its file card, without the generated receipt", async () => {
+    type Props = ComponentProps<typeof TaskChatThread>;
+    const attachmentId = "00000000-0000-4000-8000-000000000011";
+    const at = new Date("2026-11-25T05:51:50Z");
+    const workProducts = [{
+      id: "file-1", type: "artifact", provider: "paperclip", title: "u1.txt", status: "active", reviewState: "none", healthStatus: "unknown",
+      createdByRunId: "swarm-run", createdAt: at, updatedAt: at,
+      metadata: { attachmentId, originalFilename: "u1.txt", contentType: "text/plain", byteSize: 3, contentPath: `/api/attachments/${attachmentId}/content`, openPath: `/api/attachments/${attachmentId}/content`, downloadPath: `/api/attachments/${attachmentId}/content?download=1` },
+    }] as unknown as NonNullable<Props["workProducts"]>;
+    const attachments = [{ id: attachmentId, issueCommentId: "receipt-1", originatingRunId: "swarm-run", createdByAgentId: "agent",
+      originalFilename: "u1.txt", contentType: "text/plain", contentPath: `/api/attachments/${attachmentId}/content`, createdAt: at, updatedAt: at, byteSize: 3,
+    }] as unknown as NonNullable<Props["attachments"]>;
+    const receipt = {
+      id: "receipt-1", body: "Prepared u1.txt for this response.", companyId: "company", issueId: "issue", authorType: "agent" as const,
+      authorAgentId: "agent", authorUserId: null, createdByRunId: "swarm-run", createdAt: new Date(at.getTime() + 100), updatedAt: at, presentation: null,
+      metadata: { version: 1 as const, sections: [], authorizationReason: "paperclip_runner_protocol", attachmentPreparation: { attachmentId } },
+    };
+    render(<TaskChatThread comments={[receipt]} workProducts={workProducts} attachments={attachments} onAdd={async () => {}} issueStatus="done" />);
+    await settleThreadLayout();
+    expect(container.textContent).not.toContain("Prepared u1.txt for this response.");
+    expect(container.textContent).toContain("u1.txt");
+  });
+
+  it("does not repeat a run's file card under that run's reply when the reply links the file", async () => {
+    type Props = ComponentProps<typeof TaskChatThread>;
+    const fileId = "00000000-0000-4000-8000-000000000021";
+    const at = new Date("2026-11-25T07:49:27Z");
+    const workProducts = [{
+      id: "file-v1", type: "artifact", provider: "paperclip", title: "v1.txt deliverable", status: "active", reviewState: "none", healthStatus: "unknown",
+      createdByRunId: "swarm-run", createdAt: at, updatedAt: at,
+      metadata: { attachmentId: fileId, originalFilename: "v1.txt", contentType: "text/plain", byteSize: 3, contentPath: `/api/attachments/${fileId}/content`, openPath: `/api/attachments/${fileId}/content`, downloadPath: `/api/attachments/${fileId}/content?download=1` },
+    }] as unknown as NonNullable<Props["workProducts"]>;
+    const attachments = [{ id: fileId, issueCommentId: null, originatingRunId: "swarm-run", createdByAgentId: "agent",
+      originalFilename: "v1.txt", contentType: "text/plain", contentPath: `/api/attachments/${fileId}/content`, createdAt: at, updatedAt: at, byteSize: 3,
+    }] as unknown as NonNullable<Props["attachments"]>;
+    const reply = (id: string, runId: string) => ({
+      id, companyId: "company", issueId: "issue", authorType: "agent" as const, authorAgentId: "agent", authorUserId: null,
+      createdByRunId: runId, runId, presentation: null, metadata: null, createdAt: new Date(at.getTime() + 9_000), updatedAt: at,
+      body: `Created v1.txt.\n\n**Download**: [v1.txt](/api/attachments/${fileId}/content)`,
+    });
+    const chips = () => container.querySelectorAll('[data-testid="task-chat-bubble-attachments"], [data-testid="task-chat-bubble-artifacts-v1"]').length;
+
+    render(<TaskChatThread comments={[reply("reply-1", "swarm-run")]} workProducts={workProducts} attachments={attachments} onAdd={async () => {}} issueStatus="done" />);
+    await settleThreadLayout();
+    expect(container.textContent).toContain("Created v1.txt.");
+    expect(chips()).toBe(0);
+
+    render(<TaskChatThread comments={[reply("reply-2", "later-run")]} workProducts={workProducts} attachments={attachments} onAdd={async () => {}} issueStatus="done" />);
+    await settleThreadLayout();
+    expect(chips()).toBe(1);
   });
 
   it("aligns the desktop thread header with the side-panel tab row", () => {
@@ -2849,6 +2947,52 @@ describe("TaskChatThread runtime transcript selection", () => {
       );
     },
   );
+
+  it("shows a refused /swarm in its own plain words, without its code or a Retry", () => {
+    const plain = "Swarm is not available with Gemini 4 Neon (Low) yet, so nothing was changed: choose another model for this agent, such as Gemini 4 Argon, and send /swarm again.";
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "blocked",
+      onRetryFailedRun: vi.fn(),
+      linkedRuns: [{
+        runId: "swarm-refused", runtimeMode: "native", status: "failed", errorCode: "antigravity_swarm_unavailable", error: plain,
+        resultJson: { providerFailure: { provider: "antigravity", retryability: "requires_action" } },
+        agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+        createdAt: "2026-11-24T18:00:00.000Z", startedAt: "2026-11-24T18:00:00.000Z", finishedAt: "2026-11-24T18:00:08.000Z",
+      }],
+    } as Parameters<typeof renderThread>[0]);
+    const marker = container.querySelector('[data-testid="task-chat-collapsible-marker"]');
+    expect(marker?.textContent).toContain("Swarm did not start");
+    flushSync(() => marker!.querySelector<HTMLButtonElement>('button[aria-expanded="false"]')!.click());
+    const details = container.querySelector('[data-testid="task-chat-collapsible-marker-details"]')?.textContent ?? "";
+    expect(details).toContain(plain);
+    expect(container.textContent).not.toMatch(/antigravity_swarm_unavailable|The runner stopped/);
+    expect(container.textContent).not.toMatch(/Try again|Retry/);
+  });
+
+  it("keeps Retry for a swarm that ran and failed, as the server does", async () => {
+    const plain = "The swarm ended without doing any work. Send /swarm again to retry.";
+    const onRetryFailedRun = vi.fn();
+    renderThread({
+      comments: [],
+      onAdd: async () => {},
+      issueStatus: "blocked",
+      onRetryFailedRun,
+      linkedRuns: [{
+        runId: "swarm-no-result", runtimeMode: "native", status: "failed", errorCode: "antigravity_swarm_unavailable", error: plain,
+        resultJson: { providerFailure: { provider: "antigravity", retryability: "unknown" } },
+        agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner",
+        createdAt: "2026-11-24T18:00:00.000Z", startedAt: "2026-11-24T18:00:00.000Z", finishedAt: "2026-11-24T18:00:08.000Z",
+      }],
+    } as Parameters<typeof renderThread>[0]);
+    expect(container.textContent).toContain("Swarm did not finish");
+    const button = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-run-failed-try-again"]');
+    expect(button).not.toBeNull();
+    flushSync(() => button!.click());
+    await Promise.resolve();
+    expect(onRetryFailedRun).toHaveBeenCalledExactlyOnceWith("swarm-no-result");
+  });
 
   it("does not treat a progress comment as the final response of a failed native run", () => {
     nativeTranscriptState.transcriptByRun.set("native-progress-failed", [
