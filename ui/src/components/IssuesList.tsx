@@ -866,7 +866,10 @@ function StreamlinedIssuesList({
   const [hierarchyRowBudget, setHierarchyRowBudget] = useState(INITIAL_ISSUE_ROW_RENDER_LIMIT);
   const [visibleIssueColumns, setVisibleIssueColumns] = useState<InboxIssueColumn[]>(initialPreferences.columns);
   const renderedIssueIdsRef = useRef("");
-  const initialServerFillRequestedRef = useRef(false);
+  // The loaded issue set that the last viewport fill asked to extend. A fill
+  // that succeeds changes the set and allows the next fill. A failed fill
+  // keeps the set, so it does not retry in a loop.
+  const initialServerFillRequestedRef = useRef<Issue[] | null>(null);
   const deferredIssueSearch = useDeferredValue(issueSearch);
   const normalizedIssueSearch = deferredIssueSearch.trim().toLowerCase();
 
@@ -1750,8 +1753,8 @@ function StreamlinedIssuesList({
         const threshold = scrollHeight - ISSUE_SCROLL_LOAD_THRESHOLD_PX;
         if (scrollBottom >= threshold) {
           if (trigger === "initial" && !hasMoreRenderedRows && hasMoreIssues && !hasScrollableOverflow) {
-            if (initialServerFillRequestedRef.current) return;
-            initialServerFillRequestedRef.current = true;
+            if (initialServerFillRequestedRef.current === issues) return;
+            initialServerFillRequestedRef.current = issues;
           }
           loadMoreIssueRows();
         }
@@ -1769,7 +1772,7 @@ function StreamlinedIssuesList({
       window.removeEventListener("resize", handleResize);
       if (animationFrameId !== null) window.cancelAnimationFrame(animationFrameId);
     };
-  }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, loadMoreIssueRows]);
+  }, [canLoadMoreIssues, hasMoreIssues, hasMoreRenderedRows, issues, loadMoreIssueRows]);
 
   const newIssueDefaults = useCallback((group?: { key: string; items: Issue[] }) => {
     const groupKey = group?.key;
