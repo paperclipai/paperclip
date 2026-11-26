@@ -58,6 +58,9 @@
               "guides/board-operator/costs-and-budgets",
               "guides/board-operator/activity-log",
               "guides/board-operator/github-review-bots",
+              "guides/board-operator/github-review-bots-open-models",
+              "guides/board-operator/github-review-bots-required-checks",
+              "guides/board-operator/github-review-bots-cloud",
               "guides/board-operator/deleting-connection-data",
               "guides/board-operator/importing-and-exporting"
             ]
