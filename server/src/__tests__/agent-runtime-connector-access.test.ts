@@ -654,6 +654,22 @@ describeDatabase("connector access runtime synchronization", () => {
     await db.update(connectionGrants).set({ providerTenant: { github: { ...github, accessRevision: "changed", repositoryCount: 0, repositorySelection: "none", installationIds: [] } } }).where(eq(connectionGrants.id, grant.id));
     expect(await events()).toHaveLength(before.length + 2);
   });
+  it("ignores GitHub access refresh bookkeeping while retaining repository access changes", async () => {
+    const github = { userId: "fixture-user", login: "fixture", installationCount: 1, repositoryCount: 1, repositorySelection: "selected" as const, installationIds: ["1"], installationOwnerLogins: ["fixture"],
+      repositories: [{ id: "10", fullName: "fixture/repo", installationId: "1" }], accessRevision: "initial", lastAccessRefreshAt: "2000-01-01T00:00:00.000Z", webhookHealth: "healthy" as const };
+    const [grant] = await db.insert(connectionGrants).values({ companyId, connectionId, kind: "user", subjectUserId: "alice", providerTenant: { github } }).returning();
+    const before = await events();
+    // A scheduled health check rereads unchanged access: it stamps a fresh fence
+    // and refresh time, records binding debt, then settles that debt.
+    const refreshed = { ...github, accessRevision: "refreshed", lastAccessRefreshAt: "2000-01-02T00:00:00.000Z" };
+    await db.update(connectionGrants).set({ providerTenant: { github: { ...refreshed, bindingSync: { id: "fixture-sync", removeInstallationIds: [] } } } }).where(eq(connectionGrants.id, grant.id));
+    await db.update(connectionGrants).set({ providerTenant: { github: { ...refreshed, continuityRetry: { at: "2000-01-02T00:00:30.000Z", attempts: 1, revision: "fixture" } } } }).where(eq(connectionGrants.id, grant.id));
+    await db.update(connectionGrants).set({ providerTenant: { github: refreshed } }).where(eq(connectionGrants.id, grant.id));
+    expect(await events()).toEqual(before);
+    await db.update(connectionGrants).set({ providerTenant: { github: { ...refreshed, accessRevision: "changed", repositoryCount: 2,
+      repositories: [...github.repositories, { id: "11", fullName: "fixture/other", installationId: "1" }] } } }).where(eq(connectionGrants.id, grant.id));
+    expect(await events()).toHaveLength(before.length + 2);
+  });
   it("ignores OAuth grant lease acquisition and release while retaining access changes", async () => {
     const oauth = { scopes: ["read"], tokenEndpoint: "https://oauth.example.test/token" };
     const [grant] = await db.insert(connectionGrants).values({ companyId, connectionId, kind: "organization", providerTenant: { oauth } }).returning();

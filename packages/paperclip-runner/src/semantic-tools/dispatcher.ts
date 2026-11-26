@@ -1,3 +1,4 @@
+import { toolInputVariantError } from "../contracts/tool-input-variants.js";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import type {
   CapabilityCommandOutcome,
@@ -133,11 +134,13 @@ export class CapabilitySemanticDispatcher {
     }
 
     const validator = this.#validators.get(descriptor.operationId);
-    if (validator === undefined || !validator(call.input)) {
+    const schemaValid = validator !== undefined && validator(call.input);
+    const variantError = schemaValid ? toolInputVariantError(descriptor.operationId, call.input) : null;
+    if (!schemaValid || variantError !== null) {
       const decision = deniedDecision(
         invocation,
         "input_invalid",
-        formatValidationError(validator),
+        variantError ?? formatValidationError(validator),
       );
       const result = this.#denial(call, descriptor.operationId, denialCode(decision), decision.reason);
       this.#record(policyContext, decision, call.callId, call.input, result);
@@ -195,6 +198,19 @@ export class CapabilitySemanticDispatcher {
             "create_project" as const,
             "list_project_repositories" as const,
             "list_projects" as const,
+            "list_responsibilities" as const,
+            "get_responsibility" as const,
+            "find_responsibilities_for" as const,
+            "create_area" as const,
+            "update_area" as const,
+            "delete_area" as const,
+            "create_responsibility" as const,
+            "update_responsibility" as const,
+            "delete_responsibility" as const,
+            "file_under_responsibility" as const,
+            "remove_from_responsibility" as const,
+            "update_routine" as const,
+            "update_skill_details" as const,
             "handoff_case" as const,
             "read_case" as const,
             "update_case" as const,

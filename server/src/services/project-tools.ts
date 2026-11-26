@@ -2,6 +2,7 @@ import { projectDiscoverySchema, createProjectSchema, createIssueSchema, setIssu
 import { z } from "zod";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../vendor/paperclip-runner/index.js";
 import { badRequest } from "../errors.js";
+import { fetchPaperclipApi } from "./paperclip-api-loopback.js";
 
 export const PROJECT_TOOL_NAMES = ["create_project", "list_project_repositories", "list_projects"];
 export function projectToolDefinitions(workMode: string, includeTask = false) {
@@ -19,6 +20,8 @@ export function projectToolDefinitions(workMode: string, includeTask = false) {
 export async function callProjectTool(input: {
   name: string; arguments: Record<string, unknown>; apiUrl: string; token: string;
   companyId: string; issueId: string; agentId: string; conversation: boolean; receiptOnly?: boolean;
+  /** The company's issue prefix; list_projects rows then carry their page href. */
+  companyPrefix?: string | null;
 }) {
   if (input.receiptOnly && input.name !== "create_project") throw badRequest("Receipt recovery is only supported for project creation");
   const args = input.arguments;
@@ -60,16 +63,20 @@ export async function callProjectTool(input: {
       idempotencyKey: `chat-handoff:${input.issueId}:${key}`,
     });
   } else throw badRequest("Unknown project tool");
-  const response = await fetch(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api${path}`, {
+  const response = await fetchPaperclipApi({
+    apiUrl: input.apiUrl, token: input.token, path,
     method: input.name === "set_task_title" ? "PUT" : body ? "POST" : "GET",
-    headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json",
-      ...(input.receiptOnly ? { "X-Paperclip-Receipt-Only": "true" } : {}),
-    },
-    ...(body ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(60_000),
+    ...(body ? { body } : {}),
+    ...(input.receiptOnly ? { headers: { "X-Paperclip-Receipt-Only": "true" } } : {}),
   });
   if (input.receiptOnly && response.status === 204) return undefined;
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Project tool failed (${response.status})`);
+  // Chat replies link a project only when they know its real page; without an
+  // href the agent wrote the route as an unclickable path or omitted it.
+  if (page && input.companyPrefix && Array.isArray(result.projects)) {
+    return { ...result, projects: result.projects.map((project: { id: string }) => ({ ...project,
+      href: `/${encodeURIComponent(input.companyPrefix!)}/projects/${encodeURIComponent(project.id)}` })) };
+  }
   return result;
 }

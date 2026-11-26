@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { ConnectivityProvider, createConnectivityStore, type ConnectivityStore } from "@/lib/connectivity";
 import { RunnerInspector } from "./RunnerInspector";
+import { isBlockedFromReplay, replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 const accessMock = vi.hoisted(() => vi.fn());
 const eventsMock = vi.hoisted(() => vi.fn());
@@ -273,6 +274,7 @@ describe("RunnerInspector", () => {
     flushSync(() => reveal?.click());
     await flush();
     expect(container.textContent).toContain("run-one-secret");
+    expect(isBlockedFromReplay("run-one-secret", document.body)).toBe(true);
 
     flushSync(() =>
       root.render(
@@ -288,6 +290,44 @@ describe("RunnerInspector", () => {
     await flush();
     expect(container.textContent).toContain("run-2-redacted");
     expect(container.textContent).not.toContain("run-one-secret");
+  });
+
+  it("blocks an exact frame revealed in the trace view from session replay", async () => {
+    traceMock.mockResolvedValue(traceInspection("run-1", "run-1-redacted"));
+    revealMock.mockResolvedValue({
+      schema: "paperclip.provider_trace_frame.v1",
+      frameId: 1,
+      timestamp: "1",
+      direction: "provider_to_client",
+      transport: "stdio_jsonl",
+      provider: "codex",
+      byteLength: 31,
+      digest: `sha256:${"b".repeat(64)}`,
+      rawBase64: btoa(JSON.stringify({ authorization: "Bearer trace-view-Kq72Lx" })),
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    flushSync(() =>
+      root.render(
+        <RunnerInspector
+          runId="run-1"
+          run={{ status: "succeeded", resultJson: null }}
+          open
+          onOpenChange={vi.fn()}
+        />,
+      ),
+    );
+    await flush();
+    flushSync(() =>
+      Array.from(document.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((tab) => tab.textContent?.includes("Exact trace"))!.click(),
+    );
+    await flush();
+    expect(replayLeaks("run-1-redacted", document.body)).toEqual({ rendered: true, recorded: false });
+    flushSync(() =>
+      Array.from(document.querySelectorAll("button")).find((button) => button.textContent?.includes("Reveal exact frame"))!.click(),
+    );
+    await flush();
+    expect(isBlockedFromReplay("Bearer trace-view-Kq72Lx", document.body)).toBe(true);
   });
 
   it("clears exact frames when raw-trace access is revoked while open", async () => {

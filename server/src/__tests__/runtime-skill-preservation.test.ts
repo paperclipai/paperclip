@@ -4,13 +4,13 @@ import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, companies, heartbeatRuns, issues, companySkillRepositorySnapshots as snapshots,
+import { activityLog, agentInstructionRevisions, agents, companies, heartbeatRuns, issues, companySkillRepositorySnapshots as snapshots,
   nativeRunFinalizations, createDb } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import * as storageModule from "../storage/index.js";
 import { createStorageService } from "../storage/service.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
-import { materializeAsset, rehydratePinnedSkillAssets } from "../services/native-runtime/runtime-context.js";
+import { materializeAsset, rehydratePinnedInstructionAsset, rehydratePinnedSkillAssets } from "../services/native-runtime/runtime-context.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import { canonicalNativeRuntimeContextDigest, parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { preserveRuntimeSkillAssets, hasLocalRuntimeSkillObligations, migrateRuntimeSkillAssets } from "../services/native-runtime/runtime-skill-preservation.js";
@@ -51,13 +51,13 @@ describe("admitted unversioned runtime skill preservation", () => {
     await database?.cleanup();
     if (home) await removeRuntimeAssetTree(home);
   });
-  async function fixture() {
+  async function fixture(skill = "# original admitted skill\n") {
     const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), issueId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Skill preservation", issuePrefix: `R${companyId.slice(0, 6)}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Recovery source" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Preserve admitted skill" });
     const bundle = await materializeAsset([
-      { path: "SKILL.md", content: Buffer.from("# original admitted skill\n"), mode: 0o400 },
+      { path: "SKILL.md", content: Buffer.from(skill), mode: 0o400 },
       { path: "scripts/run.sh", content: Buffer.from("#!/bin/sh\necho preserve\n"), mode: 0o500 },
       { path: "binary", content: Buffer.from([0, 255, 7]), mode: 0o444 },
     ]);
@@ -187,6 +187,20 @@ describe("admitted unversioned runtime skill preservation", () => {
     await removeRuntimeAssetTree(f.bundle.rootPath);
     expect(await preserveRuntimeSkillAssets(db, f, storage)).toEqual({ preserved: 1 });
   });
+  it("names a retained run whose bundle left this disk and still saves the runs after it", async () => {
+    const lost = await fixture("# lost admitted skill\n"), kept = await fixture("# kept admitted skill\n");
+    await removeRuntimeAssetTree(lost.bundle.rootPath);
+    const page = await migrateRuntimeSkillAssets(db, { apply: true }, storage);
+    expect([...page.results].sort((a, b) => a.runId.localeCompare(b.runId))).toEqual([
+      { runId: lost.runId, status: "unsaved", code: "runtime_skill_source_absent:missing" },
+      { runId: kept.runId, status: "preserved", preserved: 1 },
+    ].sort((a, b) => a.runId.localeCompare(b.runId)));
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, kept.runId)))[0]!.runnerProfileJson)
+      .toHaveProperty("nativeRuntimeSkillPreservation");
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, lost.runId)))[0]!.runnerProfileJson)
+      .not.toHaveProperty("nativeRuntimeSkillPreservation");
+    expect(await hasLocalRuntimeSkillObligations(db)).toBe(true);
+  });
   it("retains the original receipt through a contract revision but rejects a changed admitted asset or binding", async () => {
     const f = await fixture();
     await preserveRuntimeSkillAssets(db, f, storage);
@@ -240,5 +254,27 @@ describe("admitted unversioned runtime skill preservation", () => {
     expect(await hasLocalRuntimeSkillObligations(db)).toBe(false);
     expect(await db.select().from(snapshots).where(and(eq(snapshots.companyId, f.companyId), eq(snapshots.id, snapshot!.id))))
       .toHaveLength(1);
+  });
+
+  it("rebuilds an admitted instruction bundle that is missing on a new controller host", async () => {
+    const companyId = randomUUID(), agentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Instruction rehydration", issuePrefix: `I${companyId.slice(0, 6)}` });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Rehydrated" });
+    const admitted = Buffer.from("# Admitted instructions\n");
+    for (const content of [admitted, Buffer.from("# Edited after admission\n")]) {
+      await db.insert(agentInstructionRevisions).values({ companyId, agentId, entryFile: "AGENTS.md", contentBase64: content.toString("base64"),
+        contentHash: "unused", byteLength: content.byteLength, source: "board" });
+    }
+    const bundle = await materializeAsset([{ path: "AGENTS.md", content: admitted, mode: 0o444 }]);
+    const context = nativeRuntimeContextFixture();
+    context.instructions = { entryPath: "AGENTS.md", bundle };
+    await removeRuntimeAssetTree(bundle.rootPath);
+    await fs.rm(path.join(home, "instances", "default", "runtime-context-assets", "manifests", `${bundle.digest}.json`), { force: true });
+    await expect(fs.lstat(bundle.rootPath)).rejects.toMatchObject({ code: "ENOENT" });
+    const rehydrated = await rehydratePinnedInstructionAsset(db, { companyId, agentId }, context);
+    expect(rehydrated.instructions.bundle).toEqual(bundle);
+    expect(await fs.readFile(path.join(bundle.rootPath, "AGENTS.md"), "utf8")).toBe("# Admitted instructions\n");
+    const elsewhere = { ...context, instructions: { ...context.instructions, bundle: { ...bundle, rootPath: "/other-home/runtime-context-assets/bundles/x" } } };
+    expect(await rehydratePinnedInstructionAsset(db, { companyId, agentId }, elsewhere)).toBe(elsewhere);
   });
 });

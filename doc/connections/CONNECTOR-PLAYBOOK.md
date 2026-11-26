@@ -181,6 +181,26 @@ refs and the same ownership checks. A personal resolver must not fall back to a
 company credential. Ownership mismatch is `grant_credential_invalid` and tells
 the owner to reconnect.
 
+Dedicated agent connections keep credentials on their agent grant. Background
+catalog and health work may use a single active grant for that connection and
+company. An agent caller must use its own grant. Missing, revoked, or ambiguous
+agent authorizations fail before provider requests; they never fall back to a
+personal, organization, or connection-owned credential. Renaming or pausing the
+connection must preserve the grant and its secret bindings. OAuth methods
+create the agent grant in the callback. Methods without sign-in (`none` or
+`api_key`) create it when connect names `subjectAgentId`, with the API key on
+that grant; one connection serves exactly one agent, so connecting it for a
+second agent is a conflict. Finish never creates agent grants: the grant still
+gives no tools until finish or the installs API adds that agent's install.
+For a plugin-served connection (`transport: "plugin"`) the tool access policy
+denies an agent with no install for it (or for the company) with
+`deny_connection_not_installed`, before any profile, grant, trust rule or allow
+policy. A general `tools:use` grant does not replace the install.
+A later successful
+catalog refresh clears an earlier connection-health error without new consent.
+An agent caller denied for lacking its own grant must not change shared health
+or the catalog, including when that agent has permission to manage the connection.
+
 Existing personal connections with company-scoped invocation credentials require
 their owner to reconnect and enter a fresh key or secret URL. Reconnect creates
 a user-owned credential and updates the grant and declarations while preserving
@@ -765,7 +785,23 @@ This is an opt-in restriction model. Finishing a connection is still limited to
 a board user with connection-configuration access, commits the selected action
 IDs to an auditable profile, and leaves **Ask first** available for any action.
 The open default changes the initial policy; it does not create a route around a
-policy the operator has applied.
+policy the operator has applied. Adding an agent uses the saved action choices.
+An independent approval policy can still require approval for an action marked
+Allowed on the app page. That page manages the app-specific Ask first rules; it
+does not remove independent policies.
+
+The app permission save reconciles the selected targets and actions with their
+saved rows. It retains unchanged bindings, entries, and Ask first policies,
+batches policy changes, and leaves already-disabled rules untouched. Use the
+disposable PostgreSQL benchmark to measure this path:
+
+```sh
+node --import ./server/node_modules/tsx/dist/loader.mjs scripts/benchmark-app-permission-save.ts --baseline-ref=<pre-fix SHA> --output=/tmp/app-permission-save.json
+```
+
+The benchmark uses synthetic data, two warmups, and six samples in alternating
+order. It compares saved values and action decisions. Its timings measure the
+local service, not hosted endpoint latency.
 
 Saving a connection's installation list grants its app profile only to newly
 added targets. Targets that remain installed keep their existing profile
@@ -789,8 +825,8 @@ This is the implementation sequence an autonomous coding agent should follow.
 
 ### Phase 0: Establish scope and preserve the worktree
 
-1. Read `AGENTS.md`, `doc/GOAL.md`, `doc/PRODUCT.md`,
-   `doc/SPEC-implementation.md`, `doc/DEVELOPING.md`, and `doc/DATABASE.md`.
+1. Read `AGENTS.md`, `doc/GOAL.md`, `doc/PRODUCT.md`, `doc/DEVELOPING.md`,
+   and `doc/DATABASE.md`.
 2. Read this runbook, [the connections overview](./README.md), and
    [the security threat model](./SECURITY-THREAT-MODEL.md).
 3. Inspect `git status --short`. Existing changes belong to the user or another
@@ -1514,6 +1550,34 @@ POST /api/tool-connections/:connectionId/test-calls
 DELETE /api/tool-connections/:connectionId
 ```
 
+Stored tool-call content endpoints:
+
+```text
+GET /api/tool-connections/:connectionId/stored-content
+POST /api/tool-connections/:connectionId/stored-content/deletion
+GET /api/tool-connections/:connectionId/stored-content/deletion
+DELETE /api/tool-connections/:connectionId?deleteStoredContent=true
+```
+
+Deletion is connector-agnostic. It clears the content of the connection's
+tool-call summaries (including `tool_access_audit_events.details.argumentsSummary`),
+approval previews, approval cards, delivered action results and app views, and
+deletes the whole run transcript (every copy of the run log, run-event content,
+output excerpts and the result text) of every settled run that called the
+connection or received an approved action's result. Row ids, timestamps, status,
+sizes and hashes stay. A step that cannot confirm its deletion fails, and the
+request stays pending and retries; it completes only when every step succeeded.
+A `tool_connection_content_deletions` row is the durable request; the
+`tool-connection-content-deletion` delivery queue resumes it after a restart.
+Runs that are still working are skipped and counted. Deleting a task queues an
+`issue_connection_content_deletions` row that runs the same steps for the
+task's runs and waits, for up to a day, for runs and approvals still open. Deleting a company queues its run
+logs and files in `stored_object_deletions`, which outlives the company. A new
+store that keeps connection content must be covered by all three paths;
+`tool-connection-content-deletion-canary.test.ts` scans every text column and
+every storage copy after each one. The user-facing help is
+`docs/guides/board-operator/deleting-connection-data.md`.
+
 Responses may contain secret IDs, version selectors, header names, prefixes,
 scope names, expiry timestamps, and redacted provider metadata. They must not
 contain secret values. Logs and activity should identify the operation and
@@ -1635,7 +1699,7 @@ Suggested PR verification block:
 | `oauthStrategy` | Managed broker strategy. New definitions use `paperclip_cloud_connector`; `paperclip_id_connector` is recognized only to require migration when an old grant expires. The protocols and provider clients are not interchangeable. Only valid for OAuth. |
 | `connectorProfile` | Managed connector capability/scope profile, required with `oauthStrategy`. |
 | `capabilityProfile` | User-facing read/write/mode grouping used for method selection. |
-| `grantKinds` | Restricts identity to `organization` and/or `user`; omit for flexible methods. |
+| `grantKinds` | Restricts identity to `organization`, `user` and/or `agent`; omit for flexible methods. An `agent` method connects for exactly one chosen agent. |
 | `whenToUse` | One sentence distinguishing this method from alternatives. |
 | `defaults.serverUrl` | Exact fixed endpoint. For discovery-capable OAuth, omit fixed auth endpoints. |
 | `defaults.serverUrlTemplate` | HTTPS endpoint with placeholders supplied by declared tenant/extension fields. Mutually exclusive with `serverUrl`. |
@@ -2113,7 +2177,17 @@ registers a client on the fly and stores it on the connection:
   client.
 - Env-registered clients always win: when
   `PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_ID/_SECRET` are configured, the
-  broker uses them (`customer` ownership) and skips registration. List both
+  broker uses them (`customer` ownership) and skips registration. The broker
+  sends an env client only to the method's `defaults.tokenEndpoint`, or, when
+  the method has none, to a token endpoint on the exact host of its fixed
+  `serverUrl`, `discoveryUrl`, `metadataUrl` or `authorizationEndpoint`. Set
+  `defaults.tokenEndpoint` when the vendor's token endpoint is on another host.
+  The method must list `customer` ownership. Box, Notion, PostHog, Sentry and
+  Xero rely on the same-host rule today: if their discovery returns a token
+  endpoint on another host, a deployment-wide client is refused until the
+  endpoint is pinned, and a client added to the connection always works.
+  `client-settings.test.ts` fails when a new customer method neither pins its
+  token endpoint nor joins that named list. List both
   `customer` and `dcr` in the method's `ownershipModes` when the vendor
   supports both.
 

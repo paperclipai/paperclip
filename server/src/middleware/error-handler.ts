@@ -20,8 +20,11 @@ import {
 import { recordResponsibleUserDenialOnActiveRun } from "../services/responsible-user-denial-run-outcomes.js";
 import { isObjectJournalBusyError } from "../services/object-byte-journal.js";
 import { isExpectedMcpConnectionFailure } from "../services/mcp-connection-failure.js";
+import { isOpenRouterCatalogUnavailable } from "../services/openrouter-models.js";
+import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE, readTransientSandboxCreationRefusal } from "../services/environment-provider-unavailable-error.js";
 import { isEndedDbPoolError } from "../database-retry.js";
 import { ToolGatewayHttpError } from "../services/tool-gateway.js";
+import { isStorageCredentialRejection, isStorageUnavailableError, recordedStorageFailureDiagnostics, STORAGE_TEMPORARILY_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_CODE } from "../storage/storage-unavailable.js";
 
 export interface ErrorContext {
   error: {
@@ -174,6 +177,8 @@ export function errorHandler(
     const redactedSkillPolicyDenial = isRedactedSkillPolicyDenial(details);
     const workspaceRepairPreconditionFailure =
       details?.code === "workspace_repair_precondition_failed";
+    // Its code and remediation are already top-level; repeating them only lengthens agent context.
+    const boardAccessDenial = details?.code === "board_access_required";
     const structuredConnectionError = new Set([
       "user_authorization_required",
       "organization_authorization_required",
@@ -212,7 +217,9 @@ export function errorHandler(
             },
         reportableError,
       );
-      reportCrash(reportableError, req, !isExpectedMcpConnectionFailure(err));
+      // An unreachable public provider catalog still answers 503 with its
+      // retry guidance, but it is the provider's outage, not a server fault.
+      reportCrash(reportableError, req, !isExpectedMcpConnectionFailure(err) && !isOpenRouterCatalogUnavailable(err));
     }
     const secretSensitiveServerError =
       err.status >= 500 &&
@@ -255,6 +262,7 @@ export function errorHandler(
               : {}),
             ...(!redactedSkillPolicyDenial &&
             !workspaceRepairPreconditionFailure &&
+            !boardAccessDenial &&
             responseDetailsValue
               ? { details: responseDetailsValue }
               : {}),
@@ -292,7 +300,8 @@ export function errorHandler(
   // answer, so skip the error sinks and just close out the response.
   if (
     rootError.message === "aborted" &&
-    (rootError as NodeJS.ErrnoException).code === "ECONNRESET"
+    (rootError as NodeJS.ErrnoException).code === "ECONNRESET" &&
+    !isStorageUnavailableError(rootError)
   ) {
     if (!res.headersSent) res.status(499);
     res.end();
@@ -328,6 +337,32 @@ export function errorHandler(
     if (!res.headersSent) {
       res.set("Retry-After", "2");
       res.status(503).json({ error: rootError.message, code: rootError.code });
+    } else {
+      res.end();
+    }
+    return;
+  }
+
+  // A sandbox provider outage during a sandbox creation that this request
+  // started is not a server fault. The answer is fixed text: provider text and
+  // provisional sandbox names stay out, and cleanup stays with its own record.
+  const providerRefusal = readTransientSandboxCreationRefusal(rootError);
+  if (providerRefusal) {
+    if (!res.headersSent) {
+      res.set("Retry-After", "30");
+      res.status(503).json({ error: providerRefusal.message, code: ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE });
+    } else {
+      res.end();
+    }
+    return;
+  }
+
+  if (isStorageUnavailableError(rootError) && !isStorageCredentialRejection(rootError)) {
+    logger.warn({ method: req.method, route: req.route?.path, storageFailure: recordedStorageFailureDiagnostics(rootError) },
+      "File storage was unavailable for a request");
+    if (!res.headersSent) {
+      res.set("Retry-After", "30");
+      res.status(503).json({ error: STORAGE_TEMPORARILY_UNAVAILABLE_MESSAGE, code: STORAGE_UNAVAILABLE_CODE });
     } else {
       res.end();
     }

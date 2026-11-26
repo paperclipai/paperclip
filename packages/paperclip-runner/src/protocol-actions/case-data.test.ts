@@ -1,4 +1,5 @@
-import { Ajv2020 } from "ajv/dist/2020.js";
+import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
+import { toolInputVariantError } from "../contracts/tool-input-variants.js";
 import { describe, expect, it } from "vitest";
 import { paperclipSemanticAction } from "../catalog/semantic-action-catalog.js";
 import { paperclipSemanticActionNamespace } from "../semantic-tools/paperclip-discovery.js";
@@ -6,6 +7,10 @@ import { createCaseAction, readCaseAction, updateCaseAction } from "./case-data.
 import { createWorkflowAction, listWorkflowsAction, readWorkflowAction, updateWorkflowAction } from "./workflows.js";
 
 const caseId = "00000000-0000-4000-8000-000000000001";
+// Advertised schemas are flat; cross-field variants are part of admission.
+function admit(validate: ValidateFunction, tool: string) {
+  return Object.assign((input: unknown) => validate(input) && toolInputVariantError(tool, input) === null, { get errors() { return validate.errors; } });
+}
 const actions = [readCaseAction, updateCaseAction];
 
 describe("production case data contracts", () => {
@@ -14,7 +19,7 @@ describe("production case data contracts", () => {
   it.each([listWorkflowsAction, readWorkflowAction, createWorkflowAction, updateWorkflowAction])(
     "$id has a strict company-scoped live and catalog contract", (action) => {
       for (const schema of [action.live.descriptor.inputSchema, paperclipSemanticAction(action.id)!.inputSchema]) {
-        const validate = ajv.compile(schema);
+        const validate = admit(ajv.compile(schema), action.id);
         expect(validate(action.examples.call.input), JSON.stringify(validate.errors)).toBe(true);
         expect(validate({ ...action.examples.call.input, companyId: caseId })).toBe(false);
         if (action.id === "update_workflow") expect(validate({ workflowId: caseId, idempotencyKey: "empty" })).toBe(false);
@@ -36,7 +41,7 @@ describe("production case data contracts", () => {
       expect(action.scenario).toBeNull();
       expect(action.canonical.realServiceBinding).not.toBe("unbound");
       for (const schema of [action.live.descriptor.inputSchema, catalog.inputSchema]) {
-        const validate = ajv.compile(schema);
+        const validate = admit(ajv.compile(schema), operationId);
         const example = action.examples.call.input;
         expect(validate(example), JSON.stringify(validate.errors)).toBe(true);
         expect(validate({ ...example, caseId }), JSON.stringify(validate.errors)).toBe(true);
@@ -49,7 +54,7 @@ describe("production case data contracts", () => {
 
   it("advertises bounded case JSON continuations without exposing arbitrary APIs", () => {
     for (const schema of [readCaseAction.live.descriptor.inputSchema, paperclipSemanticAction("read_case")!.inputSchema]) {
-      const validate = ajv.compile(schema);
+      const validate = admit(ajv.compile(schema), "read_case");
       expect(validate({ section: "fields", offsetBytes: 8192, limitBytes: 8192, snapshot: "a".repeat(64) }), JSON.stringify(validate.errors)).toBe(true);
       for (const input of [{ offsetBytes: 1 }, { limitBytes: 8193 }, { limitBytes: 3 }, { snapshot: "forged" },
         { section: "secrets" }, { operationId: "GET /api/assets/{id}" }]) expect(validate(input)).toBe(false);
@@ -58,7 +63,7 @@ describe("production case data contracts", () => {
 
   it("opens only explicitly selected case or linked-task documents through the bounded read contract", () => {
     for (const schema of [readCaseAction.live.descriptor.inputSchema, paperclipSemanticAction("read_case")!.inputSchema]) {
-      const validate = ajv.compile(schema);
+      const validate = admit(ajv.compile(schema), "read_case");
       expect(validate({ section: "document", documentKey: "Research:v1.notes" }), JSON.stringify(validate.errors)).toBe(true);
       expect(validate({ section: "document", documentKey: "workflow", documentIssueId: caseId }), JSON.stringify(validate.errors)).toBe(true);
       expect(validate({ section: "document", documentKey: "WORKFLOW", documentIssueId: caseId, offsetBytes: 8192,
@@ -76,7 +81,7 @@ describe("production case data contracts", () => {
   });
 
   it("requires a nonempty, idempotent facts update and excludes workflow and access mutations", () => {
-    const validate = ajv.compile(updateCaseAction.live.descriptor.inputSchema);
+    const validate = admit(ajv.compile(updateCaseAction.live.descriptor.inputSchema), "update_case");
     expect(validate({ idempotencyKey: "save-facts" })).toBe(false);
     expect(validate({ fields: {} })).toBe(false);
     expect(validate({ idempotencyKey: "save-facts", summary: null })).toBe(true);
@@ -90,7 +95,7 @@ describe("production case data contracts", () => {
 
   it("requires complete kickoff routing and accepts bounded initial task documents", () => {
     for (const schema of [createCaseAction.live.descriptor.inputSchema, paperclipSemanticAction("create_case")!.inputSchema]) {
-      const validate = ajv.compile(schema);
+      const validate = admit(ajv.compile(schema), "create_case");
       const input = createCaseAction.examples.call.input;
       expect(validate(input), JSON.stringify(validate.errors)).toBe(true);
       const { kickoff, ...withoutKickoff } = input;

@@ -1,3 +1,5 @@
+import { instanceSettingsService } from "./instance-settings.js";
+import { nativeEffectiveRunTerminalStateSqlText } from "./native-runtime/native-accepted-outcome.js";
 import { idleMcpWorkQuery } from "./public-mcp/idle-work-query.js";
 import type { McpWakeAdmission } from "./public-mcp/wake-admission.js";
 import { pendingBudgetEvaluationWorkQuery } from "./budget-evaluation-work.js";
@@ -17,7 +19,7 @@ import { sql, type SQLWrapper } from "drizzle-orm";
 import { createIdleSleepDiagnostics, type IdleSleepDiagnosticSink, type IdleSleepDiagnostics } from "./idle-sleep-diagnostics.js";
 import { verifiedResourceCleanup } from "./cleanup-verification-proof.js";
 import { companyHoldMismatch } from "../modules/agent-lifecycle/index.js";
-import { pendingBudgetRunCancellationPredicate } from "./heartbeat/budget-cancellation.js";
+import { pendingBudgetRunCancellationExistsQuery } from "./heartbeat/budget-cancellation.js";
 import { nativeResponsePresentationPendingQuery } from "./native-runtime/native-response-presentation-query.js";
 import { passiveIdleConversation } from "./conversation-idle-proof.js";
 import { idleChatHistoryChecks } from "./chat-channels/idle-history-proof.js";
@@ -76,6 +78,42 @@ export type InspectIdlePlugins = (hold: { ownerId: string; expiresAt: number }) 
 // evidence that a restarted process has no persisted work to recover.
 const workCheck = (reason: string, query: string | SQLWrapper) => ({ reason, query: typeof query === "string" ? sql.raw(query) : query });
 
+export const NATIVE_RUN_FINALIZATION_WORK_QUERY = `SELECT 1 FROM native_run_finalizations f WHERE (
+    f.phase = 'committed' AND f.lease_owner IS NULL AND f.lease_expires_at IS NULL
+    AND f.next_attempt_at IS NULL AND f.control_deadline_at IS NULL
+    AND f.recovery_state IS NULL AND f.recovery_request_id IS NULL
+    AND f.failure_code IS NULL AND f.failure_detail IS NULL
+    AND EXISTS (
+      SELECT 1 FROM heartbeat_runs r
+      JOIN native_run_results result_row ON result_row.id = f.result_id
+        AND result_row.company_id = r.company_id AND result_row.issue_id = r.native_issue_id
+        AND result_row.run_id = r.id AND result_row.completion_contract_id = r.completion_contract_id
+      JOIN work_assessments assessment ON assessment.id = f.assessment_id
+        AND assessment.company_id = r.company_id AND assessment.issue_id = r.native_issue_id
+        AND assessment.run_id = r.id AND assessment.result_id = result_row.id
+      JOIN status_decisions decision ON decision.id = f.decision_id
+        AND decision.company_id = r.company_id AND decision.issue_id = r.native_issue_id
+        AND decision.run_id = r.id AND decision.assessment_id = assessment.id
+      WHERE r.id = f.run_id AND r.company_id = f.company_id AND r.native_issue_id = f.issue_id
+        AND r.runtime_mode = 'native' AND r.native_phase = 'committed'
+        AND ${finishedRun("r")}
+        AND r.result_json->>'finalizationPhase' = 'committed'
+        AND r.result_json->>'nextAttemptAt' IS NULL AND r.result_json->>'failureCode' IS NULL
+        AND r.result_json->>'originalFailureCode' IS NULL
+        AND result_row.schema_status = 'accepted'
+        AND ${nativeEffectiveRunTerminalStateSqlText("result_row.result_json")} = r.status
+        AND decision.application_state = 'applied' AND decision.applied_at IS NOT NULL)
+    AND EXISTS (SELECT 1 FROM workspace_operations operation
+      WHERE operation.company_id = f.company_id AND operation.issue_id = f.issue_id
+        AND operation.heartbeat_run_id = f.run_id
+        AND operation.phase = 'workspace_finalize' AND operation.status = 'succeeded')
+    AND NOT EXISTS (
+      SELECT 1 FROM status_decision_effects effect WHERE effect.decision_id = f.decision_id
+        AND (effect.company_id <> f.company_id OR effect.issue_id <> f.issue_id
+          OR effect.delivery_state <> 'delivered' OR effect.delivered_at IS NULL
+          OR effect.next_attempt_at IS NOT NULL))
+    ) IS NOT TRUE`;
+
 const WORK_CHECKS = [
   workCheck("agents.execution_or_timer", `SELECT 1 FROM agents WHERE status = 'running' OR
     (status NOT IN ('terminated', 'paused', 'pending_approval') AND
@@ -98,6 +136,11 @@ const WORK_CHECKS = [
     ('preparing', 'verifying', 'pausing', 'resuming', 'terminating', 'cleaning_up')`),
   workCheck("decision_invocations", `SELECT 1 FROM decision_invocations WHERE status = 'running'`),
   workCheck("prompt_injection_invocations", `SELECT 1 FROM prompt_injection_invocations WHERE status = 'running'`),
+  // A pending provider task (MCP Tasks) is polled: the provider cannot wake
+  // Paperclip, so the instance stays awake until the task is settled.
+  // Only while the MCP Tasks setting is on; off, nothing polls these rows.
+  workCheck("tool_mcp_tasks", `SELECT 1 FROM tool_mcp_tasks WHERE next_poll_at IS NOT NULL`),
+  workCheck("responsibility_summary_invocations", `SELECT 1 FROM responsibility_summary_invocations WHERE status = 'running'`),
   // Persistent machine credentials can receive work without a human opening
   // the instance. They need an ingress wake contract before we can sleep.
   workCheck("agent_api_keys", incomingWakeWorkQuery("agent_api_keys")!),
@@ -241,41 +284,7 @@ const WORK_CHECKS = [
     WHERE c.status = 'active' AND s.enabled AND s.automatic_updates
       AND (s.access_scope = 'company' OR EXISTS (
         SELECT 1 FROM project_skill_sources b WHERE b.source_id = s.id AND b.company_id = s.company_id AND b.active))`),
-  workCheck("native_run_finalizations", `SELECT 1 FROM native_run_finalizations f WHERE (
-    f.phase = 'committed' AND f.lease_owner IS NULL AND f.lease_expires_at IS NULL
-    AND f.next_attempt_at IS NULL AND f.control_deadline_at IS NULL
-    AND f.recovery_state IS NULL AND f.recovery_request_id IS NULL
-    AND f.failure_code IS NULL AND f.failure_detail IS NULL
-    AND EXISTS (
-      SELECT 1 FROM heartbeat_runs r
-      JOIN native_run_results result_row ON result_row.id = f.result_id
-        AND result_row.company_id = r.company_id AND result_row.issue_id = r.native_issue_id
-        AND result_row.run_id = r.id AND result_row.completion_contract_id = r.completion_contract_id
-      JOIN work_assessments assessment ON assessment.id = f.assessment_id
-        AND assessment.company_id = r.company_id AND assessment.issue_id = r.native_issue_id
-        AND assessment.run_id = r.id AND assessment.result_id = result_row.id
-      JOIN status_decisions decision ON decision.id = f.decision_id
-        AND decision.company_id = r.company_id AND decision.issue_id = r.native_issue_id
-        AND decision.run_id = r.id AND decision.assessment_id = assessment.id
-      WHERE r.id = f.run_id AND r.company_id = f.company_id AND r.native_issue_id = f.issue_id
-        AND r.runtime_mode = 'native' AND r.native_phase = 'committed'
-        AND ${finishedRun("r")}
-        AND r.result_json->>'finalizationPhase' = 'committed'
-        AND r.result_json->>'nextAttemptAt' IS NULL AND r.result_json->>'failureCode' IS NULL
-        AND r.result_json->>'originalFailureCode' IS NULL
-        AND result_row.schema_status = 'accepted'
-        AND result_row.result_json->'terminal'->>'runTerminalState' = r.status
-        AND decision.application_state = 'applied' AND decision.applied_at IS NOT NULL)
-    AND EXISTS (SELECT 1 FROM workspace_operations operation
-      WHERE operation.company_id = f.company_id AND operation.issue_id = f.issue_id
-        AND operation.heartbeat_run_id = f.run_id
-        AND operation.phase = 'workspace_finalize' AND operation.status = 'succeeded')
-    AND NOT EXISTS (
-      SELECT 1 FROM status_decision_effects effect WHERE effect.decision_id = f.decision_id
-        AND (effect.company_id <> f.company_id OR effect.issue_id <> f.issue_id
-          OR effect.delivery_state <> 'delivered' OR effect.delivered_at IS NULL
-          OR effect.next_attempt_at IS NOT NULL))
-    ) IS NOT TRUE`),
+  workCheck("native_run_finalizations", NATIVE_RUN_FINALIZATION_WORK_QUERY),
   ...completedHistoryChecks.map(check => workCheck(check.reason, check.query)),
 ] as const;
 
@@ -398,6 +407,7 @@ export async function readIdleSleepSafety(
     let scheduledWake: ScheduledWake | undefined;
     const blocked = await db.transaction(async (tx) => {
       await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+      const mcpTasksEnabled = (await instanceSettingsService(db).getExperimentalReadOnly(tx)).enableMcpTasks;
       if (options.incomingWake?.incomingWake) {
         if (!ownerId || ownerId !== before.ownerId) return undefined;
         incomingProof = await readIdleIncomingWakeProof(tx, { capabilities: options.incomingWake, ownerId, receiverOwner: db, inspectionNow: now() });
@@ -434,6 +444,8 @@ export async function readIdleSleepSafety(
         (!scheduledRoutines || check.reason !== "routines")
         && (!scheduledIssueMonitors || check.reason !== "issues"))
         .map(check => {
+          if (check.reason === "tool_mcp_tasks") return { ...check,
+            query: sql`SELECT 1 FROM tool_mcp_tasks WHERE next_poll_at IS NOT NULL AND ${mcpTasksEnabled}` };
           const replacement = deadlineProof?.blocked === false ? deadlineWorkReplacement(check.reason) : undefined;
           const mcp = incomingProof?.mcp;
           const mcpRetryQuery = mcp && deadlineProof?.blocked === false && deadlineProof.mcp === mcp.schedule
@@ -443,7 +455,7 @@ export async function readIdleSleepSafety(
         });
       checks.push(workCheck("agents.company_hold", sql`SELECT 1 FROM agents JOIN companies ON companies.id = agents.company_id
         WHERE ${companyHoldMismatch()}`));
-      checks.push(workCheck("heartbeat_runs.budget_cancellation", sql`SELECT 1 FROM heartbeat_runs WHERE ${pendingBudgetRunCancellationPredicate()}`));
+      checks.push(workCheck("heartbeat_runs.budget_cancellation", pendingBudgetRunCancellationExistsQuery()));
       checks.push(workCheck("native_response_presentation", nativeResponsePresentationPendingQuery()));
       // Only the current worker's owned runtime drain can exempt a plugin.
       // Missing workers, old SDKs, and newly installed plugins still block.

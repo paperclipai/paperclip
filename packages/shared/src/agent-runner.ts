@@ -16,9 +16,23 @@ export function paperclipRunnerProfileForHarness(harness: string): { provider: "
   return undefined;
 }
 
+/**
+ * The lifecycle a new native agent stores. Codex, OpenCode and Claude store
+ * none, so the server applies the product default (warm on a local target for
+ * Codex and OpenCode). Other harnesses keep an explicit per_turn.
+ */
+export function paperclipRunnerCreationLifecycle(
+  profile: NonNullable<ReturnType<typeof paperclipRunnerProfileForHarness>>,
+): { lifecycleMode?: "per_turn" } {
+  return profile.provider === "codex" || profile.provider === "opencode"
+    || (profile.provider === "acpx" && profile.acpxAgent === "claude")
+    ? {} : { lifecycleMode: "per_turn" };
+}
+
 export const PAPERCLIP_RUNNER_MINIMUM_GLIBC_VERSION = "2.39";
 
-function supportsLinuxLibc(libc?: "glibc" | "musl" | "unknown", version?: string): boolean {
+/** The Runner's Linux libc floor: glibc at or above the minimum version. */
+export function supportsLinuxLibc(libc?: "glibc" | "musl" | "unknown", version?: string): boolean {
   if (libc !== undefined && libc !== "glibc") return false;
   if (version === undefined) return true;
   const match = typeof version === "string" ? version.trim().match(/^(?:glibc\s+)?(\d+)\.(\d+)(?:\.\d+)?$/) : null;
@@ -52,10 +66,14 @@ export function agentRunner(adapterType: string): AgentRunner {
   return adapterType === "paperclip_runner" ? "paperclip" : "legacy";
 }
 
+/** Product name of the harness an agent runs; reported as telemetry `adapter_type`. */
+export function agentHarnessName(adapterType: string, config: Record<string, unknown> = {}): string {
+  const harness = agentHarnessType(adapterType, config);
+  return harness === "acpx:copilot" ? "copilot_runtime" : harness;
+}
+
 /** Stable configuration group across native and legacy execution backends. */
 export function agentRuntimeSettingsHarness(adapterType: string, config: Record<string, unknown> = {}): string {
-  const harness = agentHarnessType(adapterType, config);
-  if (harness === "acpx:copilot") return "copilot_runtime";
-  if (harness === "cursor") return "cursor_local";
-  return harness;
+  const harness = agentHarnessName(adapterType, config);
+  return harness === "cursor" ? "cursor_local" : harness;
 }

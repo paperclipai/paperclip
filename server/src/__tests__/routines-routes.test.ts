@@ -135,6 +135,15 @@ const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
   vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
+  // Whether the person directed the run reads the database these tests mock away; routines-e2e covers it.
+  // Here every run with a person was directed by them.
+  vi.doMock("../routes/agent-person-authz.js", () => ({
+    agentPersonInCompany: async (_db: unknown, req: { actor: { type: string; onBehalfOfUserId?: string; onBehalfOfMemberships?: Array<{ companyId: string; status?: string; membershipRole?: string | null }> } }, companyId: string) => {
+      if (req.actor.type !== "agent" || !req.actor.onBehalfOfUserId) return null;
+      const membership = req.actor.onBehalfOfMemberships?.find((item) => item.companyId === companyId && item.status === "active");
+      return membership ? { userId: req.actor.onBehalfOfUserId, role: membership.membershipRole ?? null } : null;
+    },
+  }));
 
   vi.doMock("@paperclipai/shared/telemetry", () => ({
     trackRoutineCreated: mockTrackRoutineCreated,
@@ -165,11 +174,16 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(actor: Record<string, unknown>) {
+async function loadRouteModules() {
   // Load the route after its mocks are installed. Concurrent importActual
   // calls through the middleware barrel can cache unmocked dependencies.
   const { errorHandler } = await import("../middleware/error-handler.js");
   const { routineRoutes } = await import("../routes/routines.js");
+  return { errorHandler, routineRoutes };
+}
+
+async function createApp(actor: Record<string, unknown>) {
+  const { errorHandler, routineRoutes } = await loadRouteModules();
   const app = express();
   app.use(express.json({ verify: (req, _res, buf) => { (req as any).rawBody = buf; } }));
   app.use((req, _res, next) => {
@@ -194,7 +208,7 @@ describe("routine routes", () => {
     }));
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("@paperclipai/shared/telemetry");
     vi.doUnmock("../telemetry.js");
@@ -318,6 +332,7 @@ describe("routine routes", () => {
       status: "resolved",
     });
     mockAnnotationService.remapOpenThreadsForRoutineDocument.mockResolvedValue([]);
+    await loadRouteModules();
   });
 
   it("passes project filters to the routine list service", async () => {
@@ -568,6 +583,35 @@ describe("routine routes", () => {
     expect(res.body).not.toHaveProperty("previousResponsibleUserId");
   });
 
+  it("lets an agent change a routine the person it works for is responsible for", async () => {
+    const personsRoutine = { ...routine, assigneeAgentId: otherAgentId, responsibleUserId: "person-1" };
+    mockRoutineService.get.mockResolvedValue(personsRoutine);
+    mockRoutineService.update.mockResolvedValue({ ...personsRoutine, title: "Weekly digest" });
+    const forPerson = await createApp({
+      type: "agent", agentId, companyId, onBehalfOfUserId: "person-1",
+      onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active" }],
+    });
+    const res = await request(forPerson).patch(`/api/routines/${routineId}`).send({ title: "Weekly digest" });
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "routine.updated", details: expect.objectContaining({ onBehalfOfUserId: "person-1" }),
+    }));
+
+    // Handing it to another agent is an assignment the person must be allowed to make.
+    const handOff = await request(forPerson).patch(`/api/routines/${routineId}`).send({ assigneeAgentId: projectId });
+    expect(handOff.status).toBe(403);
+    mockAccessService.canUser.mockResolvedValue(true);
+    expect((await request(forPerson).patch(`/api/routines/${routineId}`).send({ assigneeAgentId: projectId })).status).toBe(200);
+    expect(mockAccessService.canUser).toHaveBeenCalledWith(companyId, "person-1", "tasks:assign");
+
+    // An agent working for someone else may not.
+    const forOther = await createApp({
+      type: "agent", agentId, companyId, onBehalfOfUserId: "person-2",
+      onBehalfOfMemberships: [{ companyId, membershipRole: "owner", status: "active" }],
+    });
+    expect((await request(forOther).patch(`/api/routines/${routineId}`).send({ title: "x" })).status).toBe(403);
+  });
+
   it("prevents even the assigned agent from transferring routine responsibility", async () => {
     const app = await createApp({ type: "agent", agentId, companyId });
     mockRoutineService.getDetail.mockResolvedValue(routine);
@@ -700,6 +744,17 @@ describe("routine routes", () => {
       userId: "board-user",
       runId: null,
     });
+  });
+
+  it("records an agent-started run as manual whatever source the agent sends, and keeps a board caller's source", async () => {
+    const agentApp = await createApp({ type: "agent", agentId, companyId });
+    const res = await request(agentApp).post(`/api/routines/${routineId}/run`).send({ source: "api" });
+    expect(res.status, JSON.stringify(res.body)).toBe(202);
+    expect(mockRoutineService.runRoutine).toHaveBeenLastCalledWith(routineId, expect.objectContaining({ source: "manual" }), expect.objectContaining({ agentId }));
+    mockAccessService.canUser.mockResolvedValue(true);
+    const boardApp = await createApp({ type: "board", userId: "board-user", source: "session", isInstanceAdmin: false, companyIds: [companyId] });
+    expect((await request(boardApp).post(`/api/routines/${routineId}/run`).send({ source: "api" })).status).toBe(202);
+    expect(mockRoutineService.runRoutine).toHaveBeenLastCalledWith(routineId, expect.objectContaining({ source: "api" }), expect.objectContaining({ userId: "board-user" }));
   });
 
   it("allows routine creation when the board user has tasks:assign", async () => {

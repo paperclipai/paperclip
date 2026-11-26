@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
 import { acquireGitExpirationLocks } from "./git-workspace-expiration-locks.js";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { executionWorkspaces, issues, heartbeatRuns, nativeRunFinalizations, environmentLeases,
-  workspaceRuntimeServices, issueRecoveryActions, projectWorkspaces, withDedicatedDbConnection, type Db } from "@paperclipai/db";
+  workspaceRuntimeServices, issueRecoveryActions, projectWorkspaces, workspaceOperations, withDedicatedDbConnection, type Db } from "@paperclipai/db";
 import { createIssueGitRemoteAuthProvider } from "./git-credentials.js";
 import type { StorageService } from "../storage/types.js";
 import { TASK_DIRECTORY_RETENTION_KEY } from "./isolated-task-directory-snapshot.js";
@@ -104,9 +104,16 @@ async function restorePointBoundary(cwd: string, repoUrl: string, headOnRemote: 
 
 /** Re-read the whole tree and every runtime/recovery consumer immediately before deletion. */
 export function expirationScope(workspace: Workspace) {
-  // Decode the three legacy keys together only after cheap native/pointer
-  // matches fail. Strict JSONPath leaves non-object inputs unmatched, as ->>
-  // did, while those inputs can still match an independent native binding.
+  // Each binding is a separate index probe. A single OR over all bindings made
+  // PostgreSQL read every company run and decode its context JSON. Each key set
+  // is passed as an array so the planner probes the index instead of hashing a
+  // full scan; it does not count the cost of reading TOASTed contexts. The legacy
+  // context expressions match the heartbeat_runs expression indexes exactly,
+  // and the key test matches the partial workspace index predicate;
+  // ->> yields NULL for non-object contexts, so those rows stay unmatched there
+  // and can still match through an independent native binding. The UNION
+  // removes duplicate IDs, so the outer primary-key probe keeps each run once.
+  const companyRuns = sql`SELECT id FROM ${heartbeatRuns} WHERE company_id = ${workspace.companyId}`;
   return sql`
     WITH RECURSIVE tree AS (
       SELECT id, status, completed_at, cancelled_at, updated_at FROM ${issues}
@@ -117,23 +124,17 @@ export function expirationScope(workspace: Workspace) {
     ), bound AS (
       SELECT id, updated_at, checkout_run_id, execution_run_id FROM ${issues}
       WHERE company_id = ${workspace.companyId} AND execution_workspace_id = ${workspace.id}
-    ), legacy_issue_ids AS MATERIALIZED (
-      SELECT unnest(array_agg(id::text)) AS id FROM tree
     ), relevant_runs AS (
       SELECT r.id, r.status, r.created_at, r.started_at, r.finished_at, r.controller_lease_expires_at
-      FROM ${heartbeatRuns} r WHERE r.company_id = ${workspace.companyId} AND (
-        r.issue_id IN (SELECT id FROM tree) OR r.native_issue_id IN (SELECT id FROM tree)
-        OR r.issue_id IN (SELECT id FROM bound) OR r.native_issue_id IN (SELECT id FROM bound)
-        OR r.id IN (SELECT unnest(ARRAY[checkout_run_id, execution_run_id]) FROM bound)
-        OR EXISTS (
-          SELECT 1 FROM jsonb_to_record(
-            jsonb_path_query_first(r.context_snapshot, 'strict $ ? (@.type() == "object")')
-          ) context("issueId" text, "taskId" text, "executionWorkspaceId" text)
-          WHERE context."issueId" IN (SELECT id FROM legacy_issue_ids)
-            OR context."taskId" IN (SELECT id FROM legacy_issue_ids)
-            OR context."executionWorkspaceId" = ${workspace.id}
-        )
-      )
+      FROM ${heartbeatRuns} r WHERE r.company_id = ${workspace.companyId} AND r.id = ANY(ARRAY(
+        ${companyRuns} AND issue_id = ANY(ARRAY(SELECT id FROM tree UNION SELECT id FROM bound))
+        UNION ${companyRuns} AND native_issue_id = ANY(ARRAY(SELECT id FROM tree UNION SELECT id FROM bound))
+        UNION SELECT unnest(ARRAY[checkout_run_id, execution_run_id]) FROM bound
+        UNION ${companyRuns} AND (context_snapshot ->> 'issueId') = ANY(ARRAY(SELECT id::text FROM tree))
+        UNION ${companyRuns} AND (context_snapshot ->> 'taskId') = ANY(ARRAY(SELECT id::text FROM tree))
+        UNION ${companyRuns} AND context_snapshot ? 'executionWorkspaceId'
+          AND (context_snapshot ->> 'executionWorkspaceId') = ${workspace.id}
+      ))
     )`;
 }
 
@@ -166,7 +167,7 @@ export async function gitWorkspaceLastActivityAt(db: Db | Tx, workspace: Workspa
 
 export async function isGitWorkspaceExpirationEligible(tx: Tx, workspace: Workspace, now: Date, idleCutoff?: Date,
   options: { closedSiblingsAllowed?: boolean } = {}) {
-  if (workspace.metadata?.reopenPendingConsumption === true) return false;
+  if (workspace.metadata?.reopenPendingConsumption === true || workspace.metadata?.remoteWorkspaceMigration != null) return false;
   const siblingBlocks = options.closedSiblingsAllowed
     ? sql`AND (other.status NOT IN ('archived', 'cleanup_failed') OR other.closed_at IS NULL
         OR other.metadata->${TASK_DIRECTORY_RETENTION_KEY}->>'removed' = 'false')`
@@ -208,6 +209,10 @@ export async function isGitWorkspaceExpirationEligible(tx: Tx, workspace: Worksp
         AND (l.execution_workspace_id = ${workspace.id} OR l.heartbeat_run_id IN (SELECT id FROM relevant_runs))
         AND (l.status = 'pending_cleanup' OR l.cleanup_status = 'failed' OR l.metadata ? 'nativeWorkspaceExportResume'
           OR (l.released_at IS NULL AND NOT coalesce(l.status = 'retained' AND l.lease_policy = 'reuse_by_environment' AND l.cleanup_status = 'success', false))))
+      AND NOT EXISTS (SELECT 1 FROM ${workspaceOperations} o WHERE o.company_id = ${workspace.companyId}
+        AND o.execution_workspace_id = ${workspace.id} AND o.phase = 'remote_workspace_migration'
+        AND (o.status IN ('running', 'pending') OR o.metadata->>'uncertain' = 'true'
+          OR (o.status = 'failed' AND o.metadata ? 'lastFailure' AND o.metadata->'retiredSave' IS NULL)))
       AND NOT EXISTS (SELECT 1 FROM ${workspaceRuntimeServices} WHERE company_id = ${workspace.companyId}
         AND (execution_workspace_id = ${workspace.id} OR cwd = ${workspace.cwd}
           OR left(cwd, length(${workspace.cwd}) + 1) = ${workspace.cwd} || '/') AND status <> 'stopped')

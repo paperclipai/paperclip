@@ -99,6 +99,7 @@ impl HostRequest {
 }
 
 pub struct HostControl {
+    pub(crate) acpx_park_relaunch: bool,
     socket: UnixStream,
     input: Vec<u8>,
     receipts: BTreeMap<String, ([u8; 32], &'static str)>,
@@ -130,10 +131,16 @@ impl HostControl {
             .set_write_timeout(Some(Duration::from_secs(1)))
             .map_err(|_| failure())?;
         Ok(Self {
+            acpx_park_relaunch: false,
             socket,
             input: Vec::new(),
             receipts: BTreeMap::new(),
         })
+    }
+
+    pub fn with_acpx_park_relaunch(mut self) -> Self {
+        self.acpx_park_relaunch = true;
+        self
     }
 
     pub(crate) fn receive(

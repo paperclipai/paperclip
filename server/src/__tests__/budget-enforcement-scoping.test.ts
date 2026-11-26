@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { agents, budgetPolicies, budgetReservations, companies, costEvents, createDb, heartbeatRuns, projects, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -123,6 +124,21 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await f.exposure()).effectiveHeldCents).toBe(`${admitted * 60}.0000000`);
   });
 
+  it("locks the run row without reading its large snapshot or log columns", async () => {
+    const f = await fixture({ reservationCents: "10" });
+    const runId = await f.queuedRun();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: randomUUID(), payload: "x".repeat(65536) } })
+      .where(eq(heartbeatRuns.id, runId));
+    const queries: string[] = [];
+    const recorded = drizzle(db.$client, { schema: db._.fullSchema, logger: { logQuery: query => queries.push(query) } }) as unknown as Db;
+    await expect(reserveRunBudget(recorded, f.companyId, runId, f.projectId)).resolves.toMatchObject({ reused: false });
+    const runLock = queries.filter(query => /from "heartbeat_runs"/.test(query) && /for update/.test(query));
+    expect(runLock).toHaveLength(1);
+    const selected = runLock[0].slice(0, runLock[0].indexOf(' from "heartbeat_runs"')).replaceAll('"heartbeat_runs".', "");
+    expect([...selected.matchAll(/"(\w+)"/g)].map(match => match[1]).sort())
+      .toEqual(["agent_id", "company_id", "cost_accounted_at", "id", "native_issue_id", "result_json", "runtime_mode", "status", "usage_json"]);
+  });
+
   it("commits a budget release while dispatch waits for asynchronous lifecycle readiness", async () => {
     const f = await fixture();
     const worker = configureAgentLifecycle(db, {
@@ -236,21 +252,23 @@ const support = await getEmbeddedPostgresTestSupport();
     await expect(reserveRunBudget(db, f.companyId, await f.queuedRun(), otherProject.id)).resolves.toMatchObject({ reused: false });
   });
 
-  it("keeps missing-price terminal work held until accounting evidence arrives", async () => {
+  // Invariant 3: the missing price stays pending accounting debt, but it is
+  // exposure, never an admission gate.
+  it("keeps missing-price terminal accounting pending without holding new work", async () => {
     const f = await fixture();
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
-    expect(await budgetService(db).getInvocationBlock(f.companyId, f.agentId, { projectId: f.projectId })).not.toBeNull();
+    expect(await budgetService(db).getInvocationBlock(f.companyId, f.agentId, { projectId: f.projectId })).toBeNull();
     expect(await f.exposure()).toMatchObject({ pendingTerminalRunCount: 1, ledgerCents: "0.0000000", liveObservedCents: "0.0000000" });
     expect(await accountRunCost(db, f.runId)).toBe(false);
     expect((await f.readRun()).costAccountingPending).toBe(true);
     expect(await db.select().from(costEvents).where(and(eq(costEvents.companyId, f.companyId), eq(costEvents.heartbeatRunId, f.runId)))).toHaveLength(0);
   });
 
-  // Pending accounting holds admission only; it never places a budget hold.
-  it.each(["pre-provider release", "stale pending marker"])("releases the accounting admission hold after %s", async kind => {
+  // Pending accounting never places a budget hold or an admission gate.
+  it.each(["pre-provider release", "stale pending marker"])("settles pending accounting after %s without a hold", async kind => {
     const f = await fixture();
     await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
-    expect(await budgetService(db).getInvocationBlock(f.companyId, f.agentId, { projectId: f.projectId })).not.toBeNull();
+    expect(await budgetService(db).getInvocationBlock(f.companyId, f.agentId, { projectId: f.projectId })).toBeNull();
     await budgetService(db).evaluateAffectedScopes(f.companyId, f.agentId, f.projectId);
     await flushBudgetEvaluationWork(db);
     const [held] = await db.select().from(agents).where(eq(agents.id, f.agentId));

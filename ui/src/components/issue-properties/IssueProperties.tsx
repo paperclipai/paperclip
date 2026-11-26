@@ -1,3 +1,4 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 import { isLockedIssueStub } from "@/components/LockedIssueChip";
 import { IssuePullRequestLinks } from "../IssuePullRequestLinks";
 import { useIssueWorkProducts } from "../../hooks/useIssueWorkProducts";
@@ -32,13 +33,14 @@ import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { selectArtifactAttachments } from "@/lib/issue-artifacts";
-import { projectsApi } from "../../api/projects";
 import { useCompany } from "../../context/CompanyContext";
 import { useSidebar } from "../../context/SidebarContext";
 import { queryKeys } from "../../lib/queryKeys";
 import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, nativeTaskModelCatalogOptions } from "../../lib/native-model-catalog";
 import { buildCompanyUserInlineOptions, buildCompanyUserLabelMap, buildCompanyUserProfileMap, isAgentTaskTarget } from "../../lib/company-members";
 import { ISSUE_OVERRIDE_ADAPTER_TYPES, type IssueModelLane } from "../../lib/issue-assignee-overrides";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useCloudHarnessPolicy } from "@/hooks/useCloudHarnessPolicy";
 import { useProjectOrder } from "../../hooks/useProjectOrder";
 import {
   getRecentAssigneeIds,
@@ -452,8 +454,7 @@ export function IssueProperties({
     enabled: !!companyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(companyId!, { includeArchived: true }),
-    queryFn: () => projectsApi.list(companyId!, { includeArchived: true }),
+    ...companyProjectsQuery(companyId!, { includeArchived: true }),
     enabled: !!companyId,
   });
   const activeProjects = useMemo(
@@ -758,8 +759,11 @@ export function IssueProperties({
   const assigneeAdapterType = assignee?.adapterType ?? null;
   const assigneeAdapterOverrides = issue.assigneeAdapterOverrides ?? null;
   const showAssigneeAdapterOptions = assigneeAdapterOverrides !== null;
+  const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
   const supportsAssigneeOverrides = Boolean(
-    assigneeAdapterType && (ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType) || nativeCatalog),
+    assigneeAdapterType && (!cloud || harnessPolicy.isCloudHarnessAllowed(assigneeAdapterType, assignee?.adapterConfig))
+      && (ISSUE_OVERRIDE_ADAPTER_TYPES.has(assigneeAdapterType) || nativeCatalog),
   );
   const assigneeOverrideLane = overrideLane(assigneeAdapterOverrides);
   const assigneeOverrideAdapterConfig = asRecord(assigneeAdapterOverrides?.adapterConfig);
@@ -2717,6 +2721,10 @@ export function IssueProperties({
         {showScheduledRetryRow && scheduledRetry?.scheduledRetryReason === "workspace_busy" ? (
           <PropertyRow label="Workspace">
             <span className="text-sm text-muted-foreground">Waiting for workspace</span>
+          </PropertyRow>
+        ) : showScheduledRetryRow && scheduledRetry?.scheduledRetryReason === "environment_provider_wait" ? (
+          <PropertyRow label="Sandbox">
+            <span className="text-sm text-muted-foreground">Waiting for the provider</span>
           </PropertyRow>
         ) : showScheduledRetryRow && scheduledRetryContent ? (
           <PropertyPicker

@@ -7,6 +7,15 @@ function asEventDimension<T extends string>(value: RawDimension<T>): T {
   return value as T;
 }
 
+/**
+ * Emitted form of a private task reference. The default collector path always
+ * hashes it with `hashPrivateRef()`. Only a client whose transport declares
+ * `hashesPrivateRefs: false` (Paperclip Cloud direct delivery) emits the raw id.
+ */
+function emitPrivateRef(client: TelemetryClient, value: string): string {
+  return client.privateRefsHashed === false ? value : client.hashPrivateRef(value);
+}
+
 export function trackInstallStarted(client: TelemetryClient): void {
   client.track("install.started", {});
 }
@@ -28,6 +37,8 @@ export function trackCompanyImported(
     isPrivate: boolean;
   },
 ): void {
+  // A private source ref is customer content (for example a private repository
+  // name), not an identifier. It stays hashed on every path, Cloud included.
   const ref = dims.isPrivate ? client.hashPrivateRef(dims.sourceRef) : dims.sourceRef;
   client.track("company.imported", {
     source_type: asEventDimension(dims.sourceType),
@@ -120,7 +131,7 @@ export function trackAgentTaskCompleted(
     agent_id: dims.agentId,
     adapter_type: asEventDimension(dims.adapterType),
     ...(dims.model ? { model: dims.model } : {}),
-    ...(dims.taskId ? { task_id: client.hashPrivateRef(dims.taskId) } : {}),
+    ...(dims.taskId ? { task_id: emitPrivateRef(client, dims.taskId) } : {}),
   });
 }
 
@@ -137,6 +148,7 @@ export function trackAgentTaskRun(
     outputTokens?: number;
     cachedTokens?: number;
     taskId?: string;
+    failureCause?: RawDimension<EventDimensionsMap["agent.task_run"]["failure_cause"]>;
   },
 ): void {
   client.track("agent.task_run", {
@@ -149,7 +161,107 @@ export function trackAgentTaskRun(
     ...(dims.inputTokens === undefined ? {} : { input_tokens: dims.inputTokens }),
     ...(dims.outputTokens === undefined ? {} : { output_tokens: dims.outputTokens }),
     ...(dims.cachedTokens === undefined ? {} : { cached_tokens: dims.cachedTokens }),
-    ...(dims.taskId ? { task_id: client.hashPrivateRef(dims.taskId) } : {}),
+    ...(dims.taskId ? { task_id: emitPrivateRef(client, dims.taskId) } : {}),
+    ...(dims.failureCause ? { failure_cause: asEventDimension(dims.failureCause) } : {}),
+  });
+}
+
+export function trackModelConnected(
+  client: TelemetryClient,
+  dims: {
+    provider: RawDimension<EventDimensionsMap["model.connected"]["provider"]>;
+    connectionMethod: RawDimension<EventDimensionsMap["model.connected"]["connection_method"]>;
+    ownership: RawDimension<EventDimensionsMap["model.connected"]["ownership"]>;
+    routingKind?: RawDimension<EventDimensionsMap["model.connected"]["routing_kind"]> | null;
+    firstForCompany: boolean;
+  },
+): void {
+  client.track("model.connected", {
+    provider: asEventDimension(dims.provider),
+    connection_method: asEventDimension(dims.connectionMethod),
+    ownership: asEventDimension(dims.ownership),
+    ...(dims.routingKind ? { routing_kind: asEventDimension(dims.routingKind) } : {}),
+    first_for_company: dims.firstForCompany,
+  });
+}
+
+export function trackTaskCreated(
+  client: TelemetryClient,
+  dims: {
+    createdByKind: RawDimension<EventDimensionsMap["task.created"]["created_by_kind"]>;
+    isSubtask: boolean;
+  },
+): void {
+  client.track("task.created", {
+    created_by_kind: asEventDimension(dims.createdByKind),
+    is_subtask: dims.isSubtask,
+  });
+}
+
+export function trackTaskCompleted(
+  client: TelemetryClient,
+  dims: {
+    completedByKind: RawDimension<EventDimensionsMap["task.completed"]["completed_by_kind"]>;
+    isSubtask: boolean;
+  },
+): void {
+  client.track("task.completed", {
+    completed_by_kind: asEventDimension(dims.completedByKind),
+    is_subtask: dims.isSubtask,
+  });
+}
+
+export function trackTaskBlocked(
+  client: TelemetryClient,
+  dims: {
+    blockedReason: RawDimension<EventDimensionsMap["task.blocked"]["blocked_reason"]>;
+    blockedByKind: RawDimension<EventDimensionsMap["task.blocked"]["blocked_by_kind"]>;
+  },
+): void {
+  client.track("task.blocked", {
+    blocked_reason: asEventDimension(dims.blockedReason),
+    blocked_by_kind: asEventDimension(dims.blockedByKind),
+  });
+}
+
+export function trackPlanCreated(
+  client: TelemetryClient,
+  dims: {
+    createdByKind: RawDimension<EventDimensionsMap["plan.created"]["created_by_kind"]>;
+    atTaskCreation: boolean;
+  },
+): void {
+  client.track("plan.created", {
+    created_by_kind: asEventDimension(dims.createdByKind),
+    at_task_creation: dims.atTaskCreation,
+  });
+}
+
+export function trackPlanApproved(
+  client: TelemetryClient,
+  dims: {
+    approvedByKind: RawDimension<EventDimensionsMap["plan.approved"]["approved_by_kind"]>;
+    startsExecution: boolean;
+  },
+): void {
+  client.track("plan.approved", {
+    approved_by_kind: asEventDimension(dims.approvedByKind),
+    starts_execution: dims.startsExecution,
+  });
+}
+
+export function trackArtifactCreated(
+  client: TelemetryClient,
+  dims: {
+    artifactType: RawDimension<EventDimensionsMap["artifact.created"]["artifact_type"]>;
+    provider: RawDimension<EventDimensionsMap["artifact.created"]["provider"]>;
+    creationFlow: RawDimension<EventDimensionsMap["artifact.created"]["creation_flow"]>;
+  },
+): void {
+  client.track("artifact.created", {
+    artifact_type: asEventDimension(dims.artifactType),
+    provider: asEventDimension(dims.provider),
+    creation_flow: asEventDimension(dims.creationFlow),
   });
 }
 
@@ -162,6 +274,7 @@ export function trackConnectionCreated(
     setup_flow: RawDimension<EventDimensionsMap["connection.created"]["setup_flow"]>;
     status: RawDimension<EventDimensionsMap["connection.created"]["status"]>;
     enabled: boolean;
+    server_domain?: string;
   },
 ): void {
   client.track("connection.created", {
@@ -184,6 +297,7 @@ export function trackConnectionUpdated(
     status: RawDimension<EventDimensionsMap["connection.updated"]["status"]>;
     previous_enabled: boolean;
     enabled: boolean;
+    server_domain?: string;
   },
 ): void {
   client.track("connection.updated", {
@@ -204,6 +318,7 @@ export function trackConnectionInvoked(
     status: RawDimension<EventDimensionsMap["connection.invoked"]["status"]>;
     origin: RawDimension<EventDimensionsMap["connection.invoked"]["origin"]>;
     duration_seconds?: number;
+    server_domain?: string;
   },
 ): void {
   client.track("connection.invoked", {
@@ -211,6 +326,36 @@ export function trackConnectionInvoked(
     transport: asEventDimension(dims.transport),
     status: asEventDimension(dims.status),
     origin: asEventDimension(dims.origin),
+  });
+}
+
+export function trackConnectionAppLinked(
+  client: TelemetryClient,
+  dims: {
+    provider: RawDimension<EventDimensionsMap["connection.app_linked"]["provider"]>;
+    app: string;
+  },
+): void {
+  client.track("connection.app_linked", {
+    provider: asEventDimension(dims.provider),
+    app: dims.app,
+  });
+}
+
+export function trackConnectionAppRequested(
+  client: TelemetryClient,
+  dims: {
+    provider: RawDimension<EventDimensionsMap["connection.app_requested"]["provider"]>;
+    app: string;
+    origin: RawDimension<EventDimensionsMap["connection.app_requested"]["origin"]>;
+    outcome: RawDimension<EventDimensionsMap["connection.app_requested"]["outcome"]>;
+  },
+): void {
+  client.track("connection.app_requested", {
+    provider: asEventDimension(dims.provider),
+    app: dims.app,
+    origin: asEventDimension(dims.origin),
+    outcome: asEventDimension(dims.outcome),
   });
 }
 

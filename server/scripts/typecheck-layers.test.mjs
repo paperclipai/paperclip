@@ -8,8 +8,14 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { emitOnlyTscArgs, lowMemoryTscArgs, runTsc } from "../../scripts/run-tsc.mjs";
 import { STEPS, typecheckLowMemory } from "../../scripts/typecheck-low-memory.mjs";
-import { findServerSource, PREPARE_STEPS, PROJECTS, typecheckTestProjects } from "../../scripts/typecheck-test-projects.mjs";
-import { declarationsConfig, layerConfig, listSourceFiles, planLayers, readImports, typecheckLayers } from "./typecheck-layers.mjs";
+import {
+  findServerSource,
+  PREPARE_STEPS,
+  PROJECTS,
+  selectTestProjects,
+  typecheckTestProjects,
+} from "../../scripts/typecheck-test-projects.mjs";
+import { declarationsConfig, layerConfig, listLayers, listSourceFiles, planLayers, readImports, typecheckLayers } from "./typecheck-layers.mjs";
 
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourcesOf = (layers, name) => layers.find((layer) => layer.name === name)?.sourceFiles;
@@ -174,7 +180,12 @@ describe("layerConfig", () => {
       { emptyLayers: new Set(["cycle"]) },
     );
 
-    expect(config.compilerOptions).toMatchObject({ composite: false, noEmit: true });
+    expect(config.compilerOptions).toMatchObject({
+      composite: false,
+      incremental: true,
+      tsBuildInfoFile: "./tests.tsbuildinfo",
+      noEmit: true,
+    });
     expect(config.references).toEqual([{ path: "./tsconfig.below.json" }]);
   });
 });
@@ -189,7 +200,10 @@ describe("layerConfig for the test tree", () => {
     });
 
     expect(config.extends).toBe("../../../src/__tests__/tsconfig.json");
-    expect(config.compilerOptions).toBeUndefined();
+    expect(config.compilerOptions).toEqual({
+      incremental: true,
+      tsBuildInfoFile: "./test-tree-0.tsbuildinfo",
+    });
     expect(config.files).toEqual(["../../../src/__tests__/a.test.ts"]);
     expect(config.references).toEqual([{ path: "./tsconfig.below.json" }]);
   });
@@ -286,6 +300,73 @@ describe("typecheckLayers", () => {
     ]);
   });
 
+  it("checks one layer against the configs a declarations run left, without writing them again", () => {
+    const root = serverFixture();
+    const silent = { log: () => {}, logError: () => {}, run: () => ({ status: 0, signal: null }) };
+    expect(typecheckLayers({ serverRoot: root, layer: "tests", ...silent })).toBe(2);
+
+    expect(typecheckLayers({ serverRoot: root, declarationsOnly: true, ...silent })).toBe(0);
+    const output = path.join(root, "node_modules", ".cache", "paperclip-typecheck");
+    const marker = path.join(output, "dts", "marker.d.ts");
+    mkdirSync(path.dirname(marker), { recursive: true });
+    writeFileSync(marker, "");
+    const configs = [];
+    const status = typecheckLayers({
+      serverRoot: root,
+      layer: "tests",
+      log: () => {},
+      run: (args, { cwd }) => {
+        configs.push({ config: args[1], cwd });
+        return { status: 3, signal: null };
+      },
+    });
+
+    expect(status).toBe(3);
+    expect(configs).toEqual([{ config: path.join("node_modules", ".cache", "paperclip-typecheck", "tsconfig.tests.json"), cwd: root }]);
+    expect(existsSync(marker)).toBe(true);
+    expect(listLayers(root)).toEqual([
+      { name: "below", emitsDeclarations: true },
+      { name: "cycle", emitsDeclarations: true },
+      { name: "above", emitsDeclarations: true },
+      { name: "tests", emitsDeclarations: false },
+    ]);
+  });
+
+  it("passes --checkers to tsc for declaration layers and single-layer checks when requested", () => {
+    const root = serverFixture();
+    const declArgs = [];
+    expect(
+      typecheckLayers({
+        serverRoot: root,
+        declarationsOnly: true,
+        checkers: 2,
+        log: () => {},
+        run: (args) => {
+          declArgs.push(args);
+          return { status: 0, signal: null };
+        },
+      }),
+    ).toBe(0);
+    expect(declArgs.every((args) => args.slice(-2).join(" ") === "--checkers 2")).toBe(true);
+
+    const layerArgs = [];
+    expect(
+      typecheckLayers({
+        serverRoot: root,
+        layer: "tests",
+        checkers: 1,
+        log: () => {},
+        run: (args) => {
+          layerArgs.push(args);
+          return { status: 0, signal: null };
+        },
+      }),
+    ).toBe(0);
+    expect(layerArgs).toEqual([
+      ["-p", path.join("node_modules", ".cache", "paperclip-typecheck", "tsconfig.tests.json"), "--checkers", "1"],
+    ]);
+  });
+
   it("reports type errors from every layer", () => {
     const root = serverFixture();
     const configs = [];
@@ -318,6 +399,38 @@ describe("typecheckLayers", () => {
 
     expect(status).toBe(1);
     expect(configs).toHaveLength(1);
+  });
+
+  it.each([
+    ["SIGTERM", "below"],
+    ["SIGKILL", "cycle"],
+  ])("reports %s and the affected %s layer from a real compiler child", (signal, layer) => {
+    const root = serverFixture();
+    const bin = path.join(root, "node_modules", "typescript", "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(path.join(bin, "tsc"), `
+      const fs = require("node:fs");
+      fs.writeSync(1, "compiler stdout\\n");
+      fs.writeSync(2, "compiler stderr\\n");
+      if (process.argv[3].endsWith("tsconfig.${layer}.json")) {
+        process.kill(process.pid, ${JSON.stringify(signal)});
+      }
+    `);
+    const wrapper = new URL("./typecheck-layers.mjs", import.meta.url).href;
+
+    const result = spawnSync(process.execPath, ["--input-type=module", "-e", `
+      import { typecheckLayers } from ${JSON.stringify(wrapper)};
+      process.exitCode = typecheckLayers({ serverRoot: ${JSON.stringify(root)} });
+    `], { encoding: "utf8", timeout: 10_000 });
+
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.status).toBe(1);
+    expect(result.stdout).toContain("compiler stdout");
+    expect(result.stderr).toContain("compiler stderr");
+    expect(result.stderr).toContain(`typecheck:layers: ${layer}: compiler terminated by ${signal}`);
+    expect(result.stderr).toContain(`tsconfig.${layer}.json`);
+    expect(result.stdout).not.toContain("typecheck:layers: above");
   });
 });
 
@@ -780,6 +893,40 @@ describe("typecheckTestProjects", () => {
     expect(layered.references.map((reference) => path.resolve(directory, reference.path))).toEqual([
       path.join(serverRoot, "node_modules", ".cache", "paperclip-typecheck", "tsconfig.declarations.json"),
     ]);
+  });
+
+  it("forwards --checkers to tsc when checking test projects", () => {
+    const tscArgs = [];
+    const status = typecheckTestProjects({
+      root: repositoryFixture(),
+      projects: ["tests/a"],
+      reuseDeclarations: true,
+      checkers: 1,
+      log: () => {},
+      listFiles: () => ({ status: 0, files: [] }),
+      run: (args) => {
+        tscArgs.push(args);
+        return { status: 0, signal: null };
+      },
+    });
+    expect(status).toBe(0);
+    expect(tscArgs).toEqual([["-p", "tests/a/tsconfig.layers.json", "--checkers", "1"]]);
+  });
+
+  it("selectTestProjects skips untouched tests/* projects in PR mode and fails closed on global or unknown inputs", () => {
+    expect(selectTestProjects(null)).toEqual(PROJECTS);
+    expect(selectTestProjects(["tsconfig.base.json"])).toEqual(PROJECTS);
+    expect(selectTestProjects(["server/src/services/isolated-unreferenced-feature.ts"])).toEqual([]);
+    expect(selectTestProjects(["server/src/services/issues.ts"])).toContain("server/src/__tests__/helpers/maintenance");
+    expect(selectTestProjects(["server/src/services/issues.ts"])).toContain("tests/runner-e2e");
+    expect(selectTestProjects(["ui/src/lib/company-routes.ts"])).toEqual(["tests/runner-e2e"]);
+    expect(selectTestProjects(["ui/src/components/Sidebar.tsx"])).toEqual([]);
+    expect(selectTestProjects(["tests/restart-chaos/invariants.ts"])).toEqual(["tests/restart-chaos"]);
+    expect(selectTestProjects(["tests/lifecycle-baseline/authority.test.ts"])).toEqual(["tests/lifecycle-baseline"]);
+    expect(selectTestProjects(["tests/speko-native/app.ts"])).toEqual(["tests/speko-native"]);
+    expect(selectTestProjects(["tests/runner-e2e/catalog.ts"])).toEqual(["tests/e2e", "tests/restart-chaos", "tests/runner-e2e"]);
+    expect(selectTestProjects(["packages/shared/src/constants.ts"])).toEqual(PROJECTS);
+    expect(selectTestProjects(["ui/src/components/Sidebar.tsx"], ["tests/custom-new"])).toEqual(["tests/custom-new"]);
   });
 });
 

@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
 import { api } from "../api/client";
 import { McpConnectPage, McpDevicePage } from "./McpConnect";
+import { isBlockedFromReplay } from "@/lib/analytics/replay-recording.test-utils";
 
 const route = vi.hoisted(() => ({ id: "request-one", companyId: null as string | null, unavailable: false, canWrite: true, requestedWrite: true, requestedConfigure: false, agentConnection: false, requiresSignIn: false, clientName: "Assistant", clientOrigin: null as string | null, setupUrl: "https://my.paperclip.app/orgs/new", reverseCompanies: false, hideFirst: false }));
 vi.mock("@/lib/router", () => ({
@@ -47,6 +48,14 @@ function setup(device = false, agentPairingOnly = false) {
     cleanup: () => { flushSync(() => root.unmount()); container.remove(); client.clear(); },
   };
 }
+
+it("blocks the device code being confirmed from session replay", async () => {
+  const page = setup(true);
+  try {
+    await vi.waitFor(() => expect(page.container.textContent).toContain("Confirm this matches the code shown by your assistant"));
+    expect(isBlockedFromReplay("MIST-YPED", page.container)).toBe(true);
+  } finally { page.cleanup(); }
+});
 
 it("lets a person correct an invalid device code without reloading", async () => {
   vi.mocked(api.get).mockRejectedValueOnce(new Error("Invalid code"));

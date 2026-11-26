@@ -1,10 +1,14 @@
+import { JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
+import { isPluginWorkspaceReplay } from "../services/plugin-workspace-replay-context.js";
 import { createPluginWorkspaceFixture } from "./helpers/plugin-workspaces.js";
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
   subscribeDatabaseWork,
+  environmentLeases,
+  environments,
   executionWorkspaces,
   heartbeatRuns,
   issues,
@@ -13,12 +17,14 @@ import {
   pluginCompanySettings,
 } from "@paperclipai/db";
 import {
+  callWorkspaceProvider,
   preparePluginWorkspace,
   inspectPluginWorkspace,
   finalizePluginWorkspace,
   removePluginWorkspace,
   type WorkspaceWorkers,
 } from "../services/plugin-workspaces.js";
+import { verifyRetryWorkspace } from "../services/fresh-workspace-continuation.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { WorkspaceProviderFailureError } from "../services/workspace-provider-failure.js";
 import { findPluginWorkerUnavailableError, PluginWorkerUnavailableError } from "../services/plugin-worker-unavailable-error.js";
@@ -47,6 +53,193 @@ const support = await getEmbeddedPostgresTestSupport();
     });
     const fixture = (companyId?: string) =>
       createPluginWorkspaceFixture(db, companyId);
+    it.each(["ready", "lost_reply", "unconfirmed", "transport", "worker_lookup", "live_writer", "older_retained", "unsupported"] as const)(
+      "verifies the same checkout before choosing a fresh retry (%s)", async (state) => {
+        const f = await fixture();
+        const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+        if (state !== "unsupported") await db.update(plugins).set({ manifestJson: {
+          ...plugin.manifestJson, workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, workspaceVerificationVersion: 1 },
+        } }).where(eq(plugins.id, f.pluginId));
+        if (state === "lost_reply") {
+          f.lose();
+          await expect(preparePluginWorkspace(db, f.workers, f.input)).rejects.toThrow();
+        } else {
+          await preparePluginWorkspace(db, f.workers, f.input);
+        }
+        const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+        const workspaceId = task.executionWorkspaceId!;
+        await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+        if (state !== "lost_reply") await db.insert(environmentLeases).values({
+          companyId: f.companyId, issueId: f.issueId, heartbeatRunId: f.runId,
+          provider: "plugin:test:tasks", executionWorkspaceId: workspaceId, leasePolicy: "ephemeral",
+          status: state === "live_writer" ? "active" : "released",
+          releasedAt: state === "live_writer" ? null : new Date(),
+        });
+        if (state === "older_retained") {
+          const [older] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.input.agentId,
+            issueId: f.issueId, status: "succeeded", finishedAt: new Date() }).returning();
+          await db.insert(environmentLeases).values({
+            companyId: f.companyId, issueId: f.issueId, heartbeatRunId: older.id,
+            provider: "plugin:test:tasks", executionWorkspaceId: workspaceId, leasePolicy: "reuse_by_environment",
+            status: "retained", releasedAt: null,
+          });
+        }
+        const retryIntentId = randomUUID();
+        const [retry] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.input.agentId,
+          issueId: f.issueId, status: "running", contextSnapshot: { taskRetryRequestId: retryIntentId },
+        }).returning();
+        const fresh = { mode: "fresh_isolated_workspace" as const, retryIntentId, sourceRunId: f.runId, retainedSourceIds: [] };
+        const call = vi.fn<WorkspaceWorkers["call"]>(async (...args) => {
+          const result = await f.workers.call(...args) as { kind: string };
+          if (state === "transport") throw new Error("connection closed");
+          if (state === "unconfirmed") throw new JsonRpcCallError({
+            code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+            message: "checkout incomplete",
+            data: workspaceOperationErrorData(new PluginWorkspaceOperationError("binding_mismatch")),
+          });
+          return { ...result, created: false };
+        });
+        const workers: WorkspaceWorkers = {
+          getWorker: (pluginId) => {
+            if (state === "worker_lookup") throw new Error("worker lookup timed out");
+            const worker = f.workers.getWorker(pluginId);
+            return worker && { ...worker, supportedMethods: ["workspaceOperation", "workspacePrepare"] };
+          },
+          call,
+        };
+        const verificationStarted = Date.now();
+        const result = verifyRetryWorkspace(db, workers, retry, f.issueId, null, fresh);
+        if (state === "transport" || state === "worker_lookup") {
+          if (state === "transport") await expect(result).rejects.toMatchObject({ kind: "transport", retryable: true });
+          else await expect(result).rejects.toThrow("worker lookup timed out");
+          return;
+        }
+        const verified = state === "ready" || state === "lost_reply";
+        expect(await result).toEqual(verified
+          ? { mode: "reuse_issue_workspace", retryIntentId, sourceRunId: f.runId, workspaceId, cwd: null }
+          : fresh);
+        expect(f.calls.slice(1)).toHaveLength(["live_writer", "older_retained", "unsupported"].includes(state) ? 0 : 1);
+        if (f.calls.length > 1) {
+          expect(call).toHaveBeenCalledExactlyOnceWith(f.pluginId, "workspaceOperation", expect.objectContaining({
+            executionWorkspaceId: workspaceId, runId: retry.id, operation: expect.objectContaining({ verifyExisting: true }),
+          }), 12_000);
+          const deadline = Date.parse(f.calls[1].deadline);
+          expect(deadline).toBeGreaterThanOrEqual(verificationStarted + 10_000);
+          expect(deadline).toBeLessThanOrEqual(Date.now() + 10_000);
+        }
+        const [retained] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
+        expect(retained.providerRef).toBe(`checkout:${workspaceId}`);
+      });
+
+    it("sends the run's own-driver environment only to a provider that declares it", async () => {
+      const f = await fixture();
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      const declare = (workspaceEnvironmentVersion?: 1) => db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+        capabilities: [...plugin.manifestJson.capabilities, "environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", configSchema: { type: "object" }, supportsTasks: true }],
+        workspaceProvider: { ...plugin.manifestJson.workspaceProvider!, workspaceVerificationVersion: 1,
+          ...(workspaceEnvironmentVersion ? { workspaceEnvironmentVersion } : {}) },
+      } }).where(eq(plugins.id, f.pluginId));
+      await declare(1);
+      const [row] = await db.insert(environments).values({ name: `Snapshot tasks ${f.pluginId}`, driver: "plugin", status: "active",
+        config: { pluginKey: plugin.pluginKey, driverKey: "tasks", driverConfig: { snapshot: "base", cpu: 2 } } }).returning();
+      const environment = { ...row, driver: "plugin" as const };
+      const expected = { id: row.id, driverKey: "tasks", config: { snapshot: "base", cpu: 2 } };
+
+      const prepared = await preparePluginWorkspace(db, f.workers, { ...f.input, environment });
+      expect(f.calls).toHaveLength(1);
+      expect(f.calls[0].environment).toEqual(expected);
+      // Retry verification of the retained checkout carries the same environment.
+      await preparePluginWorkspace(db, f.workers, { ...f.input, environment, existingWorkspaceId: prepared!.id, verifyExisting: true });
+      expect(f.calls[1]).toMatchObject({ environment: expected, operation: { verifyExisting: true } });
+
+      const operation = f.calls[0].operation;
+      const send = async (selected: Parameters<typeof callWorkspaceProvider>[2]["environment"]) => {
+        await callWorkspaceProvider(db, f.workers, { workspace: prepared!, runId: f.runId, agentId: f.input.agentId,
+          environment: selected, operation });
+        return f.calls.at(-1)!;
+      };
+      const withEnvironment = await send(environment);
+      expect(withEnvironment.environment).toEqual(expected);
+      const without = await send(undefined);
+      expect(without).not.toHaveProperty("environment");
+      // The environment is context only; the operation identity does not change.
+      expect(withEnvironment.operationId).toBe(without.operationId);
+      expect(await send({ ...environment, config: { pluginKey: plugin.pluginKey, driverKey: "tasks" } }))
+        .toMatchObject({ environment: { id: row.id, driverKey: "tasks", config: {} } });
+      for (const omitted of [
+        { ...environment, config: { ...environment.config, pluginKey: "other.plugin" } },
+        { ...environment, config: { pluginKey: plugin.pluginKey, driverConfig: { snapshot: "base" } } },
+        { id: row.id, driver: "local" as const, config: {} },
+        { id: row.id, driver: "sandbox" as const, config: { provider: "e2b", pluginKey: plugin.pluginKey, driverKey: "tasks" } },
+        null,
+      ]) {
+        const request = await send(omitted);
+        expect(request).not.toHaveProperty("environment");
+        expect(request.operationId).toBe(without.operationId);
+      }
+
+      await declare();
+      const undeclared = await send(environment);
+      expect(undeclared).not.toHaveProperty("environment");
+      expect(undeclared.operationId).toBe(without.operationId);
+    });
+
+    it("polls bounded requests using the provider's advertised preparation deadline", async () => {
+      const f = await fixture();
+      const deadline = new Date(Date.now() + 30_000).toISOString();
+      const phases: string[] = [];
+      const workers = {
+        getWorker: () => ({ supportedMethods: ["workspaceOperation", "workspacePrepare"] }),
+        call: async (pluginId: string, method: string, params: any, timeout: number) => {
+          expect(method).toBe("workspacePrepare");
+          expect(timeout).toBeLessThanOrEqual(15_000);
+          phases.push(params.phase);
+          if (params.phase === "submit") return { kind: "pending", deadline };
+          expect(params.deadline).toBe(deadline);
+          if (phases.length === 2) throw new Error("lost status reply");
+          const { phase: _phase, ...original } = params;
+          return f.workers.call(pluginId, "workspaceOperation", original);
+        },
+      } as unknown as WorkspaceWorkers;
+      expect(await preparePluginWorkspace(db, workers, f.input)).toBeTruthy();
+      expect(phases).toEqual(["submit", "poll", "poll"]);
+      expect(f.calls).toHaveLength(1);
+    });
+
+    it("stops preparation at the provider deadline before issuing a poll", async () => {
+      const f = await fixture();
+      const workers = {
+        getWorker: () => ({ supportedMethods: ["workspaceOperation", "workspacePrepare"] }),
+        call: async (_pluginId: string, method: string, params: { phase: string }) => {
+          expect(method).toBe("workspacePrepare");
+          expect(params.phase).toBe("submit");
+          return { kind: "pending", deadline: new Date(Date.now() - 1).toISOString() };
+        },
+      } as unknown as WorkspaceWorkers;
+      await expect(preparePluginWorkspace(db, workers, f.input)).rejects.toMatchObject({
+        kind: "provider", reason: "deadline_exceeded", retryable: true,
+      });
+    });
+
+    it("rejects an oversized provider deadline before it can retain the workspace lifecycle lock", async () => {
+      const f = await fixture();
+      const workers = {
+        getWorker: () => ({ supportedMethods: ["workspaceOperation", "workspacePrepare"] }),
+        call: async (_pluginId: string, method: string, params: { phase: string }) => {
+          expect(method).toBe("workspacePrepare");
+          expect(params.phase).toBe("submit");
+          return { kind: "pending", deadline: "2099-01-01T00:00:00Z" };
+        },
+      } as unknown as WorkspaceWorkers;
+      await expect(preparePluginWorkspace(db, workers, f.input)).rejects.toMatchObject({
+        kind: "provider", reason: "unsupported_operation", retryable: false,
+      });
+      const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(task?.executionWorkspaceId).toBeTruthy();
+      expect(await preparePluginWorkspace(db, f.workers, { ...f.input, existingWorkspaceId: task!.executionWorkspaceId })).toBeTruthy();
+    });
+
     it.each([
       ["missing", undefined],
       ["stopped", { status: "stopped", supportedMethods: [] }],
@@ -439,9 +632,11 @@ const support = await getEmbeddedPostgresTestSupport();
           return call(...args);
         },
       } as unknown as WorkspaceWorkers;
+      let clock = Date.now();
       const svc = executionWorkspaceService(db, {
         pluginWorkerManager: workers,
         workspaceReaperCooldownDays: 0,
+        now: () => new Date(clock),
       });
       const sweep = () => svc.sweepTerminalWorkspaces(100);
       expect(await sweep()).toMatchObject({ cleanupFailed: 1 });
@@ -451,7 +646,10 @@ const support = await getEmbeddedPostgresTestSupport();
         .where(eq(executionWorkspaces.id, workspace!.id));
       expect(failed.status).toBe("cleanup_failed");
       expect(failed.metadata?.workspaceProviderRemoval).toBeUndefined();
-      expect(await svc.nextTerminalWorkspaceSweepAt()).not.toBeNull();
+      expect(failed.metadata?.terminalCleanupRetry).toMatchObject({ failures: 1, failure: { kind: "transport" },
+        retryAt: new Date(clock + 300_000).toISOString() });
+      expect(await sweep()).toMatchObject({ skippedBackoff: 1 });
+      clock += 300_000;
       await sweep();
       const [removed] = await db
         .select()
@@ -459,6 +657,7 @@ const support = await getEmbeddedPostgresTestSupport();
         .where(eq(executionWorkspaces.id, workspace!.id));
       expect(removed.metadata?.workspaceProviderRemoved).toBe(true);
       expect(removed.status).toBe("archived");
+      expect(removed.metadata).not.toHaveProperty("terminalCleanupRetry");
     });
     it("prepares a durable reference without a local checkout or agent allocation", async () => {
       const f = await fixture();
@@ -518,8 +717,8 @@ const support = await getEmbeddedPostgresTestSupport();
         inspectPluginWorkspace(db, f.workers, reservation),
       ).resolves.toMatchObject({ remotelyRecoverable: true });
       expect(f.calls[1]).toMatchObject({
-        runId: null,
-        agentId: null,
+        runId: f.runId,
+        agentId: f.input.agentId,
         operation: { kind: "prepare" },
       });
       expect(f.calls[1].operationId).toBe(f.calls[0].operationId);
@@ -528,6 +727,73 @@ const support = await getEmbeddedPostgresTestSupport();
         .from(executionWorkspaces)
         .where(eq(executionWorkspaces.id, reservation.id));
       expect(recorded.providerRef).not.toBeNull();
+    });
+    it.each(["inspect", "retry", "replacement"] as const)("recovers a lost Launcher prepare through %s", async (recovery) => {
+      const f = await fixture();
+      const [plugin] = await db.select().from(plugins).where(eq(plugins.id, f.pluginId));
+      await db.update(plugins).set({ manifestJson: { ...plugin.manifestJson,
+        capabilities: [...plugin.manifestJson.capabilities, "environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", configSchema: { type: "object" },
+          supportsTasks: true, sessionHandoffVersion: 1 }],
+      } }).where(eq(plugins.id, f.pluginId));
+      const [environment] = await db.insert(environments).values({ name: `Workspace Launcher ${f.pluginId}`, driver: "plugin",
+        status: "active", config: { pluginKey: plugin.pluginKey, driverKey: "tasks" } }).returning();
+      const taskLease = { environmentId: environment.id, driverKey: "tasks", providerLeaseId: randomUUID() };
+      const leaseId = randomUUID();
+      const input = { ...f.input, environment: { ...environment, driver: "plugin" as const },
+        acquireTaskLease: async () => ({ leaseId, taskLease }) };
+      let deleted = false;
+      const replacementTaskLease = { ...taskLease, providerLeaseId: randomUUID() };
+      const replacementWorkers = { ...f.workers, call: vi.fn<WorkspaceWorkers["call"]>(async (...args) => {
+        const request = args[2] as (typeof f.calls)[number];
+        if (deleted && request.taskLease?.providerLeaseId === taskLease.providerLeaseId)
+          throw new Error("Previous Launcher allocation is gone");
+        const result = await f.workers.call(...args) as { kind: string };
+        if (!deleted) throw new Error("Lost committed preparation result");
+        return { ...result, created: false } as never;
+      }) };
+      if (recovery !== "replacement") f.lose();
+      await expect(preparePluginWorkspace(db, recovery === "replacement" ? replacementWorkers : f.workers, input)).rejects.toThrow("incomplete");
+      const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      const [reservation] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
+      expect(reservation.providerRef).toBeNull();
+      expect(reservation.metadata?.workspaceProviderPreparationPlacement).toMatchObject({
+        generation: 0, runId: f.runId, agentId: f.input.agentId, taskLease,
+      });
+      if (recovery === "inspect") {
+        await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.runId));
+        const workers = { ...f.workers, call: vi.fn<WorkspaceWorkers["call"]>(async (...args) => {
+          const request = args[2] as (typeof f.calls)[number];
+          expect(isPluginWorkspaceReplay({
+            pluginId: f.pluginId, companyId: f.companyId, projectId: f.input.projectId,
+            projectWorkspaceId: f.input.projectWorkspaceId, executionWorkspaceId: reservation.id,
+          })).toBe(request.operation.kind === "prepare");
+          return f.workers.call(...args);
+        }) };
+        await expect(inspectPluginWorkspace(db, workers, reservation)).resolves.toMatchObject({ remotelyRecoverable: true });
+      } else if (recovery === "retry") {
+        await expect(preparePluginWorkspace(db, f.workers, { ...input, existingWorkspaceId: reservation.id })).resolves.toMatchObject({ id: reservation.id });
+      } else {
+        await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.runId));
+        const [nextRun] = await db.insert(heartbeatRuns).values({
+          companyId: f.companyId, issueId: f.issueId, agentId: f.input.agentId, status: "running",
+        }).returning();
+        deleted = true;
+        await expect(preparePluginWorkspace(db, replacementWorkers, {
+          ...input, runId: nextRun.id, existingWorkspaceId: reservation.id,
+          acquireTaskLease: async () => ({ leaseId: randomUUID(), taskLease: replacementTaskLease }),
+        })).resolves.toMatchObject({ id: reservation.id });
+        expect(replacementWorkers.call).toHaveBeenCalledTimes(2);
+        expect(f.calls[1]).toMatchObject({ runId: nextRun.id, agentId: f.input.agentId, taskLease: replacementTaskLease });
+        expect(f.calls[1].operationId).not.toBe(f.calls[0].operationId);
+      }
+      if (recovery !== "replacement") expect(f.calls[1]).toMatchObject({
+        runId: f.runId, agentId: f.input.agentId, taskLease, operationId: f.calls[0].operationId,
+      });
+      expect(f.calls[1].operation).toEqual(f.calls[0].operation);
+      const [prepared] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, reservation.id));
+      expect(prepared.providerRef).not.toBeNull();
+      expect(prepared.metadata?.workspaceProviderPreparationPlacement).toBeUndefined();
     });
     it("reconciles an unfinished reservation before applying PR-only cleanup eligibility", async () => {
       const f = await fixture();
@@ -584,7 +850,7 @@ const support = await getEmbeddedPostgresTestSupport();
         svc.update(f.input.projectId, {
           executionWorkspacePolicy: { storageProviderPluginId: null },
         }),
-      ).rejects.toThrow("stays attached");
+      ).rejects.toMatchObject({ status: 409, details: { code: "project_storage_locked" } });
       await expect(
         svc.updateWorkspace(f.input.projectId, f.input.projectWorkspaceId, {
           repoUrl: "https://github.com/example/other.git",
@@ -593,13 +859,23 @@ const support = await getEmbeddedPostgresTestSupport();
       await expect(
         svc.removeWorkspace(f.input.projectId, f.input.projectWorkspaceId),
       ).rejects.toThrow("repository source");
+      const placement = { generation: 0, runId: f.runId, agentId: f.input.agentId,
+        taskLease: { environmentId: randomUUID(), driverKey: "tasks", providerLeaseId: randomUUID() } };
+      await db.update(executionWorkspaces).set({
+        metadata: { ...workspace!.metadata, workspaceProviderPreparationPlacement: placement },
+      }).where(eq(executionWorkspaces.id, workspace!.id));
       const execution = executionWorkspaceService(db);
       const updated = await execution.update(workspace!.id, {
         metadata: {
           note: "caller edit",
           workspaceProvider: { workspaceRef: "foreign" },
+          workspaceProviderPreparationPlacement: { ...placement, runId: randomUUID() },
         },
       });
+      expect(updated!.metadata?.workspaceProviderPreparationPlacement).toBeUndefined();
+      const [saved] = await db.select({ metadata: executionWorkspaces.metadata })
+        .from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id));
+      expect(saved.metadata?.workspaceProviderPreparationPlacement).toEqual(placement);
       expect(updated!.metadata?.workspaceProvider).toEqual(
         workspace!.metadata?.workspaceProvider,
       );

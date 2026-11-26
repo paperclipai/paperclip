@@ -106,6 +106,8 @@ export function createOAuthDiscovery({ fetchRemoteHttpUrl, assertRemoteEndpointA
     );
     let clientIdMetadataDocumentSupported =
       metadata.client_id_metadata_document_supported === true;
+    let issParameterSupported = Boolean(authorizationUrl) &&
+      metadata.authorization_response_iss_parameter_supported === true;
     // A document that carries the authorization endpoint itself *is* the
     // authorization-server metadata, so its own `issuer` is the canonical one.
     // Otherwise this was protected-resource metadata and the issuer comes from
@@ -190,6 +192,7 @@ export function createOAuthDiscovery({ fetchRemoteHttpUrl, assertRemoteEndpointA
         clientIdMetadataDocumentSupported =
           authMetadata.client_id_metadata_document_supported === true;
       }
+      issParameterSupported ||= authMetadata.authorization_response_iss_parameter_supported === true;
       if (authorizationUrl && tokenUrl) break;
     }
     if (!authorizationUrl || !tokenUrl) return null;
@@ -207,6 +210,7 @@ export function createOAuthDiscovery({ fetchRemoteHttpUrl, assertRemoteEndpointA
       issuer,
       resource,
       clientIdMetadataDocumentSupported,
+      issParameterSupported,
     };
   }
 
@@ -317,6 +321,7 @@ export function createOAuthDiscovery({ fetchRemoteHttpUrl, assertRemoteEndpointA
         resource: configuredResource,
         clientIdMetadataDocumentSupported:
           oauth.clientIdMetadataDocumentSupported === true,
+        issParameterSupported: oauth.issParameterSupported === true,
       };
     }
 

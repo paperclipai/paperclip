@@ -41,6 +41,7 @@ import {
 } from "./board-send-draft";
 
 import { LegacyBoardSendNotice } from "./LegacyBoardSendNotice";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const providerNames: Record<ChatProvider, string> = {
   speko: "Speko",
@@ -121,15 +122,15 @@ const filePhaseLabels: Record<ChatFileTransferPhase, string> = {
 };
 
 export function useIssueChatBinding(companyId: string, issueId: string) {
-  const { enabled, githubEnabled } = useChatConnectorsEnabled();
-  const queryEnabled = (enabled || githubEnabled) && Boolean(companyId && issueId) && !issueId.startsWith("chat:");
+  const { enabled } = useChatConnectorsEnabled();
+  const queryEnabled = Boolean(companyId && issueId) && !issueId.startsWith("chat:");
   const query = useQuery({
     queryKey: ["issue-chat-binding", companyId, issueId],
     queryFn: () => chatEndpointsApi.getIssueBinding(issueId),
     enabled: queryEnabled,
   });
   return {
-    binding: queryEnabled && chatProviderVisible(query.data?.provider, enabled, githubEnabled) ? (query.data ?? null) : null,
+    binding: queryEnabled && chatProviderVisible(query.data?.provider, enabled) ? (query.data ?? null) : null,
     isLoading: queryEnabled && query.isLoading,
   };
 }
@@ -558,7 +559,7 @@ function ConnectedTaskComposer({
             <p className="font-medium">
               Connected to {providerNames[binding.provider]}
             </p>
-            <p className="truncate text-xs text-muted-foreground">
+            <p className={cn("truncate text-xs text-muted-foreground", ANALYTICS_MASK_CLASS)}>
               {binding.externalLabel} · {binding.provider === "slack"
                 ? "Messages you send here and agent replies are also posted to Slack."
                 : "Agent assignment is fixed for this external task."}

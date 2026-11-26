@@ -7,7 +7,19 @@ export type DeferredReceiptRecoveryOptions = {
   companyId?: string;
   requestId?: string;
   onError?: (error: unknown) => void;
+  onDeferredDeadline?: (at: number) => void;
 };
+
+const ASSIGNMENT_WAKE_REASON = "issue_assigned";
+
+export const assignmentWakePayloadSql =
+  sql`${agentWakeupRequests.payload}#>>'{_paperclipWakeContext,wakeReason}' = ${ASSIGNMENT_WAKE_REASON}`;
+
+export function isAssignmentWakePayload(payload: Record<string, unknown> | null | undefined): boolean {
+  const context = payload?._paperclipWakeContext;
+  return context !== null && typeof context === "object" && !Array.isArray(context)
+    && (context as Record<string, unknown>).wakeReason === ASSIGNMENT_WAKE_REASON;
+}
 
 function hint(scope: DeferredExecutionScope) {
   return JSON.stringify({ companyId: scope.companyId, requestId: scope.requestId });

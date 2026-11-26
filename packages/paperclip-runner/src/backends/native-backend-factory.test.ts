@@ -32,6 +32,7 @@ import {
   WORKSPACE,
 } from "../drivers/codex/codex-app-server-driver.test-support.js";
 import { createNativeSessionBackend } from "../index.js";
+import { NativeRunnerResumeStateUnavailableError, PROVIDER_SIDE_EFFECT_PENDING, PROVIDER_STATE_INCOMPATIBLE } from "../contracts/harness-driver.js";
 import { createCodexNativeSessionBackend, createRunnerdNativeSessionBackend } from "./codex-native-backend.js";
 import { createOpenCodeNativeSessionBackend } from "./opencode-native-backend.js";
 
@@ -407,6 +408,157 @@ describe("native backend factory", () => {
     if (recovered.recovered) await recovered.session!.close({ reason: "test complete" });
   });
 
+  // An abandoned remote workspace epoch is restored into a new sibling root
+  // under `.paperclip-workspaces`, while the follow-up inherits a checkpoint
+  // that names the old root. Resume there is impossible, and retrying cannot
+  // move the saved session: the runner reports provider state incompatible.
+  // The runtime then replaces the session when the checkpoint allows it, and
+  // otherwise ends the run with the permanent named code
+  // native_provider_state_incompatible, never a generic retryable failure.
+  it.each([
+    ["Codex", execution()],
+    ["ACPX Claude", acpxExecution("claude")],
+  ])("declines to recover a %s session saved under a moved remote workspace root", async (_label, input) => {
+    const { transport, factory, backend, snapshot } = movedRootRecovery(input);
+    const recovered = await backend.recoverSession!(snapshot as never, { signal: new AbortController().signal });
+    expect(recovered).toEqual({
+      recovered: false,
+      reason: "persisted session working directory is not the assigned remote workspace",
+      failureClass: PROVIDER_STATE_INCOMPATIBLE,
+    });
+    // No Runner or provider process is started for a session that cannot resume here.
+    expect(factory).not.toHaveBeenCalled();
+    expect(transport.calls).toEqual([]);
+  });
+
+  it.each([
+    ["an active turn", { activeTurnId: "turn-in-flight" }],
+    ["a pending runtime request", { pendingRuntimeRequests: [{ requestId: "request-1" }] }],
+  ])("stops a moved-root session that holds %s for reconciliation, never replacing it", async (_label, inFlight) => {
+    const { factory, backend, snapshot } = movedRootRecovery(acpxExecution("claude"));
+    await expect(backend.recoverSession!({ ...snapshot, ...inFlight } as never, { signal: new AbortController().signal }))
+      .resolves.toEqual({
+        recovered: false,
+        reason: "persisted session working directory is not the assigned remote workspace, and a provider turn or runtime request was in flight",
+        failureClass: PROVIDER_SIDE_EFFECT_PENDING,
+      });
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it("treats a moved-root active turn that already has a terminal record as finished", async () => {
+    const { factory, backend, snapshot } = movedRootRecovery(acpxExecution("claude"));
+    await expect(backend.recoverSession!({ ...snapshot, activeTurnId: "turn-1",
+      terminalTurns: [{ turnId: "turn-1", fingerprint: "{\"status\":\"completed\"}" }] } as never, { signal: new AbortController().signal }))
+      .resolves.toMatchObject({ recovered: false, failureClass: PROVIDER_STATE_INCOMPATIBLE });
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  // Staging class P ("PRP provider resume state is unavailable"): the previous
+  // run's result was accepted but its harness backup failed to save, and its
+  // per-turn sandbox was destroyed. The follow-up's new sandbox holds no Runner
+  // control-plane state for the saved session, so every resume reads the same
+  // empty state. That failure was untyped, so a governed-wait or same-session
+  // checkpoint ended in a generic interruption, and each new message resumed
+  // the same session and failed again.
+  describe("a Runner that has no saved state for the session", () => {
+    function statelessRecovery(input: NativeExecutionInputV1) {
+      const transport = new FakeCodexTransport();
+      transport.rejectMethods.set("initialize", new NativeRunnerResumeStateUnavailableError());
+      const backend = createNativeSessionBackend(input, {
+        codexTransportFactory: () => transport,
+        environment: { ...process.env, PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+      });
+      const snapshot = {
+        schema: "paperclip.native-session.v1", backendKind: "codex_app_server", driverKind: "codex_app_server",
+        sessionId: transport.threadId, providerSessionId: transport.providerSessionId, workingDirectory: WORKSPACE,
+        identity: { runId: "run", sessionId: "session", companyId: "company", issueId: "issue", agentId: "agent" },
+        activeTurnId: null, terminalTurns: [], pendingRuntimeRequests: [], lastCursor: null,
+      };
+      return { backend, snapshot };
+    }
+
+    it.each([
+      ["Codex", execution()],
+      ["OpenCode", opencodeExecution()],
+      ["ACPX Claude", acpxExecution("claude")],
+    ])("reports a %s session with nothing in flight as provider state incompatible", async (_label, input) => {
+      const { backend, snapshot } = statelessRecovery(input);
+      await expect(backend.recoverSession!(snapshot as never, { signal: new AbortController().signal }))
+        .resolves.toEqual({
+          recovered: false,
+          reason: expect.stringContaining("PRP provider resume state is unavailable"),
+          failureClass: PROVIDER_STATE_INCOMPATIBLE,
+          resumeStateUnavailable: true,
+        });
+    });
+
+    it("carries the transport's proof that a Runner exited before answering session.open", async () => {
+      const { snapshot } = statelessRecovery(execution());
+      const exited = new FakeCodexTransport();
+      exited.rejectMethods.set("initialize", new Error("runnerd exited while waiting for session.open"));
+      Object.assign(exited, { runnerExitConfirmed: () => true });
+      const proven = createNativeSessionBackend(execution(), {
+        codexTransportFactory: () => exited,
+        environment: { ...process.env, PAPERCLIP_WORKSPACE_CWD: WORKSPACE },
+      });
+      await expect(proven.recoverSession!(snapshot as never, { signal: new AbortController().signal }))
+        .resolves.toMatchObject({ recovered: false, reason: expect.stringContaining("runnerd exited while waiting for session.open"),
+          runnerExitConfirmed: true });
+    });
+
+    it.each([
+      ["an active turn", { activeTurnId: "turn-in-flight" }],
+      ["a pending runtime request", { pendingRuntimeRequests: [{ requestId: "request-1" }] }],
+    ])("leaves a session that holds %s unclassified", async (_label, inFlight) => {
+      const { backend, snapshot } = statelessRecovery(acpxExecution("claude"));
+      const recovered = await backend.recoverSession!({ ...snapshot, ...inFlight } as never, { signal: new AbortController().signal });
+      expect(recovered).toMatchObject({ recovered: false, reason: expect.stringContaining("PRP provider resume state is unavailable") });
+      expect(recovered).not.toHaveProperty("failureClass");
+      expect(recovered).not.toHaveProperty("resumeStateUnavailable");
+    });
+  });
+
+  it("names the agent generically when a remote Claude session opens outside its workspace", async () => {
+    const { factory, backend } = movedRootRecovery(acpxExecution("claude"));
+    const failure = await backend.openSession({
+      identity: { runId: "run", sessionId: "session", companyId: "company", issueId: "issue", agentId: "agent" },
+      workingDirectory: "/home/daytona/paperclip-workspace/.paperclip-workspaces/elsewhere",
+    }).catch((error: unknown) => error);
+    // A Claude run must not be told its working directory is a Codex one.
+    expect((failure as Error).message).toBe("Remote agent working directory does not match the assigned workspace");
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["a filesystem root", "/", "Agent working directory cannot be a filesystem root"],
+    ["an unnormalized path", "/home/daytona/../root", "normalized absolute path"],
+  ])("keeps refusing a saved session whose working directory is %s", async (_label, workingDirectory, message) => {
+    const { factory, backend, snapshot } = movedRootRecovery(acpxExecution("claude"));
+    await expect(backend.recoverSession!({ ...snapshot, workingDirectory } as never, { signal: new AbortController().signal }))
+      .rejects.toThrow(message);
+    expect(factory).not.toHaveBeenCalled();
+  });
+
+  function movedRootRecovery(input: NativeExecutionInputV1) {
+    const parent = "/home/daytona/paperclip-workspace/.paperclip-workspaces";
+    const workspaceId = "a5a34403-04fe-4e7e-97cf-d8f371a802a4";
+    const savedRoot = `${parent}/${workspaceId}-1-80214561-2151-4112-a43a-7d65f3071b56`;
+    const assignedRoot = `${parent}/${workspaceId}-5-ef79592c-6784-438f-8a17-9800dd2fa2fc`;
+    const transport = new FakeCodexTransport();
+    const factory = vi.fn(() => transport);
+    const backend = createNativeSessionBackend(input, {
+      codexTransportFactory: factory, workingDirectoryAuthority: "remote_runner",
+      environment: { PAPERCLIP_WORKSPACE_CWD: assignedRoot },
+    });
+    const snapshot = {
+      schema: "paperclip.native-session.v1", backendKind: "codex_app_server", driverKind: "codex_app_server",
+      sessionId: transport.threadId, providerSessionId: transport.providerSessionId, workingDirectory: savedRoot,
+      identity: { runId: "run", sessionId: "session", companyId: "company", issueId: "issue", agentId: "agent" },
+      activeTurnId: null, terminalTurns: [], pendingRuntimeRequests: [], lastCursor: null,
+    };
+    return { transport, factory, backend, snapshot };
+  }
+
   describe("runner-prepared launch working directory", () => {
     // The transport reports the prepared directory; it exists only on the VM.
     class PreparedLaunchTransport extends FakeCodexTransport {
@@ -473,7 +625,7 @@ describe("native backend factory", () => {
 
     it.each([
       ["thread read", { read: "/projects/other", resume: "/home/agent", reason: "provider read a different working directory" }],
-      ["thread resume", { read: "/home/agent", resume: "/projects/other", reason: "Error: Codex thread response changed the assigned working directory" }],
+      ["thread resume", { read: "/home/agent", resume: "/projects/other", reason: "Error: Provider thread response changed the assigned working directory" }],
     ])("does not recover when the %s reports another cwd", async (_label, cwds) => {
       const transport = new PreparedLaunchTransport(cwds.resume);
       transport.readResponse = { thread: { id: transport.threadId, sessionId: transport.providerSessionId, cwd: cwds.read, turns: [] } };
@@ -492,7 +644,7 @@ describe("native backend factory", () => {
         codexTransportFactory: () => new PreparedLaunchTransport("/home/agent"), workingDirectoryAuthority: "remote_runner", environment: {},
       });
       await expect(backend.openSession({ identity, workingDirectory: "/home/agent" }))
-        .rejects.toThrow("Remote Codex working directory requires an assigned workspace");
+        .rejects.toThrow("Remote agent working directory requires an assigned workspace");
     });
 
     it("does not allow prepared launch authority without runnerd", () => {
@@ -614,7 +766,7 @@ describe("native backend factory", () => {
     await expect(backend.descriptor()).resolves.toMatchObject({
       kind: "runner",
       name: "acpx_runtime",
-      version: "0.13.1",
+      version: "0.22.0",
       capabilities: {
         resume: true,
         interruption: true,
@@ -638,7 +790,7 @@ describe("native backend factory", () => {
 
       await expect(backend.descriptor()).resolves.toMatchObject({
         name: "acpx_runtime",
-        version: "0.13.1",
+        version: "0.22.0",
         capabilities: {
           steering: false,
           resume: true,
@@ -664,7 +816,7 @@ describe("native backend factory", () => {
     const backend = createNativeSessionBackend(input, {
       codexTransportFactory: () => { throw new Error("descriptor must not launch the transport"); },
     });
-    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
+    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.22.0" });
   });
 
   it.each(["claude" as const])(
@@ -676,7 +828,7 @@ describe("native backend factory", () => {
 
       await expect(backend.descriptor()).resolves.toMatchObject({
         name: "acpx_runtime",
-        version: "0.13.1",
+        version: "0.22.0",
       });
     },
   );
@@ -687,7 +839,7 @@ describe("native backend factory", () => {
     const profile = resolveQualifiedAcpxProfile("pi", "custom/explicit-test-model");
     Object.assign(input.provider, { agent: "pi", model: profile.qualificationModel, piThinkingLevel: "low", profile });
     const backend = createNativeSessionBackend(input, { acpxRuntimeDirectory: "/runtime" });
-    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.13.1" });
+    await expect(backend.descriptor()).resolves.toMatchObject({ name: "acpx_runtime", version: "0.22.0" });
   });
 
   it.each(["copilot"] as const)("rejects unqualified %s direct execution even with an exact persisted profile", agent => {
