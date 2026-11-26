@@ -29,8 +29,17 @@ const SENSITIVE_HOST_HOME_DIRECTORIES = [
   ".ssh",
 ] as const;
 
+/**
+ * Which party chooses and admits the provider working directory.
+ *
+ * - `local_filesystem`: Core supplies the directory and checks it locally.
+ * - `remote_runner`: Core supplies the remote directory; runnerd checks it.
+ * - `runner_prepared_launch`: the execution environment resolves the
+ *   directory while preparing the launch, and runnerd checks it. Core only
+ *   records the directory that the prepared launch reports.
+ */
 export type CodexWorkingDirectoryAuthority =
-  "local_filesystem" | "remote_runner";
+  "local_filesystem" | "remote_runner" | "runner_prepared_launch";
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -44,34 +53,37 @@ export function validateCodexWorkingDirectory(
   authority: CodexWorkingDirectoryAuthority = "local_filesystem",
 ): string {
   if (workingDirectory.trim().length === 0) {
-    throw new Error("Codex working directory is required");
+    throw new Error("Agent working directory is required");
   }
   if (authority === "remote_runner") {
     return validateRemoteRunnerWorkingDirectory(workingDirectory, environment);
+  }
+  if (authority === "runner_prepared_launch") {
+    return validatePreparedLaunchWorkingDirectory(workingDirectory);
   }
   const requested = resolve(workingDirectory);
   let resolved: string;
   try {
     resolved = realpathSync.native(requested);
     if (!statSync(resolved).isDirectory()) {
-      throw new Error("Codex working directory must be a directory");
+      throw new Error("Agent working directory must be a directory");
     }
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") {
       throw new Error(
-        "Codex working directory must exist before provider admission",
+        "Agent working directory must exist before provider admission",
       );
     }
     throw error;
   }
   if (resolved === parse(resolved).root) {
-    throw new Error("Codex working directory cannot be a filesystem root");
+    throw new Error("Agent working directory cannot be a filesystem root");
   }
   const configuredRoot = environment.PAPERCLIP_WORKSPACE_CWD;
   const hostHome = canonicalConfiguredPath(environment.HOME);
   if (hostHome && pathContains(resolved, hostHome)) {
-    throw new Error("Codex working directory cannot contain the host HOME");
+    throw new Error("Agent working directory cannot contain the host HOME");
   }
   if (
     hostHome &&
@@ -80,7 +92,7 @@ export function validateCodexWorkingDirectory(
     )
   ) {
     throw new Error(
-      "Codex working directory cannot overlap sensitive host HOME state",
+      "Agent working directory cannot overlap sensitive host HOME state",
     );
   }
   if (
@@ -89,7 +101,7 @@ export function validateCodexWorkingDirectory(
     (configuredRoot === undefined || configuredRoot.trim().length === 0)
   ) {
     throw new Error(
-      "Codex working directory inside the host HOME requires an assigned workspace",
+      "Agent working directory inside the host HOME requires an assigned workspace",
     );
   }
   const codexHome = canonicalConfiguredPath(environment.CODEX_HOME);
@@ -98,7 +110,7 @@ export function validateCodexWorkingDirectory(
       pathContains(resolved, codexHome) ||
       pathContains(codexHome, resolved)
     ) {
-      throw new Error("Codex working directory cannot overlap host CODEX_HOME");
+      throw new Error("Agent working directory cannot overlap host CODEX_HOME");
     }
   }
   if (configuredRoot !== undefined && configuredRoot.trim().length > 0) {
@@ -110,33 +122,111 @@ export function validateCodexWorkingDirectory(
       isAbsolute(pathFromRoot)
     ) {
       throw new Error(
-        "Codex working directory is outside the assigned workspace",
+        "Agent working directory is outside the assigned workspace",
       );
     }
   }
   return resolved;
 }
 
+function isNormalizedRemotePath(path: string): boolean {
+  return (
+    posix.isAbsolute(path) &&
+    posix.normalize(path) === path &&
+    !/[\u0000-\u001f\u007f]/u.test(path)
+  );
+}
+
+/**
+ * Check the shape of a directory resolved by an execution environment. The
+ * directory exists only on the runner filesystem, so runnerd checks its
+ * existence and type before the provider starts.
+ */
+export function validatePreparedLaunchWorkingDirectory(
+  workingDirectory: unknown,
+): string {
+  if (
+    typeof workingDirectory !== "string" ||
+    !isNormalizedRemotePath(workingDirectory)
+  ) {
+    throw new Error(
+      "Prepared launch working directory must be a normalized absolute path",
+    );
+  }
+  if (workingDirectory === posix.parse(workingDirectory).root) {
+    throw new Error("Agent working directory cannot be a filesystem root");
+  }
+  return workingDirectory;
+}
+
+/**
+ * Resolve the directory a thread response reports. Core-assigned directories
+ * must come back unchanged. A prepared launch must report its directory, and
+ * recovery must report the directory that the session already recorded.
+ */
+export function codexThreadWorkingDirectory(
+  reported: unknown,
+  expected: string | null,
+  authority: CodexWorkingDirectoryAuthority = "local_filesystem",
+): string {
+  if (authority !== "runner_prepared_launch") {
+    if (expected === null) throw new Error("Agent working directory is required");
+    const returned = typeof reported === "string" ? reported : expected;
+    if (resolve(returned) !== expected) {
+      throw new Error("Provider thread response changed the assigned working directory");
+    }
+    return expected;
+  }
+  if (reported === undefined) {
+    throw new Error("Prepared launch did not report its provider working directory");
+  }
+  const returned = validatePreparedLaunchWorkingDirectory(reported);
+  if (expected !== null && returned !== expected) {
+    throw new Error("Provider thread response changed the assigned working directory");
+  }
+  return returned;
+}
+
+/**
+ * Whether a saved session names a remote workspace root other than the one
+ * Core assigned to this run. A workspace epoch that was abandoned (for example
+ * after a restart killed its preparation) is restored into a new sibling root,
+ * so a session saved under the old root cannot resume here. That is an
+ * ordinary resume failure, not an invalid admission: both paths are
+ * well-formed and only differ. Malformed paths and a missing assignment are
+ * still refused by validateCodexWorkingDirectory.
+ */
+export function remoteRunnerWorkingDirectoryMoved(
+  savedWorkingDirectory: string,
+  environment: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const assigned = environment.PAPERCLIP_WORKSPACE_CWD?.trim();
+  return Boolean(
+    assigned &&
+      isNormalizedRemotePath(assigned) &&
+      assigned !== posix.parse(assigned).root &&
+      isNormalizedRemotePath(savedWorkingDirectory) &&
+      savedWorkingDirectory !== posix.parse(savedWorkingDirectory).root &&
+      savedWorkingDirectory !== assigned,
+  );
+}
+
 function validateRemoteRunnerWorkingDirectory(
   workingDirectory: string,
   environment: NodeJS.ProcessEnv,
 ): string {
-  if (
-    !posix.isAbsolute(workingDirectory) ||
-    posix.normalize(workingDirectory) !== workingDirectory ||
-    /[\u0000-\u001f\u007f]/u.test(workingDirectory)
-  ) {
+  if (!isNormalizedRemotePath(workingDirectory)) {
     throw new Error(
-      "Remote Codex working directory must be a normalized absolute path",
+      "Remote agent working directory must be a normalized absolute path",
     );
   }
   if (workingDirectory === posix.parse(workingDirectory).root) {
-    throw new Error("Codex working directory cannot be a filesystem root");
+    throw new Error("Agent working directory cannot be a filesystem root");
   }
   const configuredRoot = environment.PAPERCLIP_WORKSPACE_CWD?.trim();
   if (!configuredRoot) {
     throw new Error(
-      "Remote Codex working directory requires an assigned workspace",
+      "Remote agent working directory requires an assigned workspace",
     );
   }
   if (
@@ -152,7 +242,7 @@ function validateRemoteRunnerWorkingDirectory(
   // canonical identity inside the authoritative filesystem before launch.
   if (workingDirectory !== configuredRoot) {
     throw new Error(
-      "Remote Codex working directory does not match the assigned workspace",
+      "Remote agent working directory does not match the assigned workspace",
     );
   }
   return workingDirectory;
@@ -259,12 +349,16 @@ export function codexToolAcceptsDisposition(
 export function codexToolAcceptsResult(
   tool: string,
   result: PrpStructuredRunResult,
+  serverResolvedContinuation = false,
 ): boolean {
   if (!codexToolAcceptsDisposition(tool, result.reportedWorkDisposition)) {
     return false;
   }
   return result.reportedWorkDisposition !== "yielded"
-    || result.continuation?.kind === "response_wake";
+    || result.continuation?.kind === "response_wake"
+    || result.continuation?.kind === "monitor"
+    || result.continuation?.kind === "case_handoff"
+    || (serverResolvedContinuation && result.continuation?.kind === "same_agent");
 }
 
 export function redactCodexValue(value: unknown, depth = 0): unknown {

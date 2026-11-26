@@ -1,5 +1,8 @@
+import { useWorkspaceBaseRefRecovery, useWorkspaceRetry } from "@/components/WorkspaceBaseRefRecovery";
+import { WorkspaceBaseRefRecoveryNotice } from "@/components/WorkspaceBaseRefRecoveryNotice";
 import { DispositionRecoveryNotice, useDispositionRecoverySnapshot } from "@/components/DispositionRecoveryNotice";
 import { useId, useState } from "react";
+import { useProviderLimitMessage } from "@/hooks/useProviderLimitMessage";
 import {
   ChevronDown,
   CircleCheck,
@@ -20,6 +23,7 @@ import { humanizeSystemNotice } from "@/lib/system-notice-humanizer";
 import { mapCommentMetadataToSystemNoticeSections } from "@/lib/system-notice-comment";
 import { timeAgo } from "@/lib/timeAgo";
 import type { TaskChatMessageItem } from "./task-chat-model";
+import { isNoLiveExecutionPathNotice } from "./adjacent-errors";
 
 const TONE_ICON: Record<SystemNoticeTone, LucideIcon> = {
   neutral: Info,
@@ -56,11 +60,14 @@ export function TaskChatSystemNotice({
   tryAgainNoLiveExecutionPathPending?: boolean;
 }) {
   const recoverySnapshot = useDispositionRecoverySnapshot(item.metadata);
+  const branchRecovery = useWorkspaceBaseRefRecovery(item.metadata);
+  const workspaceRetry = useWorkspaceRetry(item.metadata);
   const streamlined = useStreamlinedTaskChatPresentation();
   const [open, setOpen] = useState(Boolean(item.presentation?.detailsDefaultOpen));
   const detailsId = useId();
+  const body = useProviderLimitMessage(item.text);
   const { title, tone, detail } = humanizeSystemNotice({
-    body: item.text,
+    body,
     presentation: item.presentation,
   });
   const sections = mapCommentMetadataToSystemNoticeSections(item.metadata, {
@@ -75,14 +82,16 @@ export function TaskChatSystemNotice({
   const relative = item.createdAtIso ? timeAgo(item.createdAtIso) : undefined;
   const showTryAgain =
     Boolean(onTryAgainNoLiveExecutionPath) &&
-    (item.presentation?.title?.trim() === "No live execution path" ||
-      item.text.toLowerCase().includes("no live execution path"));
+    isNoLiveExecutionPathNotice(item);
   const handleTryAgain = () => {
     void Promise.resolve()
       .then(() => onTryAgainNoLiveExecutionPath?.())
       // The parent mutation owns visible error feedback.
       .catch(() => undefined);
   };
+
+  if (item.author === "system" && workspaceRetry) return null;
+  if (item.author === "system" && branchRecovery) return <WorkspaceBaseRefRecoveryNotice key={`${branchRecovery.actionId}:${branchRecovery.runId}`} {...branchRecovery.props} />;
 
   if (item.author === "system" && recoverySnapshot) {
     return <DispositionRecoveryNotice snapshot={recoverySnapshot} createdAt={item.createdAtIso} defaultExpanded={item.presentation?.detailsDefaultOpen} />;
@@ -111,7 +120,7 @@ export function TaskChatSystemNotice({
           <ToneIcon className={cn("h-3.5 w-3.5 shrink-0", TONE_ICON_CLASS[tone])} aria-hidden />
           <span className="truncate font-medium">{title}</span>
           {detail ? <span className="hidden truncate sm:inline">· {detail}</span> : null}
-          {relative ? <span className="shrink-0 text-muted-foreground/70">· {relative}</span> : null}
+          {relative ? <span className="shrink-0 text-muted-foreground">· {relative}</span> : null}
           <ChevronDown
             className={cn("tc-notice-chevron h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-180")}
             aria-hidden
@@ -139,7 +148,7 @@ export function TaskChatSystemNotice({
           {showBody ? (
             <div className="px-3 py-2.5 text-foreground/90">
               <MarkdownBody softBreaks linkIssueReferences>
-                {item.text}
+                {body}
               </MarkdownBody>
             </div>
           ) : null}

@@ -1,9 +1,11 @@
 import { redactCommandText } from "@paperclipai/adapter-utils";
-import { isPublicExecutorToolSelector } from "@paperclipai/adapter-utils/command-redaction";
+import { isPublicExecutorToolSelector, looksLikeCredentialJwt } from "@paperclipai/adapter-utils/command-redaction";
+import { looksLikeCredentialToken } from "@paperclipai/shared";
 
-const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)[A-Za-z0-9_-]*`;
+const SECRET_FIELD_NAME_PATTERN = String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|token|authorization(?:[-_]?code)?|bearer|secrets?|passwd|passwords?|credentials?|jwt|private[-_]?key|cookie|connectionstring|browser[-_]?code|login[-_]?url)(?:[-_]?(?:value|header|prod(?:uction)?|dev(?:elopment)?|test|staging|primary|secondary))*`;
+const SECRET_FIELD_NAME_START = String.raw`(?<![A-Za-z0-9_-])`;
 
-const SECRET_PAYLOAD_KEY_RE = new RegExp(SECRET_FIELD_NAME_PATTERN, "i");
+const SECRET_PAYLOAD_KEY_RE = new RegExp(`^(?:${SECRET_FIELD_NAME_PATTERN})(?:_plain|_ref)?$`, "i");
 // Authorization reasons are policy decision codes, not credentials. They must
 // remain visible in audit receipts even though the field name contains
 // "authorization". JWT-shaped values are still caught by the value guard below.
@@ -44,16 +46,13 @@ function isAuditCountField(key: string, value: unknown): boolean {
 const COMMAND_PAYLOAD_KEY_RE =
   /(^command$|^cmd$|command[-_]?line|resolved[-_]?command|PAPERCLIP_RESOLVED_COMMAND)/i;
 const COMMAND_ARGS_PAYLOAD_KEY_RE = /^(commandArgs|command_?args|argv)$/i;
-const JWT_VALUE_RE =
-  /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)?$/;
-// Durable protocol schema identifiers share JWT's broad dotted shape but are
-// public discriminators, not credentials. Exempt the Paperclip schema
-// namespace only in fields that actually declare a schema; the same value in
-// arbitrary provider data remains subject to the fail-closed JWT guard.
+// Public protocol discriminators are retained verbatim. A dotted identifier
+// alone is not a credential; JWT detection requires an encoded JSON header.
 const PAPERCLIP_SCHEMA_FIELDS = new Set(["schema", "runtimeSchema"]);
 export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.artifact.generated.v1",
   "paperclip.artifact.viewed.v1",
+  "paperclip.auth.credentials.updated.v1",
   "paperclip.capability-discovery.v1",
   "paperclip.capability.authorization-record.v1",
   "paperclip.capability.control-plane.v1",
@@ -92,6 +91,11 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.native-execution-input.v2",
   "paperclip.native-execution-input.v3",
   "paperclip.native-execution-input.v4",
+  "paperclip.native-execution-input.v5",
+  "paperclip.native-execution-input.v7",
+  "paperclip.native-execution-input.v8",
+  "paperclip.native-execution-input.v9",
+  "paperclip.native-execution-input.v10",
   "paperclip.native-finalization.v1",
   "paperclip.native-finalization.v2",
   "paperclip.native-harness-backup-stamp.v1",
@@ -99,6 +103,7 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.native-harness-backup.v1",
   "paperclip.native-model-envelope.v1",
   "paperclip.native-model-envelope.v2",
+  "paperclip.native-model-envelope.v3",
   "paperclip.native-session-scope.v2",
   "paperclip.native-session-supervisor.v1",
   "paperclip.plan.updated.v1",
@@ -139,6 +144,7 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.runner.conformance.fixture.v1",
   "paperclip.runner.conformance.output.v1",
   "paperclip.runner.durable.control-plane-state.v1",
+  "paperclip.runner.durable.control-plane-state.v2",
   "paperclip.runner.durable.diagnostics.v1",
   "paperclip.runner.durable.state.v1",
   "paperclip.runner.durable.trace.v1",
@@ -215,11 +221,14 @@ export const PRP_V1_EVENT_TYPES = new Set([
   "workspace.change.updated",
   "workspace.diff.recorded",
   "workspace.file.referenced",
+  "auth.credentials.updated",
+  "runtime.activity.recorded",
   "harness.starting",
   "harness.ready",
   "harness.exited",
   "harness.diagnostic",
   "plan.updated",
+  "plan.proposed",
   "tool.execution.started",
   "tool.execution.progressed",
   "tool.execution.completed",
@@ -326,13 +335,26 @@ const NATIVE_RUN_SPAN_NAMES = new Set([
   "native.result.finalize",
   "native.session.execute",
   "provider.session.continuity_break",
+  "provider.session.load",
   "provider.session.resume",
   "provider.time_to_first_agent_event",
   "provider.turn.queue",
   "question_response.to_run_created",
+  "harness_state.inspect",
+  "harness_state.path_check",
+  "harness_state.launch_material",
+  "provider_pack.select",
+  "provider_pack.discover",
+  "provider_pack.verify",
+  "provider_pack.verify_preinstalled",
+  "provider_pack.verify_uploaded",
+  "provider_pack.link_preinstalled",
+  "provider_pack.clear_stale",
+  "provider_pack.upload",
   "runner.artifact.discover",
   "runner.artifact.prepare",
   "runner.prp.authenticate",
+  "runner.process.launch",
   "runner.prp.route.register",
   "runner.runtime.stage",
   "runner.session.bootstrap",
@@ -343,7 +365,9 @@ const NATIVE_RUN_SPAN_NAMES = new Set([
   "runner.turn.submit",
   "task.prepare",
   "task.run",
+  "task.provider_session",
   "task.run.measured",
+  "task.provider_session.measured",
   "task.settle",
 ]);
 const CLI_SECRET_FLAG_RE = new RegExp(
@@ -351,13 +375,13 @@ const CLI_SECRET_FLAG_RE = new RegExp(
   "i",
 );
 const JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:"|')?${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` +
+  String.raw`((?:"|')?${SECRET_FIELD_NAME_START}${SECRET_FIELD_NAME_PATTERN}(?:"|')?\s*:\s*(?:"|'))[^"'` +
     "`" +
     String.raw`\r\n]+((?:"|'))`,
   "gi",
 );
 const ESCAPED_JSON_SECRET_FIELD_TEXT_RE = new RegExp(
-  String.raw`((?:\\")?${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
+  String.raw`((?:\\")?${SECRET_FIELD_NAME_START}${SECRET_FIELD_NAME_PATTERN}(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))`,
   "gi",
 );
 const SECRET_TEXT_HINTS = [
@@ -374,11 +398,25 @@ const SECRET_TEXT_HINTS = [
   "cookie",
   "connectionstring",
   "sk-",
+  "sk_live_",
+  "sk_test_",
+  "rk_live_",
+  "rk_test_",
   "ghp_",
   "gho_",
   "ghu_",
   "ghs_",
   "ghr_",
+  "github_pat_",
+  "xoxb-",
+  "xoxp-",
+  "xoxa-",
+  "xoxr-",
+  "xoxs-",
+  "akia",
+  "asia",
+  "aiza",
+  "glpat-",
 ] as const;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
 
@@ -648,7 +686,7 @@ function authorizationCredentialRange(
 function redactAuthorizationCredentials(input: string): string {
   // Include compound diagnostic labels such as proxyAuthorization while the
   // value parser still requires a Basic/Bearer scheme before redacting.
-  const authorizationWord = /\b[A-Za-z0-9_-]*Authorization[A-Za-z0-9_-]*\b/gi;
+  const authorizationWord = /(?<![A-Za-z0-9_-])[A-Za-z0-9_-]*Authorization[A-Za-z0-9_-]*\b/gi;
   const parts: string[] = [];
   let copiedThrough = 0;
   let match: RegExpExecArray | null;
@@ -710,6 +748,10 @@ function redactStandaloneBearerCredentials(input: string): string {
       }
     }
 
+    const candidate = input.slice(credentialStart, end);
+    // Preserve known authentication terms after bearer, unless explicitly quoted.
+    // Named Authorization fields are already handled independently above.
+    if (/^(?:tokens?|authentication|authorization|credentials?|schemes?|flows?)[.,;:!?]?$/i.test(candidate)) continue;
     if (credentialStart < copiedThrough) continue;
     parts.push(input.slice(copiedThrough, credentialStart), replacement);
     copiedThrough = end;
@@ -736,7 +778,7 @@ function sanitizeValue(value: unknown): unknown {
   // string leaf after validated protocol discriminators have had a chance to
   // opt in above in sanitizeRecord.
   if (typeof value === "string") {
-    return JWT_VALUE_RE.test(value) && !isPublicExecutorToolSelector(value)
+    return looksLikeCredentialJwt(value) && !isPublicExecutorToolSelector(value)
       ? REDACTED_EVENT_VALUE
       : redactSensitiveText(value);
   }
@@ -876,11 +918,56 @@ function isPaperclipSchemaDiscriminator(
   );
 }
 
+function isCredentialShapedObjectKey(key: string): boolean {
+  if (looksLikeCredentialToken(key)) return true;
+  if (key.startsWith("access.") && looksLikeCredentialToken(key.slice("access.".length))) return true;
+  return false;
+}
+
+function createRedactedObjectKeyAllocator(
+  base: string,
+  existingKeys: ReadonlySet<string>,
+): () => string {
+  let usedBase = false;
+  let nextSuffix = 2;
+  return () => {
+    if (!usedBase) {
+      usedBase = true;
+      if (!existingKeys.has(base)) return base;
+    }
+    while (existingKeys.has(`${base}_${nextSuffix}`)) {
+      nextSuffix += 1;
+    }
+    const allocated = `${base}_${nextSuffix}`;
+    nextSuffix += 1;
+    return allocated;
+  };
+}
+
 export function sanitizeRecord(
   record: Record<string, unknown>,
 ): Record<string, unknown> {
+  const entries = Object.entries(record);
+  let allocateRedactedKey: (() => string) | null = null;
   const redacted: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(record)) {
+  for (const [key, value] of entries) {
+    if (isCredentialShapedObjectKey(key)) {
+      if (!allocateRedactedKey) {
+        allocateRedactedKey = createRedactedObjectKeyAllocator(
+          REDACTED_EVENT_VALUE,
+          new Set(entries.map(([k]) => k)),
+        );
+      }
+      const safeKey = allocateRedactedKey();
+      if (isSecretRefBinding(value) || isUserSecretRefBinding(value)) {
+        redacted[safeKey] = sanitizeValue(value);
+      } else if (isPlainBinding(value)) {
+        redacted[safeKey] = { type: "plain", value: REDACTED_EVENT_VALUE };
+      } else {
+        redacted[safeKey] = REDACTED_EVENT_VALUE;
+      }
+      continue;
+    }
     if (COMMAND_ARGS_PAYLOAD_KEY_RE.test(key) && Array.isArray(value)) {
       redacted[key] = sanitizeCommandArgs(value);
       continue;
@@ -890,7 +977,7 @@ export function sanitizeRecord(
       continue;
     }
     if (
-      SECRET_PAYLOAD_KEY_RE.test(key) &&
+      (SECRET_PAYLOAD_KEY_RE.test(key) || AUDIT_COUNT_PAYLOAD_KEYS.has(key)) &&
       !AUDIT_REASON_PAYLOAD_KEY_RE.test(key) &&
       !isAuditCountField(key, value)
     ) {
@@ -909,9 +996,7 @@ export function sanitizeRecord(
       redacted[key] = REDACTED_EVENT_VALUE;
       continue;
     }
-    // Interpret a validated schema field before applying generic value-shape
-    // heuristics. The exemption is deliberately closed to this one PRP v1
-    // discriminator; the same dotted string in any other field is redacted.
+    // Preserve public protocol identities before scanning diagnostic values.
     if (isKnownPrpEventDiscriminator(record, key, value)) {
       redacted[key] = value;
       continue;
@@ -926,7 +1011,7 @@ export function sanitizeRecord(
     }
     if (
       typeof value === "string" &&
-      JWT_VALUE_RE.test(value) &&
+      looksLikeCredentialJwt(value) &&
       !isPublicExecutorToolSelector(value) &&
       !isPaperclipSchemaDiscriminator(key, value)
     ) {
@@ -982,9 +1067,22 @@ export function redactAgentAdapterConfig(
   // `env`; keeping it out of `sanitizeRecord` means a future change there
   // cannot alter entries this function has already redacted.
   const { env, ...rest } = adapterConfig;
-  const redactedEnv = Object.fromEntries(
-    Object.entries(env).map(([key, value]) => [key, redactAgentEnvBinding(value)]),
-  );
+  const envEntries = Object.entries(env);
+  let allocateRedactedKey: (() => string) | null = null;
+  const redactedEnv: Record<string, unknown> = {};
+  for (const [key, value] of envEntries) {
+    let safeKey = key;
+    if (isCredentialShapedObjectKey(key)) {
+      if (!allocateRedactedKey) {
+        allocateRedactedKey = createRedactedObjectKeyAllocator(
+          REDACTED_EVENT_VALUE,
+          new Set(envEntries.map(([k]) => k)),
+        );
+      }
+      safeKey = allocateRedactedKey();
+    }
+    redactedEnv[safeKey] = redactAgentEnvBinding(value);
+  }
 
   return { ...(redactEventPayload(rest) ?? {}), env: redactedEnv };
 }

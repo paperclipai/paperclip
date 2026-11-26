@@ -1,7 +1,10 @@
+import { slackDeliveryMeetsMentionRequirement } from "./chat-channels/slack/wake-authority.js";
 import { createHash } from "node:crypto";
-import { chatActions, type Db } from "@paperclipai/db";
-import { eq, sql, type SQLWrapper } from "drizzle-orm";
+import { agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatEndpoints, type Db } from "@paperclipai/db";
+import { and, eq, exists, inArray, isNull, or, sql, type SQLWrapper } from "drizzle-orm";
 import { HttpError } from "../errors.js";
+import { safeChatWakeAuthorityReason } from "./chat-channels/inbound/wakeup-authorization-error.js";
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 
 export interface CommittedChatResponseAuthorizationInput {
   companyId: string;
@@ -20,6 +23,21 @@ const committedChatResponseAuthorities = new WeakMap<
   Db,
   CommittedChatResponseAuthority
 >();
+
+const committedChatResponseAuthorityListeners = new WeakMap<Db, Set<() => void>>();
+
+export function onCommittedChatResponseAuthorityRegistered(db: Db, listener: () => void): () => void {
+  let listeners = committedChatResponseAuthorityListeners.get(db);
+  if (!listeners) {
+    listeners = new Set();
+    committedChatResponseAuthorityListeners.set(db, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0 && committedChatResponseAuthorityListeners.get(db) === listeners) committedChatResponseAuthorityListeners.delete(db);
+  };
+}
 
 export class CommittedChatResponseAuthorizationError extends HttpError {
   constructor() {
@@ -41,6 +59,7 @@ export function registerCommittedChatResponseAuthority(
   authority: CommittedChatResponseAuthority,
 ): () => void {
   committedChatResponseAuthorities.set(db, authority);
+  for (const listener of committedChatResponseAuthorityListeners.get(db) ?? []) listener();
   return () => {
     if (committedChatResponseAuthorities.get(db) === authority) {
       committedChatResponseAuthorities.delete(db);
@@ -116,7 +135,7 @@ export async function authorizeFailedChatRunRetryWake(
 ): Promise<boolean> {
   const action = input.wakeupRequestId
     ? await tx
-        .select({ companyId: chatActions.companyId, kind: chatActions.kind })
+        .select({ companyId: chatActions.companyId, kind: chatActions.kind, payload: chatActions.payload })
         .from(chatActions)
         .where(eq(chatActions.id, input.wakeupRequestId))
         .limit(1)
@@ -144,7 +163,9 @@ export async function authorizeFailedChatRunRetryWake(
     !(selector as Record<string, unknown>).failedRunId ||
     (selector as Record<string, unknown>).failedRunId !==
       input.contextSnapshot.retryOfRunId ||
-    input.contextSnapshot.forceFreshSession === true ||
+    (input.contextSnapshot.forceFreshSession === true &&
+      (typeof action.payload.taskRetryIntentId !== "string" ||
+        input.contextSnapshot.taskRetryRequestId !== action.payload.taskRetryIntentId)) ||
     ["resumeFromRunId", "resumeSessionParams", "resumeSessionDisplayId"].some(
       (key) => Object.hasOwn(input.contextSnapshot, key),
     )
@@ -179,6 +200,19 @@ export function unadmittedChatWakeupCondition(
           and chat_admission.agent_id::text = chat_unadmitted.payload->>'agentId'
           and chat_admission.status <> 'skipped'
       )
+      and not exists (
+        select 1 from chat_actions chat_retry
+        join agent_wakeup_requests chat_retry_admission on chat_retry_admission.id = chat_retry.id
+        where chat_retry.company_id = chat_unadmitted.company_id
+          and chat_retry.endpoint_id = chat_unadmitted.endpoint_id
+          and chat_retry.conversation_id = chat_unadmitted.conversation_id
+          and chat_retry.kind = 'failed_run_retry'
+          and chat_retry.payload->'taskRetryInput'->'skippedActionIds' ? chat_unadmitted.id::text
+          and chat_retry.payload->>'issueId' = chat_unadmitted.payload->>'issueId'
+          and chat_retry_admission.company_id = chat_retry.company_id
+          and chat_retry_admission.agent_id::text = chat_retry.payload->>'agentId'
+          and chat_retry_admission.status <> 'skipped'
+      )
       and (chat_unadmitted.status <> 'failed' or not exists (
         select 1 from chat_actions chat_later
         join agent_wakeup_requests chat_later_admission on chat_later_admission.id = chat_later.id
@@ -196,6 +230,118 @@ export function unadmittedChatWakeupCondition(
   )`;
 }
 
+export interface DeferredChatWakeScope {
+  companyId: string;
+  agentId: string;
+  issueId: string;
+  requestId: string;
+  recoverySweep?: boolean;
+}
+
+export type DeferredChatWakeDecline = { settle: string } | { retry: string };
+
+export const CLOSED_TASK_CHAT_WAKE_REOPEN_WINDOW_MS = 60 * 60_000;
+export const SILENT_CHAT_WAKE_SETTLEMENT_AFTER_MS = 24 * 60 * 60_000;
+export const DEFERRED_CHAT_WAKE_RETRY_KEY = "chatResume";
+export const SILENT_CHAT_WAKE_SETTLEMENT_KEY = "silentSettlement";
+export const DEFERRED_CHAT_WAKE_RETRY_DELAYS_MS = [60_000, 10 * 60_000, 60 * 60_000, 6 * 60 * 60_000, 24 * 60 * 60_000];
+const SETTLED_AUTHORITY_REASONS = new Set<string>(["source_shape", "delivery_binding", "conversation_binding",
+  "destination_binding", "source_comment"]);
+const DECLINED_CHAT_INPUT_NOTICE =
+  "Input saved. Its work request was skipped, cancelled, or failed; no automatic replay was performed.";
+
+export function deferredChatWakeNextAttemptAt(payload: Record<string, unknown> | null | undefined): number | null {
+  const retry = payload?.[DEFERRED_CHAT_WAKE_RETRY_KEY];
+  if (!retry || typeof retry !== "object" || Array.isArray(retry)) return null;
+  const at = Date.parse(String((retry as Record<string, unknown>).nextAttemptAt));
+  return Number.isFinite(at) ? at : null;
+}
+
+export function deferredChatWakeDeclineForError(error: unknown): DeferredChatWakeDecline {
+  const authority = safeChatWakeAuthorityReason(error);
+  if (authority) return SETTLED_AUTHORITY_REASONS.has(authority)
+    ? { settle: `authority_${authority}` } : { retry: `authority_${authority}` };
+  if (error instanceof HttpError) {
+    const details = error.details && typeof error.details === "object" ? error.details as Record<string, unknown> : {};
+    return { retry: typeof details.code === "string" ? details.code : `http_${error.status}` };
+  }
+  return { retry: error instanceof Error && /^chat_[a-z_]+$/.test(error.message) ? error.message : "resume_failed" };
+}
+
+export async function recordDeferredChatWakeDecline(db: Db,
+  scope: { companyId: string; issueId: string; requestId: string }, decline: DeferredChatWakeDecline) {
+  return db.transaction(async tx => {
+    const [receipt] = await tx.select({ payload: agentWakeupRequests.payload, createdAt: agentWakeupRequests.createdAt })
+      .from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.id, scope.requestId),
+      eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId))).for("update");
+    if (!receipt) return null;
+    const previous = receipt.payload?.[DEFERRED_CHAT_WAKE_RETRY_KEY];
+    const attempts = (previous && typeof previous === "object" && !Array.isArray(previous)
+      ? Number((previous as Record<string, unknown>).attempts) || 0 : 0) + 1;
+    const now = new Date();
+    if ("retry" in decline && attempts <= DEFERRED_CHAT_WAKE_RETRY_DELAYS_MS.length) {
+      const nextAttemptAt = now.getTime() + DEFERRED_CHAT_WAKE_RETRY_DELAYS_MS[attempts - 1]!;
+      await tx.update(agentWakeupRequests).set({ error: decline.retry, updatedAt: now,
+        payload: sql`coalesce(${agentWakeupRequests.payload}, '{}'::jsonb) || ${JSON.stringify({ [DEFERRED_CHAT_WAKE_RETRY_KEY]: {
+          attempts, reason: decline.retry, nextAttemptAt: new Date(nextAttemptAt).toISOString() } })}::jsonb`,
+      }).where(eq(agentWakeupRequests.id, scope.requestId));
+      return { outcome: "retry" as const, reason: decline.retry, attempts, nextAttemptAt };
+    }
+    const reason = "settle" in decline ? decline.settle : `retry_exhausted:${decline.retry}`;
+    const silent = receipt.createdAt.getTime() < now.getTime() - SILENT_CHAT_WAKE_SETTLEMENT_AFTER_MS;
+    await tx.update(agentWakeupRequests).set({ status: "skipped", error: reason, finishedAt: now, updatedAt: now,
+      payload: silent
+        ? sql`(${agentWakeupRequests.payload} - ${DEFERRED_CHAT_WAKE_RETRY_KEY}::text) || ${JSON.stringify({ [SILENT_CHAT_WAKE_SETTLEMENT_KEY]: true })}::jsonb`
+        : sql`${agentWakeupRequests.payload} - ${DEFERRED_CHAT_WAKE_RETRY_KEY}::text`,
+    }).where(eq(agentWakeupRequests.id, scope.requestId));
+    if (silent) return { outcome: "settled" as const, reason, attempts, silent };
+    await notifyChatInboundWakeNotices(tx, { companyId: scope.companyId, issueId: scope.issueId });
+    await tx.update(chatDeliveries).set({ redactedError: DECLINED_CHAT_INPUT_NOTICE, updatedAt: now }).where(and(
+      eq(chatDeliveries.companyId, scope.companyId), eq(chatDeliveries.state, "processed"),
+      sql`${chatDeliveries.id} = (select ${chatActions.deliveryId} from ${chatActions}
+        where ${chatActions.companyId} = ${scope.companyId} and ${chatActions.id} = ${scope.requestId}
+          and ${chatActions.kind} = 'inbound_wakeup')`));
+    return { outcome: "settled" as const, reason, attempts, silent };
+  });
+}
+
+export async function clearDeferredChatWakeRetry(db: Db, scope: { companyId: string; requestId: string }) {
+  await db.update(agentWakeupRequests).set({ error: null,
+    payload: sql`${agentWakeupRequests.payload} - ${DEFERRED_CHAT_WAKE_RETRY_KEY}::text`,
+  }).where(and(eq(agentWakeupRequests.companyId, scope.companyId), eq(agentWakeupRequests.id, scope.requestId),
+    sql`${agentWakeupRequests.payload} ? ${DEFERRED_CHAT_WAKE_RETRY_KEY}::text`));
+}
+
+/** Identify saved input by its canonical receipt, never by a caller's source
+ * label. This is selection only; the inbound owner rechecks live authority. */
+export function deferredChatInputPredicate(db: Db) {
+  return exists(db.select({ id: chatActions.id }).from(chatActions)
+    .innerJoin(chatConversations, and(eq(chatConversations.companyId, chatActions.companyId),
+      eq(chatConversations.id, chatActions.conversationId)))
+    .innerJoin(chatEndpoints, and(eq(chatEndpoints.companyId, chatActions.companyId),
+      eq(chatEndpoints.id, chatActions.endpointId), eq(chatEndpoints.id, chatConversations.endpointId)))
+    .where(and(eq(chatActions.companyId, agentWakeupRequests.companyId), eq(chatActions.id, agentWakeupRequests.id),
+      eq(chatActions.kind, "inbound_wakeup"), eq(chatActions.status, "processed"),
+      eq(chatEndpoints.assignedAgentId, agentWakeupRequests.agentId), eq(chatEndpoints.externalExecutionPolicy, "restricted"),
+      sql`${chatConversations.issueId}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+      sql`${chatActions.payload}->>'issueId' = ${agentWakeupRequests.payload}->>'issueId'`,
+      sql`${chatActions.payload}->>'agentId' = ${agentWakeupRequests.agentId}::text`)));
+}
+type DeferredChatWakeOwner = (input: DeferredChatWakeScope) => Promise<DeferredChatWakeDecline | void>;
+const deferredChatWakeOwners = new WeakMap<Db, DeferredChatWakeOwner>();
+
+/** The live inbound owner reauthorizes the original source. Cleanup owns no chat authority. */
+export function registerDeferredChatWakeOwner(db: Db, owner: DeferredChatWakeOwner) {
+  deferredChatWakeOwners.set(db, owner);
+  return () => { if (deferredChatWakeOwners.get(db) === owner) deferredChatWakeOwners.delete(db); };
+}
+export async function resumeDeferredChatWake(db: Db, input: DeferredChatWakeScope): Promise<DeferredChatWakeDecline | undefined> {
+  const owner = deferredChatWakeOwners.get(db);
+  if (!owner) return undefined;
+  return (await owner(input)) ?? undefined;
+}
+
 /** Internal authority: this object cannot be supplied through a JSON API. */
 export interface DurableChatWakeupRequest {
   readonly id: string;
@@ -208,7 +354,10 @@ export interface DurableChatWakeupRequest {
   readonly requestedAt: Date;
   readonly idempotencyKey: string;
   readonly failedRunRetry?: { readonly failedRunId: string };
+  /** Only the current inbound owner may reconsider its already saved, unconsumed receipt. */
+  readonly resumeDeferred?: true;
   readonly authorize: (tx: Db) => Promise<void>;
+  readonly onAdmitted?: (tx: Db, receipt: { runId: string | null }) => Promise<void>;
 }
 
 const trustedRequests = new WeakSet<object>();
@@ -286,4 +435,62 @@ export function assertDurableChatWakeupReceipt(
   ) {
     throw new Error("chat_inbound_wakeup_receipt_conflict");
   }
+}
+
+export function withDurableChatAdmission<T extends { kind: string; admitted?: boolean }>(request: DurableChatWakeupRequest | undefined,
+  admit: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<T>) {
+  return async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
+    const outcome = await admit(tx);
+    // An existing deferred receipt is not proof this transaction passed its
+    // gates. Only dispatch or an explicitly persisted wait admits the input.
+    if (request?.onAdmitted && (outcome.admitted === true || ["queued", "durable", "coalesced"].includes(outcome.kind))) {
+      const [receipt] = await tx.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, request.companyId), eq(agentWakeupRequests.id, request.id),
+        inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution", "coalesced"]),
+      ));
+      if (receipt) {
+        assertDurableChatWakeupReceipt(request, receipt);
+        await request.onAdmitted(tx as unknown as Db, { runId: receipt.runId });
+      }
+    }
+    return outcome;
+  };
+}
+
+/** Work-start policy only: ongoing tool and publication authorization must not
+ * revoke an already-started run when the operator enables mention gating. */
+export async function slackMentionAllowsRunStart(
+  db: Db,
+  run: { id: string; companyId: string; agentId: string; wakeupRequestId: string | null },
+): Promise<boolean> {
+  if (!run.wakeupRequestId) return true;
+  const inputs = await db.select({ event: chatDeliveries.normalizedEvent })
+    .from(agentWakeupRequests)
+    .innerJoin(chatActions, and(
+      eq(chatActions.id, agentWakeupRequests.id),
+      eq(chatActions.companyId, run.companyId),
+      eq(chatActions.kind, "inbound_wakeup"),
+    ))
+    .innerJoin(chatEndpoints, and(
+      eq(chatEndpoints.id, chatActions.endpointId),
+      eq(chatEndpoints.companyId, run.companyId),
+      eq(chatEndpoints.provider, "slack"),
+      eq(chatEndpoints.requireAtMention, true),
+    ))
+    .innerJoin(chatDeliveries, and(
+      eq(chatDeliveries.id, chatActions.deliveryId),
+      eq(chatDeliveries.endpointId, chatEndpoints.id),
+      eq(chatDeliveries.companyId, run.companyId),
+    ))
+    .where(and(
+      eq(agentWakeupRequests.companyId, run.companyId),
+      eq(agentWakeupRequests.agentId, run.agentId),
+      or(
+        eq(agentWakeupRequests.runId, run.id),
+        eq(agentWakeupRequests.id, run.wakeupRequestId),
+        sql`${agentWakeupRequests.payload}->>'coalescedIntoWakeupRequestId' = ${run.wakeupRequestId}`,
+      ),
+    ));
+  return inputs.every(({ event }) =>
+    slackDeliveryMeetsMentionRequirement({ requireAtMention: true }, event));
 }

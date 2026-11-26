@@ -14,14 +14,6 @@ import {
 
 // The restart-safe cleanup backstop for the Claude setup-token login flow.
 //
-// The in-process five-minute timer in the login-session service stays the
-// primary control. This reaper is the backstop. It runs on server startup and on
-// a fixed interval, so a sandbox lease survives a server restart and a release
-// failure. The reaper reads the durable cleanup store and releases any lease
-// whose session is terminal, past its deadline, or already consumed. It uses the
-// same convention as the Codex device-login reaper, so both flows use one reaper
-// convention.
-//
 // The reaper never records secret data. The durable cleanup record holds only
 // ids, the deadline, the claim marker, and the state. It never holds a URL, a
 // code, a token, or a raw process chunk.
@@ -43,10 +35,19 @@ export interface SetupTokenReaperDeps {
  */
 export function createSetupTokenReaper(deps: SetupTokenReaperDeps) {
   const now = deps.now ?? Date.now;
+  let failures = 0;
   async function sweep(): Promise<SetupTokenReapResult> {
-    return reapSetupTokenLeases({ store: deps.store, leases: deps.leases, log: deps.log }, now());
+    try {
+      const result = await reapSetupTokenLeases({ store: deps.store, leases: deps.leases, log: deps.log }, now());
+      failures = result.failed > 0 ? Math.min(failures + 1, 7) : 0;
+      return result;
+    } catch (error) {
+      failures = Math.min(failures + 1, 7);
+      throw error;
+    }
   }
-  return { sweep };
+  const retryDelayMs = () => failures === 0 ? 0 : Math.min(30_000 * 2 ** (failures - 1), 30 * 60_000);
+  return { sweep, retryDelayMs };
 }
 
 export type SetupTokenReaper = ReturnType<typeof createSetupTokenReaper>;
@@ -74,6 +75,7 @@ export function createProductionSetupTokenReaper(
 ): SetupTokenReaper {
   const environments = environmentService(deps.db);
   const sandbox = createProductionSetupTokenSandboxProvider({
+    db: deps.db,
     environments,
     environmentRuntime: deps.environmentRuntime,
     log: deps.log,

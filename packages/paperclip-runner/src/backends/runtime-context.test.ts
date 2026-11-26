@@ -11,14 +11,21 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { createCodexTaskEnvelope } from "../contracts/codex.js";
 import {
+  PRP_BLOCK_TOOL_DESCRIPTION,
+  PRP_COMPLETION_TOOL_DESCRIPTION,
+} from "../contracts/completion-result.js";
+import {
   buildNativeModelEnvelope,
   type NativeExecutionInput,
 } from "../contracts/native-execution.js";
 import {
+  nativeRunAttachReservedBytes,
   nativeSystemInstructions,
   nativeTaskSkillInputs,
   nativeTaskConstraints,
 } from "./runtime-context.js";
+import { retargetNativeSystemInstructions } from "../contracts/runtime-context.js";
+import { authorizedToolSetForProvider, runnerCodexDynamicToolsFit } from "../live/runnerd-codex-transport.js";
 
 const temporaryRoots: string[] = [];
 
@@ -27,6 +34,7 @@ function runtimeInput(
   entryPath: string,
 ): NativeExecutionInput {
   return {
+    provider: { kind: "codex" },
     runtimeContext: {
       prompt: { text: "Paperclip runtime." },
       instructions: { bundle: { rootPath }, entryPath },
@@ -55,6 +63,35 @@ describe("native runtime context files", () => {
     ).toContain("Stay inside the bundle.");
   });
 
+  it("gives a /swarm run the agent's own instructions, composed as for an ordinary turn, plus its hand-in values", () => {
+    const temporaryRoot = mkdtempSync(join(tmpdir(), "paperclip-runtime-context-"));
+    temporaryRoots.push(temporaryRoot);
+    const bundleRoot = join(temporaryRoot, "bundle");
+    mkdirSync(bundleRoot);
+    writeFileSync(join(bundleRoot, "AGENTS.md"), `Agent-written: write tests before code. Notes live in ${bundleRoot}/notes.md.\n`);
+    const contract = { revision: "2", objective: "Write", criteria: [{ id: "objective", requirement: "Quoted comment text" }] };
+    const execution = (mode?: string) => ({
+      ...runtimeInput(bundleRoot, "AGENTS.md"),
+      provider: { kind: "acpx", agent: "antigravity", model: "gemini-3.8-flash-low", ...(mode ? { mode } : {}) },
+      completionContract: { contract },
+    }) as unknown as NativeExecutionInput;
+    const ordinary = nativeSystemInstructions(execution());
+    expect(ordinary).toContain("Agent-written: write tests before code.");
+    expect(ordinary).not.toContain("Paperclip hand-in");
+    const swarm = nativeSystemInstructions(execution("swarm"));
+    const handIn = `## Paperclip hand-in\nWhen you call paperclip_finish or paperclip_block, set completionClaim.contractRevision to "2" and list each of these criterion IDs exactly once in completionClaim.criteria: ["objective"].`;
+    const entry = `Agent-written: write tests before code. Notes live in ${bundleRoot}/notes.md.`;
+    expect(swarm).toBe(ordinary.replace(entry, `${entry}\n\n${handIn}`));
+    expect(swarm).not.toContain("Quoted comment text");
+
+    const prior = { prompt: { text: "Paperclip runtime." }, instructions: { bundle: { rootPath: bundleRoot } } };
+    const current = { prompt: { text: "Paperclip runtime." }, instructions: { bundle: { rootPath: "/remote/bundle" } } };
+    const retargeted = retargetNativeSystemInstructions(swarm, prior as never, current as never);
+    expect(retargeted).toBe(retargetNativeSystemInstructions(ordinary, prior as never, current as never).replace(entry, `${entry}\n\n${handIn}`));
+    expect(retargeted.endsWith("/remote/bundle")).toBe(true);
+    expect(retargeted).toContain(`${entry}\n\n${handIn}`);
+  });
+
   it("requires semantic completion before the final assistant response", () => {
     const constraints = nativeTaskConstraints(
       {} as unknown as NativeExecutionInput,
@@ -63,7 +100,18 @@ describe("native runtime context files", () => {
     expect(constraints).toContain(
       "Obtain one accepted result from paperclip_finish or paperclip_block before writing",
     );
-    expect(constraints).toContain("do not call another tool");
+    expect(constraints).toContain("before writing the complete user-facing final response.");
+    expect(constraints).toContain("If blocked, explain why work cannot continue, name the owner and give the unblock action.");
+    for (const description of [PRP_COMPLETION_TOOL_DESCRIPTION, PRP_BLOCK_TOOL_DESCRIPTION]) {
+      expect(description).toContain("If rejected, correct the report and retry.");
+      expect(description).toContain("After acceptance, read the returned outcome");
+      expect(description).toContain("end the turn without further tool calls");
+    }
+    expect(PRP_COMPLETION_TOOL_DESCRIPTION).toContain("do not claim completion while gated");
+    expect(PRP_COMPLETION_TOOL_DESCRIPTION).toContain("supplied link and action");
+    expect(PRP_COMPLETION_TOOL_DESCRIPTION).toContain("yielded with response_wake for a response");
+    expect(PRP_COMPLETION_TOOL_DESCRIPTION).toContain("monitor after set_task_monitor confirms a schedule on this task");
+    expect(PRP_BLOCK_TOOL_DESCRIPTION).toContain("its owner, and the action needed to unblock it");
     expect(constraints).not.toContain(
       "final response exactly once before invoking",
     );
@@ -76,6 +124,7 @@ describe("native runtime context files", () => {
     expect(constraints).toContain("register_deliverable");
     expect(constraints).toContain("deliverable:");
     expect(constraints).toContain("download link");
+    expect(constraints).toContain("returned documentHref as a clickable link in your final response");
   });
 
   it("marks only authoritative answered-question envelopes as resolved in the outer task", () => {
@@ -341,6 +390,10 @@ describe("native runtime context files", () => {
     expect(answeredConstraint).toContain(
       "message.interactionResponses[0].response.result.answers",
     );
+    const preparedConstraint = nativeTaskConstraints({ ...input, schema: "paperclip.native-execution-input.v5" } as NativeExecutionInput)
+      .find((constraint) => constraint.includes("already authoritatively answered"));
+    expect(preparedConstraint).toContain("interactionResponses[0].response.result.answers");
+    expect(preparedConstraint).not.toContain("message.interactionResponses");
     expect(buildNativeModelEnvelope(input).interactionResponses).toEqual(
       input.interactionResponses,
     );
@@ -399,3 +452,58 @@ describe("explicit task skill selection", () => {
     expect(nativeTaskSkillInputs("/first-task", null)).toEqual([]);
   });
 });
+
+describe("run attachment reserve", () => {
+  const roots: string[] = [];
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  function reserveInput(instructions: string | null) {
+    const root = mkdtempSync(join(tmpdir(), "paperclip-run-attach-reserve-"));
+    roots.push(root);
+    if (instructions !== null) writeFileSync(join(root, "AGENTS.md"), instructions);
+    const criteria = Array.from({ length: 300 }, (_, index) => ({ id: `criterion-${index}-identifier`, requirement: "Done" }));
+    return {
+      provider: { kind: "codex" },
+      completionContract: { contract: { revision: 1, criteria } },
+      runtimeContext: {
+        prompt: { text: "Paperclip runtime." },
+        instructions: { bundle: { rootPath: root }, entryPath: "AGENTS.md" },
+        skills: Array.from({ length: 150 }, (_, index) => ({ runtimeName: `skill-${index}`, description: "Skill summary" })),
+      },
+    } as unknown as NativeExecutionInput;
+  }
+
+  it("keeps the whole run attachment within the command budget for any catalog it admits", () => {
+    const input = reserveInput("Agent instructions. ".repeat(8_000));
+    const reserved = nativeRunAttachReservedBytes(input);
+    const instructions = nativeSystemInstructions(input);
+    const criterionIds = (input as { completionContract: { contract: { criteria: Array<{ id: string }> } } })
+      .completionContract.contract.criteria.map(criterion => criterion.id);
+    expect(reserved).toBeGreaterThanOrEqual(Buffer.byteLength(JSON.stringify(instructions)) + Buffer.byteLength(JSON.stringify(criterionIds)));
+    const catalog = (count: number) => Array.from({ length: count }, (_, index) => ({
+      name: `tool_${index}`, description: "Tool", inputSchema: { type: "object", properties: { value: { type: "string", enum: ["a", "b", "c", "d"] } } },
+    }));
+    let count = 1;
+    while (count < 256 && runnerCodexDynamicToolsFit(catalog(count + 1), reserved)) count += 1;
+    const command = {
+      observeCredentials: true,
+      authorizedTools: authorizedToolSetForProvider("acpx", catalog(count)),
+      completionContract: { revision: 1, criterionIds },
+      provider: { provider: "acpx", command: "provider", instructions, runtimeContext: (input as { runtimeContext: unknown }).runtimeContext },
+      paperclipNextAuthority: { identity: { runId: "run", turnId: "turn", itemId: "item" }, connection: { mode: "connect", connectUrl: "ws://127.0.0.1:1" } },
+    };
+    expect(Buffer.byteLength(JSON.stringify(command))).toBeLessThanOrEqual(Math.floor((1024 * 1024 - 4 * 1024) / 2));
+  });
+
+  it("reserves what it can measure when the instructions cannot be read", () => {
+    const input = reserveInput(null);
+    expect(() => nativeSystemInstructions(input)).toThrow();
+    expect(nativeRunAttachReservedBytes(input))
+      .toBe(Buffer.byteLength(JSON.stringify((input as { runtimeContext: unknown }).runtimeContext))
+        + Buffer.byteLength(JSON.stringify((input as { completionContract: { contract: { criteria: Array<{ id: string }> } } })
+          .completionContract.contract.criteria.map(criterion => criterion.id))));
+  });
+});
+

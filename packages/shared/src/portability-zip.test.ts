@@ -1,7 +1,6 @@
 import { deflateRawSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
-  bytesToPortableFileEntry,
   isBlobStorePath,
   readZipArchive,
 } from "./portability-zip.js";
@@ -91,34 +90,14 @@ describe("isBlobStorePath", () => {
     expect(isBlobStorePath("blobs/4f2d1c9a")).toBe(true);
     expect(isBlobStorePath("paperclip-demo/blobs/4f2d1c9a")).toBe(true);
     expect(isBlobStorePath("tasks/pap-1/TASK.md")).toBe(false);
-  });
-});
-
-describe("bytesToPortableFileEntry", () => {
-  it("keeps blobs/ entries as base64 octet streams regardless of extension", () => {
-    const bytes = new Uint8Array([0x00, 0x01, 0x80, 0xfe, 0xff]);
-    expect(bytesToPortableFileEntry("blobs/4f2d1c9a", bytes)).toEqual({
-      encoding: "base64",
-      data: Buffer.from(bytes).toString("base64"),
-      contentType: "application/octet-stream",
-    });
-  });
-
-  it("decodes valid UTF-8 entries to text and falls back to base64 for invalid bytes", () => {
-    const text = new TextEncoder().encode("# Notes\n\ncafé ✅\n");
-    expect(bytesToPortableFileEntry("tasks/pap-1/TASK.md", text)).toBe("# Notes\n\ncafé ✅\n");
-    const invalid = new Uint8Array([0x68, 0x69, 0xff, 0xfe, 0xc0]);
-    expect(bytesToPortableFileEntry("tasks/pap-1/raw", invalid)).toEqual({
-      encoding: "base64",
-      data: Buffer.from(invalid).toString("base64"),
-      contentType: "application/octet-stream",
-    });
+    expect(isBlobStorePath("blobs/nested/file")).toBe(false);
   });
 });
 
 describe("readZipArchive", () => {
   it("round-trips STORE, DEFLATE, and base64 blob entries byte-exactly and strips the shared root", async () => {
-    const blobBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x13, 0x37]);
+    const blobBytes = new Uint8Array([0x68, 0x69]);
+    const invalidUtf8 = new Uint8Array([0x68, 0x69, 0xff, 0xfe, 0xc0]);
     // A text body large and repetitive enough that DEFLATE actually shrinks it,
     // so the DEFLATE decode path is exercised, not just written.
     const deflated = `# Weekly report\n${"paperclip ".repeat(512)}\n`;
@@ -128,6 +107,8 @@ describe("readZipArchive", () => {
         { path: "COMPANY.md", bytes: new TextEncoder().encode("---\nname: Demo\n---\n"), method: 0 },
         { path: "reports/weekly.md", bytes: new TextEncoder().encode(deflated), method: 8 },
         { path: "blobs/4f2d1c9a", bytes: blobBytes, method: 0 },
+        { path: "tasks/pap-1/TASK.md", bytes: new TextEncoder().encode("# Notes\n\ncafé ✅\n"), method: 0 },
+        { path: "notes/raw", bytes: invalidUtf8, method: 0 },
       ],
       "paperclip-demo",
     );
@@ -137,9 +118,15 @@ describe("readZipArchive", () => {
       files: {
         "COMPANY.md": "---\nname: Demo\n---\n",
         "reports/weekly.md": deflated,
+        "tasks/pap-1/TASK.md": "# Notes\n\ncafé ✅\n",
         "blobs/4f2d1c9a": {
           encoding: "base64",
           data: Buffer.from(blobBytes).toString("base64"),
+          contentType: "application/octet-stream",
+        },
+        "notes/raw": {
+          encoding: "base64",
+          data: Buffer.from(invalidUtf8).toString("base64"),
           contentType: "application/octet-stream",
         },
       },
