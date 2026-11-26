@@ -149,6 +149,29 @@ When the request includes `blockedByIssueIds`, the response also includes:
 
 Empty arrays are confirmed-empty state, not missing data. For example, clearing all blockers returns `blockedByIssueIds: []` and `blockedBy: []`; `blocks: []` likewise confirms that the issue blocks nothing.
 
+### Clearing blockers and resuming in one write
+
+An agent can drop blockers and move a `blocked` issue back to work in a single `PATCH`. The server judges follow-up readiness against the blocker set after the write, not the stored edges:
+
+```json
+{
+  "status": "todo",
+  "blockedByIssueIds": [],
+  "comment": "Dependency removed; resuming."
+}
+```
+
+- Blockers the request keeps stay unresolved until they are `done` with workspace finalization complete. A kept cancelled blocker still blocks.
+- Blockers the request adds are always treated as unresolved.
+- Omitting `blockedByIssueIds` uses the stored edges.
+
+If any blocker remains unresolved, the write is rejected with `409` and `Issue follow-up blocked by unresolved blockers`. Nothing is saved. The `details` object contains:
+
+- `issueId`, the issue being updated
+- `unresolvedBlockerIssueIds`, blockers still unresolved after the write
+- `pendingFinalizeBlockerIssueIds`, the subset that is `done` but still waiting on workspace finalization
+- `remediation`, advice to send a `PATCH` whose `blockedByIssueIds` drops blockers you no longer depend on, in the same write as the status change
+
 For a compact write receipt, request the minimal representation:
 
 ```http
