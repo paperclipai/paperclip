@@ -247,14 +247,20 @@ deletes the ciphertext on expiry and excludes it from long-term backups. Refresh
 and supported revoke operations handle plaintext only in memory for one bounded
 request.
 
-Removing one managed Google profile revokes only the local Paperclip grant.
-Paperclip does not call Google's token revocation endpoint for that action.
-Google treats revocation as client-wide for the user, so a provider-side revoke
-could also invalidate the user's other managed Gmail, Drive, and Calendar
-profiles. A future provider-level disconnect must present that all-profiles
-effect explicitly.
+Removing a managed Google profile asks Paperclip Cloud to revoke the grant.
+Google treats revocation as client-wide for the user, so the broker revokes at
+Google only when no other live binding it knows of could share the grant, and
+otherwise reports that other connections remain. Paperclip commits the local
+removal first and calls the broker only after that; the answer never changes
+the local result. See "Removing a managed Google connection" in
+[GOOGLE-WORKSPACE.md](GOOGLE-WORKSPACE.md).
 
 ### Configure each originating Paperclip instance
+
+These steps apply to Paperclip Cloud workspaces. Paperclip's own Google
+sign-in is not available on a self-hosted Paperclip; a self-hosted instance
+connects Gmail with its own Google OAuth client. See
+[Self-hosted instances: use your own Google client](GOOGLE-WORKSPACE.md#self-hosted-instances-use-your-own-google-client).
 
 Generate the two long-lived instance keys once. PEM-encoded PKCS#8 keys work
 directly with Paperclip:
@@ -285,25 +291,31 @@ HTTP is accepted only for a loopback Paperclip Cloud URL; staging and production
 must use HTTPS.
 
 Cloud-hosted stacks receive these values automatically through the existing
-per-stack secret-reference delivery path. Self-hosted instances normally use
-the Apps enrollment action instead of running the OpenSSL commands manually;
-it generates the keys and writes them to the ignored instance secret directory
-with owner-only permissions.
+per-stack secret-reference delivery path. A self-hosted instance does not use
+these keys for Google. Its Apps enrollment action still serves other
+Paperclip-managed providers, such as GitHub and Asana: it generates the keys
+and writes them to the ignored instance secret directory with owner-only
+permissions.
 
 `PAPERCLIP_ID_CONNECTOR_*` values are not aliases for this protocol. Paperclip
 ID used different endpoints, signing metadata, envelope purposes, and Google
 client credentials. An instance with only those legacy values fails with
-`CONNECTOR_MIGRATION_REQUIRED`. Enroll it with Paperclip Cloud and reconnect
-each legacy Google grant. Cloud-hosted fleets must deliver the new enrollment
-keys before they deploy a binary that enables the Cloud connector.
+`CONNECTOR_MIGRATION_REQUIRED`. On Paperclip Cloud, deliver the new enrollment
+keys and reconnect each legacy Google grant. On a self-hosted instance, reconnect
+Gmail with your own Google OAuth client. A Google grant that a self-hosted
+instance already holds through Paperclip keeps refreshing until the Paperclip
+Cloud sunset date; after that date, Paperclip asks the user to reconnect with
+their own Google OAuth client. Cloud-hosted fleets must deliver the new
+enrollment keys before they deploy a binary that enables the Cloud connector.
 
 ## Paperclip access defaults
 
 Gmail uses the same credential ownership choice as the rest of the Apps setup:
 
 - **Just me** stores the Gmail credential on the connecting user's grant.
-- **Any human in the company** stores it on the default organization grant so a
-  deliberately shared mailbox or Workspace account can back company-wide use.
+- **Any human in the organization** stores it on the default organization grant
+  so a deliberately shared mailbox or Workspace account can back
+  organization-wide use.
 - The disclosure states that Gmail access can search/read mail and create
   drafts. Sending mail is not enabled.
 - A user grant does not automatically authorize an agent. The user must also
@@ -314,6 +326,20 @@ Gmail uses the same credential ownership choice as the rest of the Apps setup:
 - Draft creation and label changes require **Ask first**.
 - Trash, spam, destructive label changes, newly discovered tools, nested
   execution, and any future send tool remain blocked until separately reviewed.
+
+## Broker rejection diagnostics
+
+A rejected connector request includes its operation, HTTP status, and an
+allowlisted broker reason in the server error. For example,
+`RETURN_ORIGIN_NOT_ENROLLED` means the callback origin is not enrolled for that
+instance. Compare the current page/configured origin with the instance's enrolled
+origins; do not bypass origin checks or copy credentials to a different instance.
+
+Unknown codes, malformed bodies, oversized responses, and stalled diagnostic
+reads produce `UNKNOWN_BROKER_ERROR`. This is not proof of any specific rejection
+cause. Diagnostics read at most 4 KiB within 500 ms and retain no raw response
+messages, URLs, tokens, authorization state, or instance/customer identifiers.
+The existing error code, status, authorization, and retry behavior are unchanged.
 
 ## Verification checklist
 
@@ -371,6 +397,7 @@ seven-day testing-token expiry.
 | The managed method is unavailable | Confirm the exact profile is in `CLOUD_HARNESS_CONNECTOR_GOOGLE_ENABLED_PROFILES` and its client id and secret reference are configured. |
 | Login starts asking for Gmail | Stop the rollout. The login and Gmail clients or route namespaces have been mixed. |
 | Connector is unavailable | Keep the grant in `needs_reauthorization` or an actionable unavailable state. Never use a login token or another environment's client. |
+| Refresh reports `reason=PROVIDER_REAUTHORIZATION_REQUIRED` | The provider revoked, expired, or already rotated the grant, or the grant no longer matches the profile. Paperclip marks it `needs_reauthorization`; the user reconnects. `reason=PROVIDER_OPERATION_FAILED` is a provider or Cloud outage; retry later. |
 
 ## References
 

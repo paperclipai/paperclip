@@ -1,0 +1,576 @@
+{
+  "schema": "paperclip.copilot.qualification-progress/v1",
+  "status": "Historical v21 evidence; superseded by the unfrozen v22 master integration; production remains gated",
+  "updatedAt": "2026-10-05T19:03:10.191470+00:00",
+  "productionAdmission": "gated",
+  "supersedes": "2026-10-03-copilot-qualification-v20.json",
+  "upstreamTargetRevision": "59015846ae02f935411afc620e0867ce812378fb",
+  "integratedSourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209",
+  "sourceFreezeComplete": true,
+  "copilotVersion": "1.0.88",
+  "model": "gpt-5.6-luna",
+  "profileVersion": 21,
+  "profileDigest": "sha256:3bd433d9835ab6998ee712da41cad724006bb85d444f0cf96550708565605b7d",
+  "profileIdentityFrozen": true,
+  "profileChangeReason": "Bind native asset ownership and the installer, support the public server vendored layout, eliminate private workspace runtime imports, and preserve the latest mainline completion and shutdown settlement fixes.",
+  "productCells": [
+    {
+      "selector": "native-active-stop.runner-acpx-copilot.local.pending-permission-stop",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "native-active-stop.runner-acpx-copilot.daytona.pending-permission-stop",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "copilot-provider-death.runner-acpx-copilot.daytona.pending-permission-provider-death",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.attached-async-settlement",
+      "status": "pending after two retained controller failures",
+      "required": true,
+      "retainedAttempts": [
+        {
+          "label": "copilot-v21-product-local-attached-settlement",
+          "status": "failed-before-test-result",
+          "failureClass": "transient_infrastructure",
+          "error": "Playwright exited 1 before writing a result",
+          "launcherObservation": "Playwright process received SIGKILL before any result was written; initial controller memory limit was 3 GiB. No assertion or model behavior result exists.",
+          "evidence": "/tmp/copilot-production-campaign-v21/linux-product-results/local-2026-10-05T17-26-43-472Z/copilot-protection/runner-acpx-copilot/local/attached-async-settlement/attempt-1/result.json",
+          "sha256": "sha256:0cd7e8c19c9ff8221b3f48d93295806f0f516e0e75a1255afeab2fbf41badca8",
+          "automaticRetries": 0,
+          "inferenceReservationRetainedUsd": 0.5
+        },
+        {
+          "label": "copilot-v21-product-local-attached-settlement-attempt02",
+          "status": "failed",
+          "resultPath": "/tmp/copilot-production-campaign-v21/linux-product-results/local-2026-10-05T18-42-28-030Z/copilot-protection/runner-acpx-copilot/local/attached-async-settlement/attempt-1/result.json",
+          "recordedFailureClass": "secret_leak",
+          "underlyingBrowserFailure": "Page crashed; controller memory.events confirms oom_kill=1 at 6 GiB",
+          "evidenceInspectionFailure": "unzip ENOENT: archives rejected and excluded from packaged evidence; recorded failure is preserved",
+          "cleanup": "passed",
+          "nativeInferenceUsd": "unknown; full $0.50 reservation retained",
+          "controllerExitProof": "/tmp/copilot-production-campaign-v21/copilot-v21-product-local-attached-settlement-attempt02-controller-exit.json"
+        }
+      ],
+      "nextAction": "Wait for the full isolated suite to finish, then one bounded 6 GiB controller attempt with captured cgroup memory events and unchanged test assertions."
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.daytona.native-permission-deny-write",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.daytona.attached-async-settlement",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "rich-acp-warm-continuity.runner-acpx-copilot.local.warm-three-turn",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "rich-acp-warm-continuity.runner-acpx-copilot.daytona.warm-three-turn",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.local.hello-complete",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.local.question-resume-complete",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.local.plan-approve-complete",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.local.structured-question-restart-resume",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.local.file-edit-validate",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.daytona.hello-complete",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.daytona.question-resume-complete",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.daytona.plan-approve-complete",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.daytona.structured-question-restart-resume",
+      "status": "pending",
+      "required": true
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.daytona.file-edit-validate",
+      "status": "pending",
+      "required": true
+    }
+  ],
+  "runnerProtocol": [
+    {
+      "caseId": "context-before-action",
+      "status": "passed",
+      "required": true,
+      "evidence": {
+        "path": "/tmp/copilot-production-campaign-v21/copilot-v21-protocol-context-before-action-summary.json",
+        "sha256": "sha256:beb87abfd68f93c3d4a4fda9a67ed370550ca8e693ad336253d0a536fa9e9d2d"
+      },
+      "sourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209",
+      "profileDigest": "sha256:3bd433d9835ab6998ee712da41cad724006bb85d444f0cf96550708565605b7d",
+      "automaticRetries": 0
+    },
+    {
+      "caseId": "get-task-context",
+      "status": "passed",
+      "required": true,
+      "evidence": {
+        "path": "/tmp/copilot-production-campaign-v21/copilot-v21-protocol-get-task-context-summary.json",
+        "sha256": "sha256:e7daec79864f0e0b61ee60d106416c5289d04ffc4273d65db16fc15fcdd4134c"
+      },
+      "sourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209",
+      "profileDigest": "sha256:3bd433d9835ab6998ee712da41cad724006bb85d444f0cf96550708565605b7d",
+      "automaticRetries": 0
+    },
+    {
+      "caseId": "create-task-document",
+      "status": "passed",
+      "required": true,
+      "evidence": {
+        "path": "/tmp/copilot-production-campaign-v21/copilot-v21-protocol-create-task-document-summary.json",
+        "sha256": "sha256:c2aa270aab6c1c0915d8271cf0402c33dced945329ecab49fffcceae6a04fd17"
+      },
+      "sourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209",
+      "profileDigest": "sha256:3bd433d9835ab6998ee712da41cad724006bb85d444f0cf96550708565605b7d",
+      "automaticRetries": 0
+    },
+    {
+      "caseId": "finish-task",
+      "status": "passed",
+      "required": true,
+      "evidence": {
+        "path": "/tmp/copilot-production-campaign-v21/copilot-v21-protocol-finish-task-summary.json",
+        "sha256": "sha256:a35e8310c7ab5da467c7f53d8ea6f71dd84e01b1621bdb7f80762dc1b485cf59"
+      },
+      "automaticRetries": 0,
+      "sourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209",
+      "profileDigest": "sha256:3bd433d9835ab6998ee712da41cad724006bb85d444f0cf96550708565605b7d"
+    },
+    {
+      "caseId": "request-human-confirmation",
+      "status": "passed",
+      "required": true,
+      "evidence": {
+        "path": "/tmp/copilot-production-campaign-v21/copilot-v21-protocol-request-human-confirmation-summary.json",
+        "sha256": "sha256:532414bd7490cfbe18a12b01a48d84d3a9acaa1ce95853de3094783a20f89bd0"
+      },
+      "automaticRetries": 0,
+      "sourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209",
+      "profileDigest": "sha256:3bd433d9835ab6998ee712da41cad724006bb85d444f0cf96550708565605b7d"
+    },
+    {
+      "caseId": "workflow-context-document-progress",
+      "status": "passed",
+      "required": true,
+      "evidence": {
+        "path": "/tmp/copilot-production-campaign-v21/copilot-v21-protocol-workflow-context-document-progress-summary.json",
+        "sha256": "sha256:d7c600f6fc0ec1acfcad0492f7aab4bced10cc63f22bee5b86277408f26daa1a"
+      },
+      "automaticRetries": 0,
+      "sourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209",
+      "profileDigest": "sha256:3bd433d9835ab6998ee712da41cad724006bb85d444f0cf96550708565605b7d"
+    },
+    {
+      "caseId": "workflow-governed-wait",
+      "status": "passed",
+      "required": true,
+      "evidence": {
+        "path": "/tmp/copilot-production-campaign-v21/copilot-v21-protocol-workflow-governed-wait-summary.json",
+        "sha256": "sha256:f169b83dfa4f60f59568833dc064a0d922f6449f4823d34b3045364f6653f7a1"
+      },
+      "automaticRetries": 0,
+      "sourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209",
+      "profileDigest": "sha256:3bd433d9835ab6998ee712da41cad724006bb85d444f0cf96550708565605b7d"
+    }
+  ],
+  "installedRuntimeSmokes": [
+    {
+      "platform": "darwin-arm64",
+      "status": "passed",
+      "required": true,
+      "evidence": {
+        "path": "/tmp/copilot-production-campaign-v21/installed-macos-arm64-smoke.json",
+        "sha256": "sha256:4ff4712f675d2d70b8984bb1ddc0c55a32152177c929eb4a81a1d2849f251a76"
+      },
+      "sourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209",
+      "promptSent": false
+    },
+    {
+      "platform": "darwin-x64",
+      "status": "passed",
+      "required": true,
+      "evidence": {
+        "path": "/tmp/copilot-production-campaign-v21/installed-macos-x64-smoke.json",
+        "sha256": "sha256:25f5b7d45c05dc3af8dc096ea4309874d58a6d41558c1f87ab5fab999947a1c5"
+      },
+      "sourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209",
+      "promptSent": false
+    },
+    {
+      "platform": "linux-x64",
+      "status": "passed",
+      "required": true,
+      "evidence": {
+        "path": "/tmp/copilot-production-campaign-v21-remote-qualified-source/linux-installed-smoke.json",
+        "sha256": "sha256:11bbfa2e48bd5823667e26e06c0a75c2bb9c6f55db772e7c9d937b88fa445663"
+      },
+      "sourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209",
+      "promptSent": false
+    }
+  ],
+  "singleIntegratedSourceCampaignComplete": false,
+  "budget": {
+    "ceilingUsd": 100,
+    "priorSharedExposureUpperBoundUsd": 47.080380624,
+    "combinedConservativeExposureUpperBoundUsd": 62.310304624,
+    "remainingCeilingHeadroomUsd": 37.689695376,
+    "nativeInferenceUsd": "unknown per run; included-credit aggregate valuation is not a measured per-run charge",
+    "aggregateIncludedUsageDollarEquivalentUsd": 0.71,
+    "reportingDelayContingencyUsd": 5,
+    "releasedHistoricalInferenceContingencyUsd": 41.79,
+    "billingControlsChanged": false,
+    "accountBindingVerified": true,
+    "billingProofSha256": "sha256:aed119f7635b7eb46bc89e3d43a9afd163a9ba9ee56671afbd3f0c6c7b16360a",
+    "privateLedgerSha256": "sha256:5f8e6407b2d87ba30713bedfe06c6bafc3aefcb17f405168659dca95f8f0a2a8",
+    "budgetIncreaseRequestDisposition": "withdrawn-unneeded; original $100 ceiling retained"
+  },
+  "verification": {
+    "sourceOwnershipAndProfileTests": {
+      "status": "passed",
+      "tests": 31
+    },
+    "vendoredProbeAndRegistryTests": {
+      "status": "passed",
+      "tests": 64
+    },
+    "freshPublishedLayoutInstallerTests": {
+      "status": "passed",
+      "tests": 3,
+      "modelPromptSent": false,
+      "qualificationOverrides": false,
+      "covers": [
+        "fresh runner and public server asset installation",
+        "idempotence",
+        "corruption refusal with evidence retention",
+        "linked asset directory refusal",
+        "unbuilt source bootstrap",
+        "incomplete published artifact refusal"
+      ]
+    },
+    "serverPackagingBuild": {
+      "status": "passed",
+      "log": "/tmp/copilot-v21-frozen-source-build.log",
+      "sourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209"
+    },
+    "vendorRuntimeImportGraph": "passed including live/index.js",
+    "recursiveTypecheck": {
+      "status": "passed",
+      "log": "/tmp/copilot-v21-final-recursive-typecheck-authorized.log"
+    },
+    "fullTestRun": {
+      "status": "failed",
+      "log": "/tmp/copilot-v21-frozen-source-full-test.log",
+      "filesPassed": 570,
+      "filesFailed": 42,
+      "filesSkipped": 144,
+      "testsPassed": 9826,
+      "testsFailed": 5,
+      "testsSkipped": 5377,
+      "cause": "PostgreSQL fixture startup failures and skips under exhausted macOS shared-memory slots; retained Git streaming stress timeout. Isolated Linux verification is being prepared; no full-suite pass claimed."
+    },
+    "fullBuild": {
+      "status": "passed",
+      "log": "/tmp/copilot-v21-frozen-source-build.log",
+      "sourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209"
+    },
+    "runnerContracts": {
+      "status": "eval kernel, protocol and Rust passed; HTTP integration blocked by host PostgreSQL startup even when run alone",
+      "log": "/tmp/copilot-v21-final-api-authority-serialized.log",
+      "next": "Run maintained commands in isolated Linux controller with private IPC namespace."
+    },
+    "tokenGates": {
+      "status": "passed",
+      "log": "/tmp/copilot-v21-final-token-gates.log"
+    },
+    "runnerApiAuthorityIsolatedLinux": {
+      "status": "passed",
+      "testCount": 1852,
+      "files": 3,
+      "log": "/tmp/copilot-v21-isolated-linux/api-authority.log",
+      "assertionsChanged": false
+    },
+    "fullTestIsolatedLinux": {
+      "status": "failed-attempt-interrupted-after-environment-diagnosis",
+      "log": "/tmp/copilot-v21-isolated-linux/full-test.log",
+      "resources": {
+        "memoryGiB": 6,
+        "cpuSet": "0-3",
+        "ipc": "private"
+      },
+      "modelCredentialsProvided": false,
+      "foreignContainersChanged": false,
+      "demonstratedEnvironmentCauses": [
+        {
+          "dependency": "lsof",
+          "evidence": "Missing in initial private controller; unchanged listener-ownership implementation invokes lsof."
+        },
+        {
+          "dependency": "jq",
+          "evidence": "Missing in initial private controller; unchanged artifact-helper tests invoke jq."
+        },
+        {
+          "dependency": "GLIBCXX_3.4.31",
+          "evidence": "ldd of installed HEIC native binary reports this version missing in Debian 12 controller."
+        }
+      ],
+      "environmentRepair": "Private Ubuntu 24.04 controller with frozen source and assets is building; failed attempts and assertions retained.",
+      "interruptionProof": "/tmp/copilot-v21-isolated-linux/full-test-first-attempt-interruption.json",
+      "completeCoverage": false,
+      "fullSuitePassClaimed": false,
+      "next": "Run retained failed suites in repaired controller, then complete full maintained checks."
+    },
+    "isolatedControllerDependencies": {
+      "status": "passed",
+      "sourceFilesVerified": 8459,
+      "sourceAndRuntimeUnchanged": true,
+      "lsof": true,
+      "jq": true,
+      "heicNativeBindingLoaded": true,
+      "proof": "/tmp/copilot-v21-isolated-linux/complete-test-tools-frozen-source-verification.json"
+    },
+    "environmentRegressionFollowup": {
+      "sourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209",
+      "profileDigest": "sha256:3bd433d9835ab6998ee712da41cad724006bb85d444f0cf96550708565605b7d",
+      "imageId": "sha256:e22d05e9a9d28019a35f059ba5ca319a783cac0857d217b1307a856f44325204",
+      "files": [
+        "server/src/__tests__/workspace-runtime.test.ts",
+        "server/src/services/workspace-runtime-exposure.test.ts",
+        "server/src/__tests__/workspace-runtime-exposure-reservation.test.ts",
+        "server/src/__tests__/photon/photon.test.ts",
+        "server/src/__tests__/photon/channel.integration.test.ts",
+        "server/src/__tests__/paperclip-skill-utils.test.ts"
+      ],
+      "status": "failed",
+      "exitCode": 1,
+      "assertionsChanged": false,
+      "modelCredentialsProvided": false,
+      "startedAt": "2026-10-05T18:33:57.887520+00:00",
+      "completedAt": "2026-10-05T18:39:48.841064+00:00",
+      "testsPassed": 260,
+      "testsFailed": 2,
+      "filesPassed": 5,
+      "filesFailed": 1,
+      "log": "/tmp/copilot-v21-isolated-linux/environment-regressions.log",
+      "remainingFailures": [
+        {
+          "name": "bind-race fixture assumes child readiness within 200 ms",
+          "evidence": "/tmp/copilot-v21-isolated-linux/workspace-fixture-startup-timing.json",
+          "measuredStartupMs": [
+            221,
+            221,
+            207,
+            207,
+            218
+          ],
+          "affectedCodeDiffFromPinnedMainline": "none"
+        },
+        {
+          "name": "listener-ownership-unavailable fixture exceeds its 20-second deadline",
+          "status": "unresolved release verification gate",
+          "affectedCodeDiffFromPinnedMainline": "none"
+        }
+      ]
+    },
+    "packageContractFinal": {
+      "status": "passed",
+      "tests": 10,
+      "log": "/tmp/copilot-production-campaign-v21/final-package-contract.log",
+      "qualificationOnlyAmendmentRecorded": true
+    }
+  },
+  "remainingReleaseGates": [
+    "Obtain exact approval of prepared private controller payload and public frozen image uploads, then execute qualification.",
+    "Pass 20 Product selectors, seven Runner protocol cases and all three installed-runtime smokes on the frozen v21 source.",
+    "Complete runner contracts, UI/connection regressions, token gates, recursive typecheck, full tests and build.",
+    "Promote Copilot consistently while keeping Cursor/Pi qualification unchanged; verify fresh ordinary setup and a canary without qualification overrides.",
+    "Publish current documentation and qualification evidence; require current-head CI and review before rollout."
+  ],
+  "upstreamIntegrated": true,
+  "mainlineIntegrationRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209",
+  "rebasedVerification": [
+    {
+      "check": "Copilot profile generation and consistency",
+      "status": "passed",
+      "profileDigest": "sha256:3bd433d9835ab6998ee712da41cad724006bb85d444f0cf96550708565605b7d"
+    },
+    {
+      "check": "Product catalog and report support",
+      "status": "passed",
+      "testCount": 44,
+      "log": "/tmp/copilot-v21-rebased-catalog-authorized.log"
+    },
+    {
+      "check": "Runner TypeScript build",
+      "status": "passed",
+      "log": "/tmp/copilot-v21-rebased-ts-build.log"
+    },
+    {
+      "check": "Copilot package contracts",
+      "status": "passed",
+      "testCount": 42,
+      "log": "/tmp/copilot-v21-rebased-copilot-contracts.log"
+    },
+    {
+      "check": "Mainline completion, shutdown and native executor regressions",
+      "status": "passed",
+      "testCount": 554,
+      "log": "/tmp/copilot-v21-mainline-settlement-regressions.log"
+    },
+    {
+      "check": "Database-dependent arbitration, project tools and workspace finalization",
+      "status": "passed",
+      "testCount": 24,
+      "log": "/tmp/copilot-v21-postgres-recovered-diagnostic.log"
+    },
+    {
+      "check": "Daytona immutable build content contract, including asset installer",
+      "status": "passed",
+      "testCount": 8,
+      "log": "/tmp/copilot-v21-rebased-image-contract.log"
+    }
+  ],
+  "postgresDiagnostic": {
+    "cause": "macOS 32 shared-memory slots exhausted; direct initdb stderr confirms shmget ENOSPC",
+    "evidence": "/private/tmp/copilot-v21-pg-init-diagnostic-__8kvlko/stderr.log",
+    "cleanup": "/tmp/copilot-production-campaign-v21/owned-postgres-ipc-cleanup.json",
+    "scope": "one zero-attached IPC segment matched to campaign postmaster.pid and this worktree postmaster.opts; foreign segments retained",
+    "rerunStatus": "24 tests passed across three formerly failing files; four other files pending current-source check"
+  },
+  "retainedBuildFailures": [
+    {
+      "attempt": "ARM64 provider pack after adding optional native dependencies",
+      "status": "failed-before-inference",
+      "cause": "pnpm native-platform .bin shim retained a temporary deployment path",
+      "log": "/tmp/copilot-production-campaign-v21/arm-provider-pack-build.log",
+      "fix": "Rewrite installed Copilot platform shims to pack-relative native launchers; retain the existing rejection for every remaining temporary path",
+      "costUsd": 0,
+      "modelPromptSent": false
+    }
+  ],
+  "frozenSourceEvidence": {
+    "path": "/tmp/copilot-production-campaign-v21/frozen-source.json",
+    "sha256": "sha256:de5c8eb7357f4f450fe6305a814bbe010e9d680880ea5cd3545e0a0ea79bf2c0"
+  },
+  "qualificationOnlyAmendments": {
+    "packages/paperclip-runner/test/acpx-codex-package-contract.test.mjs": {
+      "sha256": "sha256:97c0eef3c1261b5a931fa6c3fd1de6a3b5afd39dd6a88c8ed4dea1f82d5e713a",
+      "patchPath": "/tmp/copilot-production-campaign-v21/qualification-package-contract-amendment.patch",
+      "patchSha256": "sha256:003a101f0b66a7e2493d8de2a27f67b0bc191c6483e838a9bb00dea1c2c467ec",
+      "scope": "Offline test assertion now requires exactly the three pinned Copilot optional dependencies. No executable or package input changed."
+    }
+  },
+  "platformPacks": {
+    "providerPackDigest": "sha256:e0cd86b31885353f3eba635a040ed53a9bf01526c88c75db4da69890a74c3f5f",
+    "intelProviderPackDigest": "sha256:569cbc72e28a0c8459097ff6d96fbf81f445724fd8cf23f887d80d44ee0d6159",
+    "runnerPackageSha256": "sha256:4ba7a1436afa7a4efb59dfe0a79237861e8fccc337238873dbd7e4932df24c34"
+  },
+  "daytonaImage": {
+    "imageTag": "ghcr.io/paperclipai/paperclip-daytona-runner:copilot-qualification-7842dba3e92257219da8",
+    "expectedIndexDigest": "sha256:d228ee6bd84717410e2fcc79a62cc781f92b787a9d09781786b7ac19aae45899",
+    "status": "Built and Linux installed smoke passed. Public upload not executed; exact upload approval is pending after two automatic approval review rejections."
+  },
+  "isolatedControllerEnvironment": {
+    "sourceRevision": "1d4bc65c3cf4c3a74da59f82f306a718e3180209",
+    "profileDigest": "sha256:3bd433d9835ab6998ee712da41cad724006bb85d444f0cf96550708565605b7d",
+    "providerPackDigest": "sha256:7a4f2c6fdfa395a5f45857781ebfa08cc118cbd38548d9de185ba80eef660150",
+    "runnerdSha256": "sha256:fcaaccaba6f85ec9870fe2f8eeeedf48ffab68cc0f6d9dc348ee0e39ac092bc3",
+    "nodeSha256": "sha256:7fde7b8afa198da66257f42ee2001d874c7355631e6d1579a5fb5ef1f246df4c",
+    "imageId": "sha256:e22d05e9a9d28019a35f059ba5ca319a783cac0857d217b1307a856f44325204",
+    "imageIndexDigest": "sha256:e22d05e9a9d28019a35f059ba5ca319a783cac0857d217b1307a856f44325204",
+    "publication": "private local controller only",
+    "credentialsIncluded": false,
+    "sourceTreeProofSha256": "sha256:8506e9b8456d571b2f170ed6db25db7d895b5f240c24099078d44626337feecd",
+    "ipcNamespace": "private",
+    "testEnvironmentAmendment": {
+      "reason": "Install lsof, jq and compatible C++ runtime required by unchanged regression tests",
+      "productionSourceChanged": false,
+      "previousImageId": "sha256:f59ad48e11957c717da81b76aae8c036853c173ae7b646d732ece03b30a0ddd8",
+      "proofPath": "/tmp/copilot-v21-isolated-linux/complete-test-tools-frozen-source-verification.json",
+      "proofSha256": "sha256:9c5f2354431325a44337e674882d17e164fc36c230cb771e9d10537526f10e3b"
+    }
+  },
+  "nativePrivateController": {
+    "status": "prepared; upload rejected by automatic approval review; exact user approval pending",
+    "payloadProof": "/tmp/copilot-v21-native-controller/payload-proof.json",
+    "payloadSha256": "sha256:4f6af192e8c60c3de910c097be4dd07d543b6dc116c518a711fe34ab997f23bf",
+    "payloadBytes": 1016912183,
+    "knownCredentialMatches": 0,
+    "filesScanned": 14300,
+    "destination": "copilot-v21-native-private-controller-01, private Daytona sandbox, public=false",
+    "sandboxCreated": false,
+    "payloadUploaded": false,
+    "plannedInfrastructureReservationUsd": 3,
+    "reservationActuallyCreated": false,
+    "plannedTtlMinutes": 450,
+    "purpose": "Native x64 qualification controller; frozen workload image and application source remain unchanged."
+  },
+  "productionPromotionDraft": {
+    "applied": false,
+    "proofPath": "/tmp/copilot-production-campaign-v21/promotion-draft-provenance.json",
+    "files": 6,
+    "requiresQualificationPasses": true,
+    "transportAdmission": "Ordinary server will explicitly admit the validated qualified Copilot descriptor internally; no qualification environment override required."
+  },
+  "historicalStatus": "Awaiting exact payload/destination approval; no active paid run; production admission remains gated",
+  "supersededAt": "2026-10-06",
+  "supersededBy": {
+    "checklist": "2026-10-03-copilot-production-readiness.md",
+    "upstreamTargetRevision": "a6306ba606eb87c89b9ef0344e9fe8e0025580f9",
+    "profileVersion": 22,
+    "sourceFreezeComplete": false,
+    "historicalPassesQualifyCurrentSource": false
+  }
+}

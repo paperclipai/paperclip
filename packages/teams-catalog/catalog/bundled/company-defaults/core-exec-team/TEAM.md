@@ -41,4 +41,4 @@ The Core Exec Team is the bundled default install for a new Paperclip company. I
 
 ## Migration notes
 
-This entry mirrors the historical `server/src/onboarding-assets/ceo/` template family while staying inside the catalog package boundary. Per-agent persona files (the legacy `SOUL.md`, `HEARTBEAT.md`, `TOOLS.md` siblings) are intentionally collapsed into a single `AGENTS.md` per agent so importer/portability semantics stay simple. The richer persona content can move into `references/` files in a follow-up once onboarding actually switches to the catalog service.
+This entry mirrors the historical `server/src/onboarding-assets/ceo/` template family while staying inside the catalog package boundary. Each agent has a short role description in `AGENTS.md`. Runtime procedures come from the harness, repository instructions, and installed skills. Legacy persona files are not part of catalog imports.

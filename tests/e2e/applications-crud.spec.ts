@@ -56,7 +56,7 @@ async function createConnection(
 
 async function gotoApps(page: Page, prefix: string) {
   await page.goto(`/${prefix}/apps/connections`);
-  await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("heading", { name: "Plugins" })).toBeVisible({ timeout: 30_000 });
 }
 
 test.describe.serial("applications lifecycle", () => {
@@ -97,8 +97,6 @@ test.describe.serial("applications lifecycle", () => {
       .filter({ has: page.getByRole("heading", { name: connectedName, exact: true }) });
     await expect(connectedRow).toBeVisible();
     await expect(connectedRow.getByText(/^(Connected|Needs attention)$/)).toBeVisible({ timeout: 30_000 });
-    const openConnection = connectedRow.getByRole("button", { name: /^Open .* permissions$/ });
-    await expect(openConnection).toBeVisible();
 
     // The not-connected app has no connection, so the health sweep never touches
     // it and its Connect action stay deterministic.
@@ -110,6 +108,10 @@ test.describe.serial("applications lifecycle", () => {
     await expect(notConnectedRow.getByRole("button", { name: `Connect ${notConnectedName}` })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-list.png`, fullPage: true });
 
+    // Accounts live on the plugin's own page, one click in from the catalog.
+    await connectedRow.getByRole("button", { name: connectedName, exact: true }).click();
+    const openConnection = page.getByRole("button", { name: /^Open .* permissions$/ });
+    await expect(openConnection).toBeVisible();
     await openConnection.click();
     await expect(page).toHaveURL(
       new RegExp(`/${seed.prefix}/apps/${connected.id}/permissions$`),

@@ -1,3 +1,4 @@
+import { GithubIcon } from "@/components/icons/github-icon";
 import { Compass, Library, PencilRuler } from "lucide-react";
 import { useLocation } from "@/lib/router";
 import {
@@ -49,6 +50,7 @@ export function SkillsContextualSidebar() {
             active={activeView === "discover"}
             end
           />
+          <SidebarNavItem to={SKILLS_NAVIGATION_HREFS.sources} label="Sources" icon={GithubIcon} active={activeView === "sources"} />
         </div>
 
         <div data-slot="contextual-sidebar-section" className={contextualSidebarStyles.section}>

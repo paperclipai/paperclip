@@ -1,0 +1,59 @@
+---
+description: Keep the five newest Drizzle schema snapshots and preserve executable migration history.
+globs: "packages/db/src/schema/**,packages/db/src/migrations/**,packages/db/package.json,packages/db/drizzle.config.ts"
+alwaysApply: false
+---
+
+# Database migration snapshots
+
+## Scope and purpose
+
+This rule applies to database schema changes, migration files, and migration
+generation configuration. Drizzle snapshots under
+`packages/db/src/migrations/meta/` describe schema state for future generation.
+They are not database backups or the executable migration history.
+
+## Requirements
+
+- Keep only the five newest `*_snapshot.json` files, ordered by their numeric
+  migration prefix. If fewer than five exist, retain all of them. Always retain
+  the newest snapshot.
+- Generate schema migrations with `pnpm db:generate` from the repository root.
+  Its existing `prune:snapshots` step removes older snapshots. Commit those
+  deletions with the generated migration; do not restore them to reduce the diff.
+- After a merge, rebase, cherry-pick, or migration renumbering, check the final
+  combined snapshot set again. A branch that was correctly pruned before a
+  merge can contain too many snapshots afterward. Run the existing command:
+
+  ```sh
+  pnpm --filter @paperclipai/db prune:snapshots
+  ```
+
+- Pruning removes only old `*_snapshot.json` files. Preserve historical SQL
+  migrations and every existing `_journal.json` entry. Do not rewrite retained
+  snapshot contents or IDs as part of retention cleanup.
+- Include snapshot deletions in the same PR that adds snapshots. A separate
+  cleanup PR may remove an existing excess without generating a new migration.
+- Before pushing, inspect the migration diff and run
+  `pnpm --filter @paperclipai/db check:migrations`. Verify the retained snapshot
+  names separately: the numbering check validates SQL files and journal entries,
+  but does not enforce snapshot retention.
+
+## Examples and exceptions
+
+If the checkout contains `0331` through `0338`, retain `0334` through `0338`
+and delete snapshots `0331`, `0332`, and `0333`. Adding snapshot `0339` then
+removes snapshot `0334`. Multiple additions can require multiple deletions.
+
+SQL-only migrations do not require an invented snapshot. Select the five newest
+existing snapshots; do not assume every journal entry has one. An unrelated PR
+does not need to repair historical snapshot retention.
+
+## Review criteria
+
+For a PR that changes migrations or snapshots, inspect the resulting tree, not
+only its additions. Flag more than five snapshots, deletion of a snapshot that
+belongs in the newest five, restoration of pruned snapshots, or removal of SQL
+files or journal entries as part of pruning. Check again after rebases and
+conflict resolution. The pruning command in `packages/db/package.json` remains
+the implementation of the retention policy.

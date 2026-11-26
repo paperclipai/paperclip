@@ -22,6 +22,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { issueRoutes } from "../routes/issues.js";
+import { uniqueIssuePrefix } from "./helpers/issue-prefix.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -77,7 +78,7 @@ async function seedCompany(db: Db, label = "Subtree Diagnostics") {
   const nonce = randomUUID().slice(0, 8);
   const [company] = await db.insert(companies).values({
     name: `${label} ${nonce}`,
-    issuePrefix: `SD${nonce.slice(0, 4).toUpperCase()}`,
+    issuePrefix: uniqueIssuePrefix("SD"),
     defaultResponsibleUserId: "board-user",
   }).returning();
   return company!;

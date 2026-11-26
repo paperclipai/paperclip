@@ -111,3 +111,11 @@ export function useTheme() {
   }
   return context;
 }
+
+/**
+ * The current theme, re-rendering on change. Outside a ThemeProvider (tests,
+ * isolated stories) it falls back to the document's class.
+ */
+export function useResolvedTheme(): Theme {
+  return useContext(ThemeContext)?.theme ?? resolveThemeFromDocument();
+}

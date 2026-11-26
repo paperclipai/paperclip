@@ -1,0 +1,107 @@
+{
+  "schema": "paperclip.pi-provider-pack-offline-proof.v1",
+  "recordedAt": "2026-09-28T17:33:47.419Z",
+  "classification": "offline_candidate_admission",
+  "source": {
+    "runnerRevision": "f58cfa1cbf4503b93a0be4480f51b492d8203b7c",
+    "distDigest": "sha256:c7f250e0fbe0b6a6357bacb2d1487675d74a32f96b42922d7739ef86ddb9b6e0",
+    "bridgeDigest": "sha256:431b2400f13a20249b2d4383188e496f071f7d009a1835873561711f567f55b3",
+    "productionLockDigest": "sha256:b89a0f0a647b77f61b231bcdd95e1fc26eaf9e9b8010d53a16428fae49b96f26",
+    "note": "Built after the final foundation rebase and Pi retry-outcome repair. This probe executed the deployed generic installation registry and immutable snapshot. Every capability field below was read and asserted from this actual initialize response. No prompt was sent."
+  },
+  "environment": {
+    "platform": "darwin",
+    "architecture": "arm64",
+    "nodeVersion": "24.19.0",
+    "execution": "local macOS ARM64; immutable guarded provider snapshot",
+    "packageManager": "pnpm@9.15.4"
+  },
+  "candidate": {
+    "agent": "pi",
+    "qualification": "pending",
+    "agentProfileVersion": 2,
+    "declaredModel": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "reportedModelId": null,
+    "modelVerification": "not_performed_authentication_missing",
+    "wrapperVersion": "0.0.33",
+    "runtimeVersion": "0.84.2",
+    "profileDigest": "sha256:5ed73f923b24bf203cf39d6c5dedd5dfd21e94efcb2c2580b4adf53f1b91fd2f",
+    "closureDigest": "sha256:c79fa33fd134e860fd777cd467873438b17b80b0b462a89e95cc63fbaa46bada",
+    "assetTreeDigest": "sha256:ceb81538aff1d04bff44505aa1e08ace869039c8055ed82667fab64e21f05ab1",
+    "distributionManifestDigest": "sha256:cc56a2bd75d56de01982a731e7d43b0b5e96fd3f7e06cdbbd1bc858bf2ffcd05",
+    "wrapperDigest": "sha256:2eb201c3a931177490a8e18f4a8392f00cbcf21847e9cc171de528da5e253935",
+    "helperDigest": "sha256:4333d284ff06ab1195e49630041f0b03a486a92fc678100525ad107e0982dba1",
+    "extensionDigest": "sha256:87f5348be5da3fb505baea1208de7b62e88ec714adcf0ac0a16a51952f57e2da"
+  },
+  "providerPack": {
+    "manifestDigest": "sha256:3de76fb7d3902d29285e3da51e36d2ba4654c29bab0c867a6209fadea77c2181",
+    "portableNodeDigest": "sha256:27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+    "piNodeDigest": "sha256:27db838bb204ef7c21df2931f5656e4c8fb32e6e947f363a402b49714d32b5b1",
+    "acpxSidecarDigest": "sha256:ee85322a4947f21fe079cc22ed1c7282a38fb84016ae28b56cde4f58b9001d5e"
+  },
+  "observed": {
+    "closedSnapshotLaunch": true,
+    "acpInitialize": "passed",
+    "authMethods": [],
+    "capabilities": {
+      "version": 1,
+      "steering": true,
+      "queuedFollowUp": true,
+      "questions": [
+        "select",
+        "confirm",
+        "input",
+        "editor"
+      ],
+      "nativePermissions": true,
+      "promptUsage": true,
+      "nativePlan": false,
+      "pendingRequestRecovery": "live-process-only"
+    },
+    "sessionNew": "rejected_authentication_missing",
+    "expectedError": "Bind the configured OpenRouter API credential to this Paperclip runtime.",
+    "missingCredentialRejected": true,
+    "capabilityProvenance": "Read and asserted in full from this pack launch.",
+    "rpcMethods": [
+      "initialize",
+      "session/new"
+    ]
+  },
+  "usage": {
+    "providerCalls": 0,
+    "promptRequests": 0,
+    "paidProviderCalls": 0,
+    "credentials": "none",
+    "spentUsd": 0
+  },
+  "limitations": [
+    "No provider authentication, model prompt, or reported currentModelId was verified.",
+    "Native tool execution, permissions, questions, and semantic MCP calls were not exercised by this pack-launch probe.",
+    "Linux x64, macOS x64, and Daytona execution were not exercised.",
+    "Production qualification remains pending."
+  ],
+  "verification": {
+    "sourceRevision": "f58cfa1cbf4503b93a0be4480f51b492d8203b7c",
+    "typescriptBuild": "passed",
+    "providerPackBuild": "passed",
+    "vitest": {
+      "files": 4,
+      "passed": 30,
+      "failed": 0,
+      "actualDistributionInstallation": "enabled; same pinned runtime closure"
+    },
+    "nodeTests": {
+      "files": 3,
+      "passed": 17,
+      "failed": 0,
+      "skipped": 0,
+      "actualPackages": "fresh provider-pack assets"
+    },
+    "notRun": [
+      "full repository typecheck, build, and tests for this provider branch",
+      "credentialed model evaluation",
+      "Linux x64 or macOS x64 execution",
+      "Daytona deployment"
+    ]
+  }
+}

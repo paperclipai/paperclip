@@ -126,6 +126,45 @@ describe("sandbox native file sync", () => {
     expect(await readFile(path.join(repo, "outside.txt"), "utf8")).toBe("outside boundary\n");
   });
 
+  it("prepares a runtime whose workspace directory does not exist without failing the ignore scan", async () => {
+    // An env test staging only credential assets can hand the runtime a
+    // workspace path that never existed on this host. A directory with no
+    // files has nothing for ignore rules to govern, so the scan is skipped
+    // rather than failed (git-ignore-scan-failed took down the whole
+    // preparation in production).
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-native-absent-workspace-"));
+    cleanupDirs.push(rootDir);
+    const remoteDir = path.join(rootDir, "remote");
+
+    const { client } = makeNativeClient();
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "s1", remoteCwd: remoteDir, timeoutMs: 30_000, apiKey: null },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: path.join(rootDir, "never-created"),
+    });
+    await prepared.restoreWorkspace();
+  });
+
+  it("fails preparation when the workspace cannot be read for a reason other than absence", async () => {
+    // Only absence means "nothing to sync". A workspace that is there but
+    // unreadable must not quietly become an empty remote workspace, so any
+    // other access error still fails the preparation. A path whose parent is
+    // a file gives a deterministic non-ENOENT error on every platform.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-native-unreadable-workspace-"));
+    cleanupDirs.push(rootDir);
+    const notADirectory = path.join(rootDir, "a-file");
+    await writeFile(notADirectory, "not a directory\n");
+
+    const { client } = makeNativeClient();
+    await expect(prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "s1", remoteCwd: path.join(rootDir, "remote"), timeoutMs: 30_000, apiKey: null },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: path.join(notADirectory, "workspace"),
+    })).rejects.toMatchObject({ code: "ENOTDIR" });
+  });
+
   it("prefers the native path for default-provision asset inbound and workspace outbound", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-native-sync-"));
     cleanupDirs.push(rootDir);
