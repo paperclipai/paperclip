@@ -227,4 +227,19 @@ describe("BrowserLoadingIndicator and RouteContentLoading", () => {
     getContext.mockRestore();
     toDataUrl.mockRestore();
   });
+
+  it("renders safely when mounted without a QueryClientProvider", () => {
+    const root = createRoot(container);
+    flushSync(() => {
+      root.render(<BrowserLoadingIndicator />);
+    });
+
+    const bar = container.querySelector('[data-testid="browser-loading-bar"]') as HTMLElement;
+    expect(bar).toBeTruthy();
+    expect(bar.style.opacity).toBe("0");
+
+    flushSync(() => {
+      root.unmount();
+    });
+  });
 });

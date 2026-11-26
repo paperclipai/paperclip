@@ -1,8 +1,18 @@
-import { useEffect, useRef, useState } from "react";
-import { useIsMutating } from "@tanstack/react-query";
+import { createContext, useContext, useEffect, useRef, useState } from "react";
+import { QueryClientContext, useIsMutating, type QueryClient } from "@tanstack/react-query";
 import { useLocation } from "@/lib/router";
 import { notifyRouteChange, useActivityLoading } from "@/lib/activity-loader";
 import { AnimatedPaperclipIcon } from "./AnimatedPaperclipIcon";
+
+const FallbackQueryClientContext = createContext<QueryClient | undefined>(undefined);
+
+function QueryMutatingTracker({ onChange }: { onChange: (count: number) => void }) {
+  const mutatingCount = useIsMutating();
+  useEffect(() => {
+    onChange(mutatingCount);
+  }, [mutatingCount, onChange]);
+  return null;
+}
 
 const SPINNER_FRAME_COUNT = 12;
 const SPINNER_INTERVAL_MS = 70;
@@ -157,7 +167,8 @@ function useBrowserTabSpinner(active: boolean) {
 
 export function BrowserLoadingIndicator() {
   const location = useLocation();
-  const mutatingCount = useIsMutating();
+  const queryClient = useContext(QueryClientContext ?? FallbackQueryClientContext);
+  const [mutatingCount, setMutatingCount] = useState(0);
   const activity = useActivityLoading();
   const [routeSweeping, setRouteSweeping] = useState(false);
   const mountedLocationRef = useRef<string | null>(null);
@@ -176,7 +187,8 @@ export function BrowserLoadingIndicator() {
     return () => window.clearTimeout(timer);
   }, [location.pathname, location.search]);
 
-  const rawLoading = activity.isLoading || mutatingCount > 0 || routeSweeping;
+  const effectiveMutatingCount = queryClient ? mutatingCount : 0;
+  const rawLoading = activity.isLoading || effectiveMutatingCount > 0 || routeSweeping;
   const [sustainedLoading, setSustainedLoading] = useState(false);
   const [barVisible, setBarVisible] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -225,6 +237,7 @@ export function BrowserLoadingIndicator() {
 
   return (
     <>
+      {queryClient ? <QueryMutatingTracker onChange={setMutatingCount} /> : null}
       <div
         aria-hidden="true"
         data-testid="browser-loading-bar"
