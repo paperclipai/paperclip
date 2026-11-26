@@ -3545,7 +3545,7 @@ export function SkillDetailPage({
       {/* Floating save bar: stays visible while a file edit is dirty so the
           unsaved state is obvious (PAP-10907 J). */}
       {isDirty ? (
-        <div className="fixed bottom-20 left-1/2 z-40 flex max-w-(--sz-calc-4) -translate-x-1/2 flex-wrap items-center justify-center gap-3 rounded-2xl border border-border bg-background/95 px-4 py-2 shadow-lg backdrop-blur sm:rounded-full md:bottom-6">
+        <div className="fixed bottom-(--sz-calc-14) left-1/2 z-40 flex max-w-(--sz-calc-4) -translate-x-1/2 flex-wrap items-center justify-center gap-3 rounded-2xl border border-border bg-background/95 px-4 py-2 shadow-lg backdrop-blur sm:rounded-full md:bottom-6">
           <span className="text-sm text-muted-foreground">Unsaved changes</span>
           <Button
             variant="ghost"

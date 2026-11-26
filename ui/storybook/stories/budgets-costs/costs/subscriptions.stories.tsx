@@ -159,7 +159,24 @@ export const CostsMobile: Story = {
   play: async () => {
     const page = within(document.body);
     await expect(await page.findByText("API spend")).toBeVisible();
-    await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth));
+    const table = await page.findByRole("table", { name: "Costs by user" });
+    const scroller = table.parentElement as HTMLElement;
+    await waitFor(() => {
+      const rect = scroller.getBoundingClientRect();
+      expect(rect.width).toBeGreaterThan(0);
+      expect(rect.right).toBeLessThanOrEqual(window.innerWidth + 1);
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+    });
+    if (scroller.scrollWidth > scroller.clientWidth) {
+      scroller.scrollLeft = scroller.scrollWidth;
+      const headers = within(table).getAllByRole("columnheader");
+      const lastHeader = headers[headers.length - 1]!;
+      await waitFor(() => {
+        expect(lastHeader.getBoundingClientRect().right).toBeLessThanOrEqual(
+          scroller.getBoundingClientRect().right + 1,
+        );
+      });
+    }
   },
 };
 export const CostDataQuality: Story = { args: { costGaps: true }, play: async ({ canvasElement }) => {

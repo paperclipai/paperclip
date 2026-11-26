@@ -144,6 +144,23 @@ export const MembersMobile: Story = {
   play: async () => {
     const page = within(document.body);
     await expect(await page.findByRole("heading", { name: "Organization Members" })).toBeVisible();
-    await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth));
+    const table = await page.findByRole("table");
+    const scroller = table.parentElement as HTMLElement;
+    await waitFor(() => {
+      const rect = scroller.getBoundingClientRect();
+      expect(rect.width).toBeGreaterThan(0);
+      expect(rect.right).toBeLessThanOrEqual(window.innerWidth + 1);
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+    });
+    if (scroller.scrollWidth > scroller.clientWidth) {
+      scroller.scrollLeft = scroller.scrollWidth;
+      const headers = within(table).getAllByRole("columnheader");
+      const lastHeader = headers[headers.length - 1]!;
+      await waitFor(() => {
+        expect(lastHeader.getBoundingClientRect().right).toBeLessThanOrEqual(
+          scroller.getBoundingClientRect().right + 1,
+        );
+      });
+    }
   },
 };

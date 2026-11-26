@@ -129,7 +129,6 @@ export const Phone: Story = {
   globals: { viewport: { value: "mobile1", isRotated: false } },
 };
 
-/** Full Routines list at 390×844 mobile viewport verifying horizontal table scroll containment. */
 export const RoutinesListMobile: Story = {
   globals: { viewport: { value: "mobile", isRotated: false } },
   parameters: {
@@ -139,11 +138,27 @@ export const RoutinesListMobile: Story = {
   },
   play: async () => {
     await expect(await page().findByText("Send the weekly product digest")).toBeVisible();
-    await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth));
+    const table = await page().findByRole("table", { name: "Routines" });
+    const scroller = table.parentElement as HTMLElement;
+    await waitFor(() => {
+      const rect = scroller.getBoundingClientRect();
+      expect(rect.width).toBeGreaterThan(0);
+      expect(rect.right).toBeLessThanOrEqual(window.innerWidth + 1);
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+    });
+    if (scroller.scrollWidth > scroller.clientWidth) {
+      scroller.scrollLeft = scroller.scrollWidth;
+      const headers = within(table).getAllByRole("columnheader");
+      const lastHeader = headers[headers.length - 1]!;
+      await waitFor(() => {
+        expect(lastHeader.getBoundingClientRect().right).toBeLessThanOrEqual(
+          scroller.getBoundingClientRect().right + 1,
+        );
+      });
+    }
   },
 };
 
-/** Routine detail page at 390×844 mobile viewport. */
 export const RoutineDetailMobile: Story = {
   globals: { viewport: { value: "mobile", isRotated: false } },
   parameters: {
