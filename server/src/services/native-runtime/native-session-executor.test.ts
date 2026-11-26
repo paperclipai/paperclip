@@ -545,6 +545,7 @@ import {
   verifyNativeHarnessBackupStreamed,
   shouldRestoreNativeHarnessBackupIntoSandbox,
   remoteProviderStateNeverOpened,
+  providerSessionReplaceableAfterStateLoss,
 } from "./native-session-executor.js";
 import { onNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
 
@@ -19986,6 +19987,20 @@ describe("runnerd provider runtime wiring", () => {
         }
       } finally { owner.mockRestore(); resume.mockRestore(); }
     });
+
+  it("keeps same-session recovery for an unfinished goal or Antigravity after a confirmed lost plugin checkpoint", () => {
+    const codex = { provider: { kind: "codex", model: null, approvalPolicy: "never" } } as unknown as NativeExecutionInput;
+    const goal = (status: string) => ({ threadId: "thread", objective: "ship", status, tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0 }) as never;
+    expect(providerSessionReplaceableAfterStateLoss({}, codex)).toBe(true);
+    expect(providerSessionReplaceableAfterStateLoss({ goal: null }, codex)).toBe(true);
+    expect(providerSessionReplaceableAfterStateLoss({ goal: goal("complete") }, codex)).toBe(true);
+    for (const status of ["active", "paused", "blocked", "limited", "usageLimited", "budgetLimited"]) {
+      expect(providerSessionReplaceableAfterStateLoss({ goal: goal(status) }, codex), status).toBe(false);
+    }
+    const antigravity = { provider: { kind: "acpx", agent: "antigravity" } } as unknown as NativeExecutionInput;
+    expect(providerSessionReplaceableAfterStateLoss({}, antigravity))
+      .toBe(!antigravityRelease.antigravityForcesSameSessionRecovery(antigravity.provider));
+  });
 
   it.each([
     "stopped-state-unavailable",
