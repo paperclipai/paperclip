@@ -19570,6 +19570,11 @@ async function createRunnerdBackendWithinSessionClaim(
       // session launches from the pack root while its saved receipt names the
       // artifact root, which the next continuation's Runner rejects.
       if (requiresRemoteProviderPack) {
+        // Force a full preparation here rather than relying on the archive
+        // having cleared it: a prepared flag or cached launch inputs left over
+        // from the archived session would make this a silent no-op.
+        remotePrepared = false;
+        openCodeLaunchArtifacts = undefined;
         await prepareNativeRemoteRunner({ target, runnerIngressAuthorized: input.runnerIngressAuthorized === true,
           runnerPublicUrl: input.runnerPublicUrl, runnerCaBundlePath: input.runnerCaBundlePath,
           runId: input.execution.binding.runId, prepareRemote: prepareRemoteRunner });

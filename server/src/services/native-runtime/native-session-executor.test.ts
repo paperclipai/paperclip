@@ -3339,7 +3339,10 @@ describe("remote provider pack manifest", () => {
           const backend = state.createBackend.mock.results.at(-1)!.value;
           const factory = state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!;
           let replacementOptions: Record<string, unknown> | undefined;
+          const preparationsBefore = prepareRemote.mock.calls.length;
           Object.assign(backend, { openSession: async () => {
+            // The replacement stages its launch inputs itself, before its transport is built.
+            expect(prepareRemote.mock.calls.length).toBe(preparationsBefore + 1);
             factory();
             replacementOptions = state.createTransport.mock.calls.at(-1)![0] as Record<string, unknown>;
             return { identity: () => ({ ...remoteExecution.binding, sessionId: remoteExecution.session.normalizedSessionId! }) };

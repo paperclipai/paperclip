@@ -192,10 +192,14 @@ suite("fresh-continuation fallback", () => {
   // without its launch inputs, and the run failed as an incompatible provider
   // pack. The pack was fine; a fresh run prepares those inputs again, so the
   // task held by an older release continues without a Retry.
-  it("continues a task blocked because the controller left out the OpenCode launch inputs", async () => {
+  it.each([
+    "runner_remote_provider_artifact_incompatible: OpenCode executable is missing from the provider pack",
+    // As a wrapping layer records it, with a prefix and trailing detail.
+    "runner_ingress_unavailable: runnerd process failed: runner_remote_provider_artifact_incompatible: "
+      + "OpenCode executable is missing from the provider pack (attempt=2)",
+  ])("continues a task blocked because the controller left out the OpenCode launch inputs (%s)", async error => {
     const f = await unfinishedRun({ runtime: "native", errorCode: "runner_remote_provider_artifact_incompatible",
-      error: "runner_remote_provider_artifact_incompatible: OpenCode executable is missing from the provider pack",
-      holdCause: "runner_remote_provider_artifact_incompatible" });
+      error, holdCause: "runner_remote_provider_artifact_incompatible" });
     await settleUnrecoverableExecutions(db);
     const next = await deliverOneSuccessor(f);
     expect(next.contextSnapshot).toMatchObject({ issueId: f.issueId, previousRunId: f.runId, forceFreshSession: true });

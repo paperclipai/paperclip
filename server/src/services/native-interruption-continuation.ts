@@ -10,7 +10,7 @@ export function nativeInterruptionHold() {
   return and(
     or(inArray(issueRecoveryActions.cause, [...RESTART_CLASS_FAILURE_CODES]),
       and(eq(issueRecoveryActions.cause, LEGACY_LAUNCH_UNPREPARED_FAILURE.code),
-        eq(heartbeatRuns.error, LEGACY_LAUNCH_UNPREPARED_FAILURE.error))),
+        sql`strpos(coalesce(${heartbeatRuns.error}, ''), ${LEGACY_LAUNCH_UNPREPARED_FAILURE.marker}) > 0`)),
     eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.nativePhase, "terminal_failure"),
     eq(nativeRunFinalizations.phase, "terminal_failure"), isNull(nativeRunFinalizations.nextAttemptAt),
     not(nativeReplacementPending()!),
