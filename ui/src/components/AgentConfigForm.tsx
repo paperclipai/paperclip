@@ -30,7 +30,13 @@ import type {
   Environment,
   SecretVersionSelector,
 } from "@paperclipai/shared";
-import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter, isValidBrowserCode, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import {
+  AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  AGENT_ROLES,
+  supportedEnvironmentDriversForAdapter,
+  isValidBrowserCode,
+  ADAPTER_AUTH_MISSING_CHECK_CODE,
+} from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
@@ -81,6 +87,7 @@ import {
   DraftNumberInput,
   help,
   adapterLabels,
+  roleLabels,
 } from "./agent-config-primitives";
 import { defaultCreateValues } from "./agent-config-defaults";
 import { getUIAdapter } from "../adapters";
@@ -1851,6 +1858,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     );
   }
 
+  const editableRole = isCreate ? "" : props.agent.role;
+  const renderEditableRole = () => (
+    <Field label="Role" hint={help.role}>
+      <RoleDropdown
+        value={eff("identity", "role", editableRole)}
+        onChange={(role) => mark("identity", "role", role)}
+      />
+    </Field>
+  );
+
   return (
     <div className="space-y-6">
       {showRunnerUpgrade && !runnerUpgraded ? (
@@ -1927,6 +1944,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 placeholder="e.g. VP of Engineering"
               />
             </Field>
+            {renderEditableRole()}
             <Field label="Reports to" hint={help.reportsTo}>
               <ReportsToPicker
                 agents={companyAgents}
@@ -2307,6 +2325,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Configuration</div>
           }
           <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
+              {!isCreate && props.hiddenSections?.includes("identity") ? renderEditableRole() : null}
               {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
                 <>
                   <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
@@ -4339,6 +4358,27 @@ export function AdapterTypeDropdown({
       group: item.value === "paperclip_runner" ? "Advanced" : undefined,
       label: <span className="inline-flex items-center gap-1.5"><span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={item.value} className="size-4" /></span><span>{item.label}</span>{item.experimental && <ExperimentalBadge />}</span>,
     }))} />;
+}
+
+export function RoleDropdown({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (role: string) => void;
+}) {
+  return (
+    <SelectPopover
+      aria-label="Role"
+      value={value}
+      onValueChange={onChange}
+      displayValue={roleLabels[value] ?? value}
+      options={AGENT_ROLES.map((role) => ({
+        value: role,
+        label: roleLabels[role] ?? role,
+      }))}
+    />
+  );
 }
 
 function ExperimentalBadge() {

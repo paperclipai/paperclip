@@ -165,6 +165,57 @@ function makeEnvironment(overrides: Partial<Environment>): Environment {
   };
 }
 
+async function renderForm(
+  environments: Environment[],
+  agentOverrides: Partial<Agent> = {},
+  options: {
+    hideInlineSave?: boolean;
+    onSaveActionChange?: (save: (() => void) | null) => void;
+    hiddenSections?: readonly string[];
+    sectionLayout?: "cards" | "panels";
+    sectionOrder?: readonly string[];
+    sectionTitles?: Record<string, string>;
+  } = {},
+) {
+  mockEnvironmentsApi.list.mockResolvedValue(environments);
+
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  const onSave = vi.fn();
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  });
+
+  await act(async () => {
+    root.render(
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <TooltipProvider>
+            <AgentConfigForm
+              mode="edit"
+              agent={makeAgent(agentOverrides)}
+              onSave={onSave}
+              hidePromptTemplate
+              hideInlineSave={options.hideInlineSave}
+              onSaveActionChange={options.onSaveActionChange}
+              hiddenSections={options.hiddenSections}
+              sectionLayout={options.sectionLayout}
+              sectionOrder={options.sectionOrder}
+              sectionTitles={options.sectionTitles}
+              showAdapterTypeField={false}
+              showAdapterTestEnvironmentButton={false}
+            />
+          </TooltipProvider>
+        </ToastProvider>
+      </QueryClientProvider>,
+    );
+  });
+
+  await flushReact();
+  return { container, root, onSave };
+}
+
 const AUTH_MISSING_RESULT = {
   adapterType: "codex_local",
   status: "fail",
@@ -270,5 +321,76 @@ describe("AgentConfigForm session replay masking", () => {
     await flushReact();
 
     expect(isBlockedFromReplay("WXYZ-1234", document.body)).toBe(true);
+  });
+});
+
+describe("AgentConfigForm Role field", () => {
+  let roots: Root[] = [];
+
+  beforeEach(() => {
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    mockAgentsApi.detectModel.mockResolvedValue(null);
+    mockAgentsApi.list.mockResolvedValue([]);
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: null });
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true });
+    mockInstanceSettingsApi.getGeneral.mockResolvedValue({ executionMode: "any" });
+    mockEnvironmentsApi.capabilities.mockResolvedValue(SANDBOX_CAPABILITIES);
+    mockSecretsApi.list.mockResolvedValue([]);
+    mockSecretsApi.listProposals.mockResolvedValue([]);
+  });
+
+  afterEach(async () => {
+    for (const root of roots) {
+      await act(async () => root.unmount());
+    }
+    roots = [];
+    document.body.innerHTML = "";
+    vi.clearAllMocks();
+  });
+
+  it("lets an existing agent's role be changed after creation", async () => {
+    let saveAction: (() => void) | null = null;
+    const result = await renderForm(
+      [makeEnvironment({ id: "local-1", name: "Local", driver: "local" })],
+      { role: "cfo" },
+      {
+        hideInlineSave: true,
+        hiddenSections: ["identity", "run-policy"],
+        sectionLayout: "panels",
+        sectionOrder: ["adapter", "configuration", "environment", "environment-variables"],
+        sectionTitles: { adapter: "", configuration: "", environment: "" },
+        onSaveActionChange: (save) => { saveAction = save; },
+      },
+    );
+    roots.push(result.root);
+
+    expect(result.container.textContent).toContain("CFO");
+    const roleButton = Array.from(result.container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "CFO",
+    );
+    expect(roleButton).toBeTruthy();
+
+    await act(async () => {
+      roleButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    const engineerOption = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Engineer",
+    );
+    expect(engineerOption).toBeTruthy();
+    await act(async () => {
+      engineerOption?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(saveAction).toBeTypeOf("function");
+    await act(async () => {
+      saveAction?.();
+    });
+    await flushReact();
+
+    expect(result.onSave).toHaveBeenCalledTimes(1);
+    expect(result.onSave.mock.calls[0]?.[0]).toMatchObject({ role: "engineer" });
   });
 });
