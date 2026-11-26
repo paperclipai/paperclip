@@ -1,5 +1,5 @@
 {
-  "id": "ba38ec6e-e675-4dec-a4b5-aa73eb69c463",
+  "id": "1726f6cb-8aed-4fbd-9e78-8510bd8c1479",
   "prevId": "bd7706ab-f548-43f0-9dbb-4f1d52d9c135",
   "version": "7",
   "dialect": "postgresql",
@@ -4510,8 +4510,8 @@
           "primaryKey": false,
           "notNull": false
         },
-        "hired_through_staffing": {
-          "name": "hired_through_staffing",
+        "delegated_hire": {
+          "name": "delegated_hire",
           "type": "boolean",
           "primaryKey": false,
           "notNull": true,
@@ -16729,8 +16729,8 @@
           "notNull": true,
           "default": false
         },
-        "staffing_policy": {
-          "name": "staffing_policy",
+        "reporting_line_policy": {
+          "name": "reporting_line_policy",
           "type": "jsonb",
           "primaryKey": false,
           "notNull": false

@@ -1,6 +1,6 @@
 import { getActorInfo } from "./authz.js";
 import { unprocessable } from "../errors.js";
-import { assertStaffingOwner } from "../services/reporting-line-staffing.js";
+import { assertReportingLinePolicyOwner } from "../services/reporting-line-management.js";
 import { notifyRetentionWork, writeJoinRequestChange } from "../services/retention-work-notifications.js";
 import { isPublicIpAddress, parseIpv4Address } from "../lib/ip-address.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
@@ -4540,22 +4540,22 @@ export function accessRoutes(
       if (!memberToUpdate) throw notFound("Member not found");
       const grants = (req.body as import("@paperclipai/shared").UpdateMemberPermissions).grants ?? [];
       if (memberToUpdate.principalType === "agent") {
-        await assertStaffingOwner(db, companyId, req.actor);
-        if (grants.length > 1 || grants.some(grant => grant.permissionKey !== "agents:delegate_resources")) {
-          throw unprocessable("This route accepts only agent staffing resource grants");
+        await assertReportingLinePolicyOwner(db, companyId, req.actor);
+        if (grants.length > 1 || grants.some(grant => grant.permissionKey !== "agents:delegate_runtime")) {
+          throw unprocessable("This route accepts only runtime delegation grants for agents");
         }
-        const saved = await access.setStaffingResourceGrant(companyId, memberToUpdate.principalId,
+        const saved = await access.setRuntimeDelegationGrant(companyId, memberToUpdate.principalId,
           grants.length ? grants[0].scope ?? null : undefined, getActorInfo(req).actorId);
         await logActivity(db, {
           companyId, ...getActorInfo(req), action: "company_member.permissions_updated",
           entityType: "company_membership", entityId: memberId,
-          details: { permissionKey: "agents:delegate_resources", enabled: saved.length > 0 },
+          details: { permissionKey: "agents:delegate_runtime", enabled: saved.length > 0 },
         });
         res.json({ ...memberToUpdate, grants: saved });
         return;
       }
-      if (grants.some(grant => grant.permissionKey === "agents:delegate_resources")) {
-        throw unprocessable("Staffing resource grants apply to agents");
+      if (grants.some(grant => grant.permissionKey === "agents:delegate_runtime")) {
+        throw unprocessable("Runtime delegation grants apply to agents");
       }
       await assertCanManageCompanyMember(req, access, companyId, memberToUpdate);
       const updated = await access.setMemberPermissions(companyId, memberId, grants, req.actor.userId ?? null);

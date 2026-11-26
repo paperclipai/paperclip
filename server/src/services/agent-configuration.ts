@@ -1,4 +1,4 @@
-import { assertStaffingConfiguration } from "./reporting-line-staffing.js";
+import { assertReportingLineConfiguration } from "./reporting-line-management.js";
 import { isDeepStrictEqual } from "node:util";
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
@@ -43,10 +43,10 @@ export async function lockAgentConfigurationInteractions(tx: Db, id: string, dat
 }
 
 export async function prepareAgentConfiguration(db: Db, existing: AgentConfigurationRecord, data: AgentConfigurationPatch, options?: UpdateAgentOptions): Promise<AgentConfigurationPatch> {
-  const staffingActor = options?.staffingActor ?? (options?.recordRevision?.createdByAgentId
+  const reportingLineActor = options?.reportingLineActor ?? (options?.recordRevision?.createdByAgentId
     ? { type: "agent" as const, agentId: options.recordRevision.createdByAgentId, companyId: existing.companyId }
     : undefined);
-  await assertStaffingConfiguration(db, existing, data, staffingActor, options?.requiresStaffing);
+  await assertReportingLineConfiguration(db, existing, data, reportingLineActor, options?.requiresReportingLinePolicy);
   await assertAgentInteraction(db, { companyId: existing.companyId, actorAgentId: options?.recordRevision?.createdByAgentId,
     operation: "mention", texts: changedConfigurationText(data, existing) });
   if (data.permissions !== undefined) data = { ...data, permissions: preserveAgentInteractionPermissions(existing.permissions, data.permissions) };

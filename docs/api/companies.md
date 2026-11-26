@@ -115,13 +115,27 @@ Returns whether agent trace export is set up for the company. Every member of th
 | `createdAt` | string | ISO timestamp |
 | `updatedAt` | string | ISO timestamp |
 
-## Reporting-line staffing
+## Reporting-line policy
 
-A company owner can opt in with `PATCH /api/companies/{companyId}` and
-`{"staffingPolicy":{"enabled":true,"maxDepth":50,"maxDirectReports":12}}`.
-The policy defaults to off. Turn off `requireBoardApprovalForNewAgents` before
-enabling it. The root is at depth zero. Setup, pending, paused, and terminating
-agents count toward the direct-report limit until termination or rejection
-settles. Turn off staffing with `{"staffingPolicy":{"enabled":false}}`.
-Agents hired under this policy keep their existing work permissions and lose
-their delegated staffing authority.
+The reporting-line policy lets agents with hiring permission manage agents
+below them in the org chart. It is off by default. An owner can turn it on
+in Company Settings after turning off **Require board approval for new hires**.
+To enable it through the API, send the following body to
+`PATCH /api/companies/{companyId}`.
+
+```json
+{
+  "reportingLinePolicy": {
+    "enabled": true,
+    "maxDepth": 50,
+    "maxDirectReports": 12
+  }
+}
+```
+
+Depth counts the links from the top of the org chart, which is at depth zero.
+Direct reports count toward the limit until termination or rejection finishes,
+including agents that are still in setup or paused. To turn the policy off,
+send `{"reportingLinePolicy":{"enabled":false}}`. Agents added under the
+policy can still do their existing work. Their permission to add or manage
+reports ends.

@@ -67,8 +67,8 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
   assertRootDatabase(db);
   const records = agentRecords(db, effects);
   const store = createLifecycleStore(db, effects);
-  async function change(id: string, command: "pause" | "resume" | "terminate" | "retry", reason?: string, staffingActor?: UpdateAgentOptions["staffingActor"]) {
-    const result = await store.change(id, command, { reason, staffingActor });
+  async function change(id: string, command: "pause" | "resume" | "terminate" | "retry", reason?: string, reportingLineActor?: UpdateAgentOptions["reportingLineActor"]) {
+    const result = await store.change(id, command, { reason, reportingLineActor });
     if (result) scheduleAgentLifecycle(db, id);
     return result ? records.getById(id) : null;
   }
@@ -105,15 +105,15 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
       if (!existing) return null;
       const agent = await effects.transaction(db, existing.companyId, async (tx, publications) => {
         await updateAgentConfiguration(tx, effects, id, data, options, publications);
-        await createLifecycleStore(tx, { ...effects, transaction: async (_db, _companyId, work) => work(tx, publications) }).change(id, command, { reason: command === "resume" ? "user" : "manual", staffingActor: options?.staffingActor });
+        await createLifecycleStore(tx, { ...effects, transaction: async (_db, _companyId, work) => work(tx, publications) }).change(id, command, { reason: command === "resume" ? "user" : "manual", reportingLineActor: options?.reportingLineActor });
         return agentRecords(tx, effects).getById(id);
       });
       scheduleAgentLifecycle(db, id);
       return agent;
     },
-    pauseAgent: (id: string, reason = "manual", actor?: UpdateAgentOptions["staffingActor"]) => change(id, "pause", reason, actor),
-    resumeAgent: (id: string, reason = "user", actor?: UpdateAgentOptions["staffingActor"]) => change(id, "resume", reason, actor),
-    terminateAgent: (id: string, actor?: UpdateAgentOptions["staffingActor"]) => change(id, "terminate", undefined, actor),
+    pauseAgent: (id: string, reason = "manual", actor?: UpdateAgentOptions["reportingLineActor"]) => change(id, "pause", reason, actor),
+    resumeAgent: (id: string, reason = "user", actor?: UpdateAgentOptions["reportingLineActor"]) => change(id, "resume", reason, actor),
+    terminateAgent: (id: string, actor?: UpdateAgentOptions["reportingLineActor"]) => change(id, "terminate", undefined, actor),
     retry: (id: string) => change(id, "retry"),
     clearError: records.clearError,
     purgeAgent: (id: string) => purgeAgent(db, effects, id),

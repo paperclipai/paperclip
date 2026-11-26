@@ -1,4 +1,4 @@
-import { assertStaffingActor, assertStaffingHireInput, assertStaffingOwner, assertStaffingReplay, staffingPolicyFor } from "../services/reporting-line-staffing.js";
+import { assertReportingLineActor, assertReportingLineHireInput, assertReportingLinePolicyOwner, assertReportingLineHireReplay, reportingLinePolicyFor } from "../services/reporting-line-management.js";
 import { resolveLoginEnvironmentTarget } from "../services/login-environment.js";
 import { supportsUnscopedHeartbeat } from "../services/heartbeat-policy.js";
 import { checkAgentProtectedEnvironmentKeys } from "../services/protected-environment-keys.js";
@@ -1851,7 +1851,7 @@ export function agentRoutes(
    * other actors a ready profile link, so they can send a person to the control.
    */
   async function assertBoardCanTerminateAgent(req: Request, target: { id: string; companyId: string }) {
-    if (req.actor.type === "board" || (req.actor.type === "agent" && await staffingPolicyFor(db, target.companyId))) return;
+    if (req.actor.type === "board" || (req.actor.type === "agent" && await reportingLinePolicyFor(db, target.companyId))) return;
     const [company] = await db.select({ issuePrefix: companies.issuePrefix }).from(companies)
       .where(eq(companies.id, target.companyId));
     const profile = company?.issuePrefix ? `[the agent's profile](/${company.issuePrefix}/agents/${target.id})` : "the agent's profile";
@@ -4411,7 +4411,7 @@ export function agentRoutes(
     const revisionId = req.params.revisionId as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Agent not found");
     if (!existing) return;
-    const delegated = req.actor.type === "agent" && req.actor.agentId !== id && !!await staffingPolicyFor(db, existing.companyId);
+    const delegated = req.actor.type === "agent" && req.actor.agentId !== id && !!await reportingLinePolicyFor(db, existing.companyId);
     if (!delegated) await assertCanUpdateAgent(req, existing);
 
     const revision = await svc.getConfigRevision(id, revisionId);
@@ -4475,8 +4475,8 @@ export function agentRoutes(
     const updated = await svc.rollbackConfigRevision(id, revisionId, {
       agentId: actor.agentId,
       userId: actor.actorType === "user" ? actor.actorId : null,
-      staffingActor: req.actor,
-      requiresStaffing: delegated,
+      reportingLineActor: req.actor,
+      requiresReportingLinePolicy: delegated,
     });
     if (!updated) {
       res.status(404).json({ error: "Revision not found" });
@@ -4559,10 +4559,10 @@ export function agentRoutes(
 
   const handleAgentHire = async (req: Request, res: Response) => {
     const companyId = req.params.companyId as string;
-    const delegated = req.actor.type === "agent" && !!await staffingPolicyFor(db, companyId);
+    const delegated = req.actor.type === "agent" && !!await reportingLinePolicyFor(db, companyId);
     if (delegated) {
-      await assertStaffingActor(db, companyId, req.actor);
-      assertStaffingHireInput(req.body);
+      await assertReportingLineActor(db, companyId, req.actor);
+      assertReportingLineHireInput(req.body);
     } else await assertCanCreateAgentsForCompany(req, companyId, { hiring: true });
     const company = await db
       .select()
@@ -4769,7 +4769,7 @@ export function agentRoutes(
         if (match) {
           const existingAgent = await svc.getById(match.entityId);
           if (existingAgent && existingAgent.status !== "terminated") {
-            if (delegated) await assertStaffingReplay(db, existingAgent.id, companyId, req.actor);
+            if (delegated) await assertReportingLineHireReplay(db, existingAgent.id, companyId, req.actor);
             const priorApprovalId = (match.details as Record<string, unknown> | null)?.approvalId;
             const existingApproval =
               typeof priorApprovalId === "string" ? await approvalsSvc.getById(priorApprovalId) : null;
@@ -4796,7 +4796,7 @@ export function agentRoutes(
         },
         {
           ...(setupAgentId ? { setupAgentId } : {}),
-          ...(req.actor.type === "agent" ? { staffingActor: req.actor, requiresStaffing: delegated, staffingInput: req.body } : {}),
+          ...(req.actor.type === "agent" ? { reportingLineActor: req.actor, requiresReportingLinePolicy: delegated, reportingLineHireInput: req.body } : {}),
           createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
           createdByAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
           interactionTexts: [JSON.stringify(req.body)],
@@ -4933,7 +4933,7 @@ export function agentRoutes(
         );
       }
 
-      if (!createdAgent.hiredThroughStaffing) await applyDefaultAgentTaskAssignGrant(
+      if (!createdAgent.delegatedHire) await applyDefaultAgentTaskAssignGrant(
         companyId,
         agent.id,
         actor.actorType === "user" ? actor.actorId : null,
@@ -4971,10 +4971,10 @@ export function agentRoutes(
 
   router.post("/companies/:companyId/agents", validate(createAgentSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
-    const delegated = req.actor.type === "agent" && !!await staffingPolicyFor(db, companyId);
+    const delegated = req.actor.type === "agent" && !!await reportingLinePolicyFor(db, companyId);
     if (delegated) {
-      await assertStaffingActor(db, companyId, req.actor);
-      assertStaffingHireInput(req.body);
+      await assertReportingLineActor(db, companyId, req.actor);
+      assertReportingLineHireInput(req.body);
     } else await assertCanCreateAgentsForCompany(req, companyId, { hiring: true });
     if (req.body.budgetMonthlyCents > 0) assertBoard(req, COMPANY_BUDGETS_PAGE);
 
@@ -5102,7 +5102,7 @@ export function agentRoutes(
       },
       {
         ...(setupId ? { setupOnly: true } : {}),
-        ...(req.actor.type === "agent" ? { staffingActor: req.actor, requiresStaffing: delegated, staffingInput: req.body } : {}),
+        ...(req.actor.type === "agent" ? { reportingLineActor: req.actor, requiresReportingLinePolicy: delegated, reportingLineHireInput: req.body } : {}),
         createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
         createdByAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
         interactionTexts: [JSON.stringify(req.body)],
@@ -5162,7 +5162,7 @@ export function agentRoutes(
       trackAgentCreated(telemetryClient, { agentRole: agent.role, agentId: agent.id });
     }
 
-    if (!createdAgent.hiredThroughStaffing) await applyDefaultAgentTaskAssignGrant(
+    if (!createdAgent.delegatedHire) await applyDefaultAgentTaskAssignGrant(
       companyId,
       agent.id,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
@@ -5180,7 +5180,7 @@ export function agentRoutes(
     if (!existing) return;
 
     if (req.actor.type === "agent") {
-      if (await staffingPolicyFor(db, existing.companyId)) throw forbidden("Only an owner can manage staffing permissions");
+      if (await reportingLinePolicyFor(db, existing.companyId)) throw forbidden("Only an owner can change agent permissions while the reporting-line policy is on");
       const actorAgent = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
       if (!actorAgent || actorAgent.companyId !== existing.companyId) {
         res.status(403).json({ error: "Forbidden" });
@@ -5693,7 +5693,7 @@ export function agentRoutes(
       return;
     }
 
-    const delegated = req.actor.type === "agent" && req.actor.agentId !== existing.id && !!await staffingPolicyFor(db, existing.companyId);
+    const delegated = req.actor.type === "agent" && req.actor.agentId !== existing.id && !!await reportingLinePolicyFor(db, existing.companyId);
     const runtimeSettings = req.body.runtimeSettings;
     if (runtimeSettings && !delegated) await assertCanConfigureAgentSetup(req, existing);
     const patchData = runtimeSettings
@@ -5988,8 +5988,8 @@ export function agentRoutes(
 
     const actor = getActorInfo(req);
     const updateOptions = {
-      staffingActor: req.actor,
-      requiresStaffing: delegated,
+      reportingLineActor: req.actor,
+      requiresReportingLinePolicy: delegated,
       expectedConfigurationRevision,
       ...(runtimeSettings ? { expectedConfiguration: {
         adapterType: existing.adapterType, adapterConfig: existing.adapterConfig,
@@ -6018,7 +6018,7 @@ export function agentRoutes(
     }
 
     if (command === "pause" && delegated) await heartbeat.cancelActiveForAgent(id);
-    if (command === "terminate" && delegated) await cancelTerminatedStaffingRuns(agent.companyId, id);
+    if (command === "terminate" && delegated) await cancelTerminatedReportRuns(agent.companyId, id);
 
     await logActivity(db, {
       companyId: agent.companyId,
@@ -6055,7 +6055,7 @@ export function agentRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleAgent(req, res, id);
     if (!existing) return;
-    if (req.actor.type !== "agent" || !await staffingPolicyFor(db, existing.companyId)) assertBoard(req);
+    if (req.actor.type !== "agent" || !await reportingLinePolicyFor(db, existing.companyId)) assertBoard(req);
     const agent = await svcLifecycle.pauseAgent(id, "manual", req.actor);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -6081,7 +6081,7 @@ export function agentRoutes(
     if (!existing) {
       return;
     }
-    if (req.actor.type !== "agent" || !await staffingPolicyFor(db, existing.companyId)) await assertCanResumeAgent(req, existing);
+    if (req.actor.type !== "agent" || !await reportingLinePolicyFor(db, existing.companyId)) await assertCanResumeAgent(req, existing);
     if (existing.orgChainHealth?.status === "invalid_org_chain") {
       res.status(409).json({
         error: existing.orgChainHealth?.repairGuidance ?? "Repair this agent's reporting chain before resuming it",
@@ -6178,7 +6178,7 @@ export function agentRoutes(
     res.json(redactAgentRowForResponse(agent));
   });
 
-  async function cancelTerminatedStaffingRuns(companyId: string, id: string) {
+  async function cancelTerminatedReportRuns(companyId: string, id: string) {
     const companyAgentRows = await db
       .select({
         id: agentsTable.id,
@@ -6215,7 +6215,7 @@ export function agentRoutes(
       return;
     }
 
-    const { invalidOrgChainDescendantIds, cancellation } = await cancelTerminatedStaffingRuns(agent.companyId, id);
+    const { invalidOrgChainDescendantIds, cancellation } = await cancelTerminatedReportRuns(agent.companyId, id);
 
     await logActivity(db, {
       companyId: agent.companyId,
@@ -6245,8 +6245,8 @@ export function agentRoutes(
     const id = req.params.id as string;
     const existing = await getAccessibleAgent(req, res, id);
     if (!existing) return;
-    if (existing.hiredThroughStaffing || await staffingPolicyFor(db, existing.companyId)) {
-      await assertStaffingOwner(db, existing.companyId, req.actor);
+    if (existing.delegatedHire || await reportingLinePolicyFor(db, existing.companyId)) {
+      await assertReportingLinePolicyOwner(db, existing.companyId, req.actor);
     }
     const agent = await svc.remove(id);
     if (!agent) {

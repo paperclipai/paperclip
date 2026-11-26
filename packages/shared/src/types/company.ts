@@ -14,7 +14,7 @@ export type InteractionResolverGovernance = Partial<
   Record<IssueThreadInteractionKind, InteractionResolverKindGovernance>
 >;
 
-export interface ReportingLineStaffingPolicy {
+export interface ReportingLinePolicy {
   enabled: boolean;
   maxDepth: number;
   maxDirectReports: number;
@@ -49,7 +49,7 @@ export interface Company {
    */
   budgetOwnerUserId: string | null;
   requireBoardApprovalForNewAgents: boolean;
-  staffingPolicy?: ReportingLineStaffingPolicy | null;
+  reportingLinePolicy?: ReportingLinePolicy | null;
   interactionResolverGovernance: InteractionResolverGovernance;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: Date | null;

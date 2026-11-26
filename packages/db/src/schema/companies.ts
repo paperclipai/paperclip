@@ -1,4 +1,4 @@
-import type { InteractionResolverGovernance, ReportingLineStaffingPolicy } from "@paperclipai/shared";
+import type { InteractionResolverGovernance, ReportingLinePolicy } from "@paperclipai/shared";
 import { numeric, pgTable, uuid, text, integer, timestamp, boolean, jsonb, uniqueIndex } from "drizzle-orm/pg-core";
 
 export const companies = pgTable(
@@ -29,7 +29,7 @@ export const companies = pgTable(
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()
       .default(false),
-    staffingPolicy: jsonb("staffing_policy").$type<ReportingLineStaffingPolicy>(),
+    reportingLinePolicy: jsonb("reporting_line_policy").$type<ReportingLinePolicy>(),
     interactionResolverGovernance: jsonb("interaction_resolver_governance")
       .$type<InteractionResolverGovernance>()
       .notNull()

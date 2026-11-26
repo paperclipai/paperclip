@@ -1,4 +1,4 @@
-import { assertStaffingConfiguration } from "./reporting-line-staffing.js";
+import { assertReportingLineConfiguration } from "./reporting-line-management.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { assertNoInitialAgentInteractionPermissions, preserveAgentInteractionPermissions } from "../lib/agent-interaction-permissions.js";
 import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
@@ -85,14 +85,14 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
   assertEphemeralAgentInstructions({ ...created, name: "" });
   await initializeDurableAgentFiles(txDb, created);
   await agentIdentityService(txDb).ensureAgentIdentity(companyId, created.id);
-  if (created.hiredThroughStaffing) {
+  if (created.delegatedHire) {
     await tx.insert(companyMemberships).values({
       companyId, principalType: "agent", principalId: created.id, membershipRole: "member", status: "active",
     }).onConflictDoNothing();
   }
   // New standard agents receive the standard direct grants at activation.
   // Low-trust and bundled agents keep their explicit, narrower grants.
-  if (!created.hiredThroughStaffing && !options?.setupOnly && created.status !== "pending_approval" && !permissionsImplyLowTrust(created.permissions) &&
+  if (!created.delegatedHire && !options?.setupOnly && created.status !== "pending_approval" && !permissionsImplyLowTrust(created.permissions) &&
       !readBuiltInAgentMarker(created.metadata)) {
     await tx.insert(principalPermissionGrants).values(
       NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
@@ -124,7 +124,7 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
   const patch = { ...approvedPatch } as AgentConfigurationPatch;
   if (patch.reportsTo !== undefined) {
     const [current] = await txDb.select().from(agents).where(eq(agents.id, existing.id));
-    if (current) await assertStaffingConfiguration(txDb, current, patch);
+    if (current) await assertReportingLineConfiguration(txDb, current, patch);
   }
   const hasApprovedAdapterConfig = Object.prototype.hasOwnProperty.call(patch, "adapterConfig") && isPlainRecord(patch.adapterConfig);
   if (
@@ -168,7 +168,7 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
 export async function completeAgentHireApproval(txDb: Db, updated: AgentHireRecord, existing: AgentHireRecord) {
   const tx = txDb;
   await agentCredentialService(txDb).syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
-  if (!updated.hiredThroughStaffing && !permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
+  if (!updated.delegatedHire && !permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
     await tx.insert(principalPermissionGrants).values(
       NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
         companyId: updated.companyId,

@@ -1,5 +1,5 @@
 import { agents, companies, companyMemberships, principalPermissionGrants, toolConnectionInstalls, toolProfileBindings, type Db } from "@paperclipai/db";
-import { reportingLineStaffingPolicySchema, staffingResourceScopeSchema, type ReportingLineStaffingPolicy } from "@paperclipai/shared";
+import { reportingLinePolicySchema, delegatedRuntimeScopeSchema, type ReportingLinePolicy } from "@paperclipai/shared";
 import { and, eq, or } from "drizzle-orm";
 import { conflict, forbidden } from "../errors.js";
 import type { AgentConfigurationPatch, AgentConfigurationRecord, CreateAgentData, CreateAgentOptions } from "../lib/agent-records.js";
@@ -12,13 +12,13 @@ type Graph = Map<string, GraphAgent>;
 type RuntimeChoice = Pick<CreateAgentData, "adapterType" | "adapterConfig" | "defaultEnvironmentId" | "runtimeConfig">;
 type AgentActor = AuthorizationActor & { agentId: string };
 
-export async function staffingPolicyFor(db: Db, companyId: string) {
-  const [company] = await db.select({ policy: companies.staffingPolicy }).from(companies).where(eq(companies.id, companyId));
-  const parsed = reportingLineStaffingPolicySchema.safeParse(company?.policy);
+export async function reportingLinePolicyFor(db: Db, companyId: string) {
+  const [company] = await db.select({ policy: companies.reportingLinePolicy }).from(companies).where(eq(companies.id, companyId));
+  const parsed = reportingLinePolicySchema.safeParse(company?.policy);
   return parsed.success && parsed.data.enabled ? parsed.data : null;
 }
 
-export async function assertStaffingOwner(db: Db, companyId: string, actor: AuthorizationActor) {
+export async function assertReportingLinePolicyOwner(db: Db, companyId: string, actor: AuthorizationActor) {
   if (actor.type === "board") {
     if (actor.source === "local_implicit" || (actor.isInstanceAdmin && !actor.ignoreInstanceAdmin)) return;
     if (actor.userId) {
@@ -56,7 +56,7 @@ function lineage(graph: Graph, agentId: string) {
   return chain;
 }
 
-function assertGraphLimits(graph: Graph, policy: ReportingLineStaffingPolicy, rootId?: string) {
+function assertGraphLimits(graph: Graph, policy: ReportingLinePolicy, rootId?: string) {
   const directReports = new Map<string, number>();
   for (const agent of graph.values()) {
     if (!counts(agent)) continue;
@@ -73,22 +73,22 @@ function assertGraphLimits(graph: Graph, policy: ReportingLineStaffingPolicy, ro
   }
 }
 
-export async function assertStaffingPolicyChange(db: Db, companyId: string, policy: ReportingLineStaffingPolicy | null | undefined, requiresApproval: boolean) {
+export async function assertReportingLinePolicyChange(db: Db, companyId: string, policy: ReportingLinePolicy | null | undefined, requiresApproval: boolean) {
   if (!policy?.enabled) return;
-  if (requiresApproval) throw conflict("Turn off board approval for new agents before enabling reporting-line staffing");
+  if (requiresApproval) throw conflict("Turn off board approval for new hires before letting agents manage their reports");
   assertGraphLimits(await companyGraph(db, companyId), policy);
 }
 
-export async function assertStaffingActor(db: Db, companyId: string, actor: AuthorizationActor) {
+export async function assertReportingLineActor(db: Db, companyId: string, actor: AuthorizationActor) {
   if (actor.type !== "agent" || !actor.agentId) throw forbidden("Agent authentication required");
-  const [member] = await db.select({ id: agents.id, bounded: agents.hiredThroughStaffing }).from(agents).innerJoin(companyMemberships, and(
+  const [member] = await db.select({ id: agents.id, bounded: agents.delegatedHire }).from(agents).innerJoin(companyMemberships, and(
     eq(companyMemberships.companyId, agents.companyId), eq(companyMemberships.principalId, actor.agentId),
     eq(companyMemberships.principalType, "agent"), eq(companyMemberships.status, "active"),
   )).where(and(eq(agents.id, actor.agentId), eq(agents.companyId, companyId), eq(agents.lifecycleState, "ready")));
-  if (!member) throw forbidden("Staffing requires a ready agent with active company membership");
+  if (!member) throw forbidden("Only ready agents with active company membership can manage their reports");
   const decision = await authorizationService(db).decide({
     actor, action: "agents:create", resource: { type: "company", companyId },
-    ...(member.bounded ? { scope: { reportingLineStaffing: true } } : {}),
+    ...(member.bounded ? { scope: { reportingLineManagement: true } } : {}),
   });
   if (!decision.allowed) throw forbidden(decision.explanation);
   return actor as AgentActor;
@@ -104,9 +104,9 @@ function assertBranchTarget(graph: Graph, actor: AgentActor, targetId: string, a
   }
 }
 
-export async function assertStaffingRoleBrief(db: Db, target: AgentConfigurationRecord, actor: AuthorizationActor) {
-  if (actor.type !== "agent" || actor.agentId === target.id || !await staffingPolicyFor(db, target.companyId)) return false;
-  const manager = await assertStaffingActor(db, target.companyId, actor);
+export async function assertReportRoleDescriptionUpdate(db: Db, target: AgentConfigurationRecord, actor: AuthorizationActor) {
+  if (actor.type !== "agent" || actor.agentId === target.id || !await reportingLinePolicyFor(db, target.companyId)) return false;
+  const manager = await assertReportingLineActor(db, target.companyId, actor);
   const graph = await companyGraph(db, target.companyId);
   assertBranchTarget(graph, manager, target.id);
   await assertOwnerManagedBindingsAbsent(db, target);
@@ -142,11 +142,11 @@ async function assertDelegableRuntime(db: Db, companyId: string, graph: Graph, m
     eq(companyMemberships.principalId, principalPermissionGrants.principalId),
     eq(companyMemberships.status, "active"),
   )).where(and(eq(principalPermissionGrants.companyId, companyId),
-    eq(principalPermissionGrants.principalType, "agent"), eq(principalPermissionGrants.permissionKey, "agents:delegate_resources")));
+    eq(principalPermissionGrants.principalType, "agent"), eq(principalPermissionGrants.permissionKey, "agents:delegate_runtime")));
   const managers = lineage(graph, managerId);
   for (const grant of grants) {
     if (!managers.has(grant.principalId) || graph.get(grant.principalId)?.lifecycleState !== "ready") continue;
-    const scope = staffingResourceScopeSchema.safeParse(grant.scope);
+    const scope = delegatedRuntimeScopeSchema.safeParse(grant.scope);
     if (scope.success && scope.data.choices.some(choice =>
       (grant.principalId === managerId || choice.includeDescendants) &&
       choice.environmentId === runtime.defaultEnvironmentId && choice.adapterType === runtime.adapterType &&
@@ -155,7 +155,7 @@ async function assertDelegableRuntime(db: Db, companyId: string, graph: Graph, m
   throw forbidden("Owner approval is required to delegate this runtime choice");
 }
 
-export function assertStaffingHireInput(body: Record<string, unknown>) {
+export function assertReportingLineHireInput(body: Record<string, unknown>) {
   const allowed = new Set(["reportsTo", "name", "title", "icon", "appearance", "role", "adapterType",
     "adapterConfig", "defaultEnvironmentId", "instructionsBundle", "runtimeConfig", "budgetMonthlyCents", "sourceIssueId", "sourceIssueIds"]);
   const config = (body.adapterConfig ?? {}) as Record<string, unknown>;
@@ -167,38 +167,38 @@ export function assertStaffingHireInput(body: Record<string, unknown>) {
   }
 }
 
-export async function assertStaffingReplay(db: Db, agentId: string, companyId: string, actor: AuthorizationActor) {
+export async function assertReportingLineHireReplay(db: Db, agentId: string, companyId: string, actor: AuthorizationActor) {
   return withAccountingTransaction(db, companyId, async tx => {
-    if (!await staffingPolicyFor(tx, companyId)) throw forbidden("Reporting-line staffing is disabled");
-    const manager = await assertStaffingActor(tx, companyId, actor);
+    if (!await reportingLinePolicyFor(tx, companyId)) throw forbidden("The reporting-line policy is off");
+    const manager = await assertReportingLineActor(tx, companyId, actor);
     const graph = await companyGraph(tx, companyId);
     assertBranchTarget(graph, manager, agentId);
     const [agent] = await tx.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)));
-    if (!agent || !agent.hiredThroughStaffing || !counts(agent)) throw conflict("The previous hire is unavailable");
+    if (!agent || !agent.delegatedHire || !counts(agent)) throw conflict("The previous hire is unavailable");
     if (agent.defaultEnvironmentId) await assertDelegableRuntime(tx, companyId, graph, manager.agentId, agent);
   });
 }
 
-export async function prepareStaffingHire(db: Db, companyId: string, id: string, data: CreateAgentData, options?: CreateAgentOptions) {
-  const policy = await staffingPolicyFor(db, companyId);
-  const actor = options?.staffingActor ?? (options?.createdByAgentId
+export async function prepareReportingLineHire(db: Db, companyId: string, id: string, data: CreateAgentData, options?: CreateAgentOptions) {
+  const policy = await reportingLinePolicyFor(db, companyId);
+  const actor = options?.reportingLineActor ?? (options?.createdByAgentId
     ? { type: "agent" as const, agentId: options.createdByAgentId, companyId }
     : undefined);
   if (!policy) {
-    if (options?.requiresStaffing) throw forbidden("Reporting-line staffing is disabled");
+    if (options?.requiresReportingLinePolicy) throw forbidden("The reporting-line policy is off");
     if (actor?.type === "agent" && actor.agentId) {
-      const [record] = await db.select({ bounded: agents.hiredThroughStaffing }).from(agents).where(and(
+      const [record] = await db.select({ bounded: agents.delegatedHire }).from(agents).where(and(
         eq(agents.companyId, companyId), eq(agents.id, actor.agentId),
       ));
-      if (record?.bounded) throw forbidden("Reporting-line staffing is disabled");
+      if (record?.bounded) throw forbidden("The reporting-line policy is off");
     }
     return { reportsTo: data.reportsTo, bounded: false };
   }
   const graph = await companyGraph(db, companyId);
   let reportsTo = data.reportsTo ?? null;
   if (actor?.type === "agent") {
-    const manager = await assertStaffingActor(db, companyId, actor);
-    if (options?.staffingInput) assertStaffingHireInput(options.staffingInput);
+    const manager = await assertReportingLineActor(db, companyId, actor);
+    if (options?.reportingLineHireInput) assertReportingLineHireInput(options.reportingLineHireInput);
     if (data.reportsTo === null || options?.setupOnly || options?.setupAgentId || data.status !== "idle" ||
       options?.aiConnectionInstall || data.metadata || data.permissions ||
       data.role !== "general" || (data.budgetMonthlyCents ?? 0) !== 0) {
@@ -228,7 +228,7 @@ async function assertOwnerManagedBindingsAbsent(db: Db, agent: AgentConfiguratio
     eq(toolProfileBindings.companyId, agent.companyId),
     or(eq(toolProfileBindings.targetType, "company"), eq(toolProfileBindings.targetId, agent.id)),
   )).limit(1);
-  if (!agent.hiredThroughStaffing || install || profile || Object.values(agent.permissions).some(value => value === true)) {
+  if (!agent.delegatedHire || install || profile || Object.values(agent.permissions).some(value => value === true)) {
     throw forbidden("The agent's effective access requires owner configuration");
   }
 }
@@ -250,15 +250,15 @@ async function assertMovePreservesDelegation(db: Db, companyId: string, before: 
       if (roots.some(id => newChain.has(id)) && !roots.some(id => oldChain.has(id))) {
         throw forbidden("An owner must move a branch into an additional scoped grant");
       }
-      if (grant.permissionKey !== "agents:delegate_resources" || oldChain.has(grant.principalId) ||
+      if (grant.permissionKey !== "agents:delegate_runtime" || oldChain.has(grant.principalId) ||
         !newChain.has(grant.principalId)) continue;
-      const scope = staffingResourceScopeSchema.safeParse(grant.scope);
+      const scope = delegatedRuntimeScopeSchema.safeParse(grant.scope);
       if (!scope.success) continue;
       for (const choice of scope.data.choices) {
         if (!choice.includeDescendants) continue;
         const callerCanDelegate = grants.some(candidate => {
-          if (candidate.permissionKey !== "agents:delegate_resources" || !callerChain.has(candidate.principalId)) return false;
-          const candidateScope = staffingResourceScopeSchema.safeParse(candidate.scope);
+          if (candidate.permissionKey !== "agents:delegate_runtime" || !callerChain.has(candidate.principalId)) return false;
+          const candidateScope = delegatedRuntimeScopeSchema.safeParse(candidate.scope);
           return candidateScope.success && candidateScope.data.choices.some(approved =>
             (candidate.principalId === actorId || approved.includeDescendants) &&
             approved.environmentId === choice.environmentId && approved.adapterType === choice.adapterType &&
@@ -270,24 +270,24 @@ async function assertMovePreservesDelegation(db: Db, companyId: string, before: 
   }
 }
 
-export async function assertStaffingConfiguration(db: Db, current: AgentConfigurationRecord, patch: AgentConfigurationPatch, actor?: AuthorizationActor, requiresStaffing?: boolean) {
-  const policy = await staffingPolicyFor(db, current.companyId);
-  if (actor?.type === "agent" && actor.agentId === current.id && current.hiredThroughStaffing &&
+export async function assertReportingLineConfiguration(db: Db, current: AgentConfigurationRecord, patch: AgentConfigurationPatch, actor?: AuthorizationActor, requiresReportingLinePolicy?: boolean) {
+  const policy = await reportingLinePolicyFor(db, current.companyId);
+  if (actor?.type === "agent" && actor.agentId === current.id && current.delegatedHire &&
     Object.keys(patch).some(key => !["name", "title", "icon", "appearance"].includes(key))) {
     throw forbidden("This configuration change requires owner access");
   }
   if (!policy) {
-    if (requiresStaffing) throw forbidden("Reporting-line staffing is disabled");
+    if (requiresReportingLinePolicy) throw forbidden("The reporting-line policy is off");
     return;
   }
   if (actor?.type !== "agent" && patch.reportsTo === undefined) return;
   const graph = await companyGraph(db, current.companyId);
   const manager = actor?.type === "agent" && (actor.agentId !== current.id || patch.reportsTo !== undefined)
-    ? await assertStaffingActor(db, current.companyId, actor)
+    ? await assertReportingLineActor(db, current.companyId, actor)
     : null;
   if (manager) {
     assertBranchTarget(graph, manager, current.id);
-    if (current.lifecycleState === "pending_approval") throw conflict("Resolve the pending hire before making staffing changes");
+    if (current.lifecycleState === "pending_approval") throw conflict("Resolve the pending hire before changing this agent");
     const fields = Object.keys(patch);
     if (fields.some(key => key !== "reportsTo")) await assertOwnerManagedBindingsAbsent(db, current);
     if (fields.some(key => !["name", "title", "icon", "appearance", "reportsTo", "defaultEnvironmentId", "adapterConfig"].includes(key))) {
@@ -317,11 +317,11 @@ export async function assertStaffingConfiguration(db: Db, current: AgentConfigur
   if (manager) await assertMovePreservesDelegation(db, current.companyId, graph, nextGraph, current.id, manager.agentId);
 }
 
-export async function assertStaffingLifecycle(db: Db, target: AgentConfigurationRecord, command: string, actor?: AuthorizationActor) {
+export async function assertReportingLineLifecycle(db: Db, target: AgentConfigurationRecord, command: string, actor?: AuthorizationActor) {
   if (actor?.type !== "agent") return;
-  const policy = await staffingPolicyFor(db, target.companyId);
+  const policy = await reportingLinePolicyFor(db, target.companyId);
   if (!policy) {
-    if (command === "pause" || command === "terminate" || target.hiredThroughStaffing) throw forbidden("Reporting-line staffing is disabled");
+    if (command === "pause" || command === "terminate" || target.delegatedHire) throw forbidden("The reporting-line policy is off");
     const decision = await authorizationService(db).decide({
       actor, action: "agent_config:update", resource: { type: "agent", companyId: target.companyId, agentId: target.id },
       scope: { requiresChangeGrant: true },
@@ -329,7 +329,7 @@ export async function assertStaffingLifecycle(db: Db, target: AgentConfiguration
     if (!decision.allowed) throw forbidden(decision.explanation);
     return;
   }
-  const manager = await assertStaffingActor(db, target.companyId, actor);
+  const manager = await assertReportingLineActor(db, target.companyId, actor);
   if (command === "resume") await assertOwnerManagedBindingsAbsent(db, target);
   const graph = await companyGraph(db, target.companyId);
   assertBranchTarget(graph, manager, target.id);

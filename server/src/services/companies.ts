@@ -1,4 +1,4 @@
-import { assertStaffingPolicyChange } from "./reporting-line-staffing.js";
+import { assertReportingLinePolicyChange } from "./reporting-line-management.js";
 import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
@@ -131,7 +131,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
     defaultDecisionOwnerUserId: companies.defaultDecisionOwnerUserId,
     budgetOwnerUserId: companies.budgetOwnerUserId,
     requireBoardApprovalForNewAgents: companies.requireBoardApprovalForNewAgents,
-    staffingPolicy: companies.staffingPolicy,
+    reportingLinePolicy: companies.reportingLinePolicy,
     interactionResolverGovernance: companies.interactionResolverGovernance,
     feedbackDataSharingEnabled: companies.feedbackDataSharingEnabled,
     feedbackDataSharingConsentAt: companies.feedbackDataSharingConsentAt,
@@ -318,7 +318,7 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
     ) => {
       const budgetPublications: ActivityPublication[] = [];
       const result = await db.transaction(async (tx) => {
-        if (data.status !== undefined || data.budgetMonthlyCents !== undefined || data.staffingPolicy !== undefined || data.requireBoardApprovalForNewAgents !== undefined) {
+        if (data.status !== undefined || data.budgetMonthlyCents !== undefined || data.reportingLinePolicy !== undefined || data.requireBoardApprovalForNewAgents !== undefined) {
           await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, id)).for("no key update");
         }
         const existing = await getCompanyQuery(tx)
@@ -326,8 +326,8 @@ export function companyService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
-        if (data.staffingPolicy !== undefined || data.requireBoardApprovalForNewAgents !== undefined) {
-          await assertStaffingPolicyChange(tx as unknown as Db, id, data.staffingPolicy === undefined ? existing.staffingPolicy : data.staffingPolicy,
+        if (data.reportingLinePolicy !== undefined || data.requireBoardApprovalForNewAgents !== undefined) {
+          await assertReportingLinePolicyChange(tx as unknown as Db, id, data.reportingLinePolicy === undefined ? existing.reportingLinePolicy : data.reportingLinePolicy,
             data.requireBoardApprovalForNewAgents ?? existing.requireBoardApprovalForNewAgents);
         }
         const { logoAssetId, ...companyPatch } = data;

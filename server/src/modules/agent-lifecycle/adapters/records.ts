@@ -32,8 +32,8 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
         }
         if (options?.setupAgentId && !setup) throw notFound("Agent setup not found");
         const id = setup?.id ?? data.id ?? randomUUID();
-        const staffing = await effects.checkStaffingHire(txDb, companyId, id, data, options);
-        const prepared = await effects.prepareHire(txDb, companyId, { ...data, id, reportsTo: staffing.reportsTo }, options);
+        const reportingLine = await effects.checkReportingLineHire(txDb, companyId, id, data, options);
+        const prepared = await effects.prepareHire(txDb, companyId, { ...data, id, reportsTo: reportingLine.reportsTo }, options);
         const status = options?.setupOnly ? "paused" : data.status;
         const pauseReason = options?.setupOnly ? "setup" : data.pauseReason;
         const [company] = await tx.select({ status: companies.status }).from(companies).where(eq(companies.id, companyId));
@@ -46,8 +46,8 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
         const createdStatus=status === "pending_approval" ? "pending_approval" : status === "terminated" ? "terminated" : "paused";
         const values: typeof agents.$inferInsert = {
           ...prepared,
-          hiredThroughStaffing: setup?.hiredThroughStaffing || staffing.bounded,
-          ...(staffing.bounded ? { permissions: { canCreateAgents: false, canCreateSkills: false } } : {}),
+          delegatedHire: setup?.delegatedHire || reportingLine.bounded,
+          ...(reportingLine.bounded ? { permissions: { canCreateAgents: false, canCreateSkills: false } } : {}),
           ...(setup ? { permissions: preserveAgentInteractionPermissions(setup.permissions, prepared.permissions) } : {}),
           createdByUserId: setup?.createdByUserId ?? options?.createdByUserId ?? null,
           lifecycleState,

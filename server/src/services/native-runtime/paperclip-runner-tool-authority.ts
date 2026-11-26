@@ -1,4 +1,4 @@
-import { staffingPolicyFor } from "../reporting-line-staffing.js";
+import { reportingLinePolicyFor } from "../reporting-line-management.js";
 import { assertAgentInteraction } from "../agent-interaction-policy.js";
 import { authorizationDeniedDetails } from "../authorization.js";
 import { budgetServiceInTransaction } from "../budgets.js";
@@ -344,9 +344,9 @@ export function taskBridgeApiRequest(tool: string, input: Record<string, any>): 
 }
 
 async function hireAgentApiRequest(db: Db, input: Record<string, unknown>, binding: Pick<Binding, "companyId" | "agentId" | "issueId">): Promise<RunnerApiCall> {
-  const staffing = await staffingPolicyFor(db, binding.companyId);
+  const policy = await reportingLinePolicyFor(db, binding.companyId);
   const body: Record<string, unknown> = { name: requiredString(input.name), reportsTo: binding.agentId, sourceIssueId: binding.issueId };
-  if (staffing) {
+  if (policy) {
     const [caller] = await db.select({
       adapterType: agents.adapterType, adapterConfig: agents.adapterConfig, environmentId: agents.defaultEnvironmentId,
     }).from(agents).where(and(eq(agents.id, binding.agentId), eq(agents.companyId, binding.companyId)));

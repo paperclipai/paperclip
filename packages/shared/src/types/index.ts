@@ -23,7 +23,7 @@ export type {
 export type {
   Company,
   InteractionResolverGovernance,
-  ReportingLineStaffingPolicy,
+  ReportingLinePolicy,
   InteractionResolverKindGovernance,
 } from "./company.js";
 export type {

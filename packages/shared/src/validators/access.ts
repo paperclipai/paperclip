@@ -93,7 +93,7 @@ export const createBoardApiKeySchema = z.object({
 
 export type CreateBoardApiKey = z.infer<typeof createBoardApiKeySchema>;
 
-export const staffingResourceScopeSchema = z.object({
+export const delegatedRuntimeScopeSchema = z.object({
   choices: z.array(z.object({
     environmentId: z.string().guid(),
     adapterType: z.literal("paperclip_runner"),

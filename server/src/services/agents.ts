@@ -96,7 +96,7 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
     rollbackConfigRevision: async (
       id: string,
       revisionId: string,
-      actor: { agentId?: string | null; userId?: string | null; staffingActor?: import("./authorization.js").AuthorizationActor; requiresStaffing?: boolean },
+      actor: { agentId?: string | null; userId?: string | null; reportingLineActor?: import("./authorization.js").AuthorizationActor; requiresReportingLinePolicy?: boolean },
     ) => {
       const revision = await db
         .select()
@@ -109,12 +109,12 @@ export function agentService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       }
 
       const patch = configPatchFromSnapshot(revision.afterConfig);
-      const existing = actor.requiresStaffing ? await getById(id) : null;
-      if (actor.requiresStaffing && !existing) return null;
+      const existing = actor.requiresReportingLinePolicy ? await getById(id) : null;
+      if (actor.requiresReportingLinePolicy && !existing) return null;
       return updateAgent(id, existing ? Object.fromEntries(Object.entries(patch).filter(([key, value]) =>
         !isDeepStrictEqual(value, (existing as Record<string, unknown>)[key]))) : patch, {
-        staffingActor: actor.staffingActor,
-        requiresStaffing: actor.requiresStaffing,
+        reportingLineActor: actor.reportingLineActor,
+        requiresReportingLinePolicy: actor.requiresReportingLinePolicy,
         ...(existing ? { expectedConfigurationRevision: agentConfigurationRevision(existing) } : {}),
         recordRevision: {
           createdByAgentId: actor.agentId ?? null,

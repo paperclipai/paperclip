@@ -258,24 +258,25 @@ record. When a save's content is no longer current, a read of that save returns
 `404` with code `INSTRUCTION_REVISION_CONTENT_NOT_RETAINED`. The save stays in
 the history list.
 
-## Delegated staffing
+## Manage agents by reporting line
 
-In a company with reporting-line staffing enabled, an eligible agent can hire
-through either native creation endpoint. The default manager is the caller.
-An explicit manager must be inside the caller's branch. Configuration and
-lifecycle commands apply to strict descendants. Moving a report also requires
-authority over the destination. Move or retire direct reports before retiring
-their manager. Existing task visibility and assignments are preserved.
+With the [reporting-line policy](companies.md#reporting-line-policy) enabled,
+an Engineering lead with hiring permission can add and manage agents below
+it in the org chart. New agents report to the agent that added them by default.
+To choose another manager, set `reportsTo` to an agent below the caller.
+An agent can move a report to itself or to another manager below it. Before
+terminating a manager, move or terminate its direct reports. Moving an agent
+preserves its task assignments and visibility.
 
-An owner can approve an exact runtime choice for a named agent membership.
-Send the following shape to
-`PATCH /api/companies/{companyId}/members/{memberId}/permissions`:
+A company owner can choose which sandbox, adapter, provider, and model an
+agent may pass on to a report. To allow a choice, send this grant to
+`PATCH /api/companies/{companyId}/members/{memberId}/permissions`.
 
 ```json
 {
   "grants": [
     {
-      "permissionKey": "agents:delegate_resources",
+      "permissionKey": "agents:delegate_runtime",
       "scope": {
         "choices": [
           {
@@ -292,10 +293,12 @@ Send the following shape to
 }
 ```
 
-`includeDescendants` defaults to false. The owner can revoke the grant by
-sending an empty `grants` array to the same agent membership. The update
-only changes staffing resource authority. Use `defaultEnvironmentId` and
-`adapterConfig.provider` and `adapterConfig.model` to select a matching
-choice. Use `instructionsBundle` for the role brief. Tool, workspace, and
-credential bindings require separate owner configuration. A hire with
-`adapterType: "process"` and no runtime configuration remains paused.
+Set `includeDescendants` to `true` to let reports pass on the same choice.
+The default is `false`. To revoke the grant, send an empty `grants` array to
+the same endpoint. This leaves the agent's other permissions in place.
+
+When adding an agent, use `adapterType`, `defaultEnvironmentId`,
+`adapterConfig.provider`, and `adapterConfig.model` to select the approved
+choice. Put the new agent's role description in `instructionsBundle`.
+The owner configures tools, workspaces, and credentials separately. An agent
+with `adapterType: "process"` and no runtime configuration stays paused.

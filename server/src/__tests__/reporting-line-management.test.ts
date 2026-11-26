@@ -18,13 +18,13 @@ const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
 const limits = { enabled: true, maxDepth: 3, maxDirectReports: 2 };
 
-describePostgres("reporting-line staffing", () => {
+describePostgres("reporting-line management", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
   let worker: ReturnType<typeof configureAgentLifecycle>;
 
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-reporting-line-staffing-");
+    database = await startEmbeddedPostgresTestDatabase("paperclip-reporting-line-management-");
     db = createDb(database.connectionString);
     worker = configureAgentLifecycle(db, {
       requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete",
@@ -45,7 +45,7 @@ describePostgres("reporting-line staffing", () => {
     const memberId = randomUUID();
     const owner: Express.Request["actor"] = { type: "board", source: "local_implicit", userId: ownerId, isInstanceAdmin: true };
     const adapterConfig = { provider: "codex", model: "gpt-5.4" };
-    await db.insert(companies).values({ id: companyId, name: "Staffing", issuePrefix: uniqueIssuePrefix("ST"), staffingPolicy: policy });
+    await db.insert(companies).values({ id: companyId, name: "Reporting lines", issuePrefix: uniqueIssuePrefix("ST"), reportingLinePolicy: policy });
     await db.insert(environments).values({ id: environmentId, name: companyId, driver: "sandbox", config: { provider: "daytona" } });
     const runtime = { adapterType: "paperclip_runner", defaultEnvironmentId: environmentId, adapterConfig };
     await db.insert(agents).values([
@@ -82,7 +82,7 @@ describePostgres("reporting-line staffing", () => {
     const board = session(owner);
     const grant = (includeDescendants: boolean) => board.patch(`/api/companies/${companyId}/members/${memberId}/permissions`).send({
       grants: [{
-        permissionKey: "agents:delegate_resources",
+        permissionKey: "agents:delegate_runtime",
         scope: { choices: [{ environmentId, adapterType: runtime.adapterType, ...adapterConfig, includeDescendants }] },
       }],
     });
@@ -95,7 +95,7 @@ describePostgres("reporting-line staffing", () => {
       const id = (response.body.agent ?? response.body).id as string;
       await worker.process(id);
       const [row] = await db.select().from(agents).where(eq(agents.id, id));
-      expect(row).toMatchObject({ lifecycleState: "ready", hiredThroughStaffing: true });
+      expect(row).toMatchObject({ lifecycleState: "ready", delegatedHire: true });
       return id;
     };
     return { companyId, environmentId, manager, peer, memberId, ownerId, board, agentActor, agentSession, grant, hire, ready };
@@ -131,7 +131,7 @@ describePostgres("reporting-line staffing", () => {
     expect(await db.select().from(approvals).where(eq(approvals.companyId, f.companyId))).toHaveLength(0);
   });
 
-  it("denies staffing outside the branch and refuses a move to an unrelated manager", async () => {
+  it("denies agent management outside the reporting line and refuses a move to an unrelated manager", async () => {
     const f = await fixture();
     expect((await f.grant(true)).status).toBe(200);
     const child = await f.ready(await f.hire(f.manager, "Own report"));
@@ -199,7 +199,7 @@ describePostgres("reporting-line staffing", () => {
     expect(stillPending?.lifecycleState).toBe("pending_approval");
   });
 
-  it("keeps work access and denies both legacy hiring paths after disabling staffing", async () => {
+  it("keeps work access and denies both legacy hiring paths after turning off the reporting-line policy", async () => {
     const f = await fixture();
     expect((await f.grant(true)).status).toBe(200);
     const child = await f.ready(await f.hire(f.manager, "Bounded report"));
@@ -210,7 +210,7 @@ describePostgres("reporting-line staffing", () => {
     const resource = { type: "issue" as const, companyId: f.companyId, issueId: issue!.id, assigneeAgentId: child };
     const workAccess = () => authorizationService(db).decide({ actor, action: "issue:mutate", resource });
     expect((await workAccess()).allowed).toBe(true);
-    expect((await f.board.patch(`/api/companies/${f.companyId}`).send({ staffingPolicy: { ...limits, enabled: false } })).status).toBe(200);
+    expect((await f.board.patch(`/api/companies/${f.companyId}`).send({ reportingLinePolicy: { ...limits, enabled: false } })).status).toBe(200);
     expect((await workAccess()).allowed).toBe(true);
     const [run] = await db.insert(heartbeatRuns).values({
       companyId: f.companyId, agentId: child, status: "running", invocationSource: "assignment",
@@ -219,7 +219,7 @@ describePostgres("reporting-line staffing", () => {
     const completed = await f.agentSession(child, run!.id).patch(`/api/issues/${issue!.id}`).send({ status: "done" });
     expect(completed.status, JSON.stringify(completed.body)).toBe(200);
     const [bound] = await db.select().from(agents).where(eq(agents.id, child));
-    expect(bound).toMatchObject({ hiredThroughStaffing: true, defaultEnvironmentId: f.environmentId });
+    expect(bound).toMatchObject({ delegatedHire: true, defaultEnvironmentId: f.environmentId });
     await db.update(agents).set({ permissions: { canCreateAgents: true } }).where(eq(agents.id, child));
     expect((await f.hire(child, "Legacy fallback")).status).toBe(403);
     await db.insert(principalPermissionGrants).values({
@@ -232,6 +232,6 @@ describePostgres("reporting-line staffing", () => {
       name: "Stock report", adapterType: "process", reportsTo: stock.peer,
     });
     expect(response.status, JSON.stringify(response.body)).toBe(201);
-    expect(response.body.agent.hiredThroughStaffing).toBe(false);
+    expect(response.body.agent.delegatedHire).toBe(false);
   });
 });

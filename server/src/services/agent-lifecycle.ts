@@ -1,4 +1,4 @@
-import { assertStaffingLifecycle, prepareStaffingHire } from "./reporting-line-staffing.js";
+import { assertReportingLineLifecycle, prepareReportingLineHire } from "./reporting-line-management.js";
 import { notifyMuseContactVerification } from "../modules/external-agents/index.js";
 import { notifyBudgetResumeAgentReady } from "./budget-resume-continuation.js";
 import { readmitAgentContinuations } from "./recovery/continuation-delivery-attempt.js";
@@ -92,8 +92,8 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
     lockConfigurationInteractions: lockAgentConfigurationInteractions,
     prepareConfiguration: prepareAgentConfiguration,
     completeConfiguration: completeAgentConfiguration,
-    checkStaffingHire: prepareStaffingHire,
-    checkStaffingTransition: assertStaffingLifecycle,
+    checkReportingLineHire: prepareReportingLineHire,
+    checkReportingLineTransition: assertReportingLineLifecycle,
     prepareHire: prepareAgentHire,
     initializeHire: initializeAgentHire,
     prepareHireApproval: prepareAgentHireApproval,
