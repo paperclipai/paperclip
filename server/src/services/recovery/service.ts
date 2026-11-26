@@ -70,7 +70,7 @@ import {
   hasCommittedNativeBoardResponseWait,
   readNativeBoardResponseWaitSource,
 } from "../native-runtime/native-board-response-wait.js";
-import { authorizeChatConversationForBoundRun } from "../native-runtime/chat-attachment-reuse.js";
+import { authorizeChatConversationForBoundRun, EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST, resolveExternalChatResponseWaitAuthorization } from "../native-runtime/chat-attachment-reuse.js";
 import {
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
@@ -1989,6 +1989,30 @@ export function recoveryService(
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+
+  /**
+   * A settled external-chat turn whose response wait was lost although its
+   * requester and destination are still allowed. No provider message owns
+   * its next wake, so the task would otherwise idle in progress. A wait lost
+   * because access was revoked stays parked: revocation never starts work.
+   */
+  async function isUnregisteredExternalChatWait(issue: RecoveryIssue, latestRun: LatestIssueRun) {
+    if (
+      issue.status !== "in_progress" || latestRun?.status !== "succeeded" ||
+      latestRun.agentId !== issue.assigneeAgentId ||
+      !isExternalChatPresentationContext(latestRun.contextSnapshot) ||
+      parseObject(latestRun.resultJson).finalizationReasonCode !== EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST
+    ) return false;
+    return await resolveExternalChatResponseWaitAuthorization({ db, binding: {
+      companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId: latestRun.agentId,
+    } }) === "authorized";
+  }
+
+  async function hasRetryOfRun(companyId: string, runId: string) {
+    const [retry] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId))).limit(1);
+    return Boolean(retry);
   }
 
   async function hasQueuedIssueWake(
@@ -5304,6 +5328,34 @@ export function recoveryService(
           ));
         if (updated) {
           result.escalated += 1;
+          result.issueIds.push(issue.id);
+        } else {
+          result.skipped += 1;
+        }
+        continue;
+      }
+      if (await isUnregisteredExternalChatWait(issue, latestRun)) {
+        // One continuation for the settled turn: its successor is not a chat
+        // turn, so it never qualifies again, and a queued wake or a spent
+        // budget leaves the task for the next sweep.
+        if (
+          (await hasRetryOfRun(issue.companyId, latestRun!.id)) ||
+          (await hasQueuedIssueWake(issue.companyId, issue.id, agentId)) ||
+          (await isInvocationBudgetBlocked(issue, agentId))
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+        const queued = await enqueueStrandedIssueRecovery({
+          issueId: issue.id,
+          agentId,
+          reason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.external_chat_wait_recovery",
+          retryOfRunId: latestRun!.id,
+        });
+        if (queued) {
+          result.continuationRequeued += 1;
           result.issueIds.push(issue.id);
         } else {
           result.skipped += 1;

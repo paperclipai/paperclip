@@ -1,7 +1,7 @@
 import { notifyIssueGraphRecovery } from "../issue-recovery-notifications.js";
 import { createHash } from "node:crypto";
 
-import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, sql, type SQL } from "drizzle-orm";
 import type { SelectedFields } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import {
@@ -21,7 +21,9 @@ import {
   issueComments,
   issues,
   issueWorkProducts,
+  nativeRunFinalizations,
   runIdentityContexts,
+  statusDecisions,
 } from "@paperclipai/db";
 
 import {
@@ -811,6 +813,61 @@ function externalChatWaitCandidate(
   return { provider, commentIds };
 }
 
+export const EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST = "external_chat_response_wait_authorization_lost";
+
+/**
+ * The heartbeat settles a run and releases its task execution independently
+ * of the run's native finalizer. When the finalizer's first status commit
+ * loses a race, its scheduled retry applies the same saved result after the
+ * run is already settled. That run still owns its response wait while no
+ * other run owns the task: either its own saved result is still being
+ * applied, or its committed decision recorded only that the wait authority
+ * was lost. The caller still checks
+ * the assignee, the agent, and current principal and destination policy.
+ */
+async function settledRunOwnsResponseWait(
+  tx: Db,
+  binding: ChatReuseBinding,
+  runStatus: string,
+  issue: { executionRunId: string | null; checkoutRunId: string | null },
+): Promise<boolean> {
+  if (!["running", "succeeded"].includes(runStatus)) return false;
+  if ((issue.executionRunId && issue.executionRunId !== binding.runId) ||
+    (issue.checkoutRunId && issue.checkoutRunId !== binding.runId)) return false;
+  const [coordinator] = await tx.select({
+    phase: nativeRunFinalizations.phase,
+    resultId: nativeRunFinalizations.resultId,
+    decisionId: nativeRunFinalizations.decisionId,
+  }).from(nativeRunFinalizations).where(and(
+    eq(nativeRunFinalizations.runId, binding.runId),
+    eq(nativeRunFinalizations.companyId, binding.companyId),
+    eq(nativeRunFinalizations.issueId, binding.issueId),
+  )).limit(1);
+  if (!coordinator?.resultId || coordinator.phase === "terminal_failure") return false;
+  // A newer run's decision owns the task even after its execution ended. A
+  // preserving decision can leave the task's last decision on an earlier run,
+  // so this, not the task's last decision, rules out other owners. Compare in
+  // SQL: run timestamps keep microseconds that a Date drops.
+  const [newer] = await tx.select({ id: statusDecisions.id }).from(statusDecisions)
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, statusDecisions.runId),
+      eq(heartbeatRuns.companyId, statusDecisions.companyId)))
+    .where(and(
+      eq(statusDecisions.companyId, binding.companyId),
+      eq(statusDecisions.issueId, binding.issueId),
+      ne(statusDecisions.runId, binding.runId),
+      sql`${heartbeatRuns.createdAt} >= (select own_run.created_at from heartbeat_runs own_run
+        where own_run.id = ${binding.runId} and own_run.company_id = ${binding.companyId})`,
+    )).limit(1);
+  if (newer) return false;
+  if (coordinator.phase !== "committed") return true;
+  if (!coordinator.decisionId) return false;
+  const [decision] = await tx.select({ reasonCode: statusDecisions.reasonCode }).from(statusDecisions)
+    .where(and(eq(statusDecisions.id, coordinator.decisionId), eq(statusDecisions.companyId, binding.companyId),
+      eq(statusDecisions.issueId, binding.issueId), eq(statusDecisions.runId, binding.runId),
+      eq(statusDecisions.applicationState, "applied"))).limit(1);
+  return decision?.reasonCode === EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST;
+}
+
 /**
  * Authorize a no-work external-chat wait from the same durable boundary used
  * by historical file reuse. The nested wake payload proves that this was a
@@ -829,6 +886,7 @@ export async function resolveExternalChatResponseWaitAuthorizationInTransaction(
     .select({
       assigneeAgentId: issues.assigneeAgentId,
       executionRunId: issues.executionRunId,
+      checkoutRunId: issues.checkoutRunId,
     })
     .from(issues)
     .where(
@@ -900,12 +958,14 @@ export async function resolveExternalChatResponseWaitAuthorizationInTransaction(
       : actorQuery.for("update").limit(1));
   const preserved = run && run.status !== "running"
     ? await readPreservedNativeResultFinalization(tx, binding) : null;
+  const liveOwner = run.status === "running" && issue?.executionRunId === binding.runId;
+  const settledOwner = !preserved && !liveOwner && issue
+    ? await settledRunOwnsResponseWait(tx, binding, run.status, issue) : false;
   if (
     !issue ||
     !actor ||
-    (!preserved && run.status !== "running") ||
+    !(preserved || liveOwner || settledOwner) ||
     issue.assigneeAgentId !== binding.agentId ||
-    (!preserved && issue.executionRunId !== binding.runId) ||
     ["paused", "terminated", "pending_approval", "error"].includes(
       actor.status,
     )
@@ -1025,7 +1085,9 @@ export async function readPublishedGitHubReviewCompletionContinuationInTransacti
     eq(heartbeatRuns.agentId, binding.agentId), eq(heartbeatRuns.nativeIssueId, binding.issueId),
     eq(heartbeatRuns.runtimeMode, "native"),
   )).limit(1);
-  if (!run || run.status !== "running" && !await readPreservedNativeResultFinalization(tx, binding)) return null;
+  // Ownership itself is proven by the authorization below.
+  if (!run || !["running", "succeeded"].includes(run.status) &&
+    !await readPreservedNativeResultFinalization(tx, binding)) return null;
   const wait = await readInheritedGitHubReviewWait(tx, run);
   if (wait?.kind !== "published") return null;
   if (wait.reviewRunId !== run.id) {
