@@ -50,6 +50,7 @@ describe("agent lifecycle commands", () => {
     await run(["agent", "update", AGENT_ID, "--payload-json", JSON.stringify({ title: "Senior Builder" })]);
     await run(["agent", "pause", AGENT_ID]);
     await run(["agent", "resume", AGENT_ID]);
+    await run(["agent", "clear-error", AGENT_ID]);
     await run(["agent", "approve", AGENT_ID]);
     await run(["agent", "terminate", AGENT_ID]);
     await run(["agent", "heartbeat:invoke", AGENT_ID]);
@@ -62,12 +63,52 @@ describe("agent lifecycle commands", () => {
       ["PATCH", `http://localhost:3100/api/agents/${AGENT_ID}`],
       ["POST", `http://localhost:3100/api/agents/${AGENT_ID}/pause`],
       ["POST", `http://localhost:3100/api/agents/${AGENT_ID}/resume`],
+      ["POST", `http://localhost:3100/api/agents/${AGENT_ID}/clear-error`],
       ["POST", `http://localhost:3100/api/agents/${AGENT_ID}/approve`],
       ["POST", `http://localhost:3100/api/agents/${AGENT_ID}/terminate`],
       ["POST", `http://localhost:3100/api/agents/${AGENT_ID}/heartbeat/invoke`],
       ["POST", `http://localhost:3100/api/agents/${AGENT_ID}/claude-login`],
       ["DELETE", `http://localhost:3100/api/agents/${AGENT_ID}`],
     ]);
+  });
+
+  it("prints the server result when clearing an error with JSON output", async () => {
+    const cleared = { id: AGENT_ID, status: "idle", errorReason: null };
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(cleared));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await run(["agent", "clear-error", AGENT_ID, "--json"]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({ method: "POST", body: "{}" });
+    expect(console.log).toHaveBeenCalledWith(JSON.stringify(cleared, null, 2));
+  });
+
+  it.each([
+    { status: 403, message: "Insufficient permission to clear this agent's error" },
+    { status: 409, message: "Agent is not in error status" },
+  ])("reports a $status clear-error refusal without attempting another lifecycle action", async ({ status, message }) => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ error: message }, { status }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+      throw new Error(`exit:${code ?? 0}`);
+    }) as typeof process.exit);
+
+    await expect(run(["agent", "clear-error", AGENT_ID])).rejects.toThrow("exit:1");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends automatic selection when omitted and supports explicit runner overrides", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    const payload = { name: "Builder", adapterType: "codex_local" };
+    await run(["agent", "create", "--company-id", COMPANY_ID, "--payload-json", JSON.stringify(payload)]);
+    await run(["agent", "create", "--company-id", COMPANY_ID, "--payload-json", JSON.stringify({ ...payload, runner: "auto" }), "--runner", "legacy"]);
+    await run(["agent", "hire", "--company-id", COMPANY_ID, "--payload-json", JSON.stringify(payload), "--runner", "paperclip"]);
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body).runner).toBeUndefined();
+    expect(JSON.parse(fetchMock.mock.calls[1]![1].body).runner).toBe("legacy");
+    expect(JSON.parse(fetchMock.mock.calls[2]![1].body).runner).toBe("paperclip");
   });
 
   it("wraps configuration, runtime, skills, and instructions endpoints", async () => {
@@ -97,7 +138,7 @@ describe("agent lifecycle commands", () => {
     await run(["agent", "instructions-bundle:update", AGENT_ID, "--payload-json", JSON.stringify({ mode: "managed" })]);
     await run(["agent", "instructions-file:get", AGENT_ID, "--path", "AGENTS.md"]);
     await run(["agent", "instructions-file:put", AGENT_ID, "--path", "AGENTS.md", "--content", "hello"]);
-    await run(["agent", "instructions-file:delete", AGENT_ID, "--path", "AGENTS.md"]);
+    await run(["agent", "instructions-file:delete", AGENT_ID, "--path", "AGENTS.md", "--yes"]);
 
     expect(fetchMock.mock.calls.map((call) => [call[1]?.method ?? "GET", call[0]])).toEqual([
       ["PATCH", `http://localhost:3100/api/agents/${AGENT_ID}/permissions`],
@@ -117,6 +158,31 @@ describe("agent lifecycle commands", () => {
       ["PUT", `http://localhost:3100/api/agents/${AGENT_ID}/instructions-bundle/file`],
       ["DELETE", `http://localhost:3100/api/agents/${AGENT_ID}/instructions-bundle/file?path=AGENTS.md`],
     ]);
+  });
+
+  it("grants and revokes one permission without replacing the grant list", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    await run(["agent", "permission:grant", AGENT_ID, "commentary:view"]);
+    await run(["agent", "permission:revoke", AGENT_ID, "commentary:view"]);
+    expect(fetchMock.mock.calls.map(call => [call[0], call[1]?.method, JSON.parse(call[1]?.body)])).toEqual([
+      [`http://localhost:3100/api/agents/${AGENT_ID}/permission-grants`, "PATCH", { permissionKey: "commentary:view", enabled: true }],
+      [`http://localhost:3100/api/agents/${AGENT_ID}/permission-grants`, "PATCH", { permissionKey: "commentary:view", enabled: false }],
+    ]);
+  });
+
+  it("refuses to delete an instructions file without confirmation", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(process, "exit").mockImplementation(((code?: string | number | null) => {
+      throw new Error(`exit:${code ?? 0}`);
+    }) as typeof process.exit);
+
+    await expect(run(["agent", "instructions-file:delete", AGENT_ID, "--path", "AGENTS.md"])).rejects.toThrow(
+      "exit:1",
+    );
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });
 

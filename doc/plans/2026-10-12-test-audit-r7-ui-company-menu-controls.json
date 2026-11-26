@@ -1,0 +1,401 @@
+{
+  "audit": {
+    "file": "ui/src/components/SidebarCompanyMenu.test.tsx",
+    "base": "2e76f5157240ee8b2d42adbdcd4c345aea07c013",
+    "originalSha256": "ad89f1174a840f7e10a04c180dcdfcbb972e66e96fd45a335d4af90da553f693",
+    "candidateSha256": "3b14e39deb667f2b9f79981767b6f47852ed4a8f3ee51fe39c4bd9efbd61d5d2",
+    "allOtherProgramAstUnchanged": true,
+    "allOtherSourceBytesUnchanged": true,
+    "newHelpers": 0,
+    "registeredInvocationsRemoved": 1,
+    "renderInvocationsRemoved": 1,
+    "setupInvocationsRemoved": 1,
+    "netTestLinesRemoved": 28,
+    "migrations": [
+      {
+        "retired": "uses company-centric create copy without the chat flag",
+        "keeper": "toggles company order editing without selecting a company",
+        "exactLeadingStatements": 7,
+        "sameEnclosingHooks": true,
+        "explicitCleanupAstEqual": true,
+        "kind": "menu",
+        "exactMigratedStatements": [
+          "expect(trigger?.classList).toContain(\"px-4\");",
+          "expect(trigger?.classList).toContain(\"has-[>svg]:px-4\");",
+          "expect(trigger?.classList).toContain(\"hover:bg-sidebar-accent\");",
+          "expect(trigger?.classList).toContain(\"hover:text-sidebar-accent-foreground\");",
+          "expect(trigger?.classList).toContain(\"dark:hover:bg-sidebar-accent\");",
+          "expect(trigger?.classList).toContain(\"dark:hover:text-sidebar-accent-foreground\");",
+          "expect(trigger?.classList).not.toContain(\"hover:bg-background\");",
+          "expect(trigger?.classList).not.toContain(\"dark:hover:bg-background\");",
+          "expect(trigger?.classList).not.toContain(\"dark:hover:bg-accent/50\");",
+          "expect(document.body.textContent).toContain(\"Create organization\");",
+          "expect(document.body.textContent).not.toContain(\"Add company...\");"
+        ],
+        "alreadyExactKeeperStatementsOrBindings": [
+          "act(() => {\n      trigger?.dispatchEvent(new PointerEvent(\"pointerdown\", { bubbles: true, button: 0 }));\n      trigger?.dispatchEvent(new MouseEvent(\"click\", { bubbles: true }));\n    });",
+          "await flushReact();"
+        ],
+        "registeredInvocationsRemoved": 1,
+        "renderInvocationsRemoved": 1,
+        "setupInvocationsRemoved": 1
+      }
+    ]
+  },
+  "verifierSha256": "ff07f5e2e308cfc0f26584a6cd6599bcd98665e79d7f4782ed5bb36b35cb8cb9",
+  "mutationVerifierSha256": "676b973d4838ed130c5ae92d4bc50fb32a65309af8c858450ec34bcce13729e9",
+  "runs": [
+    {
+      "kind": "baseline",
+      "total": 16,
+      "passed": 16,
+      "failed": 0,
+      "skipped": 0,
+      "jsonSha256": "b7e2061f311e86d6750c2c9b0e6aee6bd6e026ee7acd10483c3d0cb8de863ac8",
+      "logSha256": "bce8c6310d9cbd08d01f813b90d9115241d8809314b74211530ef05f6c3cfd27"
+    },
+    {
+      "kind": "candidate",
+      "total": 15,
+      "passed": 15,
+      "failed": 0,
+      "skipped": 0,
+      "jsonSha256": "122222983e6eb17dfcc0745805ae2662a4ebf0781b4811cff488cfaa65f5dd79",
+      "logSha256": "46a93fb15df0d8faae9d94c9c261e1901ec12456bc0eb7610aa0c80cc4c1b58b"
+    }
+  ],
+  "mutations": [
+    {
+      "slug": "trigger-inset",
+      "owner": "ui/src/components/SidebarCompanyMenu.tsx",
+      "sourceSha256": "2ea2c865a3e9817c140d3bf269a0c4f45d85a957f11b64d1a84e88926fe1b97a",
+      "title": "toggles company order editing without selecting a company",
+      "mutation": {
+        "before": "gap-2 px-4 text-left",
+        "after": "gap-2 px-2 text-left",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(trigger?.classList).toContain(\"px-4\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "965e51bf2e7303dc08ed66d5758ef80bfb18f8852e967fb12dd9c05776422dd6",
+        "logSha256": "3d45f3d012ad3ffbe563e1150356387730e5e6d2c169a25b537bb7add31124fb",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "f20cf3f9ecda2e5fe608bcd28d9bd68e030c6b72b3bc1bc4edce7e895cfe3ba6",
+        "logSha256": "80548eebd34f5ed3546ce6dc68d47a8e6452ecae6a06a36b6e4e3dc34598cdda",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"inline-flex items-center whitespace-nowrap rounded-md text-sm font-medium transition-(--tp-color-background-color-border-color-box-shadow-opacity) disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3) aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive py-2 h-9 min-w-0 flex-1 justify-start gap-2 px-2 text-left hover:bg-sidebar-accent hover:text-sidebar-accent-foreground has-[>svg]:px-4 dark:hover:bg-sidebar-accent dark:hover:text-sidebar-accent-foreground\" to contain \"px-4\"\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/SidebarCompanyMenu.test.tsx:429:32\n    at runNextTicks (node:internal/process/task_queues:65:5)\n    at listOnTimeout (node:internal/timers:567:9)\n    at processTimers (node:internal/timers:541:7)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "icon-inset",
+      "owner": "ui/src/components/SidebarCompanyMenu.tsx",
+      "sourceSha256": "2ea2c865a3e9817c140d3bf269a0c4f45d85a957f11b64d1a84e88926fe1b97a",
+      "title": "toggles company order editing without selecting a company",
+      "mutation": {
+        "before": "has-[>svg]:px-4",
+        "after": "has-[>svg]:px-2",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(trigger?.classList).toContain(\"has-[>svg]:px-4\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "ea88a40c8b8bf6350d02344b57ed5d99783dc5f153b7abb4b3a344c994b7a0f3",
+        "logSha256": "6edb24fc26547ae0367a8d95a2e35530798bb07ce5f71d9f41b86001c4ee6c64",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "fc33c2e6d3e034a617bf247b3795f136b4e5d200b3a4323101df92ce7cc1d7ab",
+        "logSha256": "77d5d26f406f4c778dcd6a6c476577151cefd36b3e0e9b896bd21bfc4d435886",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"inline-flex items-center whitespace-nowrap rounded-md text-sm font-medium transition-(--tp-color-background-color-border-color-box-shadow-opacity) disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3) aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive py-2 h-9 min-w-0 flex-1 justify-start gap-2 px-4 text-left hover:bg-sidebar-accent hover:text-sidebar-accent-foreground has-[>svg]:px-2 dark:hover:bg-sidebar-accent dark:hover:text-sidebar-accent-foreground\" to contain \"has-[>svg]:px-4\"\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/SidebarCompanyMenu.test.tsx:430:32\n    at runNextTicks (node:internal/process/task_queues:65:5)\n    at listOnTimeout (node:internal/timers:567:9)\n    at processTimers (node:internal/timers:541:7)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "hover-background",
+      "owner": "ui/src/components/SidebarCompanyMenu.tsx",
+      "sourceSha256": "2ea2c865a3e9817c140d3bf269a0c4f45d85a957f11b64d1a84e88926fe1b97a",
+      "title": "toggles company order editing without selecting a company",
+      "mutation": {
+        "before": "text-left hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+        "after": "text-left hover:bg-accent hover:text-sidebar-accent-foreground",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(trigger?.classList).toContain(\"hover:bg-sidebar-accent\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "6927fb926814f3a97c2a4c93ff715eebb7b55c7b26cf78395352cd6cf72a1d94",
+        "logSha256": "3a867b13b6c1a885838cda58afc327eac62f0eba9a60def7ec1d5d9b0a58b07b",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "cdfc31c2e7474765edcda5c384aedb266d4f7ba38a6593c6da5d08a3329c98f4",
+        "logSha256": "e5d367e9396f285f008d50cc7745f3cbb4e49757bc887a4ec7847bf56cb0826c",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"inline-flex items-center whitespace-nowrap rounded-md text-sm font-medium transition-(--tp-color-background-color-border-color-box-shadow-opacity) disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3) aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive py-2 h-9 min-w-0 flex-1 justify-start gap-2 px-4 text-left hover:bg-accent hover:text-sidebar-accent-foreground has-[>svg]:px-4 dark:hover:bg-sidebar-accent dark:hover:text-sidebar-accent-foreground\" to contain \"hover:bg-sidebar-accent\"\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/SidebarCompanyMenu.test.tsx:431:32\n    at runNextTicks (node:internal/process/task_queues:65:5)\n    at listOnTimeout (node:internal/timers:567:9)\n    at processTimers (node:internal/timers:541:7)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "hover-foreground",
+      "owner": "ui/src/components/SidebarCompanyMenu.tsx",
+      "sourceSha256": "2ea2c865a3e9817c140d3bf269a0c4f45d85a957f11b64d1a84e88926fe1b97a",
+      "title": "toggles company order editing without selecting a company",
+      "mutation": {
+        "before": "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground has-",
+        "after": "hover:bg-sidebar-accent hover:text-foreground has-",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(trigger?.classList).toContain(\"hover:text-sidebar-accent-foreground\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "395cc772d310d912806b746111d7f557091468b89d37d178a6a8f941926d113b",
+        "logSha256": "63ca60c22b27299275ea041bb23a009690f69e53a01857e34a63d222c0f790a5",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "7cee44772f8452a6a3236cdee1fd3b702a5b345bda5b14786125a5e63f4a7532",
+        "logSha256": "260cb917636d6fa2a351a3dc1118c2c59fbca81f1d819e25ebc78468f6de5ca9",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"inline-flex items-center whitespace-nowrap rounded-md text-sm font-medium transition-(--tp-color-background-color-border-color-box-shadow-opacity) disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3) aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive py-2 h-9 min-w-0 flex-1 justify-start gap-2 px-4 text-left hover:bg-sidebar-accent hover:text-foreground has-[>svg]:px-4 dark:hover:bg-sidebar-accent dark:hover:text-sidebar-accent-foreground\" to contain \"hover:text-sidebar-accent-foreground\"\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/SidebarCompanyMenu.test.tsx:432:32\n    at runNextTicks (node:internal/process/task_queues:65:5)\n    at listOnTimeout (node:internal/timers:567:9)\n    at processTimers (node:internal/timers:541:7)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "dark-background",
+      "owner": "ui/src/components/SidebarCompanyMenu.tsx",
+      "sourceSha256": "2ea2c865a3e9817c140d3bf269a0c4f45d85a957f11b64d1a84e88926fe1b97a",
+      "title": "toggles company order editing without selecting a company",
+      "mutation": {
+        "before": " dark:hover:bg-sidebar-accent ",
+        "after": " dark:hover:bg-accent ",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(trigger?.classList).toContain(\"dark:hover:bg-sidebar-accent\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "e1c8a5b52bbd8abdeeebdc2257fff6c94ee10d92fd5933af3eb2ad9e73187086",
+        "logSha256": "a11984915dd20c240e728db80d958100d62effb1d398de52e4b19116fc4df06a",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "6ef6c5847ced0672654141ddf703fe5da59b8e5698679983659f76b271836c34",
+        "logSha256": "2289f05b931304d15b3e256a6b7c12d1d5b2377e938ca3d0bd2be14d6fa5ff93",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"inline-flex items-center whitespace-nowrap rounded-md text-sm font-medium transition-(--tp-color-background-color-border-color-box-shadow-opacity) disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3) aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive py-2 h-9 min-w-0 flex-1 justify-start gap-2 px-4 text-left hover:bg-sidebar-accent hover:text-sidebar-accent-foreground has-[>svg]:px-4 dark:hover:bg-accent dark:hover:text-sidebar-accent-foreground\" to contain \"dark:hover:bg-sidebar-accent\"\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/SidebarCompanyMenu.test.tsx:433:32\n    at runNextTicks (node:internal/process/task_queues:65:5)\n    at listOnTimeout (node:internal/timers:567:9)\n    at processTimers (node:internal/timers:541:7)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "dark-foreground",
+      "owner": "ui/src/components/SidebarCompanyMenu.tsx",
+      "sourceSha256": "2ea2c865a3e9817c140d3bf269a0c4f45d85a957f11b64d1a84e88926fe1b97a",
+      "title": "toggles company order editing without selecting a company",
+      "mutation": {
+        "before": "dark:hover:text-sidebar-accent-foreground\"",
+        "after": "dark:hover:text-foreground\"",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(trigger?.classList).toContain(\"dark:hover:text-sidebar-accent-foreground\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "b8dec44374759a2d23864d8773b523144f17251cc417c6ba3a5a01ad84c74d54",
+        "logSha256": "38199b184a9191ec1f9690b5ee93a55372041e1bda5cccc283dd1606e5ff8c22",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "11c7a74f5e2910ad7245ce8dc6d0659d1c611c534fb0549b36f2a3e35fb3f5e3",
+        "logSha256": "d5fa2d5d892bc50fda4e5129d56424e33cc6ad64038c8b00ccc9a2071e24024b",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected \"inline-flex items-center whitespace-nowrap rounded-md text-sm font-medium transition-(--tp-color-background-color-border-color-box-shadow-opacity) disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3) aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive py-2 h-9 min-w-0 flex-1 justify-start gap-2 px-4 text-left hover:bg-sidebar-accent hover:text-sidebar-accent-foreground has-[>svg]:px-4 dark:hover:bg-sidebar-accent dark:hover:text-foreground\" to contain \"dark:hover:text-sidebar-accent-foreground\"\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/SidebarCompanyMenu.test.tsx:434:32\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "create-copy",
+      "owner": "ui/src/components/SidebarCompanyMenu.tsx",
+      "sourceSha256": "2ea2c865a3e9817c140d3bf269a0c4f45d85a957f11b64d1a84e88926fe1b97a",
+      "title": "toggles company order editing without selecting a company",
+      "mutation": {
+        "before": ">Create organization</span>",
+        "after": ">New organization</span>",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(document.body.textContent).toContain(\"Create organization\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "094026d954d8a04e6c3f4a843905605b64087a7f1ffa32c0df6838da7b40abed",
+        "logSha256": "dddb890d92209e044b1140d2438e28a02b814b8681fb96ab0e77e60c7026cf12",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "c4cb06631eace0851f3d31084c403ddb990f22f55f03096031361e195aba6211",
+        "logSha256": "a7ecc001952a578b96aefa0a2c6f6ae7c87a01c8c64fb02102a50dad8c2f067a",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'AAcme LabsOrganizationsEditAAcme Labs\u2026' to contain 'Create organization'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/SidebarCompanyMenu.test.tsx:445:39\n    at runNextTicks (node:internal/process/task_queues:65:5)\n    at processTimers (node:internal/timers:538:9)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    },
+    {
+      "slug": "legacy-create-copy",
+      "owner": "ui/src/components/SidebarCompanyMenu.tsx",
+      "sourceSha256": "2ea2c865a3e9817c140d3bf269a0c4f45d85a957f11b64d1a84e88926fe1b97a",
+      "title": "toggles company order editing without selecting a company",
+      "mutation": {
+        "before": ">Create organization</span>",
+        "after": ">Create organization Add company...</span>",
+        "replacementCount": 1
+      },
+      "intendedGuard": "expect(document.body.textContent).not.toContain(\"Add company...\")",
+      "restoredByteForByte": true,
+      "positive": {
+        "exit": 0,
+        "jsonSha256": "4b450bb9ee4240877a53fa40ba1279d27a2c5d2eefbbd1ec6d66739b5a142c9f",
+        "logSha256": "53756ff97bc7913aab6c0a3bc303fd7151fb7cde78616841a3f9a07ef9e84d7b",
+        "caseStatus": "passed"
+      },
+      "negative": {
+        "exit": 1,
+        "jsonSha256": "93eb614e6f297f934fb4491e2b55a5d4a2f3216774b8d981a20d2b4a27b01a47",
+        "logSha256": "220100c51d3b4e1ad9a020c6bb94af8f60b159cd1a5ef32cfcd67e04a5c77dfa",
+        "caseStatus": "failed",
+        "intendedFailureMessages": [
+          "AssertionError: expected 'AAcme LabsOrganizationsEditAAcme Labs\u2026' not to contain 'Add company...'\n    at /Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/ui/src/components/SidebarCompanyMenu.test.tsx:446:43\n    at runNextTicks (node:internal/process/task_queues:65:5)\n    at processTimers (node:internal/timers:538:9)\n    at file:///Users/dotta/.codex/worktrees/test-audit-r7-ui/paperclip/node_modules/.pnpm/vitest@5.0.3_@opentelemetry+api@1.9.1_@types+node@24.13.3_jsdom@30.0.1_@noble+hashes@2.4.0__v_wr5mxfuu6kgge6st623q4v5egm/node_modules/vitest/dist/chunks/run.BTlFXlnv.js:2783:20"
+        ]
+      }
+    }
+  ],
+  "priorEvidenceUnchanged": [
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-agentconfig-controls.json",
+      "sha256": "cfb4357610beaa464cdb26848f74a7b8d967d6409c63dbd6821c92886a9cf980"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-agentconfig.md",
+      "sha256": "ea6d5dfc8cedcd653edd55ca9d77568431413a351f4de5db77ca6ac8f22b051a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appboundary-controls.json",
+      "sha256": "bad49e7bc92dea919df6b980bfa45e7452984cf31a6fd4655b355ba0444ff9a6"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appboundary.md",
+      "sha256": "cd6f173584db0d485004af6f85b1ce78fa65b19d8c6ef582b061f0d232c6c1ed"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail-controls.json",
+      "sha256": "7906fde0d62e14a7511b5cf45f864c9386a4c377922333eefc7f7e703c832f6a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-appdetail.md",
+      "sha256": "715f23cd27502c92d0f5d1b83b91bcac03f254c73ab63b44181ae76939805229"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-attachments-controls.json",
+      "sha256": "c4ff66a3226e1edafd286cad0ca45c9445795b46944cf70d606c59a754913f3a"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-attachments.md",
+      "sha256": "d38715393c95306d10e871a5a2c9a32f105fa1452871cd7ad030d86dbbdb7416"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-controls.json",
+      "sha256": "0d445f6f066032f2d9cd724525a8d7d2290246cbfeee1f6ab4b44818467af2a7"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-experimental-controls.json",
+      "sha256": "9c72abee7ee1a937fdbd6ccee870320308bc7ce06b4fc1e338cd9bd3b0efba6b"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-experimental.md",
+      "sha256": "93b7583a8ebba39dc97e390918fd62029955a00beda22756f55bd6374acc3737"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-inline-controls.json",
+      "sha256": "af9d3f115e6e0518c2c0a2e11b8913e7aa82a35c848f114e6750884323601e17"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-inline.md",
+      "sha256": "52d8e27970bd1c091ae7edf403b2331e921081da9198270df65ff779a8efc1bc"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-issuechat-controls.json",
+      "sha256": "45d86fa901c8ab40bc3fe98d266e3ba1a7bbc93edb7bc2aae60ccd9bfa130c37"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-issuechat.md",
+      "sha256": "15e84a553c5a468aea013941f68d3aa517bfb5a13ae296a90e1a39586f85de8e"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-issuedetail-controls.json",
+      "sha256": "a56f183f1c6b940662db0c4bfb62457eda0cec453c2019b439ec716ed9d2a3e1"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-issuedetail.md",
+      "sha256": "e137af5b991c936a167d6ad6f3c710b99688e939f839b163b203259fc998ded8"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-route-controls.json",
+      "sha256": "0a72a7770ec749f2c0507a74d395e65d70b722d0b9d2a767a2c066a67ed46382"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-route.md",
+      "sha256": "9b5e1543163d6c9d0958aa3e377a593ec458f6674ce1ddb2bf3ca158786f09c4"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-sidebar-controls.json",
+      "sha256": "ae9f24746e67432cf6247c5da130b9c1bba46fc85112c0610d3f18545dfce326"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-sidebar.md",
+      "sha256": "5e267441c43aa8375fa5c54edcbd2879428d657708be9a2ab372aa66e4792886"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-timeline-controls.json",
+      "sha256": "6a86b07770f1cd8d758334fb61c46254197a7f533d24c056fc9a52c317488291"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-timeline.md",
+      "sha256": "612dc3ec4c3d435888055ba20a7f28230ce89ea8b071b8c38d1ea2c147074a96"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript-controls.json",
+      "sha256": "9e4dbdc33806d6fcc912dc3aacc8691a77939e2ce2403032b2a8127c0e407e94"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui-transcript.md",
+      "sha256": "9e4ac8c92a3a9eca727c29a77ae428702d19ecdee0cab0e3dfcda0a36bf004db"
+    },
+    {
+      "file": "doc/plans/2026-10-12-test-audit-r7-ui.md",
+      "sha256": "896b9928af85a4c7d588dfca93484980aadb238bd79d8142e671c62f0b191fa8"
+    }
+  ],
+  "ownerRestoredToBaseGitBytes": true,
+  "productionLinesChanged": 0
+}

@@ -1,3 +1,4 @@
+import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { and, desc, eq, inArray } from "drizzle-orm";
@@ -658,6 +659,11 @@ export async function applyRunnerGoalPrpEvent(
   ].includes(event.eventType)) return null;
   const payload = asRecord(event.payload) ?? {};
   const changed = await db.transaction(async (tx) => {
+    const [issue] = await tx.select().from(issues).where(and(eq(issues.id, binding.issueId), eq(issues.companyId, binding.companyId))).for("update");
+    if (issue?.conversationAgentId) {
+      const [run] = event.sourceRunId ? await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, event.sourceRunId)) : [];
+      if (run?.status === "cancelled" || run?.contextSnapshot?.conversationSessionGeneration !== issue.conversationSessionGeneration) return null;
+    }
     await tx.insert(agentTaskSessions).values({
       companyId: binding.companyId,
       agentId: binding.agentId,
@@ -681,10 +687,6 @@ export async function applyRunnerGoalPrpEvent(
       : undefined;
     const sameSource = !sourceId || session?.goalSourceId === sourceId;
     if (session?.goalSourceId && sourceId !== session.goalSourceId) {
-      // goalSourceId is the persisted run epoch, not just a sequence namespace.
-      // Only a running, authenticated successor of the same native session may
-      // replace it. A delayed terminal predecessor must never reclaim the epoch
-      // or resurrect a clear tombstone, even with a higher source sequence.
       const priorRunId = session.goalSourceId.split(":").at(-1);
       const nextRunId = event.sourceRunId;
       const isUuid = (value: string | undefined): value is string =>
@@ -695,6 +697,7 @@ export async function applyRunnerGoalPrpEvent(
         status: heartbeatRuns.status,
         nativeSessionId: heartbeatRuns.nativeSessionId,
         runnerInstanceId: heartbeatRuns.runnerInstanceId,
+        runtimeMode: heartbeatRuns.runtimeMode,
       }).from(heartbeatRuns).where(and(
         inArray(heartbeatRuns.id, [priorRunId, nextRunId]),
         eq(heartbeatRuns.companyId, binding.companyId),
@@ -703,10 +706,15 @@ export async function applyRunnerGoalPrpEvent(
       ));
       const prior = owners.find((run) => run.id === priorRunId);
       const next = owners.find((run) => run.id === nextRunId);
+      const priorGoal = storedGoal(session);
+      const currentFreshSession = issue?.executionRunId === nextRunId &&
+        issue.assigneeAgentId === binding.agentId && issue.status === "in_progress" &&
+        next?.runtimeMode === "native" && prior?.runtimeMode === "native" &&
+        !!prior.nativeSessionId && (session.goalJson === null || priorGoal?.status === "complete");
       if (
         !prior || !next || next.status !== "running" ||
         next.runnerInstanceId !== event.sourceInstanceId ||
-        !next.nativeSessionId || next.nativeSessionId !== prior.nativeSessionId ||
+        !next.nativeSessionId || (next.nativeSessionId !== prior.nativeSessionId && !currentFreshSession) ||
         (prior.id !== next.id && !["succeeded", "failed", "cancelled", "timed_out"].includes(prior.status))
       ) return false;
     }
@@ -811,6 +819,7 @@ export async function applyRunnerGoalPrpEvent(
     }
     if (writesGoal) {
       update.goalJson = goal as unknown as Record<string, unknown> | null;
+      if (session.goalStatus !== (goal?.status ?? null)) await notifyExternalConversationSettlement(tx, binding);
       update.goalStatus = goal?.status ?? null;
       // Blocked and limited goals remain resumable, but must not be picked up
       // by the automatic active-goal recovery sweep until a user resumes.

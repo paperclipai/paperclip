@@ -19,6 +19,8 @@ export const CONNECTION_LIFECYCLE_ACTIONS = [
   "tool_app.reconnected",
   "tool_connection.archived",
   "tool_connection.updated",
+  "tool_connection.google_access_ended",
+  "tool_connection.google_access_not_ended",
 ] as const;
 
 export function connectionLifecycleType(
@@ -34,6 +36,10 @@ export function connectionLifecycleType(
       return "reconnected";
     case "tool_connection.archived":
       return "disconnected";
+    case "tool_connection.google_access_ended":
+      return "google_access_ended";
+    case "tool_connection.google_access_not_ended":
+      return "google_access_not_ended";
     case "tool_connection.updated": {
       const lifecycle = typeof details?.lifecycle === "string" ? details.lifecycle : null;
       if (lifecycle === "paused") return "app_paused";

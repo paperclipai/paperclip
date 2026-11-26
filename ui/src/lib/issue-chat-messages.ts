@@ -26,6 +26,7 @@ import {
 
 type JsonValue = null | string | number | boolean | JsonValue[] | { [key: string]: JsonValue };
 type JsonObject = { [key: string]: JsonValue };
+const TERMINAL_RUN_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled", "interrupted"]);
 
 export interface IssueChatComment extends IssueComment {
   runId?: string | null;
@@ -53,12 +54,14 @@ export interface IssueChatLinkedRun {
   agentId: string;
   adapterType?: string;
   agentName?: string;
+  responsibleUserId?: string | null;
   createdAt: Date | string;
   startedAt: Date | string | null;
   finishedAt?: Date | string | null;
   hasStoredOutput?: boolean;
   logBytes?: number | null;
   errorCode?: string | null;
+  error?: string | null;
   scheduledRetryAt?: string | null;
   nextAction?: string | null;
   resultJson?: Record<string, unknown> | null;
@@ -101,7 +104,7 @@ export interface IssueChatTranscriptEntry {
   cachedTokens?: number;
   costUsd?: number;
   changeType?: "add" | "remove" | "context" | "hunk" | "file_header" | "truncation";
-  family?: "plan" | "tool_execution" | "research" | "delegation" | "model_identity" | "context" | "artifact" | "review" | "hook" | "memory" | "safety" | "terminal" | "wait" | "provider_notice";
+  family?: "plan" | "plan_proposal" | "tool_execution" | "research" | "delegation" | "model_identity" | "context" | "artifact" | "review" | "hook" | "memory" | "safety" | "terminal" | "wait" | "verification" | "provider_notice";
   eventType?: string;
   status?: "running" | "completed" | "failed" | "interrupted" | "informational" | "pending" | "resolved" | "expired" | "cancelled";
   title?: string;
@@ -597,6 +600,8 @@ function createCommentMessage(args: {
     followUpRequested: comment.followUpRequested === true,
     presentation: comment.presentation ?? null,
     commentMetadata: comment.metadata ?? null,
+    origin: comment.origin ?? "comment",
+    fastResponseRequestId: comment.fastResponseRequestId ?? null,
     deletedAt: comment.deletedAt ? toDate(comment.deletedAt).toISOString() : null,
     deletedByType: comment.deletedByType ?? null,
     deletedByAgentId: comment.deletedByAgentId ?? null,
@@ -751,7 +756,7 @@ function computeSegmentTimings(entries: readonly IssueChatTranscriptEntry[]): Se
       entry.kind === "tool_result" ||
       entry.kind === "diff" ||
       entry.kind === "provider_activity" ||
-      (entry.kind === "result" && ((entry.isError && !!entry.errors?.length) || !!entry.text));
+      (entry.kind === "result" && ((entry.isError && !!entry.errors?.length) || !!entry.text)); // query-error-ok: chat-message entry flag, not a query read
     const isText = entry.kind === "assistant" && !!entry.text;
 
     if (isCoT) {
@@ -1007,7 +1012,7 @@ export function buildAssistantPartsFromTranscript(entries: readonly IssueChatTra
     if (entry.kind === "stdout") continue;
     if (entry.kind === "system") continue;
     if (entry.kind === "result") {
-      if (entry.isError && entry.errors?.length) {
+      if (entry.isError && entry.errors?.length) { // query-error-ok: chat-message entry flag, not a query read
         for (const error of entry.errors) {
           orderedParts.push({ type: "reasoning", text: `Run error: ${summarizeNotice(error)}` });
         }
@@ -1141,6 +1146,20 @@ function createLiveRunMessage(args: {
   return message;
 }
 
+/** The durable AI interaction owns repair and its receipt; don't also show the
+ * escalation's diagnostic card for that same failure. Keep unmatched notices. */
+export function isRedundantAiRecoveryNotice(
+  comment: IssueChatComment,
+  interactions: readonly IssueThreadInteraction[] = [],
+): boolean {
+  return comment.presentation?.kind === "system_notice"
+    && ["AI connection needs attention", "Configuration incomplete"].includes(comment.presentation.title ?? "")
+    && Boolean(comment.metadata?.sourceRunId)
+    && interactions.some((interaction) => interaction.kind === "connection_intent"
+      && interaction.payload.purpose === "ai"
+      && interaction.sourceRunId === comment.metadata?.sourceRunId);
+}
+
 export function buildIssueChatMessages(args: {
   comments: readonly IssueChatComment[];
   interactions?: readonly IssueThreadInteraction[];
@@ -1181,6 +1200,7 @@ export function buildIssueChatMessages(args: {
   const orderedMessages: MessageWithOrder[] = [];
 
   for (const comment of sortByCreated(comments)) {
+    if (isRedundantAiRecoveryNotice(comment, interactions)) continue;
     orderedMessages.push({
       createdAtMs: toTimestamp(comment.createdAt),
       order: 1,
@@ -1224,7 +1244,18 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const run of [...linkedRuns].sort((a, b) => toTimestamp(runTimestamp(a)) - toTimestamp(runTimestamp(b)))) {
+  const linkedRunsById = new Map(linkedRuns.map((run) => [run.runId, run]));
+  const liveRunsById = new Map(normalizeLiveRuns(liveRuns, activeRun, issueId, issueStatus).map((run) => [run.id, run]));
+  // History can settle before the live cache drops the same run. Select one
+  // representation before creating messages: terminal history is authoritative;
+  // otherwise keep the streaming snapshot and its live metadata.
+  for (const [runId, run] of linkedRunsById) {
+    if (!liveRunsById.has(runId)) continue;
+    if (TERMINAL_RUN_STATUSES.has(run.status)) liveRunsById.delete(runId);
+    else linkedRunsById.delete(runId);
+  }
+
+  for (const run of [...linkedRunsById.values()].sort((a, b) => toTimestamp(runTimestamp(a)) - toTimestamp(runTimestamp(b)))) {
     const transcript = transcriptsByRunId?.get(run.runId) ?? [];
     const hasRunOutput = transcript.length > 0 || (hasOutputForRun?.(run.runId) ?? false);
     if (hasRunOutput || run.status !== "succeeded") {
@@ -1251,7 +1282,7 @@ export function buildIssueChatMessages(args: {
     });
   }
 
-  for (const run of normalizeLiveRuns(liveRuns, activeRun, issueId, issueStatus)) {
+  for (const run of liveRunsById.values()) {
     orderedMessages.push({
       createdAtMs: toTimestamp(run.startedAt ?? run.createdAt),
       order: 3,

@@ -1,5 +1,11 @@
 import { z } from "zod";
 import { multilineTextSchema } from "./text.js";
+import { taskWorkspaceSelectionSchema } from "./task-workspace.js";
+
+export const chatExecutionDefaultsSchema = z.object({
+  projectId: z.string().uuid().nullable().optional(),
+  workspace: taskWorkspaceSelectionSchema.nullable().optional(),
+}).strict();
 import {
   CHAT_CONCURRENCY_POLICIES,
   CHAT_DELIVERY_STATES,
@@ -67,18 +73,34 @@ const chatEndpointCredentialsSchema = z
     return normalized;
   });
 
+export const slackAppConfigurationSchema = z.object({
+  appName: z.string().trim().min(1, "Enter a Slack app name.").max(35),
+  botName: z.string().trim().min(1).max(80).regex(/^[a-z0-9._-]+$/, "Use lowercase letters, numbers, dots, hyphens, or underscores for the bot name."),
+  command: z.string().trim().min(2).max(32).regex(/^\/[a-z0-9_-]+$/, "Start the command with / and use lowercase letters, numbers, hyphens, or underscores."),
+}).strict();
+
 export const createChatEndpointSchema = z
   .object({
-    provider: chatProviderSchema,
+    provider: chatProviderSchema.exclude(["agentmail"]),
     assignedAgentId: z.string().uuid(),
     applicationId: z.string().uuid().optional(),
     name: z.string().trim().min(1).max(160).optional(),
+    slackApp: slackAppConfigurationSchema.optional(),
+    slackSetupMethod: z.enum(["managed", "automatic", "manual", "existing"]).optional(),
   })
-  .strict();
+  .strict()
+  .refine(value => (!value.slackApp && !value.slackSetupMethod) || value.provider === "slack", {
+    message: "Slack app details only apply to Slack connections", path: ["slackApp"],
+  });
 
 export const updateChatEndpointSchema = z
   .object({
+    executionDefaults: chatExecutionDefaultsSchema.nullable().optional(),
+    communicationInstructions: multilineTextSchema.pipe(z.string().trim().max(4000)).optional(),
+    slackApp: slackAppConfigurationSchema.optional(),
+    slackSetupMethod: z.enum(["managed", "automatic", "manual", "existing"]).optional(),
     allowDirectMessages: z.boolean().optional(),
+    requireAtMention: z.boolean().optional(),
     allowGroupChats: z.boolean().optional(),
     allowUnlinkedPeople: z.boolean().optional(),
   })
@@ -86,6 +108,17 @@ export const updateChatEndpointSchema = z
   .refine((value) => Object.keys(value).length > 0, {
     message: "At least one chat endpoint field is required",
   });
+
+export const photonProjectIdSchema = z.string().trim().min(1).max(128).regex(/^[a-zA-Z0-9_-]+$/);
+export const photonLineIdSchema = z.string().trim().min(1).max(63).regex(/^[a-zA-Z0-9](?:[a-zA-Z0-9-]*[a-zA-Z0-9])?$/);
+export const photonChannelConfigurationSchema = z.union([
+  z.object({ allocation: z.literal("dedicated").default("dedicated"), projectId: photonProjectIdSchema, lineId: photonLineIdSchema }).strict(),
+  z.object({ allocation: z.literal("shared"), projectId: photonProjectIdSchema }).strict(),
+]);
+export const inspectPhotonProjectSchema = z.object({
+  projectId: photonProjectIdSchema,
+  projectSecret: z.string().min(1).max(4096),
+}).strict();
 
 export const configureChatEndpointSchema = z
   .object({
@@ -98,11 +131,12 @@ export const configureChatEndpointSchema = z
       "remove",
     ]),
     credentials: chatEndpointCredentialsSchema.optional(),
+    photon: photonChannelConfigurationSchema.optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
     if (
-      value.credentials &&
+      (value.credentials || value.photon) &&
       value.action !== "configure" &&
       value.action !== "reconnect"
     ) {
@@ -121,13 +155,24 @@ export const replaceChatEndpointResourcesSchema = z
         z
           .object({
             id: z.string().uuid(),
-            enabled: z.boolean(),
+            enabled: z.boolean().optional(),
+            executionDefaults: chatExecutionDefaultsSchema.nullable().optional(),
           })
           .strict(),
       )
       .max(500),
   })
   .strict();
+
+export const gitHubRepositoryPageQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  offset: z.coerce.number().int().min(0).max(2_147_483_647).default(0),
+  search: z.string().trim().max(200).default(""),
+}).strict();
+
+export const toggleAllGitHubRepositoriesSchema = z.object({
+  enabled: z.boolean(),
+}).strict();
 
 export const publishChatCommentSchema = z
   .object({

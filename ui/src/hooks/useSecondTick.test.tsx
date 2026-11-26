@@ -3,17 +3,16 @@
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { __secondTickInternals, useSecondTick } from "./useSecondTick";
+import { useSecondTick } from "./useSecondTick";
 
 function mount(active: boolean) {
   const container = document.createElement("div");
   const root = createRoot(container);
   function Probe() {
-    useSecondTick(active);
-    return null;
+    return <output>{useSecondTick(active)}</output>;
   }
   flushSync(() => root.render(<Probe />));
-  return { unmount: () => flushSync(() => root.unmount()) };
+  return { container, unmount: () => flushSync(() => root.unmount()) };
 }
 
 describe("useSecondTick", () => {
@@ -24,22 +23,31 @@ describe("useSecondTick", () => {
     const a = mount(true);
     const b = mount(true);
 
-    expect(__secondTickInternals.subscriberCount()).toBe(2);
-    expect(__secondTickInternals.isRunning()).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+    flushSync(() => vi.advanceTimersByTime(1000));
+    expect(a.container.textContent).toBe("1");
+    expect(b.container.textContent).toBe("1");
 
     a.unmount();
-    expect(__secondTickInternals.subscriberCount()).toBe(1);
-    expect(__secondTickInternals.isRunning()).toBe(true); // still one subscriber
+    expect(vi.getTimerCount()).toBe(1);
+    flushSync(() => vi.advanceTimersByTime(1000));
+    expect(b.container.textContent).toBe("2");
 
     b.unmount();
-    expect(__secondTickInternals.subscriberCount()).toBe(0);
-    expect(__secondTickInternals.isRunning()).toBe(false); // timer stopped when idle
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("does not subscribe or start a timer when inactive", () => {
     const c = mount(false);
-    expect(__secondTickInternals.subscriberCount()).toBe(0);
-    expect(__secondTickInternals.isRunning()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    flushSync(() => vi.advanceTimersByTime(3000));
+    expect(c.container.textContent).toBe("0");
+    const active = mount(true);
+    flushSync(() => vi.advanceTimersByTime(1000));
+    expect(active.container.textContent).toBe("1");
+    expect(c.container.textContent).toBe("0");
+    active.unmount();
+    expect(vi.getTimerCount()).toBe(0);
     c.unmount();
   });
 });

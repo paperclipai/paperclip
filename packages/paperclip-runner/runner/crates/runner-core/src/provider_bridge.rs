@@ -39,8 +39,16 @@ const MAX_SETTLED_CALL_IDS: usize = 65_536;
 const REPLAY_FILTER_WORDS: usize = 32_768;
 const ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE: &str =
     "durable provider tool receipt limit reached for the active turn";
-const COMPLETION_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_finish arguments. Required fields: reportedWorkDisposition, summary, completionClaim, evidence, and verification. When reportedWorkDisposition is yielded, continuation must include kind=response_wake, summary, and idempotencyKey.";
+const TOOL_CALLS_IN_FLIGHT_MESSAGE: &str =
+    "too many provider tool calls are in flight for the retained result reserve";
+const TOOL_CALLS_IN_FLIGHT_HINT: &str = "Too many tool calls are in flight. This call was not executed. Wait for the pending tool results, then retry it.";
+const COMPLETION_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_finish arguments. Required fields: reportedWorkDisposition, summary, completionClaim, evidence, and verification. When reportedWorkDisposition is yielded, continuation must include kind=response_wake or monitor, summary, and idempotencyKey.";
+const HUMAN_INPUT_SCHEMA_HINT: &str = "Invalid request_human_input arguments. Put version and supersedeOnUserComment at payload.version and payload.supersedeOnUserComment, never at the root. For questions, use payload.version=1 and a complete payload.questionSet. Preserve question and option IDs. Correct the arguments and retry.";
+const APPROVAL_INPUT_SCHEMA_HINT: &str = "Invalid request_human_input arguments. Put version and supersedeOnUserComment at payload.version and payload.supersedeOnUserComment, never at the root. Keep approval requests in their confirmation or checkbox interactionKind; do not replace them with questions. Correct the arguments and retry.";
 const BLOCK_INPUT_SCHEMA_HINT: &str = "Invalid paperclip_block arguments. Required fields: reportedWorkDisposition=blocked, summary, completionClaim, evidence, verification, and blocker. blocker must include reasonCode, owner, unblockAction, and scope.";
+const MONITOR_INPUT_SCHEMA_HINT: &str = "Invalid set_task_monitor arguments. Supply idempotencyKey and monitor: {nextCheckAt: <future UTC timestamp>, notes: <next check>}. Put all scheduling fields inside monitor, or use monitor: null to clear. Omit taskId for the current task. Correct the arguments and retry.";
+const API_INPUT_SCHEMA_HINT: &str = "Invalid call_api arguments. For responseText, use GET with offsetBytes >= 0 and responseText.limitBytes from 4 through 24576 bytes (default 24576). Follow nextOffsetBytes; null means complete. Correct the arguments and retry.";
+const TOOL_INPUT_SCHEMA_HINT: &str = "Invalid tool arguments. The tool was not executed. Match its authorized input schema. Correct the arguments and retry.";
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -192,6 +200,10 @@ pub struct ProviderToolBridge {
     catalog_operations: Vec<AuthorizedTool>,
     catalog_digest: Option<String>,
     pending: BTreeMap<String, PendingToolCall>,
+    // A provider stopping is not evidence that a dispatched server operation
+    // failed. Keep its input and identity pending until the authority replies.
+    #[serde(default)]
+    turn_closed: bool,
     #[serde(deserialize_with = "deserialize_retained_results")]
     completed: BTreeMap<String, CompletedToolCall>,
     // Keep authoritative result bodies through the provider's replay window;
@@ -223,27 +235,74 @@ pub struct ProviderToolBridge {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProviderBridgeError {
     message: String,
-    safe_provider_message: Option<&'static str>,
+    safe_provider_message: Option<String>,
 }
 
 impl ProviderBridgeError {
-    fn invalid(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
             safe_provider_message: None,
         }
     }
 
-    fn input_schema_validation(operation_id: &str) -> Self {
+    fn input_schema_validation(operation_id: &str, input: &Value) -> Self {
         let safe_provider_message = match operation_id {
             "paperclip_finish" => Some(COMPLETION_INPUT_SCHEMA_HINT),
             "paperclip_block" => Some(BLOCK_INPUT_SCHEMA_HINT),
-            _ => None,
+            "request_human_input" => {
+                Some(match input.get("interactionKind").and_then(Value::as_str) {
+                    Some("confirmation" | "checkbox") => APPROVAL_INPUT_SCHEMA_HINT,
+                    _ => HUMAN_INPUT_SCHEMA_HINT,
+                })
+            }
+            "set_task_monitor" => Some(MONITOR_INPUT_SCHEMA_HINT),
+            "call_api" => Some(API_INPUT_SCHEMA_HINT),
+            _ => Some(TOOL_INPUT_SCHEMA_HINT),
         };
         Self {
             message: format!("provider arguments for {operation_id} failed JSON Schema validation"),
-            safe_provider_message,
+            safe_provider_message: safe_provider_message.map(str::to_owned),
         }
+    }
+
+    fn with_schema_locations(mut self, validator: &jsonschema::Validator, input: &Value) -> Self {
+        if let Some(message) = self.safe_provider_message.as_mut() {
+            let locations = validator
+                .iter_errors(input)
+                .take(3)
+                .map(|error| {
+                    let location = error
+                        .schema_path()
+                        .to_string()
+                        .chars()
+                        .filter(|c| c.is_ascii_alphanumeric() || "/_~.-".contains(*c))
+                        .take(128)
+                        .collect::<String>();
+                    match error.kind() {
+                        jsonschema::error::ValidationErrorKind::Required { property } => {
+                            // Required property names come from the authorized schema.
+                            let name = property
+                                .to_string()
+                                .chars()
+                                .filter(|c| c.is_ascii_graphic() || *c == ' ')
+                                .take(64)
+                                .collect::<String>();
+                            format!("{location} (missing {name})")
+                        }
+                        jsonschema::error::ValidationErrorKind::MaxLength { limit } => {
+                            format!("{location} (maximum {limit} characters)")
+                        }
+                        _ => location,
+                    }
+                })
+                .collect::<Vec<_>>();
+            message.push_str(" Check these input schema locations: ");
+            message.push_str(&locations.join(", "));
+            message.push('.');
+            message.truncate(message.len().min(512));
+        }
+        self
     }
 
     fn active_turn_receipt_limit() -> Self {
@@ -254,8 +313,19 @@ impl ProviderBridgeError {
         self.message == ACTIVE_TURN_RECEIPT_LIMIT_MESSAGE
     }
 
-    pub fn safe_provider_message(&self) -> Option<&'static str> {
-        self.safe_provider_message
+    fn tool_calls_in_flight() -> Self {
+        Self {
+            message: TOOL_CALLS_IN_FLIGHT_MESSAGE.to_owned(),
+            safe_provider_message: Some(TOOL_CALLS_IN_FLIGHT_HINT.to_owned()),
+        }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        self.message == TOOL_CALLS_IN_FLIGHT_MESSAGE
+    }
+
+    pub fn safe_provider_message(&self) -> Option<&str> {
+        self.safe_provider_message.as_deref()
     }
 }
 
@@ -283,6 +353,7 @@ impl ProviderToolBridge {
             ));
         }
         self.prepare_internal(tool_set, true)?;
+        self.turn_closed = false;
         self.completed.clear();
         self.settled_results.clear();
         self.retained_result_bytes = 0;
@@ -531,14 +602,21 @@ impl ProviderToolBridge {
 
     pub fn prepare_turn(&mut self) -> Result<(), ProviderBridgeError> {
         if !self.pending.is_empty() || !self.completed.is_empty() {
-            return Err(ProviderBridgeError::invalid(
-                "cannot prepare the next provider turn while tool calls are active",
-            ));
+            // Name the blocking receipts so a recovery that can never start a
+            // turn identifies the stuck call. IDs and operation names only; no
+            // tool input or result content leaves the bridge.
+            return Err(ProviderBridgeError::invalid(format!(
+                "cannot prepare the next provider turn while tool calls are active \
+                 (pending: {}; completed: {})",
+                describe_active_receipts(self.pending.values()),
+                describe_active_receipts(self.completed.values().map(|entry| &entry.call)),
+            )));
         }
         // The authoritative result bodies are needed only while the provider
         // can replay the just-settled turn. Release that bulky data at the
         // verified turn boundary, but retain every call-ID tombstone and any
         // recovered legacy filter until the owning provider process is reaped.
+        self.turn_closed = false;
         self.settled_results.clear();
         self.retained_result_bytes = 0;
         self.durable_run_receipt_limit_reached = self.replay_history_blocks_admission();
@@ -612,7 +690,10 @@ impl ProviderToolBridge {
             ))
         })?;
         if !validator.is_valid(&input) {
-            return Err(ProviderBridgeError::input_schema_validation(&operation_id));
+            return Err(
+                ProviderBridgeError::input_schema_validation(&operation_id, &input)
+                    .with_schema_locations(&validator, &input),
+            );
         }
         if matches!(
             operation_id.as_str(),
@@ -622,7 +703,10 @@ impl ProviderToolBridge {
             .and_then(Value::as_str)
             .is_some_and(|summary| summary.chars().count() > MAX_COMPLETION_SUMMARY_CHARS)
         {
-            return Err(ProviderBridgeError::input_schema_validation(&operation_id));
+            return Err(ProviderBridgeError::input_schema_validation(
+                &operation_id,
+                &input,
+            ));
         }
         bounded_json(&input, MAX_TOOL_VALUE_BYTES, "provider tool input")?;
         let call = PendingToolCall {
@@ -646,6 +730,11 @@ impl ProviderToolBridge {
         {
             return Err(ProviderBridgeError::invalid(
                 "provider reused a completed tool call id",
+            ));
+        }
+        if self.turn_closed {
+            return Err(ProviderBridgeError::invalid(
+                "cannot admit a new tool call after the provider turn stopped",
             ));
         }
         // A durable receipt ledger may be exactly full or legacy state may
@@ -704,7 +793,7 @@ impl ProviderToolBridge {
             .and_then(|total| total.checked_add(result_reserve))
             .is_none_or(|total| total > MAX_RETAINED_TOOL_VALUE_BYTES)
         {
-            return Err(ProviderBridgeError::active_turn_receipt_limit());
+            return Err(ProviderBridgeError::tool_calls_in_flight());
         }
         // Reserve the complete encoded receipt, including this exact input and
         // a maximum-sized result, before accepting work. An admitted call can
@@ -716,7 +805,7 @@ impl ProviderToolBridge {
             return Err(ProviderBridgeError::active_turn_receipt_limit());
         }
         if self.ensure_settled_result_capacity(Some(&call)).is_err() {
-            return Err(ProviderBridgeError::active_turn_receipt_limit());
+            return Err(ProviderBridgeError::tool_calls_in_flight());
         }
         self.pending.insert(call_id, call.clone());
         Ok(call)
@@ -730,18 +819,14 @@ impl ProviderToolBridge {
             return if existing.result == result {
                 Ok(existing.result.result.clone())
             } else {
-                Err(ProviderBridgeError::invalid(
-                    "conflicting duplicate tool result",
-                ))
+                Err(conflicting_tool_result(&existing.result, &result))
             };
         }
         if let Some(existing) = self.settled_results.get(&result.call_id) {
             return if existing.result == result {
                 Ok(existing.result.result.clone())
             } else {
-                Err(ProviderBridgeError::invalid(
-                    "conflicting duplicate settled tool result",
-                ))
+                Err(conflicting_tool_result(&existing.result, &result))
             };
         }
         if self.has_settled_call_id(&result.call_id) {
@@ -809,7 +894,16 @@ impl ProviderToolBridge {
         )?;
         self.pending.remove(&result.call_id);
         self.retained_result_bytes = next_retained_bytes;
-        self.completed.insert(result.call_id.clone(), completed);
+        if self.turn_closed {
+            self.settled_call_ids.extend_recent(
+                std::iter::once(result.call_id.clone()),
+                MAX_SETTLED_CALL_IDS,
+            );
+            self.settled_results
+                .insert(result.call_id.clone(), completed);
+        } else {
+            self.completed.insert(result.call_id.clone(), completed);
+        }
         Ok(result.result)
     }
 
@@ -817,41 +911,95 @@ impl ProviderToolBridge {
         self.pending.values()
     }
 
+    /// Settle a pending call whose recorded result this bridge rejected, such
+    /// as a malformed envelope or an oversized value. The provider then gets a
+    /// bounded error now instead of waiting on a call nothing can answer, and
+    /// the call stops blocking later turns. Returns None when the call is not
+    /// pending, so a conflicting or unknown result still fails as before.
+    pub fn settle_undeliverable_result(
+        &mut self,
+        rejected: &ToolResult,
+    ) -> Result<Option<ToolResult>, ProviderBridgeError> {
+        let Some(pending) = self.pending.get(&rejected.call_id) else {
+            return Ok(None);
+        };
+        let mut settlement = runner_tool_failure(
+            pending,
+            UNDELIVERABLE_RESULT_CODE,
+            "Paperclip ran this tool, but its result could not be returned to you. The action may already have completed; do not repeat it. Check the current state with a read tool instead.",
+        );
+        // Bind the settlement to the exact rejected result, so a replay of the
+        // same delivery after a crash is recognized as a duplicate.
+        settlement.result["error"]["rejectedResultDigest"] =
+            Value::String(rejected_result_digest(rejected));
+        self.apply_result(settlement.clone())?;
+        Ok(Some(settlement))
+    }
+
+    /// True when this exact result was already rejected and its call settled
+    /// by `settle_undeliverable_result`.
+    pub fn is_settled_undeliverable_replay(&self, result: &ToolResult) -> bool {
+        self.completed
+            .get(&result.call_id)
+            .or_else(|| self.settled_results.get(&result.call_id))
+            .is_some_and(|entry| {
+                let error = &entry.result.result["error"];
+                entry.result.is_error
+                    && entry.result.operation_id == result.operation_id
+                    && error["code"] == UNDELIVERABLE_RESULT_CODE
+                    && error["rejectedResultDigest"]
+                        == Value::String(rejected_result_digest(result))
+            })
+    }
+
+    /// Settle the calls a closed provider turn left pending. Their provider
+    /// turn ended without them, and a new run's authority can never deliver
+    /// the old run's result, so they would block every later run. Each is
+    /// recorded as a timed-out failure with an unknown outcome.
+    pub fn expire_closed_turn_calls(&mut self) -> Result<Vec<ToolResult>, ProviderBridgeError> {
+        if !self.turn_closed {
+            return Ok(Vec::new());
+        }
+        let expired = self
+            .pending
+            .values()
+            .map(|pending| {
+                runner_tool_failure(
+                    pending,
+                    EXPIRED_RESULT_CODE,
+                    "This Paperclip tool call timed out before its result reached you. Its outcome is unknown: check the current state before repeating any change.",
+                )
+            })
+            .collect::<Vec<_>>();
+        for settlement in &expired {
+            self.apply_result(settlement.clone())?;
+        }
+        Ok(expired)
+    }
+
+    /// Close provider admission/delivery, without inventing an operation outcome.
+    /// This marker is durable, including when interruption beats result delivery.
     pub fn cancel_pending_calls(
         &mut self,
         code: &str,
     ) -> Result<Vec<ToolResult>, ProviderBridgeError> {
-        let mut next = self.clone();
-        let results = next.cancel_pending_calls_internal(code)?;
-        *self = next;
-        Ok(results)
+        self.settle_turn(code)
+    }
+
+    pub fn turn_closed(&self) -> bool {
+        self.turn_closed
     }
 
     pub fn settle_turn(&mut self, code: &str) -> Result<Vec<ToolResult>, ProviderBridgeError> {
         validate_stable_id(code, "tool cancellation code")?;
-        let results = self
-            .pending
-            .values()
-            .map(|call| cancelled_tool_result(call, code))
-            .collect::<Vec<_>>();
-        let mut settled_entries = self.completed.clone();
-        for (call_id, call) in &self.pending {
-            settled_entries.insert(
-                call_id.clone(),
-                CompletedToolCall {
-                    call: call.clone(),
-                    result: cancelled_tool_result(call, code),
-                },
-            );
+        if !self.settled_identity_capacity_allows(0) {
+            return Err(ProviderBridgeError::active_turn_receipt_limit());
         }
         let next_retained_bytes =
-            retained_result_bytes(self.settled_results.iter().chain(settled_entries.iter()))?;
-        ensure_settled_result_capacity(next_retained_bytes, std::iter::empty())?;
-
-        // Byte capacity was reserved at admission. Keep every identity exact
-        // for the lifetime of this provider-process epoch; prepare_turn
-        // releases only the bulky result bodies.
-        let new_identity_count = settled_entries
+            retained_result_bytes(self.settled_results.iter().chain(self.completed.iter()))?;
+        ensure_settled_result_capacity(next_retained_bytes, self.pending.values())?;
+        let new_identity_count = self
+            .completed
             .keys()
             .filter(|call_id| !self.settled_call_ids.contains(call_id))
             .count();
@@ -865,28 +1013,14 @@ impl ProviderToolBridge {
         }
         let evicted = self
             .settled_call_ids
-            .extend_recent(settled_entries.keys().cloned(), MAX_SETTLED_CALL_IDS);
+            .extend_recent(self.completed.keys().cloned(), MAX_SETTLED_CALL_IDS);
         debug_assert!(evicted.is_empty());
-        self.pending.clear();
-        self.completed.clear();
-        self.settled_results.append(&mut settled_entries);
+        self.settled_results.append(&mut self.completed);
         self.retained_result_bytes = next_retained_bytes;
-        Ok(results)
-    }
-
-    fn cancel_pending_calls_internal(
-        &mut self,
-        code: &str,
-    ) -> Result<Vec<ToolResult>, ProviderBridgeError> {
-        validate_stable_id(code, "tool cancellation code")?;
-        let pending = self.pending.values().cloned().collect::<Vec<_>>();
-        let mut results = Vec::with_capacity(pending.len());
-        for call in pending {
-            let result = cancelled_tool_result(&call, code);
-            self.apply_result(result.clone())?;
-            results.push(result);
-        }
-        Ok(results)
+        self.turn_closed = true;
+        // Pending effects survive both normal turn termination and process
+        // loss. They block the next turn/checkpoint, but accept a late result.
+        Ok(Vec::new())
     }
 
     fn retained_value_bytes(&self) -> Result<usize, ProviderBridgeError> {
@@ -947,6 +1081,27 @@ impl ProviderToolBridge {
             self.retained_result_bytes,
             self.pending.values().chain(additional_pending.into_iter()),
         )
+    }
+}
+
+const MAX_DESCRIBED_ACTIVE_RECEIPTS: usize = 4;
+
+fn describe_active_receipts<'a>(
+    calls: impl ExactSizeIterator<Item = &'a PendingToolCall>,
+) -> String {
+    let total = calls.len();
+    if total == 0 {
+        return "0".to_owned();
+    }
+    let described = calls
+        .take(MAX_DESCRIBED_ACTIVE_RECEIPTS)
+        .map(|call| format!("{}:{}", call.operation_id, call.call_id))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if total > MAX_DESCRIBED_ACTIVE_RECEIPTS {
+        format!("{total} [{described}, ...]")
+    } else {
+        format!("{total} [{described}]")
     }
 }
 
@@ -1232,19 +1387,38 @@ where
     deserializer.deserialize_map(RetainedResultsVisitor)
 }
 
-fn cancelled_tool_result(call: &PendingToolCall, code: &str) -> ToolResult {
+pub const UNDELIVERABLE_RESULT_CODE: &str = "semantic_tool_result_undeliverable";
+pub const EXPIRED_RESULT_CODE: &str = "semantic_tool_result_expired";
+
+fn rejected_result_digest(result: &ToolResult) -> String {
+    semantic_value_digest(&serde_json::json!({
+        "operationId": result.operation_id, "isError": result.is_error, "result": result.result,
+    }))
+}
+
+fn runner_tool_failure(pending: &PendingToolCall, code: &str, message: &str) -> ToolResult {
     ToolResult {
-        call_id: call.call_id.clone(),
-        operation_id: call.operation_id.clone(),
+        call_id: pending.call_id.clone(),
+        operation_id: pending.operation_id.clone(),
         result: serde_json::json!({
-            "error": {
-                "code": code,
-                "message": "The provider turn stopped before this semantic tool completed",
-                "retryable": false,
-            },
+            "error": { "code": code, "retryable": false, "message": message },
         }),
         is_error: true,
     }
+}
+
+fn conflicting_tool_result(existing: &ToolResult, incoming: &ToolResult) -> ProviderBridgeError {
+    // Correlate both receipts without leaking arguments or result content into
+    // a user-visible error or diagnostic stream.
+    let digest = |result: &ToolResult| {
+        semantic_value_digest(&serde_json::json!({
+            "operationId": result.operation_id, "isError": result.is_error, "result": result.result,
+        }))
+    };
+    ProviderBridgeError::invalid(format!(
+        "conflicting duplicate tool result: callId={} operationId={} existingDigest={} incomingDigest={}",
+        incoming.call_id, incoming.operation_id, digest(existing), digest(incoming),
+    ))
 }
 
 pub fn authorized_tool_catalog_digest(
@@ -1496,6 +1670,108 @@ mod tests {
         bridge
     }
 
+    fn get_task_bridge() -> ProviderToolBridge {
+        let operation = AuthorizedTool {
+            operation_id: "get_task".to_owned(),
+            version: 1,
+            description: "Read a task.".to_owned(),
+            input_schema: json!({"type": "object"}),
+            response_schema: json!({"type": "object"}),
+        };
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        bridge
+    }
+
+    fn settle_get_task(bridge: &mut ProviderToolBridge, call_id: &str, result_bytes: usize) {
+        bridge
+            .begin_call(call_id.to_owned(), "get_task".to_owned(), json!({}))
+            .unwrap();
+        bridge
+            .apply_result(ToolResult {
+                call_id: call_id.to_owned(),
+                operation_id: "get_task".to_owned(),
+                result: json!({"body": "x".repeat(result_bytes)}),
+                is_error: false,
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn parallel_calls_over_the_result_reserve_reject_only_the_overflow_call() {
+        let mut bridge = get_task_bridge();
+        settle_get_task(&mut bridge, "settled", 600 * 1024);
+        for index in 0..9 {
+            bridge
+                .begin_call(
+                    format!("parallel-{index}"),
+                    "get_task".to_owned(),
+                    json!({}),
+                )
+                .expect("calls within the result reserve are admitted");
+        }
+        let error = bridge
+            .begin_call("parallel-9".to_owned(), "get_task".to_owned(), json!({}))
+            .expect_err("the call that overflows the reserve is rejected");
+        assert!(!error.is_active_turn_receipt_limit());
+        assert!(error.is_retryable());
+        assert_eq!(
+            error.safe_provider_message(),
+            Some(TOOL_CALLS_IN_FLIGHT_HINT)
+        );
+        assert!(!bridge.durable_run_receipt_limit_reached());
+        assert!(!bridge.has_call_receipt("parallel-9"));
+        assert_eq!(bridge.pending_calls().count(), 9);
+
+        bridge
+            .apply_result(ToolResult {
+                call_id: "parallel-0".to_owned(),
+                operation_id: "get_task".to_owned(),
+                result: json!({"ok": true}),
+                is_error: false,
+            })
+            .unwrap();
+        bridge
+            .begin_call("parallel-9".to_owned(), "get_task".to_owned(), json!({}))
+            .expect("the rejected call is admitted once a pending result settles");
+        assert!(!bridge.durable_run_receipt_limit_reached());
+    }
+
+    #[test]
+    fn held_result_bytes_over_the_limit_still_stop_the_turn() {
+        let mut bridge = get_task_bridge();
+        let mut settled = 0;
+        let error = loop {
+            match bridge.begin_call(format!("held-{settled}"), "get_task".to_owned(), json!({})) {
+                Ok(_) => {
+                    bridge
+                        .apply_result(ToolResult {
+                            call_id: format!("held-{settled}"),
+                            operation_id: "get_task".to_owned(),
+                            result: json!({"body": "x".repeat(760 * 1024)}),
+                            is_error: false,
+                        })
+                        .unwrap();
+                    settled += 1;
+                }
+                Err(error) => break error,
+            }
+        };
+        assert!(settled >= 9);
+        assert_eq!(bridge.pending_calls().count(), 0);
+        assert!(error.is_active_turn_receipt_limit());
+        assert!(!error.is_retryable());
+        assert!(bridge.durable_run_receipt_limit_reached());
+    }
+
     #[test]
     fn completion_summary_enforces_the_canonical_unicode_character_limit() {
         let mut within_limit = completion_bridge();
@@ -1520,6 +1796,167 @@ mod tests {
             Some(COMPLETION_INPUT_SCHEMA_HINT)
         );
         assert!(!over_limit.has_call_receipt("call-over-limit"));
+    }
+
+    #[test]
+    fn completion_validation_identifies_schema_location_without_echoing_input() {
+        let mut bridge = completion_bridge();
+        let error = bridge
+            .begin_call(
+                "bad-summary".to_owned(),
+                "paperclip_finish".to_owned(),
+                json!({"summary": {"PRIVATE_FIELD": "PRIVATE_VALUE"}}),
+            )
+            .unwrap_err();
+        let message = error.safe_provider_message().unwrap();
+        assert!(message.contains("/properties/summary/type"), "{message}");
+        assert!(!message.contains("PRIVATE_FIELD"));
+        assert!(!message.contains("PRIVATE_VALUE"));
+        assert!(!bridge.has_call_receipt("bad-summary"));
+        bridge
+            .begin_call(
+                "corrected-summary".to_owned(),
+                "paperclip_finish".to_owned(),
+                json!({"summary": "Saved the requested output."}),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn completion_validation_names_missing_fields_and_bounds_feedback() {
+        let mut bridge = completion_bridge();
+        let error = bridge
+            .begin_call(
+                "missing-summary".to_owned(),
+                "paperclip_finish".to_owned(),
+                json!({}),
+            )
+            .unwrap_err();
+        assert!(error
+            .safe_provider_message()
+            .unwrap()
+            .contains("/required (missing \"summary\")"));
+
+        let schema = json!({"type": "object", "properties": {
+            "a": {"type": "string"}, "b": {"type": "string"},
+            "c": {"type": "string"}, "d": {"type": "string"},
+        }});
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        let error = ProviderBridgeError::input_schema_validation("paperclip_finish", &json!({}))
+            .with_schema_locations(&validator, &json!({"a": 1, "b": 2, "c": 3, "d": 4}));
+        assert_eq!(
+            error
+                .safe_provider_message()
+                .unwrap()
+                .matches("/properties/")
+                .count(),
+            3
+        );
+        let other = ProviderBridgeError::input_schema_validation("some_other_tool", &json!({}))
+            .with_schema_locations(&validator, &json!({"a": 1}));
+        let message = other.safe_provider_message().unwrap();
+        assert!(message.starts_with(TOOL_INPUT_SCHEMA_HINT));
+        assert!(message.contains("/properties/a/type"));
+    }
+
+    #[test]
+    fn monitor_validation_reports_nested_schema_paths_without_submitted_values() {
+        let schema = json!({
+            "type": "object", "required": ["idempotencyKey", "monitor"],
+            "additionalProperties": false,
+            "properties": {
+                "idempotencyKey": {"type": "string"},
+                "monitor": {
+                    "type": ["object", "null"], "required": ["nextCheckAt", "notes"],
+                    "properties": {"nextCheckAt": {"type": "string"}, "notes": {"type": "string", "maxLength": 500}},
+                    "additionalProperties": false
+                }
+            }
+        });
+        let validator = jsonschema::validator_for(&schema).unwrap();
+        for input in [
+            json!({"idempotencyKey": "check-ci", "nextCheckAt": "PRIVATE_TIMESTAMP", "notes": "PRIVATE_VALUE"}),
+            json!({"idempotencyKey": "check-ci", "monitor": {"nextCheckAt": "PRIVATE_TIMESTAMP", "notes": "PRIVATE_VALUE".repeat(100), "PRIVATE_FIELD": "PRIVATE_VALUE"}}),
+        ] {
+            let error =
+                ProviderBridgeError::input_schema_validation("set_task_monitor", &json!({}))
+                    .with_schema_locations(&validator, &input);
+            let message = error.safe_provider_message().unwrap();
+            assert!(message.contains("Put all scheduling fields inside monitor"));
+            assert!(message.contains("/required") || message.contains("/properties/monitor/"));
+            for private in ["PRIVATE_TIMESTAMP", "PRIVATE_FIELD", "PRIVATE_VALUE"] {
+                assert!(!message.contains(private));
+            }
+            assert!(message.len() <= 512);
+            assert!(!message.chars().any(char::is_control));
+        }
+    }
+
+    #[test]
+    fn monitor_notes_length_error_reports_the_authorized_numeric_limit() {
+        let contract = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../../generated/capability/semantic-tool-contracts.json"),
+        )
+        .unwrap();
+        let tools: Value = serde_json::from_str(&contract).unwrap();
+        let tool = tools
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "set_task_monitor")
+            .unwrap();
+        let schema = &tool["inputSchema"];
+        let limit = schema["properties"]["monitor"]["properties"]["notes"]["maxLength"]
+            .as_u64()
+            .unwrap() as usize;
+        let validator = jsonschema::validator_for(schema).unwrap();
+        let valid = json!({"idempotencyKey": "check-ci", "monitor": {
+            "nextCheckAt": "2030-01-01T12:00:00Z", "notes": "x".repeat(limit)
+        }});
+        assert!(validator.is_valid(&valid));
+        let mut invalid = valid.clone();
+        invalid["monitor"]["notes"] = json!("x".repeat(limit + 1));
+        assert!(!validator.is_valid(&invalid));
+        let operation = AuthorizedTool {
+            operation_id: "set_task_monitor".to_owned(),
+            version: 1,
+            description: tool["description"].as_str().unwrap().to_owned(),
+            input_schema: schema.clone(),
+            response_schema: json!({"type": "object"}),
+        };
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                    .unwrap(),
+                operations: vec![operation],
+            })
+            .unwrap();
+        bridge
+            .begin_call("maximum".to_owned(), "set_task_monitor".to_owned(), valid)
+            .unwrap();
+        let error = bridge
+            .begin_call(
+                "oversized".to_owned(),
+                "set_task_monitor".to_owned(),
+                invalid,
+            )
+            .unwrap_err();
+        assert!(!bridge.has_call_receipt("oversized"));
+        let message = error.safe_provider_message().unwrap();
+        assert!(
+            message.contains("/properties/monitor/properties/notes/maxLength"),
+            "{message}"
+        );
+        assert!(
+            message.contains(&format!("maximum {limit} characters")),
+            "{message}"
+        );
+        assert!(!message.contains(&"x".repeat(20)));
+        assert!(message.len() <= 512);
     }
 
     #[test]
@@ -1788,11 +2225,13 @@ mod tests {
         let cancelled = pending_at_capacity
             .settle_turn("semantic_tool_turn_receipt_limit")
             .unwrap();
-        assert_eq!(cancelled.len(), 1);
+        assert!(cancelled.is_empty());
+        assert_eq!(pending_at_capacity.pending_calls().count(), 1);
         assert_eq!(
             pending_at_capacity.settled_call_ids.len(),
-            MAX_SETTLED_CALL_IDS
+            MAX_SETTLED_CALL_IDS - 1
         );
+        assert!(pending_at_capacity.prepare_turn().is_err());
 
         bridge
             .apply_result(ToolResult {
@@ -2023,6 +2462,162 @@ mod tests {
                 json!({}),
             )
             .expect("a new durable run resets the full legacy ledger");
+    }
+
+    fn parallel_read_bridge() -> ProviderToolBridge {
+        let operations = ["list_documents", "list_workflows"]
+            .map(|operation_id| AuthorizedTool {
+                operation_id: operation_id.to_owned(),
+                version: 1,
+                description: "Read company records.".to_owned(),
+                input_schema: json!({"type": "object"}),
+                response_schema: json!({"type": "object", "additionalProperties": true}),
+            })
+            .to_vec();
+        let mut bridge = ProviderToolBridge::default();
+        bridge
+            .prepare(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            })
+            .unwrap();
+        for (call_id, operation_id) in [("4", "list_documents"), ("5", "list_workflows")] {
+            bridge
+                .begin_call(call_id.to_owned(), operation_id.to_owned(), json!({}))
+                .unwrap();
+        }
+        bridge
+    }
+
+    #[test]
+    fn a_rejected_result_in_a_parallel_pair_still_settles_its_own_call() {
+        // Chat-eval cohort 13 issued list_documents and list_workflows together.
+        // The workflow result named its REST route as `operationId`, which the
+        // bridge reads as a mismatched semantic envelope.
+        let mut bridge = parallel_read_bridge();
+        bridge
+            .apply_result(ToolResult {
+                call_id: "4".to_owned(),
+                operation_id: "list_documents".to_owned(),
+                result: json!({"documents": []}),
+                is_error: false,
+            })
+            .unwrap();
+        let rejected = ToolResult {
+            call_id: "5".to_owned(),
+            operation_id: "list_workflows".to_owned(),
+            result: json!({"ok": true, "status": 200,
+                "operationId": "GET /api/companies/{companyId}/workflows", "data": []}),
+            is_error: false,
+        };
+        let error = bridge.apply_result(rejected.clone()).unwrap_err();
+        assert!(error.to_string().contains("envelope does not match"));
+        assert_eq!(bridge.pending_calls().count(), 1);
+
+        let settlement = bridge
+            .settle_undeliverable_result(&rejected)
+            .unwrap()
+            .expect("the pending call settles");
+        assert!(settlement.is_error);
+        assert_eq!(settlement.operation_id, "list_workflows");
+        assert_eq!(
+            settlement.result["error"]["code"],
+            UNDELIVERABLE_RESULT_CODE
+        );
+        assert_eq!(bridge.pending_calls().count(), 0);
+        // Its sibling keeps its own result, and a settled call is not settled twice.
+        assert_eq!(
+            bridge
+                .replay_result("4", "list_documents", &json!({}))
+                .unwrap()
+                .unwrap()
+                .result,
+            json!({"documents": []})
+        );
+        assert!(bridge
+            .settle_undeliverable_result(&rejected)
+            .unwrap()
+            .is_none());
+        assert!(bridge.is_settled_undeliverable_replay(&rejected));
+        let mut different = rejected.clone();
+        different.result["data"] = json!(["other"]);
+        assert!(!bridge.is_settled_undeliverable_replay(&different));
+        bridge.settle_turn("provider_turn_terminated").unwrap();
+        assert!(bridge.is_settled_undeliverable_replay(&rejected));
+        bridge.prepare_turn().expect("the next turn starts");
+    }
+
+    #[test]
+    fn only_a_closed_turn_expires_its_pending_calls() {
+        let mut bridge = parallel_read_bridge();
+        assert!(bridge.expire_closed_turn_calls().unwrap().is_empty());
+        assert_eq!(bridge.pending_calls().count(), 2);
+
+        bridge.settle_turn("provider_turn_terminated").unwrap();
+        let expired = bridge.expire_closed_turn_calls().unwrap();
+        assert_eq!(
+            expired
+                .iter()
+                .map(|call| call.call_id.as_str())
+                .collect::<Vec<_>>(),
+            ["4", "5"]
+        );
+        assert!(expired
+            .iter()
+            .all(|call| call.is_error && call.result["error"]["code"] == EXPIRED_RESULT_CODE));
+        assert_eq!(bridge.pending_calls().count(), 0);
+        let operations = bridge.authorized_tools().cloned().collect::<Vec<_>>();
+        bridge
+            .attach_run(AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.to_owned(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            })
+            .expect("the next run attaches");
+    }
+
+    #[test]
+    fn active_receipts_that_block_the_next_turn_are_named() {
+        let mut bridge = completion_bridge();
+        bridge
+            .begin_call(
+                "stuck-call".to_owned(),
+                "paperclip_finish".to_owned(),
+                json!({"summary": "private summary text"}),
+            )
+            .unwrap();
+
+        let message = bridge
+            .prepare_turn()
+            .expect_err("a pending call blocks the next turn")
+            .to_string();
+        assert!(message.contains("tool calls are active"));
+        assert!(message.contains("pending: 1 [paperclip_finish:stuck-call]"));
+        assert!(message.contains("completed: 0"));
+        assert!(!message.contains("private summary text"));
+
+        bridge
+            .apply_result(ToolResult {
+                call_id: "stuck-call".to_owned(),
+                operation_id: "paperclip_finish".to_owned(),
+                result: json!({"ok": true}),
+                is_error: false,
+            })
+            .unwrap();
+        let message = bridge
+            .prepare_turn()
+            .expect_err("an unsettled completed call blocks the next turn")
+            .to_string();
+        assert!(message.contains("pending: 0;"));
+        assert!(message.contains("completed: 1 [paperclip_finish:stuck-call]"));
+
+        bridge.settle_turn("provider_turn_terminated").unwrap();
+        bridge
+            .prepare_turn()
+            .expect("settled receipts no longer block the turn");
     }
 
     #[test]

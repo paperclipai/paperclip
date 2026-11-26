@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import {
@@ -36,6 +36,7 @@ import {
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { runnerPrpCoordinator } from "./runner-prp-coordinator.js";
 import { PaperclipRunnerSemanticAuthority } from "./runner-semantic-authority.js";
+import { nativeSha256 } from "./canonical.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
@@ -235,7 +236,10 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
   it("registers only an exact Codex native binding and exposes read-only tools", async () => {
     const seed = await seedNativeRun();
     const server = createServer();
-    setupRunnerPrpWebSocketServer(server, { apiUrl: "http://127.0.0.1:3213" });
+    await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Expected a bound TCP controller");
+    setupRunnerPrpWebSocketServer(server);
     const stateRoot = mkdtempSync(resolve(tmpdir(), "paperclip-runner-state-"));
     scratchDirectories.push(stateRoot);
     const coordinator = runnerPrpCoordinator(db, { stateRoot });
@@ -262,7 +266,7 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
     });
 
     expect(prepared.connectUrl).toBe(
-      `ws://127.0.0.1:3213/api/runner/v1/connect/${seed.runId}`,
+      `ws://127.0.0.1:${address.port}/api/runner/v1/connect/${seed.runId}`,
     );
     expect(prepared.bootstrapTicket).toMatch(/^bootstrap_/);
     expect(prepared.semanticTools.map((tool) => tool.name)).toEqual([
@@ -296,7 +300,7 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
         runId: seed.runId,
       }),
     ).toBe(false);
-    server.close();
+    await new Promise<void>(resolve => server.close(() => resolve()));
   });
 
   it("rechecks task ownership and returns semantic receipts", async () => {
@@ -336,6 +340,59 @@ describeEmbeddedPostgres("hidden runner PRP coordinator", () => {
       ok: false,
       error: { code: "task_ownership_denied", retryable: false },
       resultReceipt: { phase: "result" },
+    });
+  });
+
+  it("persists NUL-containing command output without changing replay identity", async () => {
+    const seed = await seedNativeRun();
+    const nativeStore = store(seed);
+    const output = "transforming (6) ../\u0000virtual:/@storybook/builder-vite/storybook-stories.js";
+    const payload = {
+      schema: "paperclip.tool.execution.v1",
+      executionId: "storybook-build",
+      transport: "process",
+      operation: "execute",
+      status: "completed",
+      output,
+      outputBytes: Buffer.byteLength(output),
+      outputTruncated: false,
+      outputDigest: `sha256:${createHash("sha256").update(output).digest("hex")}`,
+      exitCode: 0,
+    };
+    const event: PrpEvent = {
+      ...runnerEvent(seed),
+      eventType: "tool.execution.completed",
+      payload,
+    };
+
+    // The provider's valid JSON cannot be inserted directly into PostgreSQL JSONB.
+    await expect(db.execute(sql`select ${JSON.stringify(event)}::jsonb`))
+      .rejects.toMatchObject({ cause: { code: "22P05" } });
+    await expect(nativeStore.appendEvent(event)).resolves.toMatchObject({
+      disposition: "committed",
+      cursor: 1,
+    });
+    const [row] = await db.select().from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, seed.runId));
+    expect(row.payload).toEqual({ prpEvent: event });
+    expect(row.sourcePayloadSha256).toBe(`sha256:${nativeSha256(row.payload?.prpEvent)}`);
+
+    // Existing SQL selectors still see the event's ordinary routing fields.
+    const [projection] = await db.select({
+      sourceKind: sql<string>`${heartbeatRunEvents.payload}->'prpEvent'->>'sourceKind'`,
+    }).from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, seed.runId));
+    expect(projection.sourceKind).toBe("runner");
+    await expect(nativeStore.appendEvent(event)).resolves.toMatchObject({
+      disposition: "duplicate",
+      cursor: 1,
+    });
+    await expect(nativeStore.appendEvent({
+      ...event,
+      payload: { ...payload, output: output.replaceAll("\u0000", "\\u0000") },
+    })).rejects.toBeInstanceOf(NativeSessionProtocolIntegrityError);
+    await expect(nativeStore.appendEvent(runnerEvent(seed, 2))).resolves.toMatchObject({
+      disposition: "committed",
+      cursor: 2,
     });
   });
 

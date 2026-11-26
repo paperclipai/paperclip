@@ -17,6 +17,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
+import { uniqueIssuePrefix } from "./helpers/issue-prefix.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -43,7 +44,7 @@ async function seedHiringFixture(db: Db) {
     .insert(companies)
     .values({
       name: `Idempotency Co ${nonce}`,
-      issuePrefix: `ID${nonce.slice(0, 4).toUpperCase()}`,
+      issuePrefix: uniqueIssuePrefix("ID"),
       defaultResponsibleUserId: "board-user",
       // Direct hires (no board approval) mirror the reported QA org where the
       // duplicate "Sam 2" agent was actually created.
@@ -136,6 +137,8 @@ describeEmbeddedPostgres("agent hire idempotency within a run", () => {
     expect(second.status, JSON.stringify(second.body)).toBe(200);
     expect(second.body.idempotent).toBe(true);
     expect(second.body.agent?.id).toBe(createdId);
+    expect(first.body.agent?.appearance).toMatchObject({ schemaVersion: 1, characterVersion: "cap-v1" });
+    expect(second.body.agent?.appearance).toEqual(first.body.agent?.appearance);
     // The retry must not have auto-renamed a duplicate to "Sam 2".
     expect(second.body.agent?.name).toBe("Sam");
 
@@ -183,11 +186,11 @@ describeEmbeddedPostgres("agent hire idempotency within a run", () => {
     // Same identity, corrected configuration: the agent meant a different hire.
     const corrected = await request(app)
       .post(`/api/companies/${company.id}/agent-hires`)
-      .send({ name: "Sam", role: "engineer", adapterType: "process", budgetMonthlyCents: 5000 });
+      .send({ name: "Sam", role: "engineer", adapterType: "process", title: "Store Builder" });
     expect(corrected.status, JSON.stringify(corrected.body)).toBe(201);
     expect(corrected.body.idempotent).toBeUndefined();
     expect(corrected.body.agent?.id).not.toBe(first.body.agent?.id);
-    expect(corrected.body.agent?.budgetMonthlyCents).toBe(5000);
+    expect(corrected.body.agent?.title).toBe("Store Builder");
   });
 
   it("still creates a distinct agent for a different hire in the same run", async () => {

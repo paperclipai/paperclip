@@ -18,7 +18,9 @@ terminal tasks. Resume/restore retain the optional wake-agents checkbox.
 
 ## Resume and execution recovery
 
-Resume releases a hold. Waking agents is optional and only applies to tasks in
+Resume releases a hold. Work the pause interrupted is re-dispatched once
+automatically, under current admission gates.
+Waking other agents is optional and only applies to tasks in
 `todo`, `in_progress`, or `in_review`; parked and terminal tasks stay untouched.
 The current execution-recovery policy requires verified outcomes before a stopped
 provider can restart. If any affected task still needs that reconciliation,
@@ -33,14 +35,68 @@ eligible tasks still receive their wake requests. No new endpoint is introduced.
 The deterministic E2E fixtures prove interruption, then record their known lack
 of external effects through the existing reconciliation API before continuing.
 
+Embedded ACP also supports verified continuation of an interrupted local session.
+The adapter must acknowledge cancellation and prove a preserved session with
+settled read-only work. Stop waits for provider cleanup. Forced local termination uses the actual
+child-process handle captured at spawn, including on Windows. An unavailable
+handle does not authorize a signal or replay. Unknown actions remain
+blocked, and task detail shows the reason even after recovery bookkeeping resolves.
+A run-level Stop leaves the task unpaused; a subsequent comment can continue the
+same session with the earlier queued messages. Composer Stop still creates a
+pause hold. New board messages require Resume first. Both comment creation and
+updates that include a comment return `409` while an effective task or ancestor
+pause hold is active. Interrupted agents may still report their results. Neither path permits a fresh-session fallback
+when the interrupted checkpoint cannot be restored.
+
+The credential-free ACP regression journey uses an actual ACP child process:
+
+```sh
+pnpm exec playwright test --config tests/e2e/playwright.config.ts tests/e2e/acp-stop-continuation.spec.ts
+```
+
+It covers the queued-follow-up sequence (queue a second request, stop, then send “go”),
+same-session delivery of both messages, and an unfinished write that stops
+mutating its file but retains a visible execution blocker. Unit and integration
+tests additionally cover pre-start Stop, unavailable/changed sessions, rotating
+scratch directories, cancellation acknowledgment, a provider that hangs during
+cleanup after returning cancellation, deferred-wake adoption, and
+company-scoped blocker lookup. Hosted-provider behavior is a separate smoke test.
+
+The browser tests also require the continued provider to complete the task through
+the agent API. Restoring a session must refresh its run identity, API credential,
+and scratch environment. The same conversation must not reuse the stopped run's
+credential. A regression test checks distinct run IDs and token hashes across the
+restart without logging the credentials themselves.
+
+Historical behavior, superseded by the composer takeover: on 2026-09-09, all three ACP browser journeys passed. A manual browser walk-through
+also queued a request, used composer Stop, sent “go” while paused, and selected
+Resume work. The pause stayed in place during the conversation reply. Resume
+restored the same provider session, answered the pending request once, and moved
+the task to Done through the current run's authenticated API call. These tests use
+a deterministic ACP child process; they do not call Drive or another external app.
+The manual unfinished-write check also confirmed that file size stayed unchanged
+for five seconds after Interrupt. Sending “go” displayed the reconciliation reason
+and did not start another provider prompt.
+
+A separate live Claude ACP smoke test interrupted a Bash tool writing only to a
+disposable local file: cancellation settled in 1,167 ms, output remained unchanged
+for five seconds, and no matching tool process remained. The shell action correctly
+did not receive automatic replay permission. A second live Claude check interrupted
+a response with no tools, restored the exact same provider session, and received
+the requested follow-up answer. These are local-provider observations, not a
+latency guarantee or proof for every provider and remote sandbox.
+
 ## Quiet task feedback
 
 The visible task/subtree does not produce duplicate state toasts. Its live
 notifications are suppressed while foregrounded, including descendant runs;
 unrelated and background work retains notifications. Tree-control results use
 inline state, and failures stay in the composer, page, or confirmation dialog.
-The pause row contains only “Subtree is paused.” (or “Task is paused.”) and
-Resume. Expected cancellation uses a muted gray disclosure with optional details.
+The amber composer takeover contains “Subtree is paused.” (or “Task is paused.”),
+a short instruction to resume before sending, and Resume. It replaces input
+controls in both task interfaces, cannot be dismissed, and preserves text and
+attachment drafts. An inherited hold links to the ancestor task. Pending resume
+keeps the takeover visible; failed resume leaves the task paused. Expected cancellation uses a muted gray disclosure with optional details.
 This is recorded as a product rule in `DESIGN.md`.
 
 The follow-up passed 213 focused tests, both isolated runner E2E journeys
@@ -56,8 +112,8 @@ Run from the worktree:
 pnpm --filter @paperclipai/ui exec storybook dev -p 6016 -c storybook/.storybook --no-open
 ```
 
-Open `http://localhost:6016/?path=/story/tasks-execution-controls--running-empty`.
-The `Tasks / Execution Controls` stories compose the production composer and
+Open `http://localhost:6016/?path=/story/composer-execution-controls--running-empty`.
+The `Composer / Execution controls` stories compose the production composer and
 menu/dialog controls together. They cover text switching, attachment-only,
 idle, stopping, paused, errors, cancellation preview/loading, and mobile/light
 presentations. The Storybook state transitions simulate requests; runner
@@ -105,7 +161,9 @@ pnpm exec playwright test --config tests/e2e/playwright-composer-stop.config.ts
 The suite boots a disposable local-trusted instance on port 3199 (override with
 `PAPERCLIP_E2E_PORT`). It never attaches to an existing server. Native coverage
 is explicitly skipped without the fixture; it must not use a logged-in provider
-as a fallback. Test companies are archived during cleanup.
+as a fallback. The acceptance server pins its Codex command resolver to the fixture
+and uses an empty credential home, because an installed Codex dependency takes
+precedence over `PATH`. Test companies are archived during cleanup.
 
 For each runner, the journey starts a parent, child, and unrelated task, plus a
 terminal child. It sends while running and verifies the durable queue, clicks
@@ -153,3 +211,6 @@ The broad run was stopped after more than 30 minutes in its serial server lane
 once these failures were independently reproduced. Later full-suite groups
 did not run. The full UI suite and the feature's server route suite were run
 separately as described above.
+
+The `Tasks / Composer / Paused task takeover` stories use the production composer
+and cover task/subtree holds, saved drafts, resume progress/failure, and light/mobile layouts.

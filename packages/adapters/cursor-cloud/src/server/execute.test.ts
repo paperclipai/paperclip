@@ -1,5 +1,7 @@
+import { generateKeyPairSync, sign, verify } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
+import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute } from "./execute.js";
 
 type MockRunOptions = {
@@ -69,7 +71,7 @@ function createMockSdkAgent(options: MockAgentOptions = {}) {
   const sendRun = options.sendRun ?? createMockRun();
   return {
     agentId: options.agentId ?? sendRun.agentId,
-    send: vi.fn(async () => sendRun),
+    send: vi.fn(async (_prompt: string, _options?: Record<string, unknown>) => sendRun),
     [Symbol.asyncDispose]: vi.fn(async () => {}),
   };
 }
@@ -142,6 +144,64 @@ describe("cursor_cloud execute", () => {
     getRunMock.mockReset();
   });
 
+  it.each([false, true])("sends the central chat directive to Cursor Cloud (custom=%s)", async (custom) => {
+    const sdkAgent = createMockSdkAgent();
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext();
+    if (!custom) delete ctx.config.promptTemplate;
+    const directive = "Chat directive: clarify goals and hand plans off to project tasks.";
+    ctx.context = {
+      ...ctx.context,
+      conversationMode: true,
+      paperclipTaskMarkdown: directive,
+      paperclipWake: {
+        reason: "issue_commented",
+        issue: { id: "issue-1", workMode: "planning", status: "in_progress" },
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+      },
+    };
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    const prompt = String(sdkAgent.send.mock.calls[0]?.[0]);
+    expect(prompt).toContain(directive);
+    expect(prompt).toContain(custom ? "Do the work for" : "You are agent agent-1");
+    expect(prompt).not.toContain("Execution contract:");
+    expect(prompt).not.toContain("Create child issues");
+  });
+
+  it("sends assignment context on an ordinary cloud task turn", async () => {
+    const sdkAgent = createMockSdkAgent();
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext({ context: createPromptContextFixture() });
+    delete ctx.config.promptTemplate;
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    const prompt = String(sdkAgent.send.mock.calls[0]?.[0]);
+    expect(prompt).toContain("## Owned assignment");
+    expect(prompt).toContain("You are agent agent-1 (Cursor Cloud Agent).");
+    expect(prompt).toContain("Connection tools:");
+    expect(prompt).not.toContain("Execution contract:");
+    expect(prompt.indexOf("Append the same ledger entry.")).toBeLessThan(prompt.indexOf("Change the final scope to the launch checklist."));
+    expect(prompt.split("Append the same ledger entry.")).toHaveLength(3);
+  });
+
+  it("delivers a large wake through the SDK prompt without a configured JSON env copy", async () => {
+    const sdkAgent = createMockSdkAgent();
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext();
+    const description = "start " + "context ".repeat(25_000) + " end";
+    ctx.config.env = { CURSOR_API_KEY: "cursor-secret", PAPERCLIP_WAKE_PAYLOAD_JSON: description };
+    ctx.context.paperclipWake = {
+      reason: "issue_assigned",
+      issue: { id: "issue-1", description },
+    };
+    const result = await execute(ctx);
+    expect(result.exitCode).toBe(0);
+    expect(createMock.mock.calls[0]?.[0]?.cloud?.envVars).not.toHaveProperty("PAPERCLIP_WAKE_PAYLOAD_JSON");
+    expect(sdkAgent.send.mock.calls[0]?.[0]).toContain(description);
+  });
+
   it("creates a fresh Cursor agent and injects Paperclip env without CURSOR_API_KEY", async () => {
     const run = createMockRun({
       agentId: "agent-fresh",
@@ -205,6 +265,39 @@ describe("cursor_cloud execute", () => {
         expect.stringContaining('"type":"cursor_cloud.result"'),
       ]),
     );
+  });
+
+  it("delivers the assigned identity to the managed cloud environment without exposing it in prompts or metadata", async () => {
+    const keys = generateKeyPairSync("ed25519");
+    const identity = {
+      keyId: "sha256:assigned-identity",
+      publicKeyPem: keys.publicKey.export({ type: "spki", format: "pem" }).toString(),
+      privateKeyPem: keys.privateKey.export({ type: "pkcs8", format: "pem" }).toString(),
+    };
+    const sdkAgent = createMockSdkAgent();
+    createMock.mockResolvedValue(sdkAgent);
+    const ctx = createContext({ agentIdentity: identity });
+    ctx.config.env = {
+      CURSOR_API_KEY: "cursor-secret",
+      PAPERCLIP_AGENT_KEY_ID: "configured-override",
+      PAPERCLIP_AGENT_PRIVATE_KEY: "configured-override",
+      paperclip_agent_private_key: "configured-override",
+    };
+
+    await execute(ctx);
+
+    const env = createMock.mock.calls[0]?.[0]?.cloud?.envVars;
+    expect(env).toMatchObject({
+      PAPERCLIP_AGENT_KEY_ID: identity.keyId,
+      PAPERCLIP_AGENT_PUBLIC_KEY: identity.publicKeyPem,
+      PAPERCLIP_AGENT_PRIVATE_KEY: identity.privateKeyPem,
+    });
+    expect(env).not.toHaveProperty("paperclip_agent_private_key");
+    const challenge = Buffer.from("managed cloud identity");
+    expect(verify(null, challenge, identity.publicKeyPem,
+      sign(null, challenge, env.PAPERCLIP_AGENT_PRIVATE_KEY))).toBe(true);
+    const privateBody = identity.privateKeyPem.split("\n")[1];
+    expect(JSON.stringify([ctx.meta, ctx.logs, sdkAgent.send.mock.calls])).not.toContain(privateBody);
   });
 
   it("omits empty environment values while preserving nonempty values exactly", async () => {

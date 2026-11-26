@@ -1,0 +1,1 @@
+ALTER TABLE "assets" ALTER COLUMN "byte_size" SET DATA TYPE bigint;

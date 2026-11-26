@@ -106,6 +106,8 @@ describe("GET /health dev-server supervisor access", () => {
         status: "ok",
         deploymentMode: "authenticated",
         deploymentExposure: "private",
+        localAiLoginSupported: true,
+        hostedGoogleAiLoginSupported: true,
         commit: null,
         bootstrapStatus: "ready",
         bootstrapInviteActive: false,

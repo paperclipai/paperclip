@@ -21,7 +21,7 @@ export const CAPABILITY_CANONICAL_OPERATIONS: readonly CapabilityCanonicalOperat
     .sort((left, right) => left.operationId.localeCompare(right.operationId)),
 );
 const byId = new Map(CAPABILITY_CANONICAL_OPERATIONS.map((operation) => [operation.operationId, operation]));
-if (byId.size !== 43) throw new Error(`expected 43 canonical semantic operations, found ${byId.size}`);
+if (byId.size !== PAPERCLIP_PROTOCOL_ACTIONS.length) throw new Error("Duplicate canonical semantic operation ID");
 export function capabilityCanonicalOperation(operationId: string): CapabilityCanonicalOperation | undefined { return byId.get(operationId); }
 export function capabilityCanonicalOperationsForSurface(surface: CapabilityCatalogSurface): readonly CapabilityCanonicalOperation[] { return CAPABILITY_CANONICAL_OPERATIONS.filter((operation) => operation.surfaces.includes(surface)); }
 export function capabilityCanonicalOperationIds(): readonly string[] { return CAPABILITY_CANONICAL_OPERATIONS.map((operation) => operation.operationId); }

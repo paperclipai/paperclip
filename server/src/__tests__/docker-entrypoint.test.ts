@@ -32,7 +32,22 @@ function writeStub(name: string, body: string) {
   writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
 }
 
-function installStubs(ids: { uid: number; gid: number; nodeUid?: number; nodeGid?: number; homeMismatch?: boolean }) {
+type StubOptions = {
+  uid: number;
+  gid: number;
+  nodeUid?: number;
+  nodeGid?: number;
+  /** Mismatch anywhere: both the shallow and the full-tree probe find it. */
+  homeMismatch?: boolean;
+  /** Mismatch only below the shallow probe depth: just the full-tree probe finds it. */
+  deepMismatch?: boolean;
+  /** The full-tree find exits non-zero without printing a mismatch (e.g. an I/O error). */
+  fullProbeFails?: boolean;
+  /** The node user's passwd home; null models a host without a node passwd entry. */
+  nodeHome?: string | null;
+};
+
+function installStubs(ids: StubOptions) {
   writeStub(
     "id",
     [
@@ -46,13 +61,29 @@ function installStubs(ids: { uid: number; gid: number; nodeUid?: number; nodeGid
   for (const cmd of ["usermod", "groupmod", "chown"]) {
     writeStub(cmd, `echo "${cmd} $*" >> "${logFile}"`);
   }
-  // The entrypoint's ownership probe is a first-mismatch find over the app
-  // home. An empty result models a fully node-owned tree (image-baked dir,
-  // healthy volume); a path models any uid OR gid mismatch anywhere in the
-  // tree (fresh root-owned mount, root-owned descendant, stale group after
-  // a GID-only remap).
-  writeStub("find", ids.homeMismatch ? `echo "$1/mismatched-entry"` : `true`);
+  // The entrypoint's ownership probes are first-mismatch finds over the app
+  // home: a shallow one bounded by -maxdepth, and a full-tree one. An empty
+  // result models a node-owned tree (image-baked dir, healthy volume); a
+  // path models a uid OR gid mismatch (fresh root-owned mount, root-owned
+  // descendant, stale group after a GID-only remap). Each call is logged as
+  // "find-shallow" or "find-full" so tests can assert which walks ran.
+  writeStub(
+    "find",
+    [
+      `case " $* " in`,
+      `  *" -maxdepth "*) echo "find-shallow $1" >> "${logFile}"; ${ids.homeMismatch ? `echo "$1/mismatched-entry"` : "true"} ;;`,
+      `  *) echo "find-full $1" >> "${logFile}"; ${ids.homeMismatch || ids.deepMismatch ? `echo "$1/deep/mismatched-entry"` : ids.fullProbeFails ? "exit 1" : "true"} ;;`,
+      `esac`,
+    ].join("\n"),
+  );
   writeStub("gosu", `echo "gosu $*" >> "${logFile}"\nshift\nexec "$@"`);
+  const nodeHome = ids.nodeHome === undefined ? "/paperclip" : ids.nodeHome;
+  writeStub(
+    "getent",
+    nodeHome === null
+      ? "exit 2"
+      : `if [ "$1" = "passwd" ] && [ "$2" = "node" ]; then echo "node:x:${ids.nodeUid ?? 1000}:${ids.nodeGid ?? 1000}::${nodeHome}:/bin/bash"; else exit 2; fi`,
+  );
 }
 
 async function runEntrypoint(env: Record<string, string> = {}) {
@@ -98,6 +129,94 @@ describe("docker-entrypoint.sh", () => {
     expect(calls).toContain("gosu node echo ENTRYPOINT-CMD-RAN");
   });
 
+  it("moves the app home away during the remap so usermod does not walk it", async () => {
+    installStubs({ uid: 0, gid: 0, homeMismatch: true, nodeHome: stubDir });
+
+    const { calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    const lines = calls.trim().split("\n");
+    // usermod re-owns files only under the current home, so every ID change
+    // runs while the home points at a placeholder that does not exist.
+    expect(lines.filter((line) => line.startsWith("usermod "))).toEqual([
+      `usermod -d /nonexistent/paperclip-uid-remap${stubDir} node`,
+      "usermod -o -u 1001 node",
+      "usermod -g 1001 node",
+      `usermod -d ${stubDir} node`,
+    ]);
+    // The ownership probe still repairs the app home after a real ID change.
+    expect(lines.indexOf(`chown -R node:node ${stubDir}`)).toBeGreaterThan(lines.indexOf(`usermod -d ${stubDir} node`));
+  });
+
+  it("moves the app home away for a GID-only remap too", async () => {
+    installStubs({ uid: 0, gid: 0, nodeUid: 1001, nodeGid: 1000, nodeHome: stubDir });
+
+    const { calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    expect(calls.trim().split("\n").filter((line) => line.startsWith("usermod "))).toEqual([
+      `usermod -d /nonexistent/paperclip-uid-remap${stubDir} node`,
+      "usermod -g 1001 node",
+      `usermod -d ${stubDir} node`,
+    ]);
+  });
+
+  it("keeps the plain remap when the passwd home is outside the app home", async () => {
+    // The ownership probe covers only the app home, so usermod must still
+    // re-own a separate passwd home.
+    installStubs({ uid: 0, gid: 0, nodeHome: "/paperclip" });
+
+    const { calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    expect(calls).toContain("usermod -o -u 1001 node");
+    expect(calls).not.toContain("usermod -d");
+  });
+
+  it("remaps without moving the home when the node passwd entry is unavailable", async () => {
+    installStubs({ uid: 0, gid: 0, homeMismatch: true, nodeHome: null });
+
+    const { stdout, calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    expect(stdout).toContain("ENTRYPOINT-CMD-RAN");
+    expect(calls).toContain("usermod -o -u 1001 node");
+    expect(calls).not.toContain("usermod -d");
+  });
+
+  it("restores the home left by an interrupted remap when the IDs already match", async () => {
+    installStubs({ uid: 0, gid: 0, nodeUid: 1001, nodeGid: 1001, nodeHome: `/nonexistent/paperclip-uid-remap${stubDir}` });
+
+    const { stdout, calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    expect(stdout).toContain("ENTRYPOINT-CMD-RAN");
+    expect(calls.trim().split("\n").filter((line) => line.startsWith("usermod "))).toEqual([
+      `usermod -d ${stubDir} node`,
+    ]);
+  });
+
+  it("restores the original home, not the placeholder, when an interrupted remap is retried", async () => {
+    installStubs({ uid: 0, gid: 0, nodeHome: `/nonexistent/paperclip-uid-remap${stubDir}` });
+
+    const { calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    expect(calls.trim().split("\n").filter((line) => line.startsWith("usermod "))).toEqual([
+      `usermod -d ${stubDir} node`,
+      `usermod -d /nonexistent/paperclip-uid-remap${stubDir} node`,
+      "usermod -o -u 1001 node",
+      "usermod -g 1001 node",
+      `usermod -d ${stubDir} node`,
+    ]);
+  });
+
+  it.each([false, true])("skips remapping a cloud identity while preserving volume repair (mismatch: %s)", async (homeMismatch) => {
+    installStubs({ uid: 0, gid: 0, nodeUid: 1001, nodeGid: 1001, homeMismatch });
+
+    const { stdout, calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+    expect(stdout).toContain("ENTRYPOINT-CMD-RAN");
+    expect(calls).not.toContain("usermod");
+    expect(calls).not.toContain("groupmod");
+    expect(calls.includes(`chown -R node:node ${stubDir}`)).toBe(homeMismatch);
+    expect(calls).toContain("gosu node echo ENTRYPOINT-CMD-RAN");
+  });
+
   it("chowns a root-owned home before gosu even with the default UID/GID (fresh volume mount)", async () => {
     // A freshly mounted volume arrives root-owned and shadows the image's
     // build-time chown; with no remap requested the old entrypoint dropped
@@ -137,6 +256,102 @@ describe("docker-entrypoint.sh", () => {
     const { calls } = await runEntrypoint({ PAPERCLIP_HOME: stubDir });
 
     expect(calls).toContain(`chown -R node:node ${stubDir}`);
+  });
+
+  describe("ownership probe cost", () => {
+    const marker = () => join(stubDir, ".paperclip-ownership-verified");
+
+    it("skips the full-tree walk when ownership is correct and the marker is current", async () => {
+      installStubs({ uid: 0, gid: 0 });
+      writeFileSync(marker(), "v1 1000:1000\n");
+
+      const { stdout, calls } = await runEntrypoint({ PAPERCLIP_HOME: stubDir });
+
+      expect(calls).toContain(`find-shallow ${stubDir}`);
+      expect(calls).not.toContain("find-full");
+      expect(calls).not.toContain("chown");
+      expect(stdout).toContain("ENTRYPOINT-CMD-RAN");
+    });
+
+    it("skips the full-tree walk when the marker is current, even with a deep mismatch", async () => {
+      // The marker is the trade-off that keeps boots O(1): once a tree has
+      // been verified, only the shallow levels are re-checked.
+      installStubs({ uid: 0, gid: 0, deepMismatch: true });
+      writeFileSync(marker(), "v1 1000:1000\n");
+
+      const { calls } = await runEntrypoint({ PAPERCLIP_HOME: stubDir });
+
+      expect(calls).not.toContain("find-full");
+      expect(calls).not.toContain("chown");
+    });
+
+    it("runs one full-tree walk without a marker, then records the marker", async () => {
+      // First boot after upgrading from an image without the marker.
+      installStubs({ uid: 0, gid: 0 });
+
+      const { calls } = await runEntrypoint({ PAPERCLIP_HOME: stubDir });
+
+      expect(calls).toContain(`find-shallow ${stubDir}`);
+      expect(calls).toContain(`find-full ${stubDir}`);
+      expect(calls).not.toContain("chown");
+      expect(readFileSync(marker(), "utf8")).toBe("v1 1000:1000\n");
+    });
+
+    it("does not record the marker when the full-tree walk fails without finding a mismatch", async () => {
+      installStubs({ uid: 0, gid: 0, fullProbeFails: true });
+
+      const { stdout, calls } = await runEntrypoint({ PAPERCLIP_HOME: stubDir });
+
+      expect(calls).toContain(`find-full ${stubDir}`);
+      expect(calls).not.toContain("chown");
+      expect(existsSync(marker())).toBe(false);
+      expect(stdout).toContain("failed; it will run again on the next boot");
+      expect(stdout).toContain("ENTRYPOINT-CMD-RAN");
+    });
+
+    it("repairs a deep mismatch found by the full-tree walk when there is no marker", async () => {
+      installStubs({ uid: 0, gid: 0, deepMismatch: true });
+
+      const { calls } = await runEntrypoint({ PAPERCLIP_HOME: stubDir });
+
+      expect(calls).toContain(`find-full ${stubDir}`);
+      expect(calls).toContain(`chown -R node:node ${stubDir}`);
+      expect(readFileSync(marker(), "utf8")).toBe("v1 1000:1000\n");
+    });
+
+    it("repairs a root-owned top level without a full-tree probe, even with a current marker", async () => {
+      installStubs({ uid: 0, gid: 0, homeMismatch: true });
+      writeFileSync(marker(), "v1 1000:1000\n");
+
+      const { calls } = await runEntrypoint({ PAPERCLIP_HOME: stubDir });
+
+      expect(calls).toContain(`find-shallow ${stubDir}`);
+      expect(calls).not.toContain("find-full");
+      expect(calls).toContain(`chown -R node:node ${stubDir}`);
+    });
+
+    it("re-runs the full-tree walk when the marker was written for another UID/GID", async () => {
+      installStubs({ uid: 0, gid: 0, nodeUid: 1001, nodeGid: 1001, deepMismatch: true });
+      writeFileSync(marker(), "v1 1000:1000\n");
+
+      const { calls } = await runEntrypoint({ USER_UID: "1001", USER_GID: "1001", PAPERCLIP_HOME: stubDir });
+
+      expect(calls).toContain(`find-full ${stubDir}`);
+      expect(calls).toContain(`chown -R node:node ${stubDir}`);
+      expect(readFileSync(marker(), "utf8")).toBe("v1 1001:1001\n");
+    });
+
+    it("logs timestamped start, repair duration, and pre-exec lines", async () => {
+      installStubs({ uid: 0, gid: 0, homeMismatch: true });
+
+      const { stdout } = await runEntrypoint({ PAPERCLIP_HOME: stubDir });
+      const stamp = "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z docker-entrypoint\\.sh: ";
+
+      expect(stdout).toMatch(new RegExp(`^${stamp}starting$`, "m"));
+      expect(stdout).toMatch(new RegExp(`^${stamp}ownership repair finished in \\d+s$`, "m"));
+      expect(stdout).toMatch(new RegExp(`^${stamp}starting app as node$`, "m"));
+      expect(stdout.indexOf("starting app as node")).toBeLessThan(stdout.indexOf("ENTRYPOINT-CMD-RAN"));
+    });
   });
 
   it("execs directly and silently when already running as the requested user (restricted PodSecurity)", async () => {
