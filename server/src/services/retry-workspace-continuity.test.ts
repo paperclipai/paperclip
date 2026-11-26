@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentWakeupRequests, agents, applyPendingMigrations, companies, createDb, environmentLeases, executionWorkspaces,
   heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, projects, workspaceOperations, type Db,
@@ -16,6 +16,7 @@ import { admitExplicitNativeContinuation } from "./explicit-native-continuation.
 import { readFreshWorkspaceReadiness, verifyRetryWorkspace } from "./fresh-workspace-continuation.js";
 import { describeRetainedPriorWorkspace, parsePorcelainZ } from "./fresh-workspace-seed.js";
 import { recordNativeLocalProcessStop } from "./native-local-process-stop.js";
+import * as nativeExecutor from "./native-runtime/native-session-executor.js";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { requestTaskRetry } from "./task-retry.js";
 
@@ -157,6 +158,27 @@ describe.skipIf(!support.supported)("Retry workspace continuity after exhausted 
     })).toEqual({ mode: "reuse_issue_workspace", retryIntentId: requestId,
       sourceRunId: f.source.id, workspaceId: f.workspace.id, cwd: f.worktree });
   }, 30_000);
+
+  it.each(["git_worktree", "local_fs", "plugin"] as const)(
+    "resumes a quarantined native session in its own %s workspace only when it is local", async providerType => {
+      const f = await seed("blocked_without_generation");
+      const nativeSessionId = randomUUID(), runnerInstanceId = randomUUID();
+      await db.update(heartbeatRuns).set({ errorCode: "native_session_cleanup_quarantined", nativeSessionId, runnerInstanceId })
+        .where(eq(heartbeatRuns.id, f.source.id));
+      await db.update(executionWorkspaces).set({ providerType }).where(eq(executionWorkspaces.id, f.workspace.id));
+      const verify = vi.spyOn(nativeExecutor, "verifyStoppedNativeSessionForContinuation").mockResolvedValue({
+        evidence: { schema: "paperclip.stopped_native_conversation.v1", runId: f.source.id, nativeSessionId, runnerInstanceId,
+          executionWorkspaceId: f.workspace.id, workspaceCwd: f.worktree }, retire: () => true });
+      try {
+        if (providerType === "plugin") {
+          await expect(retry(f)).rejects.toThrow("Verified native continuation workspace binding changed");
+          return;
+        }
+        const { requestId, readiness } = await retry(f);
+        expect(readiness).toEqual({ mode: "resume_stopped_native_workspace", retryIntentId: requestId,
+          sourceRunId: f.source.id, workspaceId: f.workspace.id, cwd: f.worktree });
+      } finally { verify.mockRestore(); }
+    }, 30_000);
 
   it("lists renamed paths from either porcelain status column once", () => {
     expect(parsePorcelainZ("R  new.md\0old.md\0 R moved.md\0before.md\0?? NOTES.md\0 M README.md\0")).toEqual([

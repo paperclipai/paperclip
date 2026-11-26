@@ -41,6 +41,7 @@ export const freshReadinessSchema = z.discriminatedUnion("mode", [z.object({
 const workspaceExportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminalRunStatuses = ["failed", "cancelled", "timed_out", "succeeded", "interrupted"];
 const reusableWorkspaceStatuses = ["active", "idle", "in_review"];
+const taskOwnedLocalProviderTypes = ["local_fs", "git_worktree"];
 // Admission can hold the issue lock. All holds share one probe per workspace,
 // and that probe has one short wall-clock budget, including scheduler queueing.
 const RETAINED_WORKSPACE_GIT_BUDGET_MS = 5_000;
@@ -98,7 +99,7 @@ export async function readableOwnGitRoot(workspace: typeof executionWorkspaces.$
  * storage authority and not closed. Shared by reuse and the prior-files hint. */
 export function isTaskOwnedLocalWorkspace(workspace: typeof executionWorkspaces.$inferSelect, issueId: string) {
   return Boolean(workspace.cwd) && workspace.sourceIssueId === issueId && workspace.mode !== "shared_workspace" &&
-    reusableWorkspaceStatuses.includes(workspace.status) && ["local_fs", "git_worktree"].includes(workspace.providerType) &&
+    reusableWorkspaceStatuses.includes(workspace.status) && taskOwnedLocalProviderTypes.includes(workspace.providerType) &&
     (workspace.metadata?.remoteWorkspace ?? null) === null;
 }
 
@@ -297,7 +298,7 @@ async function stoppedNativeContinuationWorkspace(db: Db, source: typeof heartbe
   )).where(and(eq(issues.companyId, source.companyId), eq(issues.id, input.issueId),
     eq(issues.assigneeAgentId, source.agentId), eq(executionWorkspaces.id, parsed.data.executionWorkspaceId),
     eq(executionWorkspaces.cwd, parsed.data.workspaceCwd), eq(executionWorkspaces.status, "active"),
-    eq(executionWorkspaces.providerType, "local_fs"),
+    inArray(executionWorkspaces.providerType, taskOwnedLocalProviderTypes),
     or(isNull(executionWorkspaces.sourceIssueId), eq(executionWorkspaces.sourceIssueId, input.issueId)),
   )).limit(1);
   if (!bound) throw new Error("Verified native continuation workspace binding changed");
