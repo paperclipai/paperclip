@@ -29,7 +29,7 @@ function usage() {
   process.stderr.write(
     [
       "Usage:",
-      "  node scripts/verify-release-registry-state.mjs --channel <canary|nightly|beta|stable> --dist-tag <tag> --target-version <version> --package <name> [--package <name> ...] [--allow-canary-latest]",
+      "  node scripts/verify-release-registry-state.mjs --channel <canary|nightly|beta|stable> --dist-tag <tag> --target-version <version> --package <name> [--package <name> ...] [--allow-canary-latest] [--allow-newer-canary]",
       "",
     ].join("\n"),
   );
@@ -41,6 +41,7 @@ function parseArgs(argv) {
     distTag: "",
     targetVersion: "",
     allowCanaryLatest: false,
+    allowNewerCanary: false,
     packages: [],
   };
 
@@ -66,6 +67,9 @@ function parseArgs(argv) {
         break;
       case "--allow-canary-latest":
         options.allowCanaryLatest = true;
+        break;
+      case "--allow-newer-canary":
+        options.allowNewerCanary = true;
         break;
       case "-h":
       case "--help":
@@ -94,6 +98,10 @@ function parseArgs(argv) {
 
   if (options.allowCanaryLatest && options.channel !== "canary") {
     throw createExitError("--allow-canary-latest only applies to canary releases", EXIT_NON_RETRIABLE_FAILURE);
+  }
+
+  if (options.allowNewerCanary && options.channel !== "canary") {
+    throw createExitError("--allow-newer-canary only applies to canary releases", EXIT_NON_RETRIABLE_FAILURE);
   }
 
   return options;
@@ -258,6 +266,20 @@ function requireManifest(packageName, version, packageDoc, packageManifestsByKey
   return manifest;
 }
 
+export function compareCanaryVersions(left, right) {
+  const parse = (version) => {
+    const match = /^(\d+)\.(\d+)\.(\d+)-canary\.(\d+)$/.exec(version ?? "");
+    return match ? match.slice(1).map(Number) : null;
+  };
+  const a = parse(left);
+  const b = parse(right);
+  if (!a || !b) return null;
+  for (let index = 0; index < a.length; index += 1) {
+    if (a[index] !== b[index]) return a[index] < b[index] ? -1 : 1;
+  }
+  return 0;
+}
+
 export function verifyPackageRegistryProblems({
   packageName,
   packageDoc,
@@ -267,12 +289,14 @@ export function verifyPackageRegistryProblems({
   distTag,
   targetVersion,
   allowCanaryLatest,
+  allowNewerCanary = false,
 }) {
   const problems = [];
   const distTags = packageDoc["dist-tags"] ?? {};
   const taggedVersion = distTags[distTag];
+  const taggedNewerCanary = allowNewerCanary && channel === "canary" && compareCanaryVersions(taggedVersion, targetVersion) === 1;
 
-  if (taggedVersion !== targetVersion) {
+  if (taggedVersion !== targetVersion && !taggedNewerCanary) {
     problems.push(
       createProblem(
         `${packageName}: dist-tag ${distTag} resolves to ${taggedVersion ?? "<missing>"}, expected ${targetVersion}`,
@@ -444,6 +468,7 @@ async function main() {
       distTag: options.distTag,
       targetVersion: options.targetVersion,
       allowCanaryLatest: options.allowCanaryLatest,
+      allowNewerCanary: options.allowNewerCanary,
     });
 
     if (packageProblems.length === 0) {

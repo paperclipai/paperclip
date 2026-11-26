@@ -5,10 +5,10 @@ use std::fmt::{self, Display, Formatter};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PRP_PROTOCOL_VERSION: u64 = 1;
+pub const PRP_PROTOCOL_MIN_VERSION: u64 = 1;
+pub const PRP_PROTOCOL_VERSION: u64 = 3;
 const PRP_FIXTURE_VERSION: u64 = 1;
 const PRP_FIXTURE_SCHEMA: &str = "paperclip.prp.fixture.v1";
-const PRP_EVENT_SCHEMA: &str = "paperclip.prp.event.v1";
 const PRP_SEMANTIC_TOOL_SCHEMA: &str = "paperclip.prp.semantic_tool.v1";
 const PRP_STOP_REASON_SCHEMA: &str = "paperclip.prp.stop_reason.v1";
 const PRP_SEMANTIC_TOOLS_CAPABILITY_SCHEMA: &str = "paperclip.prp.semantic_tools.v1";
@@ -90,9 +90,9 @@ impl Error for ReplayError {}
 pub fn reduce_replay_fixture(input: &str) -> Result<ReplayParitySummary, ReplayError> {
     let fixture: ReplayFixture = serde_json::from_str(input)
         .map_err(|error| ReplayError::invalid(format!("fixture must be valid JSON: {error}")))?;
-    if fixture.protocol_version != PRP_PROTOCOL_VERSION {
+    if !(PRP_PROTOCOL_MIN_VERSION..=PRP_PROTOCOL_VERSION).contains(&fixture.protocol_version) {
         return Err(ReplayError::invalid(format!(
-            "unsupported required protocolVersion {}; expected {PRP_PROTOCOL_VERSION}",
+            "unsupported required protocolVersion {}; expected {PRP_PROTOCOL_MIN_VERSION}-{PRP_PROTOCOL_VERSION}",
             fixture.protocol_version
         )));
     }
@@ -142,15 +142,16 @@ pub fn reduce_replay_fixture(input: &str) -> Result<ReplayParitySummary, ReplayE
                 event.source_seq
             )));
         }
-        if event.schema != PRP_EVENT_SCHEMA {
+        let expected_schema = format!("paperclip.prp.event.v{}", event.schema_version);
+        if event.schema != expected_schema {
             return Err(ReplayError::invalid(format!(
-                "unsupported required event schema {}; expected {PRP_EVENT_SCHEMA}",
+                "unsupported required event schema {}; expected {expected_schema}",
                 event.schema
             )));
         }
-        if event.schema_version != 1 {
+        if event.schema_version == 0 || event.schema_version > fixture.protocol_version {
             return Err(ReplayError::invalid(format!(
-                "unsupported required event schemaVersion {}; expected 1",
+                "unsupported required event schemaVersion {}; exceeds negotiated version",
                 event.schema_version
             )));
         }
@@ -340,10 +341,10 @@ mod tests {
         let error = reduce_replay_fixture(include_str!(
             "../../../../protocol/fixtures/replay/unsupported-required-version.json"
         ))
-        .expect_err("PRP v2 fixture must fail closed");
+        .expect_err("PRP v4 fixture must fail closed");
         assert!(error
             .to_string()
-            .contains("unsupported required protocolVersion 2"));
+            .contains("unsupported required protocolVersion 4"));
     }
 
     #[test]

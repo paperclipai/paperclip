@@ -1,4 +1,9 @@
 const STATIC_GITHUB_CREDENTIAL_ENVIRONMENT_KEYS = [
+  "PAPERCLIP_RUNNER_NETWORK_ACCESS",
+  "PAPERCLIP_RUNNER_NETWORK_ROOTS",
+  "PAPERCLIP_GITHUB_AUTH_MODE",
+  "PAPERCLIP_GITHUB_HOST_HOME",
+  "PAPERCLIP_GIT_METADATA_ROOTS",
   "ZDOTDIR",
   "BASH_ENV",
   "PAPERCLIP_GITHUB_BRIDGE_TOKEN",
@@ -15,6 +20,7 @@ const STATIC_GITHUB_CREDENTIAL_ENVIRONMENT_KEYS = [
   "SSH_ASKPASS",
   "SSH_AUTH_SOCK",
   "GIT_SSH_COMMAND",
+  "GIT_SSH",
   "GH_TOKEN",
   "GITHUB_TOKEN",
   "PAPERCLIP_GIT_TOKEN",
@@ -71,15 +77,4 @@ export function githubCredentialEnvironmentKeys(
   source: NodeJS.ProcessEnv,
 ): string[] {
   return Object.keys(githubCredentialEnvironment(source)).sort();
-}
-
-export function hasGitHubCredentialEnvironment(
-  source: NodeJS.ProcessEnv,
-): boolean {
-  return [
-    source.PAPERCLIP_GITHUB_BROKER_TOKEN,
-    source.GH_TOKEN,
-    source.GITHUB_TOKEN,
-    source.PAPERCLIP_GIT_TOKEN,
-  ].some((value) => typeof value === "string" && value.trim().length > 0);
 }

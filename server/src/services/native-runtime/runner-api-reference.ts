@@ -81,13 +81,17 @@ export const runnerApiReference: Record<string, { section: string; description?:
     "section": "Issues (Tasks)",
     "description": "List issues, sorted by priority. Filters: `?status=`, `?assigneeAgentId=`, `?assigneeUserId=`, `?projectId=`, `?labelId=`, `?q=` (full-text search across title, identifier, description, comments)"
   },
+  "GET /api/companies/{}/issues/count": {
+    "section": "Issues (Tasks)",
+    "description": "Count blocked issues that need attention. `?attention=blocked` is required; other requests return 400. Accepts issue-list filters such as `?status=`, `?assigneeAgentId=`, `?projectId=`, `?labelId=` and `?q=`, and rejects `?limit=` and `?offset=`. For any other count, page through `GET /api/companies/:companyId/issues` with `?limit=` (default 500, maximum 1000) and increasing `?offset=` until a page is empty, and count every returned issue"
+  },
   "GET /api/issues/{}": {
     "section": "Issues (Tasks)",
     "description": "Issue details + ancestors"
   },
   "GET /api/issues/{}/heartbeat-context": {
     "section": "Issues (Tasks)",
-    "description": "Compact issue context including `currentExecutionWorkspace` when one is linked"
+    "description": "Compact context for heartbeat: issue state, ancestor summaries, comment cursor, and `currentExecutionWorkspace` when one is linked"
   },
   "GET /api/issues/{}/diagnostics/blockers": {
     "section": "Issues (Tasks)",
@@ -125,6 +129,24 @@ export const runnerApiReference: Record<string, { section: string; description?:
             ]
           }
         }
+      },
+      {
+        "body": {
+          "status": "in_review",
+          "comment": "Waiting for your answer in the saved responsibility question card."
+        }
+      },
+      {
+        "body": {
+          "status": "blocked",
+          "unblockDescriptor": {
+            "owner": {
+              "agentId": "{your-agent-id}"
+            },
+            "action": "Restore the failed workspace service, verify health, then resume."
+          },
+          "comment": "The workspace service is unavailable; I own restoring it."
+        }
       }
     ]
   },
@@ -134,7 +156,7 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/issues/{}/release": {
     "section": "Issues (Tasks)",
-    "description": "Release task ownership"
+    "description": "Release execution locks; preserve terminal task ownership"
   },
   "GET /api/issues/{}/comments": {
     "section": "Issues (Tasks)",
@@ -146,7 +168,14 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/issues/{}/comments": {
     "section": "Issues (Tasks)",
-    "description": "Add comment (@-mentions trigger wakeups)"
+    "description": "Add comment (@-mentions provide context)",
+    "examples": [
+      {
+        "body": {
+          "body": "[@QA Reviewer](agent://qa-agent-id) has relevant testing context."
+        }
+      }
+    ]
   },
   "POST /api/issues/{}/inbox-archive": {
     "section": "Issues (Tasks)",
@@ -164,6 +193,93 @@ export const runnerApiReference: Record<string, { section: string; description?:
     "section": "Issues (Tasks)",
     "description": "Create issue-thread interaction (`suggest_tasks`, `ask_user_questions`, `request_confirmation`, `request_checkbox_confirmation`, `request_item_verdicts`)",
     "examples": [
+      {
+        "body": {
+          "kind": "ask_user_questions",
+          "idempotencyKey": "questions:{issueId}:responsibility-text:v1",
+          "title": "Hire responsibility",
+          "resolverPolicy": "human_only",
+          "continuationPolicy": "wake_assignee",
+          "payload": {
+            "version": 1,
+            "questionSet": {
+              "schema": "paperclip.question_set.v1",
+              "questions": [
+                {
+                  "id": "responsibility",
+                  "prompt": "What should the new agent be responsible for?",
+                  "required": true,
+                  "answerMode": "text"
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "body": {
+          "kind": "ask_user_questions",
+          "idempotencyKey": "questions:{issueId}:responsibility:v1",
+          "title": "Hire responsibility",
+          "resolverPolicy": "human_only",
+          "continuationPolicy": "wake_assignee",
+          "payload": {
+            "version": 1,
+            "questionSet": {
+              "schema": "paperclip.question_set.v1",
+              "questions": [
+                {
+                  "id": "responsibility",
+                  "prompt": "What should the new agent be responsible for?",
+                  "answerMode": "single_select",
+                  "required": true,
+                  "customAnswer": {
+                    "enabled": true
+                  },
+                  "options": [
+                    {
+                      "id": "research",
+                      "label": "Research",
+                      "description": "Find and summarize information."
+                    },
+                    {
+                      "id": "writing",
+                      "label": "Writing",
+                      "description": "Draft and edit content."
+                    }
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "body": {
+          "kind": "request_confirmation",
+          "idempotencyKey": "confirmation:{issueId}:{targetKey}:{targetVersion}",
+          "title": "Plan approval",
+          "continuationPolicy": "wake_assignee",
+          "payload": {
+            "version": 1,
+            "prompt": "Accept this plan?",
+            "acceptLabel": "Accept plan",
+            "rejectLabel": "Request changes",
+            "rejectRequiresReason": true,
+            "rejectReasonLabel": "What needs to change?",
+            "detailsMarkdown": "Review the latest plan document before accepting.",
+            "supersedeOnUserComment": true,
+            "target": {
+              "type": "issue_document",
+              "issueId": "{issueId}",
+              "documentId": "{documentId}",
+              "key": "plan",
+              "revisionId": "{latestRevisionId}",
+              "revisionNumber": 3
+            }
+          }
+        }
+      },
       {
         "body": {
           "kind": "request_checkbox_confirmation",
@@ -251,13 +367,34 @@ export const runnerApiReference: Record<string, { section: string; description?:
       }
     ]
   },
+  "POST /api/issues/{}/interactions/{}/resolve-from-comment": {
+    "section": "Issues (Tasks)",
+    "description": "Resolve a confirmation from the latest user reply; body: commentId, decision (accept/reject), selectedOptionIds for checkbox acceptance, optional reason"
+  },
   "POST /api/issues/{}/interactions/{}/accept": {
     "section": "Issues (Tasks)",
-    "description": "Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`)"
+    "description": "Accept suggested tasks or confirmation (body: `selectedClientKeys` for `suggest_tasks`; `selectedOptionIds` for `request_checkbox_confirmation`)",
+    "examples": [
+      {
+        "body": {
+          "selectedOptionIds": [
+            "draft-report-march",
+            "tmp-export-2025"
+          ]
+        }
+      }
+    ]
   },
   "POST /api/issues/{}/interactions/{}/reject": {
     "section": "Issues (Tasks)",
-    "description": "Reject suggested tasks or confirmation"
+    "description": "Reject suggested tasks or confirmation",
+    "examples": [
+      {
+        "body": {
+          "reason": "Keep the March draft; only delete tmp/export-2025.csv."
+        }
+      }
+    ]
   },
   "POST /api/issues/{}/interactions/{}/respond": {
     "section": "Issues (Tasks)",
@@ -370,8 +507,18 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/companies/{}/projects": {
     "section": "Companies, Projects, Goals",
-    "description": "Create project (optional inline `workspace`)",
+    "description": "Create project (`repositoryIds`/`repositoryUrls` arrays or inline `workspace`; optional `idempotencyKey`)",
     "examples": [
+      {
+        "body": {
+          "name": "Web and API",
+          "repositoryUrls": [
+            "https://github.com/acme/web",
+            "https://github.com/acme/api"
+          ],
+          "idempotencyKey": "web-api-project"
+        }
+      },
       {
         "body": {
           "name": "Paperclip Mobile App",
@@ -446,7 +593,14 @@ export const runnerApiReference: Record<string, { section: string; description?:
   },
   "POST /api/companies/{}/openclaw/invite-prompt": {
     "section": "Companies, Projects, Goals",
-    "description": "Generate OpenClaw invite prompt (CEO/board only)"
+    "description": "Generate OpenClaw invite prompt (CEO/board only)",
+    "examples": [
+      {
+        "body": {
+          "agentMessage": "optional note for the joining OpenClaw agent"
+        }
+      }
+    ]
   },
   "GET /api/companies/{}/routines": {
     "section": "Routines",
@@ -492,13 +646,135 @@ export const runnerApiReference: Record<string, { section: string; description?:
     "section": "Routines",
     "description": "Run history (default 50)"
   },
+  "POST /api/issues/{}/routine-suggestions": {
+    "section": "Routines",
+    "description": "Offer once to repeat the task you just finished as a routine (assignee agent only; experimental). See **Offer a routine after recurring work** in `SKILL.md`",
+    "examples": [
+      {
+        "body": {
+          "title": "Weekly competitor pricing summary",
+          "instructions": "Check the pricing pages of Acme, Globex and Initech and summarize what changed since the last summary.",
+          "cadence": {
+            "frequency": "weekly",
+            "dayOfWeek": "monday",
+            "time": "09:00"
+          },
+          "message": "Want me to put this summary together every Monday morning?"
+        }
+      }
+    ]
+  },
+  "POST /api/issues/{}/bar-proposals": {
+    "section": "Responsibility bars",
+    "description": "Propose a bar in the bar conversation assigned to you (experimental). A new proposal replaces the waiting one. It may carry up to two supporting `metrics` and a `primaryDisplay`",
+    "examples": [
+      {
+        "body": {
+          "standard": "We always have between 12 and 24 months of runway.",
+          "metricKind": "range",
+          "metricName": "Runway",
+          "metricUnit": "months",
+          "metricLow": 12,
+          "metricHigh": 24,
+          "metricCurrent": 18,
+          "currentEvidence": "Cash on hand divided by the last three months' average burn",
+          "message": "Here is a bar that keeps runway in a healthy band."
+        }
+      }
+    ]
+  },
+  "POST /api/responsibilities/{}/metrics/{}/readings": {
+    "section": "Responsibility bars",
+    "description": "Record what one of a responsibility's metrics reads now (experimental). `metricId` is a supporting metric's id, or `primary` for the bar's own; you must run the responsibility or have a task or routine under it. Never send `recordedAt`",
+    "examples": [
+      {
+        "body": {
+          "value": 4,
+          "note": "Four intro meetings on the shared calendar this week"
+        }
+      }
+    ]
+  },
+  "POST /api/issues/{}/automation-proposals": {
+    "section": "Automation conversations and standing checks",
+    "description": "Propose one automation in the automation conversation assigned to you (experimental). A new proposal replaces the waiting one",
+    "examples": [
+      {
+        "body": {
+          "title": "Triage new support tickets",
+          "instructions": "Read the new ticket, label it by product area and urgency, and assign it.",
+          "trigger": {
+            "kind": "webhook",
+            "caller": "The help desk, each time a ticket is opened"
+          },
+          "message": "This can start by itself whenever a ticket arrives."
+        }
+      }
+    ]
+  },
+  "POST /api/routines/{}/standing-check-results": {
+    "section": "Automation conversations and standing checks",
+    "description": "Report what one of your standing checks found on this wake-up (experimental)"
+  },
+  "POST /api/issues/{}/dashboard-changes": {
+    "section": "Dashboard conversations",
+    "description": "Propose an ordered list of changes to the person's Dashboard in the dashboard conversation assigned to you (experimental). A new proposal replaces the waiting one",
+    "examples": [
+      {
+        "body": {
+          "message": "Here is a first dashboard from your answers.",
+          "changes": [
+            {
+              "op": "add_area",
+              "ref": "fundraising",
+              "name": "Fundraising"
+            },
+            {
+              "op": "add_responsibility",
+              "areaRef": "fundraising",
+              "sentence": "Every prospective LP hears from us at least every two weeks.",
+              "reason": "You run the weekly fundraising sync."
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "POST /api/responsibilities/{}/status-report": {
+    "section": "Responsibility status",
+    "description": "Write a responsibility's status, as its reporter or an agent working under it (experimental)",
+    "examples": [
+      {
+        "body": {
+          "status": "at_risk",
+          "message": "Drifted from 2.1 s to 2.4 s as the catalogue grew.",
+          "detail": "The image pipeline rebuild is the fix and it is two weeks late."
+        }
+      }
+    ]
+  },
+  "GET /api/responsibilities/{}/status-report": {
+    "section": "Responsibility status",
+    "description": "Read a responsibility's current status, its reporter and recent reports (experimental)"
+  },
   "GET /api/companies/{}/approvals": {
     "section": "Approvals, Costs, Activity, Dashboard",
     "description": "List approvals (`?status=pending`)"
   },
   "POST /api/companies/{}/approvals": {
     "section": "Approvals, Costs, Activity, Dashboard",
-    "description": "Create approval request"
+    "description": "Create approval request",
+    "examples": [
+      {
+        "body": {
+          "type": "approve_ceo_strategy",
+          "requestedByAgentId": "{your-agent-id}",
+          "payload": {
+            "plan": "..."
+          }
+        }
+      }
+    ]
   },
   "POST /api/companies/{}/agent-hires": {
     "section": "Approvals, Costs, Activity, Dashboard",
@@ -510,7 +786,36 @@ export const runnerApiReference: Record<string, { section: string; description?:
           "role": "researcher",
           "reportsTo": "{manager-agent-id}",
           "capabilities": "Market research, competitor analysis",
-          "budgetMonthlyCents": 5000
+          "adapterType": "paperclip_runner",
+          "inheritRuntimeFrom": "caller",
+          "instructionsBundle": {
+            "entryFile": "AGENTS.md",
+            "files": {
+              "AGENTS.md": "# Marketing Analyst\nResearch markets and competitors. Report findings with sources to your manager.\n"
+            }
+          }
+        }
+      },
+      {
+        "body": {
+          "name": "Marketing Analyst",
+          "role": "researcher",
+          "reportsTo": "{manager-agent-id}",
+          "capabilities": "Market research, competitor analysis",
+          "budgetMonthlyCents": 5000,
+          "adapterType": "codex_local",
+          "instructionsBundle": {
+            "entryFile": "AGENTS.md",
+            "files": {
+              "AGENTS.md": "# Marketing Analyst\nResearch markets and competitors. Report findings with sources to your manager. Follow the Paperclip operational skill.\n"
+            }
+          },
+          "runtimeConfig": {
+            "heartbeat": {
+              "enabled": false,
+              "wakeOnDemand": true
+            }
+          }
         }
       }
     ]
@@ -602,88 +907,5 @@ export const runnerApiReference: Record<string, { section: string; description?:
   "POST /api/agents/me/secrets/{}/value": {
     "section": "Secrets",
     "description": "Fetch one granted secret value; request body is empty"
-  },
-  "POST /api/companies/company-1/imports/preview": {
-    "section": "Worked example",
-    "examples": [
-      {
-        "body": {
-          "source": {
-            "type": "github",
-            "url": "https://github.com/acme/agent-company"
-          },
-          "include": {
-            "company": true,
-            "agents": true,
-            "projects": true,
-            "issues": true
-          },
-          "target": {
-            "mode": "existing_company",
-            "companyId": "company-1"
-          },
-          "collisionStrategy": "rename"
-        }
-      }
-    ]
-  },
-  "POST /api/companies/company-1/imports/apply": {
-    "section": "Worked example",
-    "examples": [
-      {
-        "body": {
-          "source": {
-            "type": "github",
-            "url": "https://github.com/acme/agent-company"
-          },
-          "include": {
-            "company": true,
-            "agents": true,
-            "projects": true,
-            "issues": false
-          },
-          "target": {
-            "mode": "new_company",
-            "newCompanyName": "Imported Acme"
-          },
-          "collisionStrategy": "rename"
-        }
-      }
-    ]
-  },
-  "POST /api/companies/company-1/exports/preview": {
-    "section": "Worked example",
-    "examples": [
-      {
-        "body": {
-          "include": {
-            "company": true,
-            "agents": true,
-            "projects": true
-          }
-        }
-      }
-    ]
-  },
-  "POST /api/companies/company-1/exports": {
-    "section": "Worked example",
-    "examples": [
-      {
-        "body": {
-          "include": {
-            "company": true,
-            "agents": true,
-            "projects": true,
-            "issues": true
-          },
-          "selectedFiles": [
-            "COMPANY.md",
-            "agents/ceo/AGENTS.md",
-            "skills/paperclip/SKILL.md",
-            "tasks/pap-42/TASK.md"
-          ]
-        }
-      }
-    ]
   }
 };

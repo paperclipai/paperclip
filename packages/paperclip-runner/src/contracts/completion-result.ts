@@ -1,6 +1,45 @@
 /** Provider-neutral semantic completion tools and their strict model-facing schemas. */
 export const PRP_COMPLETION_TOOL_NAME = "paperclip_finish" as const;
 export const PRP_BLOCK_TOOL_NAME = "paperclip_block" as const;
+/** Native Runner guidance; legacy adapters use their own skill/API completion paths. */
+export const PRP_COMPLETION_TOOL_DESCRIPTION =
+  "Report completed work (done), work requiring review (needs_review), or an explicit wait (yielded with response_wake for a response, monitor after set_task_monitor confirms a schedule on this task, or omit continuation to use this run's authorized published-review wait or saved repository-preparation continuation). Use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome; do not claim completion while gated. Explain any required approval with its supplied link and action, then write the final response and end the turn without further tool calls.";
+export const PRP_BLOCK_TOOL_DESCRIPTION =
+  "Report work that cannot continue because of a concrete blocker. Routine repository preparation is not a blocker: use paperclip_finish with yielded and omit continuation to resume through the saved workspace continuation. Identify the blocker, its owner, and the action needed to unblock it; use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome, explain the blocker and any required action in the final response, and end the turn without further tool calls.";
+const PRP_STOP_REPORTING_INSTRUCTION =
+  "a turn's first accepted report is final, so this report was not recorded. Do not call paperclip_finish or paperclip_block again in this turn. ";
+export const PRP_RESULT_ALREADY_ACCEPTED_MESSAGE =
+  "This turn's result was already accepted, and " + PRP_STOP_REPORTING_INSTRUCTION +
+  "Put any extra notes in your final response, then end the turn.";
+export const PRP_BLOCKER_ALREADY_REPORTED_MESSAGE =
+  "This turn already reported a blocker, and " + PRP_STOP_REPORTING_INSTRUCTION +
+  "In your final response, list the steps that are complete, say whether the blocker still applies, and add any extra notes, then end the turn.";
+export const PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE = PRP_BLOCKER_ALREADY_REPORTED_MESSAGE +
+  " Paperclip continues this environment or tool blocker automatically in a fresh session that checks the saved work.";
+
+export const PRP_ENVIRONMENT_BLOCKER_REASON_CODES: ReadonlySet<string> = new Set(["environment_unavailable", "tool_unavailable"]);
+export const PRP_PERSON_BLOCKER_REASON_CODES: ReadonlySet<string> = new Set(["permission_denied", "credential_missing", "policy_restricted", "budget_exhausted"]);
+
+export function isPrpAutomaticallyContinuedBlocker(result: {
+  reportedWorkDisposition?: unknown;
+  blocker?: { owner?: { kind?: unknown } | null; reasonCode?: unknown } | null;
+} | null | undefined): boolean {
+  if (result?.reportedWorkDisposition !== "blocked") return false;
+  const ownerKind = result.blocker?.owner?.kind;
+  const reasonCode = typeof result.blocker?.reasonCode === "string" ? result.blocker.reasonCode : "";
+  return (ownerKind === "system" && !PRP_PERSON_BLOCKER_REASON_CODES.has(reasonCode))
+    || (ownerKind === "agent" && PRP_ENVIRONMENT_BLOCKER_REASON_CODES.has(reasonCode));
+}
+
+/** Feedback for a later report in a turn that already committed a different one. */
+export function prpSemanticResultConflictMessage(committed: {
+  reportedWorkDisposition: string;
+  blocker?: { owner?: { kind?: string } | null; reasonCode?: string } | null;
+} | null | undefined): string {
+  if (committed?.reportedWorkDisposition !== "blocked") return PRP_RESULT_ALREADY_ACCEPTED_MESSAGE;
+  return isPrpAutomaticallyContinuedBlocker(committed)
+    ? PRP_ENVIRONMENT_BLOCKER_ALREADY_REPORTED_MESSAGE : PRP_BLOCKER_ALREADY_REPORTED_MESSAGE;
+}
 export const PRP_SEMANTIC_TOOL_NAMES = [
   PRP_COMPLETION_TOOL_NAME,
   PRP_BLOCK_TOOL_NAME,
@@ -38,7 +77,7 @@ const completionClaimSchema = {
   additionalProperties: false,
   required: ["contractRevision", "objectiveSatisfied", "criteria", "remainingWork"],
   properties: {
-    contractRevision: { type: "string", minLength: 1 },
+    contractRevision: { type: "string", minLength: 1, description: "Use the current turn completion.revision (or completionContract.revision on the first turn), never a previous turn’s revision. On stale-revision feedback, reassess the current request and correct the report without repeating completed work." },
     objectiveSatisfied: { type: "boolean" },
     criteria: {
       type: "array",
@@ -139,9 +178,48 @@ const artifactsSchema = {
   },
 } as const;
 
+const waitContinuationProperties = {
+  type: "object",
+  description:
+    "Required when reportedWorkDisposition is yielded. Use response_wake for a response wait, or monitor only after a real monitor is persisted on the current task. Include kind, summary, and a stable idempotencyKey.",
+  additionalProperties: false,
+  required: ["kind", "summary", "idempotencyKey"],
+  properties: {
+    kind: { type: "string", enum: ["response_wake", "monitor", "case_handoff"] },
+    summary: {
+      type: "string",
+      minLength: 1,
+      description:
+        "Internal control-plane reason to wait for the next response. Keep routine waiting and continuation bookkeeping here, not in the top-level user-facing summary. This field is not the answer to the user's request.",
+    },
+    idempotencyKey: { type: "string", minLength: 1 },
+    handoffId: { type: "string", minLength: 1, description: "Exact server-issued handoff ID; required for case_handoff." },
+  },
+} as const;
+
+const waitContinuationCondition = {
+  if: { properties: { kind: { const: "case_handoff" } }, required: ["kind"] },
+  then: { required: ["handoffId"] },
+} as const;
+
+const waitContinuationSchema = {
+  ...waitContinuationProperties,
+  allOf: [waitContinuationCondition],
+} as const;
+
+const providerWaitContinuationSchema = {
+  ...waitContinuationProperties,
+  ...waitContinuationCondition,
+} as const;
+
 const commonResultProperties = {
   schema: { type: "string", const: "paperclip.run_result.v1" },
-  summary: { type: "string", minLength: 1 },
+  summary: {
+    type: "string",
+    minLength: 1,
+    description:
+      "The complete user-facing answer for this turn. Do not replace the requested answer with routine work/control bookkeeping. Include the requested result and any genuine actionable failure, limitation, or required user action. Unless explicitly requested, omit routine preparation, unconfirmed-delivery, and wait/review status; put the response-wake reason in continuation.summary. Never claim delivery without a confirmed receipt.",
+  },
   completionClaim: completionClaimSchema,
   evidence: evidenceSchema,
   verification: verificationSchema,
@@ -163,7 +241,8 @@ export const PRP_COMPLETION_RESULT_OUTPUT_SCHEMA = {
   ],
   properties: {
     ...commonResultProperties,
-    reportedWorkDisposition: { enum: ["done", "needs_review"] },
+    reportedWorkDisposition: { enum: ["done", "needs_review", "yielded"] },
+    continuation: waitContinuationSchema,
   },
   allOf: [
     {
@@ -173,6 +252,11 @@ export const PRP_COMPLETION_RESULT_OUTPUT_SCHEMA = {
     {
       if: { properties: { reportedWorkDisposition: { const: "needs_review" } }, required: ["reportedWorkDisposition"] },
       then: { properties: { attentionRequests: { minItems: 1 } } },
+    },
+    {
+      if: { properties: { reportedWorkDisposition: { const: "yielded" } }, required: ["reportedWorkDisposition"] },
+      then: { required: ["continuation"] },
+      else: { not: { required: ["continuation"] } },
     },
   ],
 } as const;
@@ -239,7 +323,10 @@ const providerVerificationCompatibilitySchema = {
       detail: { type: "string" },
       result: { type: "string" },
       cwd: { type: "string" },
-      artifactRef: { type: "string", minLength: 1 },
+      artifactRef: {
+        type: ["string", "null"],
+        description: "Reference to a real verification artifact. Omit or use null when no artifact exists; empty values are normalized away.",
+      },
     },
   },
 } as const;
@@ -323,9 +410,36 @@ export const PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA = {
   ],
   properties: {
     ...providerCommonResultProperties,
-    reportedWorkDisposition: { enum: ["done", "needs_review", "completed"] },
+    reportedWorkDisposition: { enum: ["done", "needs_review", "yielded", "completed"] },
     verification: providerVerificationCompatibilitySchema,
     attentionRequests: providerAttentionCompatibilitySchema,
+    // Responses-compatible gateways can require every declared property in
+    // tool calls. Give non-yielding results an explicit absence value instead
+    // of forcing callers to invent a response-wake continuation.
+    continuation: {
+      ...providerWaitContinuationSchema,
+      type: ["object", "null"],
+      description:
+        "For yielded, omit or use null to reuse this run's authorized published-review wait, eligible saved monitor, or repository-preparation continuation; the controller reads current task state. Otherwise provide a real response_wake or monitor with summary and idempotencyKey. Use null or omit for done, completed, or needs_review.",
+    },
+  },
+  // Keep the provider-facing root a plain object with no root conditional:
+  // some hosts render a root allOf or if/then as unknown or empty arguments.
+  // Runner bridges apply the yielded-only continuation rule through
+  // toolInputVariantError, and canonical validation enforces it again.
+} as const;
+
+export const PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA = {
+  ...PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA,
+  properties: {
+    ...PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA.properties,
+    continuation: {
+      ...PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA.properties.continuation,
+      properties: {
+        ...waitContinuationSchema.properties,
+        kind: { type: "string", enum: [...waitContinuationSchema.properties.kind.enum, "same_agent"] },
+      },
+    },
   },
 } as const;
 

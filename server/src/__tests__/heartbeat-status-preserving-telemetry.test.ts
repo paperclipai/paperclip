@@ -1,3 +1,4 @@
+import { enableRunFailureReporting } from "./helpers/run-failure-reporting.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
@@ -22,7 +23,17 @@ vi.mock("../telemetry.js", () => ({
   getTelemetryClient: () => mockTelemetryClient,
 }));
 
+const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
+vi.mock("../sentry.js", async () => {
+  const actual = await vi.importActual<typeof import("../sentry.js")>("../sentry.js");
+  return {
+    ...actual,
+    captureRunFailure: mockCaptureRunFailure,
+  };
+});
+
 import { heartbeatService } from "../services/heartbeat.ts";
+import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-lifecycle.js";
 
 function agentTaskRunCalls(fromIndex: number) {
   return mockTelemetryClient.track.mock.calls
@@ -103,6 +114,9 @@ describeEmbeddedPostgres(
         processPid: process.pid,
         contextSnapshot: { issueId },
       });
+      await persistHeartbeatRunProcessMetadata(db, runId, {
+        pid: process.pid, processGroupId: null, startedAt: new Date().toISOString(), targetKind: "local",
+      });
       await db.insert(nativeRunFinalizations).values({
         runId,
         companyId,
@@ -128,6 +142,12 @@ describeEmbeddedPostgres(
         errorCode: "native_execution_ownership_unverified",
       });
       expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
+      // A status-preserving write is not a new transition, so it must not
+      // report a second Sentry event for the same terminal failure.
+      expect(mockCaptureRunFailure).not.toHaveBeenCalled();
     });
   },
 );
+
+
+enableRunFailureReporting();

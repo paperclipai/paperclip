@@ -2,7 +2,6 @@ export type ContextualSidebarSurface =
   | "settings"
   | "apps"
   | "agent"
-  | "routine"
   | "skills"
   | `plugin:${string}`;
 
@@ -36,23 +35,20 @@ export function classifyShellRoute(
     && Boolean(agentSegment)
     && agentSegment !== "new"
     && !["all", "active", "paused", "error", "builtin"].includes(agentSegment ?? "");
-  const isRoutineDetail = root === "routines" && companySegments.length >= 2;
   const isSkillsSurface = root === "skills";
 
   return {
     companySegments,
-    isTaskDetail: root === "issues" && companySegments.length >= 2,
+    isTaskDetail: (root === "issues" || root === "chats") && companySegments.length >= 2,
     builtInContextualSurface: isCompanySettings
       ? "settings"
       : root === "apps" || root === "tools"
         ? "apps"
         : isAgentDetail
           ? "agent"
-          : isRoutineDetail
-            ? "routine"
-            : isSkillsSurface
-              ? "skills"
-        : null,
+          : isSkillsSurface
+            ? "skills"
+            : null,
   };
 }
 

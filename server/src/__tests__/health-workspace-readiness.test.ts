@@ -56,7 +56,7 @@ function stubDb() {
     select: vi.fn((projection?: Record<string, unknown>) => {
       const rows = projection && "count" in projection ? [{ count: 1 }] : [{ companyId: "company-1" }];
       const chain: Record<string, unknown> = {};
-      for (const method of ["from", "where", "innerJoin", "limit", "orderBy"]) {
+      for (const method of ["from", "where", "innerJoin", "limit", "orderBy", "groupBy"]) {
         chain[method] = vi.fn(() => chain);
       }
       chain.then = (resolve: (value: unknown) => unknown) => Promise.resolve(rows).then(resolve);

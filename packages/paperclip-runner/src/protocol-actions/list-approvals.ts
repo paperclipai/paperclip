@@ -29,7 +29,7 @@ export const listApprovalsAction = {
   },
   "documentation": {
     "title": "List approvals",
-    "description": "List mock approvals in the run company.",
+    "description": "List approvals in the run company.",
     "note": null
   },
   "examples": {
@@ -50,7 +50,7 @@ export const listApprovalsAction = {
       "operationId": "list_approvals",
       "version": 1,
       "title": "List approvals",
-      "description": "List mock approvals in the run company.",
+      "description": "List approvals in the run company.",
       "exposure": "optional",
       "requiredClaims": [
         "governance:approvals:read"

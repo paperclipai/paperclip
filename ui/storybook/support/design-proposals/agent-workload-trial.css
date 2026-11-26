@@ -1,0 +1,10 @@
+/* Trial-local composition: the shared toolbar responds to viewport width,
+   while this collection can narrow independently when its context pane opens. */
+.agent-workload-trial [data-slot="collection-toolbar"] > :first-child {
+  flex-wrap: wrap;
+  gap: var(--design-page-toolbar-gap);
+}
+
+.agent-workload-trial [data-slot="collection-toolbar-search"] {
+  flex-basis: var(--design-page-search-width);
+}

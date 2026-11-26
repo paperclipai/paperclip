@@ -1,3 +1,37 @@
+import { questionPayloadSchema } from "./question-payload-schema.js";
+
+export const REQUEST_HUMAN_INPUT_TITLE_MAX_LENGTH = 240;
+export const REQUEST_HUMAN_INPUT_PROMPT_MAX_LENGTH = 1000;
+
+export const requestHumanInputExamples = {
+  questions: {
+    idempotencyKey: "preference-v1",
+    interactionKind: "questions",
+    title: "Choose a preference",
+    prompt: "Which preference should I use?",
+    continuationPolicy: "wake_assignee",
+    payload: {
+      version: 1,
+      questionSet: {
+        schema: "paperclip.question_set.v1",
+        questions: [{ id: "preference", prompt: "Your preference?", required: true, answerMode: "text" }],
+      },
+    },
+  },
+  confirmation: {
+    idempotencyKey: "confirm-change-v1",
+    interactionKind: "confirmation",
+    title: "Confirm change",
+    prompt: "Proceed with the proposed change?",
+    continuationPolicy: "wake_assignee_on_accept",
+  },
+} as const;
+
+const requestHumanInputDescription = "Create a durable human question or approval card on the current Paperclip task bound to this run; Paperclip renders it and authenticates the response. Use questions with continuationPolicy='wake_assignee' when an answer is needed, including otherwise tool-free chat turns. Supply a stable idempotencyKey and reuse it on retries. When you need several inputs that do not depend on each other's answers, ask them together in one questions card (one questionSet) instead of one card per question; ask a follow-up card only when it depends on an earlier answer. If the user asks for one question at a time, ask only the next unanswered question and wait for its real answer. Never fabricate answers or treat ambiguous clarification as approval. For an ordinary confirmation or checkbox card, record a clear user chat answer with call_api POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment, using the source commentId and decision (accept/reject), plus explicit selectedOptionIds for checkbox acceptance. Existing resolver permissions still apply; governed tool, secret, and connection approvals are excluded. Question forms retain their dedicated answer workflow. Preserve existing review gates. Call this tool before claiming a question was asked; if creation fails, report the failure. Do not fabricate answer links or Markdown buttons, post duplicate cards, or use call_api to create the card. Use one complete payload.questionSet for text and choice questions. Paperclip generates compatibility questions; see the payload schema for formats."
+  + " Example inputs (the keys shown are illustrative; choose your own stable idempotencyKey for each request and reuse it on retries). Questions: "
+  + JSON.stringify(requestHumanInputExamples.questions)
+  + " Confirmation: " + JSON.stringify(requestHumanInputExamples.confirmation);
+
 /** Canonical definition and documentation for `request_human_input`. */
 export const requestHumanInputAction = {
   "id": "request_human_input",
@@ -27,7 +61,7 @@ export const requestHumanInputAction = {
   },
   "documentation": {
     "title": "Request structured human input",
-    "description": "Create a typed, durable interaction on the active mock task.",
+    "description": requestHumanInputDescription,
     "note": null
   },
   "examples": {
@@ -74,7 +108,7 @@ export const requestHumanInputAction = {
       "operationId": "request_human_input",
       "version": 1,
       "title": "Request structured human input",
-      "description": "Create a typed, durable interaction on the active mock task.",
+      "description": requestHumanInputDescription,
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [
@@ -105,18 +139,18 @@ export const requestHumanInputAction = {
             "type": "string",
             "description": "Interaction card title.",
             "minLength": 1,
-            "maxLength": 300
+            "maxLength": REQUEST_HUMAN_INPUT_TITLE_MAX_LENGTH
           },
           "prompt": {
             "type": "string",
             "description": "Question or decision prompt.",
             "minLength": 1,
-            "maxLength": 10000
+            "maxLength": REQUEST_HUMAN_INPUT_PROMPT_MAX_LENGTH
           },
-          "payload": {
-            "type": "object",
-            "description": "Kind-specific interaction data. For interactionKind='questions', use exactly {version:1, questions:[{id,prompt,selectionMode:'single'|'multi',required?,options:[{id,label,description?,freeText?}]}]}; option keys are id/label, not value, and question choice cardinality is selectionMode, not type. For confirmation, payload may be {}. Keep all ids stable across retries.",
-            "additionalProperties": true
+          "payload": questionPayloadSchema,
+          "resolverPolicy": {
+            "const": "human_only",
+            "description": "Optionally require an authenticated human response. Required output-quality bindings also enforce this server-side."
           },
           "targetRevisionId": {
             "type": [
@@ -148,7 +182,7 @@ export const requestHumanInputAction = {
         "properties": {
           "commandId": {
             "type": "string",
-            "description": "Stable mock command identifier.",
+            "description": "Stable command identifier.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -164,7 +198,7 @@ export const requestHumanInputAction = {
           },
           "entityRefs": {
             "type": "array",
-            "description": "Mock entities affected by the operation.",
+            "description": "Entities affected by the operation.",
             "items": {
               "type": "string",
               "minLength": 1
@@ -237,9 +271,7 @@ export const requestHumanInputAction = {
             "type": "string",
             "minLength": 1
           },
-          "payload": {
-            "description": "Kind-specific interaction data. Questions use {version:1, questions:[{id,prompt,selectionMode:'single'|'multi',required?,options:[{id,label,description?,freeText?}]}]}; do not use type:'single_choice' or option.value."
-          },
+          "payload": questionPayloadSchema,
           "targetRevisionId": {
             "oneOf": [
               {

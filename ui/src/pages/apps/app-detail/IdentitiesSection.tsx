@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Building2, Loader2, Lock, RefreshCw, Search, TriangleAlert, UserRound } from "lucide-react";
+import { Building2, Loader2, Lock, RefreshCw, TriangleAlert, UserRound } from "lucide-react";
 import type {
   ConnectionAudienceMember,
   ConnectionGrant,
@@ -9,8 +9,6 @@ import type {
 import { Button } from "@/components/ui/button";
 import { Identity } from "@/components/Identity";
 import { GithubIcon } from "@/components/icons/github-icon";
-import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import { InlineBanner } from "@/components/InlineBanner";
 import { MemberMultiSelect } from "@/components/MemberMultiSelect";
@@ -46,6 +44,7 @@ import {
   personalGrantFor,
   type GrantStatusTone,
 } from "../connection-identity";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 const STATUS_CHIP: Record<GrantStatusTone, string> = {
   connected: brandChipBadge.green,
@@ -181,7 +180,7 @@ export function IdentitiesSection({
         <h2 className="text-sm font-semibold text-foreground">GitHub identity</h2>
         <p className="text-sm text-muted-foreground">This agent uses this GitHub account for everyone’s work, instead of the person giving instructions.</p>
         <IdentityRow
-          title={github ? `@${github.login}` : "Dedicated GitHub account"}
+          title={github ? <span className={ANALYTICS_MASK_CLASS}>@{github.login}</span> : "Dedicated GitHub account"}
           status={agentGrant?.status ?? null}
           detail={dedicatedAgent ? (
             <Link
@@ -295,24 +294,8 @@ function GitHubConnectionSummary({
   onRefreshAccess?: () => void;
   refreshPending: boolean;
 }) {
-  const [repositoryOwner, setRepositoryOwner] = useState("*");
-  const [repositorySearch, setRepositorySearch] = useState("");
-  useEffect(() => {
-    setRepositoryOwner("*");
-    setRepositorySearch("");
-  }, [grant.id]);
   const github = grant.providerTenant?.github;
   if (!github) return null;
-  const owners = [...new Set([
-    ...(github.installationOwnerLogins ?? []),
-    ...(github.repositories ?? []).map((repository) => repository.fullName.split("/")[0]),
-  ])].sort((a, b) => a.localeCompare(b));
-  const selectedOwner = owners.includes(repositoryOwner) ? repositoryOwner : "*";
-  const search = repositorySearch.trim().toLowerCase();
-  const visibleRepositories = github.repositories?.filter((repository) => (
-    (selectedOwner === "*" || repository.fullName.split("/")[0] === selectedOwner)
-    && repository.fullName.toLowerCase().includes(search)
-  ));
   const configurationUrl = github.appSlug
     ? `https://github.com/apps/${encodeURIComponent(github.appSlug)}/installations/new`
     : /^https:\/\/github\.com\/apps\/[a-z0-9-]+\/installations\/new$/.test(github.installationUrl ?? "")
@@ -330,7 +313,7 @@ function GitHubConnectionSummary({
     <div className="divide-y divide-border border-y border-border">
       <div className="py-3">
         <div className="text-sm font-medium text-foreground">GitHub account</div>
-        <a className="text-sm text-muted-foreground hover:underline" href={`https://github.com/${encodeURIComponent(github.login)}`} target="_blank" rel="noreferrer">
+        <a className={cn("text-sm text-muted-foreground hover:underline", ANALYTICS_MASK_CLASS)} href={`https://github.com/${encodeURIComponent(github.login)}`} target="_blank" rel="noreferrer">
           @{github.login}
         </a>
       </div>
@@ -361,7 +344,7 @@ function GitHubConnectionSummary({
             ) : null}
             {configurationUrl ? (
               <Button asChild size="sm" variant="outline">
-                <a href={configurationUrl} target="_blank" rel="noreferrer">Configure on GitHub</a>
+                <a href={configurationUrl} target="_blank" rel="noreferrer">Add More Repos on GitHub</a>
               </Button>
             ) : onRefreshAccess ? (
               <Button size="sm" variant="outline" disabled={refreshPending} onClick={onRefreshAccess}>
@@ -371,27 +354,9 @@ function GitHubConnectionSummary({
             ) : null}
           </div>
         </div>
-        <div className="grid gap-2 sm:grid-cols-2">
-          <Select value={selectedOwner} onValueChange={setRepositoryOwner}>
-            <SelectTrigger aria-label="Filter repositories by account or organization" className="w-full">
-              <span className="flex min-w-0 items-center gap-2">
-                <GithubIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
-                <SelectValue />
-              </span>
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="*">All accounts</SelectItem>
-              {owners.map((owner) => <SelectItem key={owner} value={owner}>{owner}</SelectItem>)}
-            </SelectContent>
-          </Select>
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" aria-hidden="true" />
-            <Input aria-label="Search GitHub repositories" placeholder="Search repositories" className="pl-9" value={repositorySearch} onChange={(event) => setRepositorySearch(event.target.value)} />
-          </div>
-        </div>
         {github.repositories ? (
-          visibleRepositories?.length ? <ul aria-label="Accessible GitHub repositories" tabIndex={0} className="max-h-(--sz-github-repository-list) space-y-2 overflow-y-auto text-sm">
-            {visibleRepositories.map((repository) => (
+          github.repositories.length ? <ul aria-label="Accessible GitHub repositories" tabIndex={0} className={cn("max-h-(--sz-github-repository-list) space-y-2 overflow-y-auto text-sm", ANALYTICS_MASK_CLASS)}>
+            {github.repositories.map((repository) => (
               <li key={repository.id}>
                 <a className="flex items-center gap-2 text-muted-foreground hover:underline" href={`https://github.com/${repository.fullName.split("/").map(encodeURIComponent).join("/")}`} target="_blank" rel="noreferrer">
                   <GithubIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
@@ -401,7 +366,7 @@ function GitHubConnectionSummary({
               </li>
             ))}
           </ul> : <p role="status" className="text-sm text-muted-foreground">
-            {search ? "No repositories match your search." : "No accessible repositories for this account or organization."}
+            No accessible repositories.
           </p>
         ) : (
           <p className="text-sm text-muted-foreground">Refresh access to load the current repository list.</p>
@@ -474,7 +439,7 @@ function HumanAccessCards({
       />
       {connectedName && status !== null ? (
         <div className="flex flex-wrap items-center gap-2">
-          <Identity name={connectedName} avatarUrl={connectedImage} />
+          <Identity name={connectedName} avatarUrl={connectedImage} className={ANALYTICS_MASK_CLASS} />
           {status === "active" ? null : <StatusText status={status} />}
         </div>
       ) : null}
@@ -490,7 +455,7 @@ function IdentityRow({
   actions,
 }: {
   id?: string;
-  title: string;
+  title: ReactNode;
   status: ConnectionGrant["status"] | null;
   detail: ReactNode;
   actions: ReactNode;
@@ -544,10 +509,10 @@ export function AudienceDialog({
 
   return (
     <Dialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
-      <DialogContent>
+      <DialogContent className={ANALYTICS_MASK_CLASS}>
         <DialogHeader>
           <DialogTitle>Who can use this identity</DialogTitle>
-          <DialogDescription>
+          <DialogDescription className={ANALYTICS_MASK_CLASS}>
             {grantAccountLabel(grant)} · {appName}
           </DialogDescription>
         </DialogHeader>
@@ -627,6 +592,8 @@ export function RevokeGrantDialog({
   pending,
   isOwnIdentity,
   credentialPolicy,
+  description,
+  children,
   onCancel,
   onConfirm,
 }: {
@@ -635,6 +602,8 @@ export function RevokeGrantDialog({
   pending: boolean;
   isOwnIdentity: boolean;
   credentialPolicy: ToolConnectionCredentialPolicy;
+  description?: string;
+  children?: ReactNode;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -654,11 +623,12 @@ export function RevokeGrantDialog({
 
   return (
     <AlertDialog open onOpenChange={(open) => { if (!open) onCancel(); }}>
-      <AlertDialogContent>
+      <AlertDialogContent className={ANALYTICS_MASK_CLASS}>
         <AlertDialogHeader>
-          <AlertDialogTitle>{title}</AlertDialogTitle>
-          <AlertDialogDescription>{body}</AlertDialogDescription>
+          <AlertDialogTitle className={ANALYTICS_MASK_CLASS}>{title}</AlertDialogTitle>
+          <AlertDialogDescription>{description ?? body}</AlertDialogDescription>
         </AlertDialogHeader>
+        {children}
         <AlertDialogFooter>
           <AlertDialogCancel disabled={pending} autoFocus>
             Cancel

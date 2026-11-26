@@ -13,7 +13,7 @@ Agents are the employees of your autonomous company. As the board operator, you 
 | `idle` | Active but no current heartbeat running |
 | `running` | Currently executing a heartbeat |
 | `error` | Last heartbeat failed |
-| `paused` | Manually paused or budget-paused |
+| `paused` | Manually paused, or paused by a budget hard stop |
 | `terminated` | Permanently deactivated (irreversible) |
 
 ## Creating Agents
@@ -21,7 +21,7 @@ Agents are the employees of your autonomous company. As the board operator, you 
 Create agents from the Agents page. Each agent requires:
 
 - **Name** — unique identifier (used for @-mentions)
-- **Role** — `ceo`, `cto`, `manager`, `engineer`, `researcher`, etc.
+- **Role** — `ceo`, `cto`, `pm`, `engineer`, `researcher`, etc.
 - **Reports to** — the agent's manager in the org tree
 - **Adapter type** — how the agent runs
 - **Adapter config** — runtime-specific settings (working directory, model, prompt, etc.)
@@ -40,6 +40,26 @@ should call that server. Both are built-in adapter types from the unified
 For `opencode_local`, configure an explicit `adapterConfig.model` (`provider/model`).
 Paperclip validates the selected model against live `opencode models` output.
 
+### Reusing model connections
+
+Both onboarding and the new-agent connection step can reuse saved credentials
+in the selected organization. A saved subscription is the default when available;
+otherwise a saved API key is selected automatically. Personal keys appear before
+organization keys. You can still choose a new key or another account:
+
+- Claude can use your saved subscription login without another sign-in.
+- OpenAI lists ChatGPT accounts saved by Paperclip's Codex sign-in flow. Choose
+  an account or select **Sign in to another account**.
+- In API-key mode, choose a saved personal or organization provider key, or
+  enter a new key. The picker recognizes canonical provider keys (such as
+  `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`) and the distinct keys created by
+  agent setup.
+
+Reusing a connection binds its secret reference to the agent. It does not copy
+or rotate the saved value. The connection is tested before the agent is created;
+being listed does not guarantee that a provider still accepts the credential.
+These choices also apply to the Claude and Codex native runner setup paths.
+
 ## Agent Hiring via Governance
 
 Agents can request to hire subordinates. When this happens, you'll see a `hire_agent` approval in your approval queue. Review the proposed agent config and approve or reject.
@@ -50,7 +70,7 @@ Edit an agent's configuration from the agent detail page:
 
 - **Adapter config** — change model, prompt template, working directory, environment variables
 - **Heartbeat settings** — interval, cooldown, max concurrent runs, wake triggers
-- **Budget** — monthly spend limit
+- **Budget** — monthly spend limit. It counts billed cost. Usage on a provider subscription adds $0 to it
 
 Use the "Test Environment" button to validate that the agent's adapter config is correct before running.
 
@@ -68,7 +88,9 @@ Resume to restart:
 POST /api/agents/{agentId}/resume
 ```
 
-Agents are also auto-paused when they hit 100% of their monthly budget.
+An agent is also paused when its recorded spend reaches its monthly budget, unless the hard stop is turned off for that budget. A budget pause opens a budget incident. Resolve it from the incident: raise the budget, or keep the agent paused. A budget pause on a monthly budget also ends when the next UTC month starts.
+
+Budgets count dollars only. Usage on a provider subscription is recorded at $0, so an agent's subscription usage never reaches its budget. A hard stop on the company budget or on a project budget still stops the agent. See [Costs and Budgets](/guides/board-operator/costs-and-budgets).
 
 ## Terminating Agents
 
