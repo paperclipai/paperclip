@@ -276,9 +276,15 @@ export function botIdFromToken(token: string): string {
 const REDACTED = "<redacted>";
 
 /**
- * Mask the bot token in text that is logged, stored, returned or sent: the
- * exact token when the caller holds it (raw and URI-encoded), and the
- * `/bot<token>` segment of any Bot API URL.
+ * `/bot<id>:<secret>` in a Bot API URL. Only the token shape matches, so
+ * ordinary paths such as `/bots/handler.ts` or `/bot123/readme` stay intact.
+ */
+const BOT_URL_TOKEN_PATTERN = /\/bot\d+(?::|%3A)[A-Za-z0-9_-]+/gi;
+
+/**
+ * Mask the bot token in error text that is logged, stored, returned or sent:
+ * the exact token when the caller holds it (raw and URI-encoded), and the
+ * `/bot<token>` segment of any Bot API URL. Never run it on user content.
  */
 export function redactBotToken(text: string, token?: string): string {
   let out = text;
@@ -291,7 +297,7 @@ export function redactBotToken(text: string, token?: string): string {
     }
     for (const form of forms) out = out.split(form).join(REDACTED);
   }
-  return out.replace(/\/bot[^/\s]+/g, `/bot${REDACTED}`);
+  return out.replace(BOT_URL_TOKEN_PATTERN, `/bot${REDACTED}`);
 }
 
 /** `err`'s message with the bot token masked; use it wherever an error becomes text. */

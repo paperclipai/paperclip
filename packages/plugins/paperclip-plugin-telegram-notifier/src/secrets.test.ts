@@ -331,4 +331,15 @@ describe("bot token redaction", () => {
       "Invalid URL: https://api.telegram.org/bot<redacted>/getMe",
     );
   });
+
+  it("masks only a token-shaped /bot segment, never ordinary paths", () => {
+    expect(
+      redactBotToken("POST https://api.telegram.org/bot123456:TEST-TOKEN-abc_DEF/sendMessage failed"),
+    ).toBe("POST https://api.telegram.org/bot<redacted>/sendMessage failed");
+    expect(redactBotToken("https://api.telegram.org/bot123456%3ATEST-TOKEN/getMe")).toBe(
+      "https://api.telegram.org/bot<redacted>/getMe",
+    );
+    const paths = "See /bots/handler.ts and /bot123/readme";
+    expect(redactBotToken(paths)).toBe(paths);
+  });
 });

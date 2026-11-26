@@ -1,7 +1,7 @@
 import type { TestHarness } from "@paperclipai/plugin-sdk/testing";
 import type { Agent, Issue, PluginAccessMember } from "@paperclipai/plugin-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { JOB_KEYS, STATE_KEY, TOOL_NAMES } from "./constants.js";
+import { CALLBACK_KIND, JOB_KEYS, STATE_KEY, TOOL_NAMES } from "./constants.js";
 import manifest from "./manifest.js";
 import { readPairing, saveMessageContext, setApprovalConfig, setPairedChat } from "./pairing.js";
 import { pair, REF_A, REF_B, seedCompany, setup, state, TOKEN_A } from "./test-helpers.js";
@@ -454,6 +454,25 @@ describe("writes from a paired group", () => {
     expect(titles).not.toContain("Member task");
     expect(sentTexts().filter((t) => t.includes("Only the paired operator"))).toHaveLength(1);
     expect(sentTexts().some((t) => t.includes("Your inbox"))).toBe(true);
+  });
+
+  it("shows the full comment unchanged apart from Markdown escaping", async () => {
+    const { harness, pendingUpdates, sentTexts } = await groupSetup();
+    await saveMessageContext(harness.ctx, "-500", 7, {
+      kind: "comment_thread",
+      companyId: "company-a",
+      issueId: "issue-1",
+      identifier: "ALP-1",
+      fullBody: "See /bots/handler.ts and /bot123/readme",
+      createdAt: new Date().toISOString(),
+    });
+    pendingUpdates.set("111111", [tap(1, 42, CALLBACK_KIND.showFullComment)]);
+
+    await harness.runJob(JOB_KEYS.pollUpdates);
+
+    expect(sentTexts()).toEqual([
+      "*📄 Full comment on ALP\\-1*\n\nSee /bots/handler\\.ts and /bot123/readme",
+    ]);
   });
 
   it("lets only the operator reassign from the picker", async () => {

@@ -1112,7 +1112,7 @@ async function handleSlashCommand(
         }
       } catch (err) {
         await replyTo(ctx, config, incomingChatId, {
-          text: `*Failed to create issue*\n${escapeMdText(err)}`,
+          text: `*Failed to create issue*\n${escapeMdText(errorText(err))}`,
           keyboard: [],
         });
       }
@@ -1153,7 +1153,7 @@ async function handleSlashCommand(
         );
       } catch (err) {
         await replyTo(ctx, config, incomingChatId, {
-          text: `*Failed to load inbox*\n${escapeMdText(err)}`,
+          text: `*Failed to load inbox*\n${escapeMdText(errorText(err))}`,
           keyboard: [],
         });
       }
@@ -1181,10 +1181,14 @@ function telegramUserLabel(
   return `tg:${from.id}`;
 }
 
-function escapeMdText(err: unknown): string {
-  const message = errorText(err);
+/**
+ * MarkdownV2-escape plain text. Only escapes: user content (comments, titles)
+ * must reach the chat unchanged, so error strings are redacted with
+ * `errorText` at the error site before they get here.
+ */
+function escapeMdText(text: string): string {
   // Reuse the same MarkdownV2 escape rules used by format.ts.
-  return message.replace(/[_*\[\]()~`>#+=|{}.!\\-]/g, (m) => `\\${m}`);
+  return text.replace(/[_*\[\]()~`>#+=|{}.!\\-]/g, (m) => `\\${m}`);
 }
 
 async function handleMessage(
@@ -1255,7 +1259,7 @@ async function handleConfirmationDeclineReply(
   );
   if (!result.ok) {
     await replyTo(ctx, config, incomingChatId, {
-      text: `*Decline failed*\n${escapeMdText(result.error ?? "unknown error")}`,
+      text: `*Decline failed*\n${escapeMdText(errorText(result.error ?? "unknown error"))}`,
       keyboard: [],
     });
     return true;
@@ -1427,7 +1431,7 @@ async function handleCommentReply(
     });
   } catch (err) {
     await replyTo(ctx, config, incomingChatId, {
-      text: `*Failed to post comment*\n${escapeMdText(err)}`,
+      text: `*Failed to post comment*\n${escapeMdText(errorText(err))}`,
       keyboard: [],
     });
   }
@@ -1660,7 +1664,7 @@ async function handleCallbackQuery(
       if (!result.ok) {
         await client.answerCallbackQuery({
           callbackQueryId: query.id,
-          text: `Approve failed: ${result.error ?? "unknown error"}`.slice(0, 200),
+          text: `Approve failed: ${errorText(result.error ?? "unknown error")}`.slice(0, 200),
           showAlert: true,
         });
         return;
