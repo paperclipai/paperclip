@@ -257,6 +257,9 @@ agent's selection does not change the others. Instructions, permissions and the
 execution environment belong to the agent and remain admission constraints.
 Models, accounts and member runner settings belong to the pool. Task-bound runs
 use the selected member's existing Legacy adapter or native Runner driver.
+A Legacy member is eligible for a configured native profile only when the
+adapter can preserve its sandbox. A continuation from a pinned native run
+requires a compatible native member.
 Manual agent runs and unscoped timer heartbeats can also use Pool without a task.
 These company-scoped runs use the selected member's existing direct harness path.
 They do not create a placeholder task or acquire task completion authority.

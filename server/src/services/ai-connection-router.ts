@@ -66,9 +66,14 @@ export function assertPoolAdapterPolicyCompatible(config: Record<string, unknown
     if (source !== undefined && target !== undefined && source !== target)
       throw unprocessable("Pool member cannot replace the configured execution policy.", { code: "pool_execution_policy_incompatible" });
   }
-  if (sourceSelection && targetAdapterType !== "paperclip_runner" &&
-      (!sourceSelection.adapterType || (sourceSelection.adapterType === "paperclip_runner" && (sourceSelection.runtimeConfig.provider == null || sourceSelection.runtimeConfig.provider === "codex"))))
+  if (targetAdapterType !== "paperclip_runner" && sourceSelection &&
+      (!sourceSelection.adapterType || sourceSelection.adapterType === "paperclip_runner"))
     throw unprocessable("Cannot preserve the execution sandbox across this pool continuation. Use a compatible native backup or start a fresh task turn.", { code: "pool_execution_policy_incompatible" });
+  // The Codex CLI has an explicit sandbox translation. Other configured native
+  // profiles cannot be admitted to a Legacy member with equivalent confinement.
+  if (targetAdapterType !== "paperclip_runner" && sourceAdapterType === "paperclip_runner" &&
+      config.provider != null && config.provider !== "codex")
+    throw unprocessable("Cannot preserve the native execution sandbox with this pool member. Choose a compatible native member.", { code: "pool_execution_policy_incompatible" });
   if (sourceSelection?.adapterType === "paperclip_runner") {
     const frozen = sourceSelection.runtimeConfig;
     for (const [provider, key, unrestricted] of [["acpx", "acpxPermissionMode", "approve-all"], ["opencode", "opencodePermissionMode", "allow"]]) {

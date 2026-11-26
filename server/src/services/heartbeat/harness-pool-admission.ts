@@ -103,9 +103,12 @@ async function switchFreshRetryQuotaPin(input: {
   await db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
     const [task] = await tx.select().from(issues).where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId))).for("update");
-    if (!task || task.assigneeAgentId !== agent.id || task.executionRunId !== run.id || task.assigneeUserId ||
+    if (!task || task.assigneeAgentId !== agent.id || task.assigneeUserId ||
         (task.checkoutRunId && task.checkoutRunId !== run.id) ||
         !["todo", "in_progress", "in_review"].includes(task.status)) return;
+    // A reconciled continuation is admitted before claim binds the task. Its
+    // durable queue receipt proves authority only while no other run owns it.
+    if (task.executionRunId !== run.id && (explicit.success || task.executionRunId !== null)) return;
     const [queued] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, run.companyId),
       eq(heartbeatRuns.agentId, agent.id), eq(heartbeatRuns.issueId, issueId), eq(heartbeatRuns.id, run.id),
       eq(heartbeatRuns.status, "queued"), isNull(heartbeatRuns.startedAt))).for("update");

@@ -557,6 +557,22 @@ describe("durable, authorized connection routing", () => {
     await service().recordQuotaCooldown(companyId, account.connectionId, identity, deadline);
     for (const candidate of [agentId, secondAgentId]) await expect(resolve(pool.id, randomUUID(), { agentId: candidate, environmentId: environmentC })).rejects.toBeInstanceOf(AiConnectionPoolExhausted);
   });
+  it("keeps native execution confinement when selecting the first pool member", async () => {
+    const claude = members[1]!;
+    const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
+      schemaVersion: 2, kind: "harness_pool", name: randomUUID(), enabled: true, mode: "failover", members: [
+        { ...claude, id: randomUUID(), runner: "legacy", adapterConfig: { engine: "cli" } },
+      ],
+    } }, "alice");
+    const taskKey = randomUUID();
+    await expect(resolve(pool.id, taskKey, {
+      environmentId: null, sourceAdapterConfig: { provider: "acpx", acpxAgent: "claude" }, skipUsageProbe: true,
+    })).rejects.toMatchObject({ details: { code: "pool_execution_policy_incompatible" } });
+    expect(await db.select().from(aiConnectionTaskPins).where(and(
+      eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, taskKey),
+    ))).toHaveLength(0);
+  });
+
   it("refuses cross-provider execution when source CLI policy cannot be preserved", () => {
     const target = { poolId: randomUUID(), memberId: members[1]!.id, binding: members[1]!.binding,
       adapterType: "claude_local", runtimeConfig: poolMemberRuntimeConfig(members[1]!, "codex_local").config, notes: [] };
