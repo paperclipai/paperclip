@@ -582,6 +582,22 @@ export function originSupportsCloudConnectorEnrollment(callbackUrl: string): boo
   }
 }
 
+export function grantKindForSwitchedMethod(
+  currentGrantKind: ConnectionGrantKind,
+  nextMethod: ConnectionMethodDef | null | undefined,
+  hasRequestedAgent: boolean,
+  reconnectGrantKind: ConnectionGrantKind | null,
+): ConnectionGrantKind {
+  if (
+    !reconnectGrantKind
+    && nextMethod?.grantKinds
+    && !nextMethod.grantKinds.includes(currentGrantKind)
+  ) {
+    return defaultGrantKindFor(nextMethod, hasRequestedAgent);
+  }
+  return currentGrantKind;
+}
+
 export interface ConnectionSetupFlowProps {
   /** Optional settings composed into the standard credential form above its footer. */
   additionalSettings?: ReactNode;
@@ -1511,14 +1527,14 @@ function StandardConnectionSetupFlow({
     setOAuthError(null);
     setAuthorizationFallbackUrl(null);
     if (!nextIsManaged) setConnectorEnrollmentError(null);
-    if (
-      !reconnectGrantKind
-      && nextMethod?.grantKinds
-      && !nextMethod.grantKinds.includes(grantKind)
-    ) {
-      setGrantKind(defaultGrantKindFor(nextMethod, Boolean(requestedAgentId)));
-    } else if (!reconnectGrantKind && nextMethod && !nextMethod.grantKinds && grantKind === "user" && !requestedAgentId) {
-      setGrantKind(defaultGrantKindFor(nextMethod, false));
+    const nextGrantKind = grantKindForSwitchedMethod(
+      grantKind,
+      nextMethod,
+      Boolean(requestedAgentId),
+      reconnectGrantKind,
+    );
+    if (nextGrantKind !== grantKind) {
+      setGrantKind(nextGrantKind);
     }
     setCredentials({});
     setCuratedOAuthClientId("");

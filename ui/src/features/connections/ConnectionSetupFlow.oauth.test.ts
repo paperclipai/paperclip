@@ -5,6 +5,7 @@ import type { ToolApplication, ToolConnection } from "@paperclipai/shared";
 import { getConnectableAppDefinition } from "@paperclipai/shared";
 import { readOAuthWindowFailureDetails, readOAuthWindowOutcome } from "@/lib/oauthWindowOutcome";
 import {
+  grantKindForSwitchedMethod,
   isConnectionDefinitionUnavailable,
   isVercelConnectUnavailable,
   isMissingOAuthStateMessage,
@@ -469,5 +470,17 @@ describe("cloud connector enrollment origin support", () => {
     expect(originSupportsCloudConnectorEnrollment("http://[::1]:3100/api/tools/oauth/callback")).toBe(true);
     expect(originSupportsCloudConnectorEnrollment("http://198.51.100.10:3100/api/tools/oauth/callback")).toBe(false);
     expect(originSupportsCloudConnectorEnrollment("not-a-url")).toBe(false);
+  });
+
+  it("preserves personal user access when switching to an unrestricted fallback method", () => {
+    const github = getConnectableAppDefinition("github");
+    const patMethod = github?.methods.find((method) =>
+      method.oauthStrategy !== "paperclip_cloud_connector"
+      && method.oauthStrategy !== "paperclip_id_connector"
+      && method.auth !== "oauth",
+    );
+    expect(patMethod).toBeDefined();
+    expect(grantKindForSwitchedMethod("user", patMethod, false, null)).toBe("user");
+    expect(grantKindForSwitchedMethod("user", { key: "org-only", label: "Org", auth: "api_key", transport: "rest", grantKinds: ["organization"], fields: [] } as never, false, null)).toBe("organization");
   });
 });
