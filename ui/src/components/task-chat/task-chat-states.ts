@@ -64,10 +64,10 @@ export const TASK_CHAT_STATE_META: Record<TaskChatStateId, TaskChatStateMeta> = 
   },
   "agent-message": {
     id: "agent-message",
-    label: "Agent message",
+    label: "Final response",
     tier: "live",
     surface: "thread",
-    protocol: "text_delta stream:output (ACP agent_message_chunk)",
+    protocol: 'PRP item.delta kind:"agentMessage" channel:"final"',
   },
   thinking: {
     id: "thinking",
@@ -78,14 +78,14 @@ export const TASK_CHAT_STATE_META: Record<TaskChatStateId, TaskChatStateMeta> = 
   },
   responding: {
     id: "responding",
-    label: "Responding (streaming)",
+    label: "Progress update (streaming)",
     tier: "live",
     surface: "thread",
-    protocol: "text_delta stream:output, streaming",
+    protocol: 'PRP item.delta kind:"agentMessage" channel:"progress"',
   },
   "responding-burst": {
     id: "responding-burst",
-    label: "Responding (update burst)",
+    label: "Progress update burst",
     tier: "live",
     surface: "thread",
     protocol: "text_delta stream:output ×N, tool calls between (PAP-368 dwell)",

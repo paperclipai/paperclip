@@ -21,6 +21,7 @@
 // candidate never retain a run-scoped contribution or a bridge token. The staged
 // reuse payload carries the staged files only.
 
+import type { AdapterExecutionContext } from "../types.js";
 import type {
   AdapterExecutionTarget,
   AdapterExecutionTargetPaperclipBridgeHandle,
@@ -41,6 +42,14 @@ import type {
   SitePlan,
 } from "./run-contracts.js";
 import { createSessionReuseStore } from "./session-reuse-store.js";
+import type { WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
+
+export interface ManagedHomeRunBinding {
+  readonly env: Readonly<Record<string, string>>;
+  readonly onLog: AdapterExecutionContext["onLog"];
+}
+
+export type ManagedHomeRunRebind = (binding: ManagedHomeRunBinding) => void | Promise<void>;
 
 /**
  * One staged in-sandbox runtime the store keeps for the next compatible resume.
@@ -50,9 +59,11 @@ import { createSessionReuseStore } from "./session-reuse-store.js";
  * none — the run-start sweep is the only eviction path.
  */
 export interface StagedRuntimeStoreEntry {
+  readonly rebindRun?: ManagedHomeRunRebind;
+  observabilityCompatibilityKey?: string;
   stagedRuntime: PreparedAdapterExecutionTargetRuntime;
   envDelta: Record<string, string>;
-  teardown: (() => Promise<void>) | null;
+  teardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
   dispose: (() => Promise<void>) | null;
   lastUsedAt: number;
 }
@@ -62,8 +73,9 @@ export interface StagedRuntimeStoreEntry {
  * fields on the run and, after a clean turn, into the staged store.
  */
 export interface StagedWorkspace {
+  readonly rebindRun?: ManagedHomeRunRebind;
   readonly stagedRuntime: PreparedAdapterExecutionTargetRuntime;
-  readonly teardown: (() => Promise<void>) | null;
+  readonly teardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
   readonly dispose: (() => Promise<void>) | null;
   readonly envDelta: Record<string, string>;
   /** True when the run reused an already-staged runtime rather than staging fresh. */
@@ -78,13 +90,15 @@ export type StageWorkspace = (assets: AdapterManagedRuntimeAsset[]) => Promise<P
  * its adapter seam onto this before it passes the seam in.
  */
 export interface ManagedHomeSeamResult {
+  readonly rebindRun?: ManagedHomeRunRebind;
   readonly stagedRuntime: PreparedAdapterExecutionTargetRuntime;
-  readonly teardown: (() => Promise<void>) | null;
+  readonly teardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
   readonly dispose: (() => Promise<void>) | null;
 }
 
 /** The construction options for the sandbox site. Every value is per run. */
 export interface SandboxRunSiteOptions {
+  readonly managedHomeRunBinding?: ManagedHomeRunBinding;
   /** The run ledger. `executeAcpxEngine` creates it and passes it in (one ledger). */
   readonly ledger: AcquiredRunResources;
   /** The staged-runtime map the store operates over. The engine owns it across runs. */
@@ -110,6 +124,8 @@ export interface SandboxRunSiteOptions {
    * compatible resume may reuse the already-staged runtime.
    */
   readonly isCompatibleResume: boolean;
+  /** Process configuration compatibility; deliberately separate from conversation identity. */
+  readonly observabilityCompatibilityKey?: string;
   /** Ship the workspace (and, via the seam, the managed home) into the sandbox. */
   readonly stage: StageWorkspace;
   /**
@@ -232,15 +248,20 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
       const sessionKey = context.sessionKey;
       const lease = await withStagingLease(options.stagingLocks, sessionKey, async (): Promise<StagedWorkspace> => {
         const cached = options.isCompatibleResume ? store.borrow(sessionKey) : undefined;
-        if (cached) {
+        if (cached && cached.observabilityCompatibilityKey === options.observabilityCompatibilityKey) {
           // Reuse the already-staged in-sandbox workspace and managed home.
           // Re-apply the env keys the seam repointed and reuse the per-run
           // copy-back so the copy-back cadence stays exactly per run.
+          if (cached.rebindRun) {
+            if (!options.managedHomeRunBinding) throw new Error("Managed home requires the current run binding");
+            await cached.rebindRun(options.managedHomeRunBinding);
+          }
           Object.assign(options.env, cached.envDelta);
           cached.lastUsedAt = options.now();
           await options.onReuseLog();
           return {
             stagedRuntime: cached.stagedRuntime,
+            rebindRun: cached.rebindRun,
             teardown: cached.teardown,
             dispose: cached.dispose,
             envDelta: cached.envDelta,
@@ -282,6 +303,7 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
         }
         return {
           stagedRuntime: seam.stagedRuntime,
+          rebindRun: seam.rebindRun,
           teardown: seam.teardown,
           dispose: seam.dispose,
           envDelta,

@@ -1,8 +1,12 @@
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { runAdapterExecutionTargetProcess } from "@paperclipai/adapter-utils/execution-target";
+import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 const effortFlagSupportCache = new Map<string, Promise<boolean | null>>();
+
+export const CLAUDE_FABLE_5_1_MIN_CLI_VERSION = "2.1.251";
 
 export function claudeCommandLooksLike(command: string, expected = "claude"): boolean {
   const base = path.basename(command).toLowerCase();
@@ -33,6 +37,113 @@ function cacheKeyForTarget(command: string, target: AdapterExecutionTarget | nul
   ].join(":");
 }
 
+export function minimumClaudeCliVersionForModel(model: string): string | null {
+  const modelId = model.trim().replace(/\[1m\]$/, "").replace(/^(?:(?:us|eu|apac|global|jp|au)\.)?anthropic\./, "");
+  // Claude Code 2.1.321 changelog: "Added Claude Fable 5.2 (`claude-fable-5-2`)".
+  if (modelId === "claude-fable-5-2") return "2.1.321";
+  if (modelId === "claude-opus-5-5") return "2.1.280";
+  if (modelId === "claude-sonnet-5-5") return "2.1.284";
+  return modelId === "claude-fable-5-1"
+    ? CLAUDE_FABLE_5_1_MIN_CLI_VERSION
+    : null;
+}
+
+/**
+ * The Claude Code version an Agent SDK release bundles. SDK 0.3.N ships Claude Code 2.1.N
+ * (its package.json `claudeCodeVersion`); any other SDK line returns null so callers skip the
+ * comparison rather than guess.
+ */
+export function claudeCodeVersionForAgentSdk(sdkVersion: string | null | undefined): string | null {
+  const patch = /^0\.3\.(\d+)$/.exec(sdkVersion?.trim() ?? "")?.[1];
+  return patch ? `2.1.${patch}` : null;
+}
+
+export function parseClaudeCliVersion(output: string): string | null {
+  return output.match(/\b(\d+)\.(\d+)\.(\d+)\b/)?.[0] ?? null;
+}
+
+/**
+ * The Claude Code version bundled with the ACP bridge's SDK dependency, which
+ * the bridge launches unless CLAUDE_CODE_EXECUTABLE is set. Resolved through
+ * the bridge like `build-provider-pack.mjs`, so workspace overrides count.
+ * `from` is where resolution starts; tests point it into an npm-style tree.
+ */
+export async function readBundledClaudeCodeVersion(from: string | URL = import.meta.url): Promise<string | null> {
+  try {
+    const acpRequire = createRequire(
+      createRequire(from).resolve("@agentclientprotocol/claude-agent-acp/package.json"),
+    );
+    // The SDK does not export ./package.json; its entry sits at the package root.
+    const sdkDir = path.dirname(acpRequire.resolve("@anthropic-ai/claude-agent-sdk"));
+    const sdkPackage = JSON.parse(await fs.readFile(path.join(sdkDir, "package.json"), "utf8"));
+    return parseClaudeCliVersion(String(sdkPackage.claudeCodeVersion ?? ""));
+  } catch {
+    return null;
+  }
+}
+
+export function claudeCliVersionAtLeast(version: string, minimum: string): boolean {
+  const parsedVersion = version.split(".").map(Number);
+  const parsedMinimum = minimum.split(".").map(Number);
+  if (
+    parsedVersion.length !== 3 ||
+    parsedMinimum.length !== 3 ||
+    parsedVersion.some((part) => !Number.isInteger(part) || part < 0) ||
+    parsedMinimum.some((part) => !Number.isInteger(part) || part < 0)
+  ) {
+    return false;
+  }
+
+  for (let index = 0; index < parsedMinimum.length; index += 1) {
+    if (parsedVersion[index] !== parsedMinimum[index]) {
+      return parsedVersion[index] > parsedMinimum[index];
+    }
+  }
+  return true;
+}
+
+async function probeClaudeCommandVersion(input: {
+  runId: string;
+  command: string;
+  target: AdapterExecutionTarget | null | undefined;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec: number;
+  graceSec: number;
+}): Promise<string | null> {
+  const version = await runAdapterExecutionTargetProcess(
+    input.runId,
+    input.target,
+    input.command,
+    ["--version"],
+    {
+      cwd: input.cwd,
+      env: input.env,
+      timeoutSec: input.timeoutSec > 0 ? Math.max(1, Math.min(input.timeoutSec, 20)) : 20,
+      graceSec: Math.max(1, Math.min(input.graceSec, 5)),
+      onLog: async () => {},
+    },
+  );
+
+  if (version.timedOut || version.exitCode !== 0) return null;
+  return parseClaudeCliVersion(`${version.stdout}\n${version.stderr}`);
+}
+
+export async function readClaudeCommandVersion(input: {
+  runId: string;
+  command: string;
+  target: AdapterExecutionTarget | null | undefined;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec: number;
+  graceSec: number;
+}): Promise<string | null> {
+  // Do not cache this probe: an operator may upgrade Claude Code while the
+  // Paperclip server is running, and the next Test/run should recover without
+  // requiring a server restart.
+  return probeClaudeCommandVersion(input).catch(() => null);
+}
+
 async function probeClaudeCommandSupportsEffortFlag(input: {
   runId: string;
   command: string;
@@ -50,7 +161,7 @@ async function probeClaudeCommandSupportsEffortFlag(input: {
     {
       cwd: input.cwd,
       env: input.env,
-      timeoutSec: Math.max(1, Math.min(input.timeoutSec, 20)),
+      timeoutSec: input.timeoutSec > 0 ? Math.max(1, Math.min(input.timeoutSec, 20)) : 20,
       graceSec: Math.max(1, Math.min(input.graceSec, 5)),
       onLog: async () => {},
     },

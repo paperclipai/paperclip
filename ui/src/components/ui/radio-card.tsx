@@ -6,6 +6,16 @@ export type RadioCardOption = {
   value: string;
   title: string;
   description?: string;
+  icon?: React.ReactNode;
+  accessibleLabel?: string;
+  tooltip?: string;
+  /**
+   * Disable this one option while its siblings stay live. For a choice the
+   * viewer's capabilities forbid: the option stays legible, with its reason in
+   * `description` or `tooltip`, instead of vanishing and making the scope
+   * unexplained.
+   */
+  disabled?: boolean;
 };
 
 /**
@@ -18,12 +28,16 @@ export function RadioCard({
   selected,
   title,
   description,
+  icon,
+  tooltip,
   className,
   ...props
 }: {
   selected: boolean;
   title: string;
   description?: string;
+  icon?: React.ReactNode;
+  tooltip?: string;
 } & Omit<React.ComponentProps<"button">, "title">) {
   return (
     <button
@@ -40,10 +54,22 @@ export function RadioCard({
         "disabled:cursor-not-allowed disabled:opacity-60",
         className,
       )}
+      title={tooltip}
       {...props}
     >
       <div className="flex w-full items-center justify-between gap-2">
-        <span className="text-sm font-medium">{title}</span>
+        <span className="flex min-w-0 items-center gap-2 text-sm font-medium">
+          {icon ? (
+            <span
+              data-slot="radio-card-icon"
+              className="shrink-0 text-muted-foreground"
+              aria-hidden="true"
+            >
+              {icon}
+            </span>
+          ) : null}
+          <span>{title}</span>
+        </span>
         {selected ? <Check className="h-4 w-4 shrink-0 text-primary" /> : null}
       </div>
       {description ? (
@@ -71,16 +97,26 @@ export function RadioCardGroup({
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (disabled) return;
     const idx = options.findIndex((option) => option.value === value);
-    if (idx === -1) return;
-    let nextIdx: number | null = null;
+
+    let step: number | null = null;
     if (event.key === "ArrowDown" || event.key === "ArrowRight") {
-      nextIdx = (idx + 1) % options.length;
+      step = 1;
     } else if (event.key === "ArrowUp" || event.key === "ArrowLeft") {
-      nextIdx = (idx - 1 + options.length) % options.length;
+      step = -1;
     }
-    if (nextIdx !== null) {
-      event.preventDefault();
-      onValueChange(options[nextIdx].value);
+    if (step === null) return;
+    event.preventDefault();
+    // Step over disabled options rather than landing on one: arrowing onto a
+    // choice the viewer cannot make would select it.
+    const len = options.length;
+    for (let hop = 1; hop <= len; hop++) {
+      const next = idx === -1 ? (step === 1 ? hop - 1 : len - hop) : (((idx + step * hop) % len) + len) % len;
+      const candidate = options[next];
+      if (!candidate.disabled) {
+        onValueChange(candidate.value);
+        event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
+        return;
+      }
     }
   };
 
@@ -97,8 +133,11 @@ export function RadioCardGroup({
           selected={option.value === value}
           title={option.title}
           description={option.description}
-          disabled={disabled}
-          tabIndex={option.value === value ? 0 : -1}
+          icon={option.icon}
+          tooltip={option.tooltip}
+          aria-label={option.accessibleLabel}
+          disabled={disabled || option.disabled}
+          tabIndex={option.value === value || (!options.some(item => item.value === value && !item.disabled) && option === options.find(item => !item.disabled)) ? 0 : -1}
           onClick={() => onValueChange(option.value)}
         />
       ))}

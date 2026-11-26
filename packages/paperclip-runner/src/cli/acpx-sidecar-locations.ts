@@ -1,0 +1,6 @@
+export {
+  ACPX_WORKSPACE_RELATIVE_DISPLAY_BOUNDARY,
+  ACPX_WORKSPACE_ENTRY_ATTESTATION,
+  ACPX_WORKSPACE_CREATE_TARGET_ATTESTATION,
+  safeAcpxLocations,
+} from "../drivers/acpx/safe-locations.js";

@@ -6,7 +6,7 @@ import type { DocumentAnnotationTarget } from "@/api/document-annotations";
 import type { CompanyUserProfile } from "@/lib/company-members";
 import { useDocumentAnnotationMutations } from "@/hooks/useDocumentAnnotationMutations";
 import type { AnnotationAnchorRect, PendingAnchor } from "./DocumentAnnotationLayer";
-import { copyAnnotationLink, ThreadCard, truncate } from "./DocumentAnnotationPanel";
+import { useCopyAnnotationLink, ThreadCard, truncate } from "./DocumentAnnotationPanel";
 
 export interface DocumentAnnotationPopoverProps {
   anchorRect: AnnotationAnchorRect;
@@ -27,12 +27,13 @@ export interface DocumentAnnotationPopoverProps {
 }
 
 export function DocumentAnnotationPopover(props: DocumentAnnotationPopoverProps) {
+  const copyAnnotationLink = useCopyAnnotationLink();
   const cardRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const [composer, setComposer] = useState("");
   const [reply, setReply] = useState("");
   const target = useMemo(() => props.target, [props.target]);
-  const { createThread, addReply, updateStatus, mutationError } = useDocumentAnnotationMutations({
+  const { createThread, addReply, updateStatus, toggleReaction, mutationError } = useDocumentAnnotationMutations({
     target,
     baseRevisionId: props.baseRevisionId,
     baseRevisionNumber: props.baseRevisionNumber,
@@ -129,6 +130,9 @@ export function DocumentAnnotationPopover(props: DocumentAnnotationPopoverProps)
             onCopyLink={() => copyAnnotationLink(props.documentKey, props.thread!.id)}
             pendingReply={addReply.isPending}
             pendingStatus={updateStatus.isPending}
+            onToggleReaction={(commentId, reaction, present) =>
+              toggleReaction.mutate({ threadId: props.thread!.id, commentId, reaction, present })
+            }
             agentMap={props.agentMap}
             userProfileMap={props.userProfileMap}
           />

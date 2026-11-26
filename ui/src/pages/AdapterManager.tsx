@@ -269,7 +269,7 @@ export function AdapterManager() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
       { label: "Adapters" },
     ]);
@@ -621,7 +621,6 @@ export function AdapterManager() {
                     supportsSkills: false,
                     supportsLocalAgentJwt: false,
                     requiresMaterializedRuntimeSkills: false,
-                    supportsModelProfiles: false,
                     supportsAcp: false,
                   },
                 }}

@@ -19,14 +19,6 @@ export const ADAPTER_LOGIN_PANEL_MODES = ["displayed_code", "submitted_browser_c
 export type AdapterLoginPanelMode = (typeof ADAPTER_LOGIN_PANEL_MODES)[number];
 
 /**
- * The sandbox transport that the login command needs. `streamed_exec` runs the
- * command over the streamed exec channel. `pseudo_terminal` runs the command on
- * a real pseudo-terminal, because a pipe emits no login prompt.
- */
-export const ADAPTER_LOGIN_SANDBOX_TRANSPORTS = ["streamed_exec", "pseudo_terminal"] as const;
-export type AdapterLoginSandboxTransport = (typeof ADAPTER_LOGIN_SANDBOX_TRANSPORTS)[number];
-
-/**
  * The host-side timeout policy. `caller_bounded` lets the caller set the
  * timeout. `fixed` binds the timeout to a fixed adapter value.
  */
@@ -68,8 +60,6 @@ export interface AdapterLoginCompletionContext {
 export interface AdapterLoginCapability {
   /** The login panel mode. */
   panelMode: AdapterLoginPanelMode;
-  /** The sandbox transport that the login command needs. */
-  sandboxTransport: AdapterLoginSandboxTransport;
   /** The host-side timeout policy. */
   timeoutPolicy: AdapterLoginTimeoutPolicy;
   /** Returns the fixed, non-secret login command. */
@@ -120,11 +110,6 @@ export function assertValidAdapterLoginCapability(
   if (!isOneOf(ADAPTER_LOGIN_PANEL_MODES, cap.panelMode)) {
     throw new Error(
       `${prefix}: "panelMode" must be one of ${ADAPTER_LOGIN_PANEL_MODES.join(", ")}.`,
-    );
-  }
-  if (!isOneOf(ADAPTER_LOGIN_SANDBOX_TRANSPORTS, cap.sandboxTransport)) {
-    throw new Error(
-      `${prefix}: "sandboxTransport" must be one of ${ADAPTER_LOGIN_SANDBOX_TRANSPORTS.join(", ")}.`,
     );
   }
   if (!isOneOf(ADAPTER_LOGIN_TIMEOUT_POLICIES, cap.timeoutPolicy)) {
