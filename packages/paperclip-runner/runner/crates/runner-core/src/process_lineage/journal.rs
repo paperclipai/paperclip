@@ -140,8 +140,6 @@ struct JournalWrite {
 /// treat as unsampled, at one small write per interval.
 const SAMPLED_THROUGH_REFRESH: Duration = Duration::from_secs(1);
 
-const CLEAN_READS_TO_OUTLAST_A_TORN_TABLE_READ: usize = 2;
-
 impl Journal {
     pub(super) fn create(state: &LineageState) -> io::Result<Option<Self>> {
         let Some((directory, writer)) = JOURNAL_DIRECTORY.get() else {
@@ -284,11 +282,11 @@ impl ReapReport {
 /// recorded identity: TERM first, KILL after `grace`.
 ///
 /// A live orphan of this user that started after the dead runnerd's last
-/// sample cannot be attributed and is never signalled. The reap waits for
-/// such orphans to exit and refuses with `unattributed_orphan` only if one
-/// still lives at `deadline`. A table read is not atomic, so after it saw one
-/// it verifies only after `CLEAN_READS_TO_OUTLAST_A_TORN_TABLE_READ`
-/// consecutive reads without one.
+/// sample cannot be attributed and is never signalled. A process whose parent
+/// is not alive in the same table read counts as an orphan too, because a
+/// table read is not atomic and its parent may have exited during the read.
+/// The reap waits for such orphans to exit and refuses with
+/// `unattributed_orphan` only if one still lives at `deadline`.
 pub fn reap_journals(
     state_dir: &Path,
     runner_pid: i32,
@@ -364,7 +362,8 @@ fn reap_journals_from<T: ProcessTable>(
     let count = journals.len();
     let started = Instant::now();
     let mut signalled: HashSet<(i32, u64)> = HashSet::new();
-    let mut consecutive_clean_reads = CLEAN_READS_TO_OUTLAST_A_TORN_TABLE_READ - 1;
+    let mut unattributed_tree = UnattributedTree::default();
+    let mut consecutive_clean_reads = 0;
     loop {
         let elapsed = started.elapsed();
         let Some(table) = read_table() else {
@@ -394,21 +393,22 @@ fn reap_journals_from<T: ProcessTable>(
             // proof is refused.
             if let Some(since) = unsampled_since {
                 let escaped = unattributed_orphans(&table, since, &journals, &owned);
-                if !escaped.is_empty() {
+                let remaining = unattributed_tree.follow(&table, &escaped);
+                if !remaining.is_empty() {
+                    consecutive_clean_reads = 0;
                     if elapsed >= deadline {
                         return ReapReport {
                             journals: count,
                             signalled: signalled.len(),
-                            remaining: escaped,
+                            remaining,
                             ..ReapReport::refused("unattributed_orphan")
                         };
                     }
-                    consecutive_clean_reads = 0;
                     thread::sleep(Duration::from_millis(10));
                     continue;
                 }
                 consecutive_clean_reads += 1;
-                if consecutive_clean_reads < CLEAN_READS_TO_OUTLAST_A_TORN_TABLE_READ {
+                if consecutive_clean_reads < CLEAN_READS_REQUIRED_FOR_A_PROOF {
                     thread::sleep(Duration::from_millis(10));
                     continue;
                 }
@@ -453,21 +453,82 @@ fn reap_journals_from<T: ProcessTable>(
     }
 }
 
-/// Live orphans (parent PID 1) of this user that started no earlier than
-/// `since` and belong to no journal. An orphan of a subreaper other than init
-/// is not seen here; such a host keeps the in-process teardown only.
+const CLEAN_READS_REQUIRED_FOR_A_PROOF: usize = 2;
+
+#[derive(Default)]
+struct UnattributedTree {
+    members: HashMap<i32, u64>,
+}
+
+impl UnattributedTree {
+    fn follow(&mut self, table: &dyn ProcessTable, orphans: &[i32]) -> Vec<i32> {
+        let alive: HashMap<i32, u64> = table
+            .entries()
+            .iter()
+            .filter(|entry| !entry.zombie)
+            .map(|entry| (entry.pid, entry.started))
+            .collect();
+        let unreadable: HashSet<i32> = table.unreadable().iter().copied().collect();
+        let still_alive = |pid: &i32, started: &mut u64| {
+            unreadable.contains(pid) || alive.get(pid) == Some(started)
+        };
+        self.members.retain(still_alive);
+        for pid in orphans {
+            if let Some(started) = alive.get(pid) {
+                self.members.insert(*pid, *started);
+            }
+        }
+        loop {
+            let before = self.members.len();
+            for entry in table.entries().iter().filter(|entry| !entry.zombie) {
+                if self
+                    .members
+                    .get(&entry.ppid)
+                    .is_some_and(|started| *started <= entry.started)
+                {
+                    self.members.insert(entry.pid, entry.started);
+                }
+            }
+            if self.members.len() == before {
+                break;
+            }
+        }
+        self.members.retain(still_alive);
+        let mut pids: Vec<i32> = self.members.keys().copied().collect();
+        pids.sort_unstable();
+        pids
+    }
+}
+
+/// Live orphans (parent PID 1, or a parent not alive in this read) of this
+/// user that started no earlier than `since` and belong to no journal. An
+/// orphan of a subreaper other than init is not seen here; such a host keeps
+/// the in-process teardown only.
 fn unattributed_orphans(
     table: &dyn ProcessTable,
     since: u64,
     journals: &[(PathBuf, LineageState)],
     owned: &dyn Fn(i32) -> bool,
 ) -> Vec<i32> {
+    let alive: HashMap<i32, u64> = table
+        .entries()
+        .iter()
+        .filter(|entry| !entry.zombie)
+        .map(|entry| (entry.pid, entry.started))
+        .collect();
+    let unreadable: HashSet<i32> = table.unreadable().iter().copied().collect();
+    let parent_alive = |entry: &ProcessEntry| {
+        unreadable.contains(&entry.ppid)
+            || alive
+                .get(&entry.ppid)
+                .is_some_and(|started| *started <= entry.started)
+    };
     let mut pids: Vec<i32> = table
         .entries()
         .iter()
         .filter(|entry| {
             !entry.zombie
-                && entry.ppid == 1
+                && (entry.ppid == 1 || !parent_alive(entry))
                 && entry.started >= since
                 && !journals
                     .iter()
@@ -495,7 +556,7 @@ fn owned_by_this_user(_pid: i32) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{entry, pids, table};
+    use super::super::tests::{entry, pids, table, FixedTable};
     use super::super::SAMPLE_INTERVAL;
     use super::*;
 
@@ -719,8 +780,10 @@ mod tests {
         let writer = exited_writer();
         write_marker(&directory, writer);
         let provider = exited_writer();
-        let mut state = LineageState::default();
-        state.root = Some((provider.pid, provider.started));
+        let state = LineageState {
+            root: Some((provider.pid, provider.started)),
+            ..LineageState::default()
+        };
         let journal = directory
             .join(JOURNAL_DIRECTORY_NAME)
             .join(format!("lineage-{}-0.json", writer.pid));
@@ -778,14 +841,19 @@ mod tests {
         assert!(alive, "an unattributed process is never signalled");
     }
 
-    #[test]
-    fn reaping_rereads_after_an_orphan_exits_so_a_torn_read_cannot_hide_its_child() {
-        let directory = temporary_directory("torn-read");
+    fn reap_torn_reads(
+        name: &str,
+        reads: Vec<FixedTable>,
+        settled: fn() -> FixedTable,
+    ) -> (ReapReport, bool) {
+        let directory = temporary_directory(name);
         let writer = exited_writer();
         write_marker(&directory, writer);
         let provider = exited_writer();
-        let mut state = LineageState::default();
-        state.root = Some((provider.pid, provider.started));
+        let state = LineageState {
+            root: Some((provider.pid, provider.started)),
+            ..LineageState::default()
+        };
         let journal = directory
             .join(JOURNAL_DIRECTORY_NAME)
             .join(format!("lineage-{}-0.json", writer.pid));
@@ -794,36 +862,113 @@ mod tests {
             serde_json::to_vec(&state.journal_record(writer, 100)).unwrap(),
         )
         .unwrap();
-        let orphan = 900_001;
-        let child = 900_002;
-        let reads = std::cell::RefCell::new(vec![
-            table(vec![(entry(child, 1, child, 300), child)]),
-            table(vec![(entry(child, orphan, child, 300), child)]),
-            table(vec![
-                (entry(orphan, 1, orphan, 200), orphan),
-                (entry(child, orphan, child, 300), child),
-            ]),
-        ]);
+        let mut reads = std::collections::VecDeque::from(reads);
         let report = reap_journals_from(
             &directory,
             writer.pid,
             Duration::ZERO,
             Duration::from_millis(200),
-            || {
-                let mut reads = reads.borrow_mut();
-                Some(if reads.len() > 1 {
-                    reads.pop().unwrap()
-                } else {
-                    table(vec![(entry(child, 1, child, 300), child)])
-                })
-            },
+            || Some(reads.pop_front().unwrap_or_else(settled)),
             |_| true,
         );
         let journal_kept = journal.exists();
         let _ = fs::remove_dir_all(&directory);
+        (report, journal_kept)
+    }
+
+    const TORN_ORPHAN: i32 = 900_001;
+    const TORN_CHILD: i32 = 900_002;
+    const TORN_GRANDCHILD: i32 = 900_003;
+
+    #[test]
+    fn reaping_counts_a_process_whose_parent_exited_during_the_first_read() {
+        let (report, journal_kept) = reap_torn_reads("torn-first-read", Vec::new(), || {
+            table(vec![(
+                entry(TORN_CHILD, TORN_ORPHAN, TORN_CHILD, 300),
+                TORN_CHILD,
+            )])
+        });
         assert_eq!(report.reason, Some("unattributed_orphan"), "{report:?}");
         assert!(!report.verified);
-        assert_eq!(report.remaining, vec![child], "{report:?}");
+        assert_eq!(report.remaining, vec![TORN_CHILD], "{report:?}");
+        assert_eq!(report.signalled, 0, "{report:?}");
+        assert!(journal_kept, "a refused proof keeps the journal");
+    }
+
+    #[test]
+    fn reaping_needs_consecutive_clean_reads_before_a_proof() {
+        let (report, journal_kept) =
+            reap_torn_reads("clean-reads", vec![table(Vec::new())], || {
+                table(vec![(entry(TORN_ORPHAN, 1, TORN_ORPHAN, 200), TORN_ORPHAN)])
+            });
+        assert_eq!(report.reason, Some("unattributed_orphan"), "{report:?}");
+        assert_eq!(report.remaining, vec![TORN_ORPHAN], "{report:?}");
+        assert!(journal_kept, "a refused proof keeps the journal");
+    }
+
+    #[test]
+    fn reaping_keeps_an_orphans_descendants_across_reads() {
+        let (report, journal_kept) = reap_torn_reads(
+            "orphan-tree",
+            vec![table(vec![
+                (entry(TORN_ORPHAN, 1, TORN_ORPHAN, 200), TORN_ORPHAN),
+                (
+                    entry(TORN_CHILD, TORN_ORPHAN, TORN_ORPHAN, 300),
+                    TORN_ORPHAN,
+                ),
+            ])],
+            || {
+                super::super::tests::table_with_unreadable(
+                    vec![(
+                        entry(TORN_CHILD, TORN_ORPHAN, TORN_ORPHAN, 300),
+                        TORN_ORPHAN,
+                    )],
+                    vec![TORN_ORPHAN],
+                )
+            },
+        );
+        assert_eq!(report.reason, Some("unattributed_orphan"), "{report:?}");
+        assert!(!report.verified);
+        assert_eq!(
+            report.remaining,
+            vec![TORN_ORPHAN, TORN_CHILD],
+            "{report:?}"
+        );
+        assert_eq!(report.signalled, 0, "{report:?}");
+        assert!(journal_kept, "a refused proof keeps the journal");
+    }
+
+    #[test]
+    fn reaping_follows_an_orphan_tree_through_successive_torn_reads() {
+        let (report, journal_kept) = reap_torn_reads(
+            "torn-chain",
+            vec![
+                table(vec![
+                    (entry(TORN_ORPHAN, 1, TORN_ORPHAN, 200), TORN_ORPHAN),
+                    (
+                        entry(TORN_CHILD, TORN_ORPHAN, TORN_ORPHAN, 300),
+                        TORN_ORPHAN,
+                    ),
+                ]),
+                table(vec![(
+                    entry(TORN_CHILD, TORN_ORPHAN, TORN_ORPHAN, 300),
+                    TORN_ORPHAN,
+                )]),
+                table(vec![(
+                    entry(TORN_GRANDCHILD, TORN_CHILD, TORN_ORPHAN, 400),
+                    TORN_ORPHAN,
+                )]),
+            ],
+            || {
+                table(vec![(
+                    entry(TORN_GRANDCHILD, 1, TORN_ORPHAN, 400),
+                    TORN_ORPHAN,
+                )])
+            },
+        );
+        assert_eq!(report.reason, Some("unattributed_orphan"), "{report:?}");
+        assert!(!report.verified);
+        assert_eq!(report.remaining, vec![TORN_GRANDCHILD], "{report:?}");
         assert_eq!(report.signalled, 0, "{report:?}");
         assert!(journal_kept, "a refused proof keeps the journal");
     }
@@ -835,8 +980,10 @@ mod tests {
         let writer = exited_writer();
         write_marker(&directory, writer);
         let provider = exited_writer();
-        let mut state = LineageState::default();
-        state.root = Some((provider.pid, provider.started));
+        let state = LineageState {
+            root: Some((provider.pid, provider.started)),
+            ..LineageState::default()
+        };
         fs::write(
             directory
                 .join(JOURNAL_DIRECTORY_NAME)

@@ -593,6 +593,16 @@ mod tests {
         }
     }
 
+    pub(super) fn table_with_unreadable(
+        entries: Vec<(ProcessEntry, i32)>,
+        unreadable: Vec<i32>,
+    ) -> FixedTable {
+        FixedTable {
+            unreadable,
+            ..table(entries)
+        }
+    }
+
     impl LineageState {
         pub(super) fn observe_live(&mut self, table: &FixedTable) -> Vec<ProcessEntry> {
             self.observe(table).live
