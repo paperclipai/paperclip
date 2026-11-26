@@ -19,7 +19,7 @@ export const EFFORT_LABELS: Record<string, string> = {
 
 const MODEL_ADAPTERS = new Set([
   "claude_local", "codex_local", "opencode_local", "pi_local", "kimi_local",
-  "gemini_local", "cursor", "cursor_cloud", "grok_local", "hermes_local", "paperclip_runner",
+  "gemini_local", "agy_local", "cursor", "cursor_cloud", "grok_local", "hermes_local", "paperclip_runner",
 ]);
 
 export function supportsComposerModel(agent: Agent | undefined): boolean {
