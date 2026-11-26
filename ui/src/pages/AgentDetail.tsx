@@ -48,6 +48,7 @@ import { useAdapterCapabilities } from "@/adapters/use-adapter-capabilities";
 import { MarkdownEditor } from "../components/MarkdownEditor";
 import { assetsApi } from "../api/assets";
 import { StatusBadge } from "../components/StatusBadge";
+import { HeartbeatRunStatus } from "../components/HeartbeatRunStatus";
 import { AgentLifecycleStatus, useAgentLifecycleStatus } from "../components/AgentLifecycleStatus";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { CopyText } from "../components/CopyText";
@@ -1351,7 +1352,7 @@ function LatestRunCard({
       >
         <div className="flex items-center gap-2">
           <StatusIcon className={cn("h-3.5 w-3.5", statusInfo.color, run.status === "running" && "animate-spin")} />
-          <StatusBadge status={run.status} />
+          <HeartbeatRunStatus run={run} />
           {task ? (
             <>
               <StatusGlyph status={task.status} size="sm" />
@@ -3206,7 +3207,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           {/* Left column: status + timing */}
           <div className="flex-1 p-4 space-y-3">
             <div className="flex items-center gap-2 flex-wrap">
-              <StatusBadge status={run.status} />
+              <HeartbeatRunStatus run={run} />
               <ProviderTraceStatusBadge
                 trace={providerTraceMetadata}
                 requested={runRequestedProviderTrace(run.contextSnapshot)}

@@ -31,6 +31,27 @@ describe("run liveness classifier", () => {
     expect(classification.nextAction).toContain("inspect the repo");
   });
 
+  it("does not credit generic tool events as progress when a task only promises future work", () => {
+    const result = classifyRunLiveness({
+      ...baseInput,
+      resultJson: { summary: "Archive checksum matched. Checkout confirmed. Next: run the contract test and capture the result." },
+      evidence: { workspaceOperationsCreated: 1, toolOrActionEventsCreated: 2 },
+    });
+
+    expect(result.livenessState).toBe("plan_only");
+    expect(result.nextAction).toBe("run the contract test and capture the result.");
+  });
+
+  it("preserves a recorded checkpoint when the report also names future work", () => {
+    const result = classifyRunLiveness({
+      ...baseInput,
+      resultJson: { summary: "Saved the verified checkpoint. Next: run the full test suite." },
+      evidence: { workProductsCreated: 1, toolOrActionEventsCreated: 2 },
+    });
+
+    expect(result.livenessState).toBe("advanced");
+  });
+
   it("classifies empty successful output as empty_response", () => {
     const classification = classifyRunLiveness(baseInput);
 
