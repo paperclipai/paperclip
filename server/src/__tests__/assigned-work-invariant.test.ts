@@ -338,16 +338,13 @@ describePostgres("assigned-work invariant sweep", () => {
     const held = await blockedReviewTask({ hold: true });
     const unheld = await blockedReviewTask({ hold: false });
     const workStarted = await blockedReviewTask({ hold: false, providerWorkStarted: true });
-    // A recent block whose setup failure is older than the 7-day window stays a conversation wait.
     const runTooOld = await blockedReviewTask({ hold: false, endedAgoMs: 8 * 24 * HOUR, blockedAgoMs: 2 * HOUR });
     const waitingForMessage = await f.issue({ status: "in_progress", originKind: "chat_channel" });
     const queue = wakeQueue();
     const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup });
     const suspects = (await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id);
     expect(suspects).toEqual(expect.arrayContaining([held, unheld]));
-    expect(suspects).not.toContain(workStarted);
-    expect(suspects).not.toContain(runTooOld);
-    expect(suspects).not.toContain(waitingForMessage);
+    for (const id of [workStarted, runTooOld, waitingForMessage]) expect(suspects).not.toContain(id);
 
     for (const issueId of [held, unheld]) {
       expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
@@ -355,10 +352,8 @@ describePostgres("assigned-work invariant sweep", () => {
       expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).not.toBe("blocked");
     }
     expect(queue.calls.map(call => call.issueId).sort()).toEqual([held, unheld].sort());
-    // A chat task whose agent may have started work still waits for its conversation.
-    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: workStarted }))
-      .toMatchObject({ outcome: "ok", verdict: { clause: "waiting", reason: "conversation" } });
-    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: runTooOld }))
+    // A chat task whose agent may have started work, or whose failure is too old, still waits for its conversation.
+    for (const issueId of [workStarted, runTooOld]) expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
       .toMatchObject({ outcome: "ok", verdict: { clause: "waiting", reason: "conversation" } });
     expect(queue.calls).toHaveLength(2);
 
