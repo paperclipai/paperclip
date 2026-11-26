@@ -337,8 +337,9 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
   async function supersededAutomaticReview(
     source: Awaited<ReturnType<typeof scope>>,
     requestedCommit: string,
-    currentCommit: string,
+    pull: Pull,
   ) {
+    const currentCommit = pull.head.sha;
     const [newer] = await db
       .select({ id: chatDeliveries.id })
       .from(chatDeliveries)
@@ -358,19 +359,26 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         ),
       )
       .limit(1);
-    const next = newer
-      ? "a newer automatic review for that commit is already queued on this task"
-      : "no newer automatic review is queued for it. An authorized person can request a manual review";
+    // The review is simply no longer owed: the task finishes. It must never
+    // wait on a person to request another review.
+    const closed = pull.state === "closed";
+    const next = closed
+      ? "the pull request is already merged or closed, so no review is needed"
+      : newer
+        ? "a newer automatic review for that commit is already queued on this task"
+        : "no newer automatic review is queued for it, so this review is no longer needed";
     return conflict(
       `This automatic review was requested for an older pull request head (${requestedCommit.slice(0, 7)}). ` +
         `The pull request now points to ${currentCommit.slice(0, 7)}, and ${next}. ` +
-        "Stop this review: do not call review tools again and do not post the review as an ordinary comment.",
+        "Stop this review and finish the task as done: do not call review tools again, do not post the review " +
+        "as an ordinary comment, and do not block the task or ask anyone to request a review.",
       {
         reasonCode: "github_review_superseded",
         retryable: false,
         requestedCommit,
         currentCommit,
         newerReviewQueued: !!newer,
+        pullRequestClosed: closed,
       },
     );
   }
@@ -673,7 +681,7 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     const automatic = source.delivery.normalizedEvent.githubAutomatic as
       { context: GitHubReviewEventContext } | undefined;
     if (automatic && automatic.context.headSha !== pull.head.sha)
-      throw await supersededAutomaticReview(source, automatic.context.headSha, pull.head.sha);
+      throw await supersededAutomaticReview(source, automatic.context.headSha, pull);
     if (name === "read_pull_request") {
       const parsed = readSchema.parse(input);
       if (parsed.section === "metadata") {

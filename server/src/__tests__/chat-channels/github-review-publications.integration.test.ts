@@ -18,6 +18,7 @@ vi.mock("@chat-adapter/telegram", async (importOriginal) => {
 });
 import { chatHistoryActionBlocks } from "../helpers/chat-history-proof.js";
 import { githubChatReviewService } from "../../services/chat-github-reviews.js";
+import { githubAutomaticReviewEvent } from "../../services/chat-github-events.js";
 import { githubResponseCommentService } from "../../services/chat-github-response-comments.js";
 import { githubBotToolsForSession } from "../../services/chat-github-tools.js";
 import { resolveRunScopedMentionedSkillKeys } from "../../services/heartbeat/run-preparation.js";
@@ -50,6 +51,28 @@ describeEmbeddedPostgres("chat channels: github review publications", () => {
   } = rev;
 
   describe("GitHub agent review publications", () => {
+    it.each([["closed", "already merged or closed, so no review is needed"], ["open", "this review is no longer needed"]] as const)(
+      "tells a superseded automatic review to finish instead of waiting on a person: %s", async (state, reason) => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418");
+      const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpoint.id));
+      const context = githubAutomaticReviewEvent({ action: "opened", repository: { id: 97531, full_name: "paperclipai/paperclip" },
+        sender: { id: 42, login: "octocat" }, pull_request: { number: 418, title: "Review", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: "e".repeat(40) }, user: { id: 42, login: "octocat" }, labels: [] } },
+      randomUUID())!;
+      await db.update(chatDeliveries).set({ normalizedEvent: { ...delivery.normalizedEvent, githubAutomatic: { context } } })
+        .where(eq(chatDeliveries.id, delivery.id));
+      f.setSupplementalProviderFetch(async input => String(input).endsWith("/pulls/418")
+        ? Response.json({ number: 418, title: "Fix", body: null, state, draft: false, head: { sha: "f".repeat(40) },
+          base: { sha: "a".repeat(40), ref: "master" }, user: { id: 42, login: "octocat", type: "User" }, labels: [] })
+        : undefined);
+      const error = await githubChatReviewService(db, f.providerFetch).execute(f.session, "read_pull_request", { section: "metadata" })
+        .then(() => null, (caught: unknown) => caught as { message: string; details?: Record<string, unknown> });
+      expect(error?.message).toContain(reason);
+      expect(error?.message).toContain("finish the task as done");
+      expect(error?.message).not.toContain("An authorized person can request");
+      expect(error?.details).toMatchObject({ reasonCode: "github_review_superseded", pullRequestClosed: state === "closed" });
+    });
+
     it("loads only the current configured instruction skills, never provider links or another company", async () => {
       const f = await reviewBotFixture();
       const other = await seedCompany();
