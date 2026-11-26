@@ -612,12 +612,11 @@
   --tc-composer-bottom: var(--sz-calc-8);
   --mobile-chat-viewport-height: 100dvh;
   --tc-composer-editor-max-height: min(var(--sz-28dvh), calc(var(--mobile-chat-viewport-height) * 0.4));
-  --tc-composer-visible-nav-offset: calc(4rem + var(--spacing) * 1.5 + var(--sz-safe-bottom));
+  --mobile-nav-height: 4rem;
+  --tc-composer-visible-nav-offset: calc(var(--mobile-nav-height) + var(--spacing) * 1.5 + var(--sz-safe-bottom));
   /* With the dock's pb-1, leave 12px below the card when the nav hides. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
-  /* Floating overlays mounted outside <main> cannot inherit its inline
-     --tc-composer-bottom token. Clear MobileBottomNav (h-16 = 4rem) + safe-area + 12px. */
-  --mobile-nav-overlay-bottom: calc(4rem + var(--spacing) * 3 + var(--sz-safe-bottom));
+  --mobile-nav-overlay-bottom: calc(var(--mobile-nav-height) + var(--spacing) * 3 + var(--sz-safe-bottom));
   --mobile-nav-overlay-max-h: calc(100dvh - var(--mobile-nav-overlay-bottom) - var(--spacing) * 4);
 
   /* Dashboard Board (experimental Responsibilities). Every card is this one
@@ -5568,7 +5567,7 @@ html:not(.dark) .coordinator-sidebar {
 }
 @media (width < 48rem) {
   .agent-selection-bar {
-    --selection-bar-bottom: calc(4rem + var(--spacing) * 3);
+    --selection-bar-bottom: calc(var(--mobile-nav-height) + var(--spacing) * 3);
   }
 }
 .agent-identity-chip { background: var(--agent-identity-chip-bg); color: var(--foreground); }
