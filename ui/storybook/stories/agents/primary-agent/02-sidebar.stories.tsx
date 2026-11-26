@@ -3,7 +3,16 @@ import { userEvent, within } from "storybook/test";
 import { PrimaryPage, mobile, primaryDecorator, primaryParameters } from "../../../support/primary-agent/PrimaryAgentStory";
 
 export default { id: "primary-agent-02-sidebar",
-  title: "Agents and reusable capabilities/Hiring, configuration, and organization/Primary Agent/02 Sidebar", decorators: [primaryDecorator], parameters: primaryParameters, args: { primaryName: "Maia" }, argTypes: { primaryName: { control: "text" } }, render: () => <PrimaryPage /> } satisfies Meta;
+  title: "Agents and reusable capabilities/Hiring, configuration, and organization/Primary Agent/02 Sidebar", decorators: [primaryDecorator], parameters: { ...primaryParameters, paperclip: {
+      "capabilities": [
+        "agents/primary-agent",
+        "tasks/create",
+        "agent-chat/discovery"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Primary choice, replacement confirmation, unavailable states and task/chat fallback presentation use local presentation-provider callbacks. Production preference persistence and default-resolution precedence remain unverified by this suite. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    } }, args: { primaryName: "Maia" }, argTypes: { primaryName: { control: "text" } }, render: () => <PrimaryPage /> } satisfies Meta;
 type Story = StoryObj;
 export const IdlePrimary: Story = {};
 export const ActiveColleague: Story = { parameters: { primaryAgent: { active: true } } };

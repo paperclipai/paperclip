@@ -45,6 +45,51 @@ describe("Railway governed operations", () => {
     await expect(f.client.probe(target.projectId)).rejects.toMatchObject({ code: "railway_api_authorization_required", status: 403, message: expect.stringContaining("workspace selected during consent") });
     expect(f.request).toHaveBeenCalledTimes(1);
   });
+  it("reports a restricted environment instead of a workspace consent error when Railway denies the target", async () => {
+    const denied = () => Response.json({ errors: [{ message: "Not Authorized" }], data: null });
+    const other = "66666666-6666-4666-8666-666666666666";
+    const page = (nodes: { id: string; canAccess: boolean }[], endCursor?: string) => Response.json({ data: { project: { id: target.projectId, environments: { edges: nodes.map((node) => ({ node: { ...node, name: "env", projectId: target.projectId } })), pageInfo: { hasNextPage: !!endCursor, endCursor: endCursor ?? null } } } } });
+    const queries = (f: ReturnType<typeof fixture>) => f.request.mock.calls.map(([, init]) => JSON.parse(String(init.body)));
+    const { deploymentId: _, ...ids } = target;
+
+    const restricted = fixture((q) => q === RAILWAY_QUERIES.target ? denied() : undefined);
+    restricted.request.mockImplementation(async (_url, init) => {
+      const { query, variables } = JSON.parse(String(init.body));
+      if (query === RAILWAY_QUERIES.target) return denied();
+      return variables.after ? page([{ id: target.environmentId, canAccess: false }]) : page([{ id: other, canAccess: true }], "next");
+    });
+    await expect(restricted.client.call("paperclip-railway-list-deployments", ids)).rejects.toMatchObject({ code: "railway_environment_restricted", status: 403, message: expect.stringContaining("restricted") });
+    expect(queries(restricted).map((body) => [body.query, body.variables.after])).toEqual([[RAILWAY_QUERIES.target, undefined], [RAILWAY_QUERIES.environments, undefined], [RAILWAY_QUERIES.environments, "next"]]);
+
+    const http403 = fixture((q) => q === RAILWAY_QUERIES.target ? new Response(null, { status: 403 }) : page([{ id: target.environmentId, canAccess: false }]));
+    await expect(http403.client.call("paperclip-railway-service-status", ids)).rejects.toMatchObject({ code: "railway_environment_restricted" });
+
+    const accessible = fixture((q) => q === RAILWAY_QUERIES.target ? denied() : page([{ id: target.environmentId, canAccess: true }]));
+    await expect(accessible.client.call("paperclip-railway-service-status", ids)).rejects.toMatchObject({ code: "railway_api_authorization_required" });
+    const unknown = fixture((q) => q === RAILWAY_QUERIES.target || q === RAILWAY_QUERIES.environments ? denied() : undefined);
+    await expect(unknown.client.call("paperclip-railway-restart", target)).rejects.toMatchObject({ code: "railway_api_authorization_required" });
+    expect(queries(unknown).every((body) => !body.query.startsWith("mutation"))).toBe(true);
+
+    const revoked = fixture((q) => q === RAILWAY_QUERIES.target ? new Response(null, { status: 401 }) : page([{ id: target.environmentId, canAccess: false }]));
+    await expect(revoked.client.call("paperclip-railway-service-status", ids)).rejects.toMatchObject({ code: "railway_api_authorization_required", status: 401 });
+    expect(revoked.request).toHaveBeenCalledTimes(1);
+
+    const aborted = fixture();
+    aborted.request.mockImplementation(async (_url, init) => {
+      if (JSON.parse(String(init.body)).query === RAILWAY_QUERIES.target) return denied();
+      aborted.controller.abort(new Error("cancelled"));
+      throw new Error("network");
+    });
+    await expect(aborted.client.call("paperclip-railway-service-status", ids)).rejects.toThrow("cancelled");
+  });
+
+  it("returns each environment's access flag from list-environments", async () => {
+    const edges = [{ node: { id: target.environmentId, name: "production", projectId: target.projectId, canAccess: false } }, { node: { id: target.serviceId, name: "staging", projectId: target.projectId, canAccess: true } }];
+    const f = fixture(() => Response.json({ data: { project: { id: target.projectId, environments: { edges, pageInfo: { hasNextPage: false, endCursor: null } } } } }));
+    await expect(f.client.call("paperclip-railway-list-environments", { projectId: target.projectId })).resolves.toMatchObject({ project: { environments: { edges: [{ node: { canAccess: false } }, { node: { canAccess: true } }] } } });
+    expect(JSON.parse(String(f.request.mock.calls[0][1].body)).query).toBe(RAILWAY_QUERIES.environments);
+  });
+
   it("requires exact provider identity and treats shell and remote agents as privileged", () => {
     expect(isRailwayEndpoint("https://mcp.railway.com/")).toBe(true);
     for (const url of ["https://mcp.railway.com/path", "https://mcp.railway.com?token=x", "https://mcp.railway.com.evil.test", "http://mcp.railway.com"]) expect(isRailwayEndpoint(url)).toBe(false);

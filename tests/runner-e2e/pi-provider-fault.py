@@ -163,9 +163,13 @@ def inspect(config):
         parent_args = argv(parent)
         if len(parent_args) != 4 or not parent_args[3].endswith('/distribution/pi-entry.cjs'):
             continue
+        # The wrapper runs the pinned closure from the runner's sealed store for
+        # this exact closure, with the module guard from its per-launch directory.
         distribution = parent_args[3][:-len('/pi-entry.cjs')]
-        require(re.fullmatch(r'/tmp/paperclip-acpx-native-[A-Za-z0-9_-]+/distribution', distribution), 'snapshot_path')
-        require(parent_args[1:] == ['--require', distribution + '/' + GUARD, distribution + '/pi-entry.cjs'], 'wrapper_parent')
+        require(re.fullmatch(r'/tmp/paperclip-verified-native-[A-Za-z0-9_-]+/' + re.escape(config['closureSha256']) + '/distribution', distribution), 'snapshot_path')
+        launch = os.path.dirname(parent_args[2])
+        require(re.fullmatch(r'/tmp/paperclip-acpx-native-[A-Za-z0-9_-]+/launch', launch), 'snapshot_path')
+        require(parent_args[1:] == ['--require', launch + '/' + GUARD, distribution + '/pi-entry.cjs'], 'wrapper_parent')
         descriptor = None
         if parent_args[0] != distribution + '/' + NODE:
             # Production nativeBootstrap executes the held Node through child
@@ -177,7 +181,7 @@ def inspect(config):
         # Pi sets process.title and overwrites Linux argv. The exact pinned
         # parent's launch code attests the entrypoint; title alone never selects.
         require(argv(pid) == ['pi'], 'pi_process_title')
-        for directory in (distribution, os.path.dirname(distribution)):
+        for directory in (launch, os.path.dirname(launch), distribution, os.path.dirname(distribution)):
             st = os.lstat(directory)
             require(stat.S_ISDIR(st.st_mode) and not st.st_mode & 0o222 and os.path.realpath(directory) == directory, 'snapshot_seal')
         require(os.readlink(f'/proc/{pid}/cwd') == binding['remoteCwd'], 'cwd')

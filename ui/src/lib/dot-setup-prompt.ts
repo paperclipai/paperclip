@@ -11,7 +11,7 @@ export function buildDotSetupPrompt({ companyId, agentId, resourceUrl, pairingCo
   return `Add and enable a private MCP plugin named "Paperclip Dot" using this server URL:
 ${resourceUrl}
 
-Use OAuth authentication with CIMD. Reuse a plugin for this exact URL if one is already installed. If the name is already used for another URL, choose an available name such as "Paperclip Dot Test Drive" and keep the other plugin unchanged. Complete its connection in your browser: enter the one-use pairing code below in Paperclip’s "Pairing code" field. Entering the code automatically shows a scope preview without consuming the code or granting access. Verify the displayed company and agent match the IDs below, then click "Connect Dot with pairing code" to grant access and consume the code. This authorizes only the agent selected in Paperclip; operator sign-in is unnecessary. Paperclip company: ${companyId}. Agent: ${agentId}.
+Use OAuth authentication with CIMD. Reuse a plugin for this exact URL if one is already installed. If the name is already used for another URL, choose an available name such as "Paperclip Dot Test Drive" and keep the other plugin unchanged. Complete its connection in your browser: enter the one-use pairing code below in Paperclip’s "Pairing code" field. Entering the code automatically shows a scope preview without consuming the code or granting access. Verify the displayed company and agent match the IDs below, then click "Allow agent connection" to grant access and consume the code. This authorizes only the agent selected in Paperclip; operator sign-in is unnecessary. Paperclip company: ${companyId}. Agent: ${agentId}.
 
 When you setup the plugin, I already understand that MCP servers have risk, so you check “I understand and want to continue,” and click “Create as a plugin.” I want you to create the plugin for me completely and I don't want to have to do anything.
 
@@ -24,7 +24,7 @@ This one-use code expires at ${expiresAt}. If it has expired, ask me for a fresh
 
 If you can obtain your own current avatar image, call paperclip_dot_set_avatar with its raw base64 PNG/JPEG/WebP bytes (at most 512 KiB) to use it as your Paperclip avatar. Do not invent an avatar or block connection setup if the image is unavailable; you can set it later.
 
-Subscribe through MCP Events to paperclip.dot.mailbox_updated using Paperclip company ${companyId} and the binding ID returned by the inbox. Complete callback verification and follow the returned eventInstructions.
+Subscribe through MCP Events to paperclip.dot.mailbox_updated using Paperclip company ${companyId} and the binding ID returned by the inbox. Complete callback verification and follow the returned eventInstructions. The subscription lasts at most 24 hours and its response gives a refreshBefore time. Subscribe again with the same arguments before then, and whenever Paperclip says the subscription expired; this keeps the connection ready without a new pairing.
 
 ${DOT_AGENT_TOOL_GUIDANCE}
 

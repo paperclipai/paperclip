@@ -5,7 +5,15 @@ const meta: Meta<typeof ManagedOAuthHandoffState> = {
   id: "apps-managed-cloud-oauth-handoff",
   title: "Apps, channels, and extensions/Connection setup/Apps/Managed Cloud OAuth handoff",
   component: ManagedOAuthHandoffState,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "connection-setup/handoff"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   args: {
     onRetry: () => undefined,
     onCancel: () => undefined,

@@ -57,7 +57,16 @@ const meta = {
   id: "paperclip-source-resolved-fold",
   title: "Projects and execution/Recovery/Paperclip/Source-resolved Fold",
   component: DefaultPanel,
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "recovery/diagnosis",
+        "recovery/source-action"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta<typeof DefaultPanel>;
 
 export default meta;

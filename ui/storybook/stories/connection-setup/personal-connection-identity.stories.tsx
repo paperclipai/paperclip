@@ -154,7 +154,15 @@ function IdentitiesHarness({
 const meta: Meta = {
   id: "reviews-pap-17835-personal-connection-identity",
   title: "Apps, channels, and extensions/Connection setup/Reviews/PAP-17835 Personal connection identity",
-  parameters: { layout: "fullscreen" },
+  parameters: { layout: "fullscreen",
+    paperclip: {
+      "capabilities": [
+        "connection-setup/identity-and-access"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 };
 export default meta;
 type Story = StoryObj;

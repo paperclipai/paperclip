@@ -6,7 +6,16 @@ const meta = {
   id: "skills-repository-packages",
   title: "Agents and reusable capabilities/Skills and Skill Studio/Skills/Repository packages", component: GitHubSkillsJourney,
   tags: ['!autodocs'], parameters: { layout: 'fullscreen', docs: { description: { component:
-    'Production Skills UI in the app shell with repository fixtures. Repository files stay together. Select which skills appear in your library. No GitHub access or runtime execution occurs in this preview.' } } },
+    'Production Skills UI in the app shell with repository fixtures. Repository files stay together. Select which skills appear in your library. No GitHub access or runtime execution occurs in this preview.' } },
+    paperclip: {
+      "capabilities": [
+        "skills/versions",
+        "skills/discovery"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   args: { packageScenario: 'ready' },
 } satisfies Meta<typeof GitHubSkillsJourney>;
 export default meta;

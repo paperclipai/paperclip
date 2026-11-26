@@ -9,7 +9,15 @@ const meta = {
   id: "task-chat-rich-work-product-cards",
   title: "Tasks and conversations/Documents, attachments, and work products/Task Chat/Rich Work Product Cards",
   component: RichWorkProductCard,
-  parameters: { layout: "centered" },
+  parameters: { layout: "centered",
+    paperclip: {
+      "capabilities": [
+        "documents-artifacts/work-products"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
 } satisfies Meta<typeof RichWorkProductCard>;
 
 export default meta;

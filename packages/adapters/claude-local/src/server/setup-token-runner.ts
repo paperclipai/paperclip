@@ -8,6 +8,8 @@ import {
 import {
   parseSetupTokenCredential,
   parseSetupTokenPrompt,
+  hasSetupTokenOAuthError,
+  hasSetupTokenPromptLine,
   type SetupTokenPrompt,
 } from "./setup-token-parse.js";
 
@@ -123,6 +125,7 @@ export type SetupTokenOutcome = LoginRunnerOutcome;
  * the base result with the two setup-token status fields.
  */
 export interface SetupTokenLoginResult extends LoginRunnerResult {
+  failureReason?: "oauth_error";
   codeSubmitted: boolean;
   /** True when the runner bound the token and invoked `onCredential` one time. */
   credentialDelivered: boolean;
@@ -216,8 +219,10 @@ export async function runSetupTokenLogin(
   }
 
   let promptSurfaced = false;
+  let unrecognizedPromptLogged = false;
   let codeSubmitted = false;
   let submitStarted = false;
+  let oauthError = false;
   // The runner sets this true one time, only after the mandatory sink resolves.
   let credentialDelivered = false;
   // The bound token bytes. The runner binds them from the success record during
@@ -324,16 +329,25 @@ export async function runSetupTokenLogin(
         }
         return;
       }
+      if (!unrecognizedPromptLogged && hasSetupTokenPromptLine(buffer)) {
+        unrecognizedPromptLogged = true;
+        log("[paperclip] Setup-token login: the browser-code prompt is on screen, but the parser did not recognize the sign-in screen.");
+      }
       if (buffer.length > CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS) {
         buffer = buffer.slice(buffer.length - CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS);
       }
       return;
     }
-    // The prompt already surfaced. Scan the post-prompt stream for the success
-    // token. The runner scans only when a caller provides an `onCredential`
-    // sink, so it never holds the secret-bearing stream without a need.
-    if (!onCredential || tokenBytes) return;
+    // Observe a rejected code even if the CLI remains open waiting for Enter.
+    // Retain only the bounded private buffer; return a fixed failure reason.
+    if (tokenBytes || oauthError) return;
     tokenBuffer += chunk;
+    if (hasSetupTokenOAuthError(tokenBuffer)) {
+      oauthError = true;
+      tokenBuffer = "";
+      controller.abort();
+      return;
+    }
     captureCredential();
     if (!tokenBytes && tokenBuffer.length > CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS) {
       tokenBuffer = tokenBuffer.slice(tokenBuffer.length - CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS);
@@ -346,6 +360,7 @@ export async function runSetupTokenLogin(
     promptSurfaced,
     codeSubmitted,
     credentialDelivered,
+    ...(oauthError ? { failureReason: "oauth_error" as const } : {}),
   });
 
   try {
@@ -360,6 +375,11 @@ export async function runSetupTokenLogin(
     // self-guarding, so this await never rejects.
     controller.abort();
     await submitPromise;
+
+    if (oauthError) {
+      log("[paperclip] Setup-token login: the provider rejected the authorization code.");
+      return result("failure", null);
+    }
 
     if (raced.kind === "timeout") {
       log("[paperclip] Setup-token login timed out; stopping the process.");

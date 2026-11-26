@@ -13,7 +13,13 @@ const meta = {
   title: "Tasks and conversations/Documents, attachments, and work products/Explorations/Artifact cards/File",
   component: FileCard,
   decorators,
-  parameters,
+  parameters: { ...parameters, paperclip: {
+      "capabilities": [
+        "documents-artifacts/work-products"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    } },
   argTypes: {
     ...identityControls,
     filename: textData("Original file name, also used for download."),

@@ -59,7 +59,17 @@ const meta = {
   id: "private-tasks-03-task-actions",
   title: "Getting started and access/Login, invitations, and access/Private tasks/03 Task actions",
   decorators: [privacyDecorator],
-  parameters: { ...privacyParameters, docs: { description: { component: "Task menu privacy actions, permission gates and disclosure confirmation." } } },
+  parameters: { ...privacyParameters, docs: { description: { component: "Task menu privacy actions, permission gates and disclosure confirmation." } },
+    paperclip: {
+      "capabilities": [
+        "access/resources",
+        "tasks/properties"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    },
+  },
   render: () => <PrivacyActionsStory />,
 } satisfies Meta;
 export default meta;

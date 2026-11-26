@@ -91,6 +91,13 @@ const meta = {
   parameters: {
     layout: "padded",
     docs: { description: { component: "A structured question card above the usable composer. Choices stay selected until Next or Submit, and Other opens a text field." } },
+    paperclip: {
+      "capabilities": [
+        "questions-and-approvals/questions"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
   },
 } satisfies Meta<typeof InteractiveComposerQuestions>;
 

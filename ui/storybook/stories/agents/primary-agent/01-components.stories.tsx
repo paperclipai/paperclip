@@ -12,7 +12,16 @@ function Components(_args: PrimaryScenario) {
   </div></main>;
 }
 export default { id: "primary-agent-01-components",
-  title: "Agents and reusable capabilities/Hiring, configuration, and organization/Primary Agent/01 Components", component: Components, decorators: [primaryDecorator], parameters: primaryParameters, args: { primaryName: "Maia" }, render: args => <Components {...args} /> } satisfies Meta<typeof Components>;
+  title: "Agents and reusable capabilities/Hiring, configuration, and organization/Primary Agent/01 Components", component: Components, decorators: [primaryDecorator], parameters: { ...primaryParameters, paperclip: {
+      "capabilities": [
+        "agents/primary-agent",
+        "tasks/create",
+        "agent-chat/discovery"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures",
+      "notes": "Primary choice, replacement confirmation, unavailable states and task/chat fallback presentation use local presentation-provider callbacks. Production preference persistence and default-resolution precedence remain unverified by this suite. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+    } }, args: { primaryName: "Maia" }, render: args => <Components {...args} /> } satisfies Meta<typeof Components>;
 type Story = StoryObj<typeof Components>;
 export const CrownIndicator: Story = {};
 export const NoPrimary: Story = { args: { primaryId: null } };

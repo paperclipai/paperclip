@@ -16,6 +16,23 @@ import {
 import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
 
 describe("adapter session codecs", () => {
+  it.each([claudeSessionCodec.serialize, claudeSessionCodec.deserialize])("keeps only normalized Claude remote identity and valid conversation references", transform => {
+    const params = {
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      sshClaudeConversationId: "a".repeat(64), sshClaudeAccountScope: "b".repeat(64),
+      remoteExecution: { transport: "ssh", host: "fixture.example.test", port: 22, username: "agent", remoteCwd: "/work",
+        useHostAuth: false, privateKey: "fixture-private-key", tailscaleSocksProxySocketPath: "/fixture/socket" },
+    };
+    const output = transform(params)!;
+    expect(output).toMatchObject({ sessionId: params.sessionId, sshClaudeConversationId: params.sshClaudeConversationId,
+      sshClaudeAccountScope: params.sshClaudeAccountScope, remoteExecution: { transport: "ssh", host: "fixture.example.test", useHostAuth: false } });
+    expect(JSON.stringify(output)).not.toContain("fixture-private-key");
+    expect(JSON.stringify(output)).not.toContain("/fixture/socket");
+    const invalid = transform({ ...params, sshClaudeConversationId: "../../untrusted" })!;
+    expect(invalid.sshClaudeConversationId).toBeUndefined();
+    expect(invalid.sshClaudeAccountScope).toBeUndefined();
+  });
+
   it("normalizes claude session params with cwd", () => {
     const parsed = claudeSessionCodec.deserialize({
       session_id: "claude-session-1",

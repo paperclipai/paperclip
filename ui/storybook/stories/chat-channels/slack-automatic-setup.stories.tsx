@@ -8,7 +8,16 @@ const meta = {
   title: "Apps, channels, and extensions/External chat and email/Connections/Slack/Automatic setup",
   component: SlackSetupFixture,
   parameters: { layout: "fullscreen", initialEntries: [`${start}&resume=slack-story`],
-    docs: { description: { component: "Production Slack setup pages in journey order. Automatic stories use the same four-step wizard; manual setup retains account linking. Slack creation, consent, verification, and identity discovery are simulated; use synthetic tokens only." } } },
+    docs: { description: { component: "Production Slack setup pages in journey order. Automatic stories use the same four-step wizard; manual setup retains account linking. Slack creation, consent, verification, and identity discovery are simulated; use synthetic tokens only." } },
+    paperclip: {
+      "capabilities": [
+        "chat-channels/providers",
+        "connection-setup/channel-setup"
+      ],
+      "implementation": "production",
+      "boundary": "fixtures"
+    },
+  },
   render: args => <SlackSetupFixture key={args.scenario} {...args} />,
 } satisfies Meta<typeof SlackSetupFixture>;
 export default meta;
@@ -26,6 +35,7 @@ export const SendAMessage: Story = { name: "04 · Send a message", args: { scena
 export const Success: Story = { name: "04 · Success", args: { scenario: "success" }, play: async ({ canvasElement }) => {
   const canvas = within(canvasElement);
   await expect(await canvas.findByRole("heading", { name: "Success" })).toBeVisible();
+  await expect(canvas.getByRole("link", { name: /^Open Slack$/ })).toHaveAttribute("href", "https://app.slack.com/client/TSTORY/DSTORY");
 } };
 export const ChooseAgentSelected: Story = {
   name: "Choose agent · Advanced defaults", args: { scenario: "choose" }, parameters: { initialEntries: [`${start}&agentId=agent-codex`] },
@@ -53,6 +63,7 @@ export const AvatarUploadFailed: Story = { name: "Recovery · Avatar upload fail
 export const WelcomeFailed: Story = { name: "Recovery · Welcome DM failed", args: { scenario: "welcome_failed" } };
 export const Mobile: Story = { name: "Mobile · App configuration access token", args: { scenario: "create" }, globals: { viewport: { value: "mobile1", isRotated: false } } };
 
+export const AlreadyConnected: Story = { ...Success, name: "04 · Already connected", args: { scenario: "complete" } };
 export const SuccessMobile: Story = { name: "Mobile · Success", args: { scenario: "success" }, globals: { viewport: { value: "mobile1", isRotated: false } } };
 
 export const ChooseConnectionMobile: Story = {
