@@ -17,6 +17,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
+import { uniqueIssuePrefix } from "./helpers/issue-prefix.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -43,7 +44,7 @@ async function seedHiringFixture(db: Db) {
     .insert(companies)
     .values({
       name: `Idempotency Co ${nonce}`,
-      issuePrefix: `ID${nonce.slice(0, 4).toUpperCase()}`,
+      issuePrefix: uniqueIssuePrefix("ID"),
       defaultResponsibleUserId: "board-user",
       // Direct hires (no board approval) mirror the reported QA org where the
       // duplicate "Sam 2" agent was actually created.

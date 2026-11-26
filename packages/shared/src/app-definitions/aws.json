@@ -1,5 +1,4 @@
 {
-  "experimentalFeatureKey": "enableAwsConnector",
   "schemaVersion": 1,
   "slug": "aws",
   "name": "AWS",

@@ -169,6 +169,7 @@ function randomContext(random: ReturnType<typeof seeded>): ToolAccessContext {
     catalogSchemaHash: null,
     providerType: pick(["mcp_remote_http", "paperclip_self", null]),
     connectionTransport: null,
+    agentAccessConfigured: false,
     applicationKey: pick(["github", "linear", null]),
     upstreamToolName: pick(upstreamNames),
     toolName: pick([...toolNames, ""]),

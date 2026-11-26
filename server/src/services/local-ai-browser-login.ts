@@ -6,6 +6,7 @@ import { runSetupTokenLogin } from "@paperclipai/adapter-claude-local/server";
 import { runDeviceLogin } from "@paperclipai/adapter-codex-local/server";
 import { ensureCommandResolvable, resolveCommandForLogs } from "@paperclipai/adapter-utils/server-utils";
 import { resolveCodexCommand, startAntigravityBrowserLogin } from "../vendor/paperclip-runner/index.js";
+import { logger } from "../middleware/logger.js";
 
 export type LocalBrowserLoginState = {
   authorizationUrl?: string;
@@ -158,7 +159,13 @@ export function createScreenEmitter(screen: { render(): string }, emit: (chunk: 
 
 /** Run the same browser-code login used by sandbox connections on the local host. */
 export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "google", home: string): LocalBrowserLoginState {
-  if (provider === "google") return startAntigravityBrowserLogin(home);
+  if (provider === "google") {
+    return startAntigravityBrowserLogin(home, {
+      onFailure: (reason) => {
+        if (reason !== "aborted") logger.warn({ code: `ANTIGRAVITY_SIGN_IN_${reason.toUpperCase()}` }, "Google Antigravity sign-in failed");
+      },
+    });
+  }
   const controller = new AbortController();
   const state: LocalBrowserLoginState = { abort: () => controller.abort() };
   const args = provider === "anthropic" ? ["setup-token"] : ["login", "--device-auth"];

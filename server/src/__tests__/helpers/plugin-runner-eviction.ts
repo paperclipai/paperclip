@@ -81,7 +81,8 @@ export function registerPluginRunnerEvictionSuite(harness: "codex" | "claude", e
     const thisCase: { teardown?: () => Promise<void> } = {};
     currentCase = thisCase;
     const detached = mode === "detached" || mode === "missing state" || mode === "foreign state";
-    const denied = mode.startsWith("missing") || mode.endsWith("state");
+    const freshSession = mode === "missing state";
+    const denied = !freshSession && (mode.startsWith("missing") || mode.endsWith("state"));
     const relaunch = mode === "relaunch after inspection";
     const unavailableResume = mode === "after inspection" || mode === "bare unavailable" || relaunch;
     const reusesLease = mode === "reused lease" || unavailableResume;
@@ -166,6 +167,7 @@ export function registerPluginRunnerEvictionSuite(harness: "codex" | "claude", e
     const releases: DurableRecoveryIdentity[] = [], claims: DurableRecoveryIdentity[] = [];
     let handle: RunnerProcessHandle | undefined, submissions = 0, cleaning = false, sourceReadRequests = 0, sourceReadResponses = 0;
     let pendingFollowup: Promise<unknown> | undefined;
+    const runLogs: string[] = [];
     thisCase.teardown = async () => {
       cleaning = true;
       const cleanup = await Promise.allSettled([closeIdleWarmNativeSessionsForRestart(), ...[...hosts.values()].map(host => host.close())]);
@@ -313,7 +315,7 @@ export function registerPluginRunnerEvictionSuite(harness: "codex" | "claude", e
         runnerEnvironment: harness === "claude" ? { ANTHROPIC_API_KEY: "synthetic-fixture" } : {},
         ...(mode === "prepared copy" ? { instructionWorkingCopy: instructionCopy(current.binding.runId) } : {}),
         managedAiCredentialHome: home, managedAiCredentialIdentity: "fixture-revision", managedAiAccountIdentity: "fixture-account", turnTimeoutMs: 15_000,
-        runnerExecutionTarget: target });
+        onLog: async (_stream, chunk) => { runLogs.push(chunk); }, runnerExecutionTarget: target });
     };
     try {
       const a = await execute(execution, leaseA); expect(a).toMatchObject({ exitCode: 0, timedOut: false });
@@ -410,7 +412,11 @@ export function registerPluginRunnerEvictionSuite(harness: "codex" | "claude", e
       if (denied || mode === "bare unavailable") return;
       await waitForCondition("automatic release B", () => releases.length === 2);
       expect(await proof()).toBeUndefined();
-      expect((await supervisor()).snapshot.providerSessionId).toBe(providerSessionId);
+      if (freshSession) {
+        expect({ sourceReadRequests, sourceReadResponses }).toEqual({ sourceReadRequests: 1, sourceReadResponses: 0 });
+        expect(runLogs.join("")).toContain("finished without a saved runner checkpoint");
+        expect(runLogs.join("")).toContain("provider session continuity break");
+      } else expect((await supervisor()).snapshot.providerSessionId).toBe(providerSessionId);
       const methods = (await readFile(calls, "utf8")).trim().split(/\r?\n/);
       expect(submissions).toBe(2);
       if (mode === "after inspection" || relaunch) expect({ resumeAttempts, acquisitions }).toEqual({ resumeAttempts: 1, acquisitions: 1 });

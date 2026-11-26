@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ToolConnection } from "@paperclipai/shared";
-import { pluginTileState, type ConnectorRowModel } from "./Browse";
+import { pluginTileState, type ConnectorRowModel, chatEndpointAttention } from "./Browse";
 
 const gateway = { id: "gateway-1", status: "active", enabled: true, healthStatus: "ok", connectionPurpose: "tool", config: {} } as unknown as ToolConnection;
 const gateways = new Map([[gateway.id, gateway]]);
@@ -29,5 +29,14 @@ describe("pluginTileState", () => {
     expect(pluginTileState(aggregatorRow("ACTIVE", { freshness: "stale" }), gateways)).toBe("attention");
     const paused = new Map([[gateway.id, { ...gateway, status: "draft" } as ToolConnection]]);
     expect(pluginTileState(aggregatorRow("ACTIVE"), paused)).toBe("attention");
+  });
+});
+
+describe("chatEndpointAttention", () => {
+  it("says why a chat connection needs the user, and nothing when it is fine", () => {
+    expect(chatEndpointAttention({ status: "active", setup: null } as never)).toBeNull();
+    expect(chatEndpointAttention({ status: "draft", setup: null } as never)).toBe("Setup not finished");
+    expect(chatEndpointAttention({ status: "attention", setup: null } as never)).toBe("Needs attention");
+    expect(chatEndpointAttention({ status: "revoked", setup: null } as never)).toBe("Access revoked");
   });
 });

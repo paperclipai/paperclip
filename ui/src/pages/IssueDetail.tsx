@@ -38,6 +38,7 @@ import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTa
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { IssueCreatedFromNote } from "@/components/task-detail/IssueCreatedFromNote";
 import { EmailThreadProvider } from "../components/EmailMessageCard";
+import { TaskTranscriptAgents } from "../components/task-chat/TaskChatBubble";
 import { EmailTaskActivity } from "../components/EmailTaskActivity";
 import { TaskChatScrollNavigation, taskChatScrollEntry } from "@/components/task-chat/scroll-navigation";
 import {
@@ -2671,6 +2672,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           }}
         >
           <EmailThreadProvider companyId={companyId} issueId={issueId}>
+          <TaskTranscriptAgents.Provider value={conversationMode ? null : agentMap}>
           <ThreadComponent
             {...(!classicTaskInterfaceEnabled ? {
               compactHistory: !historyExpanded,
@@ -2872,6 +2874,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             externalReferences={externalReferences}
             linkCaseReferences={linkCaseReferences}
           />
+          </TaskTranscriptAgents.Provider>
           </EmailThreadProvider>
         </TaskChatScrollNavigation.Provider>
       )}
@@ -3331,7 +3334,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     setOpenSkill((current) => current?.id === skillId ? null : current);
   }, []);
   const [documentDeepLink, setDocumentDeepLink] = useState<
-    (IssuePropertiesDocumentDeepLink & { issueId: string }) | null
+    (IssuePropertiesDocumentDeepLink & { issueId: string; focusActivePlan?: boolean }) | null
   >(null);
   const [fileViewerPromptOpen, setFileViewerPromptOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("chat");
@@ -6648,8 +6651,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   // the issue param so navigating to another issue with an identical hash
   // still maximizes the destination pane.
   const lastMaximizeRequestKeyRef = useRef<string | null>(null);
+  const planExpandNavigation = useRef<{ pathname: string; hash: string } | null>(null);
   const routeIssueDocumentDeepLink = useCallback(
-    (hash: string) => {
+    (hash: string, focusActivePlan = false) => {
       const resolvedRoute = resolveIssueDocumentDeepLink(hash);
       // A handoff is a saved document too. Opening it must not switch the
       // conversation to full activity just because it has a legacy hash.
@@ -6692,6 +6696,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         issueId: targetIssueId,
         tab: route.tab,
         documentKey: route.documentKey,
+        focusActivePlan,
         requestId:
           current?.issueId === targetIssueId ? current.requestId + 1 : 1,
       }));
@@ -6710,7 +6715,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
 
   useEffect(() => {
-    if (!routeIssueDocumentDeepLink(location.hash)) {
+    const expand = planExpandNavigation.current;
+    planExpandNavigation.current = null;
+    if (!routeIssueDocumentDeepLink(location.hash, expand?.pathname === location.pathname && expand.hash === location.hash)) {
       setDocumentDeepLink(null);
       // The deep link ended (hash cleared or issue changed): drop any
       // maximize request the panel never consumed so it cannot maximize a
@@ -6721,6 +6728,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   }, [
     issueId,
     location.hash,
+    location.pathname,
     routeIssueDocumentDeepLink,
     clearPanelMaximizeRequest,
   ]);
@@ -6764,9 +6772,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       event.preventDefault();
       // Let link handlers close any hovered task preview. Router links and
       // popover triggers honor defaultPrevented and skip their navigation.
+      const focusActivePlan = anchor.hasAttribute("data-plan-expand") && !isMobile && panelVisible && !suppressPanelUntilPlan;
       if (hash === location.hash) {
-        routeIssueDocumentDeepLink(hash);
+        routeIssueDocumentDeepLink(hash, focusActivePlan);
       } else {
+        planExpandNavigation.current = focusActivePlan ? { pathname: location.pathname, hash } : null;
         navigate(`${location.pathname}${location.search}${hash}`, {
           preventScrollReset: true,
           state: {
@@ -6785,6 +6795,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     issue?.identifier,
     issueId,
     persistedAgentChat,
+    isMobile,
+    panelVisible,
+    suppressPanelUntilPlan,
     navigate,
     location.hash,
     location.key,

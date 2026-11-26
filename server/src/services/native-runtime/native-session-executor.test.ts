@@ -545,6 +545,7 @@ import {
   verifyNativeHarnessBackupStreamed,
   shouldRestoreNativeHarnessBackupIntoSandbox,
   remoteProviderStateNeverOpened,
+  providerSessionReplaceableAfterStateLoss,
 } from "./native-session-executor.js";
 import { onNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
 
@@ -19986,6 +19987,163 @@ describe("runnerd provider runtime wiring", () => {
         }
       } finally { owner.mockRestore(); resume.mockRestore(); }
     });
+
+  it("keeps same-session recovery for an unfinished goal or Antigravity after a confirmed lost plugin checkpoint", () => {
+    const codex = { provider: { kind: "codex", model: null, approvalPolicy: "never" } } as unknown as NativeExecutionInput;
+    const goal = (status: string) => ({ threadId: "thread", objective: "ship", status, tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0 }) as never;
+    expect(providerSessionReplaceableAfterStateLoss({}, codex)).toBe(true);
+    expect(providerSessionReplaceableAfterStateLoss({ goal: null }, codex)).toBe(true);
+    expect(providerSessionReplaceableAfterStateLoss({ goal: goal("complete") }, codex)).toBe(true);
+    for (const status of ["active", "paused", "blocked", "limited", "usageLimited", "budgetLimited"]) {
+      expect(providerSessionReplaceableAfterStateLoss({ goal: goal(status) }, codex), status).toBe(false);
+    }
+    const antigravity = { provider: { kind: "acpx", agent: "antigravity" } } as unknown as NativeExecutionInput;
+    expect(providerSessionReplaceableAfterStateLoss({}, antigravity))
+      .toBe(!antigravityRelease.antigravityForcesSameSessionRecovery(antigravity.provider));
+  });
+
+  it.each([
+    "stopped-state-unavailable",
+    "stopped-availability-omitted",
+    "stop-unconfirmed",
+    "stopped-lease-unreleased",
+  ] as const)(
+    "handles unconfirmed plugin checkpoint status on replacement lease: %s",
+    async mode => {
+      const first = {
+        ...scopedNativeExecution(`plugin-checkpoint-unconfirmed-${mode}`),
+        schema: "paperclip.native-execution-input.v5", executionMode: "default", planningContext: null, runtimeContext: nativeRuntimeContextFixture(),
+        provider: { kind: "codex", model: null, approvalPolicy: "never" },
+        session: { ...execution.session, driverKind: "codex_app_server",
+          normalizedSessionId: `plugin-checkpoint-unconfirmed-${mode}`, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } },
+      } as NativeExecutionInput;
+      parseNativeExecutionInput(first);
+      const next = { ...first, binding: { ...first.binding, runId: `${first.binding.runId}-followup` } };
+      const identity = {
+        runId: first.binding.runId, normalizedSessionId: first.session.normalizedSessionId!,
+        runnerInstanceId: "plugin-runner", environmentLeaseId: "old-lease", turnId: "old-turn", itemId: "old-item",
+      };
+      const scoped = await initializeScopedRunnerRoot(first, identity.runnerInstanceId);
+      await mkdir(join(scoped, "control-plane"), { recursive: true });
+      const journal = JSON.stringify({
+        ...durableControlPlaneState(identity),
+        commands: [{ type: "turn.start", status: "completed" }],
+        committedEvents: [{ eventType: "run.terminal", envelope: { ...identity, payload: { reportedWorkDisposition: "done" } } }],
+      });
+      await writeFile(join(scoped, "control-plane/control-plane-state.json"), journal);
+
+      const db = leaseDb(next);
+      const ordinarySelect = db.select.bind(db);
+      const { currentNativeControllerIdentity } = await import("./native-restart-recovery.js");
+      const controller = await currentNativeControllerIdentity();
+      const committedPrior = {
+        run: {
+          id: first.binding.runId, companyId: first.binding.companyId, agentId: first.binding.agentId,
+          nativeIssueId: first.binding.issueId, runtimeMode: "native", status: "succeeded",
+          runnerProfileJson: { nativeExecutionInput: first },
+          processPid: null, processGroupId: null, processStartedAt: null,
+        },
+        owner: {
+          runId: first.binding.runId, companyId: first.binding.companyId, issueId: first.binding.issueId,
+          phase: "committed", resultId: "result-1", leaseOwner: null, recoveryState: null,
+          controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt,
+          controllerBootId: controller.bootId,
+        },
+      };
+      const priorEndedLease = {
+        id: "old-lease", companyId: first.binding.companyId, heartbeatRunId: first.binding.runId,
+        status: mode === "stopped-lease-unreleased" ? "active" : "released",
+        releasedAt: mode === "stopped-lease-unreleased" ? null : new Date(),
+        cleanupStatus: mode === "stopped-lease-unreleased" ? null : "success",
+        provider: "plugin:test:tasks", providerLeaseId: "old-task",
+        metadata: {
+          driver: "plugin",
+          runnerTaskExecutionStopped: true,
+          runnerTaskSessionRetained: false,
+          remoteExecutionTermination: {
+            schema: "paperclip.remote-termination.v1",
+            companyId: first.binding.companyId,
+            runId: first.binding.runId,
+            leaseId: "old-lease",
+            provider: "plugin:test:tasks",
+            providerLeaseId: "old-task",
+            state: "stopped",
+            confirmedAt: new Date().toISOString(),
+          },
+        },
+      };
+      db.select = ((fields?: Record<string, unknown>) => {
+        if (fields?.status === heartbeatRuns.status && fields?.runnerProfileJson === heartbeatRuns.runnerProfileJson) {
+          return priorNativeRunDb(first, "succeeded").select(fields as never);
+        }
+        if (fields && "run" in fields && "owner" in fields) {
+          return {
+            from: () => ({
+              innerJoin: () => ({
+                where: () => ({ limit: async () => [committedPrior] }),
+              }),
+            }),
+          };
+        }
+        if (fields && "providerLeaseId" in fields && "status" in fields) {
+          return { from: () => ({ where: async () => [priorEndedLease] }) };
+        }
+        if (fields === undefined) {
+          return {
+            from: (table: unknown) => table === environmentLeases
+              ? { where: async () => [priorEndedLease] }
+              : ordinarySelect().from(table as never),
+          };
+        }
+        return ordinarySelect(fields as never);
+      }) as Db["select"];
+
+      const resume = vi.spyOn(environmentTaskRuntime, "resolvePluginTaskResume").mockResolvedValue("old-task");
+      const task = vi.fn(async (operation: any) => {
+        environmentTaskOperationSchema.parse(operation);
+        if (operation.kind === "read_state") {
+          throw environmentTaskRuntime.createUnconfirmedPluginCheckpointError({
+            executionStopped: mode !== "stop-unconfirmed",
+            ...(mode === "stopped-availability-omitted" ? {} : { sessionStateAvailable: false }),
+          });
+        }
+        return {
+          kind: "description", taskId: "replacement-task", launchPreparationVersion: 1, projectAuthCheckVersion: 1, warmTaskVersion: 1,
+          runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` },
+        };
+      });
+      state.createBackend.mockClear();
+      const home = join(isolatedStateDirectory, `checkpoint-unconfirmed-${mode}`);
+      await mkdir(home, { recursive: true });
+      await writeFile(join(home, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "synthetic-fixture" }), { mode: 0o600 });
+      try {
+        const launch = {
+          db, execution: next, runnerInstanceId: "replacement-runner", runnerIngressAuthorized: true,
+          managedAiCredentialHome: home, managedAiCredentialIdentity: "revision", managedAiAccountIdentity: "account",
+          runnerEnvironment: { ANTHROPIC_API_KEY: "synthetic-fixture" },
+          runnerExecutionTarget: {
+            kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "replacement-lease", runnerTask: task,
+            sandboxLeaseAcquisition: { outcome: "replacement", providerLeaseId: "replacement-task" },
+          } as never,
+        };
+        if (mode === "stopped-state-unavailable") {
+          await expect(createRunnerdBackend(launch)).resolves.toBeDefined();
+          expect(state.createBackend).toHaveBeenCalledOnce();
+          expect(existsSync(join(scoped, "continuity-breaks"))).toBe(true);
+        } else if (mode === "stopped-lease-unreleased") {
+          await expect(createRunnerdBackend(launch)).rejects.toThrow("retirement_refused=prior_lease_active");
+          expect(state.createBackend).not.toHaveBeenCalled();
+          expect(existsSync(join(scoped, "continuity-breaks"))).toBe(false);
+        } else {
+          await expect(createRunnerdBackend(launch)).rejects.toThrow("checkpoint_status_unconfirmed");
+          expect(state.createBackend).not.toHaveBeenCalled();
+          expect(existsSync(join(scoped, "continuity-breaks"))).toBe(false);
+        }
+      } finally {
+        resume.mockRestore();
+      }
+    },
+  );
 
   it.each(["verified", "wrong-state", "no-stop-proof", "disposition-retry", "disposition-wrong-state", "disposition-no-stop-proof"] as const)("admits only an authorized same-run plugin checkpoint: %s", async mode => {
     const current = scopedNativeExecution(`plugin-crash-${mode}`);

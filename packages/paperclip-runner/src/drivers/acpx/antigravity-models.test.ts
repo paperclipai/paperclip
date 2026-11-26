@@ -10,8 +10,8 @@ import { verifyQualifiedAcpxInstallation } from "./installation-integrity.js";
 import { verifyAcpxProfileInstallation } from "./profile-installation.js";
 import { assertAcpxProfileReleased, resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 
-const setup = vi.hoisted(() => ({ spawn: vi.fn(), close: vi.fn(async () => undefined), verify: vi.fn(), uncertainRetirement: false }));
-vi.mock("./antigravity-installation.js", () => ({ antigravityNativeDistributionSpec: () => ({ pinned: true }) }));
+const setup = vi.hoisted(() => ({ spawn: vi.fn(), close: vi.fn(async () => undefined), verify: vi.fn(), uncertainRetirement: false, spec: vi.fn((..._args: unknown[]) => ({ pinned: true })) }));
+vi.mock("./antigravity-installation.js", () => ({ antigravityNativeDistributionSpec: setup.spec }));
 vi.mock("./installation-integrity.js", async original => ({
   ...await original<typeof import("./installation-integrity.js")>(), verifyNativeAcpxInstallation: setup.verify,
 }));
@@ -21,6 +21,7 @@ vi.mock("./antigravity-process.js", async original => {
     ? Promise.reject(new Error("controlled retirement uncertainty")) : actual.retireAntigravityProcess(...args) };
 });
 import { AntigravityModelDiscoveryCleanupError, discoverAntigravityModels } from "./antigravity-models.js";
+import { AntigravityRuntimeUnavailableError } from "./antigravity-runtime-unavailable.js";
 
 const roots: string[] = [], children: ChildProcess[] = [];
 afterEach(async () => {
@@ -91,6 +92,15 @@ describe("Antigravity session-free account model discovery", () => {
     await expect(discoverAntigravityModels(home)).rejects.toThrow("Could not load models for this Google account");
     expect(children[0]!.exitCode).toBe(0); expect(setup.close).toHaveBeenCalledOnce();
     if (mode === "old-patch") expect(JSON.parse(await readFile(join(home, "requests.json"), "utf8"))).toHaveLength(1);
+  });
+
+  it("reports a missing runtime by its own error without launching", async () => {
+    const home = await fixture();
+    setup.verify.mockRejectedValueOnce(Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" }));
+    const failure = await discoverAntigravityModels(home).catch(error => error);
+    expect(failure).toBeInstanceOf(AntigravityRuntimeUnavailableError);
+    expect(failure.code).toBe("ANTIGRAVITY_RUNTIME_UNAVAILABLE");
+    expect(setup.spawn).not.toHaveBeenCalled();
   });
 
   it("cancellation retires a blocked catalog process and inherited descendant before rejecting", async () => {

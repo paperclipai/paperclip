@@ -232,25 +232,21 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     }
   });
 
-  it("discovers GitHub review bots independently from chat connectors", async () => {
+  it("always discovers GitHub review bots while keeping experimental chat connectors gated", async () => {
     const settings = instanceSettingsService(db);
     const previous = await settings.getExperimental();
     const service = connectionIntentService(db);
     try {
-      await settings.updateExperimental({ enableChatConnectors: false, enableGitHubReviewBots: true });
+      await settings.updateExperimental({ enableChatConnectors: false, enableGitHubReviewBots: false });
       expect((await service.search(claims, "github")).results).toEqual(expect.arrayContaining([
         expect.objectContaining({ service: "github-code-review-bot" }),
         expect.objectContaining({ service: "github" }),
       ]));
       expect((await service.search(claims, "slack")).results.some(item =>
         item.methods.some(method => method.purpose === "channel"))).toBe(false);
-      await settings.updateExperimental({ enableChatConnectors: true, enableGitHubReviewBots: false });
-      expect((await service.search(claims, "github")).results.some(item =>
-        item.service === "github-code-review-bot")).toBe(false);
     } finally {
       await settings.updateExperimental({
         enableChatConnectors: previous.enableChatConnectors,
-        enableGitHubReviewBots: previous.enableGitHubReviewBots,
       });
     }
   });
@@ -458,6 +454,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
       .rejects.toThrow("was not found");
     expect((await service.search(claims, "github")).results).toEqual([
       expect.objectContaining({ service: "github", state: "available" }),
+      expect.objectContaining({ service: "github-code-review-bot", state: "available" }),
       expect.objectContaining({ service: "github-copilot", state: "available" }),
     ]);
     await expect(service.request(claims, "github")).resolves.toMatchObject({

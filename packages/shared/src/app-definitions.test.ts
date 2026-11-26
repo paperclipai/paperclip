@@ -29,7 +29,7 @@ import {
   SELF_SERVE_MCP_RESEARCH,
 } from "./self-serve-mcp-research.js";
 import { aiConnectionRouterAppDefinition } from "./ai-connection-router.js";
-import { aiConnectionCatalogSlug } from "./ai-provider-routing.js";
+import { aiConnectionCatalogSlug, aiProviderSetupPreset } from "./ai-provider-routing.js";
 import { appDefinitionSchema, appDefinitionsSchema } from "./validators/app-definition.js";
 
 const googleScope = (scope: string) =>
@@ -258,7 +258,7 @@ describe("AppDefinition catalog", () => {
   it("validates all Wave 1 definitions", () =>
     expect(() => appDefinitionsSchema.parse(APP_DEFINITIONS)).not.toThrow());
   it("lists model providers as regular tagged catalog entries", () => {
-    const slugs = ["openai", "anthropic", "openrouter", "xai", "google", "github-copilot", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"];
+    const slugs = ["openai", "anthropic", "openrouter", "xai", "antigravity", "github-copilot", "bedrock", "responses-api", "messages-api", "chat-completions-api", "local"];
     expect(APP_STORE_DEFINITIONS.filter(app => app.tags?.includes("model-provider")).map(app => app.slug).sort()).toEqual(slugs.sort());
     for (const slug of slugs) {
       const app = APP_STORE_DEFINITIONS.find(app => app.slug === slug)!;
@@ -348,6 +348,30 @@ describe("AppDefinition catalog", () => {
     expect(github.categories).not.toContain("ai");
     expect(github.description).not.toContain("Copilot");
     expect(aiConnectionCatalogSlug("github")).toBe("github-copilot");
+  });
+  it("keys the Antigravity model-provider connector under antigravity with its own logo while preserving google provider storage", () => {
+    const antigravity = getAppStoreDefinition("antigravity")!;
+    expect(antigravity).toBeTruthy();
+    expect(getAppStoreDefinition("google")).toBeNull();
+    expect(antigravity.name).toBe("Antigravity");
+    expect(antigravity.categories).toEqual(["ai"]);
+    expect(antigravity.branding.logoUrl).toBe("/brands/apps/antigravity.svg");
+    expect(antigravity.methods.map((method) => method.key)).toEqual(["ai-subscription", "ai-api_key"]);
+    expect(antigravity.methods[0]).toMatchObject({
+      purpose: "ai",
+      transport: "runtime_auth",
+      ai: { provider: "google", method: "subscription" },
+    });
+    expect(antigravity.methods[1]).toMatchObject({
+      purpose: "ai",
+      transport: "runtime_auth",
+      ai: { provider: "google", method: "api_key" },
+      keyPlacement: { location: "env", name: "GEMINI_API_KEY" },
+    });
+    expect(aiConnectionCatalogSlug("google")).toBe("antigravity");
+    for (const source of ["antigravity", "google", "google-ai"]) {
+      expect(aiProviderSetupPreset(source)).toEqual({ provider: "google", label: "Antigravity" });
+    }
   });
   it("registers the five native chat providers with only required setup credentials", () => {
     const expected = {
@@ -1492,7 +1516,7 @@ describe("AppDefinition catalog", () => {
   });
   it("mints AWS credentials instead of placing stored keys in headers", () => {
     const aws = APP_DEFINITIONS.find((app) => app.slug === "aws")!;
-    expect(aws.experimentalFeatureKey).toBe("enableAwsConnector");
+    expect(aws.experimentalFeatureKey).toBeUndefined();
     for (const method of aws.methods) {
       expect(method).toMatchObject({ transport: "mcp_remote", auth: "api_key", credentialMinter: "aws_mcp" });
       expect(method.keyPlacement).toBeUndefined();
@@ -1672,4 +1696,14 @@ it("limits explicit DCR registration preference to remote MCP OAuth methods with
   const nonMcp = structuredClone(entry);
   nonMcp.methods[0]!.transport = "rest_api";
   expect(appDefinitionSchema.safeParse(nonMcp).success).toBe(false);
+});
+
+it("uses Slack MCP user OAuth endpoints and includes user-scope and MCP prerequisites", () => {
+  const slack = getConnectableAppDefinition("slack")!;
+  const mcpOAuth = slack.methods.find((method) => method.key === "mcp-oauth")!;
+  expect(mcpOAuth.defaults?.authorizationEndpoint).toBe("https://slack.com/oauth/v2_user/authorize");
+  expect(mcpOAuth.defaults?.tokenEndpoint).toBe("https://slack.com/api/oauth.v2.user.access");
+  expect(mcpOAuth.defaults?.scopesHint).toContain("search:read.public");
+  expect(mcpOAuth.guidanceMd).toContain("User Token Scopes");
+  expect(mcpOAuth.guidanceMd).toContain("Model Context Protocol");
 });

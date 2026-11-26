@@ -254,7 +254,7 @@ for (const journey of [
         queue = await context.newPage();
         await queue.goto(`/${seed.prefix}/apps/review`);
         await expect(
-          queue.getByRole("button", { name: "Decline", exact: true }),
+          queue.getByRole("button", { name: "Deny", exact: true }),
         ).toBeVisible({ timeout: 20_000 });
       }
       if (journey === "restart") {
@@ -290,7 +290,7 @@ for (const journey of [
       if (journey === "decline") {
         // Resolve from Connections and observe the still-open task tab update.
         await queue!
-          .getByRole("button", { name: "Decline", exact: true })
+          .getByRole("button", { name: "Deny", exact: true })
           .click();
 
       } else {
@@ -339,7 +339,7 @@ for (const journey of [
       ).not.toBeVisible();
       if (queue) {
         await expect(
-          queue.getByRole("button", { name: "Decline", exact: true }),
+          queue.getByRole("button", { name: "Deny", exact: true }),
         ).not.toBeVisible({ timeout: 20_000 });
       }
       await page.bringToFront();
