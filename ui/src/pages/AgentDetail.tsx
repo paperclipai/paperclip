@@ -41,6 +41,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { copyTextToClipboard } from "../lib/clipboard";
 import { AgentSkillsTab } from "./agent-skills/AgentSkillsTab";
 import { AgentConfigForm } from "../components/AgentConfigForm";
+import { agentConfiguredModel } from "../components/AgentProperties";
 import { agentDisplayAdapterType, getAdapterDisplay } from "../adapters/adapter-display-registry";
 import { adapterLabels, roleLabels, help } from "../components/agent-config-primitives";
 import { ToggleSwitch } from "@/components/ui/toggle-switch";
@@ -888,6 +889,17 @@ export function AgentDetail() {
                 : null}
               <span>{getAdapterDisplay(agentDisplayAdapterType(agent)).label}</span>
             </Link>
+            {agentConfiguredModel(agent.adapterConfig) ? (
+              <>
+                <span aria-hidden="true">•</span>
+                <Link
+                  to={agentDetailHref(canonicalAgentRef, "runtime")}
+                  className="font-mono text-xs truncate no-underline transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                >
+                  {agentConfiguredModel(agent.adapterConfig)}
+                </Link>
+              </>
+            ) : null}
             <span aria-hidden="true">•</span>
             <InlineEditor
               fitContent

@@ -17,6 +17,12 @@ describe("adapter display registry", () => {
     expect(getAdapterLabel(type)).toBe("Google Antigravity");
     const bridgedType = agentDisplayAdapterType({ adapterType: "gemini_local", adapterConfig: { agentCommand: "agy acp", command: "gemini" } });
     expect(getAdapterLabel(bridgedType)).toBe("Google Antigravity");
+    const quotedBridgedType = agentDisplayAdapterType({ adapterType: "gemini_local", adapterConfig: { agentCommand: '"/opt/Antigravity CLI/agy" acp', command: "gemini" } });
+    expect(getAdapterLabel(quotedBridgedType)).toBe("Google Antigravity");
+    const cliOverrideType = agentDisplayAdapterType({ adapterType: "gemini_local", adapterConfig: { engine: "cli", agentCommand: "agy acp", command: "gemini" } });
+    expect(getAdapterLabel(cliOverrideType)).toBe("Gemini CLI");
+    const acpPrecedenceType = agentDisplayAdapterType({ adapterType: "gemini_local", adapterConfig: { engine: "acp", agentCommand: "gemini --acp", acpAgentCommand: "agy acp" } });
+    expect(getAdapterLabel(acpPrecedenceType)).toBe("Gemini CLI");
   });
   it.each([
     ["openai_dot", "OpenAI Dot"],
