@@ -4,7 +4,7 @@ navigation: {"section":"Getting started and access","sectionOrder":10,"order":10
 
 # Onboarding and first work
 
-An operator can start an instance, create a company, configure its first agent, and reach a real first task. Instance setup and company onboarding are separate steps.
+An operator can start an instance, create a company, configure its first agent, and start in chat. Execution work begins after an accepted task proposal or an explicit task-creation request. Instance setup and company onboarding are separate steps.
 
 Feature ID: `onboarding`.
 
@@ -17,7 +17,7 @@ Agent access: [companion](../agent-access-map/onboarding.md).
 - `instance`: `onboarding/instance` — choose local instance configuration and start the server.
 - `company`: `onboarding/company` — create a company with its identity and initial agent.
 - `adapter`: `onboarding/adapter` — choose an available harness, model, account, and execution environment.
-- `first-task`: `onboarding/first-task` — leave setup with a task whose execution or missing prerequisite is visible.
+- `first-task`: `onboarding/first-task` — leave setup in chat, clarify the goal and exit criteria, and accept or explicitly request the first task.
 
 - `resume`: `onboarding/resume` — return to an incomplete wizard without losing saved state.
 
@@ -50,7 +50,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `web-wizard`
 
-Automated: [wizard tests](../../ui/src/components/OnboardingWizard.test.tsx) cover mocked wizard behavior; [onboarding browser suite](../../tests/e2e/onboarding.spec.ts) supplies its own test environment. Live model execution is a separate check.
+Automated: [onboarding browser suite](../../tests/e2e/onboarding.spec.ts) supplies its own test environment (mocked `OnboardingWizard` component tests were removed). Live model execution is a separate check.
 
 - **Create company and resume.** Start a fresh empty instance and run doctor using
   the [verification skill](../../.agents/skills/verify-paperclip/SKILL.md). Run
@@ -64,8 +64,13 @@ Automated: [wizard tests](../../ui/src/components/OnboardingWizard.test.tsx) cov
 
 Manual: Create a disposable company and first agent. Leave midway, reopen the
 company's onboarding route, and finish; drafts save automatically. Follow the
-created first task, verify the selected agent and company, and inspect its output
-or explicit authentication gate. Reload both company and task.
+agent chat, verify the selected agent and company, and watch the live welcome.
+No execution tasks or projects should exist yet. Request an interview or describe
+a goal and clear exit criteria, then accept the suggested task. Verify one
+standalone task is created. Reload chat and ensure the welcome is not repeated.
+Also verify an explicit task-creation request uses the normal handoff directly.
+See [chat-first onboarding](../../doc/onboarding-chat.md). Legacy first-task asset
+evaluations cover existing task-based onboarding, not this chat landing.
 
 For Codex or Claude, choose the harness to prove automatic first-agent runner
 selection. On a qualified target it saves Paperclip Runner. The wizard has no
@@ -87,9 +92,8 @@ selected model and account stay unchanged and that the compatible executable is
 actually used. A failed installation still blocks hiring. Cloud failures must
 not display Manual debug shell commands or legacy operator hints; self-hosted
 failures retain that help.
-[Wizard controls](../../ui/src/components/OnboardingWizard.test.tsx) and
-[runtime controls](../../packages/adapters/claude-local/src/server/sandbox-cli-version.test.ts)
-cover these boundaries. They do not establish live Cloud onboarding success.
+[Runtime controls](../../packages/adapters/claude-local/src/server/sandbox-cli-version.test.ts)
+cover the adapter runtime boundary (mocked `OnboardingWizard` component tests were removed; verify wizard error help manually). They do not establish live Cloud onboarding success.
 
 For a new Claude agent on an explicit immutable sandbox image or a Daytona
 named snapshot, use Connect to
@@ -186,7 +190,7 @@ Capability ID: `onboarding/resume`.
 Scope: ui
 Storybook: Restored incomplete wizard; invalid or unauthorized saved company; temporarily withheld draft; account switch; storage failure.
 Production: Reload company-prefixed onboarding without duplicating company; restore only authorized account/company draft and retain input after recoverable loading failure.
-Sources: Source: [OnboardingWizard.tsx](../../ui/src/components/OnboardingWizard.tsx), [onboarding-state.ts](../../ui/src/lib/onboarding-state.ts). Tests: [OnboardingWizard.test.tsx](../../ui/src/components/OnboardingWizard.test.tsx), [onboarding-state.test.ts](../../ui/src/lib/onboarding-state.test.ts), [onboarding.spec.ts](../../tests/e2e/onboarding.spec.ts)
+Sources: Source: [OnboardingWizard.tsx](../../ui/src/components/OnboardingWizard.tsx), [onboarding-state.ts](../../ui/src/lib/onboarding-state.ts). Tests: [onboarding-state.test.ts](../../ui/src/lib/onboarding-state.test.ts), [onboarding.spec.ts](../../tests/e2e/onboarding.spec.ts)
 
 #### `instance`
 

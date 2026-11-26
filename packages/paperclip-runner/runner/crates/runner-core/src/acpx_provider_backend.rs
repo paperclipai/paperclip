@@ -325,6 +325,13 @@ impl AcpxProviderDescriptor {
         })
     }
 
+    fn supports_host_parking(&self) -> bool {
+        matches!(self.agent.as_str(), "codex" | "claude")
+            && self.names_qualified_release()
+            && crate::acpx_candidate_admission::release_profile(&self.agent)
+                .is_some_and(|profile| !profile.qualification_pending)
+    }
+
     fn validate_session(
         &self,
         context: &AcpxEventProjectionContext,
@@ -996,6 +1003,17 @@ fn validate_pending_runtime_requests(
     Ok(())
 }
 
+/// The sidecar refused to reload a saved conversation in a new provider
+/// process (ACP `session/load` or `session/resume` behind a recovering
+/// `session.open`). Only the typed rejection decides; the message never does.
+fn saved_state_reload_refused(error: &crate::local_runner::LocalRunnerError) -> bool {
+    error.command_rejection().is_some_and(|rejection| {
+        rejection.command == GeneratedAcpxSidecarCommand::SessionOpen.as_str()
+            && rejection.classification
+                == crate::acpx_sidecar_transport::ANTIGRAVITY_SAVED_STATE_INCOMPATIBLE
+    })
+}
+
 fn attested_pending_runtime_requests(
     pending: &BTreeMap<String, Value>,
     provider: &crate::acpx_provider_state::AcpxProviderState,
@@ -1031,10 +1049,16 @@ pub struct AcpxCommandExecutor {
     restore_checked: bool,
     restore_error: Option<DurableRunnerError>,
     persistence_error: Option<DurableRunnerError>,
+    /// Provider outputs read in the current poll changed the in-memory state
+    /// after its last save. The poll saves them once before it returns.
+    polled_state_unsaved: bool,
     #[cfg(test)]
     fail_after_state_rename: bool,
+    #[cfg(test)]
+    state_writes: std::cell::Cell<usize>,
     launch_profile: Option<AcpxLaunchProfile>,
     recovery_pending_effects: Option<usize>,
+    parked_relaunch: bool,
     /// The failed turn-end restart's cause, reported by the next turn start.
     failed_turn_end_restart: Option<String>,
     /// The failed turn-end restart's cause, until the Runner records it.
@@ -1079,13 +1103,17 @@ impl AcpxCommandExecutor {
             session: None,
             restore_checked: false,
             recovery_pending_effects: None,
+            parked_relaunch: false,
             failed_turn_end_restart: None,
             unreported_turn_end_restart_failure: None,
             turn_accepts_provider_turns: false,
             restore_error: None,
             persistence_error: None,
+            polled_state_unsaved: false,
             #[cfg(test)]
             fail_after_state_rename: false,
+            #[cfg(test)]
+            state_writes: std::cell::Cell::new(0),
             launch_profile: config.acpx_launch_profile.clone(),
         }
     }
@@ -1096,6 +1124,33 @@ impl AcpxCommandExecutor {
 
     pub(crate) fn observe_recovery_state(&mut self, state: &crate::durable::DurableState) {
         self.recovery_pending_effects = Some(state.recovery_pending_effects());
+    }
+
+    pub(crate) fn defer_parked_acpx_restore(&mut self) -> Result<(), DurableRunnerError> {
+        self.ensure_persistence_healthy()?;
+        self.load_state_without_session()?;
+        let settled = self.state.as_ref().is_some_and(|state| {
+            state.descriptor.supports_host_parking()
+                && state.descriptor.run_id == self.context.run_id
+                && matches!(state.lifecycle.as_str(), "session_open" | "suspended")
+                && settled_checkpoint_blockers(state).is_empty()
+                && state.pending_events.is_empty()
+                && state.pending_runtime_requests.is_empty()
+                && state.provider_turn_wait.is_none()
+                && (state.goal_projection.is_null() || goal_is_dormant(&state.goal_projection))
+        });
+        if !settled
+            || self.recovery_pending_effects != Some(0)
+            || self.candidate_admission().is_some()
+        {
+            return Err(DurableRunnerError::invalid(
+                "parked ACPX recovery requires a settled provider checkpoint qualified for host parking",
+            )
+            .with_classification(crate::durable::PROVIDER_ATTACH_REFUSED));
+        }
+        self.restore_checked = true;
+        self.parked_relaunch = true;
+        Ok(())
     }
 
     fn candidate_admission(
@@ -1501,8 +1556,17 @@ impl AcpxCommandExecutor {
                 }
                 Err(_) => return Ok(false),
             };
-        let Ok(session) = self.start_session(true) else {
-            return Ok(false);
+        let session = match self.start_session(true) {
+            Ok(session) => session,
+            // The provider refused this saved conversation by name: closing
+            // the turn as a generic interruption would hide that the server
+            // must start a replacement conversation.
+            Err(error)
+                if error.classification() == Some(crate::durable::PROVIDER_STATE_INCOMPATIBLE) =>
+            {
+                return Err(error)
+            }
+            Err(_) => return Ok(false),
         };
         let identity = session.identity().clone();
         let process_id = session.process_id();
@@ -1556,6 +1620,14 @@ impl AcpxCommandExecutor {
             .state
             .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider has not been prepared"))?;
+        self.start_session_from(state, recovering)
+    }
+
+    fn start_session_from(
+        &self,
+        state: &AcpxDurableState,
+        recovering: bool,
+    ) -> Result<AcpxProviderSession, DurableRunnerError> {
         let expected = recovering.then(|| state.identity.clone()).flatten();
         let config = state.descriptor.session_config(
             state.tool_set.clone(),
@@ -1563,8 +1635,16 @@ impl AcpxCommandExecutor {
             self.launch_profile.as_ref(),
         )?;
         let mut session = AcpxProviderSession::start(&config).map_err(|error| {
-            DurableRunnerError::invalid(format!("failed to start ACPX provider: {error}"))
-                .with_provider_failure(error.provider_failure())
+            let incompatible = recovering && saved_state_reload_refused(&error);
+            let failure =
+                DurableRunnerError::invalid(format!("failed to start ACPX provider: {error}"))
+                    .with_provider_failure(error.provider_failure())
+                    .with_sidecar_rejection(error.sidecar_rejection());
+            if incompatible {
+                failure.with_classification(crate::durable::PROVIDER_STATE_INCOMPATIBLE)
+            } else {
+                failure
+            }
         })?;
         if session.identity().profile_digest != state.descriptor.command_digest {
             let _ = session.shutdown("qualified ACPX profile digest mismatch");
@@ -1575,7 +1655,7 @@ impl AcpxCommandExecutor {
         let expected_dormant = recovering
             && self.recovery_pending_effects == Some(0)
             && self.candidate_admission().is_none()
-            && acpx_release_profile(&state.descriptor.agent)
+            && crate::acpx_candidate_admission::release_profile(&state.descriptor.agent)
                 .is_some_and(|profile| !profile.qualification_pending)
             && matches!(state.lifecycle.as_str(), "session_open" | "suspended")
             && state.active_turn_id.is_none()
@@ -1621,7 +1701,28 @@ impl AcpxCommandExecutor {
             .as_ref()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX provider state is unavailable"))
             .and_then(|state| self.write_state(state));
-        self.record_state_write(result)
+        self.record_state_write(result)?;
+        self.polled_state_unsaved = false;
+        Ok(())
+    }
+
+    /// Keeps the effects of one provider output in memory until the poll
+    /// saves. It applies the same state transition as `save_state`, so the
+    /// event order does not depend on when the save occurs.
+    fn stage_polled_state(&mut self) -> Result<(), DurableRunnerError> {
+        self.ensure_persistence_healthy()?;
+        if let Some(state) = self.state.as_mut() {
+            state.leave_finished_provider_turn_wait()?;
+        }
+        self.polled_state_unsaved = true;
+        Ok(())
+    }
+
+    fn save_polled_state(&mut self) -> Result<(), DurableRunnerError> {
+        if self.polled_state_unsaved {
+            self.save_state()?;
+        }
+        Ok(())
     }
 
     fn commit_staged_state(&mut self, state: AcpxDurableState) -> Result<(), DurableRunnerError> {
@@ -1669,6 +1770,8 @@ impl AcpxCommandExecutor {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).map_err(|error| {
             DurableRunnerError::invalid(format!("failed to protect ACPX provider state: {error}"))
         })?;
+        #[cfg(test)]
+        self.state_writes.set(self.state_writes.get() + 1);
         Ok(())
     }
 
@@ -1933,7 +2036,12 @@ impl AcpxCommandExecutor {
         if clears_turn_end_restart_failure {
             state.turn_end_restart_failed_run = None;
         }
-        let saved = if cold_candidate_attachment {
+        let saved = if self.parked_relaunch {
+            let session = self.start_session_from(&state, true)?;
+            self.commit_staged_state(state)?;
+            self.session = Some(session);
+            Ok(())
+        } else if cold_candidate_attachment {
             self.commit_staged_state(state)
         } else {
             self.state = Some(state);
@@ -2892,7 +3000,75 @@ impl AcpxCommandExecutor {
         }
     }
 
+    /// Reads up to `count` provider outputs and saves their state once, before
+    /// any event derived from them can leave this executor. An output that
+    /// ends a turn, calls a tool, or reports a lost provider turn is saved at
+    /// once, as is a provider failure. A tool rejection that the session sends
+    /// to the provider waits until the outputs read before it are saved.
     fn poll_provider_events(
+        &mut self,
+        count: usize,
+        disconnected: bool,
+    ) -> Result<(), DurableRunnerError> {
+        if let Some(session) = self.session.as_mut() {
+            session.hold_tool_rejections();
+        }
+        let polled = self.poll_provider_outputs(count, disconnected);
+        let saved = self.save_polled_state();
+        let released = if saved.is_ok() {
+            self.release_tool_rejections(false).map(|_| ())
+        } else {
+            Ok(())
+        };
+        polled?;
+        saved?;
+        released
+    }
+
+    /// Sends held provider tool rejections. Returns `true` when the provider
+    /// failed and the poll must stop.
+    fn release_tool_rejections(&mut self, keep_holding: bool) -> Result<bool, DurableRunnerError> {
+        let Some(session) = self.session.as_mut() else {
+            return Ok(false);
+        };
+        match session.release_tool_rejections(keep_holding) {
+            Ok(()) => Ok(false),
+            Err(error) => {
+                self.fail_polled_provider(&error)?;
+                Ok(true)
+            }
+        }
+    }
+
+    fn fail_polled_provider(
+        &mut self,
+        error: &crate::local_runner::LocalRunnerError,
+    ) -> Result<(), DurableRunnerError> {
+        let state = self
+            .state
+            .as_mut()
+            .expect("ACPX failed provider has durable state");
+        state.expire_runtime_requests("provider_process_lost", false)?;
+        let failed_turn = state.active_turn_id.take();
+        state.lifecycle = "closed".to_owned();
+        state.provider_exit_unconfirmed = true;
+        if let Some(turn_id) = failed_turn {
+            let message = crate::durable::redact_text(&error.to_string());
+            state.push(NormalizedProviderEvent { event_type: "turn.failed".to_owned(), priority: EventPriority::P0,
+                payload: json!({"provider":"acpx","providerTurnId":turn_id,"status":"failed","providerTerminalObserved":false,
+                    "code":"acpx_provider_transport_failed","message":message,
+                    "error":{"code":"acpx_provider_transport_failed","message":message,"recoverable":false}}) })?;
+            state.push(NormalizedProviderEvent { event_type: "run.terminal".to_owned(), priority: EventPriority::P0,
+                payload: json!({"schema":"paperclip.prp.terminal.v1","status":"failed","turnTerminalState":"failed","runTerminalState":"failed","reportedWorkDisposition":"needs_review","provider":"acpx"}) })?;
+        }
+        self.context.provider_turn_id = None;
+        // A failed transport cannot attest escaped provider cleanup.
+        // Drop the closed process owner; later cleanup must prove the lifetime fence.
+        self.session = None;
+        self.save_state()
+    }
+
+    fn poll_provider_outputs(
         &mut self,
         count: usize,
         disconnected: bool,
@@ -2915,28 +3091,7 @@ impl AcpxCommandExecutor {
             let events = match events {
                 Ok(events) => events,
                 Err(error) => {
-                    let state = self
-                        .state
-                        .as_mut()
-                        .expect("ACPX failed provider has durable state");
-                    state.expire_runtime_requests("provider_process_lost", false)?;
-                    let failed_turn = state.active_turn_id.take();
-                    state.lifecycle = "closed".to_owned();
-                    state.provider_exit_unconfirmed = true;
-                    if let Some(turn_id) = failed_turn {
-                        let message = crate::durable::redact_text(&error.to_string());
-                        state.push(NormalizedProviderEvent { event_type: "turn.failed".to_owned(), priority: EventPriority::P0,
-                            payload: json!({"provider":"acpx","providerTurnId":turn_id,"status":"failed","providerTerminalObserved":false,
-                                "code":"acpx_provider_transport_failed","message":message,
-                                "error":{"code":"acpx_provider_transport_failed","message":message,"recoverable":false}}) })?;
-                        state.push(NormalizedProviderEvent { event_type: "run.terminal".to_owned(), priority: EventPriority::P0,
-                            payload: json!({"schema":"paperclip.prp.terminal.v1","status":"failed","turnTerminalState":"failed","runTerminalState":"failed","reportedWorkDisposition":"needs_review","provider":"acpx"}) })?;
-                    }
-                    self.context.provider_turn_id = None;
-                    // A failed transport cannot attest escaped provider cleanup.
-                    // Drop the closed process owner; later cleanup must prove the lifetime fence.
-                    self.session = None;
-                    self.save_state()?;
+                    self.fail_polled_provider(&error)?;
                     return Ok(());
                 }
             };
@@ -2944,7 +3099,12 @@ impl AcpxCommandExecutor {
                 break;
             };
             let mut provider_turn_settled = false;
+            let mut gates_effect = false;
             for event in events {
+                gates_effect |= matches!(
+                    &event,
+                    crate::acpx_provider_state::AcpxProviderStateEvent::ToolCall { .. }
+                );
                 if let crate::acpx_provider_state::AcpxProviderStateEvent::ProviderTurnStarted {
                     turn_id,
                 } = &event
@@ -3033,6 +3193,7 @@ impl AcpxCommandExecutor {
                     accepted.push(event);
                 }
                 let turn_ended = terminal.is_some();
+                gates_effect |= turn_ended || provider_lost;
                 let mut run_terminal = None;
                 if let Some(event_type) = terminal {
                     state.active_turn_id = None;
@@ -3094,7 +3255,18 @@ impl AcpxCommandExecutor {
             if provider_turn_settled {
                 self.context.provider_turn_id = None;
             }
-            self.save_state()?;
+            let session_holds_rejections = self
+                .session
+                .as_ref()
+                .is_some_and(AcpxProviderSession::has_held_tool_rejections);
+            if gates_effect || session_holds_rejections {
+                self.save_state()?;
+                if self.release_tool_rejections(true)? {
+                    return Ok(());
+                }
+            } else {
+                self.stage_polled_state()?;
+            }
         }
         Ok(())
     }
@@ -3135,7 +3307,7 @@ impl CommandExecutor for AcpxCommandExecutor {
         let Some(state) = self.state.as_ref() else {
             return Ok(false);
         };
-        if !matches!(state.descriptor.agent.as_str(), "codex" | "claude")
+        if !state.descriptor.supports_host_parking()
             || self.session.is_none()
             || state.lifecycle != "session_open"
             || state.provider_exit_unconfirmed
@@ -3145,11 +3317,8 @@ impl CommandExecutor for AcpxCommandExecutor {
             || !state.pending_events.is_empty()
             || !state.pending_runtime_requests.is_empty()
             || (!state.goal_projection.is_null() && !goal_is_dormant(&state.goal_projection))
-            || !state.descriptor.names_qualified_release()
             || state.provider_turn_wait.is_some()
             || self.candidate_admission().is_some()
-            || !acpx_release_profile(&state.descriptor.agent)
-                .is_some_and(|profile| !profile.qualification_pending)
         {
             return Ok(false);
         }
@@ -3277,6 +3446,7 @@ impl CommandExecutor for AcpxCommandExecutor {
     }
 
     fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.parked_relaunch = false;
         self.recovery_pending_effects = None;
         self.context.run_id = config.run_id.clone();
         self.context.normalized_session_id = config.normalized_session_id.clone();
@@ -3512,12 +3682,20 @@ pub(crate) fn secure_directory(path: &Path, label: &str) -> Result<(), DurableRu
     })
 }
 
+#[cfg(all(test, unix))]
+#[path = "tests/acpx_park_relaunch.rs"]
+pub(crate) mod park_relaunch_tests;
+
+#[cfg(all(test, unix))]
+#[path = "tests/acpx_poll_state_saves.rs"]
+mod poll_state_save_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    fn temporary_directory(label: &str) -> PathBuf {
+    pub(super) fn temporary_directory(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -3532,7 +3710,7 @@ mod tests {
         directory
     }
 
-    fn write_artifact(path: &Path, contents: &[u8], executable: bool) {
+    pub(super) fn write_artifact(path: &Path, contents: &[u8], executable: bool) {
         fs::write(path, contents).unwrap();
         #[cfg(unix)]
         fs::set_permissions(
@@ -3542,14 +3720,14 @@ mod tests {
         .unwrap();
     }
 
-    fn artifact(path: &Path) -> QualifiedLaunchArtifact {
+    pub(super) fn artifact(path: &Path) -> QualifiedLaunchArtifact {
         QualifiedLaunchArtifact {
             path: path.to_owned(),
             sha256: format!("sha256:{:x}", Sha256::digest(fs::read(path).unwrap())),
         }
     }
 
-    fn test_config(
+    pub(super) fn test_config(
         state_dir: &Path,
         launch_profile: Option<AcpxLaunchProfile>,
     ) -> DurableRunnerConfig {
@@ -3575,6 +3753,7 @@ mod tests {
             reconnect_grace: None,
             max_runtime: Duration::from_secs(60),
             turn_scoped: false,
+            controller_silence: crate::durable::DEFAULT_CONTROLLER_SILENCE,
         }
     }
 
@@ -4395,7 +4574,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
     fn candidate_authority_cannot_come_from_descriptor_or_recover_a_prior_runner() {
         let directory = temporary_directory("candidate-authority");
         let mut admission = crate::acpx_candidate_admission::test_admission("run-1", "session-1");
@@ -6060,6 +6245,206 @@ mod tests {
         drop(listeners.pop());
         (candidates, listeners)
     }
+    /// An Antigravity session saved by `run-1` under an ordinary launch
+    /// profile (no candidate grant), and a runner for `context_run`. Its
+    /// sidecar records any launch and exits, so no test reaches a provider.
+    #[cfg(unix)]
+    fn ordinary_antigravity_fixture(
+        label: &str,
+        context_run: &str,
+    ) -> (PathBuf, DurableRunnerConfig, Value, PathBuf) {
+        let directory = temporary_directory(label);
+        let command = directory.join("owned-sidecar");
+        let sentinel = directory.join("provider-opened");
+        write_artifact(
+            &command,
+            format!("#!/bin/sh\ntouch '{}'\nexit 1\n", sentinel.display()).as_bytes(),
+            true,
+        );
+        let profile = AcpxLaunchProfile {
+            candidate_admission: None,
+            authority_digest: format!("sha256:{}", "d".repeat(64)),
+            command: command.clone(),
+            args: vec![],
+            artifacts: vec![artifact(&command)],
+        };
+        let runtime = directory.join("runtime");
+        let workspace = directory.join("workspace");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut value = descriptor("antigravity");
+        value["runtimeDirectory"] = json!(runtime);
+        value["cwd"] = json!(workspace);
+        value["sidecarCommand"] = json!(command);
+        value["sidecarArgs"] = json!([]);
+        let desc: AcpxProviderDescriptor = serde_json::from_value(value.clone()).unwrap();
+        let identity = AcpxProviderSessionIdentity {
+            kind: "acpx".to_owned(),
+            normalized_session_id: "session-1".to_owned(),
+            acpx_record_id: "record-1".to_owned(),
+            backend_session_id: "backend-1".to_owned(),
+            agent_session_id: "agent-1".to_owned(),
+            profile_digest: desc.command_digest.clone(),
+            workspace_digest: format!("sha256:{}", "a".repeat(64)),
+            requested_model: desc.model.clone(),
+            effective_model: desc.model.clone(),
+            permission_mode: Some(desc.permission_mode),
+            mode: None,
+            pi_thinking_level: None,
+            claude_effort: None,
+            grok_effort: None,
+            grok_disable_web_search: None,
+            provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
+        };
+        let operations = Vec::new();
+        let tools = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+            operations,
+        };
+        let mut state = AcpxDurableState::new(desc, tools, profile.canonical_digest().unwrap());
+        state.lifecycle = "suspended".to_owned();
+        state.identity = Some(identity);
+        let saving = test_config(&directory, Some(profile));
+        let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &saving);
+        executor.state = Some(state);
+        executor.save_state().unwrap();
+        let mut config = saving;
+        if context_run != "run-1" {
+            config.run_id = context_run.to_owned();
+            config.turn_id = "turn-2".to_owned();
+            config.item_id = "item-2".to_owned();
+        }
+        config.validate().unwrap();
+        (directory, config, value, sentinel)
+    }
+
+    /// The candidate grant the pending Antigravity profile admits for `run_id`.
+    fn antigravity_grant(run_id: &str) -> crate::acpx_candidate_admission::AcpxCandidateAdmission {
+        let mut grant = crate::acpx_candidate_admission::test_admission(run_id, "session-1");
+        grant.model = "explicit-test-model".to_owned();
+        grant
+    }
+
+    // At qualification the Antigravity profile becomes released. Only the
+    // declaration changes: the candidate-only refusals key on a candidate
+    // grant, a released profile admits no grant, and the ordinary qualified
+    // path applies to the provider launch, recovery and attachment.
+    #[test]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    fn released_antigravity_launches_without_grant_and_rejects_any_candidate_grant() {
+        let (directory, config, _, _) = ordinary_antigravity_fixture("antigravity-flip", "run-1");
+        let executor = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        let saved: AcpxDurableState =
+            serde_json::from_slice(&fs::read(executor.state_path()).unwrap()).unwrap();
+        let profile = config.acpx_launch_profile.as_ref().unwrap();
+        // The launch configuration exactly as AcpxProviderSession::start
+        // validates it before spawning the sidecar.
+        let launch = |profile: &AcpxLaunchProfile| {
+            let config = saved
+                .descriptor
+                .session_config(
+                    saved.tool_set.clone(),
+                    saved.identity.clone(),
+                    Some(profile),
+                )
+                .map_err(|error| error.to_string())?;
+            config.validate().map_err(|error| error.to_string())?;
+            Ok::<_, String>(config)
+        };
+        assert!(
+            !crate::generated_acpx_profiles::acpx_release_profile("antigravity")
+                .unwrap()
+                .qualification_pending
+        );
+        let mut granted = profile.clone();
+        granted.candidate_admission = Some(antigravity_grant("run-1"));
+        let mut candidate_config = config.clone();
+        candidate_config.acpx_launch_profile = Some(granted.clone());
+
+        // Released: the ordinary launch needs no grant ...
+        let ordinary = launch(profile).unwrap();
+        assert!(ordinary.candidate_admission.is_none());
+        // ... and every candidate grant is refused at startup and at launch.
+        assert!(candidate_config.validate().is_err());
+        assert!(launch(&granted).is_err());
+        let mut injected = descriptor("antigravity");
+        injected["candidateAdmission"] = json!(antigravity_grant("run-1"));
+        assert!(serde_json::from_value::<AcpxProviderDescriptor>(injected).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn released_antigravity_without_grant_restores_suspends_and_attaches_a_prior_activation() {
+        let (directory, config, value, sentinel) =
+            ordinary_antigravity_fixture("antigravity-released-cold", "run-2");
+        let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        // load_state_without_session: an ordinary runner adopts the prior
+        // durable activation that a candidate would refuse.
+        recovered
+            .restore()
+            .expect("a released Antigravity runner adopts the prior activation");
+        assert!(recovered.state.is_some());
+        // runner.suspend keeps the recoverable session instead of retiring it.
+        let suspended = recovered.suspend().unwrap();
+        assert_eq!(suspended.result["status"], "completed");
+        assert_eq!(recovered.state.as_ref().unwrap().lifecycle, "suspended");
+        // run.attach: the next run attaches to the saved conversation and
+        // reaches the ordinary provider launch (the fixture sidecar exits).
+        let mut provider = value;
+        provider["runId"] = json!("run-2");
+        let error = recovered
+            .execute(&cold_attach_command(json!({"provider": provider})))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("failed to start ACPX provider"), "{error}");
+        assert!(sentinel.exists(), "the ordinary launch ran the sidecar");
+        let saved: AcpxDurableState =
+            serde_json::from_slice(&fs::read(recovered.state_path()).unwrap()).unwrap();
+        assert_eq!(saved.descriptor.run_id, "run-2");
+        assert_ne!(saved.lifecycle, "closed");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn released_antigravity_without_grant_rotates_a_live_runner_authority() {
+        let (directory, config, value, sentinel) =
+            ordinary_antigravity_fixture("antigravity-released-warm", "run-1");
+        let mut executor = AcpxCommandExecutor::with_runner_config(&directory, &config);
+        executor.load_state_for_test();
+        let mut provider = value;
+        provider["runId"] = json!("run-2");
+        let attach = cold_attach_command(json!({"provider": provider, "paperclipNextAuthority": {
+            "identity": {"runId": "run-2", "normalizedSessionId": "session-1"}
+        }}));
+        // The rotation passes both candidate refusals and reaches the
+        // ordinary provider launch (the fixture sidecar exits).
+        let error = executor.execute(&attach).unwrap_err().to_string();
+        assert!(error.contains("failed to start ACPX provider"), "{error}");
+        assert!(sentinel.exists(), "the ordinary launch ran the sidecar");
+        let updated = executor.state.as_ref().unwrap();
+        assert_eq!(updated.descriptor.run_id, "run-2");
+        assert_eq!(executor.context.run_id, "run-1");
+        assert!(executor
+            .launch_profile
+            .as_ref()
+            .unwrap()
+            .candidate_admission
+            .is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
     #[test]
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
@@ -6327,7 +6712,16 @@ mod tests {
         )
     }
 
-    fn cold_attach_command(payload: Value) -> Command {
+    impl AcpxCommandExecutor {
+        /// Loads the saved state as an already-restored runner holds it, so a
+        /// test reaches command dispatch without launching the provider.
+        fn load_state_for_test(&mut self) {
+            self.load_state_without_session().unwrap();
+            self.restore_checked = true;
+        }
+    }
+
+    pub(super) fn cold_attach_command(payload: Value) -> Command {
         Command {
             schema: "paperclip.prp.command.v1".into(),
             command_id: "cold-attach".into(),
@@ -6629,12 +7023,13 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
-    // A settled Claude session saved by one runner build. The next deploy
+    // A settled ACPX session saved by one runner build. The next deploy
     // ships a new sidecar build and provider-pack authority at the same
     // qualified launch paths, and the next run cold-attaches in a new runner.
     #[cfg(unix)]
-    fn settled_session_after_runner_upgrade(
+    pub(super) fn settled_session_after_runner_upgrade(
         label: &str,
+        agent: &str,
     ) -> (PathBuf, DurableRunnerConfig, Value, Vec<u8>) {
         let directory = temporary_directory(label);
         let command = directory.join("node");
@@ -6654,7 +7049,7 @@ mod tests {
         fs::create_dir_all(&workspace).unwrap();
         fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).unwrap();
         fs::set_permissions(&workspace, fs::Permissions::from_mode(0o700)).unwrap();
-        let mut value = descriptor("claude");
+        let mut value = descriptor(agent);
         value["runtimeDirectory"] = json!(runtime);
         value["cwd"] = json!(workspace);
         value["sidecarCommand"] = json!(command);
@@ -6717,7 +7112,7 @@ mod tests {
     #[test]
     fn settled_session_rebinds_to_the_upgraded_runner_launch_profile() {
         let (directory, config, payload, saved) =
-            settled_session_after_runner_upgrade("upgrade-rebind");
+            settled_session_after_runner_upgrade("upgrade-rebind", "claude");
         let prior: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
         let current_digest = config
             .acpx_launch_profile
@@ -6781,7 +7176,7 @@ mod tests {
         ];
         for (label, seed) in settled {
             let (directory, config, payload, saved) =
-                settled_session_after_runner_upgrade("upgrade-retired-settled");
+                settled_session_after_runner_upgrade("upgrade-retired-settled", "claude");
             let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
             let mut prior: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
             seed(&mut prior);
@@ -6825,7 +7220,8 @@ mod tests {
     fn interrupted_turn_after_runner_upgrade(
         label: &str,
     ) -> (PathBuf, DurableRunnerConfig, PathBuf) {
-        let (directory, mut config, _, saved) = settled_session_after_runner_upgrade(label);
+        let (directory, mut config, _, saved) =
+            settled_session_after_runner_upgrade(label, "claude");
         config.run_id = "run-1".to_owned();
         config.turn_id = "turn-1".to_owned();
         config.item_id = "item-1".to_owned();
@@ -6955,7 +7351,7 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
 
         let (directory, mut config, payload, _) =
-            settled_session_after_runner_upgrade("upgrade-relocated-settled");
+            settled_session_after_runner_upgrade("upgrade-relocated-settled", "claude");
         let (command, args) = relocate_upgraded_install(&directory, &mut config);
         // The controller attaches with the payload it saved, which still names
         // the old install's paths.
@@ -7034,10 +7430,11 @@ mod tests {
             ("command_moved", "launch_shape_changed"),
             ("args_changed", "launch_shape_changed"),
             ("agent_server_release", ""),
+            ("agent_runtime_release", ""),
             ("acpx_release", ""),
         ] {
             let (directory, mut config, _, saved) =
-                settled_session_after_runner_upgrade("upgrade-strict");
+                settled_session_after_runner_upgrade("upgrade-strict", "claude");
             let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
             let mut state: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
             let profile = config.acpx_launch_profile.as_mut().unwrap();
@@ -7081,6 +7478,9 @@ mod tests {
                 }
                 "args_changed" => profile.args.push("--changed".into()),
                 "agent_server_release" => state.descriptor.agent_server_version = "0.0.1".into(),
+                "agent_runtime_release" => {
+                    state.descriptor.agent_runtime_version = Some("0.3.286".into())
+                }
                 "acpx_release" => {
                     state.descriptor.acpx_version = "0.0.1".into();
                     state.descriptor.provider_version = "0.0.1".into();
@@ -7119,7 +7519,7 @@ mod tests {
     #[test]
     fn a_settled_session_saved_by_the_previous_acpx_release_continues() {
         let (directory, config, payload, saved) =
-            settled_session_after_runner_upgrade("previous-acpx-settled");
+            settled_session_after_runner_upgrade("previous-acpx-settled", "claude");
         let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
         let mut prior: AcpxDurableState = serde_json::from_slice(&saved).unwrap();
         prior.descriptor.acpx_version = "0.13.1".into();
@@ -7166,5 +7566,50 @@ mod tests {
         // close path of a lost turn instead of failing the restore.
         assert!(restored.active_turn_id.is_none());
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    // The previous release bundled Agent SDK 0.3.286 and Codex 0.160.0 behind
+    // the same bridge command digests. A runner that bundles a newer runtime
+    // cannot restore a session that runtime saved, whether the session was
+    // settled or a deploy landed mid-turn. Restore refuses it by name, opens no
+    // provider and keeps the saved bytes; the server then continues the task in
+    // a fresh provider session in the same workspace.
+    #[cfg(unix)]
+    #[test]
+    fn a_session_saved_by_the_previous_agent_runtime_is_refused_by_name() {
+        let mut cases = Vec::new();
+        for (agent, runtime) in [("claude", "0.3.286"), ("codex", "0.160.0")] {
+            let (directory, config, _, _) =
+                settled_session_after_runner_upgrade(&format!("previous-runtime-{agent}"), agent);
+            cases.push((agent, runtime, directory, config));
+        }
+        let (directory, config, _) =
+            interrupted_turn_after_runner_upgrade("previous-runtime-mid-turn");
+        cases.push(("claude mid-turn", "0.3.286", directory, config));
+        for (label, runtime, directory, config) in cases {
+            let state_path = directory.join(ACPX_PROVIDER_STATE_FILE);
+            let mut prior: AcpxDurableState =
+                serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+            prior.descriptor.agent_runtime_version = Some(runtime.into());
+            fs::write(&state_path, serde_json::to_vec(&prior).unwrap()).unwrap();
+            let retained = fs::read(&state_path).unwrap();
+
+            let mut recovered = AcpxCommandExecutor::with_runner_config(&directory, &config);
+            let error = recovered.restore().unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("does not match a qualified immutable profile"),
+                "{label}: {error}"
+            );
+            assert_eq!(
+                error.classification(),
+                Some(crate::durable::PROVIDER_STATE_INCOMPATIBLE),
+                "{label}"
+            );
+            assert!(recovered.session.is_none(), "{label}");
+            assert_eq!(fs::read(&state_path).unwrap(), retained, "{label}");
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 }

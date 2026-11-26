@@ -23,11 +23,11 @@ function stageBody(stageName: string): string {
   return dockerfile.slice(froms[startIdx].index ?? 0, froms[startIdx + 1]?.index ?? dockerfile.length);
 }
 
-it("copies installed dependencies as their own layer, before the per-commit app files", () => {
+it("copies installed dependencies as their own linked layer, before the per-commit app files", () => {
   const production = stageBody("production");
-  const dependencies = production.search(/^COPY --chown=node:node --from=deps \/app\/node_modules \/app\/node_modules$/m);
+  const dependencies = production.search(/^COPY --link --chown=\$\{USER_UID\}:\$\{USER_GID\} --from=deps \/app\/node_modules \/app\/node_modules$/m);
   const app = production.search(/^COPY --chown=node:node --exclude=node_modules --from=build \/app \/app$/m);
-  expect(dependencies, "dependencies must come from the deps stage").toBeGreaterThanOrEqual(0);
+  expect(dependencies, "dependencies must come from the deps stage with --link").toBeGreaterThanOrEqual(0);
   expect(app, "the app copy must leave out the root node_modules").toBeGreaterThan(dependencies);
   // A copy of all of /app from the build stage would put the dependencies
   // back into the per-commit layer.
@@ -53,4 +53,42 @@ it("copies the large provider-pack files as a linked layer with fixed timestamps
   );
   expect(large, "large files need --link so the layer does not depend on the app layer").toBeGreaterThanOrEqual(0);
   expect(rest).toBeGreaterThan(large);
+});
+
+function linkedCopyOwners(text: string): string[] {
+  return [...text.matchAll(/^COPY\b.*$/gim)]
+    .map((m) => m[0])
+    .filter((line) => /\s--link\b/.test(line))
+    .flatMap((line) => [...line.matchAll(/\s--chown=(\S+)/g)].map((m) => m[1]));
+}
+
+function argDefault(stageName: string, name: string): string | undefined {
+  return stageBody(stageName).match(new RegExp(`^ARG ${name}=(\\S+)$`, "m"))?.[1];
+}
+
+it("finds linked copy owners regardless of flag order or instruction case", () => {
+  const fixture = [
+    "COPY --chown=node:node --link --from=deps /a /a",
+    "COPY --link --chown=0:0 --from=pack /b /b",
+    "COPY --chown=node:node --from=build /c /c",
+    "copy --chown=node:node --link --from=deps /d /d",
+    "CoPy --link --chown=0:0 --from=pack /e /e",
+  ].join("\n");
+  expect(linkedCopyOwners(fixture)).toEqual(["node:node", "0:0", "node:node", "0:0"]);
+});
+
+it("gives every linked copy numeric owner ids, because a linked layer cannot look up user names", () => {
+  const owners = linkedCopyOwners(dockerfile);
+  expect(owners.length).toBeGreaterThan(0);
+  for (const owner of owners) {
+    expect(owner, `COPY --link --chown=${owner} must use numeric ids`).toMatch(/^(\d+|\$\{USER_UID\}):(\d+|\$\{USER_GID\})$/);
+  }
+});
+
+it("uses the same owner id defaults in the production stage as the base stage gives the node user", () => {
+  for (const name of ["USER_UID", "USER_GID"]) {
+    const base = argDefault("base", name);
+    expect(base, `the base stage must declare ${name}`).toBeDefined();
+    expect(argDefault("production", name), `${name} defaults must match`).toBe(base);
+  }
 });

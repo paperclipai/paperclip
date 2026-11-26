@@ -38,8 +38,8 @@ import {
 } from "../native-runtime/native-accepted-result-lease-settlement.js";
 import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedRemoteSnapshotSave, settleAbandonedWorkspaceCommandOperation, settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
-import { settlePreparationOnlyRemoteWorkspaceEpoch } from "./remote-workspace-unsaved-files-settlement.js";
-import { settleAbandonedRemoteSnapshotLedger } from "./remote-snapshot-ledger-settlement.js";
+import { preparationOnlyWriterCondition, settlePreparationOnlyRemoteWorkspaceEpoch } from "./remote-workspace-unsaved-files-settlement.js";
+import { retirableRemoteSnapshotLedgerCondition, settleAbandonedRemoteSnapshotLedger } from "./remote-snapshot-ledger-settlement.js";
 import { LOCAL_WORKSPACE_COMMAND_PHASES, runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { copybackOwnerHoldOwner, settleCopybackOwnerHold } from "./copyback-owner-hold.js";
 import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
@@ -62,7 +62,7 @@ import { ENVIRONMENT_LEASE_CONTROLLER_KEY } from "../environment-lease-controlle
 import {
   ENVIRONMENT_CLEANUP_RETRY_MS,
   pendingCleanupDeadlineSql,
-  recoveredOrphanFirstAttemptSql,
+  recoveredCleanupFirstAttemptSql,
 } from "../environment-cleanup-state.js";
 import { settleEnvironmentLoginProbeLease } from "../environment-login-probe-lease-settlement.js";
 import { settleEnvironmentRunLease } from "../environment-run-lease-settlement.js";
@@ -515,7 +515,7 @@ function pendingCleanupKind(): OwnableKind {
   // by the settle; a row from before that is due since its last write).
   // Built per listing: the deadline reader bounds saved deadlines relative to
   // the current time, so it must not be frozen at module load.
-  const dueMs = () => sql<string>`case when ${recoveredOrphanFirstAttemptSql()}
+  const dueMs = () => sql<string>`case when ${recoveredCleanupFirstAttemptSql()}
       then coalesce(case when jsonb_typeof(${environmentLeases.metadata}->'pendingCleanupRecoveredAtMs') = 'number'
         then (${environmentLeases.metadata}->>'pendingCleanupRecoveredAtMs')::numeric end,
         extract(epoch from ${environmentLeases.updatedAt}) * 1000)
@@ -968,7 +968,8 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
         metadata: executionWorkspaces.metadata, updatedAt: executionWorkspaces.updatedAt }).from(executionWorkspaces)
-        .where(sql`(${executionWorkspaces.metadata}->'remoteWorkspace'->>'dirty')::boolean is true`).orderBy(asc(executionWorkspaces.id)).limit(limit + 1).offset(offset);
+        .where(and(sql`(${executionWorkspaces.metadata}->'remoteWorkspace'->>'dirty')::boolean is true`,
+          preparationOnlyWriterCondition())).orderBy(asc(executionWorkspaces.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => {
         const writerRunId = str(json(json(row.metadata).remoteWorkspace).writerRunId);
@@ -983,7 +984,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     listInProgress: async (db, limit, offset) => {
       const rows = await db.select({ id: executionWorkspaceSnapshots.id, companyId: executionWorkspaceSnapshots.companyId,
         sourceRunId: executionWorkspaceSnapshots.sourceRunId, updatedAt: executionWorkspaceSnapshots.updatedAt })
-        .from(executionWorkspaceSnapshots).where(inArray(executionWorkspaceSnapshots.status, ["pending", "uploaded"])).orderBy(asc(executionWorkspaceSnapshots.id)).limit(limit + 1).offset(offset);
+        .from(executionWorkspaceSnapshots).where(retirableRemoteSnapshotLedgerCondition()).orderBy(asc(executionWorkspaceSnapshots.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.sourceRunId, issueId: null,

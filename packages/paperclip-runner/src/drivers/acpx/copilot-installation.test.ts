@@ -177,9 +177,10 @@ describe("Copilot build-owned installation", () => {
       "admissionDiagnosticsSourceSha256", "agentProfileVersion", "grokAdmissionSourceSha256",
       "profileCompatibilitySourceSha256", "runtimeHostSourceSha256", "sidecarErrorSourceSha256",
     ]);
-    for (const [name, field] of [["admission-diagnostics.ts", "admissionDiagnosticsSourceSha256"], ["grok-effort.ts", "grokAdmissionSourceSha256"]]) {
-      expect(current.declaration[field]).toBe(createHash("sha256").update(readFileSync(new URL(name!, import.meta.url))).digest("hex"));
-    }
+    expect(current.declaration).toMatchObject({
+      admissionDiagnosticsSourceSha256: "df8f1aa4f2d1bc63b2635bdd09cb8165c8b7681ddcc2618435c7c08ca90475af",
+      grokAdmissionSourceSha256: "f1e46cf2e1e36b7704bd797b678e3db8db2003f97bdb9d827cfa3d7662698777",
+    });
     expect(isSupportedAcpxProfileVersion("copilot", 69)).toBe(true);
     await expect(verifyCopilotInstallation({ ...QUALIFIED_ACPX_PROFILES.copilot,
       agentProfileVersion: 69, commandDigest: prior.commandDigest })).rejects.toThrow("exact pinned");
@@ -707,7 +708,7 @@ describe("Copilot build-owned installation", () => {
         distributionRoot: root, manifestPath: `${root}/.paperclip-copilot-closure.json`,
         expectedClosureSha256: COPILOT_CLOSURE_SHA256[`${process.platform}-${process.arch}` as keyof typeof COPILOT_CLOSURE_SHA256],
         executable: "copilot", fixedArguments: COPILOT_LAUNCH_ARGUMENTS, isolatedCacheEnvironmentName: "COPILOT_PKG_CACHE_HOME",
-        copilotDistributionDirectory: "distribution",
+        copilotDistributionDirectory: "distribution", storeFamily: "copilot",
       });
       expect(result.commandDigest).toBe(QUALIFIED_ACPX_PROFILES.copilot.commandDigest);
       expect(result.openCommand).toBe(openCommand);

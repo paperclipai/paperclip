@@ -312,7 +312,7 @@ describe("issue goal context routes", () => {
     );
     expect(mockIssueService.findMentionedProjectIds).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
-      { includeCommentBodies: false },
+      { includeCommentBodies: false, issue: expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }) },
     );
     expect(mockGoalService.getDefaultCompanyGoal).not.toHaveBeenCalled();
   });

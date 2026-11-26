@@ -7,6 +7,7 @@ import {
   type McpAppModelContext,
   type McpAppResourceCsp,
 } from "@paperclipai/shared";
+import { safeExternalHttpUrl } from "../../lib/safe-url";
 
 /**
  * Host side of the MCP Apps postMessage protocol (spec 2026-01-26). Pure and
@@ -90,17 +91,6 @@ export function isJsonRpcMessage(value: unknown): value is JsonRpcMessage {
   return message?.jsonrpc === "2.0" && (typeof message.method === "string" || "id" in message);
 }
 
-/** Only http(s) links leave the sandbox, and always into a new browsing context. */
-export function safeExternalUrl(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : null;
-  } catch {
-    return null;
-  }
-}
-
 export function createMcpAppHost(options: McpAppHostOptions) {
   let initialized = false;
   // Set once this document has sent `ui/initialize`. Requests that act on the
@@ -176,7 +166,7 @@ export function createMcpAppHost(options: McpAppHostOptions) {
         return;
       }
       case "ui/open-link": {
-        const url = safeExternalUrl(params.url);
+        const url = safeExternalHttpUrl(params.url);
         if (!url) {
           fail(message.id, SERVER_ERROR, "Only http and https links can be opened");
           return;

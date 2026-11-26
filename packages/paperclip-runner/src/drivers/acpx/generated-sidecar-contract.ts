@@ -70,6 +70,28 @@ export const GENERATED_ACPX_SIDECAR_PROVIDER_POLICY_FIELDS = [
 
 export const GENERATED_ACPX_BACKGROUND_TASKS_MAX_LIVE = 9007199254740991;
 
+export const GENERATED_ANTIGRAVITY_SWARM_PROVIDER_MODE = "swarm";
+export const GENERATED_ANTIGRAVITY_SWARM_ENVELOPE_SCHEMA = "paperclip.native-model-envelope.v3";
+export const GENERATED_ANTIGRAVITY_SWARM_REQUEST_FIELD = "swarmRequest";
+export const GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS = 16000;
+export const GENERATED_ANTIGRAVITY_SWARM_CREDENTIAL_FACTS_FIELD = "paperclip";
+export const GENERATED_ANTIGRAVITY_SWARM_CHANNELS = ["provider_default", "stable"] as const;
+export type GeneratedAntigravitySwarmChannel = (typeof GENERATED_ANTIGRAVITY_SWARM_CHANNELS)[number];
+export const GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL = "provider_default";
+export const GENERATED_ANTIGRAVITY_SWARM_ACCOUNT_SHA256_PATTERN = /^[a-f0-9]{64}$/;
+
+export type GeneratedAntigravitySwarmCredentialFacts = { swarmChannel?: GeneratedAntigravitySwarmChannel; accountSha256?: string };
+
+/** The closed facts, or null when the value is not exactly that shape. */
+export function readGeneratedAntigravitySwarmCredentialFacts(value: unknown): GeneratedAntigravitySwarmCredentialFacts | null {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return null;
+  const facts = value as Record<string, unknown>;
+  if (Object.keys(facts).some((key) => key !== "swarmChannel" && key !== "accountSha256")) return null;
+  if (facts.swarmChannel !== undefined && !(GENERATED_ANTIGRAVITY_SWARM_CHANNELS as readonly unknown[]).includes(facts.swarmChannel)) return null;
+  if (facts.accountSha256 !== undefined && (typeof facts.accountSha256 !== "string" || !GENERATED_ANTIGRAVITY_SWARM_ACCOUNT_SHA256_PATTERN.test(facts.accountSha256))) return null;
+  return { ...(facts.swarmChannel === undefined ? {} : { swarmChannel: facts.swarmChannel as GeneratedAntigravitySwarmChannel }), ...(facts.accountSha256 === undefined ? {} : { accountSha256: facts.accountSha256 as string }) };
+}
+
 export type GeneratedAcpxBackgroundTasks = { live: number };
 
 export function readGeneratedAcpxBackgroundTasks(value: unknown): GeneratedAcpxBackgroundTasks | null {

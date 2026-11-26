@@ -52,11 +52,15 @@ export function createOpenCodeFinishDiagnosticForwarder(send: (frame: Warning) =
 }
 
 const TOOL_DELIVERY_KEYS = "callIdSha256,handlerMs,outcome,schema,socketIdleMs,socketRequestIndex,written";
+const TOOL_DELIVERY_KEYS_WITH_ARGUMENTS = "argumentNames,argumentNamesTruncated,callIdSha256,handlerMs,outcome,schema,socketIdleMs,socketRequestIndex,undeclaredArgumentCount,written";
+const validArgumentNames = (names: unknown) => names === null || (Array.isArray(names) && JSON.stringify(names).length <= 1_024
+  && names.every(name => typeof name === "string" && /^[A-Za-z0-9_.-]{1,64}$/.test(name)));
 // Delivery records carry only hashes, counters and timings. Reject anything
 // else so this channel cannot forward tool inputs or results.
 function validToolDelivery(value: Record<string, unknown>): boolean {
   const count = (entry: unknown) => typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0;
-  return Object.keys(value).sort().join(",") === TOOL_DELIVERY_KEYS
+  const keys = Object.keys(value).sort().join(",");
+  return (keys === TOOL_DELIVERY_KEYS || (keys === TOOL_DELIVERY_KEYS_WITH_ARGUMENTS && validArgumentNames(value.argumentNames) && typeof value.argumentNamesTruncated === "boolean" && count(value.undeclaredArgumentCount)))
     && typeof value.callIdSha256 === "string" && /^[a-f0-9]{64}$/.test(value.callIdSha256)
     && count(value.socketRequestIndex) && count(value.handlerMs)
     && (value.socketIdleMs === null || count(value.socketIdleMs))

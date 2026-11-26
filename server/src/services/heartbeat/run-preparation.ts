@@ -1,3 +1,4 @@
+import { isUniqueViolation } from "../../db-errors.js";
 import { skillPackageStore, skillVersionMetadataColumns } from "../skill-package-store.js";
 import { skillAccessService } from "../skill-access.js";
 import { buildReviewPathRecoveryDisposition } from "../recovery/review-path-recovery.js";
@@ -797,6 +798,8 @@ export interface WakeupOptions {
   durableCaseHandoffRequest?: { handoffId: string; wakeupRequestId: string; issueId: string; expectedIssueStatusVersion: number };
   /** Set only by authenticated board wake routes; never copied from caller payloads. */
   manualUserWake?: boolean;
+  /** Optional observer called with the exact skip reason when this wake is skipped. */
+  onSkip?: (reason: string) => void;
   /** Internal resume of a queue with persisted board interruption intent. */
   queuedCommentInterruptId?: string;
   /** Internal delivery of an existing undelivered user comment. */
@@ -838,10 +841,12 @@ export interface WakeupOptions {
     monitorNextCheckAt?: string;
     monitorWakeRequestedAt?: string;
     /** Internal diagnostic only; the callback cannot grant admission. */
-    onExecutionDeferred?: (blockerCause: string) => void;
+    onExecutionDeferred?: (blockerCause: string, recoveryActionId?: string | null) => void;
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
+  /** Durable deferred wake request already saved with the triggering domain write. */
+  executionWaitRequestId?: string;
 }
 
 function sanitizeAgentSessionMessageText(value: unknown): string | null {
@@ -967,7 +972,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     .filter(
       (connection) =>
         (connection.transport === "mcp_remote" ||
-          connection.transport === "local_stdio" || isBrowserUseConnection(connection) || restConnectorFor(connection)) &&
+          connection.transport === "local_stdio" || connection.transport === "plugin" || isBrowserUseConnection(connection) || restConnectorFor(connection)) &&
         !allInstalledConnectionIds.has(connection.id),
     )
     .map(({ id, name }) => ({ id, name }))
@@ -991,9 +996,15 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         (connection.config?.sourceTemplateKey === "github" ||
           connection.transportConfig?.sourceTemplateKey === "github")) ||
         connection.credentialPolicy === "per_user" ||
+        // A plugin connection's health mostly reflects its worker, which the
+        // host restarts; calls fail retryably while it is down. Match the
+        // gateway, which keeps these tools discoverable.
+        connection.transport === "plugin" ||
         !isToolConnectionAttentionHealth(connection.healthStatus)) &&
+      // Keep this transport list equal to the native runtime assignment
+      // digest in native-runtime/runtime-context.ts.
       (connection.transport === "mcp_remote" ||
-        connection.transport === "local_stdio" || isBrowserUseConnection(connection) || restConnectorFor(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id)),
+        connection.transport === "local_stdio" || connection.transport === "plugin" || isBrowserUseConnection(connection) || restConnectorFor(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id)),
   );
   const assignedConnectionIds = new Set(
     assignedConnections.map((connection) => connection.id),
@@ -1029,7 +1040,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     return [];
   }
   const profileKey = `native:${input.agent.id}:${assignmentDigest}`;
-  let [profile] = await input.db
+  const findProfile = () => input.db
     .select()
     .from(toolProfiles)
     .where(
@@ -1039,6 +1050,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
       ),
     )
     .limit(1);
+  let [profile] = await findProfile();
 
   if (!profile) {
     const fullConnectionIds = new Set(
@@ -1075,7 +1087,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     // selector here: truncating or replacing them with connection-wide grants
     // would either lose assigned tools or authorize tools outside this snapshot.
     try {
-      const created = await access.createProfile(input.agent.companyId, {
+      profile = await access.createProfileRow(input.agent.companyId, {
         profileKey,
         name: `Native ${input.agent.id.slice(0, 8)} ${assignmentDigest.slice(0, 12)}`,
         description: "Immutable Paperclip Runner MCP assignment profile.",
@@ -1088,22 +1100,10 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         },
         entries,
       });
-      [profile] = await input.db
-        .select()
-        .from(toolProfiles)
-        .where(eq(toolProfiles.id, created.id))
-        .limit(1);
     } catch (error) {
-      [profile] = await input.db
-        .select()
-        .from(toolProfiles)
-        .where(
-          and(
-            eq(toolProfiles.companyId, input.agent.companyId),
-            eq(toolProfiles.profileKey, profileKey),
-          ),
-        )
-        .limit(1);
+      if (!isUniqueViolation(error, "tool_profiles_company_key_uq") &&
+          !isUniqueViolation(error, "tool_profiles_company_name_uq")) throw error;
+      [profile] = await findProfile();
       if (!profile) throw error;
     }
   }
@@ -2318,6 +2318,15 @@ export async function buildPaperclipWakePayload(input: {
   const annotationCommentId = readNonEmptyString(
     input.contextSnapshot.annotationCommentId,
   );
+  const annotationReaction = readNonEmptyString(
+    input.contextSnapshot.annotationReaction,
+  );
+  const annotationReactionUserId = readNonEmptyString(
+    input.contextSnapshot.annotationReactionUserId,
+  );
+  const annotationReactionAuthor = annotationReactionUserId
+    ? { type: "user", id: annotationReactionUserId }
+    : null;
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const conversationMode = input.contextSnapshot.conversationMode === true;
   const continuationSummary = conversationMode ? null : input.continuationSummary ?? null;
@@ -2575,6 +2584,9 @@ export async function buildPaperclipWakePayload(input: {
                 : row.authorUserId
                   ? { type: "user", id: row.authorUserId }
                   : { type: row.authorType, id: null },
+              reaction: annotationReaction
+                ? { name: annotationReaction, author: annotationReactionAuthor }
+                : null,
             })),
           )
       : [];

@@ -392,7 +392,6 @@
   --folder-color-cyan: #06b6d4;
   --folder-color-amber: #f59e0b;
   --folder-color-slate: #64748b;
-  --gtc-folder-row: 1rem minmax(0, 1fr) auto;
   --gtc-folder-row-actions: 1rem minmax(0, 1fr) auto auto;
   --sz-folder-rail: 13.25rem;
   --sz-folder-sheet-max: 80dvh;
@@ -477,6 +476,7 @@
   --motion-ease-scroll-pill-in: cubic-bezier(0.23, 1, 0.32, 1);
   --motion-ease-scroll-pill-out: cubic-bezier(0.7, 0, 0.84, 0);
   --motion-pane-glide: 320ms;           /* properties-pane maximize/restore glide */
+  --plan-pane-attention-duration: 520ms;
   --motion-pane-reveal: var(--motion-duration-slow);
   --motion-ease-pane-reveal: var(--motion-ease-out-expo);
   --motion-pane-width-reset: 200ms;
@@ -615,6 +615,31 @@
   --tc-composer-visible-nav-offset: calc(4rem + var(--spacing) * 1.5 + var(--sz-safe-bottom));
   /* With the dock's pb-1, leave 12px below the card when the nav hides. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
+
+  /* Dashboard Board (experimental Responsibilities). Every card is this one
+     height whatever it says, sized to a full card: padding 1.5rem, title
+     2 lines (2.5rem), bar 2 lines (2rem + 0.125rem), number (1.75rem +
+     0.625rem), target and metric (1rem), gap 2 lines (2rem + 0.25rem), two
+     reasons of 2 lines (4.25rem + 0.5rem) and "and N more" (1rem). Narrow
+     boards wrap the cards at this minimum width. */
+  --responsibility-board-card-h: 17.5rem;
+  --responsibility-board-wrap-cols: repeat(auto-fill, minmax(14rem, 1fr));
+
+  /* Dashboard Automation view (experimental Responsibilities): how much of a
+     responsibility runs without its owner, as one hue at rising strength (the
+     in-progress blue: work running without you); Manual is the inert gray.
+     The fills feed the shared .status-chip / .status-fill recipes; the icon
+     hue is the AA-tuned glyph blue. Each responsibility is one full-width row
+     of three parts on wide panes: what it is and how automated (a fixed
+     reading column), what already runs (a medium column), and the manual
+     tasks that could be automated (the rest). Narrow panes stack them. */
+  --responsibility-automation-manual: var(--status-task-backlog);
+  --responsibility-automation-some: color-mix(in srgb, var(--status-task-in_progress) 40%, var(--status-task-backlog));
+  --responsibility-automation-mostly: color-mix(in srgb, var(--status-task-in_progress) 70%, var(--status-task-backlog));
+  --responsibility-automation-automated: var(--status-task-in_progress);
+  --responsibility-automation-icon-manual: var(--status-task-icon-backlog);
+  --responsibility-automation-icon-automated: var(--status-task-icon-in_progress);
+  --responsibility-automation-row-cols: minmax(13rem, 16rem) minmax(15rem, 22rem) minmax(0, 1fr);
 
   /* Agent detail page (Refine-v2). Surfaces mix the theme's own foreground
      into its background, so the same tokens read in light and dark. */
@@ -1463,6 +1488,22 @@ html:has(.paperclip-app-shell[data-keyboard-open="true"] [data-classic-task-shel
 /* Properties-pane maximize/restore glide (left animates between docked and
    sidebar-flush while the pane is position:fixed). */
 .tc-pane-glide { transition: left var(--motion-pane-glide) var(--motion-ease-standard); }
+[data-plan-pane-attention]:focus {
+  outline: var(--sz-2px) solid transparent;
+  outline-offset: calc(-1 * var(--sz-2px));
+  animation: plan-pane-attention var(--plan-pane-attention-duration) var(--motion-ease-standard) both;
+}
+@keyframes plan-pane-attention {
+  from { outline-color: var(--plan-pane-attention-start, transparent); }
+  25% { outline-color: var(--ring); }
+  to { outline-color: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-plan-pane-attention]:focus {
+    --plan-pane-attention-start: var(--ring);
+    animation-timing-function: steps(1, end);
+  }
+}
 .properties-panel-docked {
   transition: width var(--motion-pane-reveal) var(--motion-ease-pane-reveal),
     opacity var(--motion-pane-reveal) var(--motion-ease-pane-reveal);
@@ -3137,7 +3178,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-18: calc(100dvh - 2rem); /* Extracted from ui/src/components/RoutineRunVariablesDialog.test.tsx (max-h-[calc(100dvh-2rem)]). */
   --sz-calc-19: calc(1rem + env(safe-area-inset-bottom)); /* Extracted from ui/src/components/RoutineRunVariablesDialog.test.tsx (pb-[calc(1rem+env(safe-area-inset-bottom))]). */
   --sz-calc-20: min(calc(100dvh - 2rem),42rem); /* Extracted from ui/src/components/RoutineRunVariablesDialog.tsx (max-h-[min(calc(100dvh-2rem),42rem)]). */
-  --sz-100dvh: 100dvh; /* Extracted from ui/src/components/RoutineSubSidebar.tsx (max-h-[100dvh]). */
+  --sz-100dvh: 100dvh; /* Originally extracted from the removed RoutineSubSidebar (max-h-[100dvh]). */
   --sz-calc-21: calc(1.5rem + 5rem + env(safe-area-inset-bottom)); /* Extracted from ui/src/components/ScrollToBottom.tsx (bottom-[calc(1.5rem+5rem+env(safe-area-inset-bottom))]). */
   --sz-calc-22: calc(320px + 1.5rem); /* Extracted from ui/src/components/ScrollToBottom.tsx (right-[calc(320px+1.5rem)]). */
   --sz-calc-23: min(32rem,calc(100vw - 2rem)); /* Extracted from ui/src/components/SearchableSelect.tsx (max-w-[min(32rem,calc(100vw-2rem))]). */
@@ -4788,7 +4829,6 @@ html:has(.design-proposal-theme) [data-slot="card-title"] { color: var(--foregro
    over the app background, matching the main-pane header and pane boundaries. */
 .design-sidebar { display: flex; flex-direction: column; height: 100%; min-height: 0; border-inline-end: var(--task-row-rule-width) solid var(--design-sidebar-border); background: var(--design-sidebar-surface); background-clip: padding-box; }
 .design-sidebar-brand { display: flex; align-items: center; gap: var(--design-page-control-gap); flex-shrink: 0; height: var(--design-page-header-height); padding-inline: var(--design-sidebar-inset); font-size: var(--design-page-type-size); font-weight: var(--font-weight-semibold); }
-.coordinator-sidebar .design-sidebar-brand[data-collapsed] { height: auto; flex-direction: column; padding-block: var(--design-sidebar-item-inset); }
 .design-sidebar-search { flex-shrink: 0; color: var(--muted-foreground); }
 .design-sidebar-search svg { width: var(--design-page-icon-size); height: var(--design-page-icon-size); }
 .design-sidebar-search:hover { background: var(--muted-highlight); color: var(--foreground); }
@@ -4809,16 +4849,34 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   color: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
 }
 .design-sidebar .design-sidebar-item { min-height: var(--design-sidebar-item-height); margin-inline: var(--design-sidebar-item-inset); padding-inline: var(--design-sidebar-item-inset); color: var(--design-sidebar-item-foreground); font-size: var(--design-sidebar-label-size); line-height: var(--design-sidebar-label-leading); }
+.design-sidebar-project-toggle { width: calc(100% - var(--design-sidebar-item-inset) * 2); }
 .design-sidebar .design-sidebar-item:is(:hover, [aria-current="page"]) { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
+.design-sidebar-pin-target > [aria-pressed] { opacity: 0; pointer-events: none; }
+.design-sidebar-pin-target:is(:hover, :has(> [aria-current="page"], > :focus-visible)) {
+  > .design-sidebar-item { padding-inline-end: calc(var(--spacing) * 10); background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
+  > [aria-pressed] { opacity: 1; pointer-events: auto; }
+}
+.design-sidebar-pinned-row > button:not(.design-sidebar-item) { pointer-events: none; }
+.design-sidebar-pinned-row:is(:hover, :focus-within) {
+  > .design-sidebar-pinned-item { padding-inline-end: calc(var(--spacing) * 16); background: var(--design-sidebar-item-highlight); }
+  > button:not(.design-sidebar-item) { opacity: 1; pointer-events: auto; }
+}
+@media (pointer: coarse) {
+  .design-sidebar-pinned-row > .design-sidebar-pinned-item { padding-inline-end: calc(var(--spacing) * 16); }
+  .design-sidebar-pinned-row > button:not(.design-sidebar-item) { pointer-events: auto; }
+}
 .design-sidebar-new-task { display: flex; justify-content: flex-start; width: calc(100% - var(--design-sidebar-item-inset) * 2); height: var(--design-sidebar-item-height); margin-inline: var(--design-sidebar-item-inset); padding-inline: var(--design-sidebar-item-inset); gap: calc(var(--spacing) * 2.5); font-size: var(--design-sidebar-label-size); line-height: var(--design-sidebar-label-leading); font-weight: var(--font-weight-medium); color: var(--design-sidebar-item-foreground); }
 .design-sidebar-new-task svg { width: var(--design-page-icon-size); height: var(--design-page-icon-size); }
 .design-sidebar-new-task:hover { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
 .design-sidebar-recents .design-sidebar-item { font-weight: var(--font-weight-normal); }
 .design-sidebar-navigation > :not(.design-sidebar-recents) { flex-shrink: 0; }
 .design-sidebar-recents { display: flex; flex: 1; min-height: 0; }
+.design-sidebar-recents [data-slot="sidebar-group-label"] { color: var(--muted-foreground); }
 .design-sidebar-recents > div { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
 .design-sidebar-recents > div > :first-child { flex-shrink: 0; }
 .design-sidebar-recents > div > :last-child { flex: 1; min-height: 0; }
+.design-sidebar-recents [data-slot="collapsible-content"][data-state="open"],
+.design-sidebar-recents [data-slot="collapsible-content"] > div { display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; }
 .design-sidebar-recent-list {
   --recent-fade-top: 0px;
   --recent-fade-bottom: 0px;
@@ -4954,8 +5012,11 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   font-size: var(--design-page-type-size);
   line-height: var(--design-page-type-leading);
   font-weight: var(--font-weight-normal);
-  background: var(--design-page-control-surface);
+  background-color: var(--design-page-control-surface);
   color: var(--muted-foreground);
+}
+[data-canonical-toolbar] select:not([multiple], .appearance-none) {
+  padding-inline-end: var(--native-select-end-padding);
 }
 [data-canonical-toolbar] button:not([data-toolbar-clear]):is([data-size="icon"], [data-size="icon-sm"], [data-size="icon-xs"], .design-toolbar-icon) {
   width: var(--collection-toolbar-height);
@@ -4963,7 +5024,7 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
 }
 [data-canonical-toolbar] :is(button:not([data-toolbar-clear], .canonical-tab), a[data-slot="button"], select, [data-toolbar-control]):is(:hover, [aria-pressed="true"], [aria-selected="true"], [data-active="true"], [data-state="open"]) {
   color: var(--foreground);
-  background: var(--muted-highlight);
+  background-color: var(--muted-highlight);
 }
 [data-canonical-toolbar] button:is([data-toolbar-primary], .design-new-task) {
   margin-inline-start: 0;
@@ -5232,8 +5293,29 @@ html:not(.dark) .coordinator-sidebar {
 .coordinator-decision-card [data-attention-context] :is(p, span, button, time) { font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
 .coordinator-decision-card [data-decision-prompt] { font-size: var(--text-base); line-height: var(--text-base--line-height); font-weight: var(--font-weight-medium); }
 /* The Needs You toolbar fits one row: the search takes what the filters leave. */
-.coordinator-needs-you [data-toolbar-search] { width: 100%; min-width: 0; }
+[data-canonical-toolbar="inbox"] { justify-content: space-between; }
+[data-canonical-toolbar="inbox"] .design-toolbar-actions { margin-inline-start: 0; }
+.coordinator-needs-you:not([data-coordinator-decision-history]) > :not([role="toolbar"], [data-inbox-folders]) { max-width: var(--container-4xl); margin-inline: auto; }
+[data-coordinator-decision-history] > :not([data-decision-history]),
+[data-coordinator-decision-history] > [data-decision-history] > :not([role="toolbar"], [data-inbox-folders]) { max-width: var(--container-4xl); }
 .coordinator-needs-you [data-toolbar-search] input { flex: 1; width: auto; }
+.inbox-run-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: start;
+  font-size: var(--task-row-title-size);
+  line-height: var(--task-row-title-leading);
+}
+.inbox-run-table :is(th, td) {
+  height: var(--task-row-height-comfortable);
+  padding-inline: var(--task-row-gap);
+  border-bottom: var(--task-row-rule-width) solid var(--task-row-rule-color);
+  white-space: nowrap;
+}
+.inbox-run-table :is(th, td):first-child { padding-inline-start: var(--task-row-padding-inline); }
+.inbox-run-table :is(th, td):last-child { text-align: end; padding-inline-end: var(--task-row-padding-inline); }
+.inbox-run-table th { color: var(--muted-foreground); font-weight: var(--font-weight-medium); text-align: start; }
+.inbox-run-table tbody tr:is(:hover, :focus-within) { background: var(--task-row-surface-hover); }
 .coordinator-decision-card [data-needs-you-panel] :is(p, label) { font-size: var(--text-compact); line-height: calc(var(--spacing) * 5); }
 .coordinator-decision-card [data-needs-you-panel] :is(p, label, span).text-xs { font-size: var(--text-xs); line-height: calc(var(--spacing) * 4.5); }
 .coordinator-decision-card [data-decision-actions] :is(button, a):is([data-slot="button"], [data-variant]) { height: calc(var(--spacing) * 8); padding-inline: calc(var(--spacing) * 2.5); font-size: var(--text-compact); }
@@ -5404,7 +5486,31 @@ html:not(.dark) .coordinator-sidebar {
 }
 
 /* Large collection empty states share the artifact fan, with 20px rhythm. */
-.empty-state-artwork > p { margin-block: 0; }
+.empty-state[data-placement="upper"] {
+  /* Center the group in the upper 70%, allowing its contents to fit on short screens. */
+  grid-template-rows: minmax(max-content, 70%) 1fr;
+}
+.empty-state-logo {
+  display: block;
+  inline-size: var(--sz-200px);
+  block-size: var(--sz-200px);
+  background: var(--muted);
+  mask: url("/favicon.svg") center / contain no-repeat;
+}
+/* Let a page-level empty state take the space left by its own toolbar and labels. */
+#main-content:has(> .empty-state, > .empty-state-page, > :only-child > .empty-state),
+#main-content > :is(.empty-state-page, :only-child:has(> .empty-state)) {
+  display: flex;
+  flex-direction: column;
+}
+#main-content > :is(.empty-state-page, :only-child:has(> .empty-state)) { flex: 1; }
+.paperclip-app-shell[data-mobile="true"] .app-content-column:has(#main-content > .empty-state, #main-content > .empty-state-page, #main-content > :only-child > .empty-state) {
+  min-height: calc(100dvh - var(--sz-safe-top));
+}
+.paperclip-app-shell[data-mobile="true"] .app-content-row:has(#main-content > .empty-state, #main-content > .empty-state-page, #main-content > :only-child > .empty-state) {
+  display: flex;
+  flex: 1;
+}
 .empty-state-graphic { display: flex; align-items: flex-end; justify-content: center; max-width: 100%; }
 [data-canonical-toolbar] input:not([type="checkbox"], [type="radio"]) {
   height: var(--collection-toolbar-height);
@@ -5784,3 +5890,16 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
 .secret-value-masked {
   -webkit-text-security: disc;
 }
+
+:root {
+  --routine-title-min: calc(var(--spacing) * 48);
+  --routine-column-project: calc(var(--spacing) * 36);
+  --routine-column-assignee: calc(var(--spacing) * 36);
+  --routine-column-responsibleUser: calc(var(--spacing) * 36);
+  --routine-column-lastRun: calc(var(--spacing) * 52);
+  --routine-column-enabled: calc(var(--spacing) * 24);
+  --routine-actions-width: calc(var(--spacing) * 20);
+  --routine-select-width: calc(var(--spacing) * 6);
+}
+.routine-table { min-width: max-content; }
+.routine-table-grid { display: grid; align-items: center; gap: calc(var(--spacing) * 3); }

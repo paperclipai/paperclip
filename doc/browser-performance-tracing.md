@@ -272,7 +272,8 @@ Attributes (the complete allowlist):
 | `SampleRate` | all, when sampling | 1-in-N weight |
 
 Resource: `service.name`, `service.version` (the UI build commit),
-`deployment.environment.name`.
+`deployment.environment.name`, and `paperclip.instance.host` when
+`PAPERCLIP_TRACING_INSTANCE_HOST=true` and a public HTTP(S) URL is configured.
 
 Not sent: URLs, paths with ids, query strings, hashes, referrers, user agent,
 user, company, or task identifiers, titles, or content. Server spans carry no

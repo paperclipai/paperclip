@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, sql, type SQL } from "drizzle-orm";
 import { executionWorkspaceSnapshots, executionWorkspaces, heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { persistActivity, publishActivity, type ActivityPublication } from "../activity-log.js";
@@ -13,6 +13,16 @@ export const ABANDONED_REMOTE_SNAPSHOT_LEDGER_REASON = "abandoned_remote_snapsho
 const TERMINAL_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
 
 type Snapshot = typeof executionWorkspaceSnapshots.$inferSelect;
+
+export function retirableRemoteSnapshotLedgerCondition(): SQL {
+  return and(eq(executionWorkspaceSnapshots.status, "pending"), isNull(executionWorkspaceSnapshots.objectKey),
+    sql`not exists (select 1 from workspace_operations operation where operation.company_id = ${executionWorkspaceSnapshots.companyId}
+      and operation.id = ${executionWorkspaceSnapshots.sourceOperationId} and operation.phase <> 'remote_workspace_snapshot')`,
+    sql`not exists (select 1 from execution_workspaces workspace where workspace.company_id = ${executionWorkspaceSnapshots.companyId}
+      and workspace.id = ${executionWorkspaceSnapshots.executionWorkspaceId}
+      and workspace.metadata->'remoteWorkspace'->>'writerRunId' = ${executionWorkspaceSnapshots.sourceRunId}::text
+      and workspace.metadata->'remoteWorkspace'->>'epoch' = ${executionWorkspaceSnapshots.epoch}::text)`)!;
+}
 
 export async function retireEndedRemoteSnapshotLedgerRow(tx: Db, input: {
   companyId: string; snapshotId: string; now: Date; proof: string;

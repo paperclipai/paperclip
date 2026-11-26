@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { gradeQuestionResume, questionPath, validResumeQuestionForm, type QuestionPath } from "./question-resume-scoring.js";
+import { includesSubmittedReference, submittedReferencePattern } from "./submitted-reference.js";
 import { gradeContinuation } from "./continuation-scoring.js";
 import { gradeLifecycleBaseline } from "./lifecycle-baseline.js";
 import { continuationScenario } from "./continuation-cases.js";
@@ -181,12 +182,33 @@ describe("native question/resume path qualification", () => {
     expect(gradeLifecycleBaseline(r).filter(c => !c.passed)).toEqual([]);
   });
   it.each([
-    "Welcome to the afternoon meetup, AMBERnonce.",
+    "Welcome to the club meetup this afternoon; reference: AMBERnonce.",
     "Welcome to the afternoon meetup. Use AMBERnonce",
+    "Welcome to the afternoon meetup. Reference: _AMBERnonce_.",
+    "Welcome to the afternoon meetup. Reference: __AMBERnonce__.",
+    "Welcome to the afternoon meetup. Reference: **AMBERnonce**.",
+  ])("accepts the complete supplied reference without the answer's instruction wording: %s", body => {
+    const r = recording();
+    r[2].documents[0].body = body;
+    expect(failed(r)).toEqual([]);
+  });
+  it.each([
+    "Welcome to the afternoon meetup, AMBERnonc.",
+    "Welcome to the afternoon meetup, AMBERnonce2.",
+    "Welcome to the afternoon meetup, xAMBERnonce.",
+    "Welcome to the afternoon meetup, AMBERnonce_extra.",
+    "Welcome to the afternoon meetup, AMBERnonce-extra.",
+    "Welcome to the afternoon meetup, old-AMBERnonce.",
+    "Welcome to the afternoon meetup, old_AMBERnonce.",
+    "Welcome to the afternoon meetup, _AMBERnonce_extra_.",
   ])("rejects a shortened supplied reference in the saved document: %s", body => {
     const r = recording();
     r[2].documents[0].body = body;
     expect(failed(r)).toContain("question-resume.complete-evidence");
+  });
+  it("never matches an empty reference marker", () => {
+    expect(includesSubmittedReference("Welcome to the afternoon meetup ! here", "")).toBe(false);
+    expect(() => submittedReferencePattern("")).toThrow();
   });
   it("does not admit an optional Other field on the semantic path", () => {
     const r = recording(["semantic", "semantic"]);

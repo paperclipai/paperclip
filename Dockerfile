@@ -127,8 +127,9 @@ COPY scripts/create-provider-pack-archive.mjs scripts/link-plugin-dev-sdk.mjs sc
 COPY packages/paperclip-eval-kernel /packages/paperclip-eval-kernel
 COPY packages/paperclip-runner /packages/paperclip-runner
 # build:typescript checks the Runner's generated provider-failure contract
-# against this copy, which @paperclipai/shared owns.
-COPY packages/shared/src/provider-failure.generated.ts /packages/shared/src/
+# and the Antigravity model catalog against these copies, which
+# @paperclipai/shared owns.
+COPY packages/shared/src/provider-failure.generated.ts packages/shared/src/antigravity-models.generated.ts /packages/shared/src/
 
 # Debian bookworm is the oldest glibc any consumer runs, so a daemon compiled
 # here also runs on trixie. The pack copies this Node binary as its own
@@ -314,7 +315,7 @@ COPY --link --from=runner-artifacts-build /out-transport/ /
 FROM base AS build
 WORKDIR /app
 COPY --from=deps /app /app
-COPY . .
+COPY --exclude=docker/remote-runtimes . .
 COPY --from=runner-artifacts /runner-package/dist /app/packages/paperclip-runner/dist
 COPY --from=runner-artifacts /runner-package/node_modules/.cache/paperclip-runner-build-inputs.json /app/packages/paperclip-runner/node_modules/.cache/paperclip-runner-build-inputs.json
 ARG PAPERCLIP_RUNNER_EXPECT_INPUTS_DIGEST=""
@@ -395,10 +396,11 @@ COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
 # Installed dependencies are ~2.9 GB of /app and change only with the lockfile.
-# Copied from the deps stage as their own layer, a commit that leaves the
-# lockfile alone does not push or pull them again. The build stage writes
-# nothing under the root node_modules, so the rest of /app is copied without it.
-COPY --chown=node:node --from=deps /app/node_modules /app/node_modules
+# Copied from the deps stage as their own linked layer so a commit that leaves
+# the lockfile alone neither re-copies 2.9 GB onto the parent layer nor pushes
+# or pulls them again. The build stage writes nothing under the root
+# node_modules, so the rest of /app is copied without it.
+COPY --link --chown=${USER_UID}:${USER_GID} --from=deps /app/node_modules /app/node_modules
 COPY --chown=node:node --exclude=node_modules --from=build /app /app
 
 # Large provider binaries first, linked so the layer does not depend on the
@@ -406,6 +408,13 @@ COPY --chown=node:node --exclude=node_modules --from=build /app /app
 COPY --link --chown=0:0 --from=runner-provider-pack /provider-pack-large/ /opt/paperclip-runner/provider-pack/
 COPY --chown=0:0 --from=runner-provider-pack /provider-pack /opt/paperclip-runner/provider-pack
 COPY --from=runner-provider-pack /provider-pack-transport/ /opt/paperclip-runner/
+ARG PAPERCLIP_BUILD_COMMIT=""
+ARG PAPERCLIP_MACOS_RUNTIME_INPUTS_DIGEST=""
+RUN --mount=type=bind,source=docker/remote-runtimes,target=/tmp/paperclip-remote-runtimes \
+  mkdir -p /opt/paperclip-runner/remote-runtimes \
+  && node scripts/macos-runner-runtime.mjs install /tmp/paperclip-remote-runtimes /opt/paperclip-runner/remote-runtimes "${PAPERCLIP_BUILD_COMMIT}" "${PAPERCLIP_MACOS_RUNTIME_INPUTS_DIGEST}" \
+  && chmod -R a+rX /opt/paperclip-runner/remote-runtimes \
+  && find /opt/paperclip-runner/remote-runtimes -exec touch -h -d @0 {} +
 # Managed deployments can remap node's UID at startup. This immutable pack
 # contains public code and integrity metadata, never credentials; it must remain
 # readable afterward. The Runner build grants a+rX, and every copy up to this
@@ -422,7 +431,6 @@ ENV PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH=/opt/paperclip-runner/provider-pa
 # The build stage still receives the commit before writing dist/build-info.json.
 # Empty for local builds, preserving the server's normal version fallbacks.
 ARG PAPERCLIP_BUILD_VERSION=""
-ARG PAPERCLIP_BUILD_COMMIT=""
 ENV NODE_ENV=production \
   HOME=/paperclip \
   HOST=0.0.0.0 \

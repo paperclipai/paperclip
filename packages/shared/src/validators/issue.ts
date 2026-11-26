@@ -2,7 +2,7 @@ import { CHAT_PROVIDERS } from "../types/chat-channels.js";
 import { taskWorkspaceSelectionSchema } from "./task-workspace.js";
 import { z } from "zod";
 import { maxStringLength } from "./text.js";
-import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS, ISSUE_SUMMARIES_MAX_IDS } from "../constants.js";
+import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS, ISSUE_DOCUMENT_BATCH_MAX_IDS, ISSUE_SUMMARIES_MAX_IDS } from "../constants.js";
 import { normalizeIssueIdentifier } from "../issue-references.js";
 
 import {
@@ -50,6 +50,7 @@ import { objectWithoutDefaults } from "./partial.js";
 import { questionSetToAskUserQuestionsPayload } from "../question-set.js";
 
 export const issueSummariesQuerySchema = z.object({
+  navigation: z.literal("true").optional(),
   ids: z.string().transform((value) => value.split(",").map((id) => id.trim().toLowerCase()))
     .pipe(z.array(z.string().guid()).min(1).max(ISSUE_SUMMARIES_MAX_IDS))
     .transform((ids) => [...new Set(ids)]),
@@ -1214,9 +1215,25 @@ export const addIssueCommentSchema = z.object({
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
+  /**
+   * A native command the signed-in user started with the composer's leading
+   * `/name` (parseLeadingUserCommand). Only "swarm" (Google Antigravity) exists.
+   */
+  nativeCommand: z.literal("swarm").optional(),
 });
 
 export type AddIssueComment = z.infer<typeof addIssueCommentSchema>;
+
+/**
+ * A comment request that carries `nativeCommand: "swarm"`. Its body is the swarm's
+ * request, and an empty one passes validation so the route answers every request
+ * without one with the same documented refusal (422 `antigravity_swarm_unavailable`).
+ * Ordinary comments keep `addIssueCommentSchema` and its non-empty body.
+ */
+export const addIssueSwarmCommentSchema = addIssueCommentSchema.extend({
+  body: multilineTextSchema.pipe(z.string()),
+  nativeCommand: z.literal("swarm"),
+});
 
 export const issueThreadInteractionStatusSchema = z.enum(
   ISSUE_THREAD_INTERACTION_STATUSES,
@@ -1334,6 +1351,15 @@ export const issueDocumentKeySchema = z
     /^[a-z0-9][a-z0-9_-]*$/,
     "Document key must be lowercase letters, numbers, _ or -",
   );
+
+export const issueDocumentBatchQuerySchema = z.object({
+  key: z.string().trim().toLowerCase().pipe(issueDocumentKeySchema),
+  issueIds: z.string().max(ISSUE_DOCUMENT_BATCH_MAX_IDS * 40)
+    .transform(value => value.split(",").map(id => id.trim().toLowerCase()))
+    .pipe(z.array(z.string().guid()).min(1).max(ISSUE_DOCUMENT_BATCH_MAX_IDS))
+    .transform(ids => [...new Set(ids)]),
+  includeBody: z.enum(["true", "false"]).default("true").transform(value => value === "true"),
+}).strict();
 
 export const suggestedTaskDraftSchema = z
   .object({
@@ -2330,7 +2356,7 @@ export type WithdrawIssueThreadInteraction = z.infer<
 >;
 
 export const respondIssueThreadInteractionSchema = z.object({
-  answers: z.array(askUserQuestionsAnswerSchema).max(20),
+  answers: z.array(askUserQuestionsAnswerSchema).max(64),
   summaryMarkdown: multilineTextSchema
     .pipe(z.string().max(20000))
     .nullable()

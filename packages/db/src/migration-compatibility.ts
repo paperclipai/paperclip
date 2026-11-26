@@ -583,6 +583,20 @@ function describeReasons(result: MigrationCompatResult, compatibility: Migration
     .map((reason) => `    - ${reason.code}${reason.statements.length ? ` (statement ${reason.statements.join(", ")})` : ""}: ${reason.message}`);
 }
 
+const ONLINE_COMPATIBLE_OVERRIDE_TEMPLATE = `-- ${MIGRATION_COMPAT_DIRECTIVE} online_compatible: <why the previous release keeps working and no lock is held long>`;
+const REQUIRES_STAGING_OVERRIDE_TEMPLATE = `-- ${MIGRATION_COMPAT_DIRECTIVE} requires_staging: <why this cannot be split and who accepts the maintenance deploy>`;
+
+function formatBlocker(fileName: string, result: MigrationCompatResult, summary: string, remedies: readonly string[]): string {
+  return [
+    `${fileName}: ${summary}`,
+    ...describeReasons(result, "requires_staging"),
+    ...describeReasons(result, "unknown"),
+    "  Do one of the following:",
+    ...remedies.map((remedy, index) => `    ${index + 1}. ${remedy}`),
+    "  See \"Migration compatibility with the running release\" in doc/DATABASE.md.",
+  ].join("\n");
+}
+
 export type MigrationCompatGuardOptions = {
   /**
    * SQL of every migration that applies before the new ones. Without it,
@@ -599,8 +613,7 @@ export type MigrationCompatGuardOptions = {
 
 /**
  * The pull-request guard for migrations a change adds, in apply order.
- * `unknown` without a valid override fails. `requires_staging` passes with a
- * notice until deployers enforce staging.
+ * `unknown` or `requires_staging` without a valid override fails.
  */
 export function checkNewMigrationCompatibility(
   migrations: readonly MigrationCompatInput[],
@@ -625,25 +638,25 @@ export function checkNewMigrationCompatibility(
     if (result.overrideError) {
       errors.push(`${fileName}: ${result.overrideError}`);
     } else if (result.compatibility === "unknown") {
-      errors.push([
-        `${fileName}: cannot tell whether this migration is safe to apply while the previous release is still running.`,
-        ...describeReasons(result, "unknown"),
-        "  Do one of the following:",
-        "    1. Rewrite it so every statement is recognized as compatible, for example CREATE INDEX CONCURRENTLY,",
-        "       ADD CONSTRAINT ... NOT VALID, or a nullable column or constant default.",
-        "    2. Split it into an expand migration now and a contract migration in a later release.",
-        "    3. If you have verified it yourself, make these the first lines of the file:",
-        `         -- ${MIGRATION_COMPAT_DIRECTIVE} online_compatible: <why the previous release keeps working and no lock is held long>`,
-        `       or, if the previous release cannot run against it:`,
-        `         -- ${MIGRATION_COMPAT_DIRECTIVE} requires_staging: <what has to ship first>`,
-        "  See \"Migration compatibility with the running release\" in doc/DATABASE.md.",
-      ].join("\n"));
+      errors.push(formatBlocker(fileName, result, "cannot tell whether this migration is safe to apply while the previous release is still running.", [
+        "Rewrite it so every statement is recognized as compatible, for example CREATE INDEX CONCURRENTLY,\n       ADD CONSTRAINT ... NOT VALID, or a nullable column or constant default.",
+        "Split it into an expand migration now and a contract migration in a later release.",
+        [
+          "If you have verified it yourself, make these the first lines of the file:",
+          `         ${ONLINE_COMPATIBLE_OVERRIDE_TEMPLATE}`,
+          "       or, if the previous release cannot run against it and a maintenance deploy is acceptable:",
+          `         ${REQUIRES_STAGING_OVERRIDE_TEMPLATE}`,
+        ].join("\n"),
+      ]));
     } else if (result.compatibility === "requires_staging") {
-      notices.push([
-        `${fileName}: requires_staging. The previous release cannot keep running against this migration, so a deployer that may not pause will hold it back.`,
-        ...(result.override ? [`    - override: ${result.override.justification}`] : describeReasons(result, "requires_staging")),
-        "  This does not fail the check yet. Prefer an expand migration now and the contract migration in a later release.",
-      ].join("\n"));
+      if (result.override) {
+        notices.push(`${fileName}: requires_staging by override, so it ships with a maintenance deploy: ${result.override.justification}`);
+      } else {
+        errors.push(formatBlocker(fileName, result, "requires_staging. The previous release cannot keep running against this migration, so every deployer that serves two releases at once refuses it and the release needs a maintenance deploy.", [
+          "Split it into backward-compatible expand and contract migrations: ship the expand migration\n       (new tables, nullable columns, NOT VALID constraints, CONCURRENTLY indexes) and the code that\n       uses it now, and the contract migration (drops, renames, NOT NULL) in a later release.",
+          `If a maintenance deploy is acceptable, make this the first line of the file:\n         ${REQUIRES_STAGING_OVERRIDE_TEMPLATE}`,
+        ]));
+      }
     } else if (result.override) {
       notices.push(`${fileName}: online_compatible by override (classifier said ${result.classified}): ${result.override.justification}`);
     }

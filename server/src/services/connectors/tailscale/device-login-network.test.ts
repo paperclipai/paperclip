@@ -5,6 +5,12 @@ import path from "node:path";
 import { createTailscaleNetworkManager } from "./network.js";
 import { parseTailscaleLoginStatus } from "./device-login-status.js";
 
+async function publishState(statePath: string, state: unknown) {
+  const nextPath = `${statePath}.next`;
+  await fs.writeFile(nextPath, JSON.stringify(state));
+  await fs.rename(nextPath, statePath);
+}
+
 describe("Tailscale interactive device enrollment", () => {
   let dir: string;
   let manager: ReturnType<typeof createTailscaleNetworkManager>;
@@ -52,7 +58,7 @@ if (args[1] === 'up') {
     const state = JSON.parse(await fs.readFile(statePath, "utf8"));
     expect(credential).not.toBe(emptyState);
     expect(authorized).not.toHaveBeenCalled();
-    await fs.writeFile(statePath, JSON.stringify({ ...state, BackendState: "Running", AuthURL: "" }));
+    await publishState(statePath, { ...state, BackendState: "Running", AuthURL: "" });
     await vi.waitFor(() => expect(authorized).toHaveBeenCalledOnce());
     await manager.close();
     const restored = await manager.connect({ identity: input.identity, credential, persist: input.persist });
@@ -65,7 +71,7 @@ if (args[1] === 'up') {
       login: { expiresAt: Date.now() + 60_000, onAuthorized: authorized, onFailure: vi.fn() } };
     const socket = await manager.connect(input);
     const statePath = path.join(path.dirname(socket), "state");
-    await fs.writeFile(statePath, JSON.stringify({ BackendState: "NeedsMachineAuth" }));
+    await publishState(statePath, { BackendState: "NeedsMachineAuth" });
     expect(await manager.loginStatus(input.identity)).toEqual({ status: "needs_approval" });
     await manager.disconnect(input.identity);
     expect(await manager.loginStatus(input.identity)).toBeNull();

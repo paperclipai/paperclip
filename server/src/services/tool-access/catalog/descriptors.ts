@@ -18,6 +18,8 @@ function asRecord(value: unknown): Record<string, unknown> {
 export type McpToolDescriptor = {
   name: string;
   title?: string | null;
+  /** Raw upstream title before Paperclip substitutes a local display title; in-memory only. */
+  upstreamTitle?: string | null;
   description?: string | null;
   inputSchema?: Record<string, unknown>;
   annotations?: Record<string, unknown>;

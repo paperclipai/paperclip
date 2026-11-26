@@ -3,7 +3,7 @@ import { heartbeatExternalProvider, nativeExecutionUsesTaskWorkspace } from "./e
 import { heartbeatRuns, issues, type Db, type agents } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import { readGitCacheExpiration } from "../git-workspace-restoration.js";
-import type { ExecutionWorkspace, InstanceSettings, IssueExecutionWorkspaceSettings, ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
+import { readRemoteWorkspaceAuthority, type ExecutionWorkspace, type InstanceSettings, type IssueExecutionWorkspaceSettings, type ProjectExecutionWorkspacePolicy } from "@paperclipai/shared";
 import { parseObject } from "../../adapters/utils.js";
 import { logger } from "../../middleware/logger.js";
 import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
@@ -20,7 +20,7 @@ import {
 import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../task-workspace-access.js";
 import { isBoundIsolatedTaskDirectory, shouldUseIsolatedTaskDirectory } from "../isolated-task-directory.js";
 import { readTaskDirectoryRetention } from "../isolated-task-directory-retention.js";
-import { isBoundFreshPluginTaskDirectory } from "../provider-fresh-workspace.js";
+import { isBoundPluginTaskDirectory } from "../provider-fresh-workspace.js";
 import {
   findNativeChatWorkspaceScope,
   nativeChatWorkspaceCwd,
@@ -38,6 +38,13 @@ import { ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { resolveNativeRecoveryExecutionWorkspaceBinding, resolveExecutionWorkspaceReuseRequestForIssue, WorkspaceValidationFailure } from "./workspaces.js";
 
 type Issue = typeof issues.$inferSelect;
+
+function gitCacheExpirationRemovedWorkspace(workspace: Parameters<typeof readGitCacheExpiration>[0]) {
+  if (!readRemoteWorkspaceAuthority(workspace.metadata)) return readGitCacheExpiration(workspace)?.workspaceRemoved === true;
+  const expiration = parseObject(workspace.metadata?.gitCacheExpiration);
+  return expiration.schema === "paperclip.git-cache-expiration.v1" && expiration.workspaceRemoved === true
+    && Number.isSafeInteger(expiration.generation) && expiration.generation === workspace.metadata?.lifecycleGeneration;
+}
 
 export async function resolveSshAuthenticationBeforeRouting(input: {
   agentDefaultEnvironmentId: string | null;
@@ -139,7 +146,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   if (existingExecutionWorkspace && issueId && !controllerOnly && !fresh
     && existingExecutionWorkspace.id === readNonEmptyString(issueRef?.executionWorkspaceId)
     && (existingExecutionWorkspace.status === "archived" || existingExecutionWorkspace.status === "cleanup_failed")
-    && (readGitCacheExpiration(existingExecutionWorkspace as Parameters<typeof readGitCacheExpiration>[0])?.workspaceRemoved
+    && (gitCacheExpirationRemovedWorkspace(existingExecutionWorkspace as Parameters<typeof readGitCacheExpiration>[0])
       || readTaskDirectoryRetention(existingExecutionWorkspace) !== null
       || (existingExecutionWorkspace.sourceIssueId === issueId
         && existingExecutionWorkspace.cleanupReason?.startsWith("issue_terminal") === true))) {
@@ -537,7 +544,7 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     (await isBoundIsolatedTaskDirectory({ companyId: agent.companyId, issueId,
       workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace }) ||
       (selectedEnvironmentForConfig?.driver === "plugin" && agent.adapterType === "paperclip_runner" &&
-        isBoundFreshPluginTaskDirectory({ companyId: agent.companyId, issueId,
+        isBoundPluginTaskDirectory({ companyId: agent.companyId, issueId,
           workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace,
           owner: { agentId: agent.id, environmentId: selectedEnvironmentForConfig.id,
             pluginKey: parseObject(selectedEnvironmentForConfig.config).pluginKey ?? null,
@@ -555,6 +562,8 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     mode: requestedExecutionWorkspaceMode,
     hasProjectWorkspace: workspaceProjectContext?.hasWorkspace ?? false,
     projectWorkspaceId: issueRef.projectWorkspaceId,
+    hasSelectedExecutionWorkspace: Boolean(issueRef.executionWorkspaceId || boundSourceWorkspace) ||
+      requestedShouldReuseExisting || taskWorkspaceIntent?.selection.kind === "existing",
     workspaceStrategies: [
       config.workspaceStrategy,
       issueAssigneeOverrides?.adapterConfig?.workspaceStrategy,

@@ -29,6 +29,7 @@ import {
   readConfigValueAtPath,
   writeConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
+import { pluginManifestRevision } from "./plugin-manifest-revision.js";
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
@@ -229,10 +230,15 @@ export async function resolvePluginEnvironmentDriverByKey(input: {
   });
 }
 
-type CachedProviderSchema = { pluginId: string; revision: string; schema: Record<string, unknown> | null };
+type CachedProviderSchema = {
+  pluginId: string; revision: string; schema: Record<string, unknown> | null;
+  checkedAt: number; manifestRevision: number; lookup: number;
+};
 const providerSchemas = new WeakMap<Db, Map<string, CachedProviderSchema>>();
 const MAX_CACHED_PROVIDER_SCHEMAS = 32;
 const MAX_CACHED_PROVIDER_SCHEMA_BYTES = 64 * 1024;
+export const PROVIDER_SCHEMA_REUSE_MS = 5_000;
+let providerSchemaLookups = 0;
 
 export async function resolvePluginSandboxProviderConfigSchema(input: {
   db: Db; driverKey: string;
@@ -240,6 +246,13 @@ export async function resolvePluginSandboxProviderConfigSchema(input: {
   const { db, driverKey } = input;
   let cache = providerSchemas.get(db);
   const cached = cache?.get(driverKey);
+  const manifestRevision = pluginManifestRevision();
+  const startedAt = Date.now();
+  const lookup = ++providerSchemaLookups;
+  if (cached && cached.manifestRevision === manifestRevision
+    && startedAt >= cached.checkedAt && startedAt - cached.checkedAt < PROVIDER_SCHEMA_REUSE_MS) {
+    return structuredClone(cached.schema);
+  }
   const unchanged = sql`coalesce(plugin_id = ${cached?.pluginId ?? null}::uuid
     and revision = ${cached?.revision ?? null}, false)`;
   const [row] = await db.execute<{
@@ -272,15 +285,20 @@ export async function resolvePluginSandboxProviderConfigSchema(input: {
     if (!cached || cached.pluginId !== row.pluginId || cached.revision !== row.revision) {
       throw new Error("Sandbox provider schema revision did not match the retained definition");
     }
+    if (cache!.get(driverKey) === cached) cache!.set(driverKey, { ...cached, checkedAt: startedAt, manifestRevision, lookup });
     return structuredClone(cached.schema);
   }
   const schema = row.configSchema && typeof row.configSchema === "object" && !Array.isArray(row.configSchema)
     ? row.configSchema as Record<string, unknown> : null;
+  const current = cache?.get(driverKey);
+  if (current && current.lookup > lookup) return schema;
   cache?.delete(driverKey);
   if (Buffer.byteLength(JSON.stringify(schema)) <= MAX_CACHED_PROVIDER_SCHEMA_BYTES) {
     if (!cache) { cache = new Map(); providerSchemas.set(db, cache); }
     if (cache.size >= MAX_CACHED_PROVIDER_SCHEMAS) cache.delete(cache.keys().next().value!);
-    cache.set(driverKey, { pluginId: row.pluginId, revision: row.revision, schema: structuredClone(schema) });
+    cache.set(driverKey, {
+      pluginId: row.pluginId, revision: row.revision, schema: structuredClone(schema), checkedAt: startedAt, manifestRevision, lookup,
+    });
   }
   return schema;
 }

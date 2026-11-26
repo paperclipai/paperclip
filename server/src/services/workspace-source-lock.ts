@@ -6,6 +6,7 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
 import { readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
 import { withWorkspaceLockKeepalive } from "./native-runtime/native-workspace-lock-keepalive.js";
+import { WORKSPACE_SOURCE_KEY_LIMIT } from "./workspace-source-key-limit.js";
 
 type SourceTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type SourceLockScope = { db: Db; companyId: string; keys: Set<string>; transaction: SourceTransaction; active: boolean };
@@ -85,7 +86,7 @@ export async function withWorkspaceSourceLocks<T>(db: Db,
     ...(input.issueIds ?? []).map(id => `isolated_repository_source:${input.companyId}:${id}`),
     ...(input.projectIds ?? []).map(id => `managed_project_source:${input.companyId}:${id}`),
   ])].sort();
-  if (keys.length > 128) throw new Error("workspace_source_scope_limit");
+  if (keys.length > WORKSPACE_SOURCE_KEY_LIMIT) throw new Error("workspace_source_scope_limit");
   const held = heldScope();
   if (wait && held?.db === db) throw new Error("workspace_source_wait_requires_independent_scope");
   const acquire = async (scope: SourceLockScope, nonblocking: boolean) => {
@@ -99,7 +100,7 @@ export async function withWorkspaceSourceLocks<T>(db: Db,
     }
   };
   if (held?.db === db) {
-    if (new Set([...held.keys, ...keys]).size > 128) throw new Error("workspace_source_scope_limit");
+    if (new Set([...held.keys, ...keys]).size > WORKSPACE_SOURCE_KEY_LIMIT) throw new Error("workspace_source_scope_limit");
     if (held.companyId !== input.companyId) throw new Error("workspace_source_company_mismatch");
     const onlyProjectKeys = keys.filter(key => !held.keys.has(key)).every(key => key.startsWith("managed_project_source:"));
     const alreadyHasProject = [...held.keys].some(key => key.startsWith("managed_project_source:"));

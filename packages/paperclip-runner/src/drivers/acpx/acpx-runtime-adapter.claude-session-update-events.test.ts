@@ -9,7 +9,7 @@ import type { AcpRuntimeEvent } from "acpx/runtime";
 import { expect, it, vi } from "vitest";
 
 import { ACP_SESSION_UPDATE_EVENT_KINDS, createAcpSessionUpdateEventConverter } from "./acp-session-update-event.js";
-import { openCodexAcpxRuntime } from "./acpx-runtime-adapter.js";
+import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import type { VerifiedAcpxCommandLease } from "./installation-integrity.js";
 import { resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 import type { AcpxRuntimePortOpenOptions } from "./runtime-host.js";
@@ -112,6 +112,7 @@ it("converts the real Claude ACP stream exactly as ACPX does for every update ki
   const mcpPort = (mcp.address() as { port: number }).port;
   let capture: Raw[] | null = null;
   let promptAnswered = false;
+  let taskNotificationTurnsEnded = 0;
   const entry = createRequire(import.meta.url).resolve("@agentclientprotocol/claude-agent-acp/dist/index.js");
   const command: VerifiedAcpxCommandLease = {
     spawn: (args, input) => {
@@ -125,7 +126,11 @@ it("converts the real Claude ACP stream exactly as ACPX does for every update ki
           let message: Record<string, unknown>;
           try { message = JSON.parse(line) as Record<string, unknown>; } catch { continue; }
           if (message.method === undefined && (message.result as { stopReason?: unknown } | undefined)?.stopReason !== undefined) promptAnswered = true;
-          if (message.method === "session/update") capture?.push({ message, afterPromptResponse: promptAnswered });
+          if (message.method !== "session/update") continue;
+          capture?.push({ message, afterPromptResponse: promptAnswered });
+          const update = (message.params as { update: Record<string, unknown> }).update;
+          const origin = (update._meta as { "_claude/origin"?: { kind?: unknown } } | undefined)?.["_claude/origin"];
+          if (update.sessionUpdate === "usage_update" && origin?.kind === "task-notification") taskNotificationTurnsEnded += 1;
         }
       });
       return child;
@@ -151,7 +156,7 @@ it("converts the real Claude ACP stream exactly as ACPX does for every update ki
   } as unknown as AcpxRuntimePortOpenOptions;
   const converter = createAcpSessionUpdateEventConverter();
   const seen = new Map<string, { acpx: number; paperclip: number }>();
-  let port: Awaited<ReturnType<typeof openCodexAcpxRuntime>> | undefined;
+  let port: Awaited<ReturnType<typeof openQualifiedAcpxRuntime>> | undefined;
   const runTurn = async (turnId: string, text: string) => {
     capture = [];
     promptAnswered = false;
@@ -178,13 +183,14 @@ it("converts the real Claude ACP stream exactly as ACPX does for every update ki
     return yielded;
   };
   try {
-    port = await openCodexAcpxRuntime(options, {
+    port = await openQualifiedAcpxRuntime(options, {
       awaitProviderOwnership: async () => undefined,
       awaitProviderExit: child => new Promise<void>(resolve => child.once("exit", () => resolve())),
     });
     await runTurn("turn-mcp", "KINDS-MCP: think, say something and call the probe.");
     await runTurn("turn-foreground", "KINDS-FOREGROUND: run a foreground command.");
     await runTurn("turn-background", "KINDS-BACKGROUND: run a background command.");
+    await vi.waitFor(() => expect(taskNotificationTurnsEnded).toBe(1), { timeout: 30_000, interval: 25 });
     await runTurn("turn-plan", "KINDS-PLAN: write a plan.");
     for (const required of ["tool_call", "tool_call_update", "agent_message_chunk", "agent_thought_chunk", "usage_update", "available_commands_update"]) {
       expect(seen.get(required)?.acpx ?? 0, required).toBeGreaterThan(0);

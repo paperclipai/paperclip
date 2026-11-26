@@ -10,6 +10,13 @@ import { readDocumentAction } from "../protocol-actions/read-document.js";
 import { writeDocumentAction } from "../protocol-actions/write-document.js";
 import { listDocumentRevisionsAction } from "../protocol-actions/list-document-revisions.js";
 import { handoffCaseAction } from "../protocol-actions/handoff-case.js";
+import { listRoutinesAction } from "../protocol-actions/list-routines.js";
+import { updateRoutineAction } from "../protocol-actions/update-routine.js";
+import {
+  REQUEST_HUMAN_INPUT_PROMPT_MAX_LENGTH,
+  REQUEST_HUMAN_INPUT_TITLE_MAX_LENGTH,
+  requestHumanInputAction,
+} from "../protocol-actions/request-human-input.js";
 import { toolInputVariantError } from "../contracts/tool-input-variants.js";
 import type { ValidateFunction } from "ajv/dist/2020.js";
 
@@ -158,7 +165,7 @@ describe("semantic action catalog", () => {
       (action) => action.operationId,
     );
 
-    expect(operationIds).toHaveLength(50);
+    expect(operationIds).toHaveLength(64);
     expect(operationIds).toContain("set_task_monitor");
     expect(operationIds).toContain("send_chat_message");
     expect(new Set(operationIds).size).toBe(operationIds.length);
@@ -178,6 +185,37 @@ describe("semantic action catalog", () => {
     });
     expect(hire?.inputSchema.properties).not.toHaveProperty("adapterConfig");
     expect(hire?.inputSchema.properties).not.toHaveProperty("env");
+  });
+
+  it("keeps each live action's required claims in the catalog", () => {
+    for (const action of [listRoutinesAction, updateRoutineAction]) {
+      expect(paperclipSemanticAction(action.id)?.requiredClaims).toEqual(action.live.descriptor.requiredClaims);
+    }
+    expect(paperclipSemanticAction("list_routines")?.requiredClaims).toEqual(["routines:read"]);
+  });
+
+  it("keeps request_human_input title and prompt bounds aligned across both tool surfaces", () => {
+    const ajv = new Ajv2020({ allErrors: true, allowUnionTypes: true, strict: false });
+    const title = "t".repeat(REQUEST_HUMAN_INPUT_TITLE_MAX_LENGTH);
+    const prompt = "p".repeat(REQUEST_HUMAN_INPUT_PROMPT_MAX_LENGTH);
+    const input = {
+      idempotencyKey: "bounds-check",
+      interactionKind: "confirmation",
+      title,
+      prompt,
+      continuationPolicy: "wake_assignee",
+    };
+    for (const schema of [
+      requestHumanInputAction.live.descriptor.inputSchema,
+      paperclipSemanticAction("request_human_input")!.inputSchema,
+    ]) {
+      expect(schema.properties?.title).toMatchObject({ maxLength: REQUEST_HUMAN_INPUT_TITLE_MAX_LENGTH });
+      expect(schema.properties?.prompt).toMatchObject({ maxLength: REQUEST_HUMAN_INPUT_PROMPT_MAX_LENGTH });
+      const validate = ajv.compile(schema);
+      expect(validate(input), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ ...input, title: `${title}t` })).toBe(false);
+      expect(validate({ ...input, prompt: `${prompt}p` })).toBe(false);
+    }
   });
 
   it("compiles every operation input and output schema", () => {

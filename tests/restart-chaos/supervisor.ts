@@ -183,6 +183,7 @@ export class ChaosSupervisor {
   deployShape: { overlap: boolean; freshHome: boolean } = { overlap: false, freshHome: false };
   ephemeralServer = false;
   swapHook: ((info: SwapPhaseInfo) => Promise<string | void>) | null = null;
+  onServerOutput: ((chunk: Buffer | string, source: string) => void) | null = null;
   private rollingRedeploys = 0;
   /** `--k15-fresh-home`: the instance home and config of the serving generation (generation 0 uses `paths`). */
   private serverHome: { home: string; configPath: string };
@@ -231,6 +232,10 @@ export class ChaosSupervisor {
 
   /** K14 waves: whether the older build or this checkout is serving. */
   get serverBuild(): "upgrade_from" | "current" { return this.serverRoot === this.repositoryRoot ? "current" : "upgrade_from"; }
+
+  private noteServerOutput(chunk: Buffer | string, source: string): void {
+    try { this.onServerOutput?.(chunk, source); } catch (error) { this.timeline.add("server_output_hook_failed", { error: String(error) }); }
+  }
 
   serverLogOffset(): number {
     try { return statSync(this.paths.serverLogPath).size + this.log.writableLength; } catch { return 0; }
@@ -321,8 +326,8 @@ export class ChaosSupervisor {
     this.child = child;
     const window = this.trackWindow(child, "primary");
 
-    child.stdout?.on("data", chunk => this.log.write(chunk));
-    child.stderr?.on("data", chunk => this.log.write(chunk));
+    child.stdout?.on("data", chunk => { this.log.write(chunk); this.noteServerOutput(chunk, `${child.pid}:stdout`); });
+    child.stderr?.on("data", chunk => { this.log.write(chunk); this.noteServerOutput(chunk, `${child.pid}:stderr`); });
     child.once("error", error => { this.spawnErrors.set(child, error); });
     child.once("exit", (code, signal) => {
       if (window) window.exitedAt = Date.now();
@@ -741,8 +746,8 @@ export class ChaosSupervisor {
     record.secondary = { pid: child.pid ?? null, port, spawnedAt: Date.now(), readyAt: null, stoppedAt: null };
     const secondary = { child, port, log, exit: null as string | null };
     this.secondary = secondary;
-    child.stdout?.on("data", chunk => log.write(chunk));
-    child.stderr?.on("data", chunk => log.write(chunk));
+    child.stdout?.on("data", chunk => { log.write(chunk); this.noteServerOutput(chunk, `${child.pid}:stdout`); });
+    child.stderr?.on("data", chunk => { log.write(chunk); this.noteServerOutput(chunk, `${child.pid}:stderr`); });
     child.once("error", error => { this.spawnErrors.set(child, error); });
     child.once("exit", (code, signal) => {
       if (window) window.exitedAt = Date.now();

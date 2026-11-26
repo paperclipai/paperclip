@@ -384,7 +384,7 @@ To make the design-proposals section the canonical directory of the design syste
   points to them; drop the "review references" framing at `DESIGN.md:304` for directory entries.
 - Reframe `maps/storybook-map/README.md:34-35` (exception = the entry's purpose, not a reason for
   separateness) and `60-75` (which entries stay in the directory, which move to a feature home).
-  `doc/DEVELOPING.md:257-277` needs no change unless the commands change.
+  The Storybook section of `doc/DEVELOPING.md` needs no change unless the commands change.
 
 Nothing changes in `scripts/storybook-catalog.mjs` for this: the section already has its own home
 (`specialHomes`, line 17), folder and title rule (106-108), sort slot (`storybook-feature-index.mjs:11`),

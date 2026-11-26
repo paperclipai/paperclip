@@ -1,6 +1,6 @@
 /**
  * `--long-turn-minutes <n>` (15–60): every task's first turn does n minutes of real tool work before its
- * workload, for any cell (README "Long turn").
+ * workload, for any cell (SCENARIOS.md "Long turn").
  *
  * The staging failures of 2026-11-11 followed turns of 14–43 minutes, while every chaos workload finishes in
  * a few minutes. A long turn grows what the run holds when its fault or next wake arrives: the provider

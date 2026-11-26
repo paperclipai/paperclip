@@ -1,5 +1,5 @@
 // Compares one upgrade readiness probe between a pre-fix revision and the working tree
-// on the same PostgreSQL rows. See "Native runner restart recovery" in doc/DEVELOPING.md.
+// on the same PostgreSQL rows. See "Native runner restart recovery" in doc/runner-internals.md.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import crypto, { randomBytes, randomUUID } from "node:crypto";

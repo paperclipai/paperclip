@@ -89,6 +89,29 @@ The classifier produces a `NativeEvidenceAssessment` containing:
 
 The classifier does not update the issue.
 
+### Human unblock owners
+
+A human blocker keeps its explicit user ID through status arbitration and
+transactional commit. An API-bound user on the current issue is preserved when
+the provider gives a generic human name. A provider-supplied `owner.userId`
+takes precedence and must identify an active user member of the same company.
+Without either ID, `owner.name` must match exactly one active company member by
+ID, full name, or email; name and email matching ignore case. Unknown, inactive,
+cross-company, or ambiguous references fall back to the board. They never select
+the task creator merely because that person created the work.
+
+Membership is rechecked and locked with the assessment evidence during commit.
+Board fallback decisions are rechecked too, so a person bound after assessment
+cannot be replaced by a stale board owner. Each status retry rebuilds the
+assessment against current ownership and membership before it decides again.
+The saved user owner supplies the existing personal blocker-attention card;
+binding it does not queue another run of the blocked worker. Existing generic
+board/agent decisions remain readable, and committed historical decisions are
+not rewritten. No result-schema or database migration is required.
+Human binding uses the existing assignment permission check. An agent whose
+`canAssignTasksToHumans` interaction permission is false cannot bind a user
+owner; the transaction is refused without creating that person's blocker card.
+
 ## Completion authority
 
 The persisted completion contract controls how a `done` claim may be accepted.
@@ -122,6 +145,41 @@ Under that policy, a result can complete the issue when:
 
 This produces `completion_claim_policy_accepted`. Independently governed tools
 and effects still enforce their own authorization and approval rules.
+
+### Pull request deliverables
+
+For repository implementation work, native task contracts retain delivery
+obligations across follow-up comments. Agents register their delivery PR as a
+`pull_request` work product and include its URL in result `artifacts`. Creating
+a local commit or opening a PR does not complete that delivery.
+
+Before accepting Done, the server verifies each non-archived PR work product and
+GitHub PR artifact with the company-scoped GitHub resolver. Only a verified merge
+passes. Agent-written `status` and `metadata.state` values cannot prove a merge.
+Open, draft, closed without merge, unavailable, and malformed PR deliverables
+keep the task open. The finish tool returns corrective feedback; finalization
+uses its existing bounded incomplete-work continuation. The agent can fix review
+or CI failures, use the existing monitor for an external wait, or report a
+concrete blocker. This creates no generic human completion approval.
+
+Reassessment uses the same bounded incomplete-delivery continuation as initial
+finalization. A stable unmerged PR does not create a status-race retry deadline.
+The proposed server status controls delivery validation, including when new
+evidence completes a result that previously reported another disposition.
+The transactional commit also checks these outputs, including reassessment
+paths. Human and agent work-product updates lock their source and destination
+tasks in a stable order before changing status or identity. Provider reads occur
+before the transaction, with at most twenty PRs and a shared ten-second abort
+signal for GitHub requests. The locked transaction requires merge proof
+for every current deliverable, so a changed output requires a new assessment.
+There is no new polling worker or schema. Existing saved contracts remain valid;
+new contracts include the delivery guidance and existing unfinished results use
+the server guard. Already terminal tasks are preserved.
+
+Entering a configured review stage keeps the task open and does not require a
+merge first. Conversation responses and server-assigned completion-review runs retain their
+own lifecycle. PR URLs mentioned only in prose as review input or background
+are not declared deliverables and do not create a merge obligation.
 
 ## Decision order
 

@@ -198,6 +198,10 @@ export function exhaustedSystemRecoveryAction(state: SystemRecoveryState, eviden
     return "Saving the agent's files stopped because the sandbox disk is full. Paperclip deletes only inactive tool "
       + "caches it can prove safe, and that did not free enough space. Automatic recovery does not repeat a save that fails the same way. "
       + "Retry saves the files again. The agent's result is kept, and the agent will not repeat its work.";
+  if (state.failure?.cause?.label === "git_operation_in_progress")
+    return "Saving the agent's files stopped because a Git operation (such as a merge or rebase) is still in progress in the workspace. "
+      + "Automatic recovery does not repeat a save that fails the same way. "
+      + "Finish or abort the Git operation, then use Retry to save the files again. The agent's result is kept, and the agent will not repeat its work.";
   const lostFiles = unrecoverableSavedFilesFailure(state);
   if (lostFiles)
     return `Paperclip cannot recover the unsaved files from the previous run: ${unrecoverableSavedFilesReason(lostFiles)}. `

@@ -11,6 +11,7 @@ import { usePreviewFailure } from "./ArtifactPrint";
 import { ROW_ICON, ROW_PLAY } from "./geometry";
 import { glyphOf, isAudio, labelOf, previewSourceOf, treatmentOf, type ArtifactSubject } from "./kinds";
 import { panelDateLabel } from "./when";
+import { safeNavigableUrl } from "@/lib/safe-url";
 
 /**
  * One row, from the panel mock (node 2096:87691) and reused in the thread:
@@ -148,13 +149,14 @@ export function ArtifactRow({ subject, to, href, external = false, onClick, expa
     </>
   );
   const label = `Open ${name}`;
+  const safeHref = safeNavigableUrl(href);
   const control = to ? (
     <Link to={to} aria-label={label} data-testid={`${testId}-open`} className={CONTROL_CLASS}>
       {content}
     </Link>
-  ) : href ? (
+  ) : safeHref ? (
     <a
-      href={href}
+      href={safeHref}
       target={external ? "_blank" : undefined}
       rel={external ? "noreferrer" : undefined}
       aria-label={label}

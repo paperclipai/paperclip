@@ -1,12 +1,15 @@
 import { UI_RETRY_BLOCKED_BY_MODAL, UI_RETRY_BUTTON_MISSING, UI_RETRY_NO_REQUEST, type FaultReceipt, type OracleResult, type RuleId, type RuleResult, type TaskGrade, type TaskRecord, type TaskSample } from "./types.js";
 import { g1Decision } from "./workloads.js";
 import { gradeDiskFullRetry, isDiskFullFault } from "./disk-full-faults.js";
+import { queueWaitFairnessFrom, type QueueFairness, type QueueWaitFairness } from "./agent-slots.js";
 import { enforcedUniversalFailures, gradeUniversal, type SlotFree, type UniversalBounds, type UniversalDbEvidence } from "./universal.js";
 
 /** Pure R1–R6 grading over observer samples (plan §2). No I/O. */
 
 export const ACTIVE_RUN_STATUSES = new Set(["queued", "running", "scheduled_retry"]);
 export const STALL_LIMIT_MS = 3 * 60_000;
+export const PROVIDER_TURN_LIMIT_MS = 10 * 60_000;
+export const PREPARATION_LIMIT_MS = 10 * 60_000;
 const REST_STATUSES_WITH_WORK = new Set(["todo", "in_progress"]);
 
 const ms = (iso: string | null | undefined) => (iso ? Date.parse(iso) : NaN);
@@ -60,7 +63,73 @@ export function expectedFinalStatus(record: TaskRecord): string {
   return record.plan.workload === "G1" && g1Decision(record.plan.nonce) === "reject" ? "cancelled" : "done";
 }
 
-export function gradeR1(record: TaskRecord, budgetMs: number, faults: readonly FaultReceipt[]): RuleResult {
+type TaskRun = NonNullable<TaskSample["runs"]>[number];
+export type CreditedRun = { run: TaskRun; kind: "first run" | "follow-up run" };
+
+function boardComments(record: TaskRecord): Map<string, number | null> {
+  const posted = (at: number | undefined) => typeof at === "number" && Number.isFinite(at) ? at : null;
+  const entries: Array<[string | null | undefined, number | null]> = [
+    [record.followUp?.commentId, posted(record.followUp?.sentAt ?? record.followUp?.at)],
+    [record.stagingMix?.followUp?.commentId, posted(record.stagingMix?.followUp?.at)],
+    ...(record.stagingMix?.afterEndFollowUps ?? []).map((entry): [string, number | null] => [entry.commentId, posted(entry.at)]),
+  ];
+  return new Map(entries.filter((entry): entry is [string, number | null] => typeof entry[0] === "string" && entry[0].length > 0));
+}
+
+const COMMENT_WAKE_REASONS = new Set(["issue_commented", "issue_comment_mentioned", "issue_reopened_via_comment"]);
+
+function runSelection(record: TaskRecord, requireWakeEvidence: boolean): { credited: CreditedRun[]; refusals: string[] } {
+  const latest = new Map<string, TaskRun>();
+  for (const sample of record.samples) for (const run of sample.runs ?? []) latest.set(run.id, run);
+  const undated = [...latest.values()].filter(run => !Number.isFinite(ms(run.createdAt))).map(run => run.id);
+  if (undated.length) return { credited: [], refusals: [`no createdAt for ${undated.join(",")}, so runs cannot be ordered`] };
+  const runs = [...latest.values()].sort((a, b) => ms(a.createdAt) - ms(b.createdAt));
+  const credited: CreditedRun[] = runs[0] && !runs[0].retryOfRunId ? [{ run: runs[0], kind: "first run" }] : [];
+  const refusals: string[] = [];
+  const unexecuted = (run: TaskRun) => run.status === "cancelled" && (!run.startedAt || PRE_DISPATCH_CANCELLATIONS.has(run.errorCode ?? ""));
+  for (const [commentId, sentAt] of boardComments(record)) {
+    const carriers = runs.filter(run => (run.wakeCommentIds ?? []).includes(commentId));
+    if (!carriers.length) continue;
+    if (sentAt === null) { refusals.push(`no send time for follow-up comment ${commentId}`); continue; }
+    const run = carriers.find(candidate => ms(candidate.createdAt) >= sentAt && !unexecuted(candidate));
+    const previous = run && runs.filter(other => ms(other.createdAt) < ms(run.createdAt) && !unexecuted(other)).at(-1);
+    if (!run || !previous || run.retryOfRunId || previous.status !== "succeeded" || !(ms(previous.finishedAt) <= ms(run.createdAt))) continue;
+    if (credited.some(entry => entry.run.id === run.id)) continue;
+    const wake = record.runWakes?.[run.id];
+    if (requireWakeEvidence && !wake) { refusals.push(`no wake evidence for follow-up run ${run.id}`); continue; }
+    if (wake && (wake.continuesRunIds.length || !COMMENT_WAKE_REASONS.has(wake.wakeReason ?? ""))) continue;
+    credited.push({ run, kind: "follow-up run" });
+  }
+  return { credited, refusals };
+}
+
+export function creditedRuns(record: TaskRecord): CreditedRun[] {
+  return runSelection(record, true).credited;
+}
+
+function queueWaitsOf(credited: readonly CreditedRun[]): Array<{ runId: string; createdAt: number; startedAt: number }> {
+  return credited.map(({ run }) => ({ runId: run.id, createdAt: ms(run.createdAt), startedAt: ms(run.startedAt) }))
+    .filter(wait => Number.isFinite(wait.startedAt) && wait.startedAt > wait.createdAt);
+}
+
+export function creditedRunQueuedMs(record: TaskRecord, now: number): number {
+  return Math.max(0, ...runSelection(record, false).credited.filter(({ run }) => run.status === "queued" && !run.startedAt).map(({ run }) => now - ms(run.createdAt)));
+}
+
+export function creditedQueueWaits(record: TaskRecord): Array<{ runId: string; createdAt: number; startedAt: number }> {
+  return queueWaitsOf(runSelection(record, false).credited);
+}
+
+function faultOverlapMs(faults: readonly FaultReceipt[], from: number, to: number): number {
+  return faults.reduce((total, fault) => {
+    const [start, stop] = faultWindow(fault);
+    const overlap = Math.min(stop, to) - Math.max(start, from);
+    return total + (Number.isFinite(overlap) && overlap > 0 ? overlap : 0);
+  }, 0);
+}
+
+export function gradeR1(record: TaskRecord, budgetMs: number, faults: readonly FaultReceipt[],
+  queueWait: QueueWaitFairness = queueWaitFairnessFrom(null)): RuleResult {
   if (record.launchError) return { verdict: "fail", detail: `launch_failed: ${record.launchError}` };
   if (record.retry) return { verdict: "n/a", detail: "task rested needing Retry; graded under R3" };
   const expected = expectedFinalStatus(record);
@@ -68,11 +137,33 @@ export function gradeR1(record: TaskRecord, budgetMs: number, faults: readonly F
   if (record.finalStatus !== expected) {
     return { verdict: "fail", detail: `rested_not_done (status ${record.finalStatus ?? "unknown"}, no Retry offered)` };
   }
-  const allowed = budgetMs + outageOverlapMs(record, faults);
+  const base = budgetMs + outageOverlapMs(record, faults);
   const took = (record.restAt ?? Number.POSITIVE_INFINITY) - record.createdAt!;
+  const seconds = (value: number) => Math.round(value / 1000);
+  if (took <= base) return { verdict: "pass", detail: `${expected} after ${seconds(took)}s (allowed ${seconds(base)}s)` };
+  const { credited, refusals } = runSelection(record, true);
+  const waits = new Map(queueWaitsOf(credited).map(wait => [wait.runId, wait]));
+  const proofs = credited.flatMap(({ run, kind }): Array<{ fairness: QueueFairness; credit: number }> => {
+    const wait = waits.get(run.id);
+    if (wait) {
+      const from = Math.max(wait.createdAt, record.createdAt!);
+      const to = Math.min(wait.startedAt, record.restAt ?? wait.startedAt);
+      return [{ fairness: queueWait(wait.runId, wait.createdAt, wait.startedAt, faults.map(faultWindow)),
+        credit: Math.max(0, to - from - faultOverlapMs(faults, from, to)) }];
+    }
+    return run.startedAt ? [] : [{ fairness: { verdict: "unproven", reason: `${kind} ${run.id} never started` }, credit: 0 }];
+  });
+  const unfair = proofs.map(proof => proof.fairness).find(fairness => fairness.verdict === "unfair");
+  if (unfair && unfair.verdict === "unfair") {
+    return { verdict: "fail", detail: `unfair_queue_wait ${unfair.reason}; done ${seconds(took)}s > ${seconds(base)}s without queue credit` };
+  }
+  const credit = proofs.reduce((total, proof) => total + (proof.fairness.verdict === "fair" ? proof.credit : 0), 0);
+  const unproven = [...proofs.flatMap(({ fairness }) => fairness.verdict === "unproven" ? [fairness.reason] : []), ...refusals];
+  const allowed = base + credit;
+  const note = `${credit ? ` incl. ${seconds(credit)}s fair queue wait` : ""}${unproven.length ? ` (queue wait not credited: ${unproven.join("; ")})` : ""}`;
   return took <= allowed
-    ? { verdict: "pass", detail: `${expected} after ${Math.round(took / 1000)}s (allowed ${Math.round(allowed / 1000)}s)` }
-    : { verdict: "fail", detail: `done_too_late ${Math.round(took / 1000)}s > ${Math.round(allowed / 1000)}s` };
+    ? { verdict: "pass", detail: `${expected} after ${seconds(took)}s (allowed ${seconds(allowed)}s${note})` }
+    : { verdict: "fail", detail: `done_too_late ${seconds(took)}s > ${seconds(allowed)}s${note}` };
 }
 
 export function gradeR2(record: TaskRecord, oracle: OracleResult): RuleResult {
@@ -210,8 +301,9 @@ export function deadRunningRun(sample: TaskSample, readySince: number): { id: st
     if (run.status !== "running") continue;
     // Quiet is not dead while a tool is still in flight or the run's process is verifiably alive.
     if (run.toolInFlight || run.processAlive) continue;
+    const limit = run.preparing ? PREPARATION_LIMIT_MS : run.providerTurnActive ? PROVIDER_TURN_LIMIT_MS : STALL_LIMIT_MS;
     const evidence = Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0, readySince);
-    if (sample.at - evidence > STALL_LIMIT_MS) return { id: run.id, idleMs: sample.at - Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0) };
+    if (sample.at - evidence > limit) return { id: run.id, idleMs: sample.at - Math.max(ms(run.lastEvidenceAt) || 0, ms(run.startedAt) || 0) };
   }
   return null;
 }
@@ -250,10 +342,10 @@ export function gradeR6(record: TaskRecord): RuleResult {
 }
 
 export function gradeTask(record: TaskRecord, faults: readonly FaultReceipt[], budgetMs: number, oracle: OracleResult,
-  universalDb?: UniversalDbEvidence, queue: { bounds?: UniversalBounds; slotFree?: SlotFree } = {}): TaskGrade {
+  universalDb?: UniversalDbEvidence, queue: { bounds?: UniversalBounds; slotFree?: SlotFree; queueWait?: QueueWaitFairness } = {}): TaskGrade {
   const crossing = crossingFaults(record, faults);
   const rules: Record<RuleId, RuleResult> = {
-    R1: gradeR1(record, budgetMs, faults),
+    R1: gradeR1(record, budgetMs, faults, queue.queueWait),
     R2: gradeR2(record, oracle),
     R3: gradeR3(record),
     R4: gradeR4(record),

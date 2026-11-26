@@ -27,6 +27,7 @@ import { claimNativeRestartRecoveries } from "../native-runtime/native-restart-r
 import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 import * as runner from "../../vendor/paperclip-runner/index.js";
 import { prepareAndSelectHeartbeatRuntime, selectHeartbeatRuntime, type HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
+import { ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { resolveRunnerEnvironmentForRun, resolveWarmRunnerIdleTimeoutMsForRun } from "../runner-environment-lifecycle.js";
 import { reserveRunBudget } from "../budget-reservations.js";
 import { legacyControllerClaim } from "../legacy-controller-lease.js";
@@ -772,6 +773,41 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect((await read(run.id)).contextSnapshot?.skillVersions).toEqual({ [key]: versionId });
   });
 
+  it.each(["missing", "available"] as const)("distinguishes an unprepared permitted skill from revoked access on resume (%s)", async sourceStatus => {
+    const { input, run } = await fixture();
+    const key = "company/test/project-skill", versionId = randomUUID();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { skillVersions: { [key]: versionId } } }).where(eq(heartbeatRuns.id, run.id));
+    input.run = await read(run.id);
+    vi.mocked(buildNativeRuntimeContext).mockImplementationOnce(async () => {
+      const context = nativeRuntimeContextFixture();
+      context.instructions.bundle.rootPath = instructionRoot;
+      context.skills = [{ key, runtimeName: "project-skill", versionId, bundle: { ...context.instructions.bundle } }];
+      return { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) };
+    });
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    const saved = await read(run.id);
+    input.run = saved;
+    input.session.persistedNativeExecutionInput = selected.nativeExecution;
+    input.session.persistedRunnerProfile = saved.runnerProfileJson ?? {};
+    const detail = "Failed to materialize the selected skill version: synthetic storage read timed out";
+    input.config.runtimeSkillEntries = [{ key, runtimeName: "project-skill", versionId, source: "/unavailable/project-skill", sourceStatus,
+      missingDetail: sourceStatus === "missing" ? detail : null }];
+    const resuming = selectHeartbeatRuntime(db, input);
+    if (sourceStatus === "missing") {
+      const error = await resuming.then(() => null, (failure: unknown) => failure);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(ConfigurationIncompleteFailure);
+      expect((error as Error).message).not.toContain("access changed");
+      expect((error as Error).message).toContain(key);
+      expect((error as Error).message).toContain(detail);
+      expect((await read(run.id)).runnerProfileJson).toEqual(saved.runnerProfileJson);
+    } else {
+      expect(await resuming).toMatchObject({ selected: true, nativeExecution: selected.nativeExecution });
+    }
+    expect((await read(run.id)).contextSnapshot?.skillVersions).toEqual({ [key]: versionId });
+  });
+
   it.each(["exact", "fresh", "bootstrap", "dead-runner", "expired", "foreign-owner", "missing-audit"] as const)(
     "admits only exact pending Stop cleanup at runtime selection (%s)", async mode => {
       const { input, run, issue } = await fixture();
@@ -940,6 +976,42 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect(await coordinators(run.id)).toHaveLength(0);
     expect(input.onNativeLifecycleSelected).not.toHaveBeenCalled();
     expect(prepareNativeWorkspaceSync).not.toHaveBeenCalled();
+  });
+
+  it.each(["claude_local", "codex_local", "cursor", "gemini_local", "grok_local", "kimi_local", "opencode_local", "pi_local"])("keeps %s SSH runtime and its durable workspace receipt on a volume-free server", async adapterType => {
+    const { input, run, agent, issue } = await fixture(adapterType);
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    const environmentId = randomUUID(), leaseId = randomUUID(), workspaceId = randomUUID();
+    const remoteCwd = "/home/fixture/work/.paperclip-workspaces/task";
+    const reference = { schema: "paperclip.remote-workspace-run.v1", workspaceId, epoch: 1,
+      leaseId, providerLeaseId: "ssh-fixture", remoteCwd, state: "prepared", snapshotId: null };
+    const [workspace] = await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: agent.companyId,
+      name: "SSH task files", mode: "isolated_workspace", strategyType: "project_primary", providerType: "cloud_sandbox", cwd: remoteCwd,
+      metadata: { remoteWorkspace: { schema: "paperclip.remote-workspace.v1", epoch: 1, source: { kind: "empty" },
+        writerRunId: run.id, dirty: true, snapshotId: null, location: { environmentId, leaseId, providerLeaseId: "ssh-fixture", remoteCwd } } } }).returning();
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { remoteWorkspace: reference } }).where(eq(heartbeatRuns.id, run.id));
+    input.workspace.persistedExecutionWorkspace = workspace;
+    input.workspace.executionTarget = { kind: "remote", transport: "ssh", environmentId, leaseId, remoteCwd,
+      workspaceRealization: { mode: "in_place", authoritativeRoot: remoteCwd, pathAliases: [], outboundRestorePaths: [] },
+      spec: { host: "fixture.invalid", username: "fixture", port: 22, remoteWorkspacePath: "/home/fixture/work", remoteCwd,
+        useHostAuth: false, privateKey: null, knownHosts: null, strictHostKeyChecking: true } };
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: true,
+      runtimeConfig: {}, adapterConfig: agent.adapterConfig, agent, issue, target: input.workspace.executionTarget, workspaceId });
+    const selected = await selectHeartbeatRuntime(db, input);
+    expect(selected.selected).toBe(true);
+    if (!selected.selected) throw new Error("Expected legacy SSH runtime selection");
+    expect(selected.nativeExecution).toBeNull();
+    expect((await read(run.id)).runnerProfileJson?.remoteWorkspace).toEqual(reference);
+    expect(await coordinators(run.id)).toHaveLength(0);
+    expect(prepareNativeWorkspaceSync).not.toHaveBeenCalled();
+    input.workspace.executionTarget.spec.remoteCwd = "/other-directory";
+    await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("native Paperclip Runner");
+    input.workspace.executionTarget.spec.remoteCwd = remoteCwd;
+    input.workspace.persistedExecutionWorkspace.companyId = randomUUID();
+    await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("native Paperclip Runner");
+    input.workspace.persistedExecutionWorkspace.companyId = agent.companyId;
+    input.workspace.executionTarget.leaseId = randomUUID();
+    await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("native Paperclip Runner");
   });
 
   it.each(["warm", "per_turn"] as const)("preserves resolved %s policy on an ephemeral server", async mode => {

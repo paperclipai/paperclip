@@ -15,7 +15,7 @@ import { hasCompanyHoldMismatch, projectCompanyHolds } from "./adapters/company-
 import { createLifecycleWorker } from "./application/worker.js";
 import type { LifecycleDriver } from "./application/ports.js";
 
-export { applyAgentPolicyHoldsInTransaction, releaseAgentLifecycleLeaseOfHolderInTransaction, requestAgentLifecycleRecheckInTransaction } from "./adapters/postgres.js";
+export { applyAgentPolicyHoldsInTransaction, releaseAgentLifecycleLeaseOfHolderInTransaction, requestAgentLifecycleRecheckInTransaction, wakeStoppingAgentLifecycleInTransaction } from "./adapters/postgres.js";
 export { companyHoldMismatch, fenceActiveCompanyAgentStopsInTransaction } from "./adapters/company-policy.js";
 
 export { AgentLifecycleConflict, canConfigureAgentConnection, isAgentAwaitingSetup, isAgentSetupDraft } from "./domain/policy.js";

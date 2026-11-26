@@ -21,7 +21,8 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
-import { decideNativeReplacement } from "./native-replacement-evidence.js";
+import { decideNativeReplacement, type NativeReplacementDecision } from "./native-replacement-evidence.js";
+import { freshSessionRetryContext } from "./fresh-session-retry-context.js";
 import { issueService } from "../issues.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
@@ -239,6 +240,10 @@ export async function remoteWorkspaceReplacementEvidence(
 export function nativeReplacementPending() {
   return and(
     eq(heartbeatRuns.status, "failed"),
+    // An exact chat Retry is authorized only through its own chat action and
+    // the user's Retry intent. A system successor cannot hold that authority,
+    // so admission would always refuse it. Keep the task's hold for the user.
+    sql`not (coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) ? 'chatFailedRunRetry')`,
     eq(nativeRunFinalizations.phase, "terminal_failure"),
     or(inArray(
       nativeRunFinalizations.failureCode,
@@ -435,11 +440,15 @@ export async function reconcileSafeNativeReplacements(
       if (historicalListener && !await historicalListenerGuardEvidence(db, run)) continue;
       const preClaim = coordinator.failureCode === NATIVE_PRE_CLAIM_FAILURE_CODE;
       if (preClaim && !await preClaimFailureEvidence(db, run)) continue;
-      const stoppedSession = coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !preClaim
-        ? await options.verifyStoppedSession?.(run) ?? null : null;
+      const needsStopProof = coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !preClaim;
+      const stoppedSession = needsStopProof ? await options.verifyStoppedSession?.(run) ?? null : null;
       // A transport label alone is not evidence. Keep inspecting these candidates
       // as process cleanup and the final transcript become durable.
-      if (coordinator.failureCode !== "native_provider_terminal_failed" && !historicalListener && !preClaim && !stoppedSession) continue;
+      const providerKind = record(execution.provider).kind;
+      const stopProofUnavailable = needsStopProof && !stoppedSession
+        && ((typeof providerKind === "string" && providerKind !== "codex")
+          || leases.some(lease => lease.provider !== null && lease.provider !== "local"));
+      if (needsStopProof && !stoppedSession && !stopProofUnavailable) continue;
       const invocations = await db
         .select()
         .from(toolInvocations)
@@ -540,7 +549,40 @@ export async function reconcileSafeNativeReplacements(
         && run.runnerProfileJson?.nativeWorkspaceSync == null && nativeRunHasNoWorkspaceAccess(run);
       if (preClaim && (invocations.length || !noWorkspaceToSave
         && (!remoteWorkspace?.workspacePreserved || !remoteWorkspace.providerStopped))) continue;
-      const decision = decideNativeReplacement({
+      const completedInvocation = (row: typeof invocations[number]) =>
+        row.status === "succeeded" && Boolean(row.completedAt) && Boolean(row.resultHash);
+      const executions = stopProofUnavailable ? (await db
+        .select({ seq: heartbeatRunEvents.seq, eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+        .from(heartbeatRunEvents)
+        .where(and(eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+          inArray(heartbeatRunEvents.eventType, ["tool.execution.started", "tool.execution.completed"]))))
+        .map(event => {
+          const envelope = record(event.payload);
+          return { seq: event.seq, eventType: event.eventType,
+            payload: envelope.prpEvent ? record(record(envelope.prpEvent).payload) : envelope };
+        }) : [];
+      const unconfirmedActions = stopProofUnavailable ? [...new Set([
+        ...invocations.filter(row => row.riskLevel !== "read" && !completedInvocation(row)).map(row => row.toolName),
+        ...uncertainProviderActions.flatMap(action => {
+          const started = executions.find(event => event.eventType === "tool.execution.started"
+            && String(event.payload.executionId ?? event.payload.name) === action);
+          const executionId = started?.payload.executionId;
+          if (started && executionId != null && executions.some(event => event.eventType === "tool.execution.completed"
+            && event.seq > started.seq && event.payload.executionId === executionId && event.payload.status === "completed"
+            && (event.payload.exitCode == null || event.payload.exitCode === 0) && event.payload.error == null))
+            return [];
+          if (started && started.payload.transport !== "process" && invocations.some(row => completedInvocation(row)
+            && (row.id === executionId || row.correlationId === executionId))) return [];
+          return [typeof started?.payload.name === "string" ? started.payload.name : action];
+        }),
+      ])] : [];
+      const unprovenAction = unconfirmedActions[0];
+      const decision: NativeReplacementDecision = stopProofUnavailable ? unprovenAction ? { allowed: false,
+        cause: "uncertain_external_action",
+        nextAction: `Reconcile ${unprovenAction} and preserve its result before continuing. Do not repeat it automatically.` }
+        : { allowed: false, cause: "provider_failure_meaning_unverified",
+          nextAction: "The previous session could not be confirmed stopped and recorded no unconfirmed action, so the task continues in a fresh run from its saved work." }
+        : decideNativeReplacement({
         failedSession: true,
         // A facade transport failure can conceal an authoritative protocol
         // rejection. A stopped process and read receipts do not resolve that.
@@ -610,7 +652,7 @@ export async function reconcileSafeNativeReplacements(
             (ownershipBound && !await ownershipProofExpired(tx, run))
           )
             return;
-          await notifyExecutionRunWork(tx, { companyId: run.companyId });
+          await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
           await tx
             .update(nativeRunFinalizations)
             .set({
@@ -618,6 +660,7 @@ export async function reconcileSafeNativeReplacements(
                 ...current.failureDetail,
                 replacementDenied: decision.cause,
                 nextAction,
+                ...(unconfirmedActions.length ? { unconfirmedActions } : {}),
               },
               updatedAt: now,
             })
@@ -740,17 +783,8 @@ export async function reconcileSafeNativeReplacements(
         }
         const successorRunId = randomUUID();
         const dueAt = new Date(now.getTime() + 30_000);
-        const predecessorContext = { ...record(run.contextSnapshot) };
-        // History comes from the failed source run. Consumed wake fields must
-        // not grant this automatic retry fresh comment/resume authority.
-        for (const key of [
-          "explicitUserContinuation", "wakeCommentId", "wakeCommentIds", "commentId",
-          "commentIds", "latestCommentId", "resumeIntent", "followUpRequested",
-          "paperclipWake", "paperclipWakeComment", "paperclipTaskMarkdown", "paperclipTaskMarkdownCompact",
-          "paperclipTaskMarkdownAssignment", "paperclipTaskMarkdownAssignmentCompact", "paperclipTurnContext",
-        ]) delete predecessorContext[key];
         const context = {
-          ...predecessorContext,
+          ...freshSessionRetryContext(record(run.contextSnapshot)),
           issueId: task.id,
           retryOfRunId: run.id,
           wakeReason: NATIVE_SAFE_REPLACEMENT_REASON,
@@ -775,8 +809,8 @@ export async function reconcileSafeNativeReplacements(
             idempotencyKey: `native-safe-replacement:${run.id}`,
           })
           .returning();
-        await notifyExecutionRunWork(tx, { companyId: run.companyId });
-        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId });
+        await notifyExecutionRunWork(tx, { companyId: run.companyId, runId: run.id });
+        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId, runId: run.id });
         await tx.insert(heartbeatRuns).values({
           id: successorRunId,
           companyId: run.companyId,
