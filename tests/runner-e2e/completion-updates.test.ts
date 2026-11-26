@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { completionDelivery, completionOutputUsesReleasedBrief, type CompletionObservation } from "./completion-updates.js";
+import { COMPLETION_RESTART_GATE_SKIPPED, completionDelivery, completionOutputUsesReleasedBrief, completionRestartGateSkipped, completionRestartGateTimeoutDetail, type CompletionObservation } from "./completion-updates.js";
 import { runnerMatrix } from "./catalog.js";
 
 const output = "Welcome to our free Friday garden meetup for beginners. Join us at 10:30; reference GARDEN123.";
@@ -80,5 +80,47 @@ describe("completion-update delivery oracle", () => {
       expect(cell.profile.generation).toBe("native");
       expect(cell.environment.id).toBe("local");
     }
+  });
+});
+
+describe("completion restart gate", () => {
+  const turn = (status: string, id = "turn", workerId: string | null = "worker") => ({ id, status,
+    contextSnapshot: { issueId: "source", wakeReason: "chat_task_completed", ...(workerId ? { chatCompletionUpdates: [{ id: workerId, status: "done" }] } : {}) } });
+  const base = { sourceId: "source", workerId: "worker", runs: [] as Record<string, any>[], comments: [] as Record<string, any>[] };
+  it("keeps waiting while the completion turn is pending or running at the gate", () => {
+    expect(completionRestartGateSkipped({ ...base, ready: "" })).toBeUndefined();
+    expect(completionRestartGateSkipped({ ...base, ready: "", runs: [turn("queued", "turn", null)] })).toBeUndefined();
+    expect(completionRestartGateSkipped({ ...base, ready: "", runs: [turn("running")] })).toBeUndefined();
+    expect(completionRestartGateSkipped({ ...base, ready: "waiting", runs: [turn("succeeded")] })).toBeUndefined();
+  });
+  it("names a correlated completion turn that succeeded without reaching the gate", () => {
+    expect(completionRestartGateSkipped({ ...base, ready: "", runs: [turn("succeeded")] }))
+      .toBe(`${COMPLETION_RESTART_GATE_SKIPPED}: completion turn turn ended succeeded without the reference gate reporting waiting`);
+  });
+  it("keeps waiting while a later completion turn is still active", () => {
+    expect(completionRestartGateSkipped({ ...base, ready: "", runs: [turn("succeeded", "first"), turn("queued", "retry", null)] })).toBeUndefined();
+  });
+  it("does not blame the agent for a turn that failed before the gate, and names it on timeout", () => {
+    const state = { ...base, ready: "", runs: [turn("failed")] };
+    expect(completionRestartGateSkipped(state)).toBeUndefined();
+    expect(completionRestartGateTimeoutDetail(state))
+      .toBe("restart boundary not reached: completion turn(s) turn ended failed before the reference gate reported waiting");
+    expect(completionRestartGateTimeoutDetail({ ...state, ready: "waiting" })).toBeUndefined();
+    expect(completionRestartGateTimeoutDetail(undefined)).toBeUndefined();
+  });
+  it("names a correlated agent reply and ignores unrelated replies", () => {
+    const comments = [
+      { id: "handoff", authorAgentId: "lead", createdByRunId: "initial" },
+      { id: "user", authorUserId: "board" },
+    ];
+    expect(completionRestartGateSkipped({ ...base, ready: "", runs: [turn("failed")], comments })).toBeUndefined();
+    expect(completionRestartGateSkipped({ ...base, ready: "", runs: [turn("failed")],
+      comments: [...comments, { id: "reply", authorAgentId: "lead", createdByRunId: "turn" }] }))
+      .toBe(`${COMPLETION_RESTART_GATE_SKIPPED}: agent reply reply was published without the reference gate reporting waiting`);
+  });
+  it("ignores other conversations, other tasks and ordinary chat turns", () => {
+    const other = { id: "o", status: "succeeded", contextSnapshot: { issueId: "other", wakeReason: "chat_task_completed", chatCompletionUpdates: [{ id: "worker" }] } };
+    const ordinary = { id: "u", status: "succeeded", contextSnapshot: { issueId: "source", wakeReason: "chat_message" } };
+    expect(completionRestartGateSkipped({ ...base, ready: "", runs: [other, ordinary, turn("succeeded", "t2", "another-worker")] })).toBeUndefined();
   });
 });

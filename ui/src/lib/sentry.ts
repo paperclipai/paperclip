@@ -16,12 +16,12 @@
 // as long as the close call takes. Both calls are built-in Sentry client
 // calls — no custom filter code.
 //
-// `initBrowserErrorMonitoring`, `teardownBrowserErrorMonitoring`, and
-// `captureBrowserException` each queue their work on one shared promise
-// chain (`enqueue`) instead of running at once. One operation runs at a
-// time, in call order, so no operation can ever observe another one
-// part-finished — a sign-out always closes the client a sign-in already
-// finished starting, never one still starting.
+// `initBrowserErrorMonitoring`, `teardownBrowserErrorMonitoring`,
+// `captureBrowserException`, and `captureQueryException` each queue their
+// work on one shared promise chain (`enqueue`) instead of running at once.
+// One operation runs at a time, in call order, so no operation can ever
+// observe another one part-finished — a sign-out always closes the client a
+// sign-in already finished starting, never one still starting.
 //
 // `@sentry/browser` loads through a dynamic import, so Vite puts it in a
 // separate chunk that a browser with no DSN never fetches.
@@ -37,9 +37,19 @@
 // still captures `window.onerror` and `window.onunhandledrejection`
 // (`GlobalHandlers`), the two React error boundaries, deduplicates a repeat
 // event (`Dedupe`), and links a caused-by chain (`LinkedErrors`).
+//
+// Without `Breadcrumbs`, nothing in the SDK wraps `fetch`, so a browser's
+// stackless `TypeError: Failed to fetch` arrives with no caller. Once a DSN
+// starts monitoring, `fetch-rejection-origin.ts` wraps `fetch` itself and
+// tags an unhandled rejection with an enum for who started the request. It
+// sends no URL, path, or stack text.
+//
+// Plugin UI modules run from random `blob:` URLs. `plugin-module-origins.ts`
+// maps such a frame back to its plugin key and tags the event with it.
 
 import {
   buildBrowserErrorContext,
+  buildQueryErrorContext,
   classifyRejectionReason,
   readBrowserErrorState,
   readPageLifecycle,
@@ -47,6 +57,13 @@ import {
   takeRejectionEventSnapshot,
   type BrowserErrorDetails,
 } from "./browser-error-context";
+import {
+  readFetchInitiator,
+  readFetchWrapperState,
+  startFetchRejectionDiagnostics,
+} from "./fetch-rejection-origin";
+import { isIntentionalAbortReason } from "./intentional-abort";
+import { readPluginModuleOrigin } from "./plugin-module-origins";
 
 let queue: Promise<void> = Promise.resolve();
 
@@ -84,6 +101,9 @@ export function initBrowserErrorMonitoring(dsn: string, environment?: string | n
       // `onunhandledrejection` handler. Diagnostics never block monitoring.
       try {
         startPageDiagnostics();
+      } catch { /* diagnostic unavailable */ }
+      try {
+        startFetchRejectionDiagnostics();
       } catch { /* diagnostic unavailable */ }
       Sentry.init(buildBrowserSentryInitOptions(dsn, environment));
       sentry = Sentry;
@@ -157,15 +177,48 @@ export function captureBrowserException(error: unknown, details?: BrowserErrorDe
   } catch {
     // Diagnostics must never replace the original exception or its recovery UI.
   }
+  enqueueCapture(error, context);
+}
+
+/**
+ * Report a failed query, grouped by its HTTP status and the static name of
+ * its query key. Never throws, and is a no-op until the gate opens.
+ */
+export function captureQueryException(error: unknown, queryKey: readonly unknown[]): void {
+  let context: ReturnType<typeof buildQueryErrorContext> | undefined;
+  try {
+    context = buildQueryErrorContext(error, queryKey);
+  } catch {
+    // Diagnostics must never replace the original exception.
+  }
+  enqueueCapture(error, context);
+}
+
+function enqueueCapture(
+  error: unknown,
+  context: ReturnType<typeof buildBrowserErrorContext> | ReturnType<typeof buildQueryErrorContext> | undefined,
+): void {
   void enqueue(async () => {
     try {
       if (context) sentry?.captureException(error, context);
       else sentry?.captureException(error);
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.error("[paperclip] Sentry captureBrowserException failed", err);
+      console.error("[paperclip] Sentry captureException failed", err);
     }
   });
+}
+
+const POSTHOG_REQUEST_TIMEOUT_MESSAGE = /^PostHog request timed out(?: after \d+ms)?$/;
+
+export function isPostHogRequestTimeout(reason: unknown): boolean {
+  try {
+    return reason instanceof Error
+      && reason.name === "AbortError"
+      && POSTHOG_REQUEST_TIMEOUT_MESSAGE.test(reason.message);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -188,7 +241,19 @@ export function buildBrowserSentryInitOptions(
         : undefined,
     tracesSampleRate: 0,
     sendDefaultPii: false,
+    ignoreErrors: ["__firefox__"],
     beforeSend: (event, hint) => {
+      const isUnhandledRejection = event.exception?.values?.some((value) =>
+        value.mechanism?.type === "onunhandledrejection"
+        || value.mechanism?.type === "auto.browser.global_handlers.onunhandledrejection",
+      ) ?? false;
+      if (
+        isUnhandledRejection
+        && (isIntentionalAbortReason(hint.originalException) || isPostHogRequestTimeout(hint.originalException))
+      ) {
+        takeRejectionEventSnapshot(classifyRejectionReason(hint.originalException));
+        return null;
+      }
       // Global handlers do not pass through our React boundaries. Give their
       // reports the same bounded document state, without URLs or breadcrumbs.
       // Preserve a boundary's earlier snapshot across the asynchronous queue.
@@ -202,14 +267,22 @@ export function buildBrowserSentryInitOptions(
           ...event.tags,
           browser_build_mode: import.meta.env.DEV ? "development" : "production",
         };
-        if (event.exception?.values?.some((value) =>
-          value.mechanism?.type === "onunhandledrejection"
-          || value.mechanism?.type === "auto.browser.global_handlers.onunhandledrejection",
-        )) {
+        // A plugin UI module runs from a random `blob:` URL. Name the plugin
+        // whose module holds the innermost such frame, never the URL.
+        const pluginModule = readPluginModuleOrigin(event.exception?.values);
+        if (pluginModule) event.tags.browser_plugin_module = pluginModule;
+        if (isUnhandledRejection) {
           // The SDK supplies the rejected value directly. Classify without
           // reading object properties, coercing strings, or copying its value.
           const kind = classifyRejectionReason(hint.originalException);
           event.tags.browser_rejection_kind = kind;
+          if (kind === "object") {
+            // A stackless network error carries no caller. Record who started
+            // the request, as an enum, and whether another script wraps fetch.
+            event.tags.browser_fetch_initiator = readFetchInitiator(hint.originalException);
+            const wrapper = readFetchWrapperState();
+            if (wrapper) event.tags.browser_fetch_wrapper = wrapper;
+          }
           // Whether the browser or a script dispatched the event, and which
           // promise implementation carried it. Without a stack these are the
           // remaining attribution facts for an `undefined` rejection.

@@ -1,4 +1,5 @@
 import { usePrimaryAgentPresentation } from "@/components/primary-agent/PrimaryAgentPresentation";
+import { isWaitingToStart } from "../lib/agent-queue-wait";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation } from "@/lib/router";
@@ -27,7 +28,7 @@ import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { SIDEBAR_SCROLL_RESET_STATE } from "../lib/navigation-scroll";
 import { queryKeys } from "../lib/queryKeys";
-import { cn, agentRouteRef, agentUrl, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
+import { cn, agentRouteRef, agentUrl } from "../lib/utils";
 import { useAgentOrder } from "../hooks/useAgentOrder";
 import {
   isStarred,
@@ -57,7 +58,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { Agent } from "@paperclipai/shared";
 
 /**
@@ -115,7 +115,6 @@ function SidebarAgentItem({
   leaving,
   onLeaveAgent,
   onPauseResume,
-  rail,
   runCount,
   setSidebarOpen,
   builtInStatus,
@@ -131,7 +130,6 @@ function SidebarAgentItem({
   leaving: boolean;
   onLeaveAgent: (agent: Agent) => void;
   onPauseResume: (agent: Agent, action: "pause" | "resume") => void;
-  rail: boolean;
   runCount: number;
   setSidebarOpen: (open: boolean) => void;
   builtInStatus?: BuiltInAgentStatus;
@@ -156,13 +154,6 @@ function SidebarAgentItem({
         ? "Invalid org chain"
       : pauseResumeLabel;
   const showBuiltInLifecycle = builtInStatus === "needs_setup" || builtInStatus === "pending_approval";
-  const trailingLabel = [
-    showBuiltInLifecycle ? `Built-in agent ${builtInStatus.replace(/_/g, " ")}` : null,
-    hasInvalidOrgChain ? "Invalid reporting chain" : null,
-  ].filter(Boolean).join(", ") || undefined;
-
-  // C11 (DECISION-SHEET.md): the row itself is a SidebarNavItem, so agent rows
-  // share the nav-row chrome (type, active state, rail tooltip, live dot).
   const navItem = (
     <SidebarNavItem
       to={href}
@@ -187,17 +178,11 @@ function SidebarAgentItem({
           </span>
         ) : undefined
       }
-      trailingLabel={trailingLabel}
       liveAccessory={
         agent.pauseReason === "budget" ? <BudgetSidebarMarker title="Agent paused by budget" /> : undefined
       }
     />
   );
-
-  // Rail: the star/menu overlays are hidden, so render the nav item bare (it
-  // supplies its own rail tooltip) and let it fill the column like every other
-  // rail row.
-  if (rail) return navItem;
 
   return (
     <div className="group/agent relative flex items-center">
@@ -303,8 +288,7 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
   const { selectedCompanyId } = useCompany();
   const primary = usePrimaryAgentPresentation(selectedCompanyId);
   const { openNewAgent } = useDialogActions();
-  const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
-  const rail = collapsed && !peeking;
+  const { isMobile, setSidebarOpen } = useSidebar();
   const { pushToast } = useToastActions();
   const location = useLocation();
 
@@ -359,18 +343,17 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
 
   const liveCountByAgent = useMemo(() => {
     const counts = new Map<string, number>();
+    // "N live" counts work that started; queued runs only wait for a slot.
     for (const run of liveRuns ?? []) {
+      if (isWaitingToStart(run)) continue;
       counts.set(run.agentId, (counts.get(run.agentId) ?? 0) + 1);
     }
     return counts;
   }, [liveRuns]);
-  const liveAgentIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const [agentId, count] of liveCountByAgent) {
-      if (count > 0) ids.add(agentId);
-    }
-    return ids;
-  }, [liveCountByAgent]);
+  const liveAgentIds = useMemo(
+    () => new Set((liveRuns ?? []).map((run) => run.agentId)),
+    [liveRuns],
+  );
 
   const visibleAgents = useMemo(() => {
     const filtered = (agents ?? []).filter(
@@ -625,7 +608,6 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
       leaving={agentLeaving(agent)}
       onLeaveAgent={leaveAgent}
       onPauseResume={(targetAgent, action) => pauseResumeAgent.mutate({ agent: targetAgent, action })}
-      rail={rail}
       runCount={liveCountByAgent.get(agent.id) ?? 0}
       setSidebarOpen={setSidebarOpen}
       builtInStatus={builtInStatusByAgentId.get(agent.id)}
@@ -664,27 +646,18 @@ export function SidebarAgents({ streamlined = false }: { streamlined?: boolean }
       {showSeeAllLink && (() => {
         // Deliberately NOT a SidebarNavItem: this is a quiet muted affordance
         // (plain Link) that must not adopt nav-row active-route highlighting.
-        const seeAllLink = (
+        return (
           <Link
             to="/agents/all"
             state={SIDEBAR_SCROLL_RESET_STATE}
-            aria-label={rail ? "See all agents" : undefined}
             onClick={() => {
               if (isMobile) setSidebarOpen(false);
             }}
             className="flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
           >
             <Users className="shrink-0 h-4 w-4" />
-            <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : undefined}>See all agents</span>
+            <span>See all agents</span>
           </Link>
-        );
-        return rail ? (
-          <Tooltip>
-            <TooltipTrigger asChild>{seeAllLink}</TooltipTrigger>
-            <TooltipContent side="right">See all agents</TooltipContent>
-          </Tooltip>
-        ) : (
-          seeAllLink
         );
       })()}
     </SidebarSection>

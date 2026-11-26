@@ -1,80 +1,11 @@
 # Database
 
-Paperclip uses PostgreSQL via [Drizzle ORM](https://orm.drizzle.team/). There are three ways to run the database, from simplest to most production-ready.
+How to run Paperclip against PostgreSQL, change the schema, and write migrations.
 
-### Task query performance
-
-Run-context lookups use expression indexes for both `context_snapshot.issueId`
-and `context_snapshot.paperclipIssue.id`. Task creation provenance has its own
-company-scoped expression index that follows the query's native issue ID and
-legacy `issueId`/`taskId`/`taskKey` precedence. Migration 0345 builds the two new
-indexes concurrently and can resume an interrupted build without blocking run
-writes for the full build. The indexes add storage and run-write overhead; they
-do not change task visibility or secret redaction.
-
-The chat wake-notice sweep compares UUID columns directly against guarded,
-canonical lowercase UUID payload values. Malformed and noncanonical payloads
-still match nothing. The query can use existing primary keys without adding a
-wakeup-history index.
-
-To compare all three queries on the same disposable local PostgreSQL fixture:
-
-```sh
-pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-slow-queries.ts --baseline-ref=origin/master
-```
-
-Use a revision before these fixes for `--baseline-ref` after they merge. The
-benchmark loads that revision's chat query, uses synthetic data only, compares
-complete returned rows, and prints timings and `EXPLAIN (ANALYZE, BUFFERS)` plans.
-Local results measure query execution, not staging request latency.
-
-Run history defaults to 200 rows and permits at most 1,000 rows, including
-direct service calls. The UI client requests 200 rows when its caller omits a
-limit. Context summaries expand the stored JSON once per returned row, retaining
-legacy text conversion and the first-class issue binding. Authorization and
-secret redaction still run on the bounded result set.
-Agent detail links fetch an older selected run by ID when it is outside the
-history page, and verify that it belongs to the current company and agent.
-
-Saved-run policy and parent-report lookups read only the `executionPolicy`
-value or the legacy `issueId` and `taskId` values from a run context. PostgreSQL projects
-those JSON values before it sends the row to the controller. Unused prompt and
-launch context does not travel with each policy or parent-report check. JSON
-types, task-key precedence, and company and agent identity checks are preserved.
-Each decision still reads current data; this is not an authorization cache.
-
-To compare the real summary and full history queries with an earlier revision:
-
-```sh
-pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-run-history.ts --baseline-ref=1e731520bb
-```
-
-The fixture has 1,400 synthetic runs with 192 KiB contexts. Both queries return
-the same 200 complete rows. This benchmark excludes HTTP and redaction latency.
-
-Workspace reads also compare retained task IDs as guarded, canonical UUIDs.
-This lets PostgreSQL check each source task by primary key before it evaluates
-task privacy. Casting the indexed task ID to text can instead evaluate privacy
-across company history for each workspace. Repository admission repeats these
-reads while holding its company provenance lock, so that plan can delay other
-agent launches. Missing, malformed, noncanonical, and foreign-company source
-IDs still deny access.
-
-The subsequent source-task enumeration also keeps `issues.id` as a UUID. Its
-OR predicate combines the workspace binding index with the task primary key.
-Casting that ID to text forces another scan of company history even after the
-workspace privacy query has passed. The workspace authorization regression
-suite checks both plans and verifies the attached and retained source results.
-
-To compare this query on a disposable fixture with 13,429 tasks:
-
-```sh
-pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-authorization.ts --baseline-ref=5c7a025032
-```
-
-The benchmark loads the baseline authorization module with current dependencies,
-compares complete workspace rows, and prints five warm samples and query plans.
-It measures SQL execution, not the full repository admission or agent startup.
+This file holds database setup and the rules that apply to every schema change.
+It is not a record of individual tables or features. The schema in
+`packages/db/src/schema/` and its tests describe those. Put a note about one
+feature's tables in that feature's doc, or leave it in the PR description.
 
 ## 1. Embedded PostgreSQL — zero config
 
@@ -93,17 +24,6 @@ That's it. On first start the server:
 
 Data persists across restarts in `~/.paperclip/instances/default/db/`. To reset local dev data, delete that directory.
 
-Subscription reporting adds `ai_subscriptions` (company-scoped account identity),
-`ai_subscription_prices` (immutable price revisions), and
-`ai_subscription_connections` (selected grant-to-account bindings). New managed
-subscription receipts also have a nullable `cost_events.subscription_id`.
-Migration `0322_reflective_kree.sql` is replay-safe and leaves existing cost
-amounts and receipts untouched. No historical account attribution is inferred.
-Deleting a connection removes its binding but retains subscription price history;
-disconnecting is not proof that provider billing ended. See
-[subscription cost reporting](connections/AI-CONNECTIONS.md#subscription-cost-reporting)
-for the reporting and ownership rules.
-
 If you need to apply pending migrations manually, run:
 
 ```sh
@@ -111,18 +31,6 @@ pnpm db:migrate
 ```
 
 When `DATABASE_URL` is unset, this command targets the current embedded PostgreSQL instance for your active Paperclip config/instance.
-
-Issue reference mentions follow the normal migration path: the schema migration creates the tracking table, but it does not backfill historical issue titles, descriptions, comments, or documents automatically.
-
-To backfill existing content manually after migrating, run:
-
-```sh
-pnpm issue-references:backfill
-# optional: limit to one company
-pnpm issue-references:backfill -- --company <company-id>
-```
-
-Future issue, comment, and document writes sync references automatically without running the backfill command.
 
 This mode is ideal for local development and one-command installs.
 
@@ -198,20 +106,7 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.
 DATABASE_MIGRATION_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
 ```
 
-If your hosted database requires transaction-pooling-only connections (pgbouncer transaction mode, Supavisor port 6543, Neon `-pooler` endpoints), set `DATABASE_PREPARED_STATEMENTS=false` so the client does not rely on session-scoped prepared statements, and keep `DATABASE_MIGRATION_URL` on a direct connection. Do not edit database client source files as part of deployment setup.
-
-### Client tuning (optional)
-
-All of these are optional; when unset, the driver defaults apply and behavior is unchanged — typical self-hosted setups need none of them:
-
-```sh
-DATABASE_PREPARED_STATEMENTS=false   # required for transaction-mode poolers; default: enabled
-DATABASE_POOL_MAX=25                 # connection pool size; default: 10
-DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: 60 (0 = keep open)
-DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
-DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this long; default: 30-60 min (random)
-DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default: paperclip
-```
+If your transaction-mode pooler does not support protocol-level named prepared statements, set `DATABASE_PREPARED_STATEMENTS=false`. If your pooler supports them, you can opt in with `DATABASE_PREPARED_STATEMENTS=true`. Check your provider's pooler configuration before you enable this setting. Keep `DATABASE_MIGRATION_URL` on a direct connection. Do not edit database client source files as part of deployment setup.
 
 ### Push the schema
 
@@ -228,6 +123,235 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
 - Projects pause after 1 week of inactivity
 
 See [Supabase pricing](https://supabase.com/pricing) for current details.
+
+## Client tuning (optional)
+
+All of these are optional; when unset, the driver defaults apply and behavior is unchanged — typical self-hosted setups need none of them:
+
+```sh
+DATABASE_PREPARED_STATEMENTS=false   # use false when the pooler does not support named prepared statements
+DATABASE_POOL_MAX=25                 # connection pool size; default: 10
+DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: 60 (0 = keep open)
+DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
+DATABASE_MAX_LIFETIME_SECONDS=1800   # recycle a pooled connection after this long; default: 30-60 min (random)
+DATABASE_APPLICATION_NAME=paperclip  # application_name in pg_stat_activity; default for the server's main pool: paperclip:<boot id>
+```
+
+The server names its main pool `paperclip:<boot id>`, so after a restart the
+sessions of each server process can be told apart in `pg_stat_activity`. When a
+run's event, process identity, or event-write operation stays unfinished for
+30 seconds, the server logs one warning per stalled run ("runner event intake
+stalled"). The warning lists the pending operations of each run, the pool size,
+the database sessions per application name and state, and the sessions that
+wait for a lock or hold one (`pg_blocking_pids`, query text without literals,
+cut to 160 characters). It also logs the event-loop lag. A second line
+("runner event intake stall cleared") records when the operation finished. The
+check runs only while an operation is pending, and it reads `pg_stat_activity`
+only when it reports a stall.
+
+`withDedicatedDbConnection` gives an action exclusive use of one session outside
+the main pool (application name `paperclip-workspace-finalization-lock`). Each
+`createDb` owner keeps released single-connection clients idle for reuse: always
+up to `DEDICATED_CONNECTION_IDLE_MAX` (4), and more while idle plus in-use
+clients stay within `DATABASE_DEDICATED_CONNECTION_MAX`, so a recurring burst
+reuses the sessions the previous burst opened instead of reconnecting. They
+follow the same idle timeout and max lifetime as the main pool, so a retained
+client closes its session after `DATABASE_IDLE_TIMEOUT_SECONDS` without use. At most `DATABASE_DEDICATED_CONNECTION_MAX`
+(default 24) dedicated clients are in use at once per owner. A caller that
+finds the limit reached waits in a first-in, first-out queue. A caller that
+already holds a dedicated client, or runs inside an open transaction of the
+same process, is admitted at once, because its wait could deadlock with the
+holder that it blocks. A caller that holds another bounded resource that a
+holder can need passes `{ admitWithoutWaiting: true }` for the same reason; the
+skill package store does this while it holds one of its package I/O permits
+(at most 2 storage and 2 response permits). Such callers can take the in-use
+count above the limit.
+A caller that waits longer than `DATABASE_DEDICATED_CONNECTION_WAIT_MS`
+(default 30000) is admitted over the limit, so a lock cycle that the database
+cannot see ends in a delay, not a hang. A connection whose action throws is
+closed, never reused. Actions must keep
+session state transaction-scoped (`pg_advisory_xact_lock`,
+`set_config(..., true)`). Like the main pool, a retained session sees an
+`ALTER DATABASE` or `ALTER ROLE ... SET` change only after it reconnects; a test
+that changes such a setting calls `closeDedicatedDbConnections` first. Shutdown
+and ending the owner client close the idle set.
+
+Connections per server process, at most (`databaseConnectionBudget` in
+`packages/db/src/client.ts` computes this, and a test keeps it equal to the
+pool settings):
+
+| Source | Connections |
+| --- | --- |
+| Main pool | `DATABASE_POOL_MAX` (driver default 10) |
+| Private pools: controller lease 2, legacy controller lease 1, controller-instance lease 1, runner checkpoint 3, file storage 2 | 9 |
+| Notification listeners: plugin lifecycle 1, deployment notifications 1 | 2 |
+| Dedicated clients: 2 x `DATABASE_DEDICATED_CONNECTION_MAX` in use (one nested client per holder) + 4 idle | 52 with the default limit |
+| Total with defaults | 73 |
+
+A separate `DATABASE_MIGRATION_URL` adds a second owner with its own pools.
+Admission over the limit after the wait bound can exceed this total.
+
+An explicit `DATABASE_PREPARED_STATEMENTS=true` enables named prepared statements
+for parameterized ORM queries, transactions, reserved connections, and dedicated
+clients. Postgres.js manages the statement cache. This does not cache query
+results. Bound values and returned data stay fresh. Explicit per-query options
+still apply, including `prepare: false` and simple-protocol execution. With the
+setting unset, ORM queries keep their existing unprepared behavior and tagged
+SQL uses the driver default. With `false`, preparation stays disabled.
+
+With `true`, a database client and its private pools prepare at most 1,000
+distinct SQL texts, and never a text longer than 8 KB; other texts run
+unprepared. A transaction-mode pooler
+(PgBouncer 1.22 or later, Neon `-pooler` hosts) shares prepared statements by
+SQL text across clients, so after a migration changes a column type, the
+pooler's statement for an affected text keeps failing with `cached plan must
+not change result type` for every client and every process. When a statement
+fails with that error, `prepared statement does not exist` (26000), or a
+duplicate statement name (42P05), the client stops preparing that text for the
+rest of the process and retries once without preparation. A pooled statement
+is retried on its own. When the failed statement is the first one that the
+transaction ran (after `SET TRANSACTION` only), the client rolls back, begins
+again with the same options, repeats the `SET TRANSACTION` statements, and runs
+the statement unprepared on the same connection. The transaction callback does
+not run again and receives the result. A later statement in a transaction, or a
+statement in a savepoint, is not retried, so that transaction or savepoint fails
+once for each affected text in each process. `preparedStatementStats(db)`
+reports the prepared texts and the unprepared, demoted, retried, and restarted
+counts.
+
+## Switching between modes
+
+The database mode is controlled by `DATABASE_URL`:
+
+| `DATABASE_URL` | Mode |
+|---|---|
+| Not set | Embedded PostgreSQL (`~/.paperclip/instances/default/db/`) |
+| `postgres://...localhost...` | Local Docker PostgreSQL |
+| `postgres://...supabase.com...` | Hosted Supabase |
+
+Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
+
+## Schema change workflow
+
+When you change the data model:
+
+1. Edit `packages/db/src/schema/*.ts`.
+2. Export each new table from `packages/db/src/schema/index.ts`.
+3. Generate the migration from the repository root:
+
+   ```sh
+   pnpm db:generate
+   ```
+
+4. Validate that everything compiles:
+
+   ```sh
+   pnpm -r typecheck
+   ```
+
+`pnpm db:generate` compiles `packages/db` first, because
+`packages/db/drizzle.config.ts` reads the compiled schema from `dist/schema/*.js`.
+Then update every layer that the change affects: `packages/shared` types and
+validators, `server` routes and services, and `ui` API clients and pages.
+
+### Migration compatibility with the running release
+
+Paperclip Cloud starts a new release while the previous one is still serving
+against the same database. Every migration is therefore classified by
+`packages/db/src/migration-compatibility.ts` as one of:
+
+| Class | Meaning | Examples |
+| --- | --- | --- |
+| `online_compatible` | The previous release keeps working and no lock is held for long. A deployer applies it without a pause. | `CREATE TABLE` and anything on a table created in the same migration, `CREATE INDEX CONCURRENTLY`, `ADD COLUMN` that is nullable or has a constant default, `ADD CONSTRAINT ... NOT VALID`, `CREATE TYPE`, `ALTER TYPE ... ADD VALUE` |
+| `requires_staging` | The previous release breaks or its writes are rejected. Ship it in two releases: expand first, contract later. | `DROP TABLE`/`DROP COLUMN`, renames, `ALTER COLUMN ... TYPE`, `SET NOT NULL`, `DROP DEFAULT`, a `NOT NULL` column without a default, a validated `CHECK`, a `UNIQUE` constraint or unique index on an existing table, `TRUNCATE`, `DELETE` |
+| `unknown` | The classifier cannot prove either. This includes every statement it does not recognize and every lock or duration hazard (reason codes starting with `lock_hazard_`). | plain `CREATE INDEX` on an existing table, a validated foreign key on an existing table, `VALIDATE CONSTRAINT`, `UPDATE` backfills, procedural `DO` blocks, `CREATE OR REPLACE FUNCTION`, triggers on existing tables, `DROP INDEX`, `DROP CONSTRAINT` |
+
+A migration takes the worst class of its statements. Lock and duration hazards
+are `unknown`, not compatible with a warning.
+
+A table counts as created in the migration when the statement is a plain
+`CREATE TABLE`, or a `CREATE TABLE IF NOT EXISTS` for a table that no earlier
+migration created. `IF NOT EXISTS` on a table from an earlier migration proves
+nothing, so later statements on that table are judged as changes to an existing
+table.
+
+`drizzle-kit` emits validated foreign keys and plain indexes. For an existing
+table, edit the generated SQL: append `NOT VALID` to the foreign key, and use
+`CREATE INDEX CONCURRENTLY IF NOT EXISTS`.
+
+PostgreSQL rejects `CONCURRENTLY` inside a transaction, and the migrator runs
+each migration file in one transaction. A migration that uses `CONCURRENTLY`
+must therefore be listed in `MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS` in
+`packages/db/src/client.ts`, and every statement in it must be idempotent,
+because a failed run starts again from the first statement. The pull-request
+guard fails a new `CONCURRENTLY` migration that is not in that list.
+
+**The rule for a new migration.** A pull request fails when a migration it adds
+is `unknown` or `requires_staging`. Rewrite the migration, split it into expand and contract
+migrations, or, when you have verified the migration yourself, state the class
+in the first lines of the migration file:
+
+```sql
+-- paperclip:migration-compat online_compatible: <why the previous release keeps working and no lock is held long>
+```
+
+Use `requires_staging` in place of `online_compatible` when the previous
+release cannot run against the migration. The justification is mandatory. The
+override is read only from the migration file, so it is reviewed with the SQL
+and travels with it. A contract migration (for example the `DROP COLUMN` that
+follows an expand release) always classifies as `requires_staging`; mark it
+`online_compatible` this way once no running release uses the column.
+Cloud stacks that serve two releases at once refuse a `requires_staging`
+release, so it ships only through a maintenance deploy. Prefer splitting it
+into expand and contract migrations; add the `requires_staging` override only
+when the maintenance deploy is accepted.
+
+Check a migration locally:
+
+```sh
+cd packages/db
+pnpm exec tsx scripts/migration-compatibility.ts src/migrations/0468_busy_wendell_rand.sql
+pnpm exec tsx scripts/migration-compatibility.ts            # distribution over all migrations
+pnpm exec tsx scripts/migration-compatibility.ts --check    # the pull-request guard
+```
+
+The guard runs in `check:migrations` (so in the `@paperclipai/db` typecheck and
+build) against the merge base with `origin/master`, and in the pull-request
+policy job through `.github/scripts/check-pr-migration-order.mjs`. Migrations
+that were already on `master` when the classifier shipped are not annotated.
+
+Deployers read the result from the cloud migrator manifest
+(`cloud-migrators/v1/<sha>/manifest.json`, built by
+`scripts/cloud-migrator-artifacts.mjs`). Its `migrationCompatibility.migrations`
+array lists every packed migration in journal order with `idx`, `tag`,
+`sqlSha256` (the hash the migrator records in the migration history),
+`compatibility`, `classified` (the classifier's verdict before an override),
+`override`, `overrideJustification`, and `reasons`.
+
+## Migration authoring checklist
+
+Older embedded databases can use `SQL_ASCII`. Test encoding-sensitive SQL on
+both `SQL_ASCII` and UTF-8 databases.
+
+The 0126 issue comment attribution backfill showed the failure mode this checklist is meant to prevent: each batch looked for the next rows with an unindexed predicate, so PostgreSQL repeatedly scanned the same table and the migration became O(n²) as the table grew.
+
+When authoring migrations or one-time backfills:
+
+- Create the supporting index for the batch predicate before the backfill loop runs.
+- Bound batches by an indexed key, such as an id range or keyset pagination cursor. Do not use `OFFSET` pagination or a query shape that re-scans already-visited rows each batch.
+- Avoid unbounded full-table `UPDATE` or `DELETE` statements. Add a selective predicate and process rows in bounded batches when table size can be large.
+- Use `CREATE INDEX CONCURRENTLY` for large existing tables when the migration can run outside a transaction and must avoid long write locks.
+- Split schema changes, index creation, and data backfill into separate phases so each step has clear locking and rollback behavior.
+- Treat the `check:migrations` CI gate as the enforcement backstop for these rules. If it flags a migration, rewrite the migration or add a suppression comment with the indexed predicate, batch bound, and reason the remaining scan is safe.
+
+## Migration snapshots
+
+`drizzle-kit generate` diffs `packages/db/src/schema/` against the newest snapshot in `packages/db/src/migrations/meta/`. That snapshot must describe the schema that every migration produces when they run in order. A snapshot that drifts from the schema makes the *next* migration wrong, because `generate` folds the drift into it. The drift can add a column that an earlier migration already created, which makes that migration fail on a fresh database. It can also drop a column that the schema still uses.
+
+- Create every migration with `pnpm --filter @paperclipai/db generate`. Do not hand-write a snapshot.
+- Do not hand-edit a snapshot to resolve a merge conflict. Renumber your migration and run `generate` again, as `packages/db/.gitattributes` describes.
+- The repo keeps only the newest 5 snapshots. `generate` runs `prune:snapshots` afterwards to delete older ones. Drizzle only reads the newest snapshot, and each snapshot is a full copy of the schema (over 1 MB each). Older snapshots are still in git history.
+- `packages/db/src/migration-snapshot-drift.test.ts` is the enforcement backstop. It repeats the diff that `generate` performs and fails when the newest snapshot no longer matches `packages/db/src/schema/`.
 
 ## Connection loss and retries
 
@@ -247,546 +371,6 @@ When a database connection closes, its transaction fails. Paperclip does not
 replay that transaction. New requests can use a fresh connection from the pool.
 Queries from the failed transaction must keep failing, even after the pool
 reconnects.
-
-Source builds carry `patches/postgres@3.4.9.patch` for this behavior. It rejects
-queued and later queries from a disconnected transaction or reserved connection,
-and prevents a released, closed connection from returning to the open pool.
-The patch covers both ESM and CommonJS. The regression suite terminates real
-PostgreSQL backends and checks rejection, pool recovery, and transaction isolation.
-Remove the patch when an upstream release passes these tests. Installs of the
-unmodified `postgres` package outside this workspace do not include the patch.
-
-Trusted-header actor synchronization retries transient connection failures,
-including `CONNECT_TIMEOUT`, at most twice. This retry applies only to the
-idempotent actor synchronization operations, not arbitrary transactions. A
-persistent outage still fails the request after the bounded retries; each
-connection attempt remains subject to the configured database connect timeout.
-
-The dashboard's company lookup, agent and task counts, pending approval count,
-monthly spend, and run activity aggregate each retry these connection errors
-at most twice. The heartbeat run list and base issue lookup by UUID or identifier
-use the same bounded retries. Each callback is read-only and rebuilds its query
-for each attempt. A failed read does not replay completed reads, the budget
-workflow, or issue label and watchdog enrichment. Missing resources,
-authentication errors, and other database errors retain their usual behavior.
-This does not enable general SQL replay or retry a full request.
-
-The task run list also opts its execution-status projection into these bounded
-retries. Each of its four read-only lookups rebuilds only the failed query;
-completed lookups and the separate liveness backfill are not replayed. Projection
-callers that use a transaction retain single-attempt reads. The opt-in is only
-for a pooled database handle outside a transaction.
-
-## Execution identity row locks
-
-Identity initialization, credential acquisition, and steering reconciliation lock
-the task before its run. These operations use `FOR NO KEY UPDATE`: they change
-identity state, not parent keys. The lock still serializes identity writers and
-blocks concurrent task or run updates. It allows audit inserts to retain their
-foreign-key `KEY SHARE` locks without waiting on identity acquisition. The audit
-foreign keys and their deletion behavior remain enforced.
-
-## Switching between modes
-
-The database mode is controlled by `DATABASE_URL`:
-
-| `DATABASE_URL` | Mode |
-|---|---|
-| Not set | Embedded PostgreSQL (`~/.paperclip/instances/default/db/`) |
-| `postgres://...localhost...` | Local Docker PostgreSQL |
-| `postgres://...supabase.com...` | Hosted Supabase |
-
-Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
-
-## Migration authoring checklist
-
-The 0126 issue comment attribution backfill showed the failure mode this checklist is meant to prevent: each batch looked for the next rows with an unindexed predicate, so PostgreSQL repeatedly scanned the same table and the migration became O(n²) as the table grew.
-
-When authoring migrations or one-time backfills:
-
-- Create the supporting index for the batch predicate before the backfill loop runs.
-- Bound batches by an indexed key, such as an id range or keyset pagination cursor. Do not use `OFFSET` pagination or a query shape that re-scans already-visited rows each batch.
-- Avoid unbounded full-table `UPDATE` or `DELETE` statements. Add a selective predicate and process rows in bounded batches when table size can be large.
-- Use `CREATE INDEX CONCURRENTLY` for large existing tables when the migration can run outside a transaction and must avoid long write locks.
-- Split schema changes, index creation, and data backfill into separate phases so each step has clear locking and rollback behavior.
-- Treat the `check:migrations` CI gate as the enforcement backstop for these rules. If it flags a migration, rewrite the migration or add a suppression comment with the indexed predicate, batch bound, and reason the remaining scan is safe.
-
-Private-task migrations `0313` and `0314` are explicitly allowlisted in the
-Paperclip executor to run outside a file-wide transaction. Their idempotent
-keyset batches commit every 1,000 rows, and migration history is recorded only
-when all batches finish. The executor repairs invalid concurrent indexes on
-retry. A reserved connection holds a session advisory lock across all batch
-commits, so concurrent migrators recheck history only after the preceding runner
-finishes. Privacy triggers are replaced atomically. Bootstrap uses the same
-executor; other migrations remain transactional
-per file. Apply these migrations through `pnpm db:migrate` using a direct
-connection, before enabling the new server and UI.
-
-## Migration snapshots
-
-`drizzle-kit generate` diffs `packages/db/src/schema/` against the newest snapshot in `packages/db/src/migrations/meta/`. That snapshot must describe the schema that every migration produces when they run in order. A snapshot that drifts from the schema makes the *next* migration wrong, because `generate` folds the drift into it. The drift can add a column that an earlier migration already created, which makes that migration fail on a fresh database. It can also drop a column that the schema still uses.
-
-- Create every migration with `pnpm --filter @paperclipai/db generate`. Do not hand-write a snapshot.
-- Do not hand-edit a snapshot to resolve a merge conflict. Renumber your migration and run `generate` again, as `packages/db/.gitattributes` describes.
-- The repo keeps only the newest 5 snapshots. `generate` runs `prune:snapshots` afterwards to delete older ones. Drizzle only reads the newest snapshot, and each snapshot is a full copy of the schema (over 1 MB each). Older snapshots are still in git history.
-- `packages/db/src/migration-snapshot-drift.test.ts` is the enforcement backstop. It repeats the diff that `generate` performs and fails when the newest snapshot no longer matches `packages/db/src/schema/`.
-
-## Cloud runtime identity singleton
-
-The private `instance_settings` row whose singleton key is
-`cloud-runtime-identity/v1` records the immutable Cloud stack id, warm-pool
-claim id, previous pool origin, canonical origin, and stack slug accepted from
-Cloud's signed pre-activation assertion. It is separate from the normal
-`default` settings row and never appears in the settings API. This is
-intentionally instance-scoped rather than company-scoped: an instance has one
-public identity, and the existing unique singleton-key index makes concurrent
-or later attempts to replace it fail closed. The server loads the row before
-constructing URL-dependent runtime services on every boot.
-
-### Unclaimed Cloud warm standby
-
-`PAPERCLIP_CLOUD_WARM_STANDBY=1` is an opt-in control-plane marker for an
-unclaimed warm application. It requires Cloud configuration, a stack identity,
-and runtime identity verification keys. After restoring the durable identity,
-startup checks once for company data. Existing companies or a persisted claim
-keep the application fully active. A failed database check fails startup.
-
-An empty unclaimed application keeps its HTTP server and sandbox plugins ready,
-but skips recurring database work: chat/email delivery, plugin jobs, browser
-cleanup, feedback export, import cleanup, execution reconciliation, heartbeat
-schedules, and automatic backups. Startup migrations, plugin installation, and
-other one-time preparation still run. Normal anonymous health probes return
-`warmStandby: true` without SQL or session lookups. This is application liveness,
-not a current database connectivity check. Other API requests and WebSocket upgrades return 503 until
-the signed claim succeeds. Page and asset requests serve only the static UI
-router, bypassing session, bearer-key, tenant, and other dynamic handlers.
-
-The existing signed claim on `GET /api/health` writes the identity durably before
-normal requests and polling resume. No polling discovers claims and no process
-restart is required. Timers resume on their next normal tick; request-driven
-work can proceed immediately. Claim failure leaves standby intact. A restart
-restores the claim even if provider environment alignment has not completed.
-Deleting a claimed workspace's last company never puts it back into standby.
-
-Deploy support before enabling the marker. Validate idle database transactions
-and health probes, claim/bootstrap latency, recurring work after claim, and a
-restart with stale provider variables on an isolated warm application first.
-Rollback by setting the marker to `0` and restarting. No schema changes are
-required. This mechanism does not sleep claimed workspaces or replace a durable
-scheduler for their background work.
-
-## Resource membership tables
-
-Paperclip stores current-user sidebar membership state in:
-
-- `project_memberships`
-- `agent_memberships`
-
-These rows are company-scoped and user-scoped. A missing row means the user is joined, so existing users keep seeing projects and agents in the sidebar until they explicitly leave them. Rows only control sidebar visibility; they do not affect project/agent detail access, all-pages, selectors, assignment flows, or existing company permissions.
-
-Both tables use a unique key on `(company_id, user_id, resource_id)` and keep `state` as `joined` or `left`. Join/leave mutations are idempotent board-user `/me` operations and write activity entries when the effective state changes.
-
-Private-project authorization uses the separate `project_access_members` table. Its user/agent rows are security grants, not sidebar preferences, and are evaluated by the same issue-read predicate as issue-level grants. Do not merge or overload these two concepts.
-
-## Decision training snapshot retention
-
-`decision_training_examples` stores a point-in-time copy of an issue, its comments, relevant runs, and the selected decision. Each row carries the `scrub_deleted_comments_v1` retention policy marker, and JSONL exports include that marker alongside the snapshot.
-
-- Deleting a captured source comment transactionally replaces that comment in every affected snapshot with a content-free redaction tombstone. The original body, presentation, and metadata are not retained in the training record.
-- Deleting an issue deletes its decision-training examples through the `issue_id` foreign-key cascade.
-- Deleting a training example deletes only that example and does not mutate the source issue.
-
-This policy makes training exports self-describing while keeping the decision record usable after a comment deletion without retaining content the author removed.
-
-## Decision queues and triage provenance
-
-The decisions desk stores queue membership, decide-by/snooze state, and retention state in `decision_queues`, `decision_queue_items`, `decision_triage`, and `decision_retention`. These sidecars use the stable attention identity `(source_kind, source_id)` so all attention source kinds can participate without copying source titles, bodies, projects, or other visibility-sensitive data.
-
-`decision_triage_events` is append-only history for queue and triage changes. Current rows and history both carry server-derived user/agent, heartbeat run, API-key, and responsible-user attribution where applicable. Queue reads must resolve and authorize their source rows at read time; a sidecar row is never a visibility grant.
-
-Triage writes serialize on the company and attention-source identity so concurrent partial updates preserve both fields and produce monotonic history versions.
-
-`decision_retention` tracks the last observed source `activityAt`, Keep, reversible archive provenance, and monotonic source/archive versions. `decision_archive_notification_outbox` has a unique key over company, source identity, archive version, and immutable origin agent so repeated sweeps cannot enqueue duplicate notifications; delivery claims are retryable and coalesced per agent.
-
-## Native runner persistence
-
-Native runner state is additive to the existing heartbeat tables. Every existing
-`heartbeat_runs` row defaults to `runtime_mode = 'legacy'`; adding these columns
-does not select the native runtime or start a runner process. Native execution can
-record its resolved runtime profile, provider session, driver, completion
-contract, durable event cursor, and finalization phase on the run when a later
-rollout explicitly selects it.
-
-`completion_contracts`, `native_run_results`, `native_run_finalizations`,
-`work_assessments`, `status_decisions`, and `status_decision_effects` form the
-append-oriented evidence and status-decision chain. Unique fingerprints,
-versions, ordinals, and idempotency keys make retries deterministic. Composite
-foreign keys bind every contract, result, assessment, decision, effect, and
-finalization to one company, issue, and run. The database rejects mixed-owner
-evidence even when every referenced ID exists. Native source identities on
-`heartbeat_run_events` are nullable so legacy events remain readable without
-rewriting historical rows. Per-run native source identifiers are unique, while
-the existing legacy sequence behavior remains unchanged. The hidden native
-coordinator serializes on its bound `heartbeat_runs` row, allocates
-`next_event_seq`, and commits a validated PRP event before the transport sends
-its cumulative ACK. Byte-equivalent source retries return the existing cursor;
-gaps and conflicting replays fail closed. Accepted structured results enter the
-finalization ledger, whose retry time and owner lease are checked under a row
-lock. None of these writes selects a runtime or changes a legacy run's execution
-path.
-
-Durable agent session goals are an additive projection on
-`agent_task_sessions`, distinct from the business-goal hierarchy. The row stores
-the negotiated goal capability, normalized snapshot and status, desired state,
-provider source cursor, monotonic projection revision, and observation time.
-`agent_session_goal_actions` is the control outbox: `(session_id, request_id)`
-is unique, so retries return the original accepted action. Provider source
-ordering fences duplicate and stale updates, and a cleared projection retains
-its revision/cursor tombstone so an older provider event cannot resurrect it.
-
-Issue `status_version` advances only when `status` changes. The JavaScript backup
-path includes user-defined functions and triggers so a restored database keeps
-that invariant. Removing or disabling a future native rollout flag must not
-delete these records; persisted experimental runs remain available for recovery
-and inspection.
-
-`native_run_finalizations` also stores restart ownership and recovery state.
-The controller owner is a server boot id, PID, operating-system process-start
-timestamp, and monotonically increasing controller generation. Recovery writes
-its correlated request id, current state, and a bounded JSON history. A
-successor can take the lease immediately only when coordinated handoff or PID
-and process-start evidence proves the prior controller is gone, or when the
-lease expires. Recovery generation changes do not increment the independent
-provider-attempt counter.
-
-## Chat communication snapshots
-
-Chat communication guidance uses two additive columns: endpoint
-`communication_instructions` defaults to empty, and conversation
-`communication_guidance` holds the immutable initial task snapshot. Existing
-conversations retain a null snapshot; there is no backfill that changes an
-ongoing conversation. New Slack tasks receive built-in guidance even when the
-endpoint has no additional instructions.
-
-## Telegram private draft identities
-
-`chat_telegram_draft_ids` is a content-free, instance-wide PostgreSQL sequence,
-not a company-owned record. Telegram's native Stop callback carries a draft ID
-but no actor or Paperclip generation. IDs therefore must not be recycled when
-a transaction rolls back or an endpoint/company is deleted and its bot is
-connected again. The sequence allocates positive 31-bit IDs without cycling;
-exhaustion refuses new draft allocation rather than wrapping or falling back to
-random IDs. Never reset it as part of chat cleanup.
-
-The matching `chat_actions` entry remains company/endpoint-scoped and binds the
-draft to its exact conversation, publication attempt, runtime, credential and
-approved text. Stop can suppress that private draft's final publication; it
-cannot cancel a task or model run. Logical backups preserve the sequence, but
-restoring an older database may roll back its high-water mark: disaster recovery
-must not assume stale provider Stop events are safe to reuse. That restore
-boundary is not qualified by the rollback/concurrency regression.
-
-## Attachment upload provenance
-
-`issue_attachments.originating_run_id` records server-derived run attribution at
-upload time. It is not writable through attachment or work-product update APIs.
-Legacy attachments and uploads without a registered run keep a null value; the
-migration deliberately does not infer attribution from mutable work products.
-Deleting the originating run clears the reference and fails closed for automatic
-chat handoff. An agent's external file selection must match the attachment's
-company, task, agent, and originating run. Editing or recreating a work-product
-record cannot reassign that authority to a later run.
-
-## Question-response delivery receipts
-
-`issue_question_response_deliveries` is the retry-safe, content-free outbox for
-answered `ask_user_questions` interactions. Its unique interaction and correlation
-indexes enforce one causal delivery per response. It records source and target
-run/turn ids, payload digest, attempt/acknowledgement state, and one of `steered`,
-`coalesced`, or `wake_fallback`; answer content remains only in
-`issue_thread_interactions.result`. Deleting the interaction cascades its receipt,
-while deleting a referenced run clears that run pointer without deleting history.
-
-The question-history index covers `(company_id, idempotency_key)` for every
-`question-response:` wake state, including failed, cancelled, and skipped
-receipts excluded from the delivery-idempotency fence. Migration `0332` creates
-this nonunique index concurrently through the standard migration executor.
-Apply it with `pnpm db:migrate` on a direct connection before enabling the new
-sleep guard. The executor retries interrupted invalid builds and records history
-only after the index is valid. It does not delete delivery or wake records.
-
-## Plugin database namespaces
-
-The plugin runtime tracks plugin-owned database namespaces and migrations in `plugin_database_namespaces` and `plugin_migrations`. Hosted deployments that separate runtime and migration connections should set `DATABASE_MIGRATION_URL`; plugin namespace migration work uses the migration connection when present.
-
-## Backups
-
-Paperclip supports automatic and manual logical database backups. These dumps include
-non-system database schemas such as `public`, the Drizzle migration journal, and
-plugin-owned database schemas. See `doc/DEVELOPING.md` for the current
-`paperclipai db:backup` / `pnpm db:backup` commands and backup retention
-configuration.
-
-Database backups do not include non-database instance files such as local-disk
-uploads, workspace files, or the local encrypted secrets master key. Back those paths
-up separately when you need full instance disaster recovery.
-
-## Secret storage
-
-Paperclip stores secret metadata and versions in:
-
-- `user_secret_definitions`
-- `user_secret_declarations`
-- `company_secrets`
-- `company_secret_versions`
-- `company_secret_bindings`
-- `secret_access_events`
-
-Company secrets use `company_secrets.scope = 'company'` and are bound directly
-through `company_secret_bindings`. User-specific secrets reuse the same provider
-and version storage, but each value is a `company_secrets.scope = 'user'` row
-with `owner_user_id` and `user_secret_definition_id` set. Definitions describe
-the reusable company-level slot, declarations record where `user_secret_ref`
-bindings are required, and the concrete value is selected later for the
-responsible user.
-
-Secret-aware env bindings are supported by agents, projects, and routines. Routine env lives in `routines.env`, is captured in `routine_revisions.snapshot`, and routine dispatches store `routine_runs.routine_revision_id` so runtime secret resolution uses the env snapshot that existed when the run was created. Routine secret refs bind with `target_type = 'routine'`, `target_id = routines.id`, and `config_path` values under `env.*`.
-
-For local/default installs, the active provider is `local_encrypted`:
-
-- Secret material is encrypted at rest with a local master key.
-- Default key file: `~/.paperclip/instances/default/secrets/master.key` (auto-created if missing).
-- CLI config location: `~/.paperclip/instances/default/config.json` under `secrets.localEncrypted.keyFilePath`.
-- Backup/restore requires both the database metadata and the local master key file; either artifact alone is insufficient.
-- The server best-effort enforces `0600` key file permissions and provider health reports permission warnings.
-- User-scoped values use the same local encrypted provider path. Database
-  backups preserve definitions, declarations, owner metadata, version metadata,
-  and access events, but restored user-scoped values are decryptable only when
-  the matching local master key is restored with the database.
-
-Optional overrides:
-
-- `PAPERCLIP_SECRETS_MASTER_KEY` (32-byte key as base64, hex, or raw 32-char string)
-- `PAPERCLIP_SECRETS_MASTER_KEY_FILE` (custom key file path)
-
-Strict mode to block new inline sensitive env values:
-
-```sh
-PAPERCLIP_SECRETS_STRICT_MODE=true
-```
-
-You can set strict mode and provider defaults via:
-
-```sh
-pnpm paperclipai configure --section secrets
-```
-
-Inline secret migration command:
-
-```sh
-npx paperclipai secrets migrate-inline-env --company-id <company-id> --apply
-
-# direct database maintenance fallback
-pnpm secrets:migrate-inline-env --apply
-```
-
-Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVIDER.md).
-
-### Persistent agent conversations
-
-Migration `0274_agent_chat.sql` adds conversation identity/state and session generation/boundary columns to `issues`, plus idempotent client request IDs and processed session-boundary generations to `issue_comments`. The company/agent/user unique index resolves concurrent first writes to one issue. A check constraint preserves the assigned-agent identity and prevents terminal conversation status. Comment request IDs are unique per issue and user. There is no separate chat/message store. Provider sessions continue to use `agent_task_sessions`; `/new` removes only the matching conversation session, and session writers fence stale generations against the issue row.
-
-## Resource lifecycle events
-
-`resource_lifecycle_events` records content-free lifecycle hooks in the same
-transaction as the resource change. Hired agents and new projects emit `create`.
-Pending hires emit creation only when `activatePendingApproval` succeeds.
-Rejected hires emit termination without creation. Agents created as terminated
-emit no creation event. Capture is generic and works on self-hosted and managed
-instances; recording an event does not authorize a provider operation.
-
-A partial unique `(company_id, resource_type, resource_id)` index deduplicates
-creation. Each actual agent pause, resume, or termination appends another event,
-including budget actions and generic status updates. The agent row stays locked
-until status and event commit, so concurrent repeat requests emit one hook.
-Project edits and workspace additions, updates, and removals append `update`.
-Repository replacement emits one aggregate update; project creation with repositories
-emits only creation. Project mutations hold the project row lock until their record
-commits. An active-to-archived transition emits `archive`; restoring an archived
-project emits `update`. Repeat archive or restore requests emit no new status
-record. An edit combined with archive emits `update` followed by `archive` in
-the same transaction. Archiving preserves workspace records and authorizes no
-provider cleanup.
-Termination commits API-key revocation in that same transaction.
-Hire approval and rejection commit with agent activation or termination, so a
-failed event write leaves the decision pending and retryable.
-
-Creation is delivered first for each resource, including a backfilled creation
-whose ID is newer than earlier captured transitions. The remaining events follow
-numeric ID order. Plugin delivery
-must enforce company scope, preserve resource order, and track acknowledgments
-per plugin. A global high-water mark can skip transactions that have not yet
-committed; it is not a safe delivery cursor. The journal stores only identity,
-action, and timestamps, not repository snapshots, credentials, provider config,
-or resource health. Company deletion cascades to its events. Resource deletion
-retains events, so consumers must revalidate existence and eligibility and load
-current authorized repository data. A termination hook does not authorize
-provider cleanup without the plugin's own authorization and retention policy.
-
-Migration `0309_loving_the_hood.sql` seeds a one-time current-state baseline before
-plugin delivery is available. It records creation for existing hired agents and
-all projects, including archived projects. Pending hires stay behind approval.
-Paused and terminated agents receive missing final status intents. A partial
-journal ending at pause receives resume when the current agent is running.
-Archived projects receive missing archive intents. A partial journal ending at
-archive receives update when the current project is active.
-Existing records remain intact, and rerunning the baseline does not duplicate it.
-The migration also repairs the journal ID generator in older JavaScript restores
-that lost identity metadata, starting above existing IDs. New JavaScript backups
-preserve identity generation, sequence options, and sequence progress.
-Resource writes wait for the migration transaction to commit. These records
-represent current desired state, not reconstructed historical transitions.
-There is no later or runtime journal backfill. Plugins use `ctx.events.listLifecycle(companyId, limit?, afterId?)` and
-`ctx.events.acknowledgeLifecycle(companyId, eventId)` with `events.subscribe`.
-The host requires a matching company invocation (or configured-company proactive
-access) and a ready plugin enabled for that company.
-`plugin_lifecycle_acknowledgments` stores progress independently
-for each plugin and event; plugin and event deletion cascade acknowledgments.
-Reads return creation first, then the earliest unacknowledged transition for each resource, up to 100
-resources. Acknowledging a later event is rejected. Reads never consume work, so
-crashes, retries, and restarts cannot lose a hook; concurrent reads can repeat an
-event. There is no global cursor or runtime backfill scan. Consumers must serialize their
-processing and make provider operations idempotent before acknowledging success.
-Retention and provider integration remain separate work.
-
-Lifecycle polls can page past failed resources using the last returned event id as
-`afterId`. Reset `afterId` at the start of every polling sweep: it is a page
-cursor, never a persisted high-water mark. This retries failures and includes
-transactions that commit later with lower ids.
-
-## Legacy controller ownership
-
-Legacy run claims atomically record `controller_boot_id`, a database-clock
-`controller_lease_expires_at`, and `execution_stage` before workspace provisioning.
-The lease renews independently of output. A different container must not infer
-controller death from its own process map or numeric PIDs. Expiration grants
-cleanup authority; it does not prove that remote inference has stopped. Recovery
-revokes the previous boot identity with a conditional update. Its own claim also
-expires so another sweep can finish cleanup after a restart. Historical rows keep
-null ownership fields and follow the previous recovery path.
-
-## Agent file persistence and legacy revisions
-
-Managed agent files are current filesystem contents, using the same persistent
-instance storage as other workspaces. `agent_instruction_revisions` and
-`agent_instruction_heads` are retained as read-only upgrade input. Their heads
-are adopted once into the managed directory; new saves never append revisions.
-`agent_instruction_working_copies` holds per-run baseline hashes, state, and
-capture receipts. New receipts identify `paperclip.agent-files.v1`; historical
-rows retain the instruction-only format. Completed directory runs discard their
-baseline and private copies. See [Persistent agent files](agent-files.md).
-
-## Large API response snapshots
-
-`assets.byte_size` uses PostgreSQL `bigint` so saved responses and byte ranges can
-exceed 2 GiB. The API and Drizzle mapping continue to expose a JavaScript number;
-response readers validate safe integer offsets. The type-widening migration
-rewrites the asset metadata table and needs an exclusive table lock. File bytes
-remain in local or object storage.
-
-### Runner API response reservations
-
-`runner_api_response_reservations` holds company-scoped API snapshot reservations.
-Before a capture spills, the server locks company admission and counts stored
-`runner-api` assets plus unattached reservations against a 20 GiB default quota.
-A committed asset replaces its reservation in that total. The asset foreign key
-cascades on deletion, while deleting a run sets `run_id` to null so an orphan
-reservation cannot silently disappear. Failed cleanup or an ambiguous storage
-write requires operator reconciliation before an unattached reservation is
-removed. The table stores no response bodies. See `doc/runner-api-tools.md` for
-limits and the operator override.
-
-Project `privacy_owner_user_id` records who may manage its audience independently of project read membership. Creation assigns the authenticated user or run responsible user; migration recovers legacy ownership from creation audit evidence. Missing evidence leaves management with administrators.
-## Internal agent commentary
-
-`agent_commentary` stores company-scoped, attributed complaints and suggestions
-as free-form text in the instance database. Legacy agents use the default
-`complain` and `suggestion-box` runtime skills; native runs use dedicated tools
-in standard, ask, and planning modes. Submission never changes task disposition
-or routes feedback externally. See [Agent commentary](agent-commentary.md) for
-authentication, replay, document-sized limits, inspection, and deletion semantics.
-
-## Agent identity keys and backups
-
-`agent_identity_keys` stores one encrypted Ed25519 identity per agent. Its migration
-creates schema only: existing agents provision on their next managed run. Public
-reads and server startup do not provision them. Normal backups preserve identity
-rows and need the matching secrets master key for recovery. Both development seed
-modes omit identity rows, including with live-work preservation, so copied agents
-get fresh identities. See [Agent cryptographic identity](AGENT-IDENTITY.md).
-
-### Slack app registration
-
-`chat_slack_registrations` stores one company-scoped app registration per chat
-endpoint. A composite foreign key binds `(company_id, endpoint_id)` to the
-endpoint's company. It contains the creation request ID, immutable manifest
-snapshot/hash, OAuth callback URI, app/client IDs, vault references, installation
-identity, status, safe failure code, creator, and timestamps. It contains no
-plaintext configuration token, OAuth code, signing/client secret, or bot token.
-
-Creation records `creating` before dispatch. An interrupted attempt becomes
-`uncertain`; a new request needs explicit confirmation that no app exists.
-`install` means the app exists. `credentials_saved` means the OAuth bot token is
-vaulted and connection checks can resume. `configured` means runtime credentials
-are durably bound; staged duplicates are cleaned and the client secret remains
-available for reauthorization. `removed` invalidates registration and keeps the
-safe app management link for provider-side cleanup.
-
-`chat_endpoints.setup.slackAvatar` records optional avatar provisioning as
-`pending`, `uploaded` with its confirmation timestamp, or `failed` with a fixed
-safe error code. It survives reloads and restarts. App credentials are durably
-bound before icon upload; an interrupted upload never triggers another app
-creation. This JSON state stores no token, image URL, or provider error payload.
-
-`chat_endpoints.setup.slackAccount` stores the OAuth installer’s Slack ID, the
-initiating Paperclip user ID, pending/linked status, durable welcome-DM and
-optional verification-DM status, and the returned DM channel ID. It stores no
-user OAuth token or provider payload.
-The account uses the existing company-scoped `chat_identity_links` table; it
-preserves conflicting/revoked links and does not change on reauthorization.
-Both message dispatches move pending → sending before network I/O, then sent/failed;
-a restart or ambiguous response moves sending → uncertain without replay.
-Signed Request URL verification can precede installation. Internal setup state
-retains a signing-secret fingerprint and observed URL so configuration preserves
-that evidence only for the same secret and callback. No plaintext secret is stored
-in setup state, and the fingerprint is excluded from endpoint responses.
-For automatically registered apps, `webhookVerifiedAt` also records successful
-delivery of an authenticated message/app-mention event to the current callback
-URL. The current signing secret, saved app/workspace/bot binding, active connection,
-and runtime generation are checked before recording it. This is Paperclip's
-connection evidence, not Slack's settings-page URL-verification flag. Activity
-identifies this evidence as `authenticated_event`; no message body is recorded.
-
-Slack install attempts use `tool_oauth_states` with the `slack-install.` namespace.
-They expire after ten minutes, bind the company/connection/endpoint, registration
-request ID, app ID, initiating actor/session, callback URI, and requested scopes,
-and are atomically deleted before code exchange. The `code_verifier` column holds
-this non-secret binding for this namespace; Slack bot installation does not use
-PKCE. Removal and manual recovery invalidate outstanding attempts under the same
-credential-mutation lease used by configuration.
-
-### Slack manager workspace grants
-
-`chat_slack_manager_grants` stores a personal workspace authorization, scoped by
-company, Paperclip user, Slack user, workspace and manager app. Access/refresh
-credentials are references to user-scoped vault entries, never plaintext columns.
-Revision fencing protects reauthorization from concurrent revocation. Per-method
-rate-limit deadlines retain Slack's Retry-After across setup retries.
-
-`chat_slack_registrations.manager_grant_id` is optional, with a composite company
-foreign key. Existing registrations remain customer owned with a null reference.
-Deleting one endpoint removes its registration credentials and attempts, but does
-not revoke grants used by other bots. See [Slack setup](connections/slack-setup.md).
 
 ## Transaction-aware delivery work signals
 
@@ -830,119 +414,27 @@ register before writing, or they can remain unseen until the next startup or
 another notification. Tests should verify both the producer and its outer
 transaction boundary.
 
-### Project repository skill synchronization
+## Plugin database namespaces
 
-`project_skill_sources` stores durable workspace import jobs and originating project
-access provenance. Active bindings track their repository/ref; inactive bindings retain
-access to installed versions. Project deletion removes bindings, but retained skills
-with `access_source_id` stay restricted when no originating project remains.
-Removing a project source hides tracking using `company_skill_sources.removed_at`
-while retaining its access identity for editable copies and forks. Bindings become
-inactive and refresh leases are invalidated transactionally. Reattachment preserves
-removal; explicit adoption creates or joins an active source with a separate identity.
-Migration 0341 limits repository/ref uniqueness to active sources. Removed sources
-retain their original project audience; editable forks capture independent retained
-provenance so later attachments cannot expose their local edits. Membership and
-project visibility are still evaluated dynamically.
+The plugin runtime tracks plugin-owned database namespaces and migrations in `plugin_database_namespaces` and `plugin_migrations`. Hosted deployments that separate runtime and migration connections should set `DATABASE_MIGRATION_URL`; plugin namespace migration work uses the migration connection when present.
 
-`company_skill_sources` stores automatic-update and future-import preferences, setup
-user/agent and connection/grant IDs, next-check time, failure count and existing refresh
-leases. Existing sources default to automatic updates with their selection preserved.
-Credential values remain in the connection secret system. No project membership lists
-are copied into skills. Background publication uses normal immutable versions and
-transactional activity attribution. Setup agent and connection identifiers remain after
-those identities are deleted. Refresh then requires explicit repair; deletion cannot
-silently substitute board authority or another connection. Execution snapshots keep
-only the delivered skill keys and their immutable version IDs. New executions resolve
-the latest installed versions without an upstream fetch.
+## Backups
 
-Project-derived sources retain `HEAD` for an unspecified repository ref. It follows
-GitHub's current default branch. An explicitly configured branch has a separate
-source identity even if it currently resolves to that default branch. API-key
-agents without an authenticated run may attach repositories; their durable import
-jobs have no setup person and require adoption by an authorized person.
+Paperclip supports automatic and manual logical database backups. These dumps include
+non-system database schemas such as `public`, the Drizzle migration journal, and
+plugin-owned database schemas. See `doc/database-backups.md` for the current
+`paperclipai db:backup` / `pnpm db:backup` commands and backup retention
+configuration.
 
-Independent sources can change their tracked branch or revision through source
-settings, including `HEAD` to follow the default branch. Validate the repository
-identity and the requested commit read
-before changing the ref; preserve installed skill IDs, versions and selection. Active
-project bindings must change their ref through the project configuration. `HEAD`
-remains the default-branch alias after refresh, including for independent sources.
-Branch changes use the source revision and lease fence, reject duplicate repository/ref
-sources, keep installed version rows unchanged, and enqueue the normal refresh path.
-Branch listing uses the caller's authorized connection, not the stored setup identity.
+Database backups do not include non-database instance files such as local-disk
+uploads, workspace files, or the local encrypted secrets master key. Back those paths
+up separately when you need full instance disaster recovery.
 
-### Task workspace records (2026-10-09)
+## More documentation
 
-Migration [0336_big_crystal.sql](../packages/db/src/migrations/0336_big_crystal.sql) makes `execution_workspaces.project_id` nullable and changes its project reference to `ON DELETE RESTRICT`: source-project policy cannot disappear while a workspace still depends on it. `issues.execution_workspace_id` remains the sole active task binding. Versioned selection/pending-selection JSON and a binding revision record intent and protect transitions; they are not additional active bindings. Accepting a new pending choice advances the revision without changing the active folder. Its receipt retains the original request revision, so current-choice retries are idempotent and superseded retries fail the revision check.
-
-`execution_workspace_repositories` is company-scoped inventory beneath an execution workspace. It records repository identity, contained relative path, requested ref, pinned commit, preparation state and idempotency receipts. Credentials are resolved at use and are never stored in this inventory. Connection/destination `execution_defaults` JSON contains optional typed project/workspace choices, never arbitrary host paths or commands.
-
-Migration [0337_exotic_proemial_gods.sql](../packages/db/src/migrations/0337_exotic_proemial_gods.sql) adds internal `execution_workspace_repository_roots` records. A company and hash of its canonical physical path uniquely identify a sticky `anonymous_only` or `managed` acquisition reservation. Short transactions serialize reservations with repository requests and credential promotion, preventing private publication after low-trust admission checks. Records have no workspace foreign key: mutable workspace metadata, relocation, archival or deletion cannot release a physical folder still accessible to an admitted run. There is no automatic mode change or reservation deletion.
-
-Migration [0338_absurd_vengeance.sql](../packages/db/src/migrations/0338_absurd_vengeance.sql) adds internal `execution_workspace_repository_access` provenance. Company/canonical-root source entries retain execution-workspace and source-project identities; reader entries retain the exact admitted run, task, agent and responsible user. New repository receipts also record their root at creation; legacy receipts receive no inferred origin. Shared project-source entries retain which physical owners require workspace write authority. Current admission, selection, requests and publication check the current task’s writer against those owners; retained past readers and file APIs still require only read authority. Genuine isolated copies retain source read access without requiring shared-folder write access. An existing linked worktree can recover a missing isolated-copy proof only after Git registration and its captured source owner are verified. Configured local sibling copies retain deny-only task/project source ownership on the bound task root before materialization; ordinary repository clones create no isolation proof. The shared root fence checks every reader against every source before admission and future publication, including tasks without repository requests. File APIs apply the same source privacy without writing provenance. These entries grant no authority and have no workspace or run deletion cascade; unavailable retained identity fails closed. Automatic provenance release is deferred, so a newly incompatible permission scope requires a separate physical root.
-
-Git-source capture checks the actual common Git storage directory and verified
-checkout owners. Separately stored metadata does not make its parent a checkout.
-When a linked worktree cannot identify its primary checkout, the service verifies
-company-known configured, execution, and retained roots against that metadata
-identity. A primary checkout identifies itself when its Git directory equals its
-common directory, including separate metadata layouts. Verified primary sources
-and linked worktrees with a verified registered primary avoid the fallback scan.
-
-Writable selection, source-copy preparation, admission, and publication check the trust policy of
-current and retained physical source projects. A projectless alias cannot bypass
-a source's sandbox requirement. An incompatible preset or boundary is rejected;
-the check never silently changes the selected execution environment. Admitted
-and retained readers use their persisted effective run policy; absence of a
-retained low-trust policy counts as standard. Live policy edits cannot relabel
-a standard local run as sandboxed. Read-only file access
-keeps its existing authorization rules.
-
-Source-copy checks retain deny-only ownership on failure but create a new
-isolated-copy proof only after physical identity, access, and trust checks pass.
-For low-trust sandbox runs, the harness also disables host worktree provisioning
-on fresh realization, reuse, and rebuild. This covers configured commands and
-the repository's built-in provision script; an empty configured command alone
-would still allow that fallback. The capability comes from the server's selected
-trust policy and environment, never repository configuration.
-
-After source authorization and retained-reader checks pass, the existing
-`source` and `project_source` kinds retain ownership on shared Git storage.
-Removing the original checkout cannot release private committed files in surviving
-worktrees. These records grant no authority and create no isolation proof. Denied
-source captures leave no new records. Worktree realization uses a verified checkout
-as its Git command directory, including when metadata sits inside another repository.
-
-No migration scans or copies existing agent home directories. Keep admitted native descriptors and recovery references until compatible controllers finish their persistence obligations. See [the architecture rollout contract](plans/2026-10-09-task-workspaces.md).
-
-Migration 0341 stores the last scanned Git tree and a durable automatic-refresh
-work allowance. The allowance starts at 512 MiB, refills at 512 MiB/hour, and
-reserves the existing 128 MiB upper bound before automatic downloads. Completed
-small scans refund unused capacity; interrupted/failed work keeps its bounded
-reservation. These internal fields do not appear in source responses.
-
-Automatic initial repository imports reserve durable company work credits before
-provider reads: 512 MiB capacity, refilling 512 MiB per hour, with a 128 MiB
-reservation per attempt. Failed downloads and package fallback keep the full
-reservation. Successfully linked small imports refund unused measured work.
-Completed bindings do not reset company credits; waiting jobs retry on refill.
-The company_skill_import_budgets table stores no credentials or source contents.
-
-### Execution recovery query performance
-
-Conversation recovery keeps indexed run and task UUID columns as UUIDs. Saved
-JSON identifiers pass a canonical lowercase UUID guard before conversion.
-Malformed, uppercase, numeric and cross-company values retain their old behavior.
-Ownership candidate reads split native and legacy issue bindings so existing
-indexes can filter candidates before reading large contexts. Native bindings
-continue to override legacy context IDs. No new index or migration is needed.
-
-```sh
-pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-recovery-queries.ts --baseline-ref=1e731520bb
-```
-
-This disposable fixture compares the real ownership, recovery-action and status
-delivery queries, including complete positional results and database plans.
-All data is synthetic. Query timings exclude process liveness probes, HTTP and
-provider work.
+| Area | Doc |
+| --- | --- |
+| Automatic backups and restore | [database-backups.md](database-backups.md) |
+| Response-size diagnostics, the postgres.js patch, transaction memory | [database-client-internals.md](database-client-internals.md) |
+| Remote workspace snapshot storage | [workspace-storage.md](workspace-storage.md#experimental-remote-workspace-snapshots) |
+| Execution admission tables | [server/src/modules/README.md](../server/src/modules/README.md#execution-admission-accounting) |

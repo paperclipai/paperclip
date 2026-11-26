@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CloudflareDriverConfig } from "./types.js";
-import { createCloudflareBridgeClient, resolveRequestTimeoutMs } from "./bridge-client.js";
+import { environmentResumeErrorData } from "@paperclipai/plugin-sdk";
+import { CloudflareBridgeTimeoutError, createCloudflareBridgeClient, resolveRequestTimeoutMs } from "./bridge-client.js";
 
 const baseConfig: CloudflareDriverConfig = {
   bridgeBaseUrl: "https://bridge.example.workers.dev",
@@ -88,5 +89,17 @@ describe("Cloudflare bridge client timeouts", () => {
     expect(onOutput).toHaveBeenCalledWith("stdout", "hello\n");
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(JSON.parse(String(init.body))).toMatchObject({ streamOutput: true });
+  });
+
+  it("names a bridge request deadline as a transport timeout in the resume error envelope", async () => {
+    vi.stubGlobal("fetch", vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+      init.signal!.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" })));
+    })));
+    const client = createCloudflareBridgeClient({ config: { ...baseConfig, bridgeRequestTimeoutMs: 5 } });
+    const error = await client.resumeLease({ providerLeaseId: "lease-1" } as never).catch(caught => caught);
+    expect(error).toBeInstanceOf(CloudflareBridgeTimeoutError);
+    expect(error).toMatchObject({ code: "ETIMEDOUT", message: "Cloudflare sandbox bridge request timed out after 5ms." });
+    expect(environmentResumeErrorData(error)).toEqual({ schema: "paperclip/environment-resume-error/v1",
+      diagnostic: { errorCode: "ETIMEDOUT" } });
   });
 });
