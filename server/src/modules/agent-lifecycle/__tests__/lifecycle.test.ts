@@ -19,7 +19,7 @@ import { errorHandler } from "../../../middleware/error-handler.js";
 import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, approvals, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, environments, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, applyPendingMigrations, closeRegisteredClients, createDb, type Db } from "@paperclipai/db";
+import { agents, approvals, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, environments, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, instanceUserRoles, principalPermissionGrants, plugins, pluginCompanySettings, applyPendingMigrations, closeRegisteredClients, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createAgentLifecycle, configureAgentLifecycle, startAgentLifecycle } from "../../../services/agent-lifecycle.js";
@@ -76,6 +76,41 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await current(hired.id)).adapterConfig).toMatchObject({ ...adapterConfig, lifecycleMode: "warm" });
     await createAgentLifecycle(db).updateConfiguration(hired.id, { adapterConfig: { ...(await current(hired.id)).adapterConfig, lifecycleMode: "per_turn" } });
     expect((await current(hired.id)).adapterConfig.lifecycleMode).toBe("per_turn");
+  });
+
+  it("requires an instance administrator at managed Hermes creation and pending activation", async () => {
+    const lifecycle = createAgentLifecycle(db);
+    const operator = randomUUID();
+    const member = randomUUID();
+    const managed = { name: "Managed Hermes", adapterType: "hermes_gateway",
+      adapterConfig: { managedProfile: true, managedProfileAuthorizedBy: operator } };
+    await db.insert(instanceUserRoles).values({ userId: operator });
+
+    for (const options of [{ createdByUserId: member }, { createdByUserId: null, responsibleUserId: operator }]) {
+      await expect(lifecycle.requestHire(companyId, managed, options)).rejects
+        .toThrow("Managed Hermes profiles require instance administrator authorization");
+    }
+
+    const agent = await lifecycle.requestHire(companyId, { ...managed, status: "pending_approval" }, { createdByUserId: operator });
+    await expect(lifecycle.approveHire(agent.id, member)).rejects
+      .toThrow("Managed Hermes profiles require instance administrator authorization");
+    expect((await current(agent.id)).lifecycleState).toBe("pending_approval");
+    await lifecycle.approveHire(agent.id, operator);
+    expect(await current(agent.id)).toMatchObject({
+      lifecycleState: "preparing", adapterConfig: { managedProfileAuthorizedBy: operator },
+    });
+  });
+
+  it("rejects a type-only config update that would activate a managed Hermes profile", async () => {
+    const lifecycle = createAgentLifecycle(db);
+    const agent = await lifecycle.requestHire(companyId, {
+      name: "Ordinary hire", adapterType: "process",
+      adapterConfig: { managedProfile: true, managedProfileAuthorizedBy: randomUUID() },
+    });
+    expect((await current(agent.id)).adapterConfig).not.toHaveProperty("managedProfileAuthorizedBy");
+    await expect(lifecycle.updateConfiguration(agent.id, { adapterType: "hermes_gateway" }))
+      .rejects.toThrow("The Hermes lifecycle owns the managed gateway binding");
+    expect((await current(agent.id)).adapterType).toBe("process");
   });
 
   it("rejects an outdated configuration snapshot under the write lock", async () => {

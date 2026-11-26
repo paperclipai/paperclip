@@ -25,7 +25,7 @@ import { secretService, assertClaudeOAuthBindingInvariant } from "./secrets.js";
 import { agentCredentialService } from "./agent-credentials.js";
 import { clearPrimaryAgent } from "./primary-agent.js";
 import { budgetServiceInTransaction } from "./budgets.js";
-import { managedHermesConfigurationChanged } from "../lib/hermes-gateway-binding.js";
+import { managedHermesConfigurationChanged, usesManagedHermesProfile } from "../lib/hermes-gateway-binding.js";
 import { releaseProviderLimitWaits } from "./heartbeat/provider-limit-wait.js";
 
 export async function lockAgentConfigurationInteractions(tx: Db, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions) {
@@ -95,7 +95,8 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
   const nextConfig = isPlainRecord(data.adapterConfig) ? data.adapterConfig : currentConfig;
   if ((existing.adapterType === "hermes_gateway" || data.adapterType === "hermes_gateway") &&
       (managedHermesConfigurationChanged(currentConfig, nextConfig) ||
-       (currentConfig.managedProfile === true && data.adapterType !== undefined && data.adapterType !== "hermes_gateway"))) {
+       usesManagedHermesProfile(existing.adapterType, currentConfig) !==
+         usesManagedHermesProfile(data.adapterType ?? existing.adapterType, nextConfig))) {
     throw conflict("The Hermes lifecycle owns the managed gateway binding");
   }
   const normalizedPatch = { ...data } as AgentConfigurationPatch;

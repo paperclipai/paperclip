@@ -83,8 +83,9 @@ of a private JSON policy. The policy requires these fields:
 - `paperclipApiUrl` reachable by Hermes and the trusted `profileConfig` passed to
   native Hermes configuration. Specify the model and tool access here.
 
-Set `adapterType: "hermes_gateway"` and `adapterConfig.managedProfile: true` in
-a native hire request. Paperclip creates the saved gateway binding and the
+An instance administrator can set `adapterType: "hermes_gateway"` and
+`adapterConfig.managedProfile: true` in a native hire request. A pending managed
+hire also requires an instance administrator to approve it. Paperclip creates the saved gateway binding and the
 project-scoped reporting key during `preparing`. Hermes creates and supervises
 the profile. Paperclip uses the named native readiness check before dispatch.
 
@@ -95,8 +96,15 @@ existing Paperclip task helper with an operator-selected reporting toolset.
 
 Terminate managed agents while idle. Paperclip revokes each agent's reporting
 key and its lifecycle stops the Hermes gateway and removes the assigned
-credentials. Hermes retains the profile's memory and sessions. Keep its
-management policy available until cleanup has settled.
+credentials. Automatic hire and retirement require the Hermes Dashboard
+`PUT /api/gateway/lifecycle` endpoint for a named standalone S6 gateway. If
+Hermes cannot confirm the supervisor state, Paperclip keeps the lifecycle
+pending. Keep its management policy available until cleanup has settled.
+
+Hermes retains the profile's memory and sessions. For privileged recovery,
+assign a fresh gateway key before an explicit Dashboard or CLI start. The
+managed retirement marker stays in place and the old Paperclip key stays
+revoked. Stop the recovered runtime and remove the recovery key after use.
 
 ## Invite From Paperclip
 

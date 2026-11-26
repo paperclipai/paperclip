@@ -1,3 +1,5 @@
+import { usesManagedHermesProfile } from "../lib/hermes-gateway-binding.js";
+import { accessService } from "./access.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { assertNoInitialAgentInteractionPermissions, preserveAgentInteractionPermissions } from "../lib/agent-interaction-permissions.js";
 import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
@@ -8,7 +10,7 @@ import { agentAppearanceSchema, randomAgentAppearance } from "@paperclipai/share
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
 import { agents, toolConnectionInstalls, principalPermissionGrants, type Db } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
-import { unprocessable } from "../errors.js";
+import { forbidden, unprocessable } from "../errors.js";
 import { agentRecordQueries, isPlainRecord, configPatchFromApprovalPayload, normalizeRuntimeConfigForNewAgent,
   deduplicateAgentName, type CreateAgentData, type CreateAgentOptions, type AgentConfigurationPatch, type AgentHireRecord } from "../lib/agent-records.js";
 import { CEO_HIRING_DENIAL_KEY, normalizeAgentPermissions, permissionsImplyLowTrust, NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS,
@@ -21,6 +23,17 @@ import { initializePrimaryAgent } from "./primary-agent.js";
 import { resolveAgentRunnerTaskDriverForCompany, resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { assertProviderApiPlacementPolicy, isProviderApiSetupDraft, resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
+
+async function authorizeManagedHermesProfile(
+  db: Db, adapterType: string, config: Record<string, unknown>, userId?: string | null,
+) {
+  const { managedProfileAuthorizedBy: _callerValue, ...adapterConfig } = config;
+  if (!usesManagedHermesProfile(adapterType, adapterConfig)) return adapterConfig;
+  if (!userId || !await accessService(db).isInstanceAdmin(userId)) {
+    throw forbidden("Managed Hermes profiles require instance administrator authorization");
+  }
+  return { ...adapterConfig, managedProfileAuthorizedBy: userId };
+}
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
   assertNoInitialAgentInteractionPermissions(input.permissions);
@@ -58,7 +71,10 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
   const rawAdapterConfig = isPlainRecord(data.adapterConfig)
     ? await secretService(db).normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
     : {};
-  const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
+  const adapterConfig = await authorizeManagedHermesProfile(
+    db, adapterType, normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig),
+    options?.managedHermesApproverUserId ?? options?.createdByUserId,
+  );
   const profile = { adapterType, adapterConfig };
   const providerApiDraft = options?.setupOnly === true && isProviderApiSetupDraft(profile);
   const providerApi = providerApiDraft ? null : resolveProviderApiPlacement({ agent: profile });
@@ -113,7 +129,7 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
   }
 }
 
-export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireRecord, approvedPayload?: Record<string, unknown> | null): Promise<AgentConfigurationPatch> {
+export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireRecord, approvedPayload?: Record<string, unknown> | null, approverUserId?: string | null): Promise<AgentConfigurationPatch> {
   const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
   const patch = { ...approvedPatch } as AgentConfigurationPatch;
   const hasApprovedAdapterConfig = Object.prototype.hasOwnProperty.call(patch, "adapterConfig") && isPlainRecord(patch.adapterConfig);
@@ -136,6 +152,11 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
       patch.adapterType as string,
       existing.adapterConfig,
     );
+  }
+  const effectiveType = patch.adapterType ?? existing.adapterType;
+  const effectiveConfig = patch.adapterConfig ?? existing.adapterConfig ?? {};
+  if (patch.adapterConfig !== undefined || usesManagedHermesProfile(effectiveType, effectiveConfig)) {
+    patch.adapterConfig = await authorizeManagedHermesProfile(txDb, effectiveType, effectiveConfig, approverUserId);
   }
   if (patch.permissions !== undefined) {
     // The pending-approval activation replays the original hire

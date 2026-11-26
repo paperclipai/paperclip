@@ -1,6 +1,5 @@
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { setTimeout } from "node:timers/promises";
 import { and, eq, sql } from "drizzle-orm";
 import { agents, projects, type Db } from "@paperclipai/db";
 import { z } from "zod";
@@ -75,6 +74,12 @@ class HermesAdmin {
       .parse(await this.request(`/api/status?profile=${profile}`));
   }
 
+  async settle(profile: string, desired: "running" | "retired") {
+    const result = z.object({ profile: z.literal(profile), desired: z.literal(desired), settled: z.boolean() })
+      .parse(await this.request(`/api/gateway/lifecycle?profile=${profile}&desired=${desired}`, "PUT"));
+    return result.settled;
+  }
+
   async setEnv(profile: string, key: string, value: string) {
     await this.request("/api/env", "PUT", { profile, key, value });
   }
@@ -119,6 +124,9 @@ async function reserveConnection(db: Db, snapshot: LifecycleAgent, policy: Polic
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${origin(policy.gatewayHost).origin}, 0))`);
     const agent = await lockedAgent(tx, snapshot);
     if (!agent) return false;
+    if (typeof agent.adapterConfig.managedProfileAuthorizedBy !== "string") {
+      throw new Error("Managed Hermes profile has no instance administrator authorization");
+    }
 
     const secrets = secretService(tx);
     const existing = await ownedSecret(tx, agent, "gateway");
@@ -203,23 +211,21 @@ async function prepareProfile(tx: Db, agent: AgentRow, policy: Policy, admin: He
     });
   }
   const status = await admin.status(profile);
-  if (status.gateway_running && status.gateway_state === "running") return "complete" as const;
-  if (status.gateway_running || status.gateway_state === "starting") return "pending" as const;
-
-  const endpoint = new URL(String(agent.adapterConfig.apiBaseUrl));
-  await admin.request(`/api/config?profile=${profile}`, "PUT", { config: {
-    ...policy.profileConfig,
-    gateway: { standalone: true, multiplex_profiles: false },
-    platforms: { api_server: { enabled: true, extra: { host: "127.0.0.1", port: Number(endpoint.port) } } },
-  } });
-  await admin.setEnv(profile, "API_SERVER_KEY", key);
-  await admin.setEnv(profile, "PAPERCLIP_BRIDGE_API_KEY", bridge);
-  await admin.setEnv(profile, "PAPERCLIP_API_URL", policy.paperclipApiUrl);
-  await admin.request(`/api/gateway/start?profile=${profile}`, "POST");
-  // The management endpoint acknowledges command spawn, before the gateway
-  // writes its first status. Give the supervisor time to observe that start.
-  await setTimeout(3_000);
-  return "pending" as const;
+  if (!status.gateway_running && status.gateway_state !== "starting") {
+    const endpoint = new URL(String(agent.adapterConfig.apiBaseUrl));
+    await admin.request(`/api/config?profile=${profile}`, "PUT", { config: {
+      ...policy.profileConfig,
+      gateway: { standalone: true, multiplex_profiles: false },
+      platforms: { api_server: { enabled: true, extra: { host: "127.0.0.1", port: Number(endpoint.port) } } },
+    } });
+    await admin.setEnv(profile, "API_SERVER_KEY", key);
+    await admin.setEnv(profile, "PAPERCLIP_BRIDGE_API_KEY", bridge);
+    await admin.setEnv(profile, "PAPERCLIP_API_URL", policy.paperclipApiUrl);
+  }
+  if (!await admin.settle(profile, "running")) return "pending" as const;
+  const afterStart = await admin.status(profile);
+  return afterStart.gateway_running && afterStart.gateway_state === "running"
+    ? "complete" as const : "pending" as const;
 }
 
 async function retireProfile(tx: Db, agent: AgentRow, admin: HermesAdmin) {
@@ -227,11 +233,7 @@ async function retireProfile(tx: Db, agent: AgentRow, admin: HermesAdmin) {
   const owned = (await admin.profiles()).find(row => row.name === profile);
   if (owned) {
     if (owned.description !== markerFor(agent)) throw new Error("Managed Hermes profile ownership conflict");
-    const status = await admin.status(profile);
-    if (status.gateway_running || status.gateway_state === "starting") {
-      await admin.request(`/api/gateway/stop?profile=${profile}`, "POST");
-      return "pending" as const;
-    }
+    if (!await admin.settle(profile, "retired")) return "pending" as const;
     for (const key of ["API_SERVER_KEY", "PAPERCLIP_BRIDGE_API_KEY"]) {
       await admin.request("/api/env", "DELETE", { profile, key }, true);
     }
@@ -260,8 +262,8 @@ export async function reconcileManagedHermesGateway(db: Db, snapshot: LifecycleA
   const admin = new HermesAdmin(origin(policy.adminUrl), token);
   return db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
-    // Serialize changes for this agent across lifecycle phases. A stop cannot
-    // overtake an in-flight prepare request from the previous lease.
+    // Serialize local writes across phases. Hermes orders supervisor commands
+    // separately because an HTTP timeout does not cancel the remote work.
     const agent = await lockedAgent(tx, snapshot);
     if (!agent) return "pending" as const;
     return snapshot.lifecycleState === "preparing"
