@@ -8,22 +8,35 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
-import { useReviewCount } from "./useReviewCount";
+import { AppLogo } from "./AppLogo";
+import { useReviewQueue } from "./useReviewCount";
 
 export type PluginsAddOption = { id: string; title: string; description: string; href: string };
 
-/** Opens the Review page, and counts the requests waiting for the user's OK when there are any. */
+/** How many plugin logos the review shortcut stacks before the count. */
+const STACKED_LOGOS = 4;
+
+/** Opens Reviews. When requests are waiting it shows the plugins they come from and how many there are. */
 function ReviewButton() {
-  const count = useReviewCount();
+  const { count, apps } = useReviewQueue();
   return (
-    <Button asChild variant="ghost" className="h-9 shrink-0 gap-2 px-3 text-muted-foreground">
-      <Link to="/apps/review" aria-label={count > 0 ? `${count} to review, open Review` : "Open Review"}>
+    <Button asChild variant="ghost" className="h-9 shrink-0 gap-3 px-2 pr-3 text-muted-foreground">
+      <Link to="/apps/review" aria-label={count > 0 ? `${count} to review, open Reviews` : "Open Reviews"}>
         {count > 0 ? (
-          <span className="inline-flex h-6 items-center rounded-md bg-(--status-task-todo)/15 px-2 text-xs font-normal text-(--status-task-icon-todo) tabular-nums">
-            {count} to review
-          </span>
+          <>
+            {apps.length > 0 ? (
+              <span aria-hidden className="flex items-center -space-x-1.5">
+                {apps.slice(0, STACKED_LOGOS).map((name) => (
+                  <AppLogo key={name} name={name} size={28} className="rounded-lg ring-2 ring-background" />
+                ))}
+              </span>
+            ) : null}
+            <span className="inline-flex h-6 items-center rounded-md bg-(--status-task-todo)/15 px-2 text-xs font-normal text-(--status-task-icon-todo) tabular-nums">
+              {count} to review
+            </span>
+          </>
         ) : (
-          "Review"
+          <span className="pl-1">Reviews</span>
         )}
         <ChevronRight className="size-4" aria-hidden />
       </Link>

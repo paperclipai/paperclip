@@ -25,7 +25,7 @@ import {
 } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useQueryView } from "@/components/QueryView";
-import { AlertTriangle, CheckCircle2, Copy, CircleHelp, ExternalLink, Eye, EyeOff, Hammer, Loader2 } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Copy, CircleHelp, ExternalLink, Eye, EyeOff, Hammer, Loader2, X } from "lucide-react";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { AgentCharacter } from "@/components/AgentCharacter";
 import { AgentSelect } from "@/components/AgentMultiSelect";
@@ -114,10 +114,11 @@ export function isChatEndpointRepairing(
   );
 }
 
-export function ChatConnectionPurpose({ provider, onChat, onTools, slackLabels }: {
+export function ChatConnectionPurpose({ provider, onChat, onTools, onClose, slackLabels }: {
   provider: ChatProvider;
   onChat: () => void;
   onTools: () => void;
+  onClose?: () => void;
   slackLabels?: string[];
 }) {
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -128,11 +129,18 @@ export function ChatConnectionPurpose({ provider, onChat, onTools, slackLabels }
   return (
       <div className="max-w-2xl space-y-6">
         <ChatSetupNavigation labels={provider === "slack" ? slackLabels ?? ["Choose agent", "Connect"] : undefined} step={0} availableStep={0} onSelect={onChat} />
-        <div>
-          <h1 className="text-xl font-bold">Choose how to connect</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            What should this {providerNames[provider]} connection do?
-          </p>
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h1 className="text-xl font-bold">Choose how to connect</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              What should this {providerNames[provider]} connection do?
+            </p>
+          </div>
+          {onClose ? (
+            <Button type="button" variant="ghost" size="icon" className="-mt-1 -mr-2 shrink-0 text-muted-foreground" aria-label="Close" title="Close" onClick={onClose}>
+              <X aria-hidden />
+            </Button>
+          ) : null}
         </div>
         <div className="grid gap-3">
           <button
@@ -538,7 +546,7 @@ function ChatSdkEndpointSetup() {
     );
 
   if (purpose === "choice" && provider !== "speko") {
-    return <ChatConnectionPurpose provider={provider} slackLabels={slackNavigation.labels} onChat={() => setPurpose("chat")} onTools={() => navigate(toolHref)} />;
+    return <ChatConnectionPurpose provider={provider} slackLabels={slackNavigation.labels} onChat={() => setPurpose("chat")} onTools={() => navigate(toolHref)} onClose={() => navigate("/apps")} />;
   }
 
   return (
