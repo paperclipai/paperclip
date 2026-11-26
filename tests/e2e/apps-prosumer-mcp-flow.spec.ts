@@ -115,13 +115,9 @@ async function gotoApps(page: Page, prefix: string) {
 
 async function gotoConnect(page: Page, prefix: string) {
   await page.goto(`/${prefix}/apps`);
-  await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
-  const customConnector = page
-    .getByRole("list", { name: "Connector list" })
-    .getByRole("listitem")
-    .filter({ hasText: "Connect your own tool" });
-  await customConnector.getByRole("button", { name: "Connect", exact: true }).click();
-  await customConnector.getByRole("button", { name: "Connect your own MCP server" }).click();
+  await expect(page.getByRole("heading", { name: "Plugins" })).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByRole("menuitem", { name: /MCP server URL/ }).click();
 }
 
 async function gotoAdvanced(page: Page, prefix: string) {
@@ -161,32 +157,83 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
     await linkInput.fill(mock.url);
     await page.getByRole("button", { name: "Continue" }).click();
 
-    // Access is chosen before credentials so the user knows who and which
-    // agents will receive the connection before Paperclip contacts it.
-    await expect(page.getByText("Which humans can use this credential?")).toBeVisible();
-    await page.getByRole("button", { name: "Save and continue" }).click();
-
-    // LinkKey step keeps the BYO connection heading. Mock doesn't
-    // require a key — leave the default "No" answer.
+    // There is no separate Access step: the link opens the key screen, which
+    // states the default access in one line. The mock needs no key, and a
+    // credential challenge from the server is what would ask for one.
     await expect(page.getByRole("heading", { name: "Connect your own MCP server" })).toBeVisible({ timeout: 15_000 });
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-02-key-step.png`, fullPage: true });
 
     // Submit (button label is "Check link").
     await page.getByRole("button", { name: /Check link/i }).click();
 
-    // The Access choice was captured before credentials. A successful generic
-    // probe now commits discovered actions and risk defaults transactionally,
-    // so the key check lands directly on success.
+    // A successful generic probe commits discovered actions and the stated
+    // access defaults transactionally, so the key check lands on success.
     await expect(page.getByRole("heading", { name: /is ready\.$/i })).toBeVisible({ timeout: 30_000 });
+    // The success screen restates who can use the connection and links to where that changes.
+    await expect(page.getByRole("button", { name: "Change", exact: true })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-05-success.png`, fullPage: true });
 
     // Verify the mock saw a tools/list call from the catalog refresh.
     expect(mock.captures.some((c) => c.method === "tools/list")).toBe(true);
 
-    // The new connection should show up on /apps/connections.
+    const connectionsResponse = await request.get(`/api/companies/${seed.companyId}/tools/connections`);
+    expect(connectionsResponse.ok(), `list connections failed ${connectionsResponse.status()}`).toBe(true);
+    const connectionsPayload = await connectionsResponse.json();
+    const savedConnection = connectionsPayload.connections.find(
+      (connection: { config?: { url?: string } }) => connection.config?.url === mock.url,
+    );
+    expect(savedConnection?.id).toBeTruthy();
+    const mockPort = new URL(savedConnection.config.url).port;
+    expect(mockPort).toBeTruthy();
+
+    // View the exact saved connection and confirm its discovered actions survive a reload.
+    await page.getByRole("button", { name: "View connection" }).click();
+    await expect(page).toHaveURL(
+      new RegExp(`/${seed.prefix}/apps/${savedConnection.id}/permissions$`),
+      { timeout: 15_000 },
+    );
+    const savedHeading = page.getByRole("heading", { level: 1 });
+    await expect(savedHeading).toBeVisible();
+    const savedHeadingText = (await savedHeading.textContent())?.trim();
+    expect(savedHeadingText).toBeTruthy();
+    expect(savedHeadingText).toContain(mockPort);
+    await expect(page.getByRole("heading", { name: "Actions", exact: true })).toBeVisible();
+    await expect(page.getByText("List widgets", { exact: true })).toBeVisible();
+    await expect(page.getByText("Create widget", { exact: true })).toBeVisible();
+    await page.reload();
+    await expect(page).toHaveURL(
+      new RegExp(`/${seed.prefix}/apps/${savedConnection.id}/permissions$`),
+      { timeout: 15_000 },
+    );
+    await expect(page.getByRole("heading", { name: savedHeadingText, exact: true })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Actions", exact: true })).toBeVisible();
+    await expect(page.getByText("List widgets", { exact: true })).toBeVisible();
+    await expect(page.getByText("Create widget", { exact: true })).toBeVisible();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-06-permissions.png`, fullPage: true });
+
+    // The plugin page shows the same actions as two blocks and saves a group change in one step.
     await gotoApps(page, seed.prefix);
-    await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 15_000 });
-    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-06-apps-list.png`, fullPage: true });
+    await page
+      .getByRole("list", { name: "Connector list" })
+      .getByRole("listitem")
+      .filter({ hasText: mockPort })
+      .getByRole("heading")
+      .getByRole("button")
+      .click();
+    const permissions = page.getByRole("region", { name: "Tool permissions" });
+    const reads = permissions.getByRole("button", { name: /^Reads\s*1$/ });
+    const writes = permissions.getByRole("button", { name: /^Writes\s*1$/ });
+    await expect(reads).toBeVisible({ timeout: 30_000 });
+    await expect(writes).toBeVisible();
+    await writes.click();
+    await expect(permissions.getByText("Create widget", { exact: true })).toBeVisible();
+    await permissions.getByRole("button", { name: /^All writes: / }).click();
+    await page.getByRole("menuitemradio", { name: "Off", exact: true }).click();
+    await expect(permissions.getByRole("button", { name: "All writes: Off" })).toBeVisible({ timeout: 15_000 });
+    await page.reload();
+    await expect(page.getByRole("region", { name: "Tool permissions" }).getByRole("button", { name: "All writes: Off" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("region", { name: "Tool permissions" }).getByRole("button", { name: /^All reads: Allowed$/ })).toBeVisible();
+    await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-07-plugin-permissions.png`, fullPage: true });
   });
 
   test("Expired key → health sweep → Needs attention → reconnect → green", async ({ page, request }) => {
@@ -223,7 +270,7 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
 
       // Needs-attention page should surface this connection.
       await gotoNeedsAttention(page, seed.prefix);
-      await expect(page.getByRole("heading", { name: "Connectors" })).toBeVisible({ timeout: 30_000 });
+      await expect(page.getByRole("heading", { name: "Plugins" })).toBeVisible({ timeout: 30_000 });
       await expect(page.getByText("Needs attention", { exact: true }).first()).toBeVisible({ timeout: 30_000 });
       await page.screenshot({ path: `${SCREENSHOT_DIR}/prosumer-mcp-07-needs-attention.png`, fullPage: true });
 
@@ -243,10 +290,12 @@ test.describe.serial("prosumer MCP flow prosumer MCP flow", () => {
         });
         expect(repatch.ok(), `patch url failed ${repatch.status()}: ${await repatch.text()}`).toBe(true);
 
-        const reconnect = await request.post(`/api/tool-connections/${connectionId}/reconnect`, {
-          data: { credentialValues: { "credentials.authorization": "fresh-key" } },
-        });
-        expect(reconnect.ok(), `reconnect failed ${reconnect.status()}: ${await reconnect.text()}`).toBe(true);
+        await page.reload();
+        await page.getByLabel("App key", { exact: true }).fill("fresh-key");
+        await page.getByRole("button", { name: "Check & reconnect", exact: true }).click();
+        await expect(page.getByText("Reconnected", { exact: true })).toBeVisible();
+        await expect(page.getByRole("heading", { name: "This app needs reconnecting" })).toHaveCount(0);
+        await expect(page.getByText("Still not working", { exact: true })).toHaveCount(0);
 
         const after = await request.get(`/api/tool-connections/${connectionId}`);
         const afterBody = await after.json();

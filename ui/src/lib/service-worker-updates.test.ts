@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startServiceWorkerUpdates } from "./service-worker-updates";
+import { hasPendingWrites, subscribePendingWrites, trackPendingWrite } from "./reload-safety";
 
 type Listener = () => void;
 
@@ -42,6 +43,44 @@ function fakeDocument(initialVisibility: DocumentVisibilityState = "visible") {
 }
 
 describe("startServiceWorkerUpdates", () => {
+  it("keeps the installed page while a durable write is in flight and reloads once it settles", () => {
+    const { container, emit } = fakeContainer({ controlled: true });
+    const { doc } = fakeDocument("hidden");
+    const reload = vi.fn();
+    const finish = trackPendingWrite();
+    const stop = startServiceWorkerUpdates({ container, documentRef: doc, reload,
+      canReload: () => !hasPendingWrites(), subscribeReloadSafety: subscribePendingWrites });
+    emit("controllerchange");
+    expect(reload).not.toHaveBeenCalled();
+    finish();
+    expect(reload).toHaveBeenCalledOnce();
+    finish();
+    expect(reload).toHaveBeenCalledOnce();
+    stop();
+  });
+
+  it("defers an update through an outage and still waits for a hidden tab after recovery", () => {
+    const { container, emit } = fakeContainer({ controlled: true });
+    const documentState = fakeDocument("hidden");
+    const reload = vi.fn();
+    let safe = false;
+    let notify = () => {};
+    const unsubscribe = vi.fn();
+    const stop = startServiceWorkerUpdates({ container, documentRef: documentState.doc, reload,
+      canReload: () => safe, subscribeReloadSafety: listener => { notify = listener; return unsubscribe; } });
+    emit("controllerchange");
+    expect(reload).not.toHaveBeenCalled();
+    documentState.doc.visibilityState = "visible";
+    safe = true;
+    notify();
+    expect(reload).not.toHaveBeenCalled();
+    documentState.doc.visibilityState = "hidden";
+    documentState.emit("visibilitychange");
+    expect(reload).toHaveBeenCalledOnce();
+    stop();
+    expect(unsubscribe).toHaveBeenCalledOnce();
+  });
+
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -84,16 +123,6 @@ describe("startServiceWorkerUpdates", () => {
 
     docState.emit("visibilitychange");
     expect(reload).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not reload on a first-ever install", async () => {
-    const { container, emit } = fakeContainer({ controlled: false });
-    const { doc } = fakeDocument("hidden");
-    const reload = vi.fn();
-    startServiceWorkerUpdates({ container, documentRef: doc, reload });
-
-    emit("controllerchange");
-    expect(reload).not.toHaveBeenCalled();
   });
 
   it("reloads when a later deploy replaces the worker a first-visit tab installed", async () => {

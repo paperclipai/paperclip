@@ -46,6 +46,7 @@ function formatVerb(
       return "opened";
     case "issue.updated": {
       const status = details?.status;
+      if (status === "in_review" && details?.externalConversationState === "waiting") return "moved to idle";
       if (typeof status === "string") return `moved to ${humanize(status)}`;
       const priority = details?.priority;
       if (typeof priority === "string") return `set priority to ${humanize(priority)} on`;
@@ -141,6 +142,7 @@ function deriveTaskStatus(
       return "todo";
     case "issue.updated": {
       const status = details?.status;
+      if (status === "in_review" && details?.externalConversationState === "waiting") return "idle";
       return typeof status === "string" ? status : null;
     }
     case "issue.document_created":
@@ -399,10 +401,6 @@ interface FeedCardProps {
   agentMap: Map<string, Agent>;
   entityNameMap: Map<string, string>;
   entityTitleMap?: Map<string, string>;
-  /** Retained for call-site compatibility; no longer read — the collapsed
-   *  card always shows the event-derived status. Lifecycle aggregation (a
-   *  later pass) will pass the live status through its own wrapper. */
-  entityStatusMap?: Map<string, string>;
   isActive?: boolean;
   /** Tier 2 treatment: mutes the verb and title text. Actor name and
    *  timestamp retain their color; leading icon retains its color. */

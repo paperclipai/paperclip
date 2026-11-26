@@ -242,7 +242,7 @@ export function summarizeToolResult(
   isError: boolean | undefined,
   density: TranscriptDensity = "comfortable",
 ): string {
-  if (!result) return isError ? "Tool failed" : "Waiting for result";
+  if (!result) return isError ? "Tool failed" : "Waiting for result"; // query-error-ok: tool-result flag, not a query read
   const structured = parseStructuredToolResult(result);
   if (structured) {
     if (structured.body) {

@@ -139,7 +139,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { engine: "cli", command: "claude" },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });
@@ -170,7 +170,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { engine: "cli", command: "claude" },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });
@@ -202,7 +202,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { engine: "cli", command: "claude" },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });
@@ -239,7 +239,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { engine: "cli", command: "claude" },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });
@@ -269,7 +269,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { engine: "cli", command: "claude" },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });
@@ -296,7 +296,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { engine: "cli", command: "claude" },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });
@@ -323,7 +323,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { engine: "cli", command: "claude" },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });
@@ -361,7 +361,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { engine: "cli", command: "claude" },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });
@@ -401,7 +401,7 @@ describe("claude sandbox hello probe diagnostics", () => {
       testEnvironment({
         companyId: "company-1",
         adapterType: "claude_local",
-        config: { engine: "cli", command: "claude" },
+        config: { model: "claude-opus-5", engine: "cli", command: "claude" },
         executionTarget: sandboxTarget,
         environmentName: "Daytona",
       }),
@@ -428,7 +428,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { engine: "cli", command: "claude" },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });
@@ -451,7 +451,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { engine: "cli", command: "claude" },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });
@@ -471,7 +471,7 @@ describe("claude sandbox hello probe diagnostics", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { engine: "cli", command: "claude" },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude" },
       executionTarget: sandboxTarget,
       environmentName: "Daytona",
     });
@@ -494,7 +494,7 @@ describe("claude auth mode hints", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: {
+      config: { model: "claude-opus-5",
         engine: "cli",
         command: "claude",
         env: { CLAUDE_CODE_OAUTH_TOKEN: "oauth-test-token" },
@@ -515,7 +515,7 @@ describe("claude auth mode hints", () => {
   it("reports an intentionally selected managed API account without a subscription warning", async () => {
     probeResult.value = { exitCode: 0, stdout: successStdout, stderr: "" };
     const result = await testEnvironment({ companyId: "company-1", adapterType: "claude_local",
-      config: { engine: "cli", command: "claude", managedAiConnection: { provider: "anthropic", method: "api_key" }, env: { ANTHROPIC_API_KEY: "api-test-key" } },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude", managedAiConnection: { provider: "anthropic", method: "api_key" }, env: { ANTHROPIC_API_KEY: "api-test-key" } },
       executionTarget: sandboxTarget, environmentName: "Daytona",
     });
     expect(result.checks.find(check => check.code === "claude_anthropic_api_key_overrides_subscription")).toMatchObject({ level: "info", message: "Using the selected Claude API connection." });
@@ -528,7 +528,7 @@ describe("claude auth mode hints", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: {
+      config: { model: "claude-opus-5",
         engine: "cli",
         command: "claude",
         env: {
@@ -606,7 +606,7 @@ describe("claude CLI local hello probe hardening", () => {
     await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: {
+      config: { model: "claude-opus-5",
         engine: "cli",
         command: "/tmp/evil/claude",
         env: {
@@ -639,14 +639,18 @@ describe("claude CLI local hello probe hardening", () => {
     expect(JSON.stringify(spawnedEnv)).not.toContain("caller-proxy");
   });
 
-  it("warns without executing when runtime PATH selects a different local Claude executable", async () => {
+  it.each([
+    ["claude-fable-5-1", "2.1.251"],
+    ["claude-opus-5-5", "2.1.280"],
+    ["claude-sonnet-5-5", "2.1.284"],
+  ])("warns without executing %s when runtime PATH selects a different executable", async (model, minimumVersion) => {
     const runtimeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cli-runtime-path-"));
     const runtimeClaudePath = path.join(runtimeDir, "claude");
     await writeFile(runtimeClaudePath, "#!/bin/sh\nexit 0\n");
     await chmod(runtimeClaudePath, 0o755);
 
     try {
-      probeResult.value = { exitCode: 0, stdout: "2.1.251 (Claude Code)\n", stderr: "" };
+      probeResult.value = { exitCode: 0, stdout: `${minimumVersion} (Claude Code)\n`, stderr: "" };
 
       const result = await testEnvironment({
         companyId: "company-1",
@@ -654,7 +658,7 @@ describe("claude CLI local hello probe hardening", () => {
         config: {
           engine: "cli",
           command: "claude",
-          model: "claude-fable-5-1",
+          model,
           env: { PATH: runtimeDir },
         },
         executionTarget: null,
@@ -664,6 +668,7 @@ describe("claude CLI local hello probe hardening", () => {
       expect(result.status).toBe("warn");
       expect(result.checks).toContainEqual(expect.objectContaining({
         code: "claude_cli_version_probe_mismatch",
+        hint: `Ensure the runtime-selected Claude Code is ${minimumVersion} or newer. Execution will verify that exact executable before launch.`,
         level: "warn",
       }));
       expect(runAdapterExecutionTargetProcess).not.toHaveBeenCalled();
@@ -678,7 +683,7 @@ describe("claude CLI local hello probe hardening", () => {
     const result = await testEnvironment({
       companyId: "company-1",
       adapterType: "claude_local",
-      config: { engine: "cli", command: "claude" },
+      config: { model: "claude-opus-5", engine: "cli", command: "claude" },
       executionTarget: null,
       environmentName: null,
     });

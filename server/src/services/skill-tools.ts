@@ -18,6 +18,35 @@ export const createSkillToolInput = z.object({
   }
 });
 
+/** Replace the complete primary file of an existing skill, never a partial patch. */
+export const updateSkillToolInput = z.object({
+  skillId: z.string().guid(),
+  markdown: z.string().min(1).max(200000),
+  expectedVersionId: z.string().guid(),
+  idempotencyKey: z.string().min(1).max(240),
+}).strict().superRefine((input, context) => {
+  const document = parseFrontmatterMarkdown(input.markdown);
+  const metadata = skillFrontmatterSchema.safeParse(document.frontmatter);
+  if (!document.hasFrontmatter || !metadata.success || !document.body.trim()) {
+    context.addIssue({ code: "custom", path: ["markdown"], message: "Provide a complete SKILL.md with valid name and description frontmatter and a nonempty body." });
+  }
+});
+
+export async function callUpdateSkillTool(input: {
+  arguments: Record<string, unknown>; apiUrl: string; token: string; companyId: string;
+}, fetcher: typeof fetch = fetch) {
+  const { skillId, markdown, expectedVersionId, idempotencyKey } = updateSkillToolInput.parse(input.arguments);
+  const response = await fetcher(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api/companies/${encodeURIComponent(input.companyId)}/skills/${encodeURIComponent(skillId)}/files`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ path: "SKILL.md", content: markdown, expectedVersionId, idempotencyKey }),
+    signal: AbortSignal.timeout(60_000),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Skill update failed (${response.status})`);
+  return { skillId: result.skillId, versionId: result.versionId, path: result.path, studioPath: result.studioPath };
+}
+
 /** Use the same API and company skill policy as Skill Studio. */
 export async function callCreateSkillTool(input: {
   arguments: Record<string, unknown>; apiUrl: string; token: string; companyId: string;
@@ -32,4 +61,35 @@ export async function callCreateSkillTool(input: {
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Skill creation failed (${response.status})`);
   return { id: result.id, name: result.name, slug: result.slug, description: result.description,
     versionId: result.currentVersionId, studioPath: `/skills/studio/${encodeURIComponent(result.id)}` };
+}
+
+/**
+ * A company skill's catalog details that live outside SKILL.md. Its name and
+ * description are SKILL.md frontmatter, so they change through update_skill.
+ * Like the advertised schema, only skillId is required; without a detail the
+ * call changes nothing.
+ */
+export const updateSkillDetailsToolInput = z.object({
+  skillId: z.string().guid(),
+  tagline: z.string().trim().max(120).nullable().optional(),
+  categories: z.array(z.string().trim().min(1).max(60)).max(20).optional(),
+}).strict();
+
+/** Same API and company skill edit policy as the skill page. */
+export async function callUpdateSkillDetailsTool(input: {
+  arguments: Record<string, unknown>; apiUrl: string; token: string; companyId: string;
+}, fetcher: typeof fetch = fetch) {
+  const { skillId, ...details } = updateSkillDetailsToolInput.parse(input.arguments);
+  if (details.tagline === undefined && details.categories === undefined) {
+    return { id: skillId, changed: false, note: "Nothing changed: send tagline, categories or both." };
+  }
+  const response = await fetcher(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api/companies/${encodeURIComponent(input.companyId)}/skills/${encodeURIComponent(skillId)}`, {
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" },
+    body: JSON.stringify(details), signal: AbortSignal.timeout(60_000),
+  });
+  const result = await response.json();
+  if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Skill update failed (${response.status})`);
+  return { id: result.id, name: result.name, slug: result.slug, tagline: result.tagline ?? null, categories: result.categories ?? [],
+    studioPath: `/skills/studio/${encodeURIComponent(result.id)}` };
 }

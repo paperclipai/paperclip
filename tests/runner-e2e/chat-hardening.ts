@@ -11,7 +11,7 @@ type Agent = {
 type Comment = { id: string; body: string; authorAgentId?: string; clientRequestId?: string };
 type Document = { id: string; body: string; latestRevisionId: string; createdByAgentId?: string };
 
-function mutableIssueSnapshot(issue: ChatIssue) {
+export function mutableIssueSnapshot(issue: ChatIssue) {
   // Follow the public mutation contract as it grows. Include relationships and
   // fields governed by dedicated endpoints; omit derived read projections such
   // as inbound references, which a legitimate status reply can add to the chat.
