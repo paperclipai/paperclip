@@ -17,6 +17,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { registerRunLineageSampling } from "../services/heartbeat/run-descendant-reaper.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -138,6 +140,7 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let previousAgentJwtSecret: string | undefined;
+  let deliveryWork: ReturnType<typeof createDeliveryWorkCoordinator> | null = null;
 
   beforeAll(async () => {
     previousAgentJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
@@ -145,6 +148,8 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-local-environment-");
     db = createDb(tempDb.connectionString);
     heartbeat = heartbeatService(db);
+    deliveryWork = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: () => undefined });
+    registerRunLineageSampling(deliveryWork);
   }, 20_000);
 
   afterEach(async () => {
@@ -175,6 +180,7 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
     // while a run's finalize work is still in flight lets a queued write hit
     // a socket that cleanup() already tore down.
     await heartbeat.drainActiveRunExecutions();
+    await deliveryWork?.stop();
     await tempDb?.cleanup();
     if (previousAgentJwtSecret === undefined) {
       delete process.env.PAPERCLIP_AGENT_JWT_SECRET;

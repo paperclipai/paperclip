@@ -143,7 +143,7 @@ describe.skipIf(process.platform !== "linux")("run lineage file", () => {
     await fsp.writeFile(path.join(root, "run-lineage"), "");
     const pid = startSleeper();
     await trackRunDescendants({ runId, rootPid: pid });
-    expect(coordinator.nextWakeAt()).not.toBeNull();
+    expect(await waitFor(() => coordinator.nextWakeAt() !== null)).toBe(true);
     await fsp.rm(path.join(root, "run-lineage"));
     expect(await waitFor(async () => fsp.stat(lineageFile(runId)).then(() => true, () => false))).toBe(true);
 
@@ -152,7 +152,7 @@ describe.skipIf(process.platform !== "linux")("run lineage file", () => {
 
     const laterRunId = "lineage-scheduler-later-run";
     await trackRunDescendants({ runId: laterRunId, rootPid: startSleeper() });
-    expect(coordinator.nextWakeAt()).not.toBeNull();
+    expect(await waitFor(() => coordinator.nextWakeAt() !== null)).toBe(true);
     await worker.stop();
     expect(coordinator.nextWakeAt()).toBeNull();
     await trackRunDescendants({ runId: laterRunId, rootPid: startSleeper() });
