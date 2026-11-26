@@ -2746,7 +2746,7 @@ it.each(["acpx-runtime-sidecar.cjs", "opencode-app-server-proxy.cjs"] as const)(
 it("requires a remote OpenCode executable before resolving controller dependencies", () => {
   expect(() => runnerdLaunchProfileInternals.resolveRunnerOpenCodeExecutable({
     runnerFilesystemRoot: "/provider-pack",
-  })).toThrow("OpenCode executable is missing from the provider pack");
+  })).toThrow("runner_remote_provider_launch_unprepared: OpenCode executable is missing from the provider pack launch inputs");
   expect(runnerdLaunchProfileInternals.resolveRunnerOpenCodeExecutable({
     runnerFilesystemRoot: "/provider-pack", opencodeCommand: "/provider-pack/opencode",
   })).toBe("/provider-pack/opencode");
@@ -3810,7 +3810,7 @@ it("rejects remote OpenCode before spawn when provider-pack paths are absent", a
         baseInstructions: "Complete the task.",
         dynamicTools: [],
       }),
-    ).rejects.toThrow("runner_remote_provider_artifact_incompatible");
+    ).rejects.toThrow("runner_remote_provider_launch_unprepared");
   } finally {
     await transport.close();
     await rm(root, { recursive: true, force: true });
