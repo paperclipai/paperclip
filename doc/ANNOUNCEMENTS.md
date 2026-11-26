@@ -257,6 +257,13 @@ period. A hidden tab clears the card; becoming visible fetches fresh dismissal
 state before showing anything, even if that lookup takes longer than three
 seconds.
 
+The Connectors promotion (`2026-09-14-connectors`) also waits for
+the user's second visit. In this browser, returning to Paperclip or interacting
+with it after 30 minutes of inactivity starts that visit. The board records
+first-visit activity per account across tabs and companies, including time in
+the onboarding wizard and the agent chat. Once eligible, the browser remembers
+that the account has returned. Clearing site data starts the visit history over.
+
 The instance caches the feed for an hour, deduplicates concurrent fetches, and
 uses conditional requests. Failed requests have a fifteen-minute cooldown; no
 card appears for unavailable/invalid/incompatible content. Each request has a

@@ -34,7 +34,11 @@ import {
 export interface ProductAnalyticsClient {
   init(token: string, config: PostHogInitOptions): unknown;
   register(properties: Record<string, unknown>): void;
-  identify(distinctId: string, personProperties?: Record<string, unknown>): void;
+  identify(
+    distinctId: string,
+    personProperties?: Record<string, unknown>,
+    personPropertiesSetOnce?: Record<string, unknown>,
+  ): void;
   group(groupType: string, groupKey: string): void;
   reset(): void;
   capture?(event: string, properties?: Record<string, unknown>, options?: { timestamp?: Date }): unknown;
@@ -201,6 +205,12 @@ function superProperties(config: BrowserAnalyticsConfig) {
   return {
     deployment_source: "cloud",
     environment: config.environment,
+    ...(typeof config.cloudTrialInferenceEnabled === "boolean"
+      ? {
+          cloud_trial_inference_enabled: config.cloudTrialInferenceEnabled,
+          "$feature/cloud-trial-inference": config.cloudTrialInferenceEnabled ? "treatment" : "control",
+        }
+      : {}),
   };
 }
 
@@ -233,7 +243,13 @@ function applyIdentity(client: ProductAnalyticsClient, config: BrowserAnalyticsC
     const personProperties: Record<string, string> = {};
     if (user.email) personProperties.email = user.email;
     if (user.name) personProperties.name = user.name;
-    client.identify(user.id, personProperties);
+    if (typeof config.cloudTrialInferenceEnabled === "boolean") {
+      client.identify(user.id, personProperties, {
+        cloud_trial_inference_cohort: config.cloudTrialInferenceEnabled ? "treatment" : "control",
+      });
+    } else {
+      client.identify(user.id, personProperties);
+    }
     client.group(WORKSPACE_GROUP_TYPE, config.stackId);
     identifiedUserId = user.id;
     return;

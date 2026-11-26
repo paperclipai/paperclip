@@ -1,5 +1,8 @@
 import { questionPayloadSchema } from "./question-payload-schema.js";
 
+export const REQUEST_HUMAN_INPUT_TITLE_MAX_LENGTH = 240;
+export const REQUEST_HUMAN_INPUT_PROMPT_MAX_LENGTH = 1000;
+
 export const requestHumanInputExamples = {
   questions: {
     idempotencyKey: "preference-v1",
@@ -136,13 +139,13 @@ export const requestHumanInputAction = {
             "type": "string",
             "description": "Interaction card title.",
             "minLength": 1,
-            "maxLength": 300
+            "maxLength": REQUEST_HUMAN_INPUT_TITLE_MAX_LENGTH
           },
           "prompt": {
             "type": "string",
             "description": "Question or decision prompt.",
             "minLength": 1,
-            "maxLength": 10000
+            "maxLength": REQUEST_HUMAN_INPUT_PROMPT_MAX_LENGTH
           },
           "payload": questionPayloadSchema,
           "resolverPolicy": {

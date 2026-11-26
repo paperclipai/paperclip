@@ -129,6 +129,13 @@ impl LineageState {
         state
     }
 
+    /// Adds processes as members, each with the identity this read reported.
+    pub(crate) fn track_roots(&mut self, roots: &[ProcessEntry]) {
+        for root in roots.iter().filter(|root| !root.zombie) {
+            self.members.insert(root.pid, root.started);
+        }
+    }
+
     /// Updates membership from one table read and returns the live members.
     /// Callers must apply reads in the order they were taken; an older read
     /// would forget members that a newer one recorded.
@@ -590,6 +597,16 @@ mod tests {
             unreadable: Vec::new(),
             sessions: entries.iter().map(|(e, sid)| (e.pid, *sid)).collect(),
             entries: entries.into_iter().map(|(e, _)| e).collect(),
+        }
+    }
+
+    pub(super) fn table_with_unreadable(
+        entries: Vec<(ProcessEntry, i32)>,
+        unreadable: Vec<i32>,
+    ) -> FixedTable {
+        FixedTable {
+            unreadable,
+            ..table(entries)
         }
     }
 

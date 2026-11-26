@@ -201,6 +201,8 @@ export type {
   AttentionTaskIndex,
   AttentionFeedView,
   AttentionItem,
+  AttentionProviderLimit,
+  AttentionRunHistoryEntry,
   AttentionItemDetail,
   AttentionItemDismissal,
   AttentionFeedQuery,
@@ -493,6 +495,7 @@ export {
   isSystemIssueDocumentKey,
   ISSUE_REFERENCE_SOURCE_KINDS,
   DOCUMENT_ANNOTATION_THREAD_STATUSES,
+  DOCUMENT_ANNOTATION_COMMENT_REACTIONS,
   DOCUMENT_ANNOTATION_ANCHOR_STATES,
   DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES,
   EXTERNAL_OBJECT_STATUS_CATEGORIES,
@@ -703,6 +706,7 @@ export {
   type SystemIssueDocumentKey,
   type IssueReferenceSourceKind,
   type DocumentAnnotationThreadStatus,
+  type DocumentAnnotationCommentReactionName,
   type DocumentAnnotationAnchorState,
   type DocumentAnnotationAnchorConfidence,
   type ExternalObjectStatusCategory,
@@ -1157,6 +1161,8 @@ export type {
   DocumentAnnotationAnchorSelector,
   DocumentAnnotationAnchorSnapshot,
   DocumentAnnotationComment,
+  DocumentAnnotationCommentReactionActor,
+  DocumentAnnotationCommentReactionSummary,
   DocumentAnnotationTextPositionSelector,
   DocumentAnnotationTextQuoteSelector,
   DocumentAnnotationThread,
@@ -1646,12 +1652,14 @@ export type {
   ToolConnectionRemovalResult,
   ToolConnectionRemovalSummary,
   ManagedGoogleAccessRemoval,
+  AiSignInRemoval,
   ManagedGoogleRevocationOutcome,
   ConnectionGrantRevocationResult,
   ToolConnectionStoredContent,
   ToolConnectionStoredContentCounts,
   ToolConnectionContentDeletion,
   ToolConnectionContentDeletionCounts,
+  ToolConnectionContentDeletionReason,
   ToolConnectionContentDeletionStatus,
   ConnectionAudienceMember,
   ConnectionGrant,
@@ -2109,6 +2117,7 @@ export {
   type UpdateProjectWorkspace,
   projectExecutionWorkspacePolicySchema,
   createDocumentAnnotationCommentSchema,
+  documentAnnotationCommentReactionSchema,
   createDocumentAnnotationThreadSchema,
   documentAnnotationAnchorConfidenceSchema,
   documentAnnotationAnchorSelectorSchema,
@@ -2175,6 +2184,7 @@ export {
   issueCommentMetadataSectionSchema,
   issueCommentMetadataSchema,
   addIssueCommentSchema,
+  addIssueSwarmCommentSchema,
   sendChatMessageSchema,
   markIssueReadSchema,
   issueThreadInteractionStatusSchema,
@@ -2362,6 +2372,10 @@ export {
   attentionTransferSchema,
   type AttentionClose,
   type AttentionTransfer,
+  ENV_VAR_NAME_RE,
+  looksLikeCredentialToken,
+  SECRET_SHAPED_ENV_NAME_ERROR,
+  SECRET_SHAPED_ACCESS_ALIAS_ERROR,
   envBindingPlainSchema,
   envBindingSecretRefSchema,
   envBindingUserSecretRefSchema,
@@ -3031,6 +3045,7 @@ export { configureRailwaySshSchema, type ConfigureRailwaySsh, type RailwaySshSet
 export * from "./announcements.js";
 
 export { REMOTE_MCP_CONNECTOR_METHODS, isRemoteMcpConnectorId, isRemoteMcpConnectorMethod, type RemoteMcpConnectorId } from "./remote-mcp-connectors.js";
+export { isCatalogEntryBlocked, isCatalogEntryOffered, isCatalogEntryRemovedByProvider } from "./tool-catalog-availability.js";
 
 export { isRetiredComposioConnection, RETIRED_COMPOSIO_MESSAGE } from "./retired-composio.js";
 
@@ -3150,3 +3165,5 @@ export * from "./tool-call-progress.js";
 export * from "./mcp-skills.js";
 export type { TailscaleConnection, TailscaleDeviceLogin } from "./types/tailscale.js";
 export * from "./agent-setup-progress.js";
+export { antigravitySwarmAvailable, antigravitySwarmWorkModeAllows, isAntigravityAgent, parseLeadingUserCommand, SWARM_REQUEST_MAX_CHARS, type LeadingUserCommand } from "./leading-user-command.js";
+export * from "./cloud-inference.js";

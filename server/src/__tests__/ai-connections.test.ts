@@ -17,7 +17,7 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, type Db, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, type Db, activityLog, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
@@ -50,8 +50,11 @@ import * as settingsModule from "../services/instance-settings.js";
 import { agentRoutes } from "../routes/agents.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { invalidateInstanceSettingsCache } from "../services/instance-settings-cache.js";
+const browserLoginMock = vi.hoisted(() => ({
+  startLocalBrowserLogin: vi.fn(() => ({ authorizationUrl: "https://auth.openai.com/codex/device", code: "ABCD-EFGHJ", abort: () => {} })),
+}));
 vi.mock("../services/local-ai-browser-login.js", () => ({
-  startLocalBrowserLogin: () => ({ authorizationUrl: "https://auth.openai.com/codex/device", code: "ABCD-EFGHJ", abort: () => {} }),
+  startLocalBrowserLogin: browserLoginMock.startLocalBrowserLogin,
 }));
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -888,7 +891,7 @@ describe("managed AI connections", () => {
   });
 
   it("requires sign-in after the receiver process dies with an exchanged but unsaved token", async () => {
-    const owner = "quota-receiver-process-loss";
+    const owner = `quota-receiver-process-loss-${randomUUID()}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const original = JSON.stringify({ tokens: { access_token: "expired-process", refresh_token: "single-use-process" } });
     await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
@@ -915,10 +918,15 @@ describe("managed AI connections", () => {
     const child = spawn(process.execPath, ["--import", createRequire(import.meta.url).resolve("tsx"), new URL("./helpers/quota-credential-process.ts", import.meta.url).pathname], {
       env: { ...process.env, CREDENTIAL_TEST_DATABASE_URL: database.connectionString,
         CREDENTIAL_TEST_PROVIDER_URL: `http://127.0.0.1:${address.port}`, CREDENTIAL_TEST_COMPANY_ID: companyId, CREDENTIAL_TEST_OWNER: owner },
-      stdio: "ignore",
+      stdio: ["ignore", "pipe", "ignore"],
     });
     const exited = once(child, "exit");
+    let ready = false, output = "";
+    child.stdout!.setEncoding("utf8").on("data", (chunk: string) => { output += chunk; ready ||= output.includes("ready\n"); });
     try {
+      const startup = Date.now() + 150_000;
+      while (!ready && Date.now() < startup && child.exitCode === null) await new Promise(resolve => setTimeout(resolve, 25));
+      expect(ready).toBe(true);
       let blocked = false;
       const deadline = Date.now() + 25_000;
       while (!blocked && Date.now() < deadline && child.exitCode === null) {
@@ -949,7 +957,7 @@ describe("managed AI connections", () => {
     await receiver.save(companyId, owner, { connectionId: row.connection.id, provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, signedIn);
     const [current] = await receiver.quotaAccounts(companyId, owner);
     expect(await receiver.runtimeCredential(current)).toBe(signedIn);
-  }, 40_000);
+  }, 200_000);
 
   it("does not exchange a token when a required database transaction fails", async () => {
     const owner = "quota-db-prerequisite";
@@ -2633,7 +2641,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       expect((await request(app).post(url).set("x-local", "yes").send({ ...codex, localSessionId: prepared.body.sessionId })).status).toBe(422);
     } finally { reader.mockRestore(); }
   });
-  it.each(["anthropic", "openai"] as const)("blocks server-host %s login on a public deployment without a trusted host", async provider => {
+  it.each(["anthropic", "openai", "xai"] as const)("blocks server-host %s login on a public deployment without a trusted host", async provider => {
     const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails");
     const app = express();
     app.use(express.json());
@@ -2653,6 +2661,151 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
       }
       expect(reader).not.toHaveBeenCalled();
     } finally { reader.mockRestore(); }
+  });
+
+  it("allows hosted Google Antigravity sign-in on an authenticated public deployment with full ownership, redaction, and single-use checks", async () => {
+    const { errorHandler } = await import("../middleware/error-handler.js");
+    const { createHttpLogger } = await import("../middleware/logger.js");
+    const { default: pino } = await import("pino");
+    const owner = `hosted-google-${randomUUID().slice(0, 8)}`;
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const reader = vi.spyOn(localCredentials, "readVerifiedLocalAiCredentialDetails").mockResolvedValue({
+      credential: JSON.stringify({
+        client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+        client_secret: "fixture-hosted-secret",
+        refresh_token: "fixture-hosted-refresh-token",
+        token_uri: "https://oauth2.googleapis.com/token",
+        scopes: [
+          "https://www.googleapis.com/auth/cloud-platform",
+          "https://www.googleapis.com/auth/userinfo.email",
+          "https://www.googleapis.com/auth/aicode",
+        ],
+        project_id: "fixture-hosted-project",
+      }),
+      accountLabel: "hosted.user@example.test",
+    });
+
+    const usedCodes = new Set<string>();
+    const expectedState = "hosted_google_state_0123456789";
+    let googleState: { authorizationUrl?: string; outcome?: "success" | "failure"; error?: string; submitRedirect?: (raw: string) => Promise<void>; abort: () => void };
+    browserLoginMock.startLocalBrowserLogin.mockImplementationOnce(() => {
+      googleState = {
+        authorizationUrl: `https://accounts.google.com/o/oauth2/v2/auth?state=${expectedState}&redirect_uri=${encodeURIComponent("http://127.0.0.1:41999/")}`,
+        submitRedirect: async (raw: string) => {
+          const parsed = new URL(raw);
+          if (parsed.searchParams.get("state") !== expectedState) {
+            throw new Error("The pasted URL does not match this Google sign-in attempt. Copy the address from the tab opened by this sign-in and try again.");
+          }
+          const code = parsed.searchParams.get("code") ?? "";
+          if (usedCodes.has(code)) {
+            throw new Error("This Google authorization code has already been used. Start sign-in again.");
+          }
+          usedCodes.add(code);
+          googleState.submitRedirect = undefined;
+          googleState.outcome = "success";
+        },
+        abort: () => {},
+      };
+      return googleState as never;
+    });
+
+    const logLines: string[] = [];
+    const testLogger = pino({ level: "debug" }, { write(chunk: string) { logLines.push(chunk); } });
+    const app = express();
+    app.use(express.json());
+    app.use(createHttpLogger(testLogger));
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "session", userId: String(req.headers["x-test-user"] ?? owner), companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "member" }] };
+      next();
+    });
+    app.use("/api", aiConnectionRoutes(db, { deploymentMode: "authenticated", deploymentExposure: "public", trustedLocalStdioRuntimeHost: "" }));
+    app.use(errorHandler);
+
+    const base = `/api/companies/${companyId}/ai-connections/local`;
+    const intent = { provider: "google" as const, method: "subscription" as const, ownership: "personal" as const, name: "Hosted Google Antigravity", allAgents: false, agentIds: [] };
+    const secretCode = `4/0hosted-google-code-canary-${"z".repeat(550)}`;
+    const validRedirect = `http://127.0.0.1:41999/?state=${expectedState}&code=${secretCode}`;
+    const wrongStateRedirect = `http://127.0.0.1:41999/?state=wrong-state-canary&code=wrong-code-canary`;
+
+    try {
+      // 1. Start hosted Google attempt.
+      const started = await request(app).post(`${base}/attempts`).send(intent);
+      expect(started.status).toBe(201);
+      expect(started.headers["cache-control"]).toBe("no-store");
+      const sessionId = started.body.sessionId as string;
+      const codeUrl = `${base}/attempts/${sessionId}/code`;
+
+      // 2. Ownership, company scope, and bad-state checks on /code.
+      const wrongUser = await request(app).post(codeUrl).set("x-test-user", "bob").send({ browserCode: validRedirect });
+      expect(wrongUser.status).toBe(404);
+      expect(wrongUser.headers["cache-control"]).toBe("no-store");
+
+      const wrongCompany = await request(app).post(codeUrl.replace(companyId, otherCompanyId)).send({ browserCode: validRedirect });
+      expect(wrongCompany.status).toBe(403);
+
+      const wrongState = await request(app).post(codeUrl).send({ browserCode: wrongStateRedirect });
+      expect(wrongState.status).toBe(422);
+      expect(wrongState.headers["cache-control"]).toBe("no-store");
+      expect(JSON.stringify(wrongState.body)).not.toContain("wrong-state-canary");
+      expect(JSON.stringify(wrongState.body)).not.toContain("wrong-code-canary");
+
+      // 3. Valid redirect (> 512 bytes!) succeeds and consumes single-use slot.
+      const submitted = await request(app).post(codeUrl).send({ browserCode: validRedirect });
+      expect(submitted.status).toBe(200);
+      expect(submitted.headers["cache-control"]).toBe("no-store");
+
+      // 4. Second submission on the same attempt is rejected.
+      const replayed = await request(app).post(codeUrl).send({ browserCode: validRedirect });
+      expect(replayed.status).toBe(422);
+
+      // 5. Check returns ready with verified account label, and POST /local saves the connection.
+      const checked = await request(app).post(`${base}/check`).send({ ...intent, localSessionId: sessionId });
+      expect(checked.status).toBe(200);
+      expect(checked.body).toEqual({ status: "ready", accountLabel: "hosted.user@example.test" });
+
+      const saved = await request(app).post(base).send({ ...intent, localSessionId: sessionId });
+      expect(saved.status).toBe(201);
+      expect(saved.body).toEqual({ connectionId: expect.any(String), grantId: expect.any(String) });
+
+      // 6. Saved connection is listed and compatible with antigravity_runtime.
+      const listed = await service.list(companyId, owner);
+      const savedConnection = listed.find(c => c.id === saved.body.connectionId);
+      expect(savedConnection).toMatchObject({
+        provider: "google",
+        method: "subscription",
+        name: "Hosted Google Antigravity",
+        accountLabel: "hosted.user@example.test",
+      });
+      expect(isAiConnectionCompatible({ provider: "google", method: "subscription" }, "antigravity_runtime")).toBe(true);
+
+      // 7. Expired attempt cannot accept a redirect URL.
+      const expiredId = randomUUID();
+      const [envRow] = await db.select().from(environments).where(eq(environments.status, "active")).limit(1);
+      await db.insert(adapterAuthSessions).values({
+        id: expiredId, publicSessionId: expiredId, companyId, environmentId: envRow.id,
+        startedByUserId: owner, adapterType: "paperclip_runner", aiConnection: intent,
+        connectionMethod: "local_subscription", status: "waiting_for_user",
+        expiresAt: new Date(Date.now() - 60_000),
+      });
+      expect((await request(app).post(`${base}/attempts/${expiredId}/code`).send({ browserCode: validRedirect })).status).toBe(422);
+
+      // 8. Activity log and HTTP logs contain NO pasted redirect URL or authorization code.
+      const activities = await db.select().from(activityLog).where(eq(activityLog.entityId, sessionId));
+      expect(activities.some(a => a.action === "ai_connection.local_login_code_submitted" && (a.details as { provider?: string })?.provider === "google")).toBe(true);
+      const serializedActivities = JSON.stringify(activities);
+      expect(serializedActivities).not.toContain("hosted-google-code-canary");
+      expect(serializedActivities).not.toContain(expectedState);
+      expect(serializedActivities).not.toContain("127.0.0.1");
+
+      const serializedHttpLogs = logLines.join("\n");
+      expect(serializedHttpLogs).not.toContain("hosted-google-code-canary");
+      expect(serializedHttpLogs).not.toContain("wrong-state-canary");
+      expect(serializedHttpLogs).not.toContain("wrong-code-canary");
+      expect(serializedHttpLogs).not.toContain("127.0.0.1:41999");
+    } finally {
+      reader.mockRestore();
+      browserLoginMock.startLocalBrowserLogin.mockImplementation(() => ({ authorizationUrl: "https://auth.openai.com/codex/device", code: "ABCD-EFGHJ", abort: () => {} }));
+    }
   });
   it.each(["anthropic", "openai"] as const)("lets authenticated users connect only their own isolated %s login", async provider => {
     const owner = `self-hosted-${provider}`;

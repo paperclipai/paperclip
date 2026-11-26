@@ -48,6 +48,7 @@ const apiPrefixes: Record<string, string> = {
   "slack-tools.ts": "/api",
   "email.ts": "/api",
   "cloud.ts": "/api/cloud",
+  "cloud-inference.ts": "/api",
   "customer-success.ts": "/api/customer-success/v1",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
@@ -153,6 +154,7 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // Ordinary board sessions and agent API keys cannot invoke these endpoints.
   "GET /api/customer-success/v1/run-authority",
   "POST /api/customer-success/v1/read",
+  "POST /api/customer-success/v1/read-v2",
   "POST /api/customer-success/v1/run-liveness",
   // OAuth discovery and protocol endpoints have their own metadata contract;
   // browser connection-management operations remain documented in the board API.

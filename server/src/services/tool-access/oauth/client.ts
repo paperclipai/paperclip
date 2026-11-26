@@ -412,7 +412,7 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
       ) {
         throw new HttpError(
           422,
-          "OAuth authorization has expired. Reconnect this app to continue.",
+          "Access to this app ended. Reconnect to continue.",
           {
             code: "oauth_reauthorization_required",
             providerError,

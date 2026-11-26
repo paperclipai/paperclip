@@ -237,22 +237,6 @@ function assertSuspendedRunnerState(
   }
 }
 
-export function isSettledReleasedRunnerCut(
-  state: Record<string, unknown>,
-  expected: DurableRecoveryIdentity,
-): boolean {
-  if (state.schema !== "paperclip.runner.durable.state.v1" || !recoveryIdentityMatches(state, expected)) return false;
-  if (state.lifecycle === "suspended") return true;
-  return state.lifecycle === "ready"
-    && Array.isArray(state.outbox) && state.outbox.length === 0
-    && Number.isSafeInteger(state.nextSourceSeq) && state.ackedSourceSeq === Math.max(0, Number(state.nextSourceSeq) - 1)
-    && state.warmTransition === undefined
-    && (state.pendingTerminalDelivery ?? null) === null
-    && (state.pendingProviderCleanup ?? null) === null
-    && Object.values(record(state.processedCommands)).every(command =>
-      !["pending", "indeterminate"].includes(String(record(command).status)));
-}
-
 function assertRealDirectory(path: string): void {
   const metadata = lstatSync(path);
   if (metadata.isSymbolicLink() || !metadata.isDirectory()) {
@@ -3781,7 +3765,7 @@ function acpxRunnerLaunchProfile(
   const authorityDigest = options.providerPackAuthorityDigest;
   if (!commandSha256 || !sidecarScriptSha256 || !authorityDigest) {
     throw new Error(
-      "runner_remote_provider_artifact_incompatible: ACPX launch profile omitted its provider-pack authority or verified artifact digests",
+      "runner_remote_provider_launch_unprepared: ACPX launch profile omitted its provider-pack authority or verified artifact digests",
     );
   }
   return {
@@ -3825,7 +3809,7 @@ function opencodeRunnerLaunchProfile(
     (usesLocalBuildOwnedDefaults ? localDigest(executable) : null);
   if (!commandSha256 || !proxyScriptSha256 || !executableSha256) {
     throw new Error(
-      "runner_remote_provider_artifact_incompatible: OpenCode launch profile omitted verified artifact digests",
+      "runner_remote_provider_launch_unprepared: OpenCode launch profile omitted verified artifact digests",
     );
   }
   return {
@@ -3841,7 +3825,9 @@ function opencodeRunnerLaunchProfile(
 function resolveRunnerOpenCodeExecutable(options: RunnerdCodexTransportOptions): string {
   if (options.opencodeCommand !== undefined) return options.opencodeCommand;
   if (options.runnerFilesystemRoot) {
-    throw new Error("runner_remote_provider_artifact_incompatible: OpenCode executable is missing from the provider pack");
+    // The controller did not pass the prepared pack's launch inputs. The pack
+    // itself was not judged, so the controller prepares again and retries.
+    throw new Error("runner_remote_provider_launch_unprepared: OpenCode executable is missing from the provider pack launch inputs");
   }
   return resolvePinnedOpenCodeCommand();
 }
@@ -4058,13 +4044,21 @@ export const OPEN_CODE_RUNNER_ENVIRONMENT_KEYS = new Set([
   "WINDIR",
   "RUST_BACKTRACE",
   "OPENROUTER_API_KEY",
+  "PAPERCLIP_OPENROUTER_PROXY_URL",
+  "PAPERCLIP_OPENROUTER_PROXY_TOKEN",
 ]);
 
 function createSanitizedOpenCodeRunnerEnvironment(
   source: NodeJS.ProcessEnv | undefined,
 ): NodeJS.ProcessEnv {
   const candidate = { ...process.env, ...source };
-  for (const key of ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"]) {
+  for (const key of [
+    "PAPERCLIP_AGENT_KEY_ID",
+    "PAPERCLIP_AGENT_PUBLIC_KEY",
+    "PAPERCLIP_AGENT_PRIVATE_KEY",
+    "PAPERCLIP_OPENROUTER_PROXY_URL",
+    "PAPERCLIP_OPENROUTER_PROXY_TOKEN",
+  ]) {
     delete candidate[key];
     if (source?.[key] !== undefined) candidate[key] = source[key];
   }
@@ -5067,7 +5061,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         assertPending();
         let outcome: "resumed" | "unavailable" | undefined;
         let relaunched: { version: string; digest: string } | undefined;
-        let settled: (() => Promise<void>) | undefined;
         try {
           if (!episode.ticket) {
             episode.ticket = core.issueBootstrapTicket(RUNNER_BOOTSTRAP_TICKET_TTL_MS);
@@ -5081,7 +5074,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           const result = await Promise.race([pair.resume(episode.source, episode.ticket), deadline, closed]);
           outcome = typeof result === "string" ? result : result.outcome;
           relaunched = typeof result === "string" ? undefined : result.runner;
-          settled = typeof result === "string" ? undefined : result.settled;
         } catch (error) {
           // A generic RPC error cannot prove refusal. Keep this exact pending claim quiet.
           assertPending();
@@ -5096,7 +5088,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             core.acceptRelaunchedRunner(episode.ticket!, relaunched, episode.parked);
             this.#relaunchedRunnerArtifact = structuredClone(relaunched);
             await Promise.race([core.flushCheckpoint(), deadline, closed]);
-            await Promise.race([settled?.(), deadline, closed]);
           } catch (error) {
             if (error instanceof Error && error.message === "native_runner_relaunched_build_unaccepted") {
               throw new Error("native_runner_reuse_unavailable");
@@ -6461,17 +6452,17 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       }
       if (!this.options.providerNodeCommand) {
         throw new Error(
-          "runner_remote_provider_artifact_incompatible: remote JS provider omitted its provider-pack Node executable",
+          "runner_remote_provider_launch_unprepared: remote JS provider omitted its provider-pack Node executable",
         );
       }
       if (provider === "opencode" && !this.options.opencodeProxyPath) {
         throw new Error(
-          "runner_remote_provider_artifact_incompatible: remote OpenCode omitted its packaged proxy",
+          "runner_remote_provider_launch_unprepared: remote OpenCode omitted its packaged proxy",
         );
       }
       if (provider === "acpx" && !this.options.acpxSidecarPath) {
         throw new Error(
-          "runner_remote_provider_artifact_incompatible: remote ACPX omitted its packaged sidecar",
+          "runner_remote_provider_launch_unprepared: remote ACPX omitted its packaged sidecar",
         );
       }
     }

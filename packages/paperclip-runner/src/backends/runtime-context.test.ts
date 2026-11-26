@@ -24,6 +24,7 @@ import {
   nativeTaskSkillInputs,
   nativeTaskConstraints,
 } from "./runtime-context.js";
+import { retargetNativeSystemInstructions } from "../contracts/runtime-context.js";
 import { authorizedToolSetForProvider, runnerCodexDynamicToolsFit } from "../live/runnerd-codex-transport.js";
 
 const temporaryRoots: string[] = [];
@@ -60,6 +61,35 @@ describe("native runtime context files", () => {
     expect(
       nativeSystemInstructions(runtimeInput(bundleRoot, "AGENTS.md")),
     ).toContain("Stay inside the bundle.");
+  });
+
+  it("gives a /swarm run the agent's own instructions, composed as for an ordinary turn, plus its hand-in values", () => {
+    const temporaryRoot = mkdtempSync(join(tmpdir(), "paperclip-runtime-context-"));
+    temporaryRoots.push(temporaryRoot);
+    const bundleRoot = join(temporaryRoot, "bundle");
+    mkdirSync(bundleRoot);
+    writeFileSync(join(bundleRoot, "AGENTS.md"), `Agent-written: write tests before code. Notes live in ${bundleRoot}/notes.md.\n`);
+    const contract = { revision: "2", objective: "Write", criteria: [{ id: "objective", requirement: "Quoted comment text" }] };
+    const execution = (mode?: string) => ({
+      ...runtimeInput(bundleRoot, "AGENTS.md"),
+      provider: { kind: "acpx", agent: "antigravity", model: "gemini-3.8-flash-low", ...(mode ? { mode } : {}) },
+      completionContract: { contract },
+    }) as unknown as NativeExecutionInput;
+    const ordinary = nativeSystemInstructions(execution());
+    expect(ordinary).toContain("Agent-written: write tests before code.");
+    expect(ordinary).not.toContain("Paperclip hand-in");
+    const swarm = nativeSystemInstructions(execution("swarm"));
+    const handIn = `## Paperclip hand-in\nWhen you call paperclip_finish or paperclip_block, set completionClaim.contractRevision to "2" and list each of these criterion IDs exactly once in completionClaim.criteria: ["objective"].`;
+    const entry = `Agent-written: write tests before code. Notes live in ${bundleRoot}/notes.md.`;
+    expect(swarm).toBe(ordinary.replace(entry, `${entry}\n\n${handIn}`));
+    expect(swarm).not.toContain("Quoted comment text");
+
+    const prior = { prompt: { text: "Paperclip runtime." }, instructions: { bundle: { rootPath: bundleRoot } } };
+    const current = { prompt: { text: "Paperclip runtime." }, instructions: { bundle: { rootPath: "/remote/bundle" } } };
+    const retargeted = retargetNativeSystemInstructions(swarm, prior as never, current as never);
+    expect(retargeted).toBe(retargetNativeSystemInstructions(ordinary, prior as never, current as never).replace(entry, `${entry}\n\n${handIn}`));
+    expect(retargeted.endsWith("/remote/bundle")).toBe(true);
+    expect(retargeted).toContain(`${entry}\n\n${handIn}`);
   });
 
   it("requires semantic completion before the final assistant response", () => {

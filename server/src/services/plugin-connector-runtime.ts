@@ -23,6 +23,7 @@ import type {
   ToolResult,
   ToolRunContext,
 } from "@paperclipai/plugin-sdk";
+import type { PaperclipDefinedToolDefinition } from "./connectors/paperclip-defined-tools.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { PluginWorkerUnavailableError } from "./plugin-worker-unavailable-error.js";
 
@@ -131,12 +132,13 @@ export async function assertPluginConnectionWorker(
   await runningWorker(db, identity.pluginKey);
 }
 
-function toolDescriptor(tool: ConnectorToolDescriptor | PluginConnectorToolDef) {
+function toolDescriptor(tool: ConnectorToolDescriptor | PluginConnectorToolDef): PaperclipDefinedToolDefinition {
   return {
     name: tool.name,
-    ...(tool.displayName ? { title: tool.displayName } : {}),
+    title: tool.displayName ?? null,
     description: tool.description ?? tool.displayName ?? tool.name,
     inputSchema: tool.parametersSchema,
+    outputSchema: null,
     // The declared risk travels with the catalog entry; the connector tool
     // policy reads it (see `connectors/tool-policy.ts`).
     annotations: {
@@ -145,6 +147,16 @@ function toolDescriptor(tool: ConnectorToolDescriptor | PluginConnectorToolDef) 
       ...(tool.risk === "destructive" ? { destructiveHint: true } : {}),
     },
   };
+}
+
+export function pluginConnectionToolDefinition(
+  connection: { config: Record<string, unknown> },
+  toolName: string,
+): PaperclipDefinedToolDefinition | null {
+  const tools = pluginConnectionMethod(connection)?.method.tools;
+  if (tools?.kind !== "static") return null;
+  const tool = tools.list.find((candidate) => candidate.name === toolName);
+  return tool ? toolDescriptor(tool) : null;
 }
 
 /** The tools of one plugin connection, for its catalog. */

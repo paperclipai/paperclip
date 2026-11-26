@@ -298,6 +298,103 @@ fn preserves_closed_admission_categories_over_the_sidecar_pipe() {
     transport.shutdown().unwrap();
 }
 
+// Live /swarm runs failed with only "classification=unclassified": the sidecar's
+// own reason ("mode is supported only for Cursor") was dropped at this pipe.
+#[test]
+fn session_open_rejection_keeps_the_sidecar_code_and_reason_outside_the_error_text() {
+    let mut sidecar = transport("remote-error", Duration::from_secs(1));
+    for (code, classification) in [
+        ("ACPX_SIDECAR_REQUEST_INVALID", "sidecar_request_invalid"),
+        (
+            "ANTIGRAVITY_SWARM_UNAVAILABLE",
+            "antigravity_swarm_unavailable",
+        ),
+        (
+            "ANTIGRAVITY_SWARM_SIGN_IN_REQUIRED",
+            "antigravity_swarm_sign_in_required",
+        ),
+        (
+            "ANTIGRAVITY_SWARM_RECEIPT_MISMATCH",
+            "antigravity_swarm_receipt_mismatch",
+        ),
+        (
+            "ANTIGRAVITY_SWARM_WORKSPACE_ESCAPE",
+            "antigravity_swarm_workspace_escape",
+        ),
+        (
+            "ANTIGRAVITY_SWARM_HELPERS_TIMEOUT",
+            "antigravity_swarm_helpers_timeout",
+        ),
+        (
+            "ACPX_CANDIDATE_ADMISSION_INVALID",
+            "candidate_admission_invalid",
+        ),
+        ("acpx_sidecar_command_failed", "unclassified"),
+    ] {
+        let error = sidecar
+            .request(
+                GeneratedAcpxSidecarCommand::SessionOpen,
+                json!({ "errorCode": code }),
+            )
+            .unwrap_err();
+        let message = error.to_string();
+        assert!(message.ends_with(&format!(
+            "retryable=false, classification={classification})"
+        )));
+        assert!(!message.contains("violet-circuit-4821"));
+        assert_eq!(
+            error.sidecar_rejection(),
+            Some(
+                json!({ "command": "session.open", "code": code, "message": "violet-circuit-4821" })
+            )
+        );
+    }
+    // A provider cause has its own channel: its message is not copied.
+    let cause = json!({ "schema": "paperclip.provider-failure.v1", "provider": "antigravity", "phase": "startup",
+        "category": "unknown", "message": "Swarm is not available.", "providerCode": "ANTIGRAVITY_SWARM_UNAVAILABLE",
+        "retryability": "unknown" });
+    let error = sidecar
+        .request(
+            GeneratedAcpxSidecarCommand::SessionOpen,
+            json!({ "errorCode": "ANTIGRAVITY_SWARM_UNAVAILABLE", "providerFailure": cause,
+                "errorMessage": "Swarm is not available." }),
+        )
+        .unwrap_err();
+    assert_eq!(error.provider_failure(), Some(cause.clone()));
+    assert_eq!(
+        error.sidecar_rejection(),
+        Some(json!({ "command": "session.open", "code": "ANTIGRAVITY_SWARM_UNAVAILABLE" }))
+    );
+    // Operator detail beside the cause (what the provider offered) is kept for diagnostics.
+    let error = sidecar
+        .request(
+            GeneratedAcpxSidecarCommand::SessionOpen,
+            json!({ "errorCode": "ANTIGRAVITY_SWARM_UNAVAILABLE", "providerFailure": cause,
+                "errorMessage": "The Antigravity CLI offered 2 models: gemini-4-argon-low, gemini-3.8-flash-low" }),
+        )
+        .unwrap_err();
+    assert_eq!(error.provider_failure(), Some(cause));
+    assert_eq!(
+        error.sidecar_rejection(),
+        Some(
+            json!({ "command": "session.open", "code": "ANTIGRAVITY_SWARM_UNAVAILABLE",
+            "message": "The Antigravity CLI offered 2 models: gemini-4-argon-low, gemini-3.8-flash-low" })
+        )
+    );
+    sidecar.shutdown().unwrap();
+    // A code outside the closed identifier shape fails the frame contract and is never echoed.
+    let mut invalid = transport("remote-error", Duration::from_secs(1));
+    let error = invalid
+        .request(
+            GeneratedAcpxSidecarCommand::SessionOpen,
+            json!({ "errorCode": "token=amber secret" }),
+        )
+        .unwrap_err();
+    assert!(error.sidecar_rejection().is_none());
+    assert!(!error.to_string().contains("amber"));
+    invalid.shutdown().unwrap();
+}
+
 #[test]
 fn session_ensure_rejection_carries_its_provider_cause_outside_the_error_text() {
     let mut transport = transport("remote-error", Duration::from_secs(1));

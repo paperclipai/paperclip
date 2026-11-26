@@ -165,12 +165,21 @@ describe("Tailscale network connector", () => {
   it("stops polling and gives a recovery action when the sign-in deadline passes", async () => {
     fixture.list.mockResolvedValue([{ ...connected, status: "authorizing" }]);
     fixture.deviceLogin.mockResolvedValue({ connection: { ...connected, status: "authorizing" }, authorizationUrl: "https://login.tailscale.com/a/fixture", expiresAt: new Date(Date.now() - 1).toISOString() });
-    render();await settle();
-    expect(container.textContent).toContain("Sign-in expired");
-    expect(container.querySelector('a[href="https://login.tailscale.com/a/fixture"]')).toBeNull();
-    await new Promise(resolve => setTimeout(resolve, 2100));
-    expect(fixture.deviceLogin).toHaveBeenCalledOnce();
-    expect(button("Cancel sign-in")).toBeDefined();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval"] });
+    try {
+      render();
+      for (let i = 0; i < 6; i++) {
+        await Promise.resolve();
+        await vi.advanceTimersByTimeAsync(1);
+      }
+      expect(container.textContent).toContain("Sign-in expired");
+      expect(container.querySelector('a[href="https://login.tailscale.com/a/fixture"]')).toBeNull();
+      await vi.advanceTimersByTimeAsync(2100);
+      expect(fixture.deviceLogin).toHaveBeenCalledOnce();
+      expect(button("Cancel sign-in")).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each(["cancelled", "failed"])("explains %s consent and retries the same saved connection", async outcome => {

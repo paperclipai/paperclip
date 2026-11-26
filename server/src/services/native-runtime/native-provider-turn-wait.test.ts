@@ -12,6 +12,7 @@ import {
   awaitPersonCommentDuringNativeRun, nativeProviderTurnWaitOptions, nativeProviderTurnWaitStartedAt, personCommentedDuringNativeRun,
   registerPersonCommentWaitWork,
 } from "./native-provider-turn-wait.js";
+import { uniqueIssuePrefix } from "../../__tests__/helpers/issue-prefix.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const USER = "provider-turn-user";
@@ -57,7 +58,7 @@ describe.skipIf(!support.supported)("native provider-turn wait control-plane hoo
   }
 
   async function seed(startedAt = new Date()) {
-    const [company] = await db.insert(companies).values({ name: "Provider turn", issuePrefix: `P${randomUUID().slice(0, 4)}` }).returning();
+    const [company] = await db.insert(companies).values({ name: "Provider turn", issuePrefix: uniqueIssuePrefix("P") }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Claude", adapterType: "paperclip_runner" }).returning();
     const issueId = randomUUID();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company!.id, agentId: agent!.id, status: "running", runtimeMode: "native",

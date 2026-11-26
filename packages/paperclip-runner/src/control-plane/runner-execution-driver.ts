@@ -11,7 +11,7 @@ import type { DurableRecoveryIdentity } from "../contracts/durable-recovery.js";
 export type RunnerReleaseResumeOutcome =
   | "resumed"
   | "unavailable"
-  | { outcome: "resumed"; runner: { version: string; digest: string }; settled?: () => Promise<void> };
+  | { outcome: "resumed"; runner: { version: string; digest: string } };
 
 export interface RunnerExecutionDriver {
   /** The driver verifies a stopped, idle Codex App Server source before launch. */

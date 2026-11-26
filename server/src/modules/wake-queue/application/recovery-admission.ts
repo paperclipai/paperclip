@@ -38,6 +38,7 @@ export function createWakeRecoveryAdmission<ExplicitInput extends ExplicitContin
     return {
       blocker,
       ownsReconstruction,
+      conversationResetCommentId: verifiedReset ? input.commentId : null,
       defer,
       async checkBusyAdmission() {
         let wait: ContinuationWait | undefined;

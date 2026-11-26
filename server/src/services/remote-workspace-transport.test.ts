@@ -13,6 +13,7 @@ import {
   captureRemoteWorkspaceArchive,
   cleanupRemoteWorkspaceArchive,
   hasRemoteRecoveryAttachment,
+  isRemoteWorkspaceSandboxDiskFullError,
   prepareRemoteRepository,
   prepareRemoteWorkspaceDirectory,
   remoteWorkspaceFailureCause,
@@ -23,7 +24,7 @@ import {
 } from "./remote-workspace-transport.js";
 import { classifyNativeWorkspaceFailure } from "./native-runtime/native-workspace-failure.js";
 import { createRunPreparationTiming, drainRunPreparationPhases, measureRunPhase } from "./execution-preparation-timing.js";
-import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
+import { remoteWorkspaceArchiveScript, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { readWorkspaceInventory, readonlyWorkspaceInventoryScript } from "./remote-workspace-readonly-inventory.js";
 
 const archiveReads = vi.hoisted(() => ({ paths: [] as string[] }));
@@ -1049,6 +1050,114 @@ return result};`);
       .rejects.toThrow(/^remote_workspace_operation_failed: operation=prepare exit=1; remote_workspace_prepare_failed: stage=checkout_branch exit=1 program=git$/);
   });
 
+  it.each([
+    ["low free space", "paperclip_git_storage_limit: The sandbox has too little free disk space or too few free inodes; Git did not start. SYNTHETIC_PRIVATE_PATH"],
+    ["storage budget exceeded", "paperclip_git_storage_limit: Git was stopped at its storage budget to leave room for the runner and saved state. SYNTHETIC_PRIVATE_PATH"],
+  ])("classifies a Git storage guard %s refusal during clone as sandbox disk full and cleans staged leftovers", async (_label, stderrText) => {
+    const origin = await repository();
+    const bin = path.join(scratch, "git-guard-clone-bin"); await fs.mkdir(bin, { recursive: true });
+    await fs.writeFile(path.join(bin, "git"), `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(stderrText)} >&2\nexit 75\n`, { mode: 0o700 });
+    const { remote } = target({ PATH: `${bin}${path.delimiter}${process.env.PATH}` });
+    const root = path.join(workspace, "storage-limit-clone");
+    const failure = await prepareRemoteWorkspaceDirectory({ target: remote, remoteCwd: root,
+      preparationIdentity: createHash("sha256").update("synthetic-storage-limit-clone").digest("hex"),
+      source: { kind: "git", repoUrl: origin, ref: "main" },
+      resolveGitAuth: async () => null }).then(() => null, (error: unknown) => error as Error);
+    expect(failure?.message).toBe(
+      "remote_workspace_operation_failed: operation=prepare exit=1; remote_workspace_prepare_failed: stage=clone disk=full git=storage_limit exit=75 program=git",
+    );
+    expect(failure?.message).not.toContain("SYNTHETIC");
+    expect(isRemoteWorkspaceSandboxDiskFullError(failure)).toBe(true);
+    expect((await fs.readdir(workspace)).filter(name => name.startsWith("storage-limit-clone.preparing-"))).toEqual([]);
+    const repoFailure = await prepareRemoteRepository({ target: remote, remoteCwd: path.join(workspace, "storage-limit-repo"),
+      repoUrl: origin, ref: "main", resolveGitAuth: async () => null }).then(() => null, (error: unknown) => error as Error);
+    expect(repoFailure?.message).toBe(
+      "remote_workspace_operation_failed: operation=repository exit=1; remote_workspace_repository_failed: stage=clone disk=full git=storage_limit exit=75 program=git",
+    );
+    expect(isRemoteWorkspaceSandboxDiskFullError(repoFailure)).toBe(true);
+  });
+
+  it("keeps a misconfigured Git storage guard during clone distinct from sandbox disk full", async () => {
+    const origin = await repository();
+    const bin = path.join(scratch, "git-guard-misconfigured-clone-bin"); await fs.mkdir(bin, { recursive: true });
+    await fs.writeFile(path.join(bin, "git"),
+      "#!/bin/sh\nprintf '%s\\n' \"paperclip_git_storage_limit: Git's storage guard is unavailable or misconfigured; Git did not complete. SYNTHETIC_PRIVATE_PATH\" >&2\nexit 75\n",
+      { mode: 0o700 });
+    const { remote } = target({ PATH: `${bin}${path.delimiter}${process.env.PATH}` });
+    const root = path.join(workspace, "guard-misconfigured-clone");
+    const failure = await prepareRemoteWorkspaceDirectory({ target: remote, remoteCwd: root,
+      preparationIdentity: createHash("sha256").update("synthetic-guard-misconfigured-clone").digest("hex"),
+      source: { kind: "git", repoUrl: origin, ref: "main" },
+      resolveGitAuth: async () => null }).then(() => null, (error: unknown) => error as Error);
+    expect(failure?.message).toBe(
+      "remote_workspace_operation_failed: operation=prepare exit=1; remote_workspace_prepare_failed: stage=clone git=storage_guard_unavailable exit=75 program=git",
+    );
+    expect(failure?.message).not.toContain("SYNTHETIC");
+    expect(isRemoteWorkspaceSandboxDiskFullError(failure)).toBe(false);
+    expect(isRemoteWorkspaceSandboxDiskFullError(new Error(
+      "remote_workspace_operation_failed: operation=prepare exit=1; remote_workspace_prepare_failed: stage=clone disk=full exit=75 program=git",
+    ))).toBe(false);
+  });
+
+  it("falls back to read-only capture when the Git storage guard stops in-sandbox archive mirroring", async () => {
+    await git(workspace, "init", "--initial-branch=main");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
+    await git(workspace, "add", "saved.txt");
+    await git(workspace, "commit", "-qm", "Initial commit");
+    const realGit = path.join((await exec("git", ["--exec-path"])).stdout.trim(), "git");
+    const bin = path.join(scratch, "git-guard-archive-bin"); await fs.mkdir(bin, { recursive: true });
+    // Mirror the real guard: allow read-only metadata reads (`rev-parse`, `ls-files`),
+    // refuse `clone` when free space is below floor with exit 75.
+    await fs.writeFile(path.join(bin, "git"),
+      `#!/bin/sh\ncase " $* " in *" clone "*) printf '%s\\n' 'paperclip_git_storage_limit: The sandbox has too little free disk space or too few free inodes; Git did not start. SYNTHETIC_PRIVATE' >&2; exit 75;; esac\nexec '${realGit}' "$@"\n`,
+      { mode: 0o700 });
+    const { remote } = target({ PATH: `${bin}${path.delimiter}${process.env.PATH}` });
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      expect(captured.sha256).toMatch(/^[a-f0-9]{64}$/);
+      const restoredRoot = path.join(scratch, "restored-from-guard-fallback");
+      const restored = await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: restoredRoot,
+        archivePath: captured.archivePath, manifestDigest: captured.manifestDigest, restorationIdentity: "d".repeat(64) });
+      await cleanupRemoteWorkspaceArchive({ target: remote, remoteCwd: restored.stagingRoot, operationId: restored.operationId });
+      expect(await fs.readFile(path.join(restoredRoot, "saved.txt"), "utf8")).toBe("retained source bytes\n");
+    } finally { await captured.cleanup(); }
+  });
+
+  it("does not misclassify an unavailable Git storage guard during capture as sandbox disk full", async () => {
+    await git(workspace, "init", "--initial-branch=main");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
+    const bin = path.join(scratch, "git-guard-unavailable-capture-bin"); await fs.mkdir(bin, { recursive: true });
+    await fs.writeFile(path.join(bin, "git"),
+      "#!/bin/sh\nprintf '%s\\n' \"paperclip_git_storage_limit: Git's storage guard is unavailable or misconfigured; Git did not complete. SYNTHETIC_PRIVATE\" >&2\nexit 75\n",
+      { mode: 0o700 });
+    const { remote } = target({ PATH: `${bin}${path.delimiter}${process.env.PATH}` });
+    const syncOut = vi.fn(remote.runner!.syncOut!);
+    remote.runner!.syncOut = syncOut;
+    const failure = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })
+      .then(() => null, (error: unknown) => error as Error);
+    expect(failure?.message).toBe(
+      "remote_workspace_operation_failed: operation=capture exit=1; remote_workspace_capture_failed: stage=archive exit=75 program=git reason=git_storage_guard_unavailable helper_exit=1",
+    );
+    expect(failure?.message).not.toContain("SYNTHETIC");
+    expect(isRemoteWorkspaceSandboxDiskFullError(failure)).toBe(false);
+    expect(syncOut).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["low free space", "paperclip_git_storage_limit: The sandbox has too little free disk space or too few free inodes; Git did not start.", REMOTE_WORKSPACE_SANDBOX_DISK_FULL],
+    ["storage budget exceeded", "paperclip_git_storage_limit: Git was stopped at its storage budget to leave room for the runner and saved state.", REMOTE_WORKSPACE_SANDBOX_DISK_FULL],
+    ["misconfigured", "paperclip_git_storage_limit: Git's storage guard is unavailable or misconfigured; Git did not complete.", "remote_workspace_archive_failed: exit=75 program=git reason=git_storage_guard_unavailable"],
+    ["unreadable capacity", "paperclip_git_storage_limit: Cannot verify available sandbox storage; Git did not start.", "remote_workspace_archive_failed: exit=75 program=git reason=git_storage_guard_unavailable"],
+  ])("classifies Git storage guard %s directly in the serialized archive helper", async (_label, stderrText, expectedStderr) => {
+    await git(workspace, "init", "--initial-branch=main");
+    const bin = path.join(scratch, "archive-helper-guard-bin"); await fs.mkdir(bin, { recursive: true });
+    await fs.writeFile(path.join(bin, "git"), `#!/bin/sh\nprintf '%s\\n' ${JSON.stringify(stderrText)} >&2\nexit 75\n`, { mode: 0o700 });
+    const helper = path.join(scratch, "archive.cjs"); await fs.writeFile(helper, remoteWorkspaceArchiveScript());
+    await expect(exec(process.execPath, [helper, "capture", workspace, path.join(scratch, "helper.pcws")],
+      { env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` } }))
+      .rejects.toMatchObject({ code: 1, stdout: "", stderr: expectedStderr });
+  });
+
   it("names the repository step that found a changed origin", async () => {
     const origin = await repository(), { remote } = target(), root = path.join(workspace, "repos", "changed-origin");
     await prepareRemoteRepository({ target: remote, remoteCwd: root, repoUrl: origin, ref: "HEAD", resolveGitAuth: async () => null });
@@ -1180,17 +1289,41 @@ return result};`);
   });
 
   it.skipIf(process.platform === "win32").each(["split", "one-shot"] as const)("retains a closed capture validation failure with %s output", async outputMode => {
-    const privateName = "SYNTHETIC_PRIVATE_FILENAME";
+    const privateName = "SYNTHETIC\\PRIVATE_FILENAME";
     await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
-    await exec("mkfifo", [path.join(workspace, privateName)]);
+    await fs.writeFile(path.join(workspace, privateName), "private bytes\n");
     const { remote, execute } = target({}, outputMode), operationId = randomUUID();
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId }))
-      .rejects.toThrow(/^remote_workspace_archive_unsupported_entry$/);
+      .rejects.toThrow(/^remote_workspace_archive_unsupported_filename$/);
     expect(execute).toHaveBeenCalledTimes(2);
     expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained source bytes\n");
-    expect((await fs.lstat(path.join(workspace, privateName))).isFIFO()).toBe(true);
+    expect(await fs.readFile(path.join(workspace, privateName), "utf8")).toBe("private bytes\n");
     const directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
     expect(await fs.readdir(directory)).toEqual(["archive.cjs"]);
+  });
+
+  it.skipIf(process.platform === "win32").each(["split", "one-shot"] as const)("captures beside a named pipe through the remote helper with %s output", async outputMode => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
+    await exec("mkfifo", [path.join(workspace, "pipe")]);
+    const { remote } = target({}, outputMode), operationId = randomUUID();
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId });
+    expect((await fs.lstat(path.join(workspace, "pipe"))).isFIFO()).toBe(true);
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("retained source bytes\n");
+    const archive = await fs.readFile(captured.archivePath), start = Buffer.from("PCWS1\n").length;
+    const manifest = JSON.parse(archive.subarray(start + 4, start + 4 + archive.readUInt32BE(start)).toString());
+    expect(manifest.excluded).toContain("pipe");
+    const restored = path.join(scratch, `restored-${outputMode}`);
+    await restoreRemoteWorkspaceArchive({ archivePath: captured.archivePath, targetDir: restored, expectedManifestDigest: captured.manifestDigest });
+    expect(await fs.readdir(restored)).toEqual(["saved.txt"]);
+    expect(await fs.readFile(path.join(restored, "saved.txt"), "utf8")).toBe("retained source bytes\n");
+  });
+
+  it.skipIf(process.platform === "win32")("inventories beside a named pipe, excluding the pipe in both inventory modes", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained source bytes\n");
+    await exec("mkfifo", [path.join(workspace, "pipe")]);
+    const inventory = await readWorkspaceInventory(workspace);
+    expect(inventory.exclude).toContain("pipe");
+    expect(await readWorkspaceInventory(workspace, true)).toEqual(inventory);
   });
 
   /**

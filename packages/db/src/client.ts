@@ -435,7 +435,11 @@ function trackClientEnd(client: Db, onEnd: (timeoutSeconds: number | undefined) 
   const sql = client.$client;
   const end = sql.end;
   sql.end = async (options?: { timeout?: number }) => {
-    await Promise.all([onEnd(options?.timeout), end(options)]);
+    const resolvedOptions =
+      options?.timeout === undefined && process.env.PAPERCLIP_TEST_POSTGRES_ADMIN_URL?.trim()
+        ? { ...options, timeout: 5 }
+        : options;
+    await Promise.all([onEnd(resolvedOptions?.timeout), end(resolvedOptions)]);
   };
 }
 
@@ -916,6 +920,9 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
 
   "0384_funny_adam_warlock.sql",
   "0383_tool_review_company_expiry.sql",
+  "0505_nice_rawhide_kid.sql",
+  "0508_normal_riptide.sql",
+  "0507_special_kang.sql",
 ]);
 
 async function applyPendingMigrationsManually(

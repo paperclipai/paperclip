@@ -114,13 +114,16 @@ marker. Tasks archived from the viewer’s inbox leave Recents. Canceled and
 completed tasks remain eligible. Opening a recent task moves its row to the top
 of Recents.
 
-Standard Recents also shows recent chats and projects as individual links.
+Standard Recents also shows recent chats and projects.
 Coordinator Recents lets you pin tasks, agent chats, and projects above More.
 The pin button appears on the current row or when a row is hovered or focused
 with the keyboard. Shortcuts share the saved order with pinned pages and stay
 available as Recents changes.
-Project links in Recents and pinned navigation open the project's Tasks tab.
-Both locations have a chevron that shows up to 12 recently updated project tasks.
+In **More → Projects**, each project row also lets you pin or unpin its sidebar
+shortcut without opening the project. Project star and join/leave controls appear
+only in the Classic workspace.
+In Recents and pinned navigation, clicking a project row opens or closes its
+folder to show up to 12 recently updated tasks. Each task links to its detail page.
 The task list loads when expanded and keeps the task status and unread markers.
 
 Agent-owned tasks show **In Progress** only while a task-linked run is queued
@@ -451,6 +454,12 @@ and completing work are separate actions; sending never starts or interrupts a
 chat turn. Delivery obeys membership, run authority and task privacy. This version delivers
 in-app only.
 
+Agents can also talk with each other in a person's chats. An agent acting for
+that person can post in the person's chat with another agent. The message shows
+the sending agent's name, wakes the chat's agent, and that agent answers in its
+own chat. It never carries the person's authority, and agent comment permissions
+still apply.
+
 Coordinator is the standard workspace for everyone. Settings → Experimental offers a personal **Classic workspace** opt-in, off by default. Historical Coordinator experiment settings do not enable Classic. Agent Chat is available to everyone on new and existing instances. The retired `enableAgentChat` key remains accepted for compatibility; stored and managed off values are ignored. Each person has one persistent task-backed conversation per agent and company, with ordinary company task visibility. The shared task composer, transcript, tools, files, and document panel remain the interaction surface. Agents clarify goals and hand substantial execution to linked, assigned tasks; a reply ends a turn without completing the conversation. `/new` starts fresh provider context in the same conversation while preserving visible history and artifacts. Healthy idle conversations wait for a message and do not count as unfinished execution work. See `doc/plans/2026-09-10-agent-chat.md` for the implementation contract.
 
 Document links labeled to open in the sidebar keep the conversation on screen
@@ -531,7 +540,23 @@ Coordinator navigation uses **Chat**, **Tasks**, and **Inbox**. Inbox uses the
 inbox icon and keeps the existing decision feed, its count, and decision history
 at `/decisions`. The previous Inbox destination under More is removed.
 
-Inbox opens with **Assigned to you**. Its assignee filter can show all accessible
+Inbox opens to **Needs you** with **All assignees** selected for a board member
+and **Assigned to you** for a viewer. The assignee, agent, project, and grouping
+choices are saved per person and company, so the next visit opens the same way;
+a link that names a view still opens that view. Its badge counts
+personal actions. **Waiting** shows scheduled provider retries and personal
+snoozes. A provider limit with a known account and reset appears once per
+recipient, with the affected tasks, agents and run logs inside. When the account or
+reported reset is unknown, each task’s linked retry attempts share one card.
+Automatic retries update its attempt count and preserve a personal archive.
+A collapsible group brings these task cards together. Each card shows its own
+retry state and distinguishes a scheduled recheck from a reported reset. Exhausted retries
+return to Needs you when someone must act. Resumed or closed tasks leave the
+group. **History** includes decision receipts and failed or
+provider-held runs on accessible tasks. Open a card’s ellipsis menu to choose
+**Archive for me**. The confirmation offers **Undo**. Archiving a provider episode covers later failures in the same
+window until the required action changes. Personal archive leaves approvals pending.
+The assignee filter can show all accessible
 assignees, a particular person, ownerless requests, or company alerts. Cards for
 someone else prepend that person's name to the action label; your own cards omit
 your name. Routing validates who may reassign a request and whether its recipient

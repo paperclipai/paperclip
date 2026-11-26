@@ -1538,6 +1538,51 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(host.textContent).not.toContain("Approve & run");
   });
 
+  it("explains an unreachable external repository without offering misleading Manage GitHub access advice", () => {
+    const interaction = { ...failedToolActionInteraction,
+      payload: { ...failedToolActionInteraction.payload, toolAction: {
+        ...failedToolActionInteraction.payload.toolAction!, appDisplayName: "GitHub",
+        toolName: "mcp.github:create_issue", toolDisplayName: "Create issue",
+      } },
+      result: { ...failedToolActionInteraction.result!, toolAction: {
+        ...failedToolActionInteraction.result!.toolAction!, errorCode: "github_repo_outside_app_installations",
+        errorMessage: "failed to create issue: POST https://api.github.com/repos/external-org/public-repo/issues: 403 Resource not accessible by integration []",
+      } },
+    };
+    const host = renderCard({ interaction });
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("Repository outside GitHub App access");
+    expect(alert?.textContent).toMatch(/not installed/i);
+    expect(alert?.textContent).toMatch(/post on GitHub directly|personal access token/i);
+    expect(host.textContent).not.toContain("GitHub access needed");
+    expect(host.textContent).not.toContain("Manage GitHub access");
+    expect(host.textContent).not.toContain("Retry");
+    expect(host.textContent).not.toContain("Approve & run");
+    expect(host.textContent).toContain(interaction.result.toolAction.errorMessage);
+    expect(host.querySelector("details")?.hasAttribute("open")).toBe(false);
+  });
+
+  it("offers unsuspend guidance and Manage GitHub access when the GitHub App installation is suspended", () => {
+    const interaction = { ...failedToolActionInteraction,
+      payload: { ...failedToolActionInteraction.payload, toolAction: {
+        ...failedToolActionInteraction.payload.toolAction!, appDisplayName: "GitHub",
+        toolName: "mcp.github:create_issue", toolDisplayName: "Create issue",
+      } },
+      result: { ...failedToolActionInteraction.result!, toolAction: {
+        ...failedToolActionInteraction.result!.toolAction!, errorCode: "github_app_installation_suspended",
+        errorMessage: "failed to create issue: POST https://api.github.com/repos/suspended-org/app/issues: 403 Resource not accessible by integration []",
+      } },
+    };
+    const host = renderCard({ interaction });
+    const alert = host.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("GitHub App installation suspended");
+    expect(alert?.textContent).toMatch(/unsuspend/i);
+    const manage = Array.from(host.querySelectorAll("a")).find(link => link.textContent === "Manage GitHub access");
+    expect(manage?.getAttribute("href")).toBe(`/apps/${interaction.payload.toolAction.connectionId}/permissions`);
+    expect(host.textContent).not.toContain("Repository outside GitHub App access");
+    expect(host.querySelector("details")?.hasAttribute("open")).toBe(false);
+  });
+
   it("renders the expired state without decision controls", () => {
     const host = renderCard({ interaction: expiredToolActionInteraction });
 
