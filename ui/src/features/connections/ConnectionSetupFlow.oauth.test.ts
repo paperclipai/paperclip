@@ -10,6 +10,7 @@ import {
   isMissingOAuthStateMessage,
   oauthCallbackErrorMessage,
   oauthFailureMessage,
+  originSupportsCloudConnectorEnrollment,
   readConnectionIntentGitHubRecovery,
   readConnectionIntentOAuthFailureCode,
   readConnectionIntentOAuthProviderError,
@@ -457,5 +458,16 @@ describe("GitHub installation recovery from the sign-in window", () => {
       code: "oauth_state_expired",
       recovery: { installationUrl: "https://github.com/apps/paperclip-for-github/installations/new" },
     })).toBeNull();
+  });
+});
+
+describe("cloud connector enrollment origin support", () => {
+  it("allows HTTPS and loopback HTTP origins while rejecting plain public IP HTTP", () => {
+    expect(originSupportsCloudConnectorEnrollment("https://paperclip.example.com/api/tools/oauth/callback")).toBe(true);
+    expect(originSupportsCloudConnectorEnrollment("http://localhost:3100/api/tools/oauth/callback")).toBe(true);
+    expect(originSupportsCloudConnectorEnrollment("http://127.0.0.1:3100/api/tools/oauth/callback")).toBe(true);
+    expect(originSupportsCloudConnectorEnrollment("http://[::1]:3100/api/tools/oauth/callback")).toBe(true);
+    expect(originSupportsCloudConnectorEnrollment("http://198.51.100.10:3100/api/tools/oauth/callback")).toBe(false);
+    expect(originSupportsCloudConnectorEnrollment("not-a-url")).toBe(false);
   });
 });
