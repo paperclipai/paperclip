@@ -101,7 +101,11 @@ export function StatusIcon({ status, displayStatus: presentationStatus, external
             }}
           >
             {/* The current row is the task's state: draw it exactly like the trigger. */}
-            <StatusIcon {...(s === status ? presentation : { status: s })} size="lg" />
+            <StatusIcon
+              {...(s === status ? presentation : { status: s })}
+              size="lg"
+              className={s === "in_progress" && s !== status ? "motion-safe:animate-none" : undefined}
+            />
             {taskStatusLabel(s)}
           </Button>
         ))}
