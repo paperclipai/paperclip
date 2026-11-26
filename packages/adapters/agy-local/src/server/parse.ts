@@ -104,6 +104,18 @@ export function isAgyUnknownSessionError(stdout: string, stderr: string): boolea
   return /conversation\s+"[^"]*"\s+not found/i.test(`${stdout}\n${stderr}`);
 }
 
+/**
+ * agy warns and starts a new conversation when the saved one is missing. If that
+ * attempt already reached a result, the task ran; retrying would repeat it.
+ */
+export function shouldRetryFreshConversation(
+  parsed: { status: string | null },
+  stdout: string,
+  stderr: string,
+): boolean {
+  return isAgyUnknownSessionError(stdout, stderr) && parsed.status === null;
+}
+
 const AUTH_RE = /(not (logged|signed) in|unauthenticated|please (log|sign) in|login required|authentication (required|failed)|invalid credentials|token (expired|invalid))/i;
 
 export function detectAgyAuthRequired(stdout: string, stderr: string): boolean {

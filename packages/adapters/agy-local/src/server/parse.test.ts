@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isAgyUnknownSessionError, parseAgyStreamJson } from "./parse.js";
+import { isAgyUnknownSessionError, parseAgyStreamJson, shouldRetryFreshConversation } from "./parse.js";
 
 const CONV = "709d5579-1f73-490d-a519-43174cf043a5";
 
@@ -61,5 +61,18 @@ describe("isAgyUnknownSessionError", () => {
   });
   it("does not flag unrelated stderr", () => {
     expect(isAgyUnknownSessionError("", "network down")).toBe(false);
+  });
+});
+
+describe("shouldRetryFreshConversation", () => {
+  const missing = 'warning: conversation "abc" not found';
+  it("retries when the missing-conversation attempt never reached a result", () => {
+    expect(shouldRetryFreshConversation({ status: null }, "", missing)).toBe(true);
+  });
+  it("keeps a fresh conversation that already finished the task", () => {
+    expect(shouldRetryFreshConversation({ status: "SUCCESS" }, "", missing)).toBe(false);
+  });
+  it("does not retry other failures", () => {
+    expect(shouldRetryFreshConversation({ status: null }, "", "network down")).toBe(false);
   });
 });

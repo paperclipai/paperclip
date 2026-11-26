@@ -22,7 +22,7 @@ import {
   runChildProcess,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_AGY_LOCAL_MODEL } from "../index.js";
-import { detectAgyAuthRequired, isAgyUnknownSessionError, parseAgyStreamJson } from "./parse.js";
+import { detectAgyAuthRequired, parseAgyStreamJson, shouldRetryFreshConversation } from "./parse.js";
 
 function renderEnvNote(env: Record<string, string>): string {
   const keys = Object.keys(env).filter((key) => key.startsWith("PAPERCLIP_")).sort();
@@ -187,7 +187,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let retriedFresh = false;
   if (
     canResume &&
-    isAgyUnknownSessionError(attempt.proc.stdout, attempt.proc.stderr)
+    shouldRetryFreshConversation(attempt.parsed, attempt.proc.stdout, attempt.proc.stderr)
   ) {
     await onLog("stdout", `[paperclip] agy conversation ${savedSessionId} not found; retrying with a fresh session.\n`);
     attempt = await runOnce(null);

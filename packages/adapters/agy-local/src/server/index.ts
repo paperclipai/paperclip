@@ -35,4 +35,4 @@ export const sessionCodec: AdapterSessionCodec = {
 export { execute } from "./execute.js";
 export { listAgySkills, syncAgySkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
-export { parseAgyStreamJson, isAgyUnknownSessionError, detectAgyAuthRequired } from "./parse.js";
+export { parseAgyStreamJson, isAgyUnknownSessionError, shouldRetryFreshConversation, detectAgyAuthRequired } from "./parse.js";

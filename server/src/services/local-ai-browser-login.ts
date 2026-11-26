@@ -211,6 +211,11 @@ export function startLocalBrowserLogin(provider: "anthropic" | "openai" | "googl
           file = process.env.ComSpec ?? "cmd.exe";
         }
         return new Promise((resolve, reject) => {
+          // Cleanup may already have run while the import or lookup above was pending.
+          if (controller.signal.aborted) {
+            reject(new Error("Local sign-in cancelled before launch"));
+            return;
+          }
           try {
             const session = spawnPty(file, ptyArgs, { name: "xterm-256color", cols: 120, rows: 30, cwd: home, env: ptyEnv });
             winPty = session;
