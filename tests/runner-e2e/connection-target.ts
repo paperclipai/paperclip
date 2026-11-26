@@ -1,0 +1,148 @@
+import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import type { APIRequestContext } from "@playwright/test";
+import { reserveRunnerE2EServerPort } from "./ports.js";
+import { resolvePaperclipRunnerBinaryForHarness } from "./harness-env.js";
+import { runnerE2ETypeScriptProcessArgs } from "./web-server-command.js";
+import { ConnectionBlock, ConnectionFailure, isTransientConnectionFailure, targetOrigin, type ConnectionConfig } from "./connection-config.js";
+import type { MatrixExecution } from "./types.js";
+
+export const connectionDelay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+
+const maxRetryAfterMs = 5_000;
+/** Bounded Retry-After in milliseconds (seconds form only), else the fixed backoff. */
+function retryDelay(response: { headers?: () => Record<string, string> } | undefined, attempt: number) {
+  const seconds = Number(response?.headers?.()["retry-after"]);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.min(maxRetryAfterMs, seconds * 1000) : 250 * attempt;
+}
+
+/** No raw response bodies, callback URLs, headers, or Playwright diagnostics escape. */
+export class ConnectionApi {
+  constructor(readonly request: APIRequestContext, readonly origin: string) {}
+  async response(route: string, method = "GET", data?: unknown, options: { timeoutMs?: number; retry?: boolean } = {}) {
+    const target = new URL(route, this.origin);
+    if (!route.startsWith("/api/") || target.origin !== this.origin || !target.pathname.startsWith("/api/")) throw new ConnectionFailure("invalid_api_route");
+    const timeout = options.timeoutMs ?? 30_000;
+    if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 120_000) throw new ConnectionFailure("invalid_api_timeout");
+    // A read is safe to repeat: one dropped connection or gateway error must not
+    // fail a long journey. Writes, binary downloads and callers that keep their
+    // own retry ledger opt out. All attempts share the caller's timeout.
+    const deadline = Date.now() + timeout;
+    const attempts = method === "GET" && options.retry !== false ? 3 : 1;
+    for (let attempt = 1; ; attempt++) {
+      let failure: ConnectionFailure, response: Awaited<ReturnType<APIRequestContext["fetch"]>> | undefined;
+      try {
+        response = await this.request.fetch(`${this.origin}${route}`, { method, headers: { Origin: this.origin }, ...(data === undefined ? {} : { data }), maxRedirects: 0,
+          timeout: attempt === 1 ? timeout : Math.max(1, deadline - Date.now()) });
+        if (response.ok()) return response;
+        failure = new ConnectionFailure(`api_status_${response.status()}`);
+      } catch {
+        failure = new ConnectionFailure("api_request_failed");
+      }
+      const wait = retryDelay(response, attempt);
+      if (attempt >= attempts || !isTransientConnectionFailure(failure) || Date.now() + wait + 1_000 > deadline) throw failure;
+      await connectionDelay(wait);
+    }
+  }
+  async get<T = any>(route: string, options?: { timeoutMs?: number; retry?: boolean }): Promise<T> { return (await this.response(route, "GET", undefined, options)).json(); }
+  async post<T = any>(route: string, data?: unknown, options?: { timeoutMs?: number }): Promise<T> { return (await this.response(route, "POST", data, options)).json(); }
+  async patch<T = any>(route: string, data: unknown): Promise<T> { return (await this.response(route, "PATCH", data)).json(); }
+  async delete(route: string) { await this.response(route, "DELETE"); }
+  async bytes(route: string) { return (await this.response(route, "GET", undefined, { retry: false })).body(); }
+  /** Keep fixture credentials out of Playwright request traces. */
+  async postSensitive<T = any>(route: string, data: unknown, options: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<T> {
+    const target = new URL(route, this.origin);
+    if (!route.startsWith("/api/") || target.origin !== this.origin || !target.pathname.startsWith("/api/")) throw new ConnectionFailure("invalid_api_route");
+    const timeout = options.timeoutMs ?? 30_000;
+    if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 120_000) throw new ConnectionFailure("invalid_api_timeout");
+    const signal = AbortSignal.any([AbortSignal.timeout(timeout), ...(options.signal ? [options.signal] : [])]);
+    const { cookies } = await this.request.storageState();
+    const cookie = cookies.filter(c => (target.hostname === c.domain || c.domain.startsWith(".") && target.hostname.endsWith(c.domain))
+      && (target.pathname === c.path || target.pathname.startsWith(c.path.endsWith("/") ? c.path : `${c.path}/`))
+      && (!c.secure || target.protocol === "https:")
+      && (c.expires === -1 || c.expires * 1000 > Date.now())).map(c => `${c.name}=${c.value}`).join("; ");
+    try {
+      signal.throwIfAborted();
+      const response = await fetch(target, { method: "POST", redirect: "error", signal,
+        headers: { "content-type": "application/json", Origin: this.origin, ...(cookie ? { Cookie: cookie } : {}) }, body: JSON.stringify(data) });
+      if (!response.ok) { await response.body?.cancel(); throw new ConnectionFailure(`api_status_${response.status}`); }
+      return await response.json() as T;
+    } catch (error) {
+      if (error instanceof ConnectionFailure) throw error;
+      throw new ConnectionFailure("sensitive_api_request_failed");
+    }
+  }
+}
+
+async function stopOwnedServer(child: ChildProcess) {
+  if (!child.pid) return;
+  const exited = () => child.exitCode !== null || child.signalCode !== null;
+  const kill = (signal: NodeJS.Signals) => {
+    try { process.kill(process.platform === "win32" ? child.pid! : -child.pid!, signal); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+  };
+  kill("SIGTERM");
+  const deadline = Date.now() + 45_000;
+  while (!exited() && Date.now() < deadline) await connectionDelay(100);
+  // The group is exclusively the server this function spawned, never an attached target.
+  kill("SIGKILL");
+}
+
+export async function startConnectionTarget(config: ConnectionConfig, executions: readonly MatrixExecution[], repositoryRoot: string, signal?: AbortSignal) {
+  const assertActive = () => { if (signal?.aborted) throw new ConnectionBlock("blocked_target", "test_interrupted"); };
+  assertActive();
+  if (config.target.mode === "attach") return { origin: targetOrigin(config.target.baseURL), stop: async () => {} };
+  const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-connection-e2e-"));
+  let child: ChildProcess | undefined;
+  const stop = async () => { if (child) await stopOwnedServer(child); await rm(root, { recursive: true, force: true }); };
+  try {
+    assertActive();
+    const home = path.join(root, "paperclip-home");
+    const instance = `connection-${randomBytes(6).toString("hex")}`;
+    const port = await reserveRunnerE2EServerPort();
+    await mkdir(home, { mode: 0o700 });
+    // Only bootstrap essentials are inherited. Selected provider keys enter via UI.
+    const env: NodeJS.ProcessEnv = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "SHELL", "TMPDIR", "LANG", "LC_ALL", "NODE_EXTRA_CA_CERTS"].flatMap(key => process.env[key] ? [[key, process.env[key]!]] : []));
+    Object.assign(env, {
+      PAPERCLIP_HOME: home, PAPERCLIP_INSTANCE_ID: instance, PAPERCLIP_CONFIG: path.join(home, "instances", instance, "config.json"),
+      PAPERCLIP_RUNNER_E2E_TEMP_ROOT: root, PAPERCLIP_RUNNER_E2E_PORT: String(port), PAPERCLIP_RUNNER_E2E_SERVER_LOG: path.join(root, "server.log"),
+      PAPERCLIP_RUNNER_BINARY: resolvePaperclipRunnerBinaryForHarness(executions, repositoryRoot),
+      PAPERCLIP_VITE_CACHE_DIR: path.join(root, "vite-cache"), PAPERCLIP_ANNOUNCEMENTS_ENABLED: "false",
+      PAPERCLIP_AGENT_JWT_SECRET: randomBytes(48).toString("hex"), PAPERCLIP_DECISION_SIGNING_SECRET: randomBytes(48).toString("hex"),
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: randomBytes(48).toString("hex"), BETTER_AUTH_SECRET: randomBytes(48).toString("hex"),
+    });
+    assertActive();
+    child = spawn(process.execPath, runnerE2ETypeScriptProcessArgs(repositoryRoot, path.join(repositoryRoot, "tests/runner-e2e/server.ts")), { cwd: repositoryRoot, env, detached: process.platform !== "win32", stdio: "ignore" });
+    let failed = false;
+    child.once("error", () => { failed = true; });
+    const origin = `http://127.0.0.1:${port}`;
+    const deadline = Date.now() + 180_000;
+    while (Date.now() < deadline) {
+      assertActive();
+      if (failed || child.exitCode !== null) throw new ConnectionBlock("blocked_target", "managed_server_start_failed");
+      try {
+        const response = await fetch(`${origin}/api/health`, { redirect: "error", signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(1500)]) : AbortSignal.timeout(1500) });
+        if (response.ok) { assertActive(); return { origin, stop }; }
+      } catch { assertActive(); /* Bounded startup. */ }
+      await connectionDelay(500);
+    }
+    throw new ConnectionBlock("blocked_target", "managed_server_start_timeout");
+  } catch (error) { await stop(); throw error; }
+}
+
+export async function verifyConnectionTarget(origin: string, config: ConnectionConfig, request?: APIRequestContext) {
+  let health: any;
+  try {
+    const response = request
+      ? await request.get(`${targetOrigin(origin)}/api/health`, { maxRedirects: 0, timeout: 15_000 })
+      : await fetch(`${targetOrigin(origin)}/api/health`, { redirect: "error", signal: AbortSignal.timeout(15_000) });
+    if (!(typeof response.ok === "function" ? response.ok() : response.ok)) throw new ConnectionFailure();
+    health = await response.json();
+  } catch { throw new ConnectionBlock("blocked_target", "target_health_unavailable_or_redirected"); }
+  if (typeof health.commit !== "string" || !/^[a-f0-9]{40}$/.test(health.commit)) throw new ConnectionBlock("blocked_target", "target_revision_unavailable");
+  if (config.target.mode === "attach" && (health.commit !== config.target.expectedCommit || health.deploymentMode !== config.target.deploymentMode)) throw new ConnectionBlock("blocked_target", "target_identity_mismatch");
+  return { commit: health.commit as string, deploymentMode: String(health.deploymentMode) };
+}

@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { idleOrphanSpoolPath, registerIdleSpoolDirectory } from "./idle-local-work.js";
 
 /**
  * One orphan pending-cleanup record. The acquire builds it when the conditional
@@ -50,6 +50,8 @@ export interface SandboxOrphanCleanupSpool {
    * failure and skips a malformed file.
    */
   load(): Promise<DeferredOrphanCleanupRecord[]>;
+  /** Distinguish empty storage from unread work without discarding readable records. */
+  loadWithStatus?(): Promise<{ records: DeferredOrphanCleanupRecord[]; readFailed: boolean }>;
   /**
    * Remove one persisted orphan record after its durable `pending_cleanup` row
    * lands. The removal runs after the database insert succeeds, so a crash
@@ -71,13 +73,6 @@ const RECORD_FILE_SUFFIX = ".json";
 // records never share a temp path. The atomic rename then publishes each record
 // without a torn write.
 let tempFileCounter = 0;
-
-function resolveDefaultSpoolDir(): string {
-  return (
-    process.env.SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR ??
-    path.resolve(resolvePaperclipInstanceRoot(), "data", "sandbox-orphan-cleanup")
-  );
-}
 
 // Build the stable file name for one record. Key on the provider lease id, the
 // value the teardown needs, so a repeated append for the same orphan reuses the
@@ -147,7 +142,31 @@ async function writeFileDurable(absPath: string, data: string): Promise<void> {
  * directory for a test.
  */
 export function createSandboxOrphanCleanupSpool(spoolDir?: string): SandboxOrphanCleanupSpool {
-  const dir = spoolDir ?? resolveDefaultSpoolDir();
+  const dir = spoolDir ?? idleOrphanSpoolPath();
+  registerIdleSpoolDirectory(dir);
+
+  async function loadWithStatus() {
+    let names: string[];
+    try { names = await fs.readdir(dir); }
+    catch (error) {
+      return { records: [], readFailed: (error as NodeJS.ErrnoException).code !== "ENOENT" };
+    }
+    const records: DeferredOrphanCleanupRecord[] = [];
+    let readFailed = false;
+    for (const name of names) {
+      if (!name.endsWith(RECORD_FILE_SUFFIX)) continue;
+      try {
+        const parsed: unknown = JSON.parse(await fs.readFile(path.join(dir, name), "utf8"));
+        if (isDeferredOrphanCleanupRecord(parsed)) records.push(parsed);
+        else readFailed = true;
+      } catch (error) {
+        // A concurrent successful flush can remove a listed record. Other read
+        // failures and malformed records remain unresolved cleanup obligations.
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") readFailed = true;
+      }
+    }
+    return { records, readFailed };
+  }
 
   return {
     async append(record) {
@@ -164,31 +183,8 @@ export function createSandboxOrphanCleanupSpool(spoolDir?: string): SandboxOrpha
       }
     },
 
-    async load() {
-      let names: string[];
-      try {
-        names = await fs.readdir(dir);
-      } catch {
-        // The directory does not exist yet, or the read failed. Either way, no
-        // record waits on the disk.
-        return [];
-      }
-      const records: DeferredOrphanCleanupRecord[] = [];
-      for (const name of names) {
-        if (!name.endsWith(RECORD_FILE_SUFFIX)) continue;
-        try {
-          const raw = await fs.readFile(path.join(dir, name), "utf8");
-          const parsed: unknown = JSON.parse(raw);
-          if (isDeferredOrphanCleanupRecord(parsed)) {
-            records.push(parsed);
-          }
-        } catch {
-          // Skip a malformed or unreadable file. A partial file cannot authorize
-          // a teardown, so the load ignores it and keeps the other records.
-        }
-      }
-      return records;
-    },
+    async load() { return (await loadWithStatus()).records; },
+    loadWithStatus,
 
     async remove(record) {
       const absPath = path.join(dir, recordFileName(record));

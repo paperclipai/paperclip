@@ -55,11 +55,14 @@ export function RoutineVariablesEditor({
   description,
   value,
   onChange,
+  variant = "default",
 }: {
   title: string;
   description: string;
   value: RoutineVariable[];
   onChange: (value: RoutineVariable[]) => void;
+  /** `compact` puts each variable on one row under shared column labels. */
+  variant?: "default" | "compact";
 }) {
   const [open, setOpen] = useState(true);
   const syncedVariables = useMemo(
@@ -77,6 +80,15 @@ export function RoutineVariablesEditor({
 
   if (syncedVariables.length === 0) {
     return null;
+  }
+
+  if (variant === "compact") {
+    return (
+      <CompactVariableRows
+        variables={syncedVariables}
+        onPatch={(name, mutate) => onChange(updateVariableList(syncedVariables, name, mutate))}
+      />
+    );
   }
 
   return (
@@ -246,6 +258,145 @@ export function RoutineVariablesEditor({
         ))}
       </CollapsibleContent>
     </Collapsible>
+  );
+}
+
+const compactColumns = {
+  name: "w-full shrink-0 sm:w-48",
+  type: "w-28 shrink-0",
+  defaultValue: "min-w-0 flex-1 basis-32",
+  required: "flex w-16 shrink-0 justify-center",
+};
+
+/** One row per variable: name, type, default and required, with the column labels shown once.
+ * A saved label is kept as-is; this layout does not edit it. */
+function CompactVariableRows({
+  variables,
+  onPatch,
+}: {
+  variables: RoutineVariable[];
+  onPatch: (name: string, mutate: (variable: RoutineVariable) => RoutineVariable) => void;
+}) {
+  return (
+    <div className="flex flex-col gap-2" role="group" aria-label="Variables">
+      <Label>Variables</Label>
+      <div className="hidden items-center gap-2 text-xs text-muted-foreground sm:flex" aria-hidden="true">
+        <span className={compactColumns.name}>Name</span>
+        <span className={compactColumns.type}>Type</span>
+        <span className={compactColumns.defaultValue}>Default</span>
+        <span className={compactColumns.required}>Required</span>
+      </div>
+      {variables.map((variable) => {
+        const patch = (change: Partial<RoutineVariable>) => onPatch(variable.name, (current) => ({ ...current, ...change }));
+        return (
+          <div key={variable.name} className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              <code className={`${compactColumns.name} truncate font-mono text-xs`} title={`{{${variable.name}}}`}>
+                {`{{${variable.name}}}`}
+              </code>
+              <Select
+                value={variable.type}
+                onValueChange={(type) => onPatch(variable.name, (current) => ({
+                  ...current,
+                  type: type as RoutineVariable["type"],
+                  defaultValue: defaultValueForType(type as RoutineVariable["type"], current.defaultValue),
+                  options: type === "select" ? current.options : [],
+                }))}
+              >
+                <SelectTrigger className={compactColumns.type} aria-label={`Type of ${variable.name}`}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {variableTypes.map((type) => (
+                    <SelectItem key={type} value={type}>{type}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <div className={compactColumns.defaultValue}>
+                {variable.type === "boolean" ? (
+                  <Select
+                    value={variable.defaultValue === true ? "true" : variable.defaultValue === false ? "false" : "__unset__"}
+                    onValueChange={(next) => patch({ defaultValue: next === "__unset__" ? null : next === "true" })}
+                  >
+                    <SelectTrigger className="w-full" aria-label={`Default for ${variable.name}`}>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__unset__">No default</SelectItem>
+                      <SelectItem value="true">True</SelectItem>
+                      <SelectItem value="false">False</SelectItem>
+                    </SelectContent>
+                  </Select>
+                ) : variable.type === "select" ? (
+                  <Select
+                    value={typeof variable.defaultValue === "string" ? variable.defaultValue : "__unset__"}
+                    onValueChange={(next) => patch({ defaultValue: next === "__unset__" ? null : next })}
+                  >
+                    <SelectTrigger className="w-full" aria-label={`Default for ${variable.name}`}>
+                      <SelectValue placeholder="No default" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__unset__">No default</SelectItem>
+                      {variable.options.map((option) => (
+                        <SelectItem key={option} value={option}>{option}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : variable.type === "textarea" ? (
+                  <Textarea
+                    rows={1}
+                    aria-label={`Default for ${variable.name}`}
+                    value={variable.defaultValue == null ? "" : String(variable.defaultValue)}
+                    placeholder="No default"
+                    onChange={(event) => patch({ defaultValue: event.target.value || null })}
+                  />
+                ) : (
+                  <Input
+                    type={variable.type === "number" ? "number" : variable.type === "date" ? "date" : "text"}
+                    aria-label={`Default for ${variable.name}`}
+                    value={variable.defaultValue == null ? "" : String(variable.defaultValue)}
+                    placeholder="No default"
+                    onChange={(event) => patch({ defaultValue: event.target.value || null })}
+                  />
+                )}
+              </div>
+              <label className={`${compactColumns.required} items-center gap-2 text-xs text-muted-foreground`}>
+                <input
+                  type="checkbox"
+                  checked={variable.required}
+                  aria-label={`${variable.name} is required`}
+                  onChange={(event) => patch({ required: event.target.checked })}
+                />
+                <span className="sm:hidden">Required</span>
+              </label>
+            </div>
+            {variable.type === "select" ? (
+              <div className="flex items-center gap-2">
+              <span className={`${compactColumns.name} hidden sm:block`} aria-hidden="true" />
+              <Input
+                className="min-w-0 flex-1"
+                aria-label={`Options for ${variable.name}`}
+                value={variable.options.join(", ")}
+                placeholder="Options, separated by commas: high, medium, low"
+                onChange={(event) => {
+                  const options = parseSelectOptions(event.target.value);
+                  onPatch(variable.name, (current) => ({
+                    ...current,
+                    options,
+                    defaultValue:
+                      typeof current.defaultValue === "string" && options.includes(current.defaultValue)
+                        ? current.defaultValue
+                        : null,
+                  }));
+                }}
+              />
+              <span className={`${compactColumns.required} hidden sm:block`} aria-hidden="true" />
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

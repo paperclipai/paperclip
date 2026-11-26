@@ -102,9 +102,7 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
     await new Promise<void>((resolveListen) => server!.listen(0, "127.0.0.1", resolveListen));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Expected a TCP listener");
-    setupRunnerPrpWebSocketServer(server, {
-      apiUrl: `http://127.0.0.1:${address.port}`,
-    });
+    setupRunnerPrpWebSocketServer(server);
   }, 660_000);
 
   afterAll(async () => {

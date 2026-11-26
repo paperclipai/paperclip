@@ -1,0 +1,283 @@
+{
+  "schema": "paperclip.pi-v5-offline-qualification/v1",
+  "sourceRevision": "aec26ad83f1d082f0d0a5eaffbd615a9e2e26155",
+  "profileVersion": 5,
+  "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+  "qualification": "pending",
+  "paidCalls": 0,
+  "credentials": false,
+  "sourceTrees": {
+    "packages/paperclip-runner/src": "08da7f645ec75be82e525da2d0cae46b329b734f",
+    "packages/paperclip-runner/scripts": "5413d7ec0e8306efa29c43c063c642e7984c13ce",
+    "packages/paperclip-runner/runner": "b9b519d1766df8af629a2eacb91d51ee6a1f92c2",
+    "patches": "5d9ae2a6546e13f780269e4fdbf03efa99fbafe4",
+    "server/src": "1a4c4b7000becae6021d74e7dc0f2f36180c767c",
+    "tests/runner-e2e": "6d15ec5668fda2eed3bd308e11e0fda0cf48ca19"
+  },
+  "verification": {
+    "recursiveTypecheck": "passed",
+    "fullRepositoryBuild": "passed",
+    "typescriptIncludingActualInstallation": 43,
+    "installedWrapperAndNativeSdk": 19,
+    "materializer": 8,
+    "nativeBackendRustTestsPassed": 13,
+    "independentCodeReview": "no blocking findings",
+    "cleanDependencyResolutions": 2,
+    "resolvedLockSha256": "9eea60187c6c808efb4d936a234a8d8000beac45253091abd4c5348132bd1408",
+    "trackedLockUnchanged": true
+  },
+  "pack": {
+    "sourceRevision": "aec26ad83f1d082f0d0a5eaffbd615a9e2e26155",
+    "packDigest": "sha256:cf7d0998bbc2bed7b893c726c2b6455ba8a683d9cff7d92afedbff2d5900d500",
+    "manifestFileSha256": "6fe0fae6057a1d4503e0b0901bce330b403b64f7610a27695ff289f0f2181c58",
+    "target": {
+      "platform": "darwin",
+      "architecture": "arm64"
+    },
+    "productionLock": "sha256:9eea60187c6c808efb4d936a234a8d8000beac45253091abd4c5348132bd1408",
+    "distDigest": "sha256:2fc9b100eb4b3a8dde6d51cdcf3741815dde783579fe35c7d04e59833440ffff",
+    "verifiedProviders": {
+      "cursor": {
+        "version": "2026.09.26-dd393fe",
+        "profileDigest": "sha256:1157a5d071abbd57ab132f22bace75c65e84cc47a045b0023475488755e14899",
+        "closureDigest": "sha256:77394184a89b0e7384971181da19c3c82d83a399b04e7944b3f94fe3d7e62b25",
+        "qualification": "pending",
+        "path": "provider-assets/cursor/darwin-arm64",
+        "sha256": "sha256:3b6de19114d4df62f648604025a0d71937dfa7c2b15b397cce5da2c5da268994",
+        "verifiedFileCount": 446
+      },
+      "copilot": {
+        "version": "1.0.88",
+        "profileDigest": "sha256:b18c01603dd0169d233140709cfaa8bf5304a03cf5de78ca4f625f30013e8457",
+        "closureDigest": "sha256:fb3b367a45cd76122fe931521fa2a18adf234ba944fc302db9e10e005e57037e",
+        "qualification": "pending",
+        "path": "provider-assets/copilot/darwin-arm64",
+        "sha256": "sha256:49ad871973843e2bfc3ee1d1886f6a1537e887748cc6f3d5148b3ec7f3c7298f",
+        "verifiedFileCount": 1
+      },
+      "pi": {
+        "version": "0.84.2",
+        "profileDigest": "sha256:020d96ccbd3c45c3f62680814776394ed5a56d9572a1a4dccda56a74d16c7803",
+        "closureDigest": "sha256:0010175e4bc200f145386e59f7a824cf7532ad273e9db6824d22c4f82cdcd6ff",
+        "qualification": "pending",
+        "path": "provider-assets/pi/darwin-arm64",
+        "sha256": "sha256:a679a009c1fe370fed020acad1c642848a278278306885edd9c47de897cfe566",
+        "verifiedFileCount": 13827
+      }
+    },
+    "providerInferenceCalls": 0,
+    "providerProcessesStarted": 0
+  },
+  "outerNode": {
+    "version": "24.21.0",
+    "bundledUndici": "7.29.1",
+    "sha256": "e4b5a3af0e05c75de2eae013904145f40fe7fc2a6e6f17510128bf45cca4e79b",
+    "relocatedPackInterpreterExecuted": true
+  },
+  "nativeLaunch": {
+    "schema": "paperclip.combined-provider-offline-smoke/v1",
+    "provider": "pi",
+    "target": {
+      "platform": "darwin",
+      "architecture": "arm64"
+    },
+    "sourceRevision": "aec26ad83f1d082f0d0a5eaffbd615a9e2e26155",
+    "providerPackDigest": "sha256:cf7d0998bbc2bed7b893c726c2b6455ba8a683d9cff7d92afedbff2d5900d500",
+    "candidate": {
+      "version": "0.84.2",
+      "profileDigest": "sha256:020d96ccbd3c45c3f62680814776394ed5a56d9572a1a4dccda56a74d16c7803",
+      "closureDigest": "sha256:0010175e4bc200f145386e59f7a824cf7532ad273e9db6824d22c4f82cdcd6ff",
+      "qualification": "pending",
+      "path": "provider-assets/pi/darwin-arm64",
+      "sha256": "sha256:a679a009c1fe370fed020acad1c642848a278278306885edd9c47de897cfe566"
+    },
+    "commandDigest": "sha256:020d96ccbd3c45c3f62680814776394ed5a56d9572a1a4dccda56a74d16c7803",
+    "registryLaunch": "verifyAcpxProfileInstallation/openCommand/spawn",
+    "initializeRequestId": 0,
+    "protocolVersion": 1,
+    "nativeInfo": {
+      "name": "pi-acp",
+      "title": "pi ACP adapter",
+      "version": "0.0.33"
+    },
+    "agentCapabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": false
+      },
+      "_meta": {
+        "paperclipPi": {
+          "version": 1,
+          "steering": true,
+          "queuedFollowUp": true,
+          "questions": [
+            "select",
+            "confirm",
+            "input",
+            "editor"
+          ],
+          "nativePermissions": true,
+          "promptUsage": true,
+          "nativePlan": false,
+          "pendingRequestRecovery": "live-process-only"
+        }
+      },
+      "promptCapabilities": {
+        "image": true,
+        "audio": false,
+        "embeddedContext": false
+      },
+      "sessionCapabilities": {
+        "list": {}
+      }
+    },
+    "exitCode": 0,
+    "eofSettled": true,
+    "prompts": 0,
+    "inferenceCalls": 0,
+    "network": "macOS sandbox-exec deny network*",
+    "credentials": false,
+    "explicitModelOnlyForProfileAdmission": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "modelSelected": false,
+    "providerGroupCleanup": true,
+    "privateStateRemoved": true
+  },
+  "runnerBinary": {
+    "source": "aec26ad83f1d082f0d0a5eaffbd615a9e2e26155",
+    "rustTree": "b9b519d1766df8af629a2eacb91d51ee6a1f92c2",
+    "sha256": "fe03a5f5e7b7d51aafb398aa435e4a200ca6e0206c46b84ba0baa15aa0be5f31",
+    "profileVersion": 5,
+    "profileDigest": "sha256:020d96ccbd3c45c3f62680814776394ed5a56d9572a1a4dccda56a74d16c7803",
+    "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+    "mode": "0555",
+    "build": "pnpm build (release runnerd)"
+  },
+  "fullRunnerStartup": {
+    "credentials": false,
+    "promptCalls": 0,
+    "durationMs": 8558,
+    "result": "typed_rejection",
+    "code": "command_execution_failed",
+    "classification": "session_ensure_failed",
+    "unchangedDeadlineMs": 30000,
+    "interpretation": "Credential-free admission rejection; not authenticated session success."
+  },
+  "securityProof": "security-closure-proof.v5.json",
+  "limits": [
+    "macOS ARM64 credential-free launch only; no authenticated v5 qualification in this artifact.",
+    "x64 Node archives and closure identities are pinned; target execution is not demonstrated by this artifact.",
+    "Historical v1-v4 evidence remains bound to its own source and bytes."
+  ],
+  "independentCombinedRegistryStartup": {
+    "schema": "paperclip.combined-provider-probe-index/v2",
+    "sourceRevision": "aec26ad83f1d082f0d0a5eaffbd615a9e2e26155",
+    "providerPackDigest": "sha256:cf7d0998bbc2bed7b893c726c2b6455ba8a683d9cff7d92afedbff2d5900d500",
+    "platform": {
+      "platform": "darwin",
+      "architecture": "arm64"
+    },
+    "outerInterpreter": {
+      "version": "24.21.0",
+      "bundledUndici": "7.29.1",
+      "sha256": "sha256:e4b5a3af0e05c75de2eae013904145f40fe7fc2a6e6f17510128bf45cca4e79b"
+    },
+    "proofs": {
+      "cursor": {
+        "sha256": "39d5e570970f476dd861f26d616383a5fb8751e90644e8f902f316d530df4b8b",
+        "registryLaunch": "verifyAcpxProfileInstallation/openCommand/spawn",
+        "candidate": {
+          "version": "2026.09.26-dd393fe",
+          "profileDigest": "sha256:1157a5d071abbd57ab132f22bace75c65e84cc47a045b0023475488755e14899",
+          "closureDigest": "sha256:77394184a89b0e7384971181da19c3c82d83a399b04e7944b3f94fe3d7e62b25",
+          "qualification": "pending",
+          "path": "provider-assets/cursor/darwin-arm64",
+          "sha256": "sha256:3b6de19114d4df62f648604025a0d71937dfa7c2b15b397cce5da2c5da268994"
+        },
+        "initialized": true,
+        "protocolVersion": 1,
+        "nativeInfo": null,
+        "eofExit": {
+          "exitCode": null,
+          "cleanExit": false
+        },
+        "explicitCleanupRequired": true,
+        "leaseCleanupPassed": true,
+        "privateStateRemoved": true,
+        "supervisorExitCode": 0,
+        "networkPolicy": "deny network",
+        "fixtureRequests": [],
+        "durationSeconds": 7.233
+      },
+      "copilot": {
+        "sha256": "44cdc7243d93f7bf0a78cb955d15c145f7b0cbf482664f4a03ebd887d2d7ea5f",
+        "registryLaunch": "verifyAcpxProfileInstallation/openCommand/spawn",
+        "candidate": {
+          "version": "1.0.88",
+          "profileDigest": "sha256:b18c01603dd0169d233140709cfaa8bf5304a03cf5de78ca4f625f30013e8457",
+          "closureDigest": "sha256:fb3b367a45cd76122fe931521fa2a18adf234ba944fc302db9e10e005e57037e",
+          "qualification": "pending",
+          "path": "provider-assets/copilot/darwin-arm64",
+          "sha256": "sha256:49ad871973843e2bfc3ee1d1886f6a1537e887748cc6f3d5148b3ec7f3c7298f"
+        },
+        "initialized": true,
+        "protocolVersion": 1,
+        "nativeInfo": {
+          "name": "Copilot",
+          "title": "Copilot",
+          "version": "1.0.88"
+        },
+        "eofExit": {
+          "exitCode": 0,
+          "cleanExit": true
+        },
+        "explicitCleanupRequired": false,
+        "leaseCleanupPassed": true,
+        "privateStateRemoved": true,
+        "supervisorExitCode": 0,
+        "networkPolicy": "deny network except loopback",
+        "fixtureRequests": [],
+        "durationSeconds": 2.872
+      },
+      "pi": {
+        "sha256": "1c4395d673fc4ba789cf90b570ae4f8e9431fe5676eae3fcad9c6347aa971d84",
+        "registryLaunch": "verifyAcpxProfileInstallation/openCommand/spawn",
+        "candidate": {
+          "version": "0.84.2",
+          "profileDigest": "sha256:020d96ccbd3c45c3f62680814776394ed5a56d9572a1a4dccda56a74d16c7803",
+          "closureDigest": "sha256:0010175e4bc200f145386e59f7a824cf7532ad273e9db6824d22c4f82cdcd6ff",
+          "qualification": "pending",
+          "path": "provider-assets/pi/darwin-arm64",
+          "sha256": "sha256:a679a009c1fe370fed020acad1c642848a278278306885edd9c47de897cfe566"
+        },
+        "initialized": true,
+        "protocolVersion": 1,
+        "nativeInfo": {
+          "name": "pi-acp",
+          "title": "pi ACP adapter",
+          "version": "0.0.33"
+        },
+        "eofExit": {
+          "exitCode": 0,
+          "cleanExit": true
+        },
+        "explicitCleanupRequired": false,
+        "leaseCleanupPassed": true,
+        "privateStateRemoved": true,
+        "supervisorExitCode": 0,
+        "networkPolicy": "deny network",
+        "fixtureRequests": [],
+        "durationSeconds": 11.046
+      }
+    },
+    "credentialsProvided": false,
+    "promptsSent": 0,
+    "providerInferenceCalls": 0,
+    "remainingProbeSupervisors": 0,
+    "qualification": "pending; credential-free initialization only; no model/paid/Daytona qualification",
+    "unchangedSiblingProviderIdentities": [
+      "cursor",
+      "copilot"
+    ]
+  }
+}

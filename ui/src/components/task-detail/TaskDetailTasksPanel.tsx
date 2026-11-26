@@ -6,7 +6,8 @@ import { projectRouteRef } from "@/lib/utils";
 import { issueStatusOrder } from "@/lib/issue-filters";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { RelationNavigationList, TaskDetailSubtasksPanel, TaskDetailTaskList } from "./TaskDetailRelationsPanel";
+import { RelationNavigationList, resolveTaskDetailSubtaskState, TaskDetailSubtasksPanel, TaskDetailTaskList } from "./TaskDetailRelationsPanel";
+import { IssueCreatedFromNote } from "./IssueCreatedFromNote";
 
 function TaskGroup({ name, projectPath, children }: { name: string; projectPath?: string; children: ReactNode }) {
   return (
@@ -36,6 +37,8 @@ function TaskGroup({ name, projectPath, children }: { name: string; projectPath?
 export interface TaskDetailTasksPanelProps {
   /** API order: immediate parent first. Displayed root first. */
   ancestors?: NonNullable<Issue["ancestors"]>;
+  /** Access-checked creation provenance; shown even when the source is not the parent. */
+  createdFrom?: Issue["createdFrom"];
   subtasks: Issue[];
   createdTasks: Issue[];
   projects: Project[];
@@ -45,13 +48,23 @@ export interface TaskDetailTasksPanelProps {
   issueLinkState?: unknown;
 }
 
-export function TaskDetailTasksPanel({ ancestors = [], subtasks, createdTasks, projects, isLoading, hasError, onRetry, issueLinkState }: TaskDetailTasksPanelProps) {
+export function TaskDetailTasksPanel({ ancestors = [], createdFrom = null, subtasks, createdTasks, projects, isLoading, hasError, onRetry, issueLinkState }: TaskDetailTasksPanelProps) {
+  const visibleAncestors = ancestors.filter((item) => item.id !== createdFrom?.issue.id);
   const sortedSubtasks = sortTasks(subtasks);
+  const displayedTaskIds = new Set([
+    ...(createdFrom ? [createdFrom.issue.id] : []),
+    ...ancestors.map((item) => item.id),
+    ...sortedSubtasks.map((item) => item.id),
+  ]);
+  const { rootBlocker } = resolveTaskDetailSubtaskState(sortedSubtasks);
+  if (rootBlocker) displayedTaskIds.add(rootBlocker.id);
+  const projectsById = new Map(projects.map((project) => [project.id, project]));
   const groups = new Map<string, { name: string; path?: string; tasks: Issue[] }>();
   for (const item of sortTasks(createdTasks)) {
+    if (displayedTaskIds.has(item.id)) continue;
     const key = item.projectId ?? "no-project";
     const project = item.projectId
-      ? projects.find((candidate) => candidate.id === item.projectId) ?? item.project
+      ? projectsById.get(item.projectId) ?? item.project
       : null;
     const group = groups.get(key) ?? {
       name: project?.name ?? (item.projectId ? "Project" : "No project"),
@@ -63,10 +76,15 @@ export function TaskDetailTasksPanel({ ancestors = [], subtasks, createdTasks, p
   }
   return (
     <section className="flex flex-col gap-6" aria-label="Related tasks">
-      {ancestors.length > 0 && (
+      {createdFrom && (
+        <TaskGroup name="Created from">
+          <IssueCreatedFromNote createdFrom={createdFrom} issueLinkState={issueLinkState} className="px-2 text-sm" />
+        </TaskGroup>
+      )}
+      {visibleAncestors.length > 0 && (
         <TaskGroup name="Ancestors">
           <RelationNavigationList
-            items={[...ancestors].reverse()}
+            items={[...visibleAncestors].reverse()}
             emptyMessage=""
             ariaLabel="Ancestor tasks, root to parent"
             issueLinkState={issueLinkState}
@@ -90,7 +108,7 @@ export function TaskDetailTasksPanel({ ancestors = [], subtasks, createdTasks, p
           {onRetry && <Button variant="ghost" size="sm" onClick={onRetry}>Retry</Button>}
         </div>
       )}
-      {!isLoading && !hasError && ancestors.length === 0 && subtasks.length === 0 && createdTasks.length === 0 && (
+      {!isLoading && !hasError && !createdFrom && ancestors.length === 0 && subtasks.length === 0 && createdTasks.length === 0 && (
         <p className="py-6 text-center text-sm text-muted-foreground">No tasks yet.</p>
       )}
     </section>
