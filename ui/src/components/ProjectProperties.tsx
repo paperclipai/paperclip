@@ -261,6 +261,14 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
     },
   });
+  const rotateSecret = useMutation({
+    mutationFn: (input: { secretId: string; value: string }) =>
+      secretsApi.rotate(input.secretId, { value: input.value }),
+    onSuccess: () => {
+      if (!selectedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    },
+  });
   // PAP-749 task 1d: members populate the decision owner picker.
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyMembers(selectedCompanyId ?? ""),
@@ -551,6 +559,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
                 const created = await createSecret.mutateAsync({ name, value });
                 return created;
               }}
+              onRotateSecret={(secretId, value) => rotateSecret.mutateAsync({ secretId, value })}
               onChange={(env) => commitField("env", { env: env ?? null })}
             />
 

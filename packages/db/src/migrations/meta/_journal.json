@@ -3487,6 +3487,83 @@
       "when": 1795048062306,
       "tag": "0499_numerous_whizzer",
       "breakpoints": true
+    },
+    {
+      "idx": 500,
+      "version": "7",
+      "when": 1795206084746,
+      "tag": "0500_funny_malcolm_colcord",
+      "breakpoints": true
+    },
+    {
+      "idx": 501,
+      "version": "7",
+      "when": 1795444424088,
+      "tag": "0501_charming_living_lightning",
+      "breakpoints": true
+    },
+    {
+      "idx": 502,
+      "version": "7",
+      "when": 1795451480643,
+      "tag": "0502_dapper_hedge_knight",
+      "breakpoints": true
+    },
+    {
+      "idx": 503,
+      "version": "7",
+      "when": 1795461974140,
+      "tag": "0503_melted_meggan",
+      "breakpoints": true
+    },
+    {
+      "idx": 504,
+      "version": "7",
+      "when": 1795469468402,
+      "tag": "0504_lucky_pepper_potts",
+      "breakpoints": true
+    },
+    {
+      "idx": 505,
+      "version": "7",
+      "when": 1795544784796,
+      "tag": "0505_nice_rawhide_kid",
+      "breakpoints": true
+    },
+    {
+      "idx": 506,
+      "version": "7",
+      "when": 1795560008849,
+      "tag": "0506_nappy_agent_brand",
+      "breakpoints": true
+    },
+    {
+      "idx": 507,
+      "version": "7",
+      "when": 1795561452000,
+      "tag": "0507_special_kang",
+      "breakpoints": true
+    },
+    {
+      "idx": 508,
+      "version": "7",
+      "when": 1795572002132,
+      "tag": "0508_normal_riptide",
+      "breakpoints": true
+    },
+    {
+      "idx": 509,
+      "version": "7",
+      "when": 1795602445143,
+      "tag": "0509_recover_exhausted_github_responses",
+      "breakpoints": true
+    },
+    {
+      "idx": 510,
+      "version": "7",
+      "when": 1795635927842,
+      "tag": "0510_clear_speedball",
+      "breakpoints": true
     }
   ]
 }

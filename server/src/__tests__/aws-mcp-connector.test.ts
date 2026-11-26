@@ -158,15 +158,16 @@ describe("AWS connector with minted credentials", () => {
     await request(app).get(`/api/tool-connections/${keyDraft.body.connectionId}/aws-setup`).expect(422);
   });
 
-  it("stays unavailable until the experimental setting is on", async () => {
+  it("is available even where an old setting turned the former experimental flag off", async () => {
     const { org } = await company();
     const { service } = harness();
     await instanceSettingsService(db).updateExperimental({ enableAwsConnector: false });
+    expect((await instanceSettingsService(db).getExperimental()).enableAwsConnector).toBe(true);
     await expect(service.connectGalleryApp(org.id, {
       galleryKey: "aws", connectionMethodKey: "aws-access-key",
       configValues: { endpointRegion: "us-east-1", accessLevel: "read_only" },
       credentialValues: { "credentials.accessKeyId": ACCESS_KEY_ID, "credentials.secretAccessKey": SECRET_ACCESS_KEY },
-    }, actor)).rejects.toThrow();
+    }, actor)).resolves.toBeTruthy();
   });
 
   it("access key: lists and calls tools with a minted token, never sending the stored key", async () => {
@@ -316,6 +317,7 @@ describe("AWS connector with minted credentials", () => {
     const [row] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
     expect(row!.healthMessage ?? JSON.stringify(health)).toContain("AWS refused this connection's role");
     expect(row!.healthMessage ?? "").not.toContain("123456789012");
+    expect(health).toMatchObject({ status: 422, details: { code: "aws_role_access_denied" } });
 
     // The instance's address changes: Paperclip stops with a clear message instead of a role refusal from AWS.
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://renamed.paperclip.app");

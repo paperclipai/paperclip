@@ -1,4 +1,11 @@
-import { imagePreparationReceiptIds } from "./task-chat/image-resources";
+import {
+  hasVisibleRunAnswer,
+  LEGACY_WITHHELD_RUN_COMMENT,
+  presentationDecisionCommentId,
+  semanticProgressCommentIds,
+} from "@/lib/run-answer-visibility";
+import { preparationReceiptIds, runFileCardAttachments } from "./task-chat/image-resources";
+import { RunFileCardsContext } from "./task-chat/RunFileCardsContext";
 import type { ScrollingHistory } from "@/components/task-chat/TaskMessageScroller";
 import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
 import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
@@ -156,9 +163,18 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useQueryClient } from "@tanstack/react-query";
 import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
 import { isRunStopConfirmed } from "@/lib/wait-for-stopped-runs";
+import { safeNavigableUrl } from "@/lib/safe-url";
 
 const EMPTY_BROWSERS: TaskBrowser[] = [];
 const COMPACT_RUN_LOG_READ_LIMIT_BYTES = 32_000;
+
+/** Mirrors task-interruption-presentation.ts: a swarm-route failure needs the person when Antigravity says so. */
+function swarmFailureNeedsAction(resultJson: Record<string, unknown> | null | undefined): boolean {
+  const failure = resultJson?.providerFailure;
+  if (!failure || typeof failure !== "object" || Array.isArray(failure)) return false;
+  const { provider, retryability } = failure as Record<string, unknown>;
+  return provider === "antigravity" && retryability === "requires_action";
+}
 
 function toMs(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -168,17 +184,6 @@ function toMs(value: Date | string | null | undefined): number {
 
 function normalizedMessageText(value: string | null | undefined): string {
   return (value ?? "").trim().replace(/\s+/g, " ");
-}
-
-function safeResourceHref(value: string | null | undefined): string | null {
-  if (!value) return null;
-  if (value.startsWith("/") || value.startsWith("#")) return value;
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:" ? value : null;
-  } catch {
-    return null;
-  }
 }
 
 function formatResourceBytes(value: number): string {
@@ -306,8 +311,6 @@ function isNativePaperclipRunnerRun(
     run?.runtimeMode === "native" && run.adapterType === "paperclip_runner"
   );
 }
-const LEGACY_WITHHELD_RUN_COMMENT =
-  "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
 
 function acceptedSemanticResult(
   value: unknown,
@@ -348,42 +351,6 @@ function acceptedSemanticResultDisposition(value: unknown): string | null {
     : null;
 }
 
-function presentationDecisionCommentId(
-  value: unknown,
-): string | null | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return undefined;
-  const decision = (value as Record<string, unknown>).presentationDecision;
-  if (!decision || typeof decision !== "object" || Array.isArray(decision))
-    return undefined;
-  const record = decision as Record<string, unknown>;
-  if (record.schema !== "paperclip.run_presentation_decision.v1")
-    return undefined;
-  return typeof record.commentId === "string" && record.commentId.trim()
-    ? record.commentId
-    : null;
-}
-
-function semanticProgressCommentIds(value: unknown): Set<string> {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return new Set();
-  const receipts = (value as Record<string, unknown>).semanticToolReceipts;
-  if (!receipts || typeof receipts !== "object" || Array.isArray(receipts))
-    return new Set();
-  const ids = new Set<string>();
-  for (const receipt of Object.values(receipts)) {
-    if (!receipt || typeof receipt !== "object" || Array.isArray(receipt))
-      continue;
-    const record = receipt as Record<string, unknown>;
-    if (record.operationId !== "report_progress") continue;
-    const result = record.result;
-    if (!result || typeof result !== "object" || Array.isArray(result))
-      continue;
-    const commentId = (result as Record<string, unknown>).commentId;
-    if (typeof commentId === "string" && commentId) ids.add(commentId);
-  }
-  return ids;
-}
 
 function acceptedSemanticResultVerificationCaveats(value: unknown) {
   const runResult =
@@ -933,9 +900,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // prefers the accepted semantic result so runs such as DOT-20 recover their
   // real upstream response without a data migration.
   const imageReceipts = useMemo(
-    () => imagePreparationReceiptIds(comments, attachments, workProducts),
+    () => preparationReceiptIds(comments, attachments, workProducts),
     [comments, attachments, workProducts],
   );
+  const runFileCards = useMemo(() => runFileCardAttachments(workProducts), [workProducts]);
   const projectedComments = useMemo(
     () =>
       comments.flatMap((comment) => {
@@ -1046,14 +1014,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       const meta = linkedRunMetaById.get(run.id);
       if (acceptedSemanticResultDisposition(meta?.resultJson) === "yielded" ||
         interactions?.some(interaction => interaction.sourceRunId === run.id && interaction.status === "pending")) continue;
-      const presentationCommentId = presentationDecisionCommentId(meta?.resultJson);
-      const progressCommentIds = semanticProgressCommentIds(meta?.resultJson);
-      if (projectedComments.some(comment =>
-        comment.authorType === "agent" && !comment.deletedAt && comment.body.trim() &&
-        comment.body !== LEGACY_WITHHELD_RUN_COMMENT && !progressCommentIds.has(comment.id) &&
-        (comment.runId ?? comment.createdByRunId ?? comment.derivedCreatedByRunId) === run.id &&
-        (presentationCommentId === undefined || presentationCommentId === comment.id),
-      )) deferred.add(run.id);
+      if (hasVisibleRunAnswer(projectedComments, run.id, meta?.resultJson)) deferred.add(run.id);
     }
     return deferred;
   }, [issueId, runs, projectedComments, linkedRunMetaById, interactions, compactTranscriptDeferral, slowSettledTranscriptRunIds, openedAt]);
@@ -1480,7 +1441,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           ]
             .filter(Boolean)
             .join(" · "),
-          href: safeResourceHref(href),
+          href: safeNavigableUrl(href),
           timestamp: new Date(workProduct.createdAt).toISOString(),
           workProduct,
         },
@@ -1502,7 +1463,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           resourceKind: "attachment",
           title: attachment.originalFilename ?? "Agent attachment",
           subtitle: `${attachment.contentType} · ${formatResourceBytes(attachment.byteSize)}`,
-          href: safeResourceHref(attachment.openPath ?? attachment.contentPath),
+          href: safeNavigableUrl(attachment.openPath ?? attachment.contentPath),
           timestamp: new Date(attachment.createdAt).toISOString(),
           attachment,
         },
@@ -1861,6 +1822,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? "Runtime missing"
             : code === "native_provider_model_rejected" && source.status === "failed"
             ? "Model unavailable"
+            : code === "antigravity_swarm_unavailable" && source.status === "failed"
+            ? swarmFailureNeedsAction(meta?.resultJson) ? "Swarm did not start" : "Swarm did not finish"
             : code === "native_provider_approval_required" && source.status === "failed"
             ? "Approval required"
             : code === "native_provider_usage_limit" && source.status === "failed"
@@ -1890,6 +1853,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 ? `${props.interruption?.observedRunId === source.id && props.interruption.rejectedModel
                     ? `The provider rejected the model "${props.interruption.rejectedModel}".`
                     : meta?.error || "The provider rejected the selected model."} Choose a supported model or clear the task's model override, then retry.`
+                : code === "antigravity_swarm_unavailable" && source.status === "failed"
+                  // The swarm route's own plain sentence; never the code.
+                  ? meta?.error?.trim() || "Swarm did not start, and nothing was changed. Send /swarm again to try once more."
                 : code === "native_provider_usage_limit" &&
                     source.status === "failed"
                   ? "The model provider has reached its current usage limit. Try again after the limit resets."
@@ -1920,7 +1886,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             tone: source.status === "cancelled" ? "neutral" : "error",
             label,
             detail,
-            retryable: code !== "native_session_cleanup_quarantined" && !diskFullBesideInterruption,
+            // A /swarm the route refused for something the person must change (another model,
+            // a planning run) has no Retry; one that ran and failed (no result, helpers timed
+            // out) keeps it. The same rule as the server's task interruption state.
+            retryable: code !== "native_session_cleanup_quarantined" && !diskFullBesideInterruption &&
+              !(code === "antigravity_swarm_unavailable" && swarmFailureNeedsAction(meta?.resultJson)),
             ...(credentialAccess ? { credentialAccess, retryable: false } : {}),
             collapsible: true,
             runId: source.id,
@@ -3481,6 +3451,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         ) : null}
                       </div>
                     ) : (
+                      <RunFileCardsContext.Provider value={runFileCards}>
                       <TaskChatThreadView
                         items={threadItems}
                         scrollingHistory={scrollingHistory}
@@ -3609,6 +3580,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         contentKey={`${autoFollowContentKey}:${historyRevealed}`}
                         className={isMobile ? undefined : "pt-3"}
                       />
+                      </RunFileCardsContext.Provider>
                     )}
                   </>
                 ) : null}

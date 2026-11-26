@@ -1332,6 +1332,15 @@ function adaptDuplexChannelHostSession(
   };
 }
 
+/** One automatic snapshot re-qualification per environment and company at a
+ * time in this process. Routes and services each build their own runtime, so
+ * the pending probes are shared across all of them: a burst of runs behind one
+ * stale proof boots one probe sandbox. */
+const sandboxSnapshotRequalifications = new Map<string, Promise<{ environment: Environment | null; reason: string | null }>>();
+/** A failed re-check answers later runs for the same saved config for this
+ * long, so a queue of runs behind a broken snapshot boots one probe, not one each. */
+const FAILED_SANDBOX_REQUALIFICATION_REUSE_MS = 2 * 60_000;
+
 function createSandboxEnvironmentDriver(
   db: Db,
   options: {
@@ -1665,6 +1674,39 @@ function createSandboxEnvironmentDriver(
     });
   }
 
+  function requalifyStaleSandboxSnapshot(environment: Environment, companyId: string) {
+    const environmentId = environment.id;
+    const key = `${environmentId}:${companyId}:${stableStringify(environment.config)}`;
+    const pending = sandboxSnapshotRequalifications.get(key);
+    if (pending) return pending;
+    const run = (async () => {
+      const environments = environmentService(db);
+      const current = await environments.getById(environmentId);
+      if (!current || current.driver !== "sandbox") return { environment: null, reason: null };
+      const { probeEnvironment } = await import("./environment-probe.js");
+      const result = await probeEnvironment(db, current, {
+        companyId, pluginWorkerManager, applyCustomImageTemplate: true,
+        acquireSandboxRuntimeLease: true, assertCompanyBinding: true,
+      });
+      // Only controlled diagnostics reach the run error; provider exception
+      // text can carry credentials and stays in the probe result.
+      const reason = result.ok
+        ? (typeof result.details?.platformQualificationDiagnostic === "string" ? result.details.platformQualificationDiagnostic : null)
+        : "The check sandbox could not start. Paperclip tries again in a few minutes.";
+      return { environment: await environments.getById(environmentId), reason,
+        recorded: result.ok && result.details?.platformQualificationRecorded === true };
+    })().then(
+      ({ recorded, ...outcome }) => {
+        if (recorded) sandboxSnapshotRequalifications.delete(key);
+        else setTimeout(() => sandboxSnapshotRequalifications.delete(key), FAILED_SANDBOX_REQUALIFICATION_REUSE_MS).unref?.();
+        return outcome;
+      },
+      (error: unknown) => { sandboxSnapshotRequalifications.delete(key); throw error; },
+    );
+    sandboxSnapshotRequalifications.set(key, run);
+    return run;
+  }
+
   return {
     driver: "sandbox",
 
@@ -1693,7 +1735,21 @@ function createSandboxEnvironmentDriver(
       if (input.adapterType === "paperclip_runner" && !usesManagedCloudSandboxImage(configuredEnvironment, selectedTemplate.value)) {
         pinnedSnapshotId = qualifiedSandboxSnapshotId(configuredEnvironment, input.companyId, parsed.config, selectedTemplate.value);
         if (!pinnedSnapshotId && hasSandboxSnapshotQualification(configuredEnvironment, input.companyId)) {
-          throw new Error("sandbox_snapshot_qualification_required: The snapshot qualification is missing or stale. Open the agent's Harness / Runtime page and select Run test before running Paperclip Runner.");
+          // A saved proof goes stale whenever its snapshot, config or captured
+          // image changes, or a probe is interrupted. Re-run the same check the
+          // agent's Run test performs instead of waiting for a person to click it.
+          // Another run may have just re-qualified it; read the saved proof first.
+          const saved = await environmentService(db).getById(configuredEnvironment.id);
+          pinnedSnapshotId = saved ? qualifiedSandboxSnapshotId(saved, input.companyId, parsed.config, selectedTemplate.value) : null;
+          if (!pinnedSnapshotId) {
+            const requalified = await requalifyStaleSandboxSnapshot(saved ?? configuredEnvironment, input.companyId);
+            if (requalified.environment) {
+              pinnedSnapshotId = qualifiedSandboxSnapshotId(requalified.environment, input.companyId, parsed.config, selectedTemplate.value);
+            }
+            if (!pinnedSnapshotId) {
+              throw new Error(`sandbox_snapshot_qualification_required: Paperclip could not re-check this sandbox image before starting Paperclip Runner.${requalified.reason ? ` ${requalified.reason}` : ""}`);
+            }
+          }
         }
       }
       if (input.configuredEnvironment) parsed.config = { ...parsed.config, reuseLease: storedParsed.config.reuseLease, archiveOnRelease: storedParsed.config.archiveOnRelease };
@@ -2508,7 +2564,7 @@ function createSandboxEnvironmentDriver(
             `Sandbox provider "${recordedProvider}" needs a plugin worker manager for cleanup, but none is available.`,
           );
         }
-        const pinnedPluginId = exportResume || input.lease.metadata?.creationOperationId ? readString(input.lease.metadata?.pluginId) : null;
+        const pinnedPluginId = exportResume ? readString(input.lease.metadata?.pluginId) : pinnedCreationCleanupPluginId(input.lease);
         if (exportResume && !pinnedPluginId) throw new Error("Workspace export cleanup has no recorded provider plugin.");
         const pluginProvider = await resolveSandboxProviderPlugin({ provider: recordedProvider, ...(pinnedPluginId ? { pluginId: pinnedPluginId } : {}) });
         if (pluginProvider.state !== "running") {
@@ -2626,6 +2682,13 @@ function createSandboxEnvironmentDriver(
         const pinned = await resolvePluginSandboxProviderDriverById({ db, pluginId: pinnedPluginId, driverKey: recordedProvider });
         return Boolean(pinned?.plugin.status === "ready" && pluginWorkerManager.isRunning(pinned.plugin.id)
           && pluginWorkerVerifiesLifecycleMethod(pinned.plugin.id, "environmentStopLease"));
+      }
+      // A failed creation is torn down by the plugin that created it, so probe
+      // that plugin. A missing or not-ready pinned plugin is a transient window.
+      const pinnedCreationPluginId = pinnedCreationCleanupPluginId(input.lease);
+      if (pinnedCreationPluginId) {
+        const pinned = await resolvePluginSandboxProviderDriverById({ db, pluginId: pinnedCreationPluginId, driverKey: recordedProvider });
+        return Boolean(pinned?.plugin.status === "ready" && pluginWorkerManager.isRunning(pinned.plugin.id));
       }
       // Resolve the installed plugin without a wait. A plugin reload or a plugin
       // reinstall can remove the plugin row for a short window, so a missing
@@ -3358,6 +3421,16 @@ function pluginDriverProviderKey(config: PluginEnvironmentConfig): string {
 
 function readString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * A failed sandbox creation belongs to the plugin that started it. Two plugins
+ * can declare the same provider key, so the cleanup readiness probe and the
+ * teardown both use this pin instead of the first installed plugin with the key.
+ */
+function pinnedCreationCleanupPluginId(lease: { metadata: Record<string, unknown> | null }): string | null {
+  const metadata = lease.metadata ?? {};
+  return metadata.creationOperationId || metadata.failedCreateCleanup ? readString(metadata.pluginId) : null;
 }
 
 // Keys the runtime stores in the lease metadata that are not part of the

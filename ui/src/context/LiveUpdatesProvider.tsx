@@ -63,6 +63,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { extractCompanyPrefixFromPath, toCompanyRelativePath } from "../lib/company-routes";
 import { useLocation } from "../lib/router";
 import { agentRouteRef } from "../lib/utils";
+import { markdownToPlainText } from "../lib/markdown-plain-text";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
 import { tryCreateWebSocket } from "../lib/websocket";
 
@@ -1117,6 +1118,8 @@ const ISSUE_CASE_WORK_ACTIVITY_ACTIONS = new Set([
 const ISSUE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
   "issue.document_annotation_thread_created",
   "issue.document_annotation_comment_added",
+  "issue.document_annotation_comment_reaction_added",
+  "issue.document_annotation_comment_reaction_removed",
   "issue.document_annotation_thread_resolved",
   "issue.document_annotation_thread_reopened",
   "issue.document_annotation_remapped",
@@ -1124,6 +1127,8 @@ const ISSUE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
 const ROUTINE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
   "routine.document_annotation_thread_created",
   "routine.document_annotation_comment_added",
+  "routine.document_annotation_comment_reaction_added",
+  "routine.document_annotation_comment_reaction_removed",
   "routine.document_annotation_thread_resolved",
   "routine.document_annotation_thread_reopened",
   "routine.document_annotation_remapped",
@@ -1131,6 +1136,8 @@ const ROUTINE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
 const CASE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
   "case.document_annotation_thread_created",
   "case.document_annotation_comment_added",
+  "case.document_annotation_comment_reaction_added",
+  "case.document_annotation_comment_reaction_removed",
   "case.document_annotation_thread_resolved",
   "case.document_annotation_thread_reopened",
   "case.document_annotation_remapped",
@@ -1143,32 +1150,25 @@ function describeIssueUpdate(
 ): string | null {
   if (!details) return null;
   const changes: string[] = [];
-  if (typeof details.status === "string")
-    changes.push(`status -> ${details.status.replace(/_/g, " ")}`);
-  if (typeof details.priority === "string")
-    changes.push(`priority -> ${details.priority}`);
-  if (
-    typeof details.assigneeAgentId === "string" ||
-    typeof details.assigneeUserId === "string"
-  ) {
-    changes.push("reassigned");
-  } else if (
-    details.assigneeAgentId === null ||
-    details.assigneeUserId === null
-  ) {
-    changes.push("unassigned");
-  }
+  const statusLabel = (status: string) => status === "todo" ? "to do" : status.replace(/_/g, " ");
   if (details.reopened === true) {
-    const from = readString(details.reopenedFrom);
-    changes.push(
-      from ? `reopened from ${from.replace(/_/g, " ")}` : "reopened",
-    );
+    const from = readString(details.reopenedFrom) ?? readString(details.statusFrom);
+    const to = readString(details.status);
+    changes.push(`reopened${from ? ` from ${statusLabel(from)}` : " the task"}${to ? ` to ${statusLabel(to)}` : ""}`);
+  } else if (typeof details.status === "string") {
+    changes.push(typeof details.statusFrom === "string"
+      ? `changed status from ${statusLabel(details.statusFrom)} to ${statusLabel(details.status)}`
+      : `changed status to ${statusLabel(details.status)}`);
   }
-  if (typeof details.title === "string") changes.push("title changed");
-  if (typeof details.description === "string")
-    changes.push("description changed");
-  if (changes.length > 0) return changes.join(", ");
-  return null;
+  if (typeof details.priority === "string") changes.push(`set priority to ${details.priority}`);
+  if (details.assignment === "reassigned" || typeof details.assigneeAgentId === "string" || typeof details.assigneeUserId === "string") {
+    changes.push("reassigned the task");
+  } else if (details.assignment === "unassigned" || details.assigneeAgentId === null || details.assigneeUserId === null) {
+    changes.push("unassigned the task");
+  }
+  if (details.titleChanged === true || typeof details.title === "string") changes.push("changed the title");
+  if (details.descriptionChanged === true || typeof details.description === "string") changes.push("changed the description");
+  return changes.length > 0 ? changes.join(", ") : null;
 }
 
 function buildActivityToast(
@@ -1180,7 +1180,8 @@ function buildActivityToast(
   const entityType = readString(payload.entityType);
   const entityId = readString(payload.entityId);
   const action = readString(payload.action);
-  const details = readRecord(payload.details);
+  const activityDetails = readRecord(payload.details);
+  const details = readRecord(payload.notificationDetails) ?? activityDetails;
   const actorId = readString(payload.actorId);
   const actorType = readString(payload.actorType);
 
@@ -1198,8 +1199,9 @@ function buildActivityToast(
     companyId,
     entityId,
     {
-      ...details,
-      identifier: readString(payload.issueIdentifier) ?? readString(details?.identifier),
+      ...activityDetails,
+      title: readString(payload.issueTitle) ?? readString(activityDetails?.title),
+      identifier: readString(payload.issueIdentifier) ?? readString(activityDetails?.identifier),
     },
   );
   const actor = readString(readString(payload.actorName)?.trim()) ?? resolveActorLabel(queryClient, companyId, actorType, actorId);
@@ -1226,70 +1228,41 @@ function buildActivityToast(
       actorId === currentActor.agentId);
   if (isSelfActivity) return null;
 
+  const title = truncate((issue.title?.trim() || "Task").replace(/\s+/g, " "), 120);
+  const actionLink = { label: "View task", href: issue.href };
   if (action === "issue.created") {
     return {
       actor: toastActor,
-      title: `${actor} created ${issue.ref}`,
-      body: issue.title ? truncate(issue.title, 96) : undefined,
+      title,
+      body: truncate(`${actor} created the task`, 240),
       tone: "success",
-      action: { label: `View ${issue.ref}`, href: issue.href },
+      action: actionLink,
       dedupeKey: `activity:${action}:${entityId}`,
     };
   }
 
+  const changeDesc = describeIssueUpdate(details);
   if (action === "issue.updated") {
-    if (readString(details?.source) === "comment") {
-      // Comment-driven updates emit a paired comment event; show one combined toast on the comment event.
-      return null;
-    }
-    const changeDesc = describeIssueUpdate(details);
-    const body = changeDesc
-      ? issue.title
-        ? `${truncate(issue.title, 64)} - ${changeDesc}`
-        : changeDesc
-      : issue.title
-        ? truncate(issue.title, 96)
-        : issue.label;
+    if (details?.source === "comment" || !changeDesc) return null;
     return {
       actor: toastActor,
-      title: `${actor} updated ${issue.ref}`,
-      body: truncate(body, 100),
+      title,
+      body: truncate(`${actor} ${changeDesc}`, 240),
       tone: "info",
-      action: { label: `View ${issue.ref}`, href: issue.href },
+      action: actionLink,
       dedupeKey: `activity:${action}:${entityId}`,
     };
   }
 
   const commentId = readString(details?.commentId);
-  const bodySnippet = readString(details?.bodySnippet);
-  const reopened = details?.reopened === true;
-  const updated = details?.updated === true;
-  const reopenedFrom = readString(details?.reopenedFrom);
-  const reopenedLabel = reopened
-    ? reopenedFrom
-      ? `reopened from ${reopenedFrom.replace(/_/g, " ")}`
-      : "reopened"
-    : null;
-  const title = reopened
-    ? `${actor} reopened and commented on ${issue.ref}`
-    : updated
-      ? `${actor} commented and updated ${issue.ref}`
-      : `${actor} commented on ${issue.ref}`;
-  const body = bodySnippet
-    ? reopenedLabel
-      ? `${reopenedLabel} - ${bodySnippet.replace(/^#+\s*/m, "").replace(/\n/g, " ")}`
-      : bodySnippet.replace(/^#+\s*/m, "").replace(/\n/g, " ")
-    : reopenedLabel
-      ? issue.title
-        ? `${reopenedLabel} - ${issue.title}`
-        : reopenedLabel
-      : (issue.title ?? undefined);
+  const snippet = markdownToPlainText(readString(details?.bodySnippet) ?? "");
+  const summary = changeDesc ? `${actor} ${changeDesc}` : actor;
   return {
     actor: toastActor,
     title,
-    body: body ? truncate(body, 96) : undefined,
+    body: truncate(snippet ? `${summary}: ${snippet}` : changeDesc ? summary : `${actor} added a comment`, 240),
     tone: "info",
-    action: { label: `View ${issue.ref}`, href: issue.href },
+    action: actionLink,
     dedupeKey: `activity:${action}:${entityId}:${commentId ?? "na"}`,
   };
 }
@@ -1362,6 +1335,7 @@ function buildRunStatusToast(
   // Interrupt is an intentional conversation control. Its caller gives
   // feedback; the terminal event must not announce a cancelled/failed run.
   if (errorCode === "operator_interrupted") return null;
+  if (status === "cancelled" && errorCode === "provider_limit_wait") return null;
   // Workspace contention is ordinary scheduling, not a failed user action.
   if (errorCode === "workspace_busy" || errorCode === "agent_directory_busy") return null;
   const contextSource = readString(payload.contextSource);
@@ -1626,6 +1600,9 @@ function invalidateActivityQueries(
     typeof details?.handledForUserId === "string" ||
     action?.startsWith("issue.thread_interaction_") ||
     action === "issue.status_decision_recorded" ||
+    action === "issue.provider_limit_retry_settled" ||
+    action === "issue.recovery_action_resolved" ||
+    action === "issue.retry_requested" ||
     action === "issue.conversation_session_started" ||
     (entityType === "issue" && ["issue.created", "issue.updated", "issue.deleted"].includes(action ?? ""));
   const decisionAudienceChanged = action?.startsWith("issue_access_grant.") ||
@@ -2213,6 +2190,9 @@ function handleLiveEvent(
     }
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     if (event.type === "heartbeat.run.status") {
+      if (["scheduled_retry", "running", "succeeded", "failed", "timed_out", "cancelled"].includes(String(payload.status))) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.attention(expectedCompanyId) }, { cancelRefetch: false });
+      }
       const toast = buildRunStatusToast(payload, nameOf);
       if (toast && event.toastEligible === true && !suppressRunToast) {
         gatedPushToast(gate, pushToast, "run-status", toast);
@@ -2231,10 +2211,27 @@ function handleLiveEvent(
     return;
   }
 
+  if (event.type === "agent_setup_progress.updated") {
+    // A person's own agent checked off a setup step; the open setup page shows it.
+    const progressId = readString(payload.progressId);
+    if (progressId) queryClient.invalidateQueries({ queryKey: queryKeys.agentSetupProgress(progressId) });
+    return;
+  }
+
   if (event.type === "agent.runtime_state.updated") {
     // The server saved a new provider rate-limit snapshot for this agent.
     const agentId = readString(payload.agentId);
     if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agentId) });
+    return;
+  }
+
+  if (event.type === "cloud_trial.status.updated") {
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.cloudInference.status(expectedCompanyId),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.list(expectedCompanyId),
+    });
     return;
   }
 

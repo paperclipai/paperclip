@@ -87,6 +87,17 @@ describe("release swap end-of-wave grade", () => {
     expect(capped.result.pass).toBe(false);
   });
 
+  it("counts a loop-guard notice from different runs as informational and the same notice twice from one run as a duplicate", async () => {
+    const notice = "Paperclip stopped a tool call that kept failing the same way. The task continues in a fresh session.";
+    const base = fakeDb({ issues: [{ id: "d1", identifier: "CHA-5", title: "d" }], runs: () => [{ runId: "r1", issueId: "d1", status: "succeeded" }] });
+    const db = { $client: { unsafe: async (sql: string, params?: unknown[]) => sql.includes("from issue_comments")
+      ? [{ issueId: "d1", body: notice, count: 2, runIds: ["r1", "r2"] }, { issueId: "d2", body: notice, count: 2, runIds: ["r3", "r3"] }]
+      : base.$client.unsafe(sql, params as never) } } as unknown as ReleaseSwapFinishInput["db"];
+    const { json } = await finish({ db, api: { get: async () => ({ status: "done" }), post: async () => ({}) } as unknown as ReleaseSwapFinishInput["api"] });
+    expect(json.duplicates.autoNoticeRepeats).toEqual([{ issueId: "d1", count: 2 }]);
+    expect(json.duplicates.duplicateComments).toEqual([{ issueId: "d2", count: 2 }]);
+  });
+
   it("grades a pending question from the database as a person's wait, and passes a clean wave", async () => {
     const { json } = await finish({ api: { get: async () => ({ status: "blocked" }), post: async () => ({}) } as unknown as ReleaseSwapFinishInput["api"],
       db: fakeDb({ issues: [{ id: "q1", identifier: "CHA-3", title: "q" }], runs: () => [{ runId: "r1", issueId: "q1", status: "succeeded" }], questions: ["q1"] }) });

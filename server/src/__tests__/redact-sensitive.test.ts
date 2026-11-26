@@ -226,6 +226,41 @@ describe("redactSensitive", () => {
     expect(json).not.toContain("null");
     expect(json).not.toContain("[1,2,3]");
   });
+
+  it("redacts secret-shaped object keys so accidental tokens in env var names never leak into 4xx logs", () => {
+    const githubPat = ["github", "pat", "11ABCDEF0123456789", "secretTokenValue99"].join("_");
+    const ghpToken = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+    const openaiKey = ["sk", "proj", "secretApiKey1234567890abcdef"].join("-");
+    const out = redactSensitive({
+      adapterConfig: {
+        env: {
+          [githubPat]: { type: "plain", value: "x" },
+          [ghpToken]: { type: "plain", value: "y" },
+          [openaiKey]: { type: "plain", value: "z" },
+          NODE_ENV: { type: "plain", value: "production" },
+        },
+      },
+    });
+    const serialized = JSON.stringify(out);
+    expect(serialized).not.toContain(githubPat);
+    expect(serialized).not.toContain(ghpToken);
+    expect(serialized).not.toContain(openaiKey);
+    expect(serialized).toContain("NODE_ENV");
+  });
+
+  it("handles thousands of distinct credential-shaped object keys in linear time without leaking them", () => {
+    const env: Record<string, unknown> = { "[REDACTED]": "existing", "[REDACTED]_2": "existing2" };
+    const prefix = ["xoxb", "1234567890"].join("-");
+    for (let index = 0; index < 4_000; index += 1) {
+      env[`${prefix}-${String(index).padStart(6, "0")}abcdef`] = "secret";
+    }
+    const startedAt = performance.now();
+    const out = redactSensitive({ env }) as { env: Record<string, unknown> };
+    const elapsedMs = performance.now() - startedAt;
+    expect(elapsedMs).toBeLessThan(1_000);
+    expect(Object.keys(out.env)).toHaveLength(4_002);
+    expect(JSON.stringify(out)).not.toContain(prefix);
+  });
 });
 
 describe("stripSecretBearingUrlParts", () => {
@@ -270,6 +305,23 @@ it("redacts Grok routine URL and key in setup failure logs", () => {
   expect(JSON.stringify(redactSensitive(payload))).not.toContain("canary");
   expect(collectSensitiveStringValues(payload)).toContain(payload.webhookUrl);
   expect(collectSensitiveStringValues(payload)).toContain(payload.webhookKey);
+});
+
+it("redacts hosted Google redirect URLs and browser codes unconditionally", () => {
+  const payload = {
+    browserCode: "http://127.0.0.1:41234/?state=state-canary&code=code-canary",
+    redirectUrl: "http://127.0.0.1:41234/?state=state-canary-2&code=code-canary-2",
+    redirect_url: "http://127.0.0.1:41234/?state=state-canary-3&code=code-canary-3",
+  };
+  const redacted = redactSensitive(payload) as Record<string, unknown>;
+  expect(redacted).toEqual({
+    browserCode: "[REDACTED]",
+    redirectUrl: "[REDACTED]",
+    redirect_url: "[REDACTED]",
+  });
+  expect(JSON.stringify(redacted)).not.toContain("canary");
+  expect(collectSensitiveStringValues(payload)).toContain(payload.browserCode);
+  expect(collectSensitiveStringValues(payload)).toContain(payload.redirectUrl);
 });
 
 describe("invitation bearer URL paths", () => {

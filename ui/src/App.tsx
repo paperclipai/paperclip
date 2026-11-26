@@ -1,3 +1,4 @@
+import { AnnouncementVisitProvider } from "./context/AnnouncementVisitContext";
 import { useCoordinatorWorkspaceEnabled } from "./hooks/useCoordinatorWorkspaceEnabled";
 import { AgentChats } from "./pages/AgentChats";
 import { lazy, Suspense, useEffect, type ReactNode } from "react";
@@ -210,6 +211,8 @@ function boardRoutes(streamlinedUiEnabled: boolean, combinedInboxTasksEnabled: b
       <Route path="tools" element={<LegacyToolsRedirect />} />
       <Route path="tools/:tab" element={<LegacyToolsRedirect />} />
       <Route path="apps" element={<Browse />} />
+      <Route path="apps/plugin/:pluginKey" element={<Browse />} />
+      <Route path="apps/category/:categoryId" element={<Browse />} />
       <Route path="apps/tailscale" element={<TailscaleConnector />} />
       <Route path="apps/assistant-connection" element={<AssistantConnection />} />
       <Route path="apps/browse" element={<Navigate to="/apps" replace />} />
@@ -468,8 +471,8 @@ function AppsConnectEntryRoute({
 } = {}) {
   const location = useLocation();
   const searchParams = new URLSearchParams(location.search);
-  const { enabled: chatConnectorsEnabled, githubEnabled: githubReviewBotsEnabled } = useChatConnectorsEnabled();
-  return canEnterAppsConnect(searchParams, { chatConnectorsEnabled, githubReviewBotsEnabled })
+  const { enabled: chatConnectorsEnabled } = useChatConnectorsEnabled();
+  return canEnterAppsConnect(searchParams, { chatConnectorsEnabled })
     ? <AppsConnect credentialSource={credentialSource} />
     : <Navigate to="/apps" replace />;
 }
@@ -782,7 +785,7 @@ function NoCompaniesStartPage() {
 export function App() {
   const { pathname } = useLocation();
   const { enabled: classicStreamlinedUiEnabled, loaded: classicStreamlinedUiLoaded } = useStreamlinedUiEnabled();
-  const { enabled: coordinatorWorkspaceEnabled, loaded: coordinatorWorkspaceLoaded } = useCoordinatorWorkspaceEnabled();
+  const { enabled: coordinatorWorkspaceEnabled, loaded: coordinatorWorkspaceLoaded, userId } = useCoordinatorWorkspaceEnabled();
   const streamlinedUiEnabled = classicStreamlinedUiEnabled || coordinatorWorkspaceEnabled;
   const streamlinedUiLoaded = classicStreamlinedUiLoaded && coordinatorWorkspaceLoaded;
   const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
@@ -899,11 +902,11 @@ export function App() {
   );
 
   return (
-    <>
+    <AnnouncementVisitProvider userId={userId}>
       <ConnectionStatusBanner />
       <PageLoadTracker routes={routeTree} />
       <Suspense fallback={<PaperclipLoading />}><Routes>{routeTree}</Routes></Suspense>
       <OnboardingWizardVariant />
-    </>
+    </AnnouncementVisitProvider>
   );
 }

@@ -50,7 +50,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `cost-overview`
 
-Automated: [costs service](../../server/src/__tests__/costs-service.test.ts) covers cost contracts; [embedded costs UI](../../ui/src/pages/Costs.test.tsx) has narrow Audit-host coverage.
+Automated: [costs service](../../server/src/__tests__/costs-service.test.ts) covers cost contracts (mocked `Costs` UI tests were removed; verify Audit-host UI manually).
 
 Manual: Inspect a known fixture run and reconcile recorded spend with the chosen
 period and resource. Switch the report period/company and inspect the **By
@@ -79,7 +79,7 @@ Sources: [Subscription card](../../ui/src/components/SubscriptionCostCard.tsx), 
 
 ### `cost-recording`
 
-Automated: [Cost notice](../../ui/src/components/CostDataQualityNotice.test.tsx), [quality report](../../server/src/__tests__/cost-data-quality.test.ts), and [quality routes](../../server/src/__tests__/cost-data-quality-routes.test.ts) cover UI explanations, report scope, viewer/agent denial, and retry contracts. They do not prove arrival of a real provider receipt.
+Automated: [quality report](../../server/src/__tests__/cost-data-quality.test.ts) and [quality routes](../../server/src/__tests__/cost-data-quality-routes.test.ts) cover report scope, viewer/agent denial, and retry contracts (mocked `CostDataQualityNotice` UI tests were removed; verify UI explanations manually). They do not prove arrival of a real provider receipt.
 
 Manual: Use saved-cost fixtures for waiting-for-receipt, receipt-unavailable, unknown-billing, missing-model/price, and retryable states. Expand the notice, inspect the affected run, and verify the explanation matches its saved evidence. For a retryable entry, choose Retry cost recording, reload, and verify costs are recorded once while the run ID, transcript, task execution count, and original outcome stay unchanged. Repeat with no new receipt and with a failed recording attempt; neither may fabricate zero cost or start a model run. Sign in as a viewer and then an ordinary agent: check the read/mutation boundaries and denial. Keep unresolved budget holds visible until their own accounting obligations settle.
 
@@ -104,4 +104,4 @@ Capability ID: `budgets-costs/resolution`.
 Scope: ui
 Storybook: Mount BudgetIncidentCard with entered raised limit, invalid limit, keep-paused, applying, authorized/blocked and error states wired through actual host. Existing matrix handlers are no-ops.
 Production: POST /companies/{id}/budget-incidents/{id}/resolve must authorize scope-specific raise, persist resolution and resume eligible work while retaining overlapping budget/manual holds.
-Sources: Source: [BudgetIncidentCard.tsx](../../ui/src/components/BudgetIncidentCard.tsx), [Costs.tsx](../../ui/src/pages/Costs.tsx), [budgets.ts](../../ui/src/api/budgets.ts), [costs.ts](../../server/src/routes/costs.ts), [budgets.ts](../../server/src/services/budgets.ts). Tests: [budgets-service.test.ts](../../server/src/__tests__/budgets-service.test.ts), [Costs.test.tsx](../../ui/src/pages/Costs.test.tsx)
+Sources: Source: [BudgetIncidentCard.tsx](../../ui/src/components/BudgetIncidentCard.tsx), [Costs.tsx](../../ui/src/pages/Costs.tsx), [budgets.ts](../../ui/src/api/budgets.ts), [costs.ts](../../server/src/routes/costs.ts), [budgets.ts](../../server/src/services/budgets.ts). Tests: [budgets-service.test.ts](../../server/src/__tests__/budgets-service.test.ts)

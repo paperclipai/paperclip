@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Copy, Check, Loader2 } from "lucide-react";
 
@@ -13,6 +13,7 @@ import {
   COPIED_REVEAL_TRAVEL,
 } from "./onboarding/onboarding-motion";
 import { ANALYTICS_MASK_CLASS, ANALYTICS_NO_CAPTURE_CLASS } from "@/lib/analytics/privacy";
+import { describeError } from "@/api/errors";
 import { cn } from "@/lib/utils";
 
 /**
@@ -52,7 +53,7 @@ export const CONNECT_SOURCE_NAMES: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "OpenAI",
   grok_local: "Grok",
-  antigravity_runtime: "Google",
+  antigravity_runtime: "Antigravity",
 };
 
 /** The provider name for a source, falling back to the type when unlisted. */
@@ -364,9 +365,11 @@ export function OnboardingCardField({
   onPaste,
   disabled,
   label = "Authorization code",
+  description,
   placeholder = "Paste authorization code here",
   masked = false,
   autoFocus = false,
+  className,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -374,6 +377,7 @@ export function OnboardingCardField({
   onPaste?: (event: ClipboardEvent<HTMLInputElement>) => void;
   disabled?: boolean;
   label?: string;
+  description?: string;
   placeholder?: string;
   /**
    * Dots instead of the value. The key card asks for it because a provider key
@@ -391,12 +395,15 @@ export function OnboardingCardField({
    * not where the next action is.
    */
   autoFocus?: boolean;
+  className?: string;
 }) {
-  return (
+  const descriptionId = useId();
+  const input = (
     <input
       // eslint-disable-next-line jsx-a11y/no-autofocus -- see the prop's note
       autoFocus={autoFocus}
       aria-label={label}
+      aria-describedby={description ? descriptionId : undefined}
       type={masked ? "password" : "text"}
       autoComplete="off"
       spellCheck={false}
@@ -411,8 +418,16 @@ export function OnboardingCardField({
           onSubmit();
         }
       }}
-      className={onboardingCardInputClass}
+      className={className ? cn(onboardingCardInputClass, className) : onboardingCardInputClass}
     />
+  );
+  if (!description) return input;
+
+  return (
+    <div className="flex flex-col gap-2">
+      {input}
+      <p id={descriptionId} className="px-5 text-xs text-muted-foreground">{description}</p>
+    </div>
   );
 }
 
@@ -434,7 +449,7 @@ export function ProviderSubscriptionCard({
   failure?: "expired" | "failed";
   failureMessage?: string;
   onRetry?: () => void;
-  mode: "submitted_code" | "displayed_code" | "browser_redirect";
+  mode: "submitted_code" | "displayed_code" | "browser_redirect" | "hosted_redirect";
   loading?: boolean;
   children: ReactNode;
 }) {
@@ -456,7 +471,8 @@ export function ProviderSubscriptionCard({
           >
             Sign in to {providerName}
           </a>
-          {mode === "browser_redirect" ? " then return here"
+          {mode === "hosted_redirect" ? " then paste the redirect URL below"
+            : mode === "browser_redirect" ? " then return here"
             : mode === "submitted_code"
             ? " then come back and enter authorization code"
             : " by providing the authorization code below"}
@@ -490,38 +506,48 @@ export function ProviderApiKeyCard({
 }
 
 /** Shared instructions for local subscription setup in every authentication host. */
-export function LocalProviderLoginInstructions({ adapterType, login }: {
+export function LocalProviderLoginInstructions({ adapterType, login, hostedRedirect = false }: {
   adapterType: string;
+  hostedRedirect?: boolean | "optional";
   login?: { isolated?: boolean; command?: string; authorizationUrl?: string | null; code?: string | null; accountLabel?: string | null; submitCode?: (code: string) => Promise<void>; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
 }) {
   const [showCommand, setShowCommand] = useState(false);
   const [browserCode, setBrowserCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [codeSubmitted, setCodeSubmitted] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const codeSubmissionRef = useRef<symbol | null>(null);
   useEffect(() => {
     codeSubmissionRef.current = null;
     setBrowserCode("");
     setSubmitting(false);
     setCodeSubmitted(false);
+    setSubmitError(null);
   }, [login?.authorizationUrl, login?.preparing]);
-  const provider = adapterType === "antigravity_runtime" ? "Google Antigravity" : adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
+  const provider = adapterType === "antigravity_runtime" ? "Antigravity" : adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
   const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local");
   const command = login?.command;
   const browserLogin = adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "antigravity_runtime";
+  const hostedGoogleRedirect = adapterType === "antigravity_runtime" && Boolean(hostedRedirect);
+  const optionalHostedGoogleRedirect = adapterType === "antigravity_runtime" && hostedRedirect === "optional";
   async function submitBrowserCode(value = browserCode) {
     if (!value.trim() || !login?.submitCode || codeSubmissionRef.current) return;
     const submission = Symbol();
     codeSubmissionRef.current = submission;
     setSubmitting(true);
+    setSubmitError(null);
     try {
       await login.submitCode(value.trim());
       if (codeSubmissionRef.current !== submission) return;
       setBrowserCode("");
       setCodeSubmitted(true);
-    } catch {
-      // The login hook presents the request error beside the sign-in card.
-      if (codeSubmissionRef.current === submission) codeSubmissionRef.current = null;
+    } catch (cause) {
+      // The login hook presents attempt-level errors beside the sign-in card;
+      // hosted Google redirect keeps the field open for retryable paste errors.
+      if (codeSubmissionRef.current === submission) {
+        codeSubmissionRef.current = null;
+        if (hostedGoogleRedirect) setSubmitError(describeError(cause).body);
+      }
     } finally {
       if (codeSubmissionRef.current === submission || codeSubmissionRef.current === null) setSubmitting(false);
     }
@@ -534,6 +560,7 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
     const end = input.selectionEnd ?? start;
     const value = input.value.slice(0, start) + pasted + input.value.slice(end);
     event.preventDefault();
+    setSubmitError(null);
     setBrowserCode(value);
     void submitBrowserCode(value);
   }
@@ -550,7 +577,7 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
     {browserLogin && !ready && !submitting && !codeSubmitted && !login?.error && login?.authorizationUrl && <ProviderSubscriptionCard
       providerName={connectSourceName(adapterType)}
       authorizationUrl={login.authorizationUrl}
-      mode={adapterType === "antigravity_runtime" ? "browser_redirect" : adapterType === "claude_local" ? "submitted_code" : "displayed_code"}
+      mode={hostedGoogleRedirect && !optionalHostedGoogleRedirect ? "hosted_redirect" : adapterType === "antigravity_runtime" ? "browser_redirect" : adapterType === "claude_local" ? "submitted_code" : "displayed_code"}
     >
       {adapterType === "claude_local" ? <div className="flex flex-col gap-2">
         <OnboardingCardField
@@ -561,7 +588,28 @@ export function LocalProviderLoginInstructions({ adapterType, login }: {
           disabled={submitting}
         />
         <Button type="button" disabled={!browserCode.trim() || submitting} onClick={() => void submitBrowserCode()}>Submit code</Button>
-      </div> : adapterType === "antigravity_runtime" ? <p>Finish signing in in the Google browser window, then return here.</p> : <OnboardingLoginCodeRow code={login.code ?? ""} />}
+      </div> : hostedGoogleRedirect ? <div className="flex flex-col gap-2">
+        <p className="px-2 text-xs text-muted-foreground">
+          {optionalHostedGoogleRedirect
+            ? <>Finish signing in in the Antigravity browser window, then return here. If your browser is on another machine and the <code className="font-mono">127.0.0.1</code> redirect page won’t load, copy the full URL from your address bar and paste it below.</>
+            : <>After signing in to Antigravity, your browser will redirect to a <code className="font-mono">127.0.0.1</code> page that won’t load. Copy the full URL from your browser’s address bar and paste it below.</>}
+        </p>
+        <OnboardingCardField
+          label="Antigravity redirect URL"
+          placeholder="Paste http://127.0.0.1:... URL here"
+          className={cn(ANALYTICS_MASK_CLASS, ANALYTICS_NO_CAPTURE_CLASS)}
+          value={browserCode}
+          onChange={(value) => {
+            setSubmitError(null);
+            setBrowserCode(value);
+          }}
+          onPaste={pasteBrowserCode}
+          onSubmit={() => void submitBrowserCode()}
+          disabled={submitting}
+        />
+        <Button type="button" disabled={!browserCode.trim() || submitting} onClick={() => void submitBrowserCode()}>Submit redirect URL</Button>
+        {submitError && <p role="alert" className="px-2 text-xs text-destructive">{submitError}</p>}
+      </div> : adapterType === "antigravity_runtime" ? <p>Finish signing in in the Antigravity browser window, then return here.</p> : <OnboardingLoginCodeRow code={login.code ?? ""} />}
     </ProviderSubscriptionCard>}
     {!browserLogin && (!ready || showCommand) && !login?.error && <>
       <p>Run this in a terminal on that machine and finish signing in in your browser. We’ll check automatically when you return.</p>

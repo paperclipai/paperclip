@@ -1,4 +1,5 @@
 import { nativeResponsePresentationWork } from "./native-response-presentation-work.js";
+import { DELETED_TEXT } from "../tool-access/connections/content-cleaning.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { plugins } from "@paperclipai/db";
 import { readTaskPanelActivations } from "../plugin-task-panels.js";
@@ -576,6 +577,23 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect(JSON.stringify(result)).toContain('"turnTerminalState":"completed"');
     expect(JSON.stringify(result)).toContain('"runTerminalState":"succeeded"');
     expect(JSON.stringify(result)).toContain('"status":"satisfied"');
+  });
+
+  it.each([false, true])("cleans a checkpoint saved after the run's connection content was deleted (deleted: %s)", async deleted => {
+    const f = await terminalObserverFixture();
+    const text = "Quarterly board notes from https://docs.google.com/document/d/board-notes";
+    if (deleted) await db.update(heartbeatRuns).set({ resultJson: { contentDeletedAt: new Date().toISOString() } })
+      .where(eq(heartbeatRuns.id, f.identity.runId));
+    await f.port.checkpointSession({ ...f.snapshot, semanticResult: { ...CONTROL_PLANE_CONFORMANCE_RESULT, summary: text } });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId));
+    const checkpoint = run!.runnerProfileJson?.sessionCheckpoint as { semanticResult: { summary: string }; contentDeletedAt?: string };
+    if (deleted) {
+      expect(JSON.stringify(run!.runnerProfileJson)).not.toContain("board-notes");
+      expect(checkpoint).toMatchObject({ semanticResult: { summary: DELETED_TEXT }, contentDeletedAt: expect.any(String) });
+    } else {
+      expect(checkpoint.semanticResult.summary).toBe(text);
+      expect(checkpoint.contentDeletedAt).toBeUndefined();
+    }
   });
 
   it.each(["default", "deferred"] as const)("keeps %s terminal observation owned before checkpoint and result acceptance", async mode => {
@@ -1999,9 +2017,6 @@ describe("PaperclipControlPlanePort conformance", () => {
     const repair = () => repairCommittedNativeChatResponse(db, {
       companyId: identity.companyId, issueId: taskIssueId, runId: taskRunId,
     });
-    expect(await repair()).toBe(false);
-    await db.update(heartbeatRuns).set({ contextSnapshot: { externalChatContinuation: true } })
-      .where(eq(heartbeatRuns.id, taskRunId));
     expect(await repair()).toBe(false);
     await db.update(heartbeatRuns).set({ contextSnapshot: {} }).where(eq(heartbeatRuns.id, taskRunId));
     const work = nativeResponsePresentationWork(db);

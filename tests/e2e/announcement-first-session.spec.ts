@@ -1,4 +1,5 @@
 import { test, expect, request as pwRequest, type APIRequestContext, type Page } from "@playwright/test";
+import { seedReturningAnnouncementVisit } from "./helpers/announcement-visit";
 
 /**
  * E2E (N-13): the in-app announcement well ("Introducing Connectors" upsell)
@@ -14,7 +15,7 @@ import { test, expect, request as pwRequest, type APIRequestContext, type Page }
 
 const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
-const ANNOUNCEMENT_ID = "e2e-n13-connectors";
+const ANNOUNCEMENT_ID = "2026-09-14-connectors";
 const SETTLE_WAIT_MS = 4_500; // ANNOUNCEMENT_SETTLE_MS (3 s) plus slack.
 const ONE_PIXEL_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
@@ -30,7 +31,8 @@ async function createCompany(board: APIRequestContext, name: string) {
     data: { name: "Chief of staff", role: "ceo", adapterType: "process", adapterConfig: { command: "true" } },
   });
   if (!agentRes.ok()) throw new Error(`POST agents → ${agentRes.status()}: ${await agentRes.text()}`);
-  return { id: company.id as string, prefix: (company.issuePrefix ?? company.prefix) as string };
+  const agent = await agentRes.json();
+  return { agentId: agent.id as string, id: company.id as string, prefix: (company.issuePrefix ?? company.prefix) as string };
 }
 
 async function createIssue(board: APIRequestContext, companyId: string, data: Record<string, unknown>) {
@@ -54,11 +56,6 @@ async function mockAnnouncementFeed(page: Page) {
   await page.route("**/api/workspace-preferences/me", (route) => route.fulfill({ json: {
     userId: "local-board", coordinatorWorkspaceEnabled: false, updatedAt: null,
   } }));
-  await page.addInitScript(() => {
-    for (const key of Object.keys(window.localStorage)) {
-      if (key.includes("announcement")) window.localStorage.removeItem(key);
-    }
-  });
 }
 
 test.describe("Announcement well (N-13)", () => {
@@ -79,7 +76,27 @@ test.describe("Announcement well (N-13)", () => {
     await mockAnnouncementFeed(page);
   });
 
+  test("chat-first onboarding keeps Connectors hidden across a reload until an idle return", async ({ page }) => {
+    const company = await createCompany(board, "E2E-Chat-Onboarding");
+    companyIds.push(company.id);
+    const start = await board.post(`${BASE_URL}/api/companies/${company.id}/chats/${company.agentId}/onboarding`, { data: {} });
+    expect(start.ok(), await start.text()).toBe(true);
+    const path = `/${company.prefix}/chats/${company.agentId}`;
+    const well = page.getByRole("complementary", { name: "Paperclip announcements" });
+    await page.clock.install();
+    for (const navigate of [() => page.goto(path), () => page.reload()]) {
+      await Promise.all([page.waitForResponse("**/api/announcements/current"), navigate()]);
+      await page.clock.fastForward(SETTLE_WAIT_MS);
+      await expect(well).toHaveCount(0);
+    }
+    const now = await page.evaluate(() => Date.now());
+    await page.clock.setSystemTime(now + 30 * 60_000);
+    await page.keyboard.press("Shift");
+    await expect(well.getByRole("link", { name: "Explore connectors" })).toBeVisible();
+  });
+
   test("a brand-new company with its onboarding task open does not show the upsell", async ({ page }) => {
+    await seedReturningAnnouncementVisit(page);
     const company = await createCompany(board, "E2E-N13-Onboarding");
     companyIds.push(company.id);
     const firstTask = await createIssue(board, company.id, {

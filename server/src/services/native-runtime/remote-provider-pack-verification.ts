@@ -3,34 +3,10 @@ import { posix } from "node:path";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { runRemoteProviderVerification } from "./remote-provider-pack.js";
 
-export function canonicalProviderPackJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalProviderPackJson).join(",")}]`;
-  if (value && typeof value === "object") return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, entry]) => `${JSON.stringify(key)}:${canonicalProviderPackJson(entry)}`).join(",")}}`;
-  return JSON.stringify(value) ?? "null";
-}
-
-export type ProviderPackIdentity = {
-  schema: string;
-  digest: string;
-  payload: {
-    compatibility?: { opencode: number; acpx: number };
-    contractDigest?: string;
-    acpxProfileDigests?: Record<string, string>;
-    providers?: Record<string, unknown>;
-    candidateProviders?: Record<string, unknown>;
-    pins: { opencode: string; [key: string]: string | null };
-    target: { platform: string; architecture: string };
-    runnerSourceRevision: string;
-    /** Identity of the Runner image the pack was built in, when it was built there. Provenance only. */
-    runnerInputsDigest?: string;
-    artifacts: { nodeCommand: { path: string; sha256: string }; opencodeCommand: { path: string; sha256: string }; [key: string]: { path: string; sha256: string } };
-  };
-};
-
-export function providerPackIncompatible(check: string, detail: string): Error & { failureCheck: string } {
-  return Object.assign(new Error(`runner_remote_provider_artifact_incompatible: ${detail}`), { failureCheck: check });
-}
+import { canonicalProviderPackJson, providerPackIncompatible, compatibleProviderPackInstallation, requiredProviderAssetNames,
+  type ProviderPackIdentity, type ProviderPackInstallation, type PackProvider, type AdmittedProviderPackReceipt } from "./provider-pack-compatibility.js";
+export { canonicalProviderPackJson, providerPackIncompatible, type ProviderPackIdentity,
+  type ProviderPackInstallation, type PackProvider, type AdmittedProviderPackReceipt } from "./provider-pack-compatibility.js";
 
 async function withProviderPackCheck<T>(step: "pack" | "opencode", verify: () => Promise<T>): Promise<T> {
   try {
@@ -44,68 +20,42 @@ async function withProviderPackCheck<T>(step: "pack" | "opencode", verify: () =>
   }
 }
 
-export type ProviderPackInstallation = { root: string; manifest: unknown; immutable: boolean };
-export type PackProvider = { kind: "opencode" } | { kind: "acpx"; agent: string };
-
-/** Admission of a build-qualified, OS-protected installation. Source revisions,
- * dependency pins and unrelated provider changes are provenance, not an interface.
- * The interface is the hand-maintained compatibility revision plus the pack's
- * computed contract digest; a pack without a digest predates that check and
- * is replaced rather than reused.
- * The metadata comes from the trusted runner, never from a provider tool result.
+/**
+ * A Node expression defining `packIdentity(root)`: a digest of the kernel
+ * identity of every entry under the pack's real root (path, mode, device,
+ * inode, size, mtime, ctime, link count, owner; a symlink's text and its
+ * target's identity), bound to the machine's boot. Content cannot change
+ * without moving a ctime, and no unprivileged process can set a ctime back,
+ * so an unchanged identity proves bytes unchanged since they were hashed.
  */
-function compatibleInstallation<T extends ProviderPackIdentity>(
-  installation: ProviderPackInstallation, expected: T, packRoot: string,
-  provider: PackProvider, requireExactIdentity: boolean, requireCurrentOpenCodeProxy: boolean,
-): T {
-  const actual = installation.manifest as T | null;
-  const payload = actual?.payload;
-  const contract = expected.payload.compatibility?.[provider.kind];
-  const failed = !installation.immutable ? "installation_unprotected"
-    : installation.root !== packRoot ? "installation_root"
-    : !payload ? "manifest_missing"
-    : actual.schema !== expected.schema ? "schema"
-    : actual.digest !== `sha256:${createHash("sha256").update(canonicalProviderPackJson(payload)).digest("hex")}` ? "manifest_digest"
-    : canonicalProviderPackJson(payload.target) !== canonicalProviderPackJson(expected.payload.target) ? "target"
-    : requireExactIdentity ? (actual.digest !== expected.digest ? "exact_identity" : null)
-    : !Number.isSafeInteger(contract) || contract! < 1 ? "expected_compatibility_missing"
-    : payload.compatibility?.[provider.kind] !== contract ? "compatibility_revision"
-    : !/^sha256:[a-f0-9]{64}$/.test(expected.payload.contractDigest ?? "") ? "expected_contract_digest_missing"
-    : payload.contractDigest === undefined ? "contract_digest_missing"
-    : payload.contractDigest !== expected.payload.contractDigest ? "contract_digest"
-    : null;
-  if (failed || !actual || !payload || typeof payload.pins?.opencode !== "string") {
-    throw providerPackIncompatible(failed ?? "opencode_pin_missing", "installed provider pack interface or installation is incompatible");
-  }
-  // Launch profiles and recovery receipts bind the selected installation's own
-  // bytes, never the current controller's artifact hashes.
-  for (const [name, expectedArtifact] of Object.entries(expected.payload.artifacts)) {
-    const artifact = payload.artifacts?.[name];
-    if (artifact?.path !== expectedArtifact.path || !/^sha256:[a-f0-9]{64}$/.test(artifact.sha256)) {
-      throw providerPackIncompatible(`artifact:${name}`, "installed provider pack artifact identity is invalid");
-    }
-  }
-  if (provider.kind === "opencode" && requireCurrentOpenCodeProxy
-    && payload.artifacts.opencodeProxy?.sha256 !== expected.payload.artifacts.opencodeProxy?.sha256) {
-    throw providerPackIncompatible("opencode_proxy", "installed proxy does not match the requested OpenCode diagnostics");
-  }
-  if (provider.kind === "acpx") {
-    const agent = provider.agent;
-    const currentProfile = expected.payload.acpxProfileDigests?.[agent];
-    const selected = expected.payload.providers?.[agent] ?? expected.payload.candidateProviders?.[agent];
-    const installed = payload.providers?.[agent] ?? payload.candidateProviders?.[agent];
-    // ACPX's existing qualified launch profiles remain authoritative for the
-    // selected agent. Other providers in the same pack do not invalidate it.
-    if (currentProfile ? payload.acpxProfileDigests?.[agent] !== currentProfile
-      : !selected || !installed || ["version", "profileDigest", "closureDigest", "qualification", "path"].some(key =>
-          (installed as Record<string, unknown>)[key] !== (selected as Record<string, unknown>)[key])) {
-      throw providerPackIncompatible("acpx_profile", "selected ACPX provider profile is incompatible");
-    }
-  }
-  return structuredClone(actual);
+export const PROVIDER_PACK_IDENTITY_FUNCTION = [
+  "const packIdentity=(root)=>{const fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');const h=crypto.createHash('sha256');let boot='none';try{boot=fs.readFileSync('/proc/sys/kernel/random/boot_id','utf8').trim()}catch{}",
+  "const real=fs.realpathSync(root);h.update('boot\\0'+boot+'\\nroot\\0'+real+'\\n');const id=(s)=>[s.mode,s.dev,s.ino,s.size,s.mtimeNs,s.ctimeNs,s.nlink,s.uid].join('\\0');h.update('.\\0'+id(fs.lstatSync(real,{bigint:true}))+'\\n');",
+  "const visit=(d,prefix)=>{for(const name of fs.readdirSync(d).sort()){const a=path.join(d,name),r=prefix?prefix+'/'+name:name,s=fs.lstatSync(a,{bigint:true});h.update(r+'\\0'+id(s)+'\\n');if(s.isSymbolicLink()){let t='missing';try{t=id(fs.statSync(a,{bigint:true}))}catch{}h.update('link\\0'+fs.readlinkSync(a)+'\\0'+t+'\\n')}else if(s.isDirectory())visit(a,r)}};visit(real,'');return h.digest('hex')}",
+].join("");
+
+type SealedPackRecord = { identity: string; manifest: ProviderPackIdentity };
+/** Fully verified packs this server process has sealed, by target and expected identity. */
+const sealedPacks = new Map<string, SealedPackRecord>();
+const MAX_SEALED_PACKS = 512;
+
+/** Test seam: forget every sealed pack record. */
+export function clearSealedProviderPacksForTest(): void { sealedPacks.clear(); }
+
+function sealKeyFor(
+  seal: { targetKey: string } | undefined,
+  packRoot: string,
+  manifest: ProviderPackIdentity,
+  acceptProvenance: boolean,
+  requiredAssets: readonly string[] | null,
+): string | null {
+  if (!seal?.targetKey) return null;
+  return createHash("sha256").update(canonicalProviderPackJson([seal.targetKey, packRoot, manifest, acceptProvenance, requiredAssets])).digest("hex");
 }
 
-export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({ runner, cwd, packRoot, manifest, installation, provider, requireExactIdentity = false, requireCurrentOpenCodeProxy = false, acceptProvenance = false }: {
+const reportedIdentity = (stdout: string) => /paperclip-pack-identity=([a-f0-9]{64})/.exec(stdout)?.[1] ?? null;
+
+export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({ runner, cwd, packRoot, manifest, installation, provider, requireExactIdentity = false, requireCurrentOpenCodeProxy = false, acceptProvenance = false, admittedReceipt, seal }: {
   runner: CommandManagedRuntimeRunner;
   cwd: string;
   packRoot: string;
@@ -115,20 +65,43 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
   requireExactIdentity?: boolean;
   requireCurrentOpenCodeProxy?: boolean;
   acceptProvenance?: boolean;
+  admittedReceipt?: AdmittedProviderPackReceipt;
+  /**
+   * The exact sandbox this pack sits on. After one full verification the
+   * server keeps the pack's kernel identity; later runs on the same sandbox
+   * re-check only that identity instead of re-hashing every byte.
+   */
+  seal?: { targetKey: string };
 }): Promise<T> {
   if (installation) {
     if (!provider) throw new Error("runner_remote_provider_artifact_incompatible: provider interface is required");
-    return compatibleInstallation(installation, manifest, packRoot, provider, requireExactIdentity, requireCurrentOpenCodeProxy);
+    return compatibleProviderPackInstallation(installation, manifest, packRoot, provider, requireExactIdentity, requireCurrentOpenCodeProxy, admittedReceipt);
+  }
+  const providerNodeCommand = posix.join(
+    packRoot,
+    manifest.payload.artifacts.nodeCommand.path,
+  );
+  const requiredAssets = requiredProviderAssetNames(provider, manifest);
+  const sealKey = sealKeyFor(seal, packRoot, manifest, acceptProvenance, requiredAssets);
+  const sealed = sealKey ? sealedPacks.get(sealKey) : undefined;
+  if (sealKey && sealed) {
+    // Any failure or difference falls through to the full verification.
+    const current = await runner.execute({
+      command: providerNodeCommand,
+      args: ["-e", `${PROVIDER_PACK_IDENTITY_FUNCTION};process.stdout.write('\\npaperclip-pack-identity='+packIdentity(process.argv[1])+'\\n')`, packRoot],
+      cwd, bypassSession: true, timeoutMs: 30_000,
+    }).catch(() => null);
+    if (current && current.exitCode === 0 && !current.timedOut && reportedIdentity(current.stdout) === sealed.identity) {
+      return structuredClone(sealed.manifest) as T;
+    }
+    sealedPacks.delete(sealKey);
   }
   const expected = Buffer.from(
     canonicalProviderPackJson(manifest),
     "utf8",
   ).toString("base64");
-  const providerNodeCommand = posix.join(
-    packRoot,
-    manifest.payload.artifacts.nodeCommand.path,
-  );
   const verifyScript = [
+    ...(sealKey ? [PROVIDER_PACK_IDENTITY_FUNCTION, "let identityBefore=null;try{identityBefore=packIdentity(process.argv[1])}catch{}"] : []),
     "const fs=require('node:fs')",
     "const crypto=require('node:crypto')",
     "const path=require('node:path')",
@@ -148,7 +121,8 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
     "const tree=(treeRoot)=>{try{return walk(treeRoot)}catch{return 'unreadable'}}",
     "for(const name of ['nodeCommand','productionLock','opencodeCommand','opencodeExecutable','opencodeProxy','acpxSidecar','grokLauncher']){const artifact=manifest.payload.artifacts[name];if(hash(artifact.path)!==artifact.sha256)fail('artifact_digest:'+name,name+' digest mismatch')}",
     "if(tree(path.join(root,'dist'))!==manifest.payload.distDigest)fail('dist_digest','dist tree digest mismatch')",
-    "for(const candidate of Object.values({...manifest.payload.providers,...manifest.payload.candidateProviders})){if(tree(path.join(root,candidate.path))!==candidate.sha256)fail('candidate_digest','candidate asset tree digest mismatch')}",
+    "const requiredCandidates=process.argv[4]?JSON.parse(process.argv[4]):null",
+    "for(const [name,candidate] of Object.entries({...manifest.payload.providers,...manifest.payload.candidateProviders})){if(requiredCandidates!==null&&!requiredCandidates.includes(name))continue;if(tree(path.join(root,candidate.path))!==candidate.sha256)fail('candidate_digest','candidate asset tree digest mismatch')}",
     "const version=process.versions.node.split('.').map(Number)",
     "const minimum=manifest.payload.pins.nodeMinimum.split('.').map(Number)",
     "if(version[0]<minimum[0]||(version[0]===minimum[0]&&(version[1]<minimum[1]||(version[1]===minimum[1]&&version[2]<minimum[2]))))fail('node_version','Node version incompatible')",
@@ -157,10 +131,15 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
     "const expectedPackages={acpx:manifest.payload.pins.acpx,'@agentclientprotocol/claude-agent-acp':manifest.payload.pins.claudeAcp,'@agentclientprotocol/codex-acp':manifest.payload.pins.codexAcp,'opencode-ai':manifest.payload.pins.opencode}",
     "for(const [pkg,version] of Object.entries(expectedPackages))if(packageVersion(pkg)!==version)fail('package_version:'+pkg,pkg+' version mismatch')",
     "if(provenance)process.stdout.write('\\npaperclip-pack-manifest='+Buffer.from(canonical(manifest)).toString('base64')+'\\n')",
+    // Seal only when no entry changed while it was being hashed.
+    ...(sealKey ? ["let identityAfter=null;try{identityAfter=packIdentity(root)}catch{}if(identityBefore&&identityBefore===identityAfter)process.stdout.write('\\npaperclip-pack-identity='+identityAfter+'\\n')"] : []),
   ].join(";");
+  const verifyArgs = requiredAssets !== null
+    ? ["-e", verifyScript, packRoot, expected, acceptProvenance ? "provenance" : "", JSON.stringify(requiredAssets)]
+    : ["-e", verifyScript, packRoot, expected, ...(acceptProvenance ? ["provenance"] : [])];
   const verified = await withProviderPackCheck("pack", () => runRemoteProviderVerification(() => runner.execute({
     command: providerNodeCommand,
-    args: ["-e", verifyScript, packRoot, expected, ...(acceptProvenance ? ["provenance"] : [])],
+    args: verifyArgs,
     cwd: cwd,
     bypassSession: true,
     timeoutMs: 30_000,
@@ -181,6 +160,11 @@ export async function verifyRemoteProviderPack<T extends ProviderPackIdentity>({
     opencodeVersion.stdout.trim() !== manifest.payload.pins.opencode
   ) {
     throw providerPackIncompatible("opencode_version", "OpenCode version mismatch");
+  }
+  const identity = sealKey ? reportedIdentity(verified.stdout) : null;
+  if (sealKey && identity) {
+    if (sealedPacks.size >= MAX_SEALED_PACKS) sealedPacks.delete(sealedPacks.keys().next().value!);
+    sealedPacks.set(sealKey, { identity, manifest: structuredClone(selected) });
   }
   return structuredClone(selected);
 }

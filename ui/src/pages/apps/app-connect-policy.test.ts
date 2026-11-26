@@ -39,7 +39,7 @@ describe("app connect policy", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=zapier"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("source=model-provider"))).toBe(false);
-    for (const source of ["responses-api", "messages-api", "chat-completions-api", "bedrock", "local", "google", "openrouter"]) {
+    for (const source of ["responses-api", "messages-api", "chat-completions-api", "bedrock", "local", "antigravity", "google", "google-ai", "openrouter"]) {
       expect(canEnterAppsConnect(new URLSearchParams({ source })), source).toBe(true);
     }
     expect(canEnterAppsConnect(new URLSearchParams("byo=1"))).toBe(false);
@@ -102,7 +102,7 @@ describe("app connect policy", () => {
       const href = appSourceConnectHref(app.slug);
       const searchParams = new URL(href, "http://paperclip.test").searchParams;
 
-      expect(canEnterAppsConnect(searchParams, { chatConnectorsEnabled: true, githubReviewBotsEnabled: true }), app.slug).toBe(true);
+      expect(canEnterAppsConnect(searchParams, { chatConnectorsEnabled: true }), app.slug).toBe(true);
       expect(resolveAppsConnectRouteKey({ sourceSlug: searchParams.get("source") }), app.slug).toBe(app.slug);
     }
   });
@@ -116,15 +116,16 @@ describe("app connect policy", () => {
     expect(resolveAppsConnectRouteKey({})).toBeUndefined();
   });
 
-  it("admits the GitHub bot independently of chat setup and keeps tools available", () => {
+  it("admits the GitHub bot without experimental chat flags and keeps tools available", () => {
     const bot = new URLSearchParams("source=github-code-review-bot");
-    expect(canEnterAppsConnect(bot, { chatConnectorsEnabled: true })).toBe(false);
-    expect(canEnterAppsConnect(bot, { githubReviewBotsEnabled: true })).toBe(true);
-    expect(canEnterAppsConnect(new URLSearchParams("source=discord"), { githubReviewBotsEnabled: true })).toBe(false);
+    expect(canEnterAppsConnect(bot)).toBe(true);
+    expect(canEnterAppsConnect(bot, { chatConnectorsEnabled: false })).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=discord"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
   });
-  it("retains GitHub tools but denies chat-only deep links while chat connectors are disabled", () => {
+  it("retains GitHub tools, GitHub review bots, and AgentMail while denying chat-only deep links when chat connectors are disabled", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=github-code-review-bot"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=agentmail"))).toBe(true);
     for (const source of ["discord", "telegram", "microsoft-teams", "speko"]) {
       expect(canEnterAppsConnect(new URLSearchParams({ source })), source).toBe(false);

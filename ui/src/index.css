@@ -476,6 +476,7 @@
   --motion-ease-scroll-pill-in: cubic-bezier(0.23, 1, 0.32, 1);
   --motion-ease-scroll-pill-out: cubic-bezier(0.7, 0, 0.84, 0);
   --motion-pane-glide: 320ms;           /* properties-pane maximize/restore glide */
+  --plan-pane-attention-duration: 520ms;
   --motion-pane-reveal: var(--motion-duration-slow);
   --motion-ease-pane-reveal: var(--motion-ease-out-expo);
   --motion-pane-width-reset: 200ms;
@@ -1487,6 +1488,22 @@ html:has(.paperclip-app-shell[data-keyboard-open="true"] [data-classic-task-shel
 /* Properties-pane maximize/restore glide (left animates between docked and
    sidebar-flush while the pane is position:fixed). */
 .tc-pane-glide { transition: left var(--motion-pane-glide) var(--motion-ease-standard); }
+[data-plan-pane-attention]:focus {
+  outline: var(--sz-2px) solid transparent;
+  outline-offset: calc(-1 * var(--sz-2px));
+  animation: plan-pane-attention var(--plan-pane-attention-duration) var(--motion-ease-standard) both;
+}
+@keyframes plan-pane-attention {
+  from { outline-color: var(--plan-pane-attention-start, transparent); }
+  25% { outline-color: var(--ring); }
+  to { outline-color: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-plan-pane-attention]:focus {
+    --plan-pane-attention-start: var(--ring);
+    animation-timing-function: steps(1, end);
+  }
+}
 .properties-panel-docked {
   transition: width var(--motion-pane-reveal) var(--motion-ease-pane-reveal),
     opacity var(--motion-pane-reveal) var(--motion-ease-pane-reveal);
@@ -4832,13 +4849,21 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   color: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
 }
 .design-sidebar .design-sidebar-item { min-height: var(--design-sidebar-item-height); margin-inline: var(--design-sidebar-item-inset); padding-inline: var(--design-sidebar-item-inset); color: var(--design-sidebar-item-foreground); font-size: var(--design-sidebar-label-size); line-height: var(--design-sidebar-label-leading); }
-.design-sidebar-pin-target > .design-sidebar-item { padding-inline-end: calc(var(--spacing) * 10); }
-.design-sidebar .design-sidebar-pinned-item { padding-inline-end: calc(var(--spacing) * 16); }
+.design-sidebar-project-toggle { width: calc(100% - var(--design-sidebar-item-inset) * 2); }
 .design-sidebar .design-sidebar-item:is(:hover, [aria-current="page"]) { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
-.design-sidebar-pin-target > button { opacity: 0; pointer-events: none; }
+.design-sidebar-pin-target > [aria-pressed] { opacity: 0; pointer-events: none; }
 .design-sidebar-pin-target:is(:hover, :has(> [aria-current="page"], > :focus-visible)) {
-  > .design-sidebar-item { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
-  > button { opacity: 1; pointer-events: auto; }
+  > .design-sidebar-item { padding-inline-end: calc(var(--spacing) * 10); background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
+  > [aria-pressed] { opacity: 1; pointer-events: auto; }
+}
+.design-sidebar-pinned-row > button:not(.design-sidebar-item) { pointer-events: none; }
+.design-sidebar-pinned-row:is(:hover, :focus-within) {
+  > .design-sidebar-pinned-item { padding-inline-end: calc(var(--spacing) * 16); background: var(--design-sidebar-item-highlight); }
+  > button:not(.design-sidebar-item) { opacity: 1; pointer-events: auto; }
+}
+@media (pointer: coarse) {
+  .design-sidebar-pinned-row > .design-sidebar-pinned-item { padding-inline-end: calc(var(--spacing) * 16); }
+  .design-sidebar-pinned-row > button:not(.design-sidebar-item) { pointer-events: auto; }
 }
 .design-sidebar-new-task { display: flex; justify-content: flex-start; width: calc(100% - var(--design-sidebar-item-inset) * 2); height: var(--design-sidebar-item-height); margin-inline: var(--design-sidebar-item-inset); padding-inline: var(--design-sidebar-item-inset); gap: calc(var(--spacing) * 2.5); font-size: var(--design-sidebar-label-size); line-height: var(--design-sidebar-label-leading); font-weight: var(--font-weight-medium); color: var(--design-sidebar-item-foreground); }
 .design-sidebar-new-task svg { width: var(--design-page-icon-size); height: var(--design-page-icon-size); }
@@ -4987,8 +5012,11 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   font-size: var(--design-page-type-size);
   line-height: var(--design-page-type-leading);
   font-weight: var(--font-weight-normal);
-  background: var(--design-page-control-surface);
+  background-color: var(--design-page-control-surface);
   color: var(--muted-foreground);
+}
+[data-canonical-toolbar] select:not([multiple], .appearance-none) {
+  padding-inline-end: var(--native-select-end-padding);
 }
 [data-canonical-toolbar] button:not([data-toolbar-clear]):is([data-size="icon"], [data-size="icon-sm"], [data-size="icon-xs"], .design-toolbar-icon) {
   width: var(--collection-toolbar-height);
@@ -4996,7 +5024,7 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
 }
 [data-canonical-toolbar] :is(button:not([data-toolbar-clear], .canonical-tab), a[data-slot="button"], select, [data-toolbar-control]):is(:hover, [aria-pressed="true"], [aria-selected="true"], [data-active="true"], [data-state="open"]) {
   color: var(--foreground);
-  background: var(--muted-highlight);
+  background-color: var(--muted-highlight);
 }
 [data-canonical-toolbar] button:is([data-toolbar-primary], .design-new-task) {
   margin-inline-start: 0;
@@ -5265,8 +5293,29 @@ html:not(.dark) .coordinator-sidebar {
 .coordinator-decision-card [data-attention-context] :is(p, span, button, time) { font-size: var(--text-xs); line-height: var(--text-xs--line-height); }
 .coordinator-decision-card [data-decision-prompt] { font-size: var(--text-base); line-height: var(--text-base--line-height); font-weight: var(--font-weight-medium); }
 /* The Needs You toolbar fits one row: the search takes what the filters leave. */
-.coordinator-needs-you [data-toolbar-search] { width: 100%; min-width: 0; }
+[data-canonical-toolbar="inbox"] { justify-content: space-between; }
+[data-canonical-toolbar="inbox"] .design-toolbar-actions { margin-inline-start: 0; }
+.coordinator-needs-you:not([data-coordinator-decision-history]) > :not([role="toolbar"], [data-inbox-folders]) { max-width: var(--container-4xl); margin-inline: auto; }
+[data-coordinator-decision-history] > :not([data-decision-history]),
+[data-coordinator-decision-history] > [data-decision-history] > :not([role="toolbar"], [data-inbox-folders]) { max-width: var(--container-4xl); }
 .coordinator-needs-you [data-toolbar-search] input { flex: 1; width: auto; }
+.inbox-run-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: start;
+  font-size: var(--task-row-title-size);
+  line-height: var(--task-row-title-leading);
+}
+.inbox-run-table :is(th, td) {
+  height: var(--task-row-height-comfortable);
+  padding-inline: var(--task-row-gap);
+  border-bottom: var(--task-row-rule-width) solid var(--task-row-rule-color);
+  white-space: nowrap;
+}
+.inbox-run-table :is(th, td):first-child { padding-inline-start: var(--task-row-padding-inline); }
+.inbox-run-table :is(th, td):last-child { text-align: end; padding-inline-end: var(--task-row-padding-inline); }
+.inbox-run-table th { color: var(--muted-foreground); font-weight: var(--font-weight-medium); text-align: start; }
+.inbox-run-table tbody tr:is(:hover, :focus-within) { background: var(--task-row-surface-hover); }
 .coordinator-decision-card [data-needs-you-panel] :is(p, label) { font-size: var(--text-compact); line-height: calc(var(--spacing) * 5); }
 .coordinator-decision-card [data-needs-you-panel] :is(p, label, span).text-xs { font-size: var(--text-xs); line-height: calc(var(--spacing) * 4.5); }
 .coordinator-decision-card [data-decision-actions] :is(button, a):is([data-slot="button"], [data-variant]) { height: calc(var(--spacing) * 8); padding-inline: calc(var(--spacing) * 2.5); font-size: var(--text-compact); }
@@ -5437,7 +5486,31 @@ html:not(.dark) .coordinator-sidebar {
 }
 
 /* Large collection empty states share the artifact fan, with 20px rhythm. */
-.empty-state-artwork > p { margin-block: 0; }
+.empty-state[data-placement="upper"] {
+  /* Center the group in the upper 70%, allowing its contents to fit on short screens. */
+  grid-template-rows: minmax(max-content, 70%) 1fr;
+}
+.empty-state-logo {
+  display: block;
+  inline-size: var(--sz-200px);
+  block-size: var(--sz-200px);
+  background: var(--muted);
+  mask: url("/favicon.svg") center / contain no-repeat;
+}
+/* Let a page-level empty state take the space left by its own toolbar and labels. */
+#main-content:has(> .empty-state, > .empty-state-page, > :only-child > .empty-state),
+#main-content > :is(.empty-state-page, :only-child:has(> .empty-state)) {
+  display: flex;
+  flex-direction: column;
+}
+#main-content > :is(.empty-state-page, :only-child:has(> .empty-state)) { flex: 1; }
+.paperclip-app-shell[data-mobile="true"] .app-content-column:has(#main-content > .empty-state, #main-content > .empty-state-page, #main-content > :only-child > .empty-state) {
+  min-height: calc(100dvh - var(--sz-safe-top));
+}
+.paperclip-app-shell[data-mobile="true"] .app-content-row:has(#main-content > .empty-state, #main-content > .empty-state-page, #main-content > :only-child > .empty-state) {
+  display: flex;
+  flex: 1;
+}
 .empty-state-graphic { display: flex; align-items: flex-end; justify-content: center; max-width: 100%; }
 [data-canonical-toolbar] input:not([type="checkbox"], [type="radio"]) {
   height: var(--collection-toolbar-height);

@@ -101,6 +101,11 @@ import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-ident
 import { cloudControlMiddleware } from "./middleware/cloud-control.js";
 import { runnerCallOutcomeMiddleware } from "./middleware/runner-call-outcome.js";
 import { cloudRoutes } from "./routes/cloud.js";
+import { cloudInferenceInternalProxyRoutes, cloudInferenceRoutes } from "./routes/cloud-inference.js";
+import {
+  createCloudTrialInferenceController,
+  setDefaultCloudTrialInferenceController,
+} from "./services/cloud-trial-inference.js";
 import { companyRoutes } from "./routes/companies.js";
 import { companySkillRoutes } from "./routes/company-skills.js";
 import { companySkillPolicyRoutes } from "./routes/company-skill-policy.js";
@@ -140,6 +145,7 @@ import { routineSuggestionRoutes } from "./routes/routine-suggestions.js";
 import { environmentRoutes } from "./routes/environments.js";
 import { tailscaleConnectionRoutes } from "./routes/tailscale-connections.js";
 import { workloadIdentityPublicRoutes, workloadIdentityRoutes } from "./routes/workload-identity.js";
+import { agentSetupProgressAgentRoutes, agentSetupProgressBoardRoutes } from "./routes/agent-setup-progress.js";
 import { setWorkloadIdentityConfiguredPublicOrigin } from "./services/workload-identity.js";
 import { executionWorkspaceRoutes } from "./routes/execution-workspaces.js";
 import { goalRoutes } from "./routes/goals.js";
@@ -623,6 +629,8 @@ export async function createApp(
   // Outside clouds fetch these anonymously to verify connection identity tokens.
   setWorkloadIdentityConfiguredPublicOrigin(opts.authPublicBaseUrl);
   app.use(workloadIdentityPublicRoutes(db));
+  // A person's own agent reports setup progress with the bearer token from its setup prompt.
+  app.use(agentSetupProgressAgentRoutes(db));
   // Connection-intent tools carry their own short-lived, run-bound bearer and
   // must be reachable by remote adapters that intentionally do not receive an
   // agent API key. Every request revalidates the active heartbeat row.
@@ -749,6 +757,17 @@ export async function createApp(
         })
       : undefined;
 
+  // Internal OpenRouter trial inference proxy (authenticated strictly by
+  // ephemeral per-run bearer token; never requires board session cookies).
+  const cloudTrialInferenceController = createCloudTrialInferenceController();
+  setDefaultCloudTrialInferenceController(cloudTrialInferenceController);
+  // Warm resolved experimental settings at startup so staging overrides sync
+  // into PostHog cohort properties before the first request or event.
+  void instanceSettingsService(db)
+    .getExperimental()
+    .catch(() => {});
+  app.use("/api/internal/cloud-inference", cloudInferenceInternalProxyRoutes(cloudTrialInferenceController));
+
   // Mount API routes
   const api = Router();
   const agentAvatars = agentAvatarRoutes();
@@ -757,6 +776,7 @@ export async function createApp(
   api.use("/health", health);
   api.use(openApiRoutes());
   api.use("/cloud", cloudRoutes());
+  api.use(cloudInferenceRoutes(db, cloudTrialInferenceController));
   api.use("/companies", companyRoutes(db, opts.storageService));
   api.use(llmRoutes(db));
   api.use(folderRoutes(db));
@@ -872,6 +892,7 @@ export async function createApp(
   api.use(routineRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(tailscaleConnectionRoutes(db));
   api.use(workloadIdentityRoutes(db));
+  api.use(agentSetupProgressBoardRoutes(db));
   api.use(routineSuggestionRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(
     environmentRoutes(db, {

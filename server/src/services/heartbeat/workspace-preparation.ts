@@ -2,6 +2,9 @@ import { NATIVE_REMOTE_RECOVERY_LEASE_MISMATCH, remoteRecoveryLeaseMismatch } fr
 import { readInheritedRunnerRetainedSandbox } from "../native-runtime/native-inherited-runner-retry.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { assertEphemeralWorkspaceExecution, readRemoteWorkspaceAuthority, RemoteWorkspaceWriterActiveError, reserveRemoteWorkspace, shouldUseRemoteWorkspaces } from "../remote-workspaces.js";
+import { assertProjectStorageEnvironment, listProjectWorkspaceProviders, projectStorageForEnvironment } from "../project-workspace-provider.js";
+import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "../project-storage-environment-reason.js";
+import { ConfigurationIncompleteFailure } from "./run-preparation.js";
 import { WorkspaceBusyDeferral } from "./retries.js";
 import { remoteWorkspaceHoldRefusesStart } from "../remote-workspace-writer-hold.js";
 import { WORKSPACE_BUSY_RETRY_REASON } from "../../modules/run-dispatch/index.js";
@@ -237,10 +240,12 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     resolvedInstanceSettings,
   } = input.environment;
   const { mergedConfig, configSnapshot, secretManifest } = input.config;
-  const {
+  let {
     requestedShouldReuseExisting,
     existingExecutionWorkspace,
     reusableExistingExecutionWorkspace,
+  } = input.reuse;
+  const {
     workspaceReuseRequest,
     nativeRecoveryExecutionWorkspaceId,
     persistedNativeExecutionInput,
@@ -283,10 +288,53 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       && !projectExecutionWorkspacePolicy?.storageProviderPluginId,
     existingWorkspace: reusableExistingExecutionWorkspace ?? existingExecutionWorkspace,
   });
-  if (!providerApiPlacement) assertEphemeralWorkspaceExecution({ externalConversation: isDotRun,
-    adapterType: agent.adapterType,
-    environmentDriver: selectedEnvironmentForConfig?.driver,
-    pluginTaskWorkspace, remoteAuthority });
+  const projectStorageEnvironmentIncompleteFailure = (details: {
+    message: string;
+    projectId: string | null;
+    storageProviderPluginId: string | null;
+    environmentId: string;
+  }) => new ConfigurationIncompleteFailure(details.message, {
+    configurationIncomplete: {
+      reason: PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE,
+      companyId: agent.companyId,
+      agentId: agent.id,
+      issueId: issueId ?? null,
+      projectId: details.projectId,
+      storageProviderPluginId: details.storageProviderPluginId,
+      environmentId: details.environmentId,
+      fingerprint: `project_storage_environment:${details.storageProviderPluginId ?? "core"}:${details.environmentId}`,
+      actionUrl: `/agents/${agent.id}/runtime`,
+      missingBindings: [],
+    },
+  });
+  // A volume-free server rejects execution without durable task storage. When
+  // the source project's storage provider cannot serve the selected
+  // environment, that mismatch is the cause and only an owner can repair it.
+  const assertEphemeralExecution = async () => {
+    if (providerApiPlacement) return;
+    try {
+      assertEphemeralWorkspaceExecution({ externalConversation: isDotRun, adapterType: agent.adapterType,
+        environmentDriver: selectedEnvironmentForConfig?.driver, pluginTaskWorkspace, remoteAuthority });
+    } catch (error) {
+      const storagePluginId = projectExecutionWorkspacePolicy?.storageProviderPluginId;
+      const provider = storagePluginId && selectedEnvironmentForConfig
+        ? (await listProjectWorkspaceProviders(db, agent.companyId)).find(value => value.id === storagePluginId) : undefined;
+      if (provider && selectedEnvironmentForConfig) {
+        try {
+          assertProjectStorageEnvironment(provider, selectedEnvironmentForConfig);
+        } catch (mismatch) {
+          throw projectStorageEnvironmentIncompleteFailure({
+            message: mismatch instanceof Error ? mismatch.message : String(mismatch),
+            projectId: issueRef?.projectId ?? null,
+            storageProviderPluginId: provider.id,
+            environmentId: selectedEnvironmentForConfig.id,
+          });
+        }
+      }
+      throw error;
+    }
+  };
+  await assertEphemeralExecution();
   const assertRemotePreparationOwned = run.runtimeMode === "native" ? () => assertNativeSessionPreparationAuthority({
     db, companyId: agent.companyId, runId: run.id,
     leaseOwner: runOptions.nativeLeaseOwner ?? runOptions.nativeRestartRecovery?.leaseOwner,
@@ -309,13 +357,37 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   }
   const taskWorkspaceOwner = pluginTaskWorkspace ? { agentId: agent.id, environmentId: selectedEnvironmentForConfig.id,
     pluginKey: pluginConfig.pluginKey ?? null, driverKey: pluginConfig.driverKey ?? null } : null;
+  let detachedForeignAgentPluginWorkspace = false;
+  let detachedForeignAgentWorkspaceId: string | null = null;
   for (const workspace of [existingExecutionWorkspace, reusableExistingExecutionWorkspace]) {
     const owner = parseObject(workspace?.metadata?.runnerTaskWorkspaceOwner);
-    if ((pluginTaskWorkspace && workspace && workspace.providerType !== "plugin" && Object.keys(owner).length === 0)
-        || (Object.keys(owner).length > 0 && (!taskWorkspaceOwner || Object.entries(taskWorkspaceOwner).some(([key, value]) => owner[key] !== value)))) {
+    const hasOwner = Object.keys(owner).length > 0;
+    const foreignAgentSamePluginEnv = Boolean(
+      pluginTaskWorkspace && workspace && workspace.providerType === "adapter_managed" && hasOwner
+      && taskWorkspaceOwner && !nativeRecoveryExecutionWorkspaceId && !persistedNativeExecutionInput
+      && typeof owner.agentId === "string" && owner.agentId !== taskWorkspaceOwner.agentId
+      && owner.environmentId === taskWorkspaceOwner.environmentId
+      && owner.pluginKey === taskWorkspaceOwner.pluginKey
+      && owner.driverKey === taskWorkspaceOwner.driverKey,
+    );
+    if (foreignAgentSamePluginEnv) {
+      // A reassigned assignee or reviewer on the same plugin environment cannot
+      // reuse another agent's private adapter-managed workspace; detach it so
+      // this run provisions its own agent-owned workspace cleanly.
+      detachedForeignAgentPluginWorkspace = true;
+      detachedForeignAgentWorkspaceId = workspace!.id;
+      continue;
+    }
+    if ((pluginTaskWorkspace && workspace && workspace.providerType !== "plugin" && !hasOwner)
+        || (hasOwner && (!taskWorkspaceOwner || Object.entries(taskWorkspaceOwner).some(([key, value]) => owner[key] !== value)))) {
       throw new WorkspaceValidationFailure("The retained workspace belongs to a different agent, environment, or storage provider.",
         { reason: "plugin_workspace_owner_mismatch" });
     }
+  }
+  if (detachedForeignAgentPluginWorkspace) {
+    existingExecutionWorkspace = null;
+    reusableExistingExecutionWorkspace = null;
+    requestedShouldReuseExisting = false;
   }
   const workspaceServices = parseObject(mergedConfig.workspaceRuntime).services;
   if (pluginTaskWorkspace && Array.isArray(workspaceServices) && workspaceServices.length > 0) {
@@ -370,8 +442,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
           remoteAuthority = false;
           // Source resolution can retain a configured host folder. Check the
           // resolved authority before materializing it or acquiring a sandbox.
-          if (!providerApiPlacement) assertEphemeralWorkspaceExecution({ externalConversation: isDotRun,
-            adapterType: agent.adapterType, environmentDriver: selectedEnvironmentForConfig?.driver, pluginTaskWorkspace, remoteAuthority });
+          await assertEphemeralExecution();
         }
         else {
           remoteSourceState.value = sourceState;
@@ -403,7 +474,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
         return { cwd, source: "agent_home" as const, projectId: null, workspaceId: null, repoUrl: null, repoRef: null,
           workspaceHints: [], warnings: [], baseCwdFallback: false, materializationFailures: [], additionalWorkspaces: [], referencedProjectFailures: [] };
       }
-      if (useIsolatedTaskDirectory && issueRef && !pluginTaskWorkspace) {
+      if (useIsolatedTaskDirectory && issueRef && !pluginTaskWorkspace && !(nativeChatWorkspaceScope && !nativeChatWorkspaceScope.projectId)) {
         // A completed fresh attempt becomes the current task directory. New
         // input reuses that binding; only another fresh attempt changes roots.
         let cwd: string;
@@ -678,14 +749,20 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const pluginPrepareInput: Parameters<typeof preparePluginWorkspace>[2] = {
     companyId: agent.companyId, projectId: resolvedWorkspace.projectId, projectWorkspaceId: resolvedWorkspace.workspaceId,
     issueId, runId: run.id, agentId: agent.id, responsibleUserId,
-    existingWorkspaceId: providerFresh ? providerFresh.previousWorkspaceId : reusableExistingExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
+    existingWorkspaceId: providerFresh
+      ? providerFresh.previousWorkspaceId
+      : detachedForeignAgentPluginWorkspace
+        ? null
+        : reusableExistingExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
     ...(providerFresh ? { fresh: providerFresh, expectedBindingRevision: previousProviderBindingRevision } : {}),
     selectedProviderPluginId: projectExecutionWorkspacePolicy?.storageProviderPluginId ?? null,
     environment: selectedEnvironmentForConfig,
     acquireTaskLease,
     onTaskPrepared: ensure => { ensureTaskWorkspace = ensure; },
     mode: requestedExecutionWorkspaceMode,
-    strategy: resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, mergedConfig),
+    strategy: useIsolatedTaskDirectory && !remoteAuthority
+      ? "project_primary"
+      : resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, mergedConfig),
     branchMode: typeof parseObject(mergedConfig.workspaceStrategy).existingBranch === "string" ? "existing" : "create",
     branchName: typeof parseObject(mergedConfig.workspaceStrategy).existingBranch === "string"
       ? String(parseObject(mergedConfig.workspaceStrategy).existingBranch)
@@ -733,6 +810,23 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   }
   const pluginPrepared = controllerOnly || remoteAuthority ? null : await preparePluginWorkspace(db, input.services.workspaceWorkers, pluginPrepareInput);
 
+  if (pluginTaskWorkspace && !pluginPrepared && !controllerOnly && !remoteAuthority
+    && selectedEnvironmentForConfig && !projectExecutionWorkspacePolicy?.storageProviderPluginId
+    && resolvedWorkspace.projectId && resolvedWorkspace.workspaceId) {
+    const environmentStorage = projectStorageForEnvironment(
+      selectedEnvironmentForConfig,
+      await listProjectWorkspaceProviders(db, agent.companyId),
+    );
+    if (environmentStorage?.pluginId) {
+      throw projectStorageEnvironmentIncompleteFailure({
+        message: `This project's workspace storage (Core / local) does not support the environment "${selectedEnvironmentForConfig.name}". Use an agent in a compatible environment, or choose a workspace source from a project for this environment.`,
+        projectId: resolvedWorkspace.projectId,
+        storageProviderPluginId: null,
+        environmentId: selectedEnvironmentForConfig.id,
+      });
+    }
+  }
+
   const freshTaskReservationId = providerFresh && pluginTaskWorkspace && !pluginPrepared && issueId
     ? await reserveFreshPluginTaskWorkspace({ db, companyId: agent.companyId, issueId, runId: run.id, agentId: agent.id,
         fresh: providerFresh, responsibleUserId, expectedBindingRevision: previousProviderBindingRevision, owner: taskWorkspaceOwner!,
@@ -749,7 +843,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const skipHostProvision = copyOnlyProvisioning || hostProvisionDriver === "sandbox" || hostProvisionDriver === "ssh" || hostProvisionDriver === "plugin";
   const hostExecutionWorkspaceConfig = controllerOnly ? {} :
     stripHostWorkspaceProvision({
-      config: fresh && !remoteAuthority ? { ...mergedConfig, workspaceStrategy: { type: "project_primary" } } : mergedConfig,
+      config: (fresh || useIsolatedTaskDirectory) && !remoteAuthority ? { ...mergedConfig, workspaceStrategy: { type: "project_primary" } } : mergedConfig,
       skipHostProvision,
     });
   const executionWorkspaceBase = {
@@ -1085,7 +1179,10 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   const bindIssueToPersistedExecutionWorkspace = async (
     workspace: ExecutionWorkspace | null,
   ) => {
-    if (controllerOnly || !issueId || !workspace || nativeRecoveryExecutionWorkspaceId) {
+    if (
+      controllerOnly || !issueId || !workspace || nativeRecoveryExecutionWorkspaceId ||
+      (detachedForeignAgentPluginWorkspace && !input.task.wasIssueAssignee)
+    ) {
       return;
     }
     const nextIssueWorkspaceMode =
@@ -1386,6 +1483,21 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   ) {
     await timeWorkspace("workspace_record_update", () => executionWorkspacesSvc.update(
       reusableExistingExecutionWorkspace.id,
+      {
+        status: "idle",
+        cleanupReason: null,
+      },
+    ));
+  }
+  if (
+    detachedForeignAgentPluginWorkspace &&
+    input.task.wasIssueAssignee &&
+    detachedForeignAgentWorkspaceId &&
+    persistedExecutionWorkspace &&
+    detachedForeignAgentWorkspaceId !== persistedExecutionWorkspace.id
+  ) {
+    await timeWorkspace("workspace_record_update", () => executionWorkspacesSvc.update(
+      detachedForeignAgentWorkspaceId!,
       {
         status: "idle",
         cleanupReason: null,

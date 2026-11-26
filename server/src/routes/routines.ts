@@ -1,4 +1,4 @@
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { triggerUpdateActivityAction } from "../services/routine-trigger-update-plan.js";
 import { listProtectedEnvironmentKeyHolders, protectedEnvironmentKeyWarnings } from "../services/protected-environment-keys.js";
@@ -8,6 +8,7 @@ import {
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
   createRoutineTriggerSchema,
+  documentAnnotationCommentReactionSchema,
   ROUTINE_STATUSES,
   rotateRoutineTriggerSecretSchema,
   runRoutineSchema,
@@ -19,6 +20,7 @@ import { trackRoutineCreated } from "@paperclipai/shared/telemetry";
 import { validate, validateIssueMutationBody } from "../middleware/validate.js";
 import { accessService, documentAnnotationService, instanceSettingsService, logActivity, routineService } from "../services/index.js";
 import { instanceSettingsService as experimentSettings } from "../services/instance-settings.js";
+import { dashboardOwner } from "./responsibility-owner.js";
 import { responsibilitiesDisabledError } from "../services/responsibilities-disabled.js";
 import { agentPersonInCompany } from "./agent-person-authz.js";
 import { assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
@@ -65,6 +67,11 @@ export function routineRoutes(
         runId: actor.runId,
       },
     };
+  }
+
+  function annotationReactionViewer(req: Request) {
+    const actor = getActorInfo(req);
+    return { actorType: actor.actorType, actorId: actor.actorId };
   }
 
   async function remapRoutineDescriptionAnnotations(req: Request, routineId: string) {
@@ -207,7 +214,8 @@ export function routineRoutes(
       && (await experimentSettings(db).getExperimental()).enableResponsibilities !== true) {
       throw responsibilitiesDisabledError();
     }
-    const result = await svc.list(companyId, { ...filters, ...(q ? { query: q } : {}), ...(unfiled === "true" ? { unfiled: true } : {}) });
+    const ownerUserId = filters.responsibilityId || unfiled === "true" ? await dashboardOwner(db, req, companyId) : undefined;
+    const result = await svc.list(companyId, { ...filters, ownerUserId, ...(q ? { query: q } : {}), ...(unfiled === "true" ? { unfiled: true } : {}) });
     res.json(result);
   });
 
@@ -277,6 +285,7 @@ export function routineRoutes(
     const threads = await documentAnnotationsSvc.listThreadsForRoutineDocument(routine.id, routineDocumentKey, {
       status,
       includeComments: parseBooleanQuery(req.query.includeComments),
+      viewer: annotationReactionViewer(req),
     });
     res.json(threads);
   });
@@ -291,6 +300,7 @@ export function routineRoutes(
       routine.id,
       routineDocumentKey,
       req.params.threadId as string,
+      annotationReactionViewer(req),
     );
     if (!thread) {
       res.status(404).json({ error: "Annotation thread not found" });
@@ -418,6 +428,62 @@ export function routineRoutes(
       });
       res.json(thread);
     },
+  );
+
+  async function setRoutineAnnotationCommentReaction(req: Request, res: Response, present: boolean) {
+    const routine = await assertCanManageExistingRoutine(req, req.params.id as string);
+    if (!routine) {
+      res.status(404).json({ error: "Routine not found" });
+      return;
+    }
+    const reactionParsed = documentAnnotationCommentReactionSchema.safeParse(req.params.reaction);
+    if (!reactionParsed.success) {
+      res.status(400).json({ error: "Invalid reaction", details: reactionParsed.error.issues });
+      return;
+    }
+    const { actor, annotationActor } = annotationActorInput(req);
+    const result = await documentAnnotationsSvc.setCommentReaction({
+      target: { kind: "routine", routineId: routine.id, key: routineDocumentKey },
+      threadId: req.params.threadId as string,
+      commentId: req.params.commentId as string,
+      reaction: reactionParsed.data,
+      present,
+      actor: annotationActor,
+    });
+    if (result.changed) {
+      await logActivity(db, {
+        companyId: routine.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: present
+          ? "routine.document_annotation_comment_reaction_added"
+          : "routine.document_annotation_comment_reaction_removed",
+        entityType: "routine",
+        entityId: routine.id,
+        details: {
+          key: routineDocumentKey,
+          documentKey: routineDocumentKey,
+          documentId: result.thread.documentId,
+          threadId: result.thread.id,
+          commentId: result.comment.id,
+          reaction: reactionParsed.data,
+        },
+      });
+    }
+    res.json(result.comment);
+  }
+
+  router.put(
+    "/routines/:id/description/annotations/:threadId/comments/:commentId/reactions/:reaction",
+    async (req, res) => setRoutineAnnotationCommentReaction(req, res, true),
+  );
+
+  router.delete(
+    "/routines/:id/description/annotations/:threadId/comments/:commentId/reactions/:reaction",
+    async (req, res) => setRoutineAnnotationCommentReaction(req, res, false),
   );
 
   router.patch("/routines/:id", validate(updateRoutineSchema), async (req, res) => {

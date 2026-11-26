@@ -87,7 +87,7 @@ test("candidate startup and sidecar admission share one strict identity-bound JS
   for (const command of ["initialize", "session.open"]) {
     const request = { protocolVersion, id: 1, command, params: { agent: "antigravity", model: candidateAdmission.model, candidateAdmission } };
     assert.equal(validate(request), true, JSON.stringify(validate.errors));
-    for (const change of [{ unknown: true }, { runId: undefined }, { normalizedSessionId: "wrong session" }, { platform: "linux" }, { expiresAt: "1800000060000" }]) {
+    for (const change of [{ unknown: true }, { runId: undefined }, { normalizedSessionId: "wrong session" }, { platform: "win32" }, { architecture: "ia32" }, { expiresAt: "1800000060000" }]) {
       const altered = JSON.parse(JSON.stringify({ ...request, params: { ...request.params, candidateAdmission: { ...candidateAdmission, ...change } } }));
       assert.equal(validate(altered), false);
       assert.equal(startup(altered.params.candidateAdmission), false);
@@ -95,6 +95,8 @@ test("candidate startup and sidecar admission share one strict identity-bound JS
     assert.equal(validate({ ...request, params: { ...request.params, agent: "codex" } }), false);
   }
   assert.equal(validate({ protocolVersion, id: 1, command: "turn.start", params: { candidateAdmission } }), false);
+  // The schema admits each verified-closure platform; compiled pins decide the exact pairs.
+  for (const [platform, architecture] of [["linux", "x64"], ["linux", "arm64"]]) assert.equal(startup({ ...candidateAdmission, platform, architecture }), true);
 });
 
 test("Pi session admission requires an explicit supported thinking level including recovery", () => {

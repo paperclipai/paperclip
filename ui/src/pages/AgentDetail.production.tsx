@@ -66,6 +66,7 @@ import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-
 import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { ProviderLimitMessage } from "../components/ProviderLimitMessage";
+import { runFailureMessage } from "@paperclipai/shared";
 import { describeRunRetryState } from "../lib/runRetryState";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -96,7 +97,6 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsPanel } from "../components/chat/AgentChannelsPanel";
-import { useChatConnectorsEnabled } from "@/hooks/useChatConnectorsEnabled";
 import {
   isUuidLike,
   type Agent,
@@ -296,10 +296,7 @@ export function AgentDetail() {
   const location = useLocation();
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
-  const { enabled: chatEnabled, githubEnabled, loaded: chatConnectorsLoaded } = useChatConnectorsEnabled();
-  const chatConnectorsEnabled = chatEnabled || githubEnabled;
-  const activeView = urlRunId ? "runs" as AgentDetailView
-    : urlTab === "channels" && !chatConnectorsEnabled ? "dashboard" : parseAgentDetailView(urlTab ?? null);
+  const activeView = urlRunId ? "runs" as AgentDetailView : parseAgentDetailView(urlTab ?? null);
   const needsDashboardData = activeView === "dashboard";
   const needsRunData = activeView === "runs" || Boolean(urlRunId);
   const shouldLoadHeartbeats = needsDashboardData || needsRunData;
@@ -489,7 +486,6 @@ export function AgentDetail() {
 
   useEffect(() => {
     if (!agent) return;
-    if (!urlRunId && urlTab === "channels" && !chatConnectorsLoaded) return;
     if (urlRunId) {
       if (routeAgentRef !== canonicalAgentRef) {
         navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
@@ -518,7 +514,7 @@ export function AgentDetail() {
       navigate(`/agents/${canonicalAgentRef}/${canonicalTab}${location.search}`, { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, navigate, chatConnectorsLoaded, location.search]);
+  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, navigate, location.search]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -941,7 +937,7 @@ export function AgentDetail() {
           onValueChange={handleAgentTabChange}
         >
           <PageTabBar
-            items={AGENT_DETAIL_TABS.filter((item) => item.value !== "channels" || chatConnectorsEnabled)}
+            items={AGENT_DETAIL_TABS}
             value={activeView}
             onValueChange={handleAgentTabChange}
           />
@@ -3039,9 +3035,9 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 )}
               </div>
             )}
-            {run.error && (
+            {runFailureMessage(run) && (
               <div className="text-xs">
-                <span className="text-red-600 dark:text-red-400"><ProviderLimitMessage>{run.error}</ProviderLimitMessage></span>
+                <span className="text-destructive"><ProviderLimitMessage>{runFailureMessage(run)!}</ProviderLimitMessage></span>
                 {run.errorCode && <span className="text-muted-foreground ml-1">({run.errorCode})</span>}
               </div>
             )}

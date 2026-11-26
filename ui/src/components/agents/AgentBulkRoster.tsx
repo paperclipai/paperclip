@@ -9,6 +9,8 @@ import { bindAccount } from "@/lib/account-scope";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { getAdapterLabel } from "@/adapters/adapter-display-registry";
 import { bulkAgentDisabledReason, bulkAgentHarness } from "@/lib/bulk-agent-settings";
+import { useCloudHarnessPolicy } from "@/hooks/useCloudHarnessPolicy";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { buildAgentRosterIndex } from "@/lib/agent-roster-filters";
 import { AgentStatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +25,8 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent,
   renderStatus?: (agent: Agent) => ReactNode;
 }) {
   const client = useQueryClient();
+  const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
   const openingRef = useRef(false);
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState("");
@@ -37,8 +41,8 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent,
   const accounts = useQuery({ queryKey: ["ai-connections", companyId], queryFn: () => aiConnectionsApi.list(companyId) });
   const visible = visibleAgents;
   const rosterIndex = useMemo(() => buildAgentRosterIndex(agents, accounts.data), [agents, accounts.data]);
-  const selectable = visible.filter(a => !bulkAgentDisabledReason(a));
-  const selectedAgents = useMemo(() => agents.filter(a => selected.includes(a.id) && !bulkAgentDisabledReason(a)), [agents, selected]);
+  const selectable = visible.filter(a => !bulkAgentDisabledReason(a, cloud, harnessPolicy));
+  const selectedAgents = useMemo(() => agents.filter(a => selected.includes(a.id) && !bulkAgentDisabledReason(a, cloud, harnessPolicy)), [agents, selected, cloud, harnessPolicy]);
   const [lastSelection, setLastSelection] = useState<Agent[]>([]);
   useEffect(() => { if (selectedAgents.length) setLastSelection(selectedAgents); }, [selectedAgents]);
   // Retain the card contents while it drops out, so its width does not collapse mid-animation.
@@ -62,7 +66,7 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent,
       if (!account.isCurrentAccount() || revision !== selectionRevision.current) return;
       // The display cache excludes private runtime fields. Only complete,
       // freshly authorized agents can become the editor's optimistic base.
-      if (complete.some(a => a.companyId !== companyId || bulkAgentHarness(a) !== harness || bulkAgentDisabledReason(a))) {
+      if (complete.some(a => a.companyId !== companyId || bulkAgentHarness(a) !== harness || bulkAgentDisabledReason(a, cloud, harnessPolicy))) {
         setOpenError("The selected agents changed. Refresh the roster and select them again.");
         return;
       }
@@ -93,7 +97,7 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent,
       <tbody>{visible.map(agent => {
         const metadata = rosterIndex.byAgentId.get(agent.id)!;
         return <tr key={agent.id} data-state={selected.includes(agent.id) ? "selected" : undefined} className="group/agent-row border-t border-border data-[state=selected]:bg-accent/30 hover:bg-accent/50 focus-within:bg-accent/50 [&_td]:px-3 [&_td]:align-middle">
-        <td title={bulkAgentDisabledReason(agent)}><Checkbox aria-label={`Select ${agent.name}`} checked={selectedAgents.some(a => a.id === agent.id)} disabled={!!bulkAgentDisabledReason(agent)} onCheckedChange={value => changeSelection(value ? [...new Set([...selected, agent.id])] : selected.filter(id => id !== agent.id))} /></td>
+        <td title={bulkAgentDisabledReason(agent, cloud, harnessPolicy)}><Checkbox aria-label={`Select ${agent.name}`} checked={selectedAgents.some(a => a.id === agent.id)} disabled={!!bulkAgentDisabledReason(agent, cloud, harnessPolicy)} onCheckedChange={value => changeSelection(value ? [...new Set([...selected, agent.id])] : selected.filter(id => id !== agent.id))} /></td>
         <td className="min-w-64 p-0">{renderAgent(agent)}</td>
         {renderChat && <td>{renderChat(agent)}</td>}
         <td>{renderStatus ? renderStatus(agent) : <AgentStatusBadge status={agent.status} />}</td>

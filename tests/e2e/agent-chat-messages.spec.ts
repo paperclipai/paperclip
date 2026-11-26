@@ -31,7 +31,7 @@ test("answering questions in chat and inbox updates both open surfaces", async (
 });
 
 test("a routine delivers a first digest, unread state, source link and replyable history", async ({ page, request }) => {
-  const f = await setup(request);
+  const f = await setup(request, { agentCount: 2 });
   try {
     await page.goto(`/${f.company.issuePrefix}/chats/${f.agents[1].id}`);
     await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible({ timeout: 20_000 });
@@ -63,7 +63,15 @@ test("a routine delivers a first digest, unread state, source link and replyable
     await expect.poll(async () => (await json(await request.get(f.chatPath))).isUnreadForMe).toBe(false);
     await sourceLink.click();
     await expect(page).toHaveURL(new RegExp(`/issues/${source.identifier}`));
-    await page.goto(f.route);
+    await expect(page.getByText("Digest delivered.", { exact: true })).toBeVisible();
+    const identity = page.getByTestId("task-chat-agent-identity").filter({ hasText: f.agent.name }).first();
+    const chatPath = `/${f.company.issuePrefix}/chats/${f.agent.urlKey}`;
+    await expect(identity).toHaveAccessibleName(f.agent.name);
+    await expect(identity).toHaveAttribute("href", chatPath);
+    await identity.click();
+    await expect(page).toHaveURL(chatPath);
+    await expect(page.getByText("Morning PR digest", { exact: true })).toBeVisible();
+    await expect(identity).toHaveAttribute("href", `/${f.company.issuePrefix}/agents/${f.agent.id}/overview`);
     await send(page, { action: "digest-followup", text: "Which was the first PR?" });
     await idle(request, f.chatPath, 2);
     await expect(page.getByText("The first PR in your morning digest is PR 123.", { exact: true })).toBeVisible({ timeout: 45_000 });

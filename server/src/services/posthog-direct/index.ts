@@ -10,4 +10,9 @@ export {
   postHogRequestContextMiddleware,
   type PostHogEventContext,
 } from "./request-context.js";
-export { buildPostHogDirectEvent, type PostHogDirectEvent } from "./event-shape.js";
+export {
+  buildCloudDirectEvent,
+  buildPostHogDirectEvent,
+  cloudExperimentProperties,
+  type PostHogDirectEvent,
+} from "./event-shape.js";

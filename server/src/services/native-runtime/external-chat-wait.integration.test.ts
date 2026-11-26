@@ -83,6 +83,7 @@ import { resolveHeartbeatRunResponse } from "../heartbeat-run-summary.js";
 import { issueService } from "../issues.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 import { reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
+import { recoveryService } from "../recovery/service.js";
 import {
   authorizeChatConversationForBoundRun,
   isExternalChatWaitAuthorizationContention,
@@ -731,11 +732,17 @@ describe("native external-chat response wait", () => {
     };
   }
 
-  async function seedBoardAnsweredTurn(withLink = true, provider: "github" | "slack" = "github", oversized = false) {
+  async function seedBoardAnsweredTurn(withLink = true, provider: "github" | "slack" = "github", oversized = false, nativeSlackForm = false) {
     const fixture = await seedWaitTurn(provider);
     if (provider === "slack") {
       await db.update(chatEndpointResources).set({ type: "channel" }).where(eq(chatEndpointResources.id, fixture.resourceId));
       await db.update(chatConversations).set({ isDirectMessage: false }).where(eq(chatConversations.id, fixture.conversationId));
+    }
+    if (nativeSlackForm) {
+      const [endpoint] = await db.select({ capabilities: chatEndpoints.capabilities }).from(chatEndpoints)
+        .where(eq(chatEndpoints.id, fixture.endpointId));
+      await db.update(chatEndpoints).set({ capabilities: { ...endpoint!.capabilities, cards: true, actions: true, modals: true } })
+        .where(eq(chatEndpoints.id, fixture.endpointId));
     }
     const gate = await seedPriorCompletionReview(fixture);
     const [current] = await db
@@ -785,7 +792,13 @@ describe("native external-chat response wait", () => {
           kind: "ask_user_questions",
           sourceRunId,
           continuationPolicy: "wake_assignee",
-          payload: {
+          payload: nativeSlackForm ? {
+            version: 1,
+            questionSet: {
+              schema: "paperclip.question_set.v1",
+              questions: [{ id: "color", prompt: "Name a color", required: true, answerMode: "text" }],
+            },
+          } : {
             version: 1,
             questions: [
               {
@@ -827,7 +840,7 @@ describe("native external-chat response wait", () => {
     await interactionSvc.answerQuestions(
       { id: fixture.issueId, companyId: fixture.companyId },
       interaction.id,
-      { answers: [{ questionId: "color", optionIds: ["cobalt"] }] },
+      { answers: [nativeSlackForm ? { questionId: "color", optionIds: [], otherText: "cobalt" } : { questionId: "color", optionIds: ["cobalt"] }] },
       { userId: fixture.userId },
     );
     const [delivery] = await db
@@ -955,6 +968,26 @@ describe("native external-chat response wait", () => {
     expect(JSON.stringify(responses)).toContain("cobalt");
   });
 
+  it("attests a Slack question answered in Paperclip after its native form was published", async () => {
+    const fixture = await seedBoardAnsweredTurn(true, "slack", false, true);
+    const [publication] = await db.select().from(chatPublications).where(eq(chatPublications.id, fixture.publicationId));
+    expect(publication!.payload.card?.actions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "callback" }),
+    ]));
+    const tokens = await db.select().from(chatActions).where(eq(chatActions.companyId, fixture.companyId));
+    expect(tokens.map(token => token.kind)).toEqual(expect.arrayContaining(["question_form_submit"]));
+    expect(tokens.some(token => token.status === "processed")).toBe(false);
+    const denials: string[] = [];
+    await attestReviewedExternalChatRun({ db, ...fixture, contextSnapshot: { ...fixture.context }, onDenied: reason => denials.push(reason) });
+    expect(denials).toEqual([]);
+    expect(await resolveExternalChatQuestionResponse(db, fixture, fixture.context, "read", true)).not.toBeNull();
+    await attestAnswer(fixture);
+    await db.update(heartbeatRuns).set({ contextSnapshot: fixture.context }).where(eq(heartbeatRuns.id, fixture.runId));
+    const responses = await materializeExternalChatQuestionResponseInput({ db, binding: fixture, contextSnapshot: fixture.context });
+    expect(responses).toHaveLength(1);
+    expect(JSON.stringify(responses)).toContain("cobalt");
+  });
+
   it.each((["github", "slack"] as const).flatMap(provider => [true, false].map(withLink => ({ provider, withLink }))))(
     "attests a native $provider question answered in Board without inventing a provider action (link: $withLink)",
     async ({ provider, withLink }) => {
@@ -1020,7 +1053,7 @@ describe("native external-chat response wait", () => {
     },
   );
 
-  it.each((["github", "slack"] as const).flatMap(provider => ([
+  it.each((["github", "slack", "slack_native_form"] as const).flatMap(variant => ([
     "different_user",
     "viewer",
     "membership_revoked",
@@ -1035,10 +1068,32 @@ describe("native external-chat response wait", () => {
     "endpoint_paused",
     "resource_revoked",
     "answer_hash",
-  ] as const).filter(change => provider === "github" || (change !== "generation" && change !== "missing_runtime")).map(change => ({ provider, change }))))(
-    "rejects $provider Board answer authority after $change",
-    async ({ provider, change }) => {
-      const fixture = await seedBoardAnsweredTurn(true, provider);
+    "unsuperseded_token",
+    "foreign_callback",
+  ] as const).filter(change => variant === "github"
+    ? change !== "unsuperseded_token" && change !== "foreign_callback"
+    : change !== "generation" && change !== "missing_runtime"
+      && (variant === "slack_native_form" || (change !== "unsuperseded_token" && change !== "foreign_callback")))
+    .map(change => ({ variant, provider: variant === "github" ? "github" as const : "slack" as const, change }))))(
+    "rejects $variant Board answer authority after $change",
+    async ({ variant, provider, change }) => {
+      const fixture = await seedBoardAnsweredTurn(true, provider, false, variant === "slack_native_form");
+      if (change === "unsuperseded_token")
+        await db
+          .update(chatActions)
+          .set({ status: "issued", result: null })
+          .where(and(eq(chatActions.companyId, fixture.companyId), eq(chatActions.kind, "question_form_submit")));
+      if (change === "foreign_callback") {
+        const [publication] = await db.select().from(chatPublications).where(eq(chatPublications.id, fixture.publicationId));
+        const card = publication!.payload.card!;
+        await db
+          .update(chatPublications)
+          .set({ payload: { ...publication!.payload, card: { ...card, actions: [
+            ...(card.actions ?? []),
+            { type: "callback", actionId: `pcf:${randomUUID()}`, label: "Other" },
+          ] } } })
+          .where(eq(chatPublications.id, fixture.publicationId));
+      }
       if (change === "different_user") {
         const otherUser = `other-${randomUUID()}`;
         await db
@@ -5792,6 +5847,203 @@ describe("native external-chat response wait", () => {
           ),
         ),
     ).resolves.toEqual([]);
+  });
+
+  it.each([
+    ["run settled", { run: true, release: false }],
+    ["execution released", { run: false, release: true }],
+    ["run settled and execution released", { run: true, release: true }],
+  ] as const)("keeps the response wait when a contended finalization is retried after the %s", async (_label, settle) => {
+    const fixture = await seedWaitTurn();
+    let releaseEndpoint!: () => void;
+    let endpointLocked!: () => void;
+    const endpointRelease = new Promise<void>((resolve) => { releaseEndpoint = resolve; });
+    const endpointLockObserved = new Promise<void>((resolve) => { endpointLocked = resolve; });
+    const endpointHolder = db.transaction(async (tx) => {
+      await tx.select({ id: chatEndpoints.id }).from(chatEndpoints)
+        .where(eq(chatEndpoints.id, fixture.endpointId)).for("update");
+      endpointLocked();
+      await endpointRelease;
+    });
+    await endpointLockObserved;
+    try {
+      // The live heartbeat finalizes without projecting the run status.
+      await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded" });
+    } finally {
+      releaseEndpoint();
+    }
+    await endpointHolder;
+    await expect(db.select({ phase: nativeRunFinalizations.phase, failureCode: nativeRunFinalizations.failureCode })
+      .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId)))
+      .resolves.toEqual([{ phase: "retryable_failure", failureCode: "status_cas_exhausted" }]);
+    // The heartbeat then settles its run and releases the task execution
+    // before the scheduled finalization retry applies the saved result.
+    if (settle.run) await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    if (settle.release) await db.update(issues).set({ executionRunId: null, executionLockedAt: null })
+      .where(eq(issues.id, fixture.issueId));
+    await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(0) })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+
+    await expect(db.select({ reasonCode: statusDecisions.reasonCode }).from(statusDecisions)
+      .where(eq(statusDecisions.issueId, fixture.issueId))).resolves.toEqual([
+      { reasonCode: "external_chat_response_waiting" },
+    ]);
+  });
+
+  it.each([
+    ["still allowed", true, 1],
+    ["revoked", false, 0],
+  ] as const)("continues a settled task whose response wait was lost while chat access is %s", async (_label, restoreAccess, wakes) => {
+    // Tasks that settled before the retry fix keep the lost decision. Losing
+    // access to the conversation still parks the task without a new run.
+    const fixture = await seedWaitTurn();
+    await db.update(companyMemberships).set({ status: "suspended", updatedAt: new Date() })
+      .where(eq(companyMemberships.principalId, fixture.userId));
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    await expect(db.select({ reasonCode: statusDecisions.reasonCode }).from(statusDecisions)
+      .where(eq(statusDecisions.issueId, fixture.issueId))).resolves.toEqual([
+      { reasonCode: "external_chat_response_wait_authorization_lost" },
+    ]);
+    await db.update(issues).set({ executionRunId: null, executionLockedAt: null, checkoutRunId: null })
+      .where(eq(issues.id, fixture.issueId));
+    if (restoreAccess) await db.update(companyMemberships).set({ status: "active", updatedAt: new Date() })
+      .where(eq(companyMemberships.principalId, fixture.userId));
+    const enqueueWakeup = vi.fn(async (agentId: string, wake: { contextSnapshot?: Record<string, unknown> }) =>
+      db.insert(heartbeatRuns).values({ companyId: fixture.companyId, agentId, invocationSource: "automation",
+        status: "queued", contextSnapshot: wake.contextSnapshot ?? {} }).returning().then(rows => rows[0]!));
+    const recovery = recoveryService(db, { enqueueWakeup: enqueueWakeup as never });
+
+    for (let sweep = 0; sweep < 2; sweep += 1) {
+      await recovery.reconcileStrandedAssignedIssues({ companyId: fixture.companyId, issueId: fixture.issueId });
+    }
+
+    expect(enqueueWakeup).toHaveBeenCalledTimes(wakes);
+    if (wakes) expect(enqueueWakeup).toHaveBeenCalledWith(fixture.agentId, expect.objectContaining({
+      reason: "issue_continuation_needed",
+      payload: expect.objectContaining({ issueId: fixture.issueId, retryOfRunId: fixture.runId }),
+    }));
+  });
+
+  it.each([
+    ["no other owner", "authorized"],
+    ["another execution run", "revoked"],
+    ["another checkout run", "revoked"],
+    ["a terminal finalization", "revoked"],
+    ["a committed decision other than a lost wait", "revoked"],
+  ] as const)("authorizes a settled run's lost wait only with %s", async (gate, expected) => {
+    const fixture = await seedWaitTurn();
+    await db.update(companyMemberships).set({ status: "suspended", updatedAt: new Date() })
+      .where(eq(companyMemberships.principalId, fixture.userId));
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    await db.update(companyMemberships).set({ status: "active", updatedAt: new Date() })
+      .where(eq(companyMemberships.principalId, fixture.userId));
+    const [run] = await db.select({ createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    // An older run, so only the named owner check can revoke the wait.
+    const [other] = await db.insert(heartbeatRuns).values({ companyId: fixture.companyId, agentId: fixture.agentId,
+      invocationSource: "automation", status: "succeeded", finishedAt: new Date(),
+      createdAt: new Date(run!.createdAt.getTime() - 60_000), contextSnapshot: {} }).returning();
+    await db.update(issues).set({
+      executionRunId: gate === "another execution run" ? other!.id : null,
+      checkoutRunId: gate === "another checkout run" ? other!.id : null,
+    }).where(eq(issues.id, fixture.issueId));
+    if (gate === "a terminal finalization") await db.update(nativeRunFinalizations).set({ phase: "terminal_failure" })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    if (gate === "a committed decision other than a lost wait") await db.update(statusDecisions)
+      .set({ reasonCode: "response_wake_waiting_for_input" }).where(eq(statusDecisions.runId, fixture.runId));
+
+    await expect(chatWaitAuthority.resolveExternalChatResponseWaitAuthorization({ db, binding: {
+      companyId: fixture.companyId, issueId: fixture.issueId, runId: fixture.runId, agentId: fixture.agentId,
+    } })).resolves.toBe(expected);
+  });
+
+  it("queues one continuation for a lost wait when recovery passes overlap through the real queue", async () => {
+    const fixture = await seedWaitTurn();
+    await db.update(companyMemberships).set({ status: "suspended", updatedAt: new Date() })
+      .where(eq(companyMemberships.principalId, fixture.userId));
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    await db.update(issues).set({ executionRunId: null, executionLockedAt: null, checkoutRunId: null })
+      .where(eq(issues.id, fixture.issueId));
+    await db.update(companyMemberships).set({ status: "active", updatedAt: new Date() })
+      .where(eq(companyMemberships.principalId, fixture.userId));
+    const heartbeat = heartbeatService(db);
+    // Both passes read the task before either queues its continuation.
+    let arrived = 0;
+    let releasePasses!: () => void;
+    const bothRead = new Promise<void>((resolve) => { releasePasses = resolve; });
+    const enqueueWakeup = vi.fn(async (...args: Parameters<typeof heartbeat.wakeup>) => {
+      arrived += 1;
+      if (arrived === 2) releasePasses();
+      await bothRead;
+      return heartbeat.wakeup(...args);
+    });
+    const passes = [recoveryService(db, { enqueueWakeup: enqueueWakeup as never }),
+      recoveryService(db, { enqueueWakeup: enqueueWakeup as never })];
+
+    await Promise.all(passes.map(pass => pass.reconcileStrandedAssignedIssues({
+      companyId: fixture.companyId, issueId: fixture.issueId, skipRelatedRecovery: true,
+    })));
+
+    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
+    const continuations = await db.select({ status: agentWakeupRequests.status }).from(agentWakeupRequests).where(and(
+      eq(agentWakeupRequests.companyId, fixture.companyId),
+      sql`${agentWakeupRequests.payload}->>'retryOfRunId' = ${fixture.runId}`,
+      sql`${agentWakeupRequests.status} not in ('skipped', 'failed', 'cancelled')`,
+    ));
+    expect(continuations).toHaveLength(1);
+    // Let the started continuation settle before the database closes.
+    await vi.waitFor(async () => expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, fixture.companyId), sql`${heartbeatRuns.status} in ('queued', 'running')`,
+    ))).toEqual([]), { timeout: 15_000, interval: 50 });
+  });
+
+  it.each([
+    ["settled and released", false, "external_chat_response_waiting", "in_review"],
+    ["settled and released with a newer queued run", true, "external_chat_response_wait_authorization_lost", "in_progress"],
+  ] as const)("re-derives a published review wait when its contended finalization is retried after the run %s", async (_label, newerRun, reasonCode, status) => {
+    const fixture = await seedPublishedReviewCompletionTurn();
+    const authority = new PaperclipRunnerToolAuthority(db, fixture);
+    const read = () => authority.execute({ tool: "get_task_context", callId: randomUUID(), arguments: {} });
+    const { resolveCompletionContinuation } = await import(new URL("../../../../packages/paperclip-runner/src/drivers/completion-continuation.ts", import.meta.url).href);
+    const resolved = await resolveCompletionContinuation({ ...fixture.result, continuation: undefined }, fixture.runId, read) as PrpStructuredRunResult;
+    expect(resolved).toMatchObject({ reportedWorkDisposition: "yielded", continuation: { kind: "response_wake" } });
+    await expect(nativeCompletionFeedback(db, fixture.runId, resolved)).resolves.toContain("accepted");
+    await fixture.port.completeRun({ result: resolved, terminal: fixture.terminal, callerResultId: `wait-result-${fixture.runId}` });
+    let releaseEndpoint!: () => void;
+    let endpointLocked!: () => void;
+    const endpointRelease = new Promise<void>((resolve) => { releaseEndpoint = resolve; });
+    const endpointLockObserved = new Promise<void>((resolve) => { endpointLocked = resolve; });
+    const endpointHolder = db.transaction(async (tx) => {
+      await tx.select({ id: chatEndpoints.id }).from(chatEndpoints)
+        .where(eq(chatEndpoints.id, fixture.endpointId)).for("update");
+      endpointLocked();
+      await endpointRelease;
+    });
+    await endpointLockObserved;
+    try {
+      await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded" });
+    } finally {
+      releaseEndpoint();
+    }
+    await endpointHolder;
+    await expect(db.select({ phase: nativeRunFinalizations.phase }).from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId))).resolves.toEqual([{ phase: "retryable_failure" }]);
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    await db.update(issues).set({ executionRunId: null, executionLockedAt: null, checkoutRunId: null })
+      .where(eq(issues.id, fixture.issueId));
+    // A queued run of the task owns its next step before it records a decision.
+    if (newerRun) await db.insert(heartbeatRuns).values({ companyId: fixture.companyId, agentId: fixture.agentId,
+      invocationSource: "automation", status: "queued", contextSnapshot: { issueId: fixture.issueId } });
+
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+
+    await expect(db.select({ reasonCode: statusDecisions.reasonCode }).from(statusDecisions)
+      .where(eq(statusDecisions.runId, fixture.runId))).resolves.toEqual([{ reasonCode }]);
+    expect((await db.select().from(issues).where(eq(issues.id, fixture.issueId)))[0]).toMatchObject({ status });
   });
 
   it("retries a contended endpoint proof without deadlocking or scheduling work", async () => {

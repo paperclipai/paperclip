@@ -24,7 +24,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { configuredEnvironmentProjection } from "../configured-environment.js";
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
-import { createCapabilityRunnerdCodexTransport, createCapabilityRunnerdProviderEnvironment, waitForRunnerCommand } from "../live/runnerd-codex-transport.js";
+import { authorizedToolSetForProvider, createCapabilityRunnerdCodexTransport, createCapabilityRunnerdProviderEnvironment, runnerCodexDynamicToolsFit, waitForRunnerCommand } from "../live/runnerd-codex-transport.js";
 import { providerTurnStartBefore } from "../live/provider-turn-tool-order.js";
 import { ACPX_CREDENTIAL_BINDING_ENV, createAcpxSidecarHostEnvironment } from "../drivers/acpx/environment.js";
 import { validatePrpEvent } from "../protocol/replay-contract.js";
@@ -44,6 +44,7 @@ import {
   type DurablePrpControlPlaneStore,
   type RunnerProcessHandle,
   durableRecoveryInternals,
+  runAttachToolCatalogFits,
   SemanticToolNotDispatchedError,
   inspectWarmRunTransition,
   spawnRunner,
@@ -402,6 +403,101 @@ it("persists an undispatched source-to-target attachment before bootstrap and pr
   } finally {
     client?.socket.destroy();
     await restored?.stop(); await core.stop(); rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function denseToolCatalog(toolCount: number, valuesPerTool: number): Record<string, unknown>[] {
+  return Array.from({ length: toolCount }, (_, tool) => ({
+    name: `connector_tool_${tool}`,
+    description: "Dense connector tool",
+    inputSchema: {
+      type: "object",
+      properties: Object.fromEntries(Array.from({ length: valuesPerTool / 10 }, (_, property) => [
+        `p${property}`, { type: "string", enum: Array.from({ length: 10 }, (_, value) => String(value)) },
+      ])),
+    },
+  }));
+}
+
+it("stages and restores a run attachment for every tool catalog the provider protocol admits", async () => {
+  let valuesPerTool = 10;
+  while (runnerCodexDynamicToolsFit(denseToolCatalog(250, valuesPerTool + 10))) valuesPerTool += 10;
+  const tools = denseToolCatalog(250, valuesPerTool);
+  expect(runnerCodexDynamicToolsFit(tools)).toBe(true);
+  const connectorCatalog = denseToolCatalog(180, 400);
+  expect(Buffer.byteLength(JSON.stringify(connectorCatalog))).toBeLessThan(768 * 1024);
+  expect(runnerCodexDynamicToolsFit(connectorCatalog)).toBe(false);
+  const root = mkdtempSync(resolve(tmpdir(), "runner-large-catalog-"));
+  const target = { ...identity, runId: "00000000-0000-4000-8000-000000000003", turnId: "catalog-turn", itemId: "catalog-item" };
+  const template = { provider: { provider: "acpx", command: "fixture", instructions: "assigned" }, authorizedTools: authorizedToolSetForProvider("acpx", tools) };
+  const core = new DurablePrpControlPlane({ stateDirectory: resolve(root, "first"), identity, expectedRunnerVersion, expectedRunnerDigest });
+  let checkpoint!: DurablePrpCheckpoint;
+  core.setCheckpointPersistence(async value => { checkpoint = value; });
+  try {
+    core.stageRunAttachment(target, template);
+    await core.flushCheckpoint();
+    expect(() => decodeDurablePrpCheckpoint(checkpoint.records)).not.toThrow();
+    checkpoint.restoreSessionDirectory(resolve(root, "replacement"));
+    const restored = new DurablePrpControlPlane({ stateDirectory: resolve(root, "replacement", "control-plane"), identity, expectedRunnerVersion, expectedRunnerDigest });
+    try {
+      expect(inspectStagedRunAttachment(restored.store.state, target)).toMatchObject({ runAttachTemplate: template });
+    } finally {
+      await restored.stop();
+    }
+  } finally {
+    await core.stop(); rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("refuses rather than throws for a tool schema nested past the canonical depth", () => {
+  let schema: Record<string, unknown> = { type: "string" };
+  for (let depth = 0; depth < 70; depth += 1) schema = { type: "object", properties: { child: schema } };
+  expect(runnerCodexDynamicToolsFit([{ name: "deep_tool", description: "Deep", inputSchema: schema }])).toBe(false);
+});
+
+it("admits a tool catalog exactly up to the run attachment command budget", () => {
+  const catalog = authorizedToolSetForProvider("acpx", denseToolCatalog(40, 100));
+  const catalogBytes = Buffer.byteLength(durableRecoveryInternals.controllerJson(catalog));
+  const commandBudget = Math.floor((1024 * 1024 - 4 * 1024) / 2);
+  const reserveAtLimit = commandBudget - 32 * 1024 - catalogBytes;
+  expect(runAttachToolCatalogFits(catalog, reserveAtLimit)).toBe(true);
+  expect(runAttachToolCatalogFits(catalog, reserveAtLimit + 1)).toBe(false);
+});
+
+it("leaves room in the run attachment for the instructions it reserves", async () => {
+  const instructions = "Large agent instructions. ".repeat(6_000);
+  const runtimeContext = { skills: Array.from({ length: 200 }, (_, index) => ({ runtimeName: `skill-${index}`, description: "Skill summary ".repeat(6) })) };
+  const criterionIds = Array.from({ length: 400 }, (_, index) => `criterion-${index}-with-a-longer-identifier`);
+  const reserved = Buffer.byteLength(JSON.stringify(instructions)) + Buffer.byteLength(JSON.stringify(runtimeContext))
+    + Buffer.byteLength(JSON.stringify(criterionIds));
+  let valuesPerTool = 10;
+  while (runnerCodexDynamicToolsFit(denseToolCatalog(100, valuesPerTool + 10))) valuesPerTool += 10;
+  const unreserved = denseToolCatalog(100, valuesPerTool);
+  expect(runnerCodexDynamicToolsFit(unreserved, reserved)).toBe(false);
+  let fitting = 10;
+  while (runnerCodexDynamicToolsFit(denseToolCatalog(100, fitting + 10), reserved)) fitting += 10;
+  const tools = denseToolCatalog(100, fitting);
+  const root = mkdtempSync(resolve(tmpdir(), "runner-reserved-catalog-"));
+  const target = { ...identity, runId: "00000000-0000-4000-8000-000000000004", turnId: "reserved-turn", itemId: "reserved-item" };
+  const template = { observeCredentials: true, authorizedTools: authorizedToolSetForProvider("acpx", tools),
+    completionContract: { revision: 1, criterionIds },
+    provider: { provider: "acpx", command: "fixture", instructions, runtimeContext } };
+  const core = new DurablePrpControlPlane({ stateDirectory: resolve(root, "first"), identity, expectedRunnerVersion, expectedRunnerDigest });
+  let checkpoint!: DurablePrpCheckpoint;
+  core.setCheckpointPersistence(async value => { checkpoint = value; });
+  let client: AuthenticatedClient | null = null;
+  try {
+    expect(() => core.stageRunAttachment(target, template)).not.toThrow();
+    await core.flushCheckpoint();
+    await core.start(); client = await authenticate(core, core.issueBootstrapTicket());
+    expect(client).not.toBeNull();
+    expect(() => core.queueCommand("run.attach", { ...template, paperclipNextAuthority: { identity: target,
+      connection: { mode: "connect", connectUrl: core.connectUrl } } }, "reserved-next-attach")).not.toThrow();
+    await core.flushCheckpoint();
+    expect(() => decodeDurablePrpCheckpoint(checkpoint.records)).not.toThrow();
+  } finally {
+    client?.socket.destroy();
+    await core.stop(); rmSync(root, { recursive: true, force: true });
   }
 });
 
@@ -5205,10 +5301,12 @@ describe("DurablePrpControlPlane", () => {
       core.persistPreparedLaunchConfiguration(identity, "prior-configuration");
       core.persistPreparedLaunchConfiguration(nextIdentity, "next-configuration");
       if (usesExternalPersistence) rmSync(resolve(root, "control-plane"), { recursive: true });
+      const transitionCatalog = authorizedToolSetForProvider("acpx", denseToolCatalog(100, 200));
       const command = core.queueCommand(
         "run.attach",
         {
           provider: { kind: "mock", run: "next" },
+          authorizedTools: transitionCatalog,
           paperclipNextAuthority: {
             identity: nextIdentity,
             connection: { mode: "connect", connectUrl: core.connectUrl },
@@ -5558,7 +5656,7 @@ describe("DurablePrpControlPlane", () => {
         core.persistPreparedLaunchConfiguration({ ...nextIdentity, runId: "third-run" }, "third-configuration");
         expect(core.preparedLaunchConfigurationId(identity)).toBeUndefined();
         expect(core.store.state.preparedLaunchConfigurations).toHaveLength(2);
-        expect(core.store.state.runAttachTemplate).toEqual({ provider: { kind: "mock", run: "next" } });
+        expect(core.store.state.runAttachTemplate).toEqual({ provider: { kind: "mock", run: "next" }, authorizedTools: transitionCatalog });
         expect(
           (successor!.welcome.payload as Record<string, unknown>)
             .pendingCommands,

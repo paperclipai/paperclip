@@ -1,3 +1,4 @@
+import { PaperclipRunnerProviderProfileError } from "../native-runtime/provider-profile.js";
 import { promises as fs } from "node:fs";
 import { createDurableRunLogStore } from "../run-log-store.js";
 import { createServer } from "node:http";
@@ -26,12 +27,12 @@ import { UnresolvedWorkspaceBaseRefError } from "../workspace-runtime.js";
 import { LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
 import { requestedRunCancellation } from "../run-cancellation.js";
 import { ProjectAccessDeniedError } from "../project-access-denial.js";
-import { RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, RemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
+import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL, RemoteWorkspaceOperationError, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, RemoteWorkspaceRestoreError } from "../remote-workspace-transport.js";
 import { EnvironmentRunError, environmentRunOrchestrator } from "../environment-run-orchestrator.js";
 import { ReusableSandboxResumeError } from "../reusable-sandbox-resume-error.js";
 import { PluginWorkerUnavailableError } from "../plugin-worker-unavailable-error.js";
 import { ReviewedChatBindingDeniedError, ReviewedChatBindingNotReadyError } from "../reviewed-chat-binding-diagnostics.js";
-import { environmentTaskErrorCodeData, JsonRpcCallError, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
+import { environmentTaskErrorCodeData, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES, PluginEnvironmentTaskError, PluginWorkspaceOperationError, workspaceOperationErrorData } from "@paperclipai/plugin-sdk";
 import { RUNNER_REVISION_MISMATCH_RETRY } from "../runner-revision-mismatch.js";
 import { STORAGE_CREDENTIALS_REJECTED_HELD_MESSAGE, STORAGE_UNAVAILABLE_CODE, STORAGE_UNAVAILABLE_EXHAUSTED_MESSAGE, STORAGE_UNAVAILABLE_HELD_MESSAGE, STORAGE_UNAVAILABLE_MESSAGE, STORAGE_UNAVAILABLE_RETRY } from "../../storage/storage-unavailable.js";
 import { withS3FailureDiagnostics } from "../../storage/s3-failure.js";
@@ -45,6 +46,7 @@ import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js"
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { createHeartbeatRunCompletion, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
 import { createHeartbeatAgentStatus } from "./agent-status.js";
+import { createHeartbeatRetries } from "./retries.js";
 import { prepareNativeHeartbeatRun } from "../native-runtime/prepare-native-run.js";
 import { buildNativeCompletionContract } from "../native-runtime/completion-contracts.js";
 import { readPendingNativeRunStop } from "../native-runtime/native-cancellation-request.js";
@@ -1117,6 +1119,19 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       expect(failed).toMatchObject({ status: "failed", errorCode: "adapter_failed", error: refusal });
       expect(failed.resultJson).not.toHaveProperty("nativeExactResumeRefusal");
     });
+
+    it("persists safe closed-enum pluginTaskError metadata on failed runs without leaking worker text", async () => {
+      const f = await fixture({ runtimeMode: "native" });
+      const err = Object.assign(
+        new Error("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying"),
+        { pluginTaskError: { operation: "read_state", rpcErrorCode: "timeout", errorCode: "runner_revision_mismatch" } },
+      );
+      await f.completion.failRun(f.failure(err));
+      const failed = await read(f.run.id);
+      expect(failed.resultJson).toMatchObject({
+        pluginTaskError: { operation: "read_state", rpcErrorCode: "timeout", errorCode: "runner_revision_mismatch" },
+      });
+    });
   });
 
   it("persists a project denial without provider work or an automatic retry", async () => {
@@ -1129,6 +1144,73 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
     expect(f.deps.scheduleInteractionContinuationInfrastructureRetryIfEligible).not.toHaveBeenCalled();
     expect(f.deps.finalizeIssueCommentPolicy).not.toHaveBeenCalled();
+  });
+
+  it("settles a refused /swarm as its own failure that nothing retries automatically", async () => {
+    const f = await fixture();
+    const refusal = new PaperclipRunnerProviderProfileError("antigravity_swarm_unavailable",
+      "The swarm did not finish after three attempts, so Paperclip stopped retrying it. Send /swarm again to start a new one.");
+    await f.completion.failRun(f.failure(refusal));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "antigravity_swarm_unavailable", error: refusal.message });
+    expect(f.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("gives a swarm the route refused at session.open a plain run error and agent error reason, which clears on the next success", async () => {
+    const f = await fixture();
+    const plain = "Swarm is not available with Gemini 4 Neon (Low) yet, so nothing was changed: choose another model for this agent, such as Gemini 4 Argon, and send /swarm again.";
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "antigravity", phase: "startup", category: "model_unavailable",
+      message: plain, retryability: "requires_action" };
+    const raw = `PRP command session.open failed: {"commandType":"session.open","result":{"code":"command_execution_failed","message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=antigravity_swarm_unavailable)","providerFailure":${JSON.stringify(providerFailure)}},"status":"failed"}`;
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Swarm", status: "in_progress", assigneeAgentId: f.agent.id }).returning();
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issue!.id, contextSnapshot: { issueId: issue!.id } }).where(eq(heartbeatRuns.id, f.run.id));
+    await db.insert(nativeRunFinalizations).values({ companyId: f.run.companyId, issueId: issue!.id, runId: f.run.id,
+      phase: "terminal_failure", failureCode: "antigravity_swarm_unavailable" });
+    const statuses = createHeartbeatAgentStatus(db);
+    f.deps.finalizeAgentStatus.mockImplementation(statuses.finalizeAgentStatus);
+    await f.completion.failRun(f.failure(Object.assign(new Error(raw), { runnerCommandResult: { result: { providerFailure } } })));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode: "antigravity_swarm_unavailable", error: plain });
+    const [refused] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
+    expect(refused!.errorReason ?? null).not.toMatch(/PRP command|[{}]|antigravity_swarm/);
+    if (refused!.status === "error") expect(refused!.errorReason).toBe(plain);
+    await statuses.finalizeAgentStatus(f.agent.id, "succeeded");
+    const [recovered] = await db.select().from(agents).where(eq(agents.id, f.agent.id));
+    expect(recovered).toMatchObject({ status: "idle", errorReason: null });
+  });
+
+  it("names a full sandbox disk that the sandbox provider reported during setup", async () => {
+    const f = await fixture();
+    const refusal = new JsonRpcCallError({ code: PLUGIN_RPC_ERROR_CODES.WORKER_ERROR,
+      message: "internal server error: failed to create session config directory: "
+        + "mkdir /home/daytona/.daytona/sessions/paperclip-78f6ce53: no space left on device" });
+    await f.completion.failRunSetup(f.setup(new Error("Could not reconnect to the running agent", { cause: refusal })));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "sandbox_disk_full" });
+    expect(failed?.resultJson).not.toHaveProperty("failureCause");
+  });
+
+  it.each([
+    ["the save", () => new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL)],
+    ["the save and its read-only fallback", () => new Error(REMOTE_WORKSPACE_SANDBOX_DISK_FULL, { cause: new Error(
+      "remote_workspace_readonly_capture_failed: stage=transfer reason=operation_failed transport=unknown") })],
+  ])("names a full sandbox disk that stopped %s of the workspace during setup", async (_name, failure) => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(failure()));
+    const failed = await read(f.run.id);
+    expect(failed).toMatchObject({ status: "failed", errorCode: "sandbox_disk_full", error: REMOTE_WORKSPACE_SANDBOX_DISK_FULL });
+    expect(failed?.resultJson).not.toHaveProperty("failureCause");
+  });
+
+  it("keeps another failed workspace save as a setup failure", async () => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(new Error("remote_workspace_archive_changed")));
+    expect((await read(f.run.id))?.errorCode).toBe("setup_failed");
+  });
+
+  it("keeps a full disk on the Paperclip host out of the sandbox disk code", async () => {
+    const f = await fixture();
+    await f.completion.failRunSetup(f.setup(Object.assign(new Error("ENOSPC: no space left on device, write"), { code: "ENOSPC" })));
+    expect((await read(f.run.id))?.errorCode).not.toBe("sandbox_disk_full");
   });
 
   it("records a setup configuration gap without inventing provider work or applying comment policy", async () => {
@@ -1865,6 +1947,23 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       resultJson: { cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_deadline)" } } });
   });
 
+  it.each([
+    { name: "a rejected AI selection keeps its owner action", selectionFailure: "ai_connection_credential_not_shared", errorCode: "configuration_incomplete" },
+    { name: "an unclassified AI preparation error stays a retryable lease loss", selectionFailure: undefined, errorCode: "controller_lease_lost" },
+  ] as const)("records a lease lost during AI selection: $name", async ({ selectionFailure, errorCode }) => {
+    const f = await fixture();
+    f.controller.abort(new LegacyControllerLeaseLostError("renewal_deadline",
+      { sinceRenewalMs: 37_725, renewalPendingMs: 29_418, deadlineLateMs: 52, renewalCount: 2 }));
+    await f.completion.failRunSetup(f.setup(new ConfigurationIncompleteFailure("This credential is not shared with the responsible user", {
+      configurationIncomplete: { reason: "ai_connection_unavailable", ...(selectionFailure ? { selectionFailure } : {}) } })));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", errorCode,
+      error: "This credential is not shared with the responsible user", resultJson: {
+        configurationIncomplete: { reason: "ai_connection_unavailable" },
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        controllerLeaseLoss: { cause: "renewal_deadline", renewalPendingMs: 29_418, renewalCount: 2 },
+        cancellation: { source: "controller_lease", reason: "Legacy controller lease lost (renewal_deadline)" } } });
+  });
+
   it("does not make a lease loss retryable once provider work has started", async () => {
     const f = await fixture();
     f.controller.abort(new LegacyControllerLeaseLostError("renewal_error"));
@@ -1881,5 +1980,170 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.setWakeupStatus).not.toHaveBeenCalled();
     expect(f.deps.releaseIssueExecutionAndPromote).not.toHaveBeenCalled();
     expect(f.deps.finalizeAgentStatus).not.toHaveBeenCalled();
+  });
+
+  it("routes hermes_gateway shutdown interruptions through failed transient retry while keeping deliberate cancels cancelled", async () => {
+    const { mapFinalResultForTest } = await import("@paperclipai/hermes-paperclip-adapter/gateway/server");
+
+    const fShutdown = await fixture({}, `HG${randomUUID().slice(0, 6)}`);
+    const [hermesAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+      .where(eq(agents.id, fShutdown.agent.id)).returning();
+    const shutdownResult = mapFinalResultForTest({
+      terminal: {
+        runId: "hermes-shutdown-1",
+        status: "cancelled",
+        payload: { status: "cancelled", error: "Gateway shutdown interrupted the run." },
+      },
+      outputChunks: [],
+      sessionKey: "session-shutdown",
+      strategy: "issue",
+    });
+    await fShutdown.completion.completeRun({
+      ...fShutdown.input,
+      agent: hermesAgent!,
+      adapterResult: shutdownResult,
+    });
+    expect(await read(fShutdown.run.id)).toMatchObject({
+      status: "failed",
+      errorCode: "hermes_gateway_run_failed",
+      resultJson: {
+        status: "interrupted",
+        gateway_status: "cancelled",
+        errorFamily: "transient_upstream",
+        conversationContinuation: "continue_conversation_v1",
+      },
+    });
+    expect(fShutdown.deps.scheduleBoundedRetryForRun).toHaveBeenCalledWith(
+      expect.objectContaining({ id: fShutdown.run.id, status: "failed" }),
+      hermesAgent,
+    );
+
+    const fCancel = await fixture({}, `HC${randomUUID().slice(0, 6)}`);
+    const [hermesCancelAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+      .where(eq(agents.id, fCancel.agent.id)).returning();
+    const cancelResult = mapFinalResultForTest({
+      terminal: {
+        runId: "hermes-cancel-1",
+        status: "cancelled",
+        payload: { status: "cancelled", error: "Stopped by operator." },
+      },
+      outputChunks: [],
+      sessionKey: "session-cancel",
+      strategy: "issue",
+    });
+    await fCancel.completion.completeRun({
+      ...fCancel.input,
+      agent: hermesCancelAgent!,
+      adapterResult: cancelResult,
+    });
+    expect(await read(fCancel.run.id)).toMatchObject({
+      status: "cancelled",
+      resultJson: { status: "cancelled" },
+    });
+    expect(fCancel.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+
+    const { hasConversationContinuationPolicy } = await import("../conversation-continuation.js");
+    const { legacyExecutionNeedsReconciliation } = await import("../legacy-execution-recovery.js");
+
+    const fUnconfirmedTimeout = await fixture({}, `HU${randomUUID().slice(0, 6)}`);
+    const [hermesUnconfirmedAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+      .where(eq(agents.id, fUnconfirmedTimeout.agent.id)).returning();
+    await fUnconfirmedTimeout.completion.completeRun({
+      ...fUnconfirmedTimeout.input,
+      agent: hermesUnconfirmedAgent!,
+      adapterResult: {
+        exitCode: 1,
+        signal: null,
+        timedOut: true,
+        errorCode: "hermes_gateway_timeout",
+        errorMessage: "Hermes gateway run timed out after 300s.",
+        provider: "hermes_gateway",
+        resultJson: { run_id: "hermes-timeout-unconfirmed", status: "timeout" },
+      },
+    });
+    const unconfirmedPersisted = await read(fUnconfirmedTimeout.run.id);
+    expect(unconfirmedPersisted?.status).toBe("timed_out");
+    expect(hasConversationContinuationPolicy(unconfirmedPersisted?.resultJson)).toBe(false);
+    expect(legacyExecutionNeedsReconciliation(unconfirmedPersisted!)).toBe(true);
+
+    const fConfirmedTimeout = await fixture({}, `HT${randomUUID().slice(0, 6)}`);
+    const [hermesConfirmedAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+      .where(eq(agents.id, fConfirmedTimeout.agent.id)).returning();
+    await fConfirmedTimeout.completion.completeRun({
+      ...fConfirmedTimeout.input,
+      agent: hermesConfirmedAgent!,
+      adapterResult: {
+        exitCode: 1,
+        signal: null,
+        timedOut: true,
+        errorCode: "hermes_gateway_timeout",
+        errorMessage: "Hermes gateway run timed out after 300s.",
+        provider: "hermes_gateway",
+        resultJson: { run_id: "hermes-timeout-confirmed", status: "cancelled" },
+      },
+    });
+    const confirmedPersisted = await read(fConfirmedTimeout.run.id);
+    expect(confirmedPersisted?.status).toBe("timed_out");
+    expect(hasConversationContinuationPolicy(confirmedPersisted?.resultJson)).toBe(true);
+    expect(legacyExecutionNeedsReconciliation(confirmedPersisted!)).toBe(false);
+
+    // Ambiguous outbound POST /v1/runs HTTP 429/5xx responses do not prove non-dispatch
+    // (a proxy or redirect may have created the remote run), so they fail closed without
+    // stamping conversationContinuation and keep legacyExecutionNeedsReconciliation true.
+    for (const [tag, errorCode, reason] of [
+      ["H4", "hermes_gateway_rate_limited", "rate_limited"],
+      ["H5", "hermes_gateway_upstream_error", "remote_unavailable"],
+    ] as const) {
+      const fCreateErr = await fixture({}, `${tag}${randomUUID().slice(0, 6)}`);
+      const [hermesCreateAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
+        .where(eq(agents.id, fCreateErr.agent.id)).returning();
+      const unreachable = () => { throw new Error("retry scheduling passed the reconciliation gate"); };
+      const realRetries = createHeartbeatRetries(db, {
+        hasCaseHandoffForRun: async () => false,
+        getAgent: unreachable, getRun: unreachable, resolveSessionBeforeForWakeup: unreachable,
+        resolveResponsibleUserIdForRunContext: unreachable, getAgentInvokability: unreachable,
+        appendRunEvent: unreachable, escalatePlanApprovalResumeFailureNeedsAttention: unreachable,
+        recordPlanApprovalResumeFailureRetry: unreachable, setRunStatusIfRunning: unreachable,
+        setWakeupStatus: unreachable, releaseIssueExecutionAndPromote: unreachable, finalizeAgentStatus: unreachable,
+        getWorktreeExecutionCutoff: unreachable, applyRunDispatchPostCommitEffects: unreachable,
+        runDispatch: { nextScheduledRetryAt: unreachable, evaluateScheduledRetryGate: unreachable,
+          promoteDueScheduledRetries: unreachable, promoteScheduledRetry: unreachable },
+      });
+      fCreateErr.deps.scheduleBoundedRetryForRun.mockImplementation((run, agent, opts) =>
+        realRetries.scheduleBoundedRetryForRun(run, agent, opts));
+      await fCreateErr.completion.completeRun({
+        ...fCreateErr.input,
+        agent: hermesCreateAgent!,
+        adapterResult: {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorCode,
+          errorFamily: "transient_upstream",
+          errorMessage: `Hermes gateway ${reason}`,
+          provider: "hermes_gateway",
+          resultJson: {
+            connectionFailure: {
+              schemaVersion: 1,
+              provider: "hermes_gateway",
+              operation: "create_run",
+              reason,
+            },
+          },
+        },
+      });
+      const createErrPersisted = await read(fCreateErr.run.id);
+      expect(createErrPersisted?.status).toBe("failed");
+      expect(hasConversationContinuationPolicy(createErrPersisted?.resultJson)).toBe(false);
+      expect(legacyExecutionNeedsReconciliation(createErrPersisted!)).toBe(true);
+      const retryOutcomes = await Promise.all(
+        fCreateErr.deps.scheduleBoundedRetryForRun.mock.results.map(result => result.value),
+      );
+      expect(retryOutcomes).toEqual(retryOutcomes.map(() => expect.objectContaining({
+        outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation",
+      })));
+      expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, fCreateErr.run.id))).toEqual([]);
+    }
   });
 });

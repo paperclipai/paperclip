@@ -1,4 +1,6 @@
 import { wakeWaitersOfStalledIssues, type BlockerStallWakeup } from "./blocker-stall-wakeups.js";
+import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "../antigravity-swarm-refusal.js";
+import { DEPENDENCY_WAKE_REPEATED_FAILURE_STREAK, readDependencyWakeCircuit } from "./dependency-wake-circuit-breaker.js";
 import { INTERACTION_DELIVERY_DENIED, isInteractionDeliveryDeniedRun } from "../agent-interaction-delivery.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { OWNER_UNPROVABLE_CAUSE } from "./owner-gone-attestation.js";
@@ -17,6 +19,7 @@ import { REUSABLE_SANDBOX_RESUME_FAILED_CODE } from "../reusable-sandbox-resume-
 import { PLUGIN_WORKER_UNAVAILABLE_CODE } from "../plugin-worker-unavailable-error.js";
 import { ENVIRONMENT_PROVIDER_UNAVAILABLE_CODE } from "../environment-provider-unavailable-error.js";
 import { RUNNER_REVISION_MISMATCH_CODE } from "../runner-revision-mismatch.js";
+import { NATIVE_SANDBOX_DISK_FULL } from "../native-runtime/native-sandbox-disk-full.js";
 import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
 import { recoveryRunResultColumn } from "./run-result-read.js";
 import { readLegacyDispositionSource } from "./legacy-disposition-read.js";
@@ -24,7 +27,9 @@ import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
 import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "../workspace-source-restriction.js";
+import { PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE } from "../project-storage-environment-reason.js";
 import { hasCommittedNativePlanWait } from "../native-runtime/native-plan-wait.js";
+import { ensureNativePlanReviewCard } from "../native-runtime/native-plan-review-card.js";
 import { hasCommittedNativeConversationTurnWait, hasCommittedNativeResponseWakeWait } from "../native-runtime/native-response-wake-wait.js";
 import { listExternalReviewWaits } from "../native-runtime/external-review-wait.js";
 import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
@@ -65,7 +70,8 @@ import {
   hasCommittedNativeBoardResponseWait,
   readNativeBoardResponseWaitSource,
 } from "../native-runtime/native-board-response-wait.js";
-import { authorizeChatConversationForBoundRun } from "../native-runtime/chat-attachment-reuse.js";
+import { authorizeChatConversationForBoundRun, resolveExternalChatResponseWaitAuthorization } from "../native-runtime/chat-attachment-reuse.js";
+import { EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST } from "../native-runtime/status-arbiter.js";
 import {
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
@@ -129,7 +135,7 @@ import { isBoardOwnedBudgetBlock } from "../budget-block-ownership.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService, SOURCE_TERMINAL_RESOLUTION } from "../issue-recovery-actions.js";
 import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
-import { parseProviderQuotaClockReset } from "../provider-quota-reset.js";
+import { isProviderQuotaActionRequired, parseProviderQuotaClockReset } from "../provider-quota-reset.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../native-runtime/native-workspace-finalization-recovery-state.js";
 import {
   legacyExecutionNeedsReconciliationWithEvidence,
@@ -172,8 +178,11 @@ import {
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
 import {
+  DOT_CONFIGURATION_INCOMPLETE_REASONS,
   SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON,
+  PROJECT_STORAGE_ENVIRONMENT_NEXT_ACTION,
   sandboxProviderPluginRemedy,
+  buildConfigurationIncompleteRecoveryNoticeSeed,
   buildExecutionReviewParticipantRecoveryNoticeSeed,
   buildExecutionReviewParticipantUnavailableNoticeSeed,
   buildStrandedRecoveryEscalationNotice,
@@ -188,6 +197,7 @@ import {
 } from "./origins.js";
 import { withRecoveryContext } from "./status-only-context.js";
 import { getExecutionBlocker } from "../execution-blocker.js";
+import { readWorkspaceProviderFailure } from "../workspace-provider-failure.js";
 import { currentRunFailureText } from "../native-runtime/native-exact-resume-failure.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import { rehomeStrandedLegacyWorkspaceTasks } from "./legacy-workspace-rehome.js";
@@ -247,6 +257,7 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON =
   "execution_review_participant_recovery";
 const STRANDED_BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
+const EXTERNAL_CHAT_WAIT_RECOVERY_SOURCE = "issue.external_chat_wait_recovery";
 const DISPOSITION_REPAIR_IDEMPOTENCY_INDEX =
   "agent_wakeup_requests_disposition_repair_idempotency_uq";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
@@ -277,6 +288,7 @@ type RecoveryWakeupOptions = {
   issueStateGuard?: {
     statuses: string[];
     assigneeAgentId: string;
+    withoutSuccessorOfRunId?: string;
   };
   allowRunCoalescing?: boolean;
 };
@@ -473,6 +485,7 @@ function readRecoveryRunErrorFamily(latestRun: LatestIssueRun) {
 }
 
 function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
+  if (isProviderQuotaActionRequired(latestRun)) return false;
   if (latestRun?.errorCode === "provider_quota") return true;
   if (readRecoveryRunErrorFamily(latestRun) === "provider_quota") return true;
   if (latestRun?.errorCode !== "adapter_failed") return false;
@@ -613,9 +626,13 @@ const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
 
 const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   INTERACTION_DELIVERY_DENIED,
+  // A refused /swarm waits for the user; every automatic attempt would refuse again.
+  ANTIGRAVITY_SWARM_UNAVAILABLE,
   "project_access_denied",
+  "configuration_incomplete",
   "native_provider_model_rejected",
   "provider_tool_definition_invalid",
+  NATIVE_SANDBOX_DISK_FULL,
   "adapter_engine_unavailable",
   "agent_not_invokable",
   "agent_not_found",
@@ -670,7 +687,7 @@ export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = PROVIDER_LIMIT_DEFAULT
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
-  /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
+  /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable)|dot must be paired with a verified event subscription|dot(?:'|’)s event subscription expired)/i;
 
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
@@ -684,6 +701,7 @@ export function classifyAdapterFailureForRecovery(
   >,
   now = new Date(),
 ): AdapterFailureRecoveryClassification {
+  if (isProviderQuotaActionRequired(latestRun, now)) return null;
   // An engine prerequisite cannot be repaired by asking the same unavailable
   // engine to retry. Use the existing configuration-blocker path.
   if (latestRun.errorCode === "adapter_engine_unavailable" || latestRun.errorCode === "provider_tool_definition_invalid" || latestRun.errorCode === "native_provider_model_rejected") {
@@ -777,7 +795,8 @@ export function classifyContinuationFailure(
       errorCode,
     };
   }
-  if (isAiAuthenticationBlocked(latestRun) || (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode))) {
+  if (isAiAuthenticationBlocked(latestRun) || isProviderQuotaActionRequired(latestRun)
+      || (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode))) {
     return {
       kind: "non_retryable",
       maxAttempts: 0,
@@ -1975,6 +1994,48 @@ export function recoveryService(
       .then((rows) => Boolean(rows[0]));
   }
 
+  /**
+   * Continue a settled external-chat turn whose response wait was lost
+   * although its requester and destination are still allowed. No provider
+   * message owns its next wake, so the task would otherwise idle in progress.
+   * A wait lost because access was revoked stays parked: revocation never
+   * starts work. Returns null when the turn is not such a wait.
+   *
+   * Bounded to one continuation per turn: the successor run owns the task, so
+   * the wait is no longer authorized; the queue rechecks for a successor under
+   * the issue lock, so overlapping sweeps cannot both queue one.
+   */
+  async function continueUnregisteredExternalChatWait(
+    issue: RecoveryIssue,
+    latestRun: LatestIssueRun,
+    agentId: string,
+  ): Promise<"queued" | "skipped" | null> {
+    if (
+      issue.status !== "in_progress" || latestRun?.status !== "succeeded" ||
+      latestRun.agentId !== agentId || latestRun.agentId !== issue.assigneeAgentId ||
+      !isExternalChatPresentationContext(latestRun.contextSnapshot) ||
+      parseObject(latestRun.resultJson).finalizationReasonCode !== EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST
+    ) return null;
+    // The caller already proved the invocation budget clear for this task.
+    const [authorization, queuedWake] = await Promise.all([
+      resolveExternalChatResponseWaitAuthorization({ db, binding: {
+        companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId,
+      } }),
+      hasQueuedIssueWake(issue.companyId, issue.id, agentId),
+    ]);
+    if (authorization !== "authorized") return null;
+    if (queuedWake) return "skipped";
+    const queued = await enqueueStrandedIssueRecovery({
+      issueId: issue.id,
+      agentId,
+      reason: "issue_continuation_needed",
+      retryReason: "issue_continuation_needed",
+      source: EXTERNAL_CHAT_WAIT_RECOVERY_SOURCE,
+      retryOfRunId: latestRun.id,
+    });
+    return queued ? "queued" : "skipped";
+  }
+
   async function hasQueuedIssueWake(
     companyId: string,
     issueId: string,
@@ -2245,7 +2306,16 @@ export function recoveryService(
               assigneeAgentId: input.agentId,
             },
           }
-        : {}),
+        : input.source === EXTERNAL_CHAT_WAIT_RECOVERY_SOURCE && input.retryOfRunId
+          ? {
+              // One continuation per settled turn, even across overlapping sweeps.
+              issueStateGuard: {
+                statuses: ["in_progress"],
+                assigneeAgentId: input.agentId,
+                withoutSuccessorOfRunId: input.retryOfRunId,
+              },
+            }
+          : {}),
       payload: withRecoveryContext(
         {
           issueId: input.issueId,
@@ -2802,6 +2872,8 @@ export function recoveryService(
                       ? "Reconnect the selected AI account or choose an available connection, then continue the task."
                       : readConfigurationIncompletePayload(input.latestRun)?.reason === RESTRICTED_WORKSPACE_SOURCE_REASON
                       ? "Retry the task."
+                      : readConfigurationIncompletePayload(input.latestRun)?.reason === PROJECT_STORAGE_ENVIRONMENT_INCOMPATIBLE
+                      ? PROJECT_STORAGE_ENVIRONMENT_NEXT_ACTION
                       : readConfigurationIncompletePayload(input.latestRun)
                         ?.reason === SANDBOX_PROVIDER_PLUGIN_NOT_READY_REASON
                       ? `The plugin that starts this agent's sandbox is not running. To fix it, ${sandboxProviderPluginRemedy(
@@ -2810,6 +2882,14 @@ export function recoveryService(
                               ?.pluginStatus,
                           ) ?? "error",
                         )}, then press Retry.`
+                      : DOT_CONFIGURATION_INCOMPLETE_REASONS.has(
+                          readNonEmptyString(
+                            readConfigurationIncompletePayload(input.latestRun)?.reason,
+                          ) ?? "",
+                        )
+                      ? buildConfigurationIncompleteRecoveryNoticeSeed(
+                          readConfigurationIncompletePayload(input.latestRun),
+                        ).nextAction!
                       : "A secret this agent needs is not set. Add it in the agent's settings, then press Retry."
                     : recoveryCause === "execution_review_participant_recovery"
                       ? "The reviewer did not finish the review. Choose a reviewer, or press Retry to ask the same reviewer again."
@@ -5087,6 +5167,28 @@ export function recoveryService(
         continue;
       }
 
+      // A Plan-mode task whose run settled before the server opened plan
+      // review cards on settle (or whose card opening was interrupted) gets
+      // its card here; the card is then its next action.
+      if (
+        issue.workMode === "planning" &&
+        issue.status === "in_progress" &&
+        latestRun?.status === "succeeded" &&
+        latestRun.agentId === agentId &&
+        // An accepted native plan waits for the user's next message; its
+        // answered plan question is the review. Never ask for it again.
+        parseObject(latestRun.resultJson).finalizationReasonCode !== "native_plan_accepted_waiting_for_continuation" &&
+        !(await hasCommittedNativePlanWait(db, {
+          companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId,
+        })) &&
+        (await ensureNativePlanReviewCard(db, {
+          companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId,
+        })).kind === "created"
+      ) {
+        result.skipped += 1;
+        result.issueIds.push(issue.id);
+        continue;
+      }
       if (
         await hasActiveExecutionPath(
           issue.companyId,
@@ -5260,6 +5362,14 @@ export function recoveryService(
         } else {
           result.skipped += 1;
         }
+        continue;
+      }
+      const externalChatWait = await continueUnregisteredExternalChatWait(issue, latestRun, agentId);
+      if (externalChatWait) {
+        if (externalChatWait === "queued") {
+          result.continuationRequeued += 1;
+          result.issueIds.push(issue.id);
+        } else result.skipped += 1;
         continue;
       }
       if (
@@ -5756,7 +5866,10 @@ export function recoveryService(
             issue,
             previousStatus: "todo",
             latestRun,
-            notice: buildNoRunningExecutionNoticeSeed({ status: "todo" }),
+            notice: buildNoRunningExecutionNoticeSeed({
+              status: "todo",
+              workspaceProviderFailure: readWorkspaceProviderFailure(latestRun?.resultJson),
+            }),
           });
           if (updated) {
             result.escalated += 1;
@@ -5799,7 +5912,10 @@ export function recoveryService(
             issue,
             previousStatus: "todo",
             latestRun,
-            notice: buildNoRunningExecutionNoticeSeed({ status: "todo" }),
+            notice: buildNoRunningExecutionNoticeSeed({
+              status: "todo",
+              workspaceProviderFailure: readWorkspaceProviderFailure(latestRun?.resultJson),
+            }),
           });
           if (updated) {
             result.escalated += 1;
@@ -6036,7 +6152,11 @@ export function recoveryService(
               issue,
               previousStatus: "in_progress",
               latestRun,
-              notice: buildNoRunningExecutionNoticeSeed({ status: "in_progress", attempts: consecutive }),
+              notice: buildNoRunningExecutionNoticeSeed({
+                status: "in_progress",
+                attempts: consecutive,
+                workspaceProviderFailure: readWorkspaceProviderFailure(latestRun?.resultJson),
+              }),
             });
             if (updated) {
               result.escalated += 1;
@@ -6094,7 +6214,11 @@ export function recoveryService(
           issue,
           previousStatus: "in_progress",
           latestRun,
-          notice: recoveryOutcome.retryExhausted ? buildNoRunningExecutionNoticeSeed({ status: "in_progress" })
+          notice: recoveryOutcome.retryExhausted
+            ? buildNoRunningExecutionNoticeSeed({
+                status: "in_progress",
+                workspaceProviderFailure: readWorkspaceProviderFailure(latestRun?.resultJson),
+              })
             : recoveryOutcome.continuationRefused ? CONTINUATION_REFUSED_NOTICE
             : nonRetryableContinuationNotice(),
         });
@@ -6134,6 +6258,7 @@ export function recoveryService(
       healed: 0,
       existingWakeSkipped: 0,
       selfBlockedSkipped: 0,
+      failedWakeBackoffSkipped: 0,
       livePathSkipped: 0,
       interactionSkipped: 0,
       pauseHoldSkipped: 0,
@@ -6142,6 +6267,7 @@ export function recoveryService(
       deferredOrFailed: 0,
       enqueueFailed: 0,
       issueIds: [] as string[],
+      repeatedFailureIssueIds: [] as string[],
     };
 
     const source = opts?.source ?? "issue_graph_liveness.backstop";
@@ -6335,6 +6461,24 @@ export function recoveryService(
           continue;
         }
 
+        // A woken run that fails can leave the task blocked again, which starts a
+        // new blocked cycle and a new idempotency key. Without this breaker a
+        // deterministic failure re-woke the task on every sweep, forever.
+        const circuit = await readDependencyWakeCircuit(db, {
+          companyId,
+          issueId: candidate.id,
+          agentId,
+          blockerIssueIds: readiness.blockerIssueIds,
+        });
+        if (circuit.state === "backoff") {
+          result.failedWakeBackoffSkipped += 1;
+          if (circuit.consecutiveFailures >= DEPENDENCY_WAKE_REPEATED_FAILURE_STREAK) {
+            result.repeatedFailureIssueIds.push(candidate.id);
+          }
+          opts?.onDeferredDeadline?.(circuit.retryAt);
+          continue;
+        }
+
         try {
           const wake = await deps.enqueueWakeup(agentId, {
             source: "automation",
@@ -6406,6 +6550,15 @@ export function recoveryService(
           blockerIssueId: opts?.blockerIssueId ?? null,
         },
         "issue graph liveness backstop healed resolved blocked dependency wakes",
+      );
+    }
+    if (result.repeatedFailureIssueIds.length > 0) {
+      logger.warn(
+        {
+          issueIds: result.repeatedFailureIssueIds,
+          source,
+        },
+        "issue graph liveness backstop is backing off blocked tasks whose resolved-dependency runs keep failing",
       );
     }
 

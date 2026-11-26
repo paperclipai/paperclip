@@ -362,12 +362,16 @@ test("the Verify Paperclip Runner job restores the crate only in the lanes that 
   const lanes = JSON.parse(readFileSync(path.join(repoRoot, ".github/ci-task-matrix.json"), "utf8"))
     .verify_paperclip_runner.map((entry) => [entry.lane_label, entry.release_crate === true]);
   assert.deepEqual(lanes, [
-    ["static checks", false],
+    ["static checks", true],
     ["rust", true],
-    ["vitest package (1/3)", false],
-    ["vitest package (2/3)", false],
-    ["vitest package (3/3)", false],
-    ["vitest native server", true],
+    ["vitest package (1/6)", false],
+    ["vitest package (2/6)", false],
+    ["vitest package (3/6)", false],
+    ["vitest package (4/6)", false],
+    ["vitest package (5/6)", false],
+    ["vitest package (6/6)", false],
+    ["vitest native server (1/2)", true],
+    ["vitest native server (2/2)", true],
   ]);
   for (const stepName of [KEY_STEP, RESTORE_STEP]) {
     assert.match(step(body, stepName), /if: \$\{\{ matrix\.release_crate == true \}\}/, stepName);
@@ -419,7 +423,10 @@ test("only the master Rust lane writes the crate, after a lookup, with the reade
 
   // The dependency cache's own writer gate is the same expression.
   assert.match(body, new RegExp(`save-if: \\$\\{\\{ ${WRITER_GATE.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\}\\}`));
-  assert.equal((releaseWorkflow.match(/actions\/cache\/save@/g) ?? []).length, 2, "release and debug workspace caches have separate guarded writers");
+  assert.equal((body.match(/actions\/cache\/save@/g) ?? []).length, 2, "release and debug workspace caches have separate guarded writers");
+  // The other cache saves in release-verify.yml are the master-guarded writers in `build`
+  // (E2E UI dist, prebuilt Runner dist, and incremental typecheck cache).
+  assert.equal((releaseWorkflow.match(/actions\/cache\/save@/g) ?? []).length, 5, "release-verify.yml has guarded writers for release crate, debug crate, E2E UI dist, Runner dist, and incremental typecheck");
 });
 
 test("the scope names the platform, the compiler and the checkout root, and survives a missing rustc", () => {

@@ -44,14 +44,15 @@ export const RUNNER_IMAGE_PLATFORMS = Object.freeze(["linux/amd64", "linux/arm64
  * context. A test checks that the stage copies nothing else and that no other
  * Runner stage reads the build context.
  *
- * @paperclipai/shared owns the generated file. build:typescript only checks
- * the Runner's own copy against it, but it fails without it.
+ * @paperclipai/shared owns the generated files. build:typescript only checks
+ * the Runner's own copy and inputs against them, but it fails without them.
  */
 export const RUNNER_IMAGE_CONTEXT_INPUTS = Object.freeze([
   ".npmrc",
   "package.json",
   "packages/paperclip-eval-kernel",
   "packages/paperclip-runner",
+  "packages/shared/src/antigravity-models.generated.ts",
   "packages/shared/src/provider-failure.generated.ts",
   "patches",
   "pnpm-lock.yaml",

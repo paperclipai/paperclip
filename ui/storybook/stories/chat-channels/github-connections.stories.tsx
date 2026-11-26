@@ -23,7 +23,7 @@ const copilotBranding = {
   darkLogoUrl: "./brands/apps/github-copilot-dark.svg",
 };
 
-function GitHubConnections({ saved = false, chatEnabled = true }) {
+function GitHubConnections({ saved = false }) {
   const location = useLocation();
   const [client] = useState(() => {
     const result = new QueryClient({
@@ -38,7 +38,7 @@ function GitHubConnections({ saved = false, chatEnabled = true }) {
       ],
       capabilities: { canSetCompanyInstall: true, canCreatePersonalConnection: true, canCreateOrganizationConnection: true },
     });
-    result.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: false, enableGitHubReviewBots: chatEnabled });
+    result.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: false });
     result.setQueryData(queryKeys.tools.applications(companyId), { applications: saved ? [
       { id: "github-tools", companyId, name: "GitHub", status: "active", metadata: { sourceTemplateKey: "github" } },
       // Existing bots retain their provider/source identity after the catalog split.
@@ -91,7 +91,7 @@ const meta = {
   title: "Apps, channels, and extensions/External chat and email/Connections/GitHub and Code Review Bot",
   component: GitHubConnections,
   play: async ({ canvasElement }) => {
-    await userEvent.type(await within(canvasElement).findByRole("searchbox", { name: "Search connectors" }), "GitHub");
+    await userEvent.type(await within(canvasElement).findByRole("searchbox", { name: "Search plugins" }), "GitHub");
   },
   parameters: {
     layout: "fullscreen",
@@ -112,11 +112,10 @@ type Story = StoryObj<typeof meta>;
 export const Catalog: Story = {};
 export const SavedConnections: Story = { args: { saved: true } };
 export const ChatDisabled: Story = {
-  args: { chatEnabled: false },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByRole("button", { name: /^Connect GitHub$/ })).toBeVisible();
-    await expect(canvas.queryByRole("heading", { name: "GitHub Code Review Bot" })).not.toBeInTheDocument();
+    await expect(await canvas.findByRole("heading", { name: "GitHub Code Review Bot" })).toBeVisible();
   },
 };
 export const ToolSetup: Story = {

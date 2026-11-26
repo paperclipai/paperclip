@@ -148,6 +148,7 @@ export { statusCards, statusCardUpdates } from "./status_cards.js";
 export { routineDocuments } from "./routine_documents.js";
 export { documentAnnotationThreads } from "./document_annotation_threads.js";
 export { documentAnnotationComments } from "./document_annotation_comments.js";
+export { documentAnnotationCommentReactions } from "./document_annotation_comment_reactions.js";
 export { documentAnnotationAnchorSnapshots } from "./document_annotation_anchor_snapshots.js";
 export { heartbeatRuns, workspaceRestoreFailureCodesSql } from "./heartbeat_runs.js";
 export { heartbeatRunEvents } from "./heartbeat_run_events.js";
@@ -301,4 +302,13 @@ export { tailscaleConnections } from "./tailscale_connections.js";
 export { nativeProviderArtifacts, nativeProviderArtifactReferences } from "./native_provider_artifacts.js";
 export { linkPreviews } from "./link_previews.js";
 export { toolConnectionContentDeletions } from "./tool_connection_content_deletions.js";
+export { issueConnectionContentDeletions } from "./issue_connection_content_deletions.js";
+export { storedObjectDeletions } from "./stored_object_deletions.js";
+export { googlePendingRevocations } from "./google_pending_revocations.js";
 export * from "./plugin_connector_legacy_access.js";
+export {
+  agentSetupProgress,
+  type AgentSetupProgressStatus,
+  type AgentSetupProgressItemStatus,
+  type AgentSetupProgressItemRecord,
+} from "./agent_setup_progress.js";
