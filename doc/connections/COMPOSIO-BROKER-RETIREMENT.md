@@ -2,7 +2,7 @@
 
 September 21, 2026
 
-Composio now has one Paperclip catalog method: direct MCP. Enable **Settings → Experimental → MCP aggregators**, then connect with Composio Connect or an externally configured MCP session URL and headers. The existing Access → Connect setup, OAuth, permissions, per-action Test, and gateway execution are unchanged. Connect underlying apps in Composio; Paperclip does not create per-app child connections.
+Composio now has one Paperclip catalog method: direct MCP. Connect with Composio Connect or an externally configured MCP session URL and headers. The existing Access → Connect setup, OAuth, permissions, per-action Test, and gateway execution are unchanged. Connect underlying apps in Composio; Paperclip does not create per-app child connections.
 
 The project API-key method, toolkit-management API routes, Services tab, connected-account synchronization, and session-minting broker have been removed. There is no automatic credential or grant migration.
 

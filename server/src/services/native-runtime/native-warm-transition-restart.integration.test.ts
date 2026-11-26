@@ -44,7 +44,7 @@ const managedFixtureDirectory =
   process.env.PAPERCLIP_WARM_TRANSITION_MANAGED_FIXTURE_DIRECTORY;
 const databaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const generated =
-  fixtureDirectory && databaseUrl ? describe.sequential : describe.skip;
+  fixtureDirectory && databaseUrl ? describe : describe.skip;
 
 type Identity = {
   runnerInstanceId: string;
@@ -122,7 +122,8 @@ vi.mock("./paperclip-runner-tool-authority.js", () => ({
     }
   },
 }));
-vi.mock("./current-wake-comments.js", () => ({
+vi.mock("./current-wake-comments.js", async importOriginal => ({
+  ...await importOriginal<typeof import("./current-wake-comments.js")>(),
   resolveCurrentWakeCommentsBinding: async () => null,
   assertCurrentWakeCommentsRead: async () => undefined,
 }));

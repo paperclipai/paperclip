@@ -5,12 +5,12 @@ import { assertActiveHandoff, assertAnswerFacts, assertCrashRecovered, assertWor
 import { runnerMatrix } from "./catalog.js";
 import { buildRunnerE2EProcessEnvironment } from "./harness-env.js";
 
-const run = { id: "old", agentId: "original", companyId: "company", runtimeMode: "native", status: "cancelled", errorCode: "issue_reassigned", finishedAt: "2026-09-21T00:01:00Z", contextSnapshot: { issueId: "task" } };
+const run = { id: "old", nativeSessionId: "old-session", agentId: "original", companyId: "company", runtimeMode: "native", status: "cancelled", errorCode: "issue_reassigned", finishedAt: "2026-09-21T00:01:00Z", contextSnapshot: { issueId: "task" } };
 const successor = { ...run, id: "next", agentId: "successor", status: "succeeded", startedAt: "2026-09-21T00:01:01Z" };
 const before = { id: "task", assigneeAgentId: "original", description: "Preserve scope", projectId: null };
 const plan = { body: "Friday REFERENCE", latestRevisionId: "revision" };
 const handoff = { before, after: { ...before, status: "done", assigneeAgentId: "successor" }, oldRun: run, boundary: { ...run, status: "running" }, runs: [run, successor], successorId: "successor", planBefore: plan, planAfter: plan, draft: { id: "draft", latestRevisionId: "v1", body: "REFERENCE" }, draftAfter: { id: "draft", body: "REFERENCE" }, draftRevisions: [{ id: "v1", body: "REFERENCE" }], output: { body: "REFERENCE", createdByAgentId: "successor" }, reference: "REFERENCE", audit: [{ action: "issue.reassigned", details: { source: "paperclip_runner_protocol" } }], taskIds: ["task"] };
-const recovery = { boundary: { ...run, status: "running" }, failed: { ...run, status: "failed" }, runs: [{ ...run, status: "failed" }, { ...successor, agentId: "original" }], issueId: "task", prompt: "Read my brief", comments: [{ body: "Read my brief" }, { body: "REFERENCE MARKER", authorAgentId: "original", createdByRunId: "next" }], reference: "REFERENCE", marker: "MARKER", planBefore: { body: "plan MARKER", latestRevisionId: "v1" }, planAfter: { body: "plan MARKER", latestRevisionId: "v1" } };
+const recovery = { boundary: { ...run, status: "running" }, failed: { ...run, status: "failed" }, runs: [{ ...run, status: "failed" }, { ...successor, agentId: "original", nativeSessionId: "fresh-session", contextSnapshot: { issueId: "task", previousRunId: "old", forceFreshSession: true } }], issueId: "task", prompt: "Read my brief", comments: [{ body: "Read my brief" }, { body: "REFERENCE MARKER", authorAgentId: "original", createdByRunId: "next" }], reference: "REFERENCE", marker: "MARKER", planBefore: { body: "plan MARKER", latestRevisionId: "v1" }, planAfter: { body: "plan MARKER", latestRevisionId: "v1" } };
 
 describe("remaining native chat qualification", () => {
   it("calibrates the pidfd helper against reuse and wrong-identity faults", () => {
@@ -44,6 +44,8 @@ describe("remaining native chat qualification", () => {
       { failed: { ...recovery.failed, id: "unrelated" } },
       { runs: [recovery.runs[0]!, { ...successor, status: "failed" }] },
       { runs: [recovery.runs[0]!, { ...successor, contextSnapshot: { issueId: "new-chat" } }] },
+      { runs: [recovery.runs[0]!, { ...recovery.runs[1]!, nativeSessionId: "old-session" }] },
+      { runs: [recovery.runs[0]!, { ...recovery.runs[1]!, contextSnapshot: { issueId: "task", previousRunId: "unrelated", forceFreshSession: true } }] },
       { comments: [...recovery.comments, recovery.comments[0]!] },
       { comments: [recovery.comments[0]!, { ...recovery.comments[1], createdByRunId: "old" }] },
       { comments: [recovery.comments[0]!, { ...recovery.comments[1], body: "MARKER" }] },

@@ -10,6 +10,12 @@ components backed by local fixtures.
 
 ## Membership
 
+- With Ancestors shows the production Tasks panel with a root task and immediate
+  parent above Subtasks. Ancestors Only, Ancestors Narrow and With Ancestors Light
+  cover a task without children, a narrow panel and light mode. Ancestors are
+  linked in root-to-parent order and collapse independently. The task detail
+  response already includes the chain; no additional ancestor query is needed.
+
 - Subtasks includes the existing subtask tree, regardless of creator or run.
 - Project and No project groups contain tasks created by runs originating from
   the current task, regardless of current parentage. Created subtasks appear in

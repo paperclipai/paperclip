@@ -15,10 +15,23 @@ export async function prepareHeartbeatGitHubLaunchers(
   prepareLaunchers = prepareGitHubOperationLaunchers,
   cleanupLaunchers = cleanupGitHubOperationLaunchers,
 ) {
+  if (input.target?.kind === "remote" && input.target.transport === "sandbox" && input.target.runnerTask) {
+    // Provider-owned tasks decide their own runtime layout and command environment.
+    return { env: githubBrokerEnvironment(input.env, {
+      url: input.githubConfigured ? input.brokerUrl : "",
+      token: input.githubConfigured ? input.createBrokerToken() : "",
+    }), cleanupLocation: null };
+  }
+  // Native configured access is owned by the provider session supervisor.
+  // Defer staging until it has acquired that session; never mutate a live
+  // process's authorization from heartbeat preparation.
+  if (input.native && input.githubConfigured) {
+    return { env: githubBrokerEnvironment(input.env, { url: "", token: "" }), cleanupLocation: null };
+  }
   // An unconfigured sandbox has no managed GitHub identity to broker. Its
   // token-free wrappers still isolate image credentials, but may live as long
   // as the workspace so a warm provider never inherits a deleted run path.
-  // Configured identities keep their run-scoped capability/retirement rules.
+  // Other adapter paths retain their run-scoped capability/retirement rules.
   const anonymous = input.native && !input.githubConfigured &&
     input.target?.kind === "remote" && input.target.transport === "sandbox";
   const location = {
@@ -33,7 +46,7 @@ export async function prepareHeartbeatGitHubLaunchers(
   });
   try {
     return {
-      env: await prepareLaunchers({ ...location, cwd: input.cwd, env }),
+      env: await prepareLaunchers({ ...location, cwd: input.cwd, env, ...(anonymous ? { anonymous: true } : {}) }),
       cleanupLocation: anonymous ? null : location,
     };
   } catch (error) {

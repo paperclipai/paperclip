@@ -44,6 +44,96 @@ function arbitrate(
 }
 
 describe("native status authority", () => {
+  it("completes a reviewer's done report from its own recorded final-stage approval", () => {
+    // Retained live failure: the reviewer approved its stage, then cited free-text
+    // evidence; the report was graded as incomplete and the task reopened.
+    const freeText = assessment({ objectiveSatisfied: false, allCriteriaSatisfied: false, verificationPassed: false });
+    expect(arbitrate({ assessment: freeText, priorIssueStatus: "in_review" }))
+      .toMatchObject({ toStatus: "in_progress", reasonCode: "completion_evidence_incomplete" });
+    expect(arbitrate({ assessment: freeText, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .toMatchObject({ toStatus: "done", reasonCode: "execution_stage_approved" });
+    // The decision authorizes completion only for a clean done report.
+    expect(arbitrate({ assessment: { ...freeText, hasBlockingRemainingWork: true }, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .not.toMatchObject({ toStatus: "done" });
+    expect(arbitrate({ assessment: { ...freeText, hasFailedVerification: true }, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .not.toMatchObject({ toStatus: "done" });
+    expect(arbitrate({ assessment: { ...freeText, reportedDisposition: "needs_review" }, priorIssueStatus: "in_review", executionStageApprovedByRun: true }))
+      .not.toMatchObject({ toStatus: "done" });
+    // A still-pending stage keeps governing the task.
+    expect(arbitrate({ assessment: freeText, priorIssueStatus: "in_review", executionStageApprovedByRun: true, governanceGate: { kind: "execution_stage", id: "run" } }))
+      .toMatchObject({ toStatus: "in_review", reasonCode: "governed_gate_pending" });
+  });
+  it("cannot complete an explicitly required quality review from claims or file evidence", () => {
+    expect(arbitrate({ completionClaimPolicyAccepted: true, requiredQualityReviewSatisfied: false }))
+      .toMatchObject({ toStatus: "in_progress", reasonCode: "required_quality_review_incomplete" });
+    expect(arbitrate({ completionClaimPolicyAccepted: false, requiredQualityReviewSatisfied: false }))
+      .toMatchObject({ toStatus: "in_progress", reasonCode: "required_quality_review_incomplete" });
+    expect(arbitrate({ requiredQualityReviewSatisfied: true })).toMatchObject({ toStatus: "done" });
+    expect(arbitrate()).toMatchObject({ toStatus: "done" });
+    expect(arbitrate({ requiredQualityReviewSatisfied: false, governanceGate: { kind: "interaction", id: "quality" } }))
+      .toMatchObject({ toStatus: "in_review", reasonCode: "governed_gate_pending" });
+  });
+  it("waits on a published external review without creating human attention", () => {
+    const wait = assessment({ reportedDisposition: "yielded",
+      continuation: { kind: "response_wake", summary: "Wait for the PR update", idempotencyKey: "pr-wait" } });
+    expect(arbitrate({ assessment: wait, publishedExternalReview: true, externalChatResponseWaitAuthorization: "authorized" }))
+      .toMatchObject({ toStatus: "in_review", reasonCode: "external_chat_response_waiting", effects: [] });
+    expect(arbitrate({ assessment: wait, publishedExternalReview: true, externalChatResponseWaitAuthorization: "revoked" }))
+      .toMatchObject({ statusAction: "preserve", effects: [] });
+    expect(arbitrate({ assessment: wait, publishedExternalReview: true,
+      externalChatResponseWaitAuthorization: "authorized", governanceGate: { kind: "approval", id: "access" } }))
+      .toMatchObject({ reasonCode: "governed_response_waiting", effects: [{ kind: "create_interaction" }] });
+    const monitor = { ...wait, continuation: { ...wait.continuation!, kind: "monitor" as const } };
+    expect(arbitrate({ assessment: monitor, publishedExternalReview: true, monitorWaitAuthorized: true }))
+      .toMatchObject({ toStatus: "in_review", reasonCode: "scheduled_monitor_waiting", effects: [{ kind: "release_checkout" }] });
+    expect(arbitrate({ assessment: monitor, publishedExternalReview: true }))
+      .toMatchObject({ statusAction: "preserve", reasonCode: "monitor_wait_authority_lost" });
+  });
+  it("preserves an open task after an accepted case handoff even if the departing model claims done", () => {
+    expect(arbitrate({ caseHandoffAuthorized: true })).toMatchObject({
+      statusAction: "preserve", toStatus: "in_progress", reasonCode: "case_handoff_waiting_for_release",
+      effects: [{ kind: "release_checkout" }],
+    });
+  });
+
+  it("preserves the task status after a context compaction run", () => {
+    for (const priorIssueStatus of ["in_progress", "in_review", "blocked", "todo"] as const) {
+      expect(arbitrate({
+        contextCompactionRun: true,
+        priorIssueStatus,
+        assessment: assessment({ reportedDisposition: "yielded", objectiveSatisfied: false, allCriteriaSatisfied: false }),
+      })).toMatchObject({
+        statusAction: "preserve", toStatus: priorIssueStatus, reasonCode: "context_compaction_status_preserved", effects: [],
+      });
+    }
+  });
+
+  it("keeps workspace repair ahead of an accepted case handoff", () => {
+    expect(arbitrate({ caseHandoffAuthorized: true, workspaceFinalizeStatus: "failed" })).toMatchObject({
+      statusAction: "preserve", reasonCode: "finalization_failed_claim_preserved",
+    });
+  });
+  it("keeps a verified accepted Cursor plan passive without completing or replaying work", () => {
+    const passive = assessment({ reportedDisposition: "yielded", objectiveSatisfied: false,
+      allCriteriaSatisfied: false, hasBlockingRemainingWork: true,
+      continuation: { kind: "response_wake", summary: "Explicit continuation needed", idempotencyKey: "cursor-plan-wait:event" } });
+    expect(arbitrate({ assessment: passive, planWaitAuthorized: true })).toMatchObject({
+      toStatus: "in_progress", reasonCode: "native_plan_accepted_waiting_for_continuation", effects: [],
+    });
+    expect(arbitrate({ assessment: passive })).toMatchObject({
+      toStatus: "in_progress",
+      reasonCode: "completion_evidence_incomplete",
+      effects: [expect.objectContaining({
+        kind: "enqueue_continuation",
+        continuationKind: "same_agent",
+        idempotencyKey: "native-completion-incomplete",
+      })],
+    });
+    expect(arbitrate({ assessment: passive, planWaitAuthorized: true, terminalState: "failed" }).reasonCode).not.toBe("native_plan_accepted_waiting_for_continuation");
+    expect(arbitrate({ assessment: passive, planWaitAuthorized: true, priorIssueStatus: "cancelled" }).toStatus).toBe("cancelled");
+    expect(arbitrate({ assessment: passive, planWaitAuthorized: true, governanceGate: { kind: "interaction", id: "pending" } }).toStatus).toBe("in_review");
+  });
+
   it("a reviewer finishes its decision without completing rejected or still-reviewed work", () => {
     for (const priorIssueStatus of ["in_progress", "in_review"] as const) {
       const decision = arbitrate({ priorIssueStatus, nativeReviewOutcome: "resolved" });
@@ -59,6 +149,26 @@ describe("native status authority", () => {
       kind: "record_recovery", cause: "native_review_unresolved", agentId: "agent",
     }));
     expect(decision.effects.some((effect) => ["enqueue_continuation", "schedule_retry"].includes(effect.kind))).toBe(false);
+  });
+
+  it("lets a reviewer stopped by a tool-call loop continue through its queued review wake instead of a resume recovery", () => {
+    const decision = arbitrate({ priorIssueStatus: "in_review", nativeReviewOutcome: "pending", toolCallLoopContinuation: true });
+    expect(decision).toMatchObject({ statusAction: "preserve", toStatus: "in_review", reasonCode: "native_review_unresolved" });
+    expect(decision.effects).toEqual([{ kind: "release_checkout" }]);
+  });
+
+  it("continues a turn stopped at its tool receipt limit in a fresh session, within its bound", () => {
+    const stopped = arbitrate({ terminalState: "cancelled", toolReceiptLimitStopped: true });
+    expect(stopped).toMatchObject({ statusAction: "preserve", toStatus: "in_progress", reasonCode: "semantic_tool_turn_receipt_limit" });
+    expect(stopped.effects).toEqual([
+      { kind: "schedule_retry", cause: "semantic_tool_turn_receipt_limit", summary: "Continue the task in a fresh session.", agentId: expect.any(String) },
+      { kind: "release_run_resources" },
+    ]);
+    expect(arbitrate({ terminalState: "failed", toolReceiptLimitStopped: true }).effects)
+      .toEqual([expect.objectContaining({ kind: "schedule_retry", cause: "semantic_tool_turn_receipt_limit" })]);
+    expect(arbitrate({ terminalState: "cancelled", toolReceiptLimitStopped: true, failureRetryCount: 2 }).reasonCode).toBe("cancellation_run_only");
+    expect(arbitrate({ terminalState: "cancelled", toolReceiptLimitStopped: true, priorIssueStatus: "blocked" }).reasonCode).toBe("cancellation_run_only");
+    expect(arbitrate({ terminalState: "cancelled" }).reasonCode).toBe("cancellation_run_only");
   });
 
   it("treats only the authorized Board response_wake as passive and preserves governance", () => {
@@ -78,8 +188,9 @@ describe("native status authority", () => {
       effects: [],
     });
     expect(arbitrate({ assessment: passive })).toMatchObject({
-      reasonCode: "live_continuation_registered",
-      effects: [expect.objectContaining({ kind: "enqueue_continuation" })],
+      reasonCode: "response_wake_waiting_for_input",
+      toStatus: "in_progress",
+      effects: [],
     });
     expect(
       arbitrate({ assessment: passive, boardResponseWaitOrigin: true }),
@@ -99,7 +210,7 @@ describe("native status authority", () => {
       toStatus: "in_review",
       effects: [expect.objectContaining({ kind: "create_interaction" })],
     });
-    for (const kind of ["same_agent", "retry", "monitor"] as const) {
+    for (const kind of ["same_agent", "retry"] as const) {
       expect(
         arbitrate({
           assessment: {
@@ -114,6 +225,40 @@ describe("native status authority", () => {
       });
     }
   });
+  it("repairs unfinished response waits once using the server continuation budget", () => {
+    const unfinished = assessment({
+      reportedDisposition: "yielded", hasBlockingRemainingWork: true,
+      continuation: { kind: "response_wake", summary: "Answered status; await next message", idempotencyKey: "model-key" },
+    });
+    for (const boardResponseWaitAuthorized of [true, false]) {
+      expect(arbitrate({ assessment: unfinished, boardResponseWaitAuthorized })).toMatchObject({
+        reasonCode: "completion_evidence_incomplete",
+        toStatus: "in_progress",
+        effects: [{ kind: "enqueue_continuation", continuationKind: "same_agent", idempotencyKey: "native-completion-incomplete" }],
+      });
+      expect(arbitrate({ assessment: unfinished, boardResponseWaitAuthorized, allowIncompleteContinuation: false })).toMatchObject({
+        reasonCode: "prior_status_preserved_no_live_path",
+        effects: [{ kind: "record_finalization_error", cause: "completion_evidence_incomplete" }],
+      });
+    }
+    expect(arbitrate({ assessment: unfinished, boardResponseWaitOrigin: true, boardResponseWaitAuthorized: true }))
+      .toMatchObject({ reasonCode: "completion_evidence_incomplete" });
+    expect(arbitrate({ assessment: unfinished, boardResponseWaitOrigin: true, boardResponseWaitAuthorized: false }))
+      .toMatchObject({ reasonCode: "board_response_wait_superseded", effects: [] });
+    expect(arbitrate({ assessment: unfinished, hasActivePauseHold: true }))
+      .toMatchObject({ reasonCode: "response_wait_pause_preserved", effects: [] });
+    expect(arbitrate({ assessment: unfinished, hasUnresolvedIssueBlockers: true }))
+      .toMatchObject({ toStatus: "blocked", reasonCode: "durable_dependency_blocker_bound", effects: [] });
+    expect(arbitrate({ assessment: unfinished, governanceGate: { kind: "interaction", id: "question" } }))
+      .toMatchObject({ reasonCode: "governed_response_waiting", effects: [{ kind: "create_interaction" }] });
+    expect(arbitrate({ assessment: unfinished, externalChatResponseWaitAuthorization: "authorized" }))
+      .toMatchObject({ reasonCode: "external_chat_response_waiting", effects: [] });
+    expect(arbitrate({ assessment: unfinished, externalChatResponseWaitAuthorization: "revoked" }))
+      .toMatchObject({ reasonCode: "external_chat_response_wait_authorization_lost", effects: [] });
+    expect(arbitrate({ assessment: unfinished, isConversation: true, boardResponseWaitAuthorized: true }))
+      .toMatchObject({ reasonCode: "board_response_waiting", effects: [] });
+  });
+
   it("marks done only from successful finalization and complete durable evidence", () => {
     expect(arbitrate()).toEqual(
       expect.objectContaining({
@@ -261,13 +406,9 @@ describe("native status authority", () => {
       }),
     ).toEqual(
       expect.objectContaining({
-        reasonCode: "live_continuation_registered",
-        effects: [
-          expect.objectContaining({
-            kind: "enqueue_continuation",
-            continuationKind: "response_wake",
-          }),
-        ],
+        statusAction: "in_progress",
+        reasonCode: "response_wake_waiting_for_input",
+        effects: [],
       }),
     );
     expect(arbitrate({ terminalState: "cancelled" })).toEqual(
@@ -427,6 +568,18 @@ describe("native status authority", () => {
     );
   });
 
+  it.each(["task_wide", "current_track"] as const)("keeps a resolved human owner for a %s block without waking the worker again", scope => {
+    const blocked = assessment({ reportedDisposition: "blocked", blocker: {
+      boardOwned: true, ownerKind: "user", ownerUserId: "named-member", scope, unblockAction: "Decide the dependency exception",
+    } });
+    const decision = arbitrate({ assessment: blocked });
+    expect(decision.unblockDescriptor?.owner).toEqual({ userId: "named-member" });
+    expect(decision.effects).toEqual([{ kind: "bind_blocker", owner: { userId: "named-member" }, action: "Decide the dependency exception" }]);
+    expect(arbitrate({ assessment: blocked, hasUnresolvedIssueBlockers: true })).toMatchObject({
+      reasonCode: "durable_dependency_blocker_bound", unblockDescriptor: { owner: { userId: "named-member" } }, effects: [],
+    });
+  });
+
   it("blocks only for a task-wide blocker with a named owner and action", () => {
     expect(
       arbitrate({
@@ -477,7 +630,7 @@ describe("native status authority", () => {
       expect.objectContaining({
         statusAction: "blocked",
         toStatus: "blocked",
-        policyVersion: "phase6-v6",
+        policyVersion: "phase6-v14",
         reasonCode: "current_track_blocker_waiting",
         unblockDescriptor: {
           owner: "board",
@@ -616,4 +769,126 @@ describe("native status authority", () => {
     ]);
   });
 
+  it("continues a system environment blocker in a fresh session, bounded, and never for a paused task or chat", () => {
+    const blocked = assessment({ reportedDisposition: "blocked", objectiveSatisfied: false, allCriteriaSatisfied: false,
+      blocker: { unblockAction: "Retry the run.", boardOwned: false, ownerKind: "system", scope: "task_wide" } });
+    expect(arbitrate({ assessment: blocked, environmentBlocker: true })).toMatchObject({ statusAction: "preserve",
+      reasonCode: "native_environment_blocker", effects: [{ kind: "schedule_retry", cause: "native_environment_blocker", agentId: "agent" }] });
+    expect(arbitrate({ assessment: blocked, environmentBlocker: true, failureRetryCount: 2 })).toMatchObject({ toStatus: "blocked",
+      reasonCode: "native_environment_blocker_exhausted", unblockDescriptor: { owner: "board" } });
+    for (const held of [{ hasActivePauseHold: true }, { isConversation: true }, { environmentBlocker: false }]) {
+      expect(arbitrate({ assessment: blocked, environmentBlocker: true, ...held })).toMatchObject({ reasonCode: "task_wide_blocker_bound" });
+    }
+  });
+
+  it("hands the next turn to a queued chat request instead of continuing a blocker in a fresh session", () => {
+    // A GitHub push that arrives during a review waits as a chat wake. A
+    // self-continuation would keep the older request's head and never publish.
+    const blocked = (ownerKind: "system" | "agent") => assessment({ reportedDisposition: "blocked", objectiveSatisfied: false,
+      allCriteriaSatisfied: false, blocker: { unblockAction: "Publish the review.", boardOwned: false, ownerKind, scope: "task_wide" } });
+    const superseded = { statusAction: "preserve", toStatus: "in_progress",
+      reasonCode: "native_blocker_superseded_by_queued_request", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] };
+    expect(arbitrate({ assessment: blocked("system"), environmentBlocker: true, hasQueuedChatRequest: true })).toMatchObject(superseded);
+    expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true, hasQueuedChatRequest: true })).toMatchObject(superseded);
+    // Spent automatic continuations bind the blocker to the board, as without a queued request.
+    expect(arbitrate({ assessment: blocked("system"), environmentBlocker: true, hasQueuedChatRequest: true, failureRetryCount: 2 }))
+      .toMatchObject({ reasonCode: "native_environment_blocker_exhausted", toStatus: "blocked", unblockDescriptor: { owner: "board" } });
+    expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true, hasQueuedChatRequest: true, failureRetryCount: 1 }))
+      .toMatchObject({ reasonCode: "native_agent_blocker_needs_person", toStatus: "blocked" });
+    expect(arbitrate({ assessment: blocked("system"), environmentBlocker: true, hasQueuedChatRequest: true, hasActivePauseHold: true }))
+      .toMatchObject({ reasonCode: "task_wide_blocker_bound" });
+    // A blocker for a person or an external owner is bound now, as without a queued request.
+    for (const ownerKind of ["user", "external"] as const) {
+      const owned = assessment({ reportedDisposition: "blocked", objectiveSatisfied: false, allCriteriaSatisfied: false,
+        blocker: { unblockAction: "Add the deploy key.", boardOwned: false, ownerKind, scope: "task_wide" } });
+      expect(arbitrate({ assessment: owned, agentBlockerRecoverable: true, hasQueuedChatRequest: true }))
+        .toMatchObject({ reasonCode: "native_agent_blocker_needs_person", toStatus: "blocked" });
+    }
+  });
+
+  it("continues a blocker the agent owns once, then hands it to the board, and never binds it back to the agent", () => {
+    const blocked = (ownerKind: "agent" | "external") => assessment({ reportedDisposition: "blocked", objectiveSatisfied: false,
+      allCriteriaSatisfied: false, blocker: { unblockAction: "Save the ledger.", boardOwned: false, ownerKind, scope: "task_wide" } });
+    expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true })).toMatchObject({ statusAction: "preserve",
+      reasonCode: "native_agent_blocker_continuation", effects: [{ kind: "schedule_retry", cause: "native_agent_blocker_continuation", agentId: "agent" }] });
+    const handoff = { toStatus: "blocked", reasonCode: "native_agent_blocker_needs_person",
+      unblockDescriptor: { owner: "board", action: "Save the ledger." },
+      effects: [{ kind: "bind_blocker", owner: "board", action: "Save the ledger." }] };
+    expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true, failureRetryCount: 1 })).toMatchObject(handoff);
+    expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true, hasActivePauseHold: true })).toMatchObject(handoff);
+    expect(arbitrate({ assessment: blocked("external"), agentBlockerRecoverable: true })).toMatchObject(handoff);
+    for (const held of [{ isConversation: true }, { agentBlockerRecoverable: false }]) {
+      expect(arbitrate({ assessment: blocked("agent"), agentBlockerRecoverable: true, ...held })).toMatchObject({ reasonCode: "task_wide_blocker_bound" });
+    }
+  });
+
+  it.each(["current_track", "task_wide"] as const)("saves and wakes the agent a %s blocker names as its owner", (scope) => {
+    const action = "Review the release notes draft.";
+    expect(
+      arbitrate({
+        agentBlockerRecoverable: true,
+        assessment: assessment({
+          reportedDisposition: "blocked",
+          hasBlockingRemainingWork: true,
+          blocker: { boardOwned: false, ownerKind: "agent", ownerAgentId: "reviewer", scope, unblockAction: action },
+        }),
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        toStatus: "blocked",
+        handoffAgentId: "reviewer",
+        unblockDescriptor: { owner: { agentId: "reviewer" }, action },
+        // bind_blocker wakes a non-board owner; the reporting agent is not re-woken.
+        effects: [{ kind: "bind_blocker", owner: { agentId: "reviewer" }, action }],
+      }),
+    );
+  });
+
+  it.each(["current_track", "task_wide"] as const)("falls back to board without handoff when a %s named-agent blocker is assignment-locked", (scope) => {
+    const action = "Review the release notes draft.";
+    const decision = arbitrate({
+      agentBlockerRecoverable: true,
+      blockerHandoffLocked: true,
+      assessment: assessment({
+        reportedDisposition: "blocked",
+        hasBlockingRemainingWork: true,
+        blocker: { boardOwned: false, ownerKind: "agent", ownerAgentId: "reviewer", scope, unblockAction: action },
+      }),
+    });
+    expect(decision).toEqual(
+      expect.objectContaining({
+        toStatus: "blocked",
+        unblockDescriptor: { owner: "board", action },
+        effects: [{ kind: "bind_blocker", owner: "board", action }],
+      }),
+    );
+    expect(decision.handoffAgentId).toBeUndefined();
+  });
+
+  it("carries named-agent handoff on a dependency-gated block while preserving the dependency gate", () => {
+    const action = "Review after upstream finishes.";
+    const blocked = assessment({
+      reportedDisposition: "blocked",
+      blocker: { boardOwned: false, ownerKind: "agent", ownerAgentId: "reviewer", scope: "current_track", unblockAction: action },
+    });
+    expect(arbitrate({ assessment: blocked, hasUnresolvedIssueBlockers: true })).toEqual(
+      expect.objectContaining({
+        toStatus: "blocked",
+        reasonCode: "durable_dependency_blocker_bound",
+        handoffAgentId: "reviewer",
+        unblockDescriptor: { owner: { agentId: "reviewer" }, action },
+        effects: [],
+      }),
+    );
+    const locked = arbitrate({ assessment: blocked, hasUnresolvedIssueBlockers: true, blockerHandoffLocked: true });
+    expect(locked).toEqual(
+      expect.objectContaining({
+        toStatus: "blocked",
+        reasonCode: "durable_dependency_blocker_bound",
+        unblockDescriptor: { owner: "board", action },
+        effects: [],
+      }),
+    );
+    expect(locked.handoffAgentId).toBeUndefined();
+  });
 });

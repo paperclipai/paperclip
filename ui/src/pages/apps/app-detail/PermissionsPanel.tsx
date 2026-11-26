@@ -1,5 +1,5 @@
 import { AgentAvatar } from "@/components/AgentAvatar";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Ban, Check, FlaskConical, Loader2, RefreshCw, Search, ShieldQuestion } from "lucide-react";
 import type { Agent, ToolCatalogEntry, ToolConnectionCapabilities } from "@paperclipai/shared";
 import { useSearchParams } from "@/lib/router";
@@ -12,13 +12,23 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { cn } from "@/lib/utils";
 import { type InstallState } from "@/lib/tool-installs";
 import { QuarantinedActionsReview } from "./SetupPanel";
-import { ActionTestDialog } from "./TestPanel";
+import { ActionTestDialog } from "./ActionTestDialog";
+import { ACTION_PAGE_SIZE } from "./constants";
+import { ProviderToolIcon } from "@/components/ProviderToolIcon";
+import { actionLabel } from "./action-permissions";
+
+/** Action rows without a provider icon show none, as before. */
+function NoIcon() {
+  return null;
+}
 import type { AccessDraft, AppDetailSectionProps } from "./types";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 type ActionPermission = "off" | "ask" | "allowed";
 type ActionKindFilter = "all" | "read" | "write";
 
 export function PermissionsPanel({
+  afterAgentAccess,
   connectionId,
   appName,
   agents,
@@ -53,7 +63,7 @@ export function PermissionsPanel({
   connectionId: string;
   install: InstallState;
   onSaveAccess: (next: AccessDraft) => void;
-  onSetActionPermission: (id: string, next: ActionPermission) => void;
+  onSetActionPermission: (ids: string[], next: ActionPermission) => void;
   onReviewQuarantined: (enabledIds: string[]) => void;
   onRefreshActions: () => void;
   refreshPending: boolean;
@@ -61,6 +71,8 @@ export function PermissionsPanel({
   permissionChangeWarning?: string;
   /** A credential-only connection can supply its account controls instead of tool actions. */
   actions?: ReactNode;
+  /** Supplemental agent settings share the existing connection configuration page. */
+  afterAgentAccess?: ReactNode;
 }) {
   const [searchParams] = useSearchParams();
   return (
@@ -73,6 +85,7 @@ export function PermissionsPanel({
         disabled={pending}
         onSave={onSaveAccess}
       />
+      {afterAgentAccess}
       {actions !== undefined ? actions : <ActionsSection
         key={connectionId}
         connectionId={connectionId}
@@ -110,12 +123,14 @@ function AgentAccessSection({
   disabled: boolean;
   onSave: (next: AccessDraft) => void;
 }) {
-  const liveAgents = agents.filter((agent) => agent.status !== "terminated");
+  const liveAgents = useMemo(() => agents.filter((agent) => agent.status !== "terminated"), [agents]);
   const canManage = capabilities?.canConfigure ?? false;
   const editableAgentIds = capabilities?.editableAgentIds;
-  const selectableAgents = editableAgentIds
-    ? liveAgents.filter((agent) => editableAgentIds.includes(agent.id))
-    : liveAgents;
+  const selectableAgents = useMemo(() => {
+    if (!editableAgentIds) return liveAgents;
+    const editable = new Set(editableAgentIds);
+    return liveAgents.filter((agent) => editable.has(agent.id));
+  }, [editableAgentIds, liveAgents]);
   const selectedAgents = liveAgents.filter((agent) => access.agentIds.has(agent.id));
   const requiredAgentIds = install.agentIds;
 
@@ -222,28 +237,26 @@ export function ActionsSection({
   focusId?: string | null;
   canConfigure: boolean;
   permissionChangeWarning?: string;
-  onSetPermission: (id: string, next: ActionPermission) => void;
+  onSetPermission: (ids: string[], next: ActionPermission) => void;
   onReviewQuarantined: (enabledIds: string[]) => void;
   onRefreshActions: () => void;
 }) {
   const [query, setQuery] = useState("");
   const [kindFilter, setKindFilter] = useState<ActionKindFilter>("all");
   const [showPermissionChangeWarning, setShowPermissionChangeWarning] = useState(false);
-  const byName = (a: ToolCatalogEntry, b: ToolCatalogEntry) =>
-    (a.title ?? a.toolName).localeCompare(b.title ?? b.toolName);
   const sortedRead = useMemo(() => [...readOnly].sort(byName), [readOnly]);
   const sortedWrite = useMemo(() => [...canChange].sort(byName), [canChange]);
-  const matches = (entry: ToolCatalogEntry) => {
-    const needle = query.trim().toLowerCase();
-    if (!needle) return true;
-    return (entry.title ?? entry.toolName).toLowerCase().includes(needle)
-      || (entry.description ?? "").toLowerCase().includes(needle);
-  };
-  const visibleRead = kindFilter === "write" ? [] : sortedRead.filter(matches);
-  const visibleWrite = kindFilter === "read" ? [] : sortedWrite.filter(matches);
+  const needle = query.trim().toLowerCase();
+  const visibleRead = useMemo(() => kindFilter === "write" ? [] : sortedRead.filter(entry => matchesAction(entry, needle)), [kindFilter, needle, sortedRead]);
+  const visibleWrite = useMemo(() => kindFilter === "read" ? [] : sortedWrite.filter(entry => matchesAction(entry, needle)), [kindFilter, needle, sortedWrite]);
+  const setPermission = useCallback((ids: string[], next: ActionPermission) => {
+    setShowPermissionChangeWarning(true);
+    onSetPermission(ids, next);
+  }, [onSetPermission]);
   const visibleCount = visibleRead.length + visibleWrite.length;
 
   return (
+    <TooltipProvider>
     <section className="space-y-6 border-t border-border pt-8">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-semibold text-foreground">Actions</h2>
@@ -307,6 +320,8 @@ export function ActionsSection({
       ) : (
         <div className="space-y-6">
           <ActionGroup
+            key={`read:${needle}:${kindFilter}`}
+            kind="read"
             title={`Read (${visibleRead.length})`}
             actions={visibleRead}
             connectionId={connectionId}
@@ -316,12 +331,11 @@ export function ActionsSection({
             disabled={disabled}
             focusId={focusId}
             canConfigure={canConfigure}
-            onSetPermission={(id, next) => {
-              setShowPermissionChangeWarning(true);
-              onSetPermission(id, next);
-            }}
+            onSetPermission={setPermission}
           />
           <ActionGroup
+            key={`write:${needle}:${kindFilter}`}
+            kind="write"
             title={`Write (${visibleWrite.length})`}
             actions={visibleWrite}
             connectionId={connectionId}
@@ -331,14 +345,12 @@ export function ActionsSection({
             disabled={disabled}
             focusId={focusId}
             canConfigure={canConfigure}
-            onSetPermission={(id, next) => {
-              setShowPermissionChangeWarning(true);
-              onSetPermission(id, next);
-            }}
+            onSetPermission={setPermission}
           />
         </div>
       )}
     </section>
+    </TooltipProvider>
   );
 }
 
@@ -360,7 +372,18 @@ function FilterChip({ label, active, onClick }: { label: string; active: boolean
   );
 }
 
+
+function byName(a: ToolCatalogEntry, b: ToolCatalogEntry) {
+  return actionLabel(a).localeCompare(actionLabel(b));
+}
+
+function matchesAction(entry: ToolCatalogEntry, needle: string) {
+  return !needle || actionLabel(entry).toLowerCase().includes(needle)
+    || (entry.description ?? "").toLowerCase().includes(needle);
+}
+
 function ActionGroup({
+  kind,
   title,
   actions,
   connectionId,
@@ -372,6 +395,7 @@ function ActionGroup({
   canConfigure,
   onSetPermission,
 }: {
+  kind: "read" | "write";
   title: string;
   actions: ToolCatalogEntry[];
   connectionId: string;
@@ -381,14 +405,51 @@ function ActionGroup({
   disabled: boolean;
   focusId?: string | null;
   canConfigure: boolean;
-  onSetPermission: (id: string, next: ActionPermission) => void;
+  onSetPermission: (ids: string[], next: ActionPermission) => void;
 }) {
+  const [visibleLimit, setVisibleLimit] = useState(ACTION_PAGE_SIZE);
+  const visibleActions = actions.slice(0, visibleLimit);
+  const focusedAction = focusId ? actions.find(action => action.id === focusId) : undefined;
+  if (focusedAction && !visibleActions.includes(focusedAction)) visibleActions.push(focusedAction);
   if (actions.length === 0) return null;
+  const groupValue = (() => {
+    const first = actionPermission(actions[0]!.id, enabledIds, askFirstIds);
+    return actions.every((action) => actionPermission(action.id, enabledIds, askFirstIds) === first)
+      ? first
+      : "";
+  })();
   return (
     <div>
-      <h3 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+      <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
+        <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+        {canConfigure ? (
+          // PAP-659 C6b: set the whole group at once, so narrowing a fresh
+          // connection's writes is one choice rather than one per action;
+          // per-row overrides stay underneath.
+          <label className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span className="sr-only">{`Set every action in ${title}`}</span>
+            <select
+              aria-label={`Set every action in ${title}`}
+              value={groupValue}
+              disabled={disabled}
+              onChange={(event) => {
+                // One change for the whole group: each row's setter rebuilds the
+                // full permission set from the same render, so looping it lets
+                // the last call overwrite the others.
+                onSetPermission(actions.map((action) => action.id), event.target.value as ActionPermission);
+              }}
+              className="h-7 rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
+            >
+              {groupValue === "" ? <option value="">Mixed</option> : null}
+              {PERMISSION_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>{`Set all: ${option.label}`}</option>
+              ))}
+            </select>
+          </label>
+        ) : null}
+      </div>
       <div className="divide-y divide-border">
-        {actions.map((action) => (
+        {visibleActions.map((action) => (
           <ActionRow
             key={action.id}
             action={action}
@@ -402,6 +463,11 @@ function ActionGroup({
           />
         ))}
       </div>
+      {visibleLimit < actions.length ? (
+        <Button type="button" variant="outline" size="sm" className="mt-3" onClick={() => setVisibleLimit(limit => limit + ACTION_PAGE_SIZE)}>
+          Show more {kind} actions
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -417,7 +483,7 @@ const PERMISSION_OPTIONS: Array<{
   { value: "allowed", label: "Allowed", description: "Runs without approval.", icon: Check },
 ];
 
-function ActionRow({
+const ActionRow = memo(function ActionRow({
   action,
   connectionId,
   appName,
@@ -434,11 +500,11 @@ function ActionRow({
   disabled: boolean;
   focused: boolean;
   canConfigure: boolean;
-  onSetPermission: (id: string, next: ActionPermission) => void;
+  onSetPermission: (ids: string[], next: ActionPermission) => void;
 }) {
   const rowRef = useRef<HTMLDivElement | null>(null);
   const [testOpen, setTestOpen] = useState(false);
-  const title = action.title ?? action.toolName;
+  const title = actionLabel(action);
 
   useEffect(() => {
     if (focused) rowRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -455,14 +521,27 @@ function ActionRow({
         data-action-id={action.id}
       >
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-foreground">{title}</div>
+          <div className="flex flex-wrap items-center gap-2">
+            {action.icons?.length ? (
+              <ProviderToolIcon icons={action.icons} fallback={NoIcon} className="h-4 w-4 shrink-0" testId="app-action-icon" />
+            ) : null}
+            <span className="text-sm font-medium text-foreground">{title}</span>
+            {/* PAP-659 C7: the gate is only as good as the classifier, so say
+                what each action was classified as. A misfiled tool is then one
+                glance to spot and one click to move. */}
+            <span
+              className="rounded-full border border-border px-1.5 py-px text-xs font-medium uppercase tracking-wide text-muted-foreground"
+              title={`Paperclip classified this action as ${action.riskLevel}`}
+            >
+              {action.riskLevel}
+            </span>
+          </div>
           {action.description ? (
             <div className="truncate text-xs text-muted-foreground">{action.description}</div>
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {canConfigure ? (
-            <TooltipProvider>
               <div
                 role="radiogroup"
                 aria-label={`${title} permission`}
@@ -480,7 +559,7 @@ function ActionRow({
                         aria-checked={selected}
                         aria-label={`${title}: ${option.label}`}
                         disabled={disabled}
-                        onClick={() => onSetPermission(action.id, option.value)}
+                        onClick={() => onSetPermission([action.id], option.value)}
                         className={cn(
                           "flex h-8 w-8 items-center justify-center rounded-sm text-muted-foreground outline-none transition-colors",
                           "hover:bg-background hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring",
@@ -491,14 +570,13 @@ function ActionRow({
                         <Icon className="h-3.5 w-3.5" />
                       </button>
                     </TooltipTrigger>
-                    <TooltipContent side="top">
+                    <TooltipContent className={ANALYTICS_MASK_CLASS} side="top">
                       <span className="font-medium">{option.label}</span> — {option.description}
                     </TooltipContent>
                   </Tooltip>
                 );
               })}
               </div>
-            </TooltipProvider>
           ) : (
             <span className="text-sm text-muted-foreground">
               {PERMISSION_OPTIONS.find((option) => option.value === value)?.label}
@@ -510,16 +588,16 @@ function ActionRow({
           </Button>
         </div>
       </div>
-      <ActionTestDialog
+      {testOpen ? <ActionTestDialog
         connectionId={connectionId}
         appName={appName}
         entry={action}
         open={testOpen}
         onOpenChange={setTestOpen}
-      />
+      /> : null}
     </>
   );
-}
+});
 
 function actionPermission(
   id: string,

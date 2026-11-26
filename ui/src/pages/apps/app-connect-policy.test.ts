@@ -1,4 +1,4 @@
-import { APP_STORE_DEFINITIONS, appSupportsCatalogSetup } from "@paperclipai/shared";
+import { APP_STORE_DEFINITIONS, aiConnectionRouterAppDefinition, appSupportsCatalogSetup, pluginAppSlug } from "@paperclipai/shared";
 import { describe, expect, it } from "vitest";
 import {
   MCP_DIRECT_OAUTH_CONNECT_SLUGS,
@@ -11,12 +11,21 @@ import {
 } from "./app-connect-policy";
 
 describe("app connect policy", () => {
+  it("admits a saved AI login handoff without a catalog source", () => {
+    expect(canEnterAppsConnect(new URLSearchParams("aiLogin=saved-login"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("aiLogin="))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("aiLogin=%20"))).toBe(false);
+  });
+
   it("derives automatic OAuth entry points from app capabilities", () => {
     expect(MCP_DIRECT_OAUTH_CONNECT_SLUGS).toEqual(expect.arrayContaining(["jira", "notion", "sentry"]));
     expect(isMcpDirectOAuthConnectSlug("notion")).toBe(true);
     expect(isMcpDirectOAuthConnectSlug("jira")).toBe(true);
+    // Asana and GitHub need an available Paperclip-managed profile for
+    // one-click sign-in. The static catalog defaults to their custom-app path.
     expect(isMcpDirectOAuthConnectSlug("asana")).toBe(false);
     expect(isMcpDirectOAuthConnectSlug("github")).toBe(false);
+    // Slack requires a customer-registered OAuth client.
     expect(isMcpDirectOAuthConnectSlug("slack")).toBe(false);
     expect(isMcpDirectOAuthConnectSlug(null)).toBe(false);
   });
@@ -26,9 +35,13 @@ describe("app connect policy", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=jira"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=asana"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
-    expect(canEnterAppsConnect(new URLSearchParams("source=context7"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=context7"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=zapier"))).toBe(true);
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=model-provider"))).toBe(false);
+    for (const source of ["responses-api", "messages-api", "chat-completions-api", "bedrock", "local", "antigravity", "google", "google-ai", "openrouter"]) {
+      expect(canEnterAppsConnect(new URLSearchParams({ source })), source).toBe(true);
+    }
     expect(canEnterAppsConnect(new URLSearchParams("byo=1"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("byo=1&source=zapier"))).toBe(false);
   });
@@ -49,6 +62,13 @@ describe("app connect policy", () => {
     expect(canEnterAppsConnect(new URLSearchParams("source=unknown&reconnect=connection-1"))).toBe(false);
   });
 
+  it("admits hidden providers only for known-provider retained setup routes", () => {
+    expect(canEnterAppsConnect(new URLSearchParams("source=monday"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=monday&resume=connection-1"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=monday&reconnect=connection-1"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=unknown&resume=connection-1"))).toBe(false);
+  });
+
   it("builds a generic source deep link", () => {
     expect(appSourceConnectHref("notion")).toBe("/apps/connect?source=notion");
     expect(appSourceConnectHref("notion", "intent-1"))
@@ -58,6 +78,20 @@ describe("app connect policy", () => {
     );
     expect(vercelConnectSourceHref()).toBe("/apps/vercel-connect");
     expect(vercelConnectSourceHref("notion")).toBe("/apps/vercel-connect?source=notion");
+  });
+
+  it("lets installed router connectors reach host catalog validation", () => {
+    const pool = aiConnectionRouterAppDefinition("example.pool", { name: "AI connection pool", description: "Use saved connections" });
+    const params = new URL(appSourceConnectHref(pool.slug), "http://paperclip.test").searchParams;
+    expect(canEnterAppsConnect(params)).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=ai-router-invalid"))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("source=ai-router-1"))).toBe(false);
+  });
+
+  it("lets plugin-provided connectors reach host catalog validation", () => {
+    const slug = pluginAppSlug("example.meetings", "circleback");
+    expect(canEnterAppsConnect(new URL(appSourceConnectHref(slug), "http://paperclip.test").searchParams)).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=plugin-zz-circleback"))).toBe(false);
   });
 
   it("routes every capability-backed catalog definition through its source deep link", () => {
@@ -82,9 +116,18 @@ describe("app connect policy", () => {
     expect(resolveAppsConnectRouteKey({})).toBeUndefined();
   });
 
-  it("retains GitHub tools but denies chat-only deep links while chat connectors are disabled", () => {
+  it("admits the GitHub bot without experimental chat flags and keeps tools available", () => {
+    const bot = new URLSearchParams("source=github-code-review-bot");
+    expect(canEnterAppsConnect(bot)).toBe(true);
+    expect(canEnterAppsConnect(bot, { chatConnectorsEnabled: false })).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=discord"))).toBe(false);
     expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
-    for (const source of ["discord", "telegram", "microsoft-teams"]) {
+  });
+  it("retains GitHub tools, GitHub review bots, and AgentMail while denying chat-only deep links when chat connectors are disabled", () => {
+    expect(canEnterAppsConnect(new URLSearchParams("source=github"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=github-code-review-bot"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("source=agentmail"))).toBe(true);
+    for (const source of ["discord", "telegram", "microsoft-teams", "speko"]) {
       expect(canEnterAppsConnect(new URLSearchParams({ source })), source).toBe(false);
       expect(canEnterAppsConnect(new URLSearchParams({ source, reconnect: "connection-1" })), source).toBe(false);
     }
