@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpRight, Check, Loader2, MoreHorizontal, ShieldQuestion, X } from "lucide-react";
-import type { ToolActionRequestListItem } from "@paperclipai/shared";
+import type { Agent, ToolActionRequestListItem } from "@paperclipai/shared";
 import { googleWorkspaceToolTitle, humanizeConnectionDisplayName } from "@paperclipai/shared";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
@@ -66,6 +66,14 @@ export function ReviewQueueCard({
     return connectionId ? all.filter((item) => item.connectionId === connectionId) : all;
   }, [query.data, connectionId]);
 
+  const decisions = layout === "decisions";
+  const agentsQuery = useQuery({
+    queryKey: queryKeys.agents.list(selectedCompanyId ?? "__none__"),
+    queryFn: () => agentsApi.list(selectedCompanyId!),
+    enabled: decisions && !!selectedCompanyId && items.some((item) => item.requestedByAgentId),
+  });
+  const agents = useMemo(() => indexAgentsById(agentsQuery.data ?? []), [agentsQuery.data]);
+
   if (!selectedCompanyId) return null;
   if (query.isLoading || view.kind === "reconnecting") return null;
   if (view.kind === "error") return <QueryErrorState error={query.error} action="load connection reviews" onRetry={view.retry} retrying={view.isFetching} />;
@@ -79,12 +87,12 @@ export function ReviewQueueCard({
     );
   }
 
-  if (layout === "decisions") {
+  if (decisions) {
     return (
       <ul aria-label="Requests to review" className="flex flex-col gap-3">
         {items.map((item) => (
           <li key={item.request.id}>
-            <ReviewRow companyId={selectedCompanyId} item={item} plain={false} decision />
+            <ReviewRow companyId={selectedCompanyId} item={item} plain={false} decision agent={item.requestedByAgentId ? agents.get(item.requestedByAgentId) ?? null : null} />
           </li>
         ))}
       </ul>
@@ -114,11 +122,13 @@ function ReviewRow({
   item,
   plain,
   decision = false,
+  agent = null,
 }: {
   companyId: string;
   item: ToolActionRequestListItem;
   plain: boolean;
   decision?: boolean;
+  agent?: Agent | null;
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -130,12 +140,6 @@ function ReviewRow({
     enabled: Boolean(item.request.issueId && item.request.interactionId),
   });
   const linkedInteraction = interactionQuery.data?.find(row => row.id === item.request.interactionId);
-  const agentsQuery = useQuery({
-    queryKey: queryKeys.agents.list(companyId),
-    queryFn: () => agentsApi.list(companyId),
-    enabled: decision && Boolean(item.requestedByAgentId),
-  });
-  const agent = agentsQuery.data?.find((entry) => entry.id === item.requestedByAgentId) ?? null;
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.tools.actionRequests(companyId, "pending") });
@@ -193,8 +197,19 @@ function ReviewRow({
     onSettled: () => setResolving(null),
   });
 
-  if (linkedInteraction) return <IssueThreadInteractionCard
+  if (decision && interactionQuery.isLoading) {
+    return (
+      <article className="coordinator-decision-card" aria-busy="true">
+        <p className="text-sm text-muted-foreground">Loading request…</p>
+      </article>
+    );
+  }
+
+  if (linkedInteraction) {
+    const card = <IssueThreadInteractionCard
     interaction={linkedInteraction}
+    presentationVariant={decision ? "coordinator-decision" : "default"}
+    primaryActionOnRight={decision}
     onAcceptInteraction={async (_interaction, _keys, _options, rememberAction) => {
       try { await toolsApi.approveActionRequest(companyId, item.request.id, rememberAction); }
       finally { invalidate(); }
@@ -204,6 +219,8 @@ function ReviewRow({
       finally { invalidate(); }
     }}
   />;
+    return decision ? <article className="coordinator-decision-card space-y-3">{card}</article> : card;
+  }
 
   const busy = resolving !== null;
   const preview = item.request.previewMarkdown?.trim();
@@ -214,14 +231,14 @@ function ReviewRow({
     const app = item.applicationName ? humanizeConnectionDisplayName(item.applicationName) : null;
     const risk = item.riskLevel ? RISK_LABELS[item.riskLevel] : null;
     return (
-      <article className="coordinator-decision-card space-y-3" aria-label={app ? `${action} in ${app}` : action}>
+      <article className={cn("coordinator-decision-card space-y-3", ANALYTICS_MASK_CLASS)} aria-label={app ? `${action} in ${app}` : action}>
         <div className="flex items-center justify-between gap-4">
           <span className="min-w-0 truncate text-xs leading-4.5 text-muted-foreground">Approve tool access</span>
           <div className="flex shrink-0 items-center gap-3" data-attention-context>
             {agent ? (
               <span className="inline-flex min-w-0 items-center gap-2 text-xs leading-4.5 text-muted-foreground">
                 <AgentAvatar agent={agent} size={20} />
-                <span className={cn("truncate", ANALYTICS_MASK_CLASS)}>from {agent.name}</span>
+                <span className="truncate">from {agent.name}</span>
               </span>
             ) : null}
             <time className="shrink-0 text-xs leading-4.5 text-muted-foreground" dateTime={new Date(item.request.createdAt).toISOString()}>
@@ -245,7 +262,7 @@ function ReviewRow({
           </div>
         </div>
         <div className="space-y-1.5">
-          <h2 className={ANALYTICS_MASK_CLASS}>{app ? `${action} in ${app}` : action}</h2>
+          <h2>{app ? `${action} in ${app}` : action}</h2>
           <p className="text-sm text-muted-foreground">
             {app ? `${action} is set to Ask first in ${app}, so it waits for your OK.` : "This action is set to Ask first, so it waits for your OK."} Allow once runs it now.
           </p>
@@ -258,7 +275,7 @@ function ReviewRow({
               meta={<>{action}{risk ? <> · <span className={cn(risk.danger && "text-destructive")}>{risk.label}</span></> : null}</>}
             />
           ) : null}
-          {preview ? <div className={cn("text-sm", ANALYTICS_MASK_CLASS)}><MarkdownBody>{preview}</MarkdownBody></div> : null}
+          {preview ? <div className="text-sm"><MarkdownBody>{preview}</MarkdownBody></div> : null}
           {agent ? <NeedsYouPanelNote>Requested by {agent.name}.</NeedsYouPanelNote> : null}
         </NeedsYouPanel>
         <DecisionCardFooter
@@ -332,6 +349,12 @@ const RISK_LABELS: Record<NonNullable<ToolActionRequestListItem["riskLevel"]>, {
   write: { label: "Changes data", danger: false },
   destructive: { label: "Destructive", danger: true },
 };
+
+export function indexAgentsById<T extends { id: string }>(agents: readonly T[]): Map<string, T> {
+  const byId = new Map<string, T>();
+  for (const agent of agents) byId.set(agent.id, agent);
+  return byId;
+}
 
 function actionLabel(item: ToolActionRequestListItem): string {
   if (!item.toolTitle && !item.toolName) return "This action";
