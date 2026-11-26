@@ -76,6 +76,7 @@ import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
 import { CloudPortfolioError } from "./services/cloud-portfolio-error.js";
 import { SecretSensitiveRequestError } from "./middleware/secret-sensitive-request-error.js";
 import { storageFailureDiagnosticsFor } from "./storage/failure-diagnostics.js";
+import { oauthProviderFailureDiagnosticsFor } from "./services/tool-access/oauth/provider-failure-diagnostics.js";
 import { directoryMergeLockTimeoutDiagnosticsFor } from "@paperclipai/adapter-utils/directory-merge-lock-diagnostics";
 import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
 import { readBuildCommit } from "./build-commit.js";
@@ -137,6 +138,7 @@ export function captureException(error: unknown, reference?: SentryRunReference)
     } : {};
     const storageFailure = storageFailureDiagnosticsFor(error);
     const lockTimeout = directoryMergeLockTimeoutDiagnosticsFor(error);
+    const oauthProviderFailure = oauthProviderFailureDiagnosticsFor(error);
     if (error instanceof AdapterStopTimeoutError) {
       // Event-local, fixed-shape context: no ambient scope or raw error fields.
       const exception = new Error(error.message);
@@ -187,6 +189,17 @@ export function captureException(error: unknown, reference?: SentryRunReference)
         contexts: { directory_merge_lock: { ...lockTimeout } },
         fingerprint: ["{{ default }}"],
       });
+    } else if (oauthProviderFailure) {
+      sentryHandle.captureException(error, {
+        tags: {
+          ...tags,
+          oauth_operation: oauthProviderFailure.operation,
+          oauth_provider_status: String(oauthProviderFailure.httpStatus),
+          ...(oauthProviderFailure.providerError ? { oauth_provider_error: oauthProviderFailure.providerError } : {}),
+        },
+        contexts: { oauth_provider_failure: { ...oauthProviderFailure } },
+        fingerprint: ["{{ default }}"],
+      });
     } else if (reference) {
       sentryHandle.captureException(error, { tags, contexts: {}, fingerprint: ["{{ default }}"] });
     } else {
@@ -220,6 +233,8 @@ export interface RunFailureEvent {
   /** The run status that triggered this report. */
   runStatus: HeartbeatRunStatus;
   failureSource?: "task_interruption";
+  /** A task-state event's observed run error code. It is a tag, not a fingerprint part. */
+  runErrorCode?: string | null;
   /** Bounded, redacted diagnostics selected by the run failure reporter. */
   diagnostics?: RunFailureDiagnostics;
   /** Recorded process exit evidence, when available. Validated before capture. */
@@ -269,6 +284,8 @@ function captureRunFailureEvent(event: RunFailureEvent): string | null {
       diagnostics?.exceptions.at(-1)?.code;
     const rootErrorCode = typeof rootCodeCandidate === "string" && /^[a-zA-Z][a-zA-Z0-9_]{1,99}$/.test(rootCodeCandidate)
       ? rootCodeCandidate : undefined;
+    const runErrorCode = typeof event.runErrorCode === "string" && /^[a-zA-Z][a-zA-Z0-9_]{1,99}$/.test(event.runErrorCode)
+      ? event.runErrorCode : undefined;
     // Without a usable root code, unrelated failures that share the error code,
     // adapter and phase would collapse into one group. Fall back to the root
     // exception's class name plus its HTTP status or numeric code. These are
@@ -284,6 +301,11 @@ function captureRunFailureEvent(event: RunFailureEvent): string | null {
         rootFallback.push(`code:${rootException.code}`);
       }
     }
+    // A native turn failure's runner-issued code is closed vocabulary. Without
+    // it, every unclassified native turn failure shares one group.
+    const runnerCodeCandidate = diagnostics?.provider.runnerFailureCode;
+    const runnerFailureCode = typeof runnerCodeCandidate === "string" && runnerCodeCandidate !== "unrecognized" &&
+      /^[a-z][a-z0-9_]{1,99}$/.test(runnerCodeCandidate) ? runnerCodeCandidate : undefined;
     const phase = diagnostics?.execution.failurePhase;
     const failurePhase = phase === "setup" || phase === "execute" ? phase : undefined;
     const contexts: Record<string, Record<string, unknown>> = {};
@@ -337,6 +359,7 @@ function captureRunFailureEvent(event: RunFailureEvent): string | null {
         event_kind: "run_failure",
         ...(event.failureSource ? { failure_source: event.failureSource } : {}),
         ...(rootErrorCode ? { root_error_code: rootErrorCode } : {}),
+        ...(runErrorCode ? { run_error_code: runErrorCode } : {}),
         ...(failurePhase ? { failure_phase: failurePhase } : {}),
         run_id: event.runId,
         ...(event.taskId ? { task_id: event.taskId } : {}),
@@ -358,7 +381,8 @@ function captureRunFailureEvent(event: RunFailureEvent): string | null {
           signal: normalizeRunSignal(event.signal),
         },
       },
-      fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : rootFallback)],
+      fingerprint: [errorCode, event.agentAdapter, ...(failurePhase ? [failurePhase] : []), ...(rootErrorCode ? [rootErrorCode] : rootFallback),
+        ...(runnerFailureCode ? [`runner:${runnerFailureCode}`] : [])],
     });
   } catch (err) {
     // eslint-disable-next-line no-console
@@ -393,7 +417,7 @@ function confirmTaskInterruptionDelivery(eventId: string | undefined, statusCode
 }
 
 export function captureTaskInterruptionFailure(event: Pick<RunFailureEvent,
-  "companyId" | "agentId" | "taskId" | "runId" | "runStatus" | "agentAdapter"> & { intentId: string | null }): void {
+  "companyId" | "agentId" | "taskId" | "runId" | "runStatus" | "agentAdapter" | "runErrorCode"> & { intentId: string | null }): void {
   const key = JSON.stringify([event.companyId, event.taskId, event.runId, event.intentId]);
   if (reportedTaskInterruptions.has(key)) return;
   const now = Date.now();
@@ -411,6 +435,7 @@ export function captureTaskInterruptionFailure(event: Pick<RunFailureEvent,
     errorMessage: "Couldn’t finish this attempt. Your message is saved.",
     errorCode: "task_attempt_failed",
     failureSource: "task_interruption",
+    runErrorCode: event.runErrorCode,
   });
   if (!eventId) return;
   pendingTaskInterruptions.set(key, { eventId, retryAt: now + TASK_INTERRUPTION_DELIVERY_RETRY_MS });

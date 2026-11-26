@@ -5,15 +5,13 @@ import { planTasks } from "../../.github/scripts/ci-plan.mjs";
 import { productInputs } from "../../.github/scripts/ci-inputs.mjs";
 import { selectionEligibility } from "../ci/select-tests.mjs";
 
-const chatSuite = "server/src/__tests__/chat-channels.integration.test.ts";
-
 function inventory(root, env, group) {
   const args = group === "serialized" ? ["--mode", "serialized"] : ["--mode", "general", "--group", group];
-  const shards = ["general-workspaces-b", "general-workspaces-c"].includes(group) ? []
+  const shards = ["general-workspaces-b", "general-workspaces-c", "general-chat"].includes(group) ? []
     : ["--shard-index", "0", "--shard-count", "1"];
   return JSON.parse(execFileSync(process.execPath, [path.join(root, "scripts/run-vitest-stable.mjs"), ...args,
     ...shards, "--dry-run"], {
-    cwd: root, env, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
+    cwd: root, env: { ...env, PAPERCLIP_CI_FULL: "1" }, encoding: "utf8", maxBuffer: 16 * 1024 * 1024,
   }));
 }
 
@@ -29,7 +27,7 @@ export async function planVerification({ root, env, diff, full = false }) {
   try {
     const groups = [...new Set(["general_tests", "verify_serialized_server"].flatMap(job =>
       coarse.jobs[job]?.run ? coarse.jobs[job].matrix.include.map(entry => entry.group ?? "serialized") : []))];
-    const inventories = new Map(groups.filter(group => group !== "general-chat").map(group => [group, inventory(root, env, group)]));
+    const inventories = new Map(groups.map(group => [group, inventory(root, env, group)]));
     const projects = [...new Set([...inventories.values()].flatMap(value => value.workspaceProjects ?? ["@paperclipai/server"]))];
     const { selectProjects } = await import("../ci/select-projects.mjs");
     const graphs = await selectProjects({ root, projects, changed: productInputs(diff.changed), concurrency: 1, env });
@@ -40,18 +38,14 @@ export async function planVerification({ root, env, diff, full = false }) {
     const byProject = new Map(graphs.map(graph => [graph.project, graph]));
     const manifest = { version: 1, head: diff.head, lanes: {} }, jobs = [], selectedFiles = new Set();
     for (const group of groups) {
-      if (group === "general-chat") {
-        if (byProject.get("@paperclipai/server")?.selected.includes(chatSuite)) {
-          selectedFiles.add(chatSuite);
-          for (let index = 0; index < 6; index++) jobs.push({ id: `chat-${index + 1}`, cacheable: false, args: ["--mode", "general", "--group", group,
-            "--shard-index", String(index), "--shard-count", "6", "--serial-chat"] });
-        }
-        continue;
-      }
       const value = inventories.get(group);
       const owners = value.workspaceProjects
         ? Object.fromEntries(value.workspaceProjects.map(project => [project, byProject.get(project).inventory]))
-        : { "@paperclipai/server": group === "serialized" ? value.selectedSerializedSuites : value.selectedGeneralServerSuites };
+        : { "@paperclipai/server": group === "serialized"
+          ? value.selectedSerializedSuites
+          : group === "general-chat"
+            ? value.selectedChatSuites
+            : value.selectedGeneralServerSuites };
       const reusable = {}, fresh = {};
       for (const [project, files] of Object.entries(owners)) {
         const graph = byProject.get(project), all = new Set(graph.inventory), affected = new Set(graph.selected);

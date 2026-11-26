@@ -16,7 +16,6 @@
   "urlPatterns": [
     "https://workspace.google.com/*"
   ],
-  "docsUrl": "https://developers.google.com/workspace/guides/configure-mcp-servers",
   "setupPrerequisite": {
     "title": "Google Developer Preview access required",
     "description": "Google must register the Workspace email and the Cloud project that owns the OAuth client before these services can be used.",
@@ -111,10 +110,10 @@
           "prompt": "consent"
         }
       },
-      "guidanceMd": "Enable the Google Workspace MCP APIs and register Paperclip's callback URI. Choose which permissions to grant on Google's consent screen; declined permissions disable only the corresponding actions.",
+      "guidanceMd": "Enable the Gmail, Drive, Docs, Sheets, Slides, and Calendar APIs in your Google Cloud project and register Paperclip's callback URI. Choose which permissions to grant on Google's consent screen; declined permissions disable only the corresponding actions.",
       "consoleLinks": {
         "register": "https://console.cloud.google.com/auth/clients",
-        "docs": "https://developers.google.com/workspace/guides/configure-mcp-servers"
+        "docs": "https://developers.google.com/workspace/guides/create-credentials#oauth-client-id"
       },
       "riskTier": "S4"
     }

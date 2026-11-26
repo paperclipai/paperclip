@@ -1,7 +1,7 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { chatConversations, chatEndpoints, heartbeatRuns, issues, statusDecisions, type Db } from "@paperclipai/db";
-import { readInheritedGitHubReviewWait } from "../chat-channels/github/review-wait.js";
-import { authorizeChatConversationForBoundRun } from "./chat-attachment-reuse.js";
+import { readInheritedGitHubReviewWaits } from "../chat-channels/github/review-wait.js";
+import { authorizeChatConversationsForBoundRuns } from "./chat-attachment-reuse.js";
 import { EXTERNAL_CHAT_QUESTION_RESPONSE_KEY } from "./external-chat-question-response.js";
 
 const authorizationContextKeys = [
@@ -61,20 +61,45 @@ export async function listExternalReviewWaits(db: Db, companyId: string, issueId
       eq(chatEndpoints.status, "active"),
     ))
     .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds), eq(issues.status, "in_review")));
-  const waits = await Promise.all(candidates.map(async ({ runId, agentId, contextSnapshot, responsibleUserId, activeIdentityContextId, ...wait }) => {
-    try {
-      const inheritedWait = await readInheritedGitHubReviewWait(db, {
-        id: runId, companyId, agentId, responsibleUserId, activeIdentityContextId,
-        nativeIssueId: wait.issueId, issueId: wait.issueId, contextSnapshot,
-      });
-      if (inheritedWait?.kind === "revoked") return null;
-      await authorizeChatConversationForBoundRun(db, { companyId, issueId: wait.issueId, runId, agentId }, inheritedWait?.context ?? contextSnapshot, "read");
-      return wait;
-    } catch (error) {
-      if (error instanceof Error && ["paperclip_runner_chat_attachment_binding_denied",
-        "paperclip_runner_chat_attachment_destination_denied", "paperclip_runner_chat_attachment_principal_denied"].includes(error.message)) return null;
-      throw error;
+  // One review read and one publication read for every wait of the page, not
+  // two reads per wait. Each wait gets the same inherited result as before.
+  const inheritedWaits = await readInheritedGitHubReviewWaits(db, candidates.map(candidate => ({
+    id: candidate.runId, companyId, agentId: candidate.agentId, responsibleUserId: candidate.responsibleUserId,
+    activeIdentityContextId: candidate.activeIdentityContextId, nativeIssueId: candidate.issueId,
+    issueId: candidate.issueId, contextSnapshot: candidate.contextSnapshot,
+  })));
+  const authorizable = candidates.flatMap(({ runId, agentId, contextSnapshot, responsibleUserId: _user, activeIdentityContextId: _context, ...wait }, index) => {
+    const inheritedWait = inheritedWaits[index];
+    if (inheritedWait?.kind === "revoked") return [];
+    return [{ wait, binding: { companyId, issueId: wait.issueId, runId, agentId },
+      contextSnapshot: inheritedWait?.context ?? contextSnapshot }];
+  });
+  // One authorization read for every wait of the page, not one per wait: the
+  // per-wait reads each held a pool connection at the same moment.
+  const authorized = await authorizeChatConversationsForBoundRuns(db, companyId, authorizable);
+  return authorizable.filter((_candidate, index) => authorized[index] !== null).map(({ wait }) => wait);
+}
+
+export type ExternalReviewWait = Awaited<ReturnType<typeof listExternalReviewWaits>>[number];
+export type ExternalReviewWaitReader = (issueIds: string[]) => Promise<ExternalReviewWait[]>;
+
+/** Share one company's wait reads between callers that serve one request.
+ * Each issue's wait is independent of the other requested issues, so an issue
+ * is read at most once. Do not keep a reader beyond its request. */
+export function createExternalReviewWaitReader(db: Db, companyId: string,
+  list: typeof listExternalReviewWaits = listExternalReviewWaits): ExternalReviewWaitReader {
+  const byIssueId = new Map<string, Promise<ExternalReviewWait | null>>();
+  return async (issueIds) => {
+    const requested = [...new Set(issueIds)];
+    const missing = requested.filter(issueId => !byIssueId.has(issueId));
+    if (missing.length) {
+      const read = list(db, companyId, missing)
+        .then(waits => new Map(waits.map(wait => [wait.issueId, wait])));
+      for (const issueId of missing) {
+        byIssueId.set(issueId, read.then(waits => waits.get(issueId) ?? null));
+      }
     }
-  }));
-  return waits.filter((wait): wait is NonNullable<typeof wait> => wait !== null);
+    const waits = await Promise.all(requested.map(issueId => byIssueId.get(issueId)!));
+    return waits.filter((wait): wait is ExternalReviewWait => wait !== null);
+  };
 }

@@ -1,6 +1,7 @@
 import express from "express";
 import request from "supertest";
-import { getTableName } from "drizzle-orm";
+import { getTableName, type SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError, unprocessable } from "../errors.js";
 import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
@@ -39,6 +40,7 @@ const mockHeartbeatService = vi.hoisted(() => ({
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async (): Promise<unknown> => null),
   getActiveRunForAgent: vi.fn(async () => null),
+  getQueuedAssignmentRunForIssue: vi.fn(async () => null),
   cancelRun: vi.fn(async (): Promise<unknown> => null),
 }));
 
@@ -158,6 +160,22 @@ vi.mock("../services/queued-interaction-response.js", () => ({
 
 vi.mock("../services/access.js", () => ({
   accessService: () => mockAccessService,
+}));
+
+const mockSwarm = vi.hoisted(() => ({
+  refusal: vi.fn(async (): Promise<string | null> => null),
+  record: vi.fn(async () => undefined),
+  // Stands in for the stored request record: marks every comment it is given.
+  markers: vi.fn(async (_db: unknown, _companyId: string, _issueId: string, comments: Array<Record<string, unknown>>) =>
+    comments.map(comment => ({ ...comment, nativeCommand: "swarm" }))),
+}));
+vi.mock("../services/antigravity-swarm.js", async () => ({
+  ...await vi.importActual<object>("../services/antigravity-swarm.js"),
+  ANTIGRAVITY_SWARM_COMMAND: "swarm",
+  ANTIGRAVITY_SWARM_UNAVAILABLE: "antigravity_swarm_unavailable",
+  antigravitySwarmCommentRefusal: mockSwarm.refusal,
+  recordAntigravitySwarmRequest: mockSwarm.record,
+  withAntigravitySwarmMarkers: mockSwarm.markers,
 }));
 
 vi.mock("../services/activity-log.js", () => ({
@@ -455,6 +473,20 @@ describe("issue comment reopen routes", () => {
     }));
     mockDbSelectFrom.mockImplementation((table) => {
       const name = getTableName(table as Parameters<typeof getTableName>[0]);
+      if (name === "issues" || name === "agents") return { where: (condition: SQL) => {
+        const ids = [...new Set(new PgDialect().sqlToQuery(condition).params
+          .filter((value): value is string => typeof value === "string" && value !== "company-1"))];
+        const rows = async () => name === "issues"
+          ? (await Promise.all(ids.map(id => mockIssueService.getById(id)))).filter(row => row && ids.includes(row.id))
+          : ids.map(id => ({ id, companyId: "company-1", permissions: null }));
+        const query = {
+          orderBy: () => query,
+          for: () => query,
+          then: (resolve: (rows: unknown[]) => unknown, reject?: (reason: unknown) => unknown) =>
+            rows().then(resolve, reject),
+        };
+        return query;
+      } };
       if (name === "case_handoffs") return { where: vi.fn(() => ({
         orderBy: vi.fn(() => ({ limit: vi.fn(async () => []) })),
       })) };
@@ -1047,7 +1079,7 @@ describe("issue comment reopen routes", () => {
       // Plan §6: name the boundary, who can act, and the sanctioned path.
       expect(res.body.error).toContain("Issue visibility");
       expect(res.body.error).toContain("Who can act:");
-      expect(res.body.details.sanctionedPath).toContain("child issue");
+      expect(res.body.details.sanctionedPath).toContain("Ask the board to widen visibility");
       expect(mockAccessService.decide).toHaveBeenCalledWith(
         expect.objectContaining({ action: "issue:comment" }),
       );
@@ -1231,6 +1263,7 @@ describe("issue comment reopen routes", () => {
         assigneeAgentId: otherAgentId,
         status: "todo",
       }),
+      mockTx,
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -1282,6 +1315,92 @@ describe("issue comment reopen routes", () => {
         }),
       ),
     );
+  });
+
+  it("records a signed-in user's /swarm request and marks the assignee's wake with it", async () => {
+    mockSwarm.refusal.mockResolvedValue(null);
+    mockIssueService.getById.mockResolvedValue(makeIssue("blocked"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({ ...makeIssue("blocked"), ...patch }));
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "two helpers write a.txt and b.txt", nativeCommand: "swarm" });
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({ id: "comment-1", nativeCommand: "swarm" });
+    // Written in the same transaction as the comment, so neither can exist without the other.
+    expect(mockSwarm.record).toHaveBeenCalledWith(mockTx, expect.objectContaining({ commentId: "comment-1", userId: "local-board" }));
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.anything(), expect.anything(), mockTx);
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      "22222222-2222-4222-8222-222222222222",
+      expect.objectContaining({ contextSnapshot: expect.objectContaining({ antigravitySwarmCommentId: "comment-1" }) }),
+    ));
+  });
+
+  it("refuses an unavailable /swarm in plain language and posts nothing", async () => {
+    mockSwarm.refusal.mockResolvedValue("Swarm is not turned on for this Paperclip.");
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "do it", nativeCommand: "swarm" });
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ error: "Swarm is not turned on for this Paperclip.", code: "antigravity_swarm_unavailable" });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an empty request", "", /no request/],
+    ["no request", "  ", /no request/],
+    ["a request that is too long", "x".repeat(16_001), /too long/],
+  ])("refuses a /swarm with %s at submit and posts nothing", async (_name, body, message) => {
+    mockSwarm.refusal.mockResolvedValue(null);
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body, nativeCommand: "swarm" });
+    expect(res.status).toBe(422);
+    expect(res.body).toMatchObject({ error: expect.stringMatching(message), code: "antigravity_swarm_unavailable" });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockSwarm.record).not.toHaveBeenCalled();
+  });
+
+  it("still rejects an empty ordinary comment with the validation error it always had", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "" });
+    expect(res.status).toBe(400);
+    expect(res.body).toMatchObject({ error: "Validation error",
+      details: [expect.objectContaining({ code: "too_small", minimum: 1, path: ["body"] })] });
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("returns the original receipt for an accepted /swarm resent after the setting was turned off, starting nothing twice", async () => {
+    // The first send committed but its response was lost; then the swarm setting was turned off.
+    mockSwarm.refusal.mockResolvedValue("Swarm is not turned on for this Paperclip.");
+    const issue = makeIssue("todo");
+    mockIssueService.getById.mockResolvedValue(issue);
+    const selectFrom = mockDbSelectFrom.getMockImplementation()!;
+    mockDbSelectFrom.mockImplementation((table) => getTableName(table as Parameters<typeof getTableName>[0]) === "issue_comments"
+      ? { where: vi.fn(() => Object.assign(Promise.resolve([{ id: "comment-1" }]), { for: async () => [{ id: "comment-1" }] })) } as any
+      : getTableName(table as Parameters<typeof getTableName>[0]) === "activity_log" ? { where: async () => [{ id: "activity-1" }] } as any : selectFrom(table));
+    const response = await request(await installActor(createApp())).post(`/api/issues/${issue.id}/comments`)
+      .send({ body: "two helpers", nativeCommand: "swarm", clientRequestId: "77777777-7777-4777-8777-777777777777" });
+    expect(response.status).toBe(201);
+    expect(response.body.id).toBe("comment-1");
+    // The resent receipt carries the same marker as the first send, from the stored record.
+    expect(response.body.nativeCommand).toBe("swarm");
+    expect(mockSwarm.markers).toHaveBeenCalledWith(expect.anything(), issue.companyId, issue.id, [expect.objectContaining({ id: "comment-1" })]);
+    expect(mockSwarm.record).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("accepts a swarm request only from a signed-in user", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    const res = await request(await installActor(createApp(), { type: "agent", agentId: "33333333-3333-4333-8333-333333333333", companyId: "company-1" }))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "do it", nativeCommand: "swarm" });
+    expect(res.status).toBe(403);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("moves in-progress issues with a scheduled retry back to todo via POST human comments", async () => {
@@ -2408,6 +2527,7 @@ describe("issue comment reopen routes", () => {
         actorAgentId: "22222222-2222-4222-8222-222222222222",
         actorUserId: null,
       }),
+      mockTx,
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),

@@ -697,6 +697,33 @@ describe("runner E2E report aggregation", () => {
     ).toBe("warm-turn-png");
   });
 
+  it("does not stage a private cell's trace viewer font, SVG or manifest into the merged report", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-e2e-report-carriers-"));
+    cleanupDirectories.push(root);
+    const executionId = "chat-features.runner-opencode.local.runs-adapters.inspect-failed-run";
+    const directory = path.join(root, "attempt-1");
+    const staged = ["final-state.png", "html-report/index.html", "html-report/trace/index.html", "html-report/trace/index.KZ4wOW1K.js", "html-report/data/0123456789abcdef0123456789abcdef01234567.zip"];
+    const refused = ["html-report/trace/codicon.DCmgc-ay.ttf", "html-report/trace/manifest.webmanifest", "html-report/trace/playwright-logo.svg"];
+    for (const file of [...staged, ...refused]) {
+      await mkdir(path.join(directory, path.dirname(file)), { recursive: true });
+      await writeFile(path.join(directory, file), `synthetic ${file}`);
+    }
+    await writeFile(path.join(directory, "result.json"), JSON.stringify({
+      schema: "paperclip.runner-e2e.result/v1", executionId, attempt: 1, status: "passed",
+      profileId: "runner-opencode", environmentId: "local", caseId: "runs-adapters.inspect-failed-run", provider: "opencode", model: "fixture-model",
+      runtimeMode: "native", startedAt: "2026-11-07T00:00:00.000Z", finishedAt: "2026-11-07T00:00:01.000Z", durationMs: 1_000, cleanup: "passed",
+    } satisfies RunnerE2EResult));
+    await writeFile(path.join(directory, "evidence-manifest.json"), JSON.stringify({ files: [...staged, ...refused], leaks: [], missing: [] }));
+    const output = path.join(root, "merged");
+    await execFileAsync(process.execPath, [path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"), path.join(repositoryRoot, "tests/runner-e2e/report.ts")], {
+      cwd: repositoryRoot,
+      env: { ...process.env, PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root, PAPERCLIP_RUNNER_E2E_REPORT_OUT: output, PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([executionId]) },
+    }).catch(error => { throw new Error(String(error.stderr).slice(-1500)); });
+    const evidence = path.join(output, "evidence", executionId, "attempt-1");
+    for (const file of staged) expect(await readFile(path.join(evidence, file), "utf8")).toBe(`synthetic ${file}`);
+    for (const file of refused) await expect(readFile(path.join(evidence, file))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("constructs the public root JUnit from fixed markup and escaped fields", async () => {
     const root = await mkdtemp(
       path.join(os.tmpdir(), "runner-e2e-report-junit-test-"),

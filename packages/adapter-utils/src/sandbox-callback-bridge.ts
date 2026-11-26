@@ -153,6 +153,9 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/companies\/[^/]+\/skills$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/skills\/[^/]+$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/skills\/[^/]+\/files$/ },
+  // Supporting files of approved skills from connected apps (MCP Skills). The
+  // controller checks the run, the app grant and the approved file manifest.
+  { method: "GET", path: /^\/api\/agents\/me\/mcp-skills\/[^/]+\/files$/ },
   { method: "GET", path: /^\/api\/projects\/[^/]+$/ },
   { method: "GET", path: /^\/api\/goals\/[^/]+$/ },
 
@@ -168,6 +171,7 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/companies\/[^/]+\/email\/tasks\/[^/]+$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/email\/deliveries\/[^/]+$/ },
   { method: "POST", path: /^\/api\/companies\/[^/]+\/email\/send$/ },
+  { method: "POST", path: /^\/api\/companies\/[^/]+\/slack\/tasks\/[^/]+\/tools$/ },
 
   // Issue lifecycle: read context, checkout, update, comment, document, release
   { method: "GET", path: /^\/api\/issues\/[^/]+$/ },

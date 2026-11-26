@@ -23,7 +23,9 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
     from(table: unknown) {
       return {
         where() {
-          return Promise.resolve(rowsForTable(table));
+          return Object.assign(Promise.resolve(rowsForTable(table)), {
+            prepare: () => ({ execute: async () => rowsForTable(table) }),
+          });
         },
       };
     },

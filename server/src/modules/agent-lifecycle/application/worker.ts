@@ -45,8 +45,15 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
         }
         if (!operation.hostComplete) {
           if (!await runStep("renew", () => store.renew(agent, owner, new Date()))) continue;
-          if (await runStep("host", () => driver.runHost(agent)) === "pending") {
-            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date()))) continue;
+          const host = await runStep("host", () => driver.runHost(agent));
+          if (host === "waiting") {
+            if (agent.lifecycleState !== "verifying") throw new Error("Only host verification may await an external event");
+            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date(), { waitForSignal: true }))) continue;
+            return;
+          }
+          if (host === "pending" || typeof host === "object") {
+            const pendingReason = typeof host === "object" ? host.pending : "host_step_pending";
+            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date(), { pendingReason }))) continue;
             return;
           }
           if (!await runStep("complete_host", () => store.completeHost(agent, owner))) continue;
@@ -59,7 +66,7 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
           }
           if (!await runStep("renew", () => store.renew(agent, owner, new Date()))) continue phase;
           if (await runStep("plugin", () => driver.runPlugin(agent, pluginId), pluginId) === "pending") {
-            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date()))) continue phase;
+            if (!await runStep("defer", () => store.defer(agent, owner, null, new Date(), { pendingReason: "plugin_step_pending" }))) continue phase;
             return;
           }
           if (!await runStep("complete_plugin", () => store.completePlugin(agent, owner, pluginId), pluginId)) continue phase;

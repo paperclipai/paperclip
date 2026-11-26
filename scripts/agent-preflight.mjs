@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// One-command preflight for an agent worktree: install, the Runner build and
-// the Runner's debug binaries, skipping work whose inputs are unchanged and
+// One-command preflight for an agent worktree: install, the plugin SDK build,
+// the Runner build and the Runner's debug binaries, skipping work whose inputs are unchanged and
 // reusing other worktrees' results through the content-addressed cache in
 // scripts/agent-build-cache.mjs.
 //
 // It replaces this sequence, with the same results:
 //   pnpm install --frozen-lockfile
+//   pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
 //   pnpm --filter @paperclipai/paperclip-runner run ensure:eval-build-deps
 //   pnpm --filter @paperclipai/paperclip-runner run build:rust
 //   pnpm --filter @paperclipai/paperclip-runner build
@@ -14,6 +15,8 @@
 // Steps:
 //   install       skipped when the lockfile, manifests, patches and toolchain
 //                 match the last successful install in this worktree
+//   plugin sdk    skipped when ensure-plugin-build-deps finds the SDK and
+//                 @paperclipai/shared outputs match their source fingerprints
 //   runner build  skipped when the Runner's own build stamp is current;
 //                 restored from the cache when another worktree built the same
 //                 inputs; otherwise built, then published
@@ -96,6 +99,40 @@ function installStep(root, options, toolchain) {
   const seconds = exec("pnpm", ["install", "--frozen-lockfile", "--prefer-offline"], root);
   if (key) writeJson(stampFile, { key, modulesMtimeMs: statSync(modules).mtimeMs });
   return { step: "install", action: "ran", seconds };
+}
+
+// --- plugin SDK build -----------------------------------------------------
+
+// @paperclipai/plugin-sdk exports its built dist rather than its TypeScript
+// source, so plugin workers can load it under plain Node. Apart from the
+// Runner and eval kernel, which the Runner build step covers, it is the only
+// workspace package the server imports that way. The server (and anything that imports
+// server modules, such as the restart-chaos harness) cannot start without it.
+// ensure-plugin-build-deps builds it and its @paperclipai/shared dependency,
+// skips both when its content fingerprints show the outputs are current, and
+// takes the same lock as its other callers (CI, `paperclipai run`, typecheck).
+// The two packages compile in about two seconds, so they skip the shared
+// cache: a clone of their dist would save almost nothing.
+export const PLUGIN_SDK_BUILD_MARKERS = ["packages/shared/dist/.paperclip-build-complete",
+  "packages/plugins/sdk/dist/.paperclip-build-complete"];
+
+function markerState(root, marker) {
+  try {
+    const file = path.join(root, marker);
+    return `${statSync(file).mtimeMs}:${readFileSync(file, "utf8")}`;
+  } catch { return null; }
+}
+
+export function pluginSdkBuildStep(root, run = exec) {
+  const before = PLUGIN_SDK_BUILD_MARKERS.map(marker => markerState(root, marker));
+  const seconds = run(process.execPath, ["scripts/ensure-plugin-build-deps.mjs"], root);
+  const after = PLUGIN_SDK_BUILD_MARKERS.map(marker => markerState(root, marker));
+  const missing = PLUGIN_SDK_BUILD_MARKERS.filter((_, index) => after[index] === null);
+  if (missing.length > 0) throw new Error(`plugin SDK build left no completion marker at ${missing.join(", ")}`);
+  if (before.every((state, index) => state === after[index])) {
+    return { step: "plugin-sdk", action: "skipped", reason: "SDK and shared sources unchanged since this worktree's build" };
+  }
+  return { step: "plugin-sdk", action: "built", seconds };
 }
 
 // --- cargo seed ------------------------------------------------------------
@@ -294,6 +331,7 @@ export function preflight({ root, options, env = process.env }) {
 
   const toolchain = toolchainIdentity(root, env);
   record(installStep(root, options, toolchain));
+  record(pluginSdkBuildStep(root));
   const bins = debugContract(root).bins;
   record(restoreSeed(root, cache, toolchain));
   record(runnerBuildStep(root, cache, toolchain));

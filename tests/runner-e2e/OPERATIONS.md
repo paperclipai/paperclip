@@ -978,7 +978,8 @@ without registry resolution. The worker target and its lock artifact never
 control report dependencies. An already-reviewed output lock is used unchanged. An unknown committed lock fails before install;
 review the correction with dependency changes. The existing lockfile-refresh bot runs
 `prepare-report-lock.mjs --refresh` and includes the correction and hashes in its
-lockfile PR. The lockfile bot merges that PR without checks or code-owner review
+lockfile PR. The same commit resyncs `source-sdk-public-inputs.json`, whose
+`lockSha256` is copied from the committed `report-lock.json` output hash. The lockfile bot merges that PR without checks or code-owner review
 when every added package version is at least 3 days old on npm; otherwise the PR
 waits for a maintainer (see `doc/RELEASE-AUTOMATION-SETUP.md` §8.1). The bot
 merges only the commit the workflow generated. It refuses to bless an

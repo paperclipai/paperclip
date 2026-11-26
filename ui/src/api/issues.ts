@@ -1,5 +1,7 @@
-import type { SetIssueTitle } from "@paperclipai/shared";
-import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
+import type { IssueInboxArchiveFilter, SetIssueTitle } from "@paperclipai/shared";
+import { ISSUE_CHAT_BOOTSTRAP_MAX_IDS, ISSUE_SUMMARIES_MAX_IDS, type IssueChatBootstrap } from "@paperclipai/shared";
+import type { RunForIssue } from "./activity";
+import type { ActiveRunForIssue, LiveRunForIssue } from "./heartbeats";
 import type { IssueSummary } from "@paperclipai/shared";
 import type { ExecutionReconciliation } from "@paperclipai/shared";
 import type { IssueContextUsage } from "@paperclipai/shared";
@@ -11,6 +13,7 @@ import type {
   InboxMineSnapshot,
   CreateIssueTreeHold,
   DocumentRevision,
+  ExactDocumentRevision,
   FeedbackTargetType,
   FeedbackTrace,
   FeedbackVote,
@@ -204,7 +207,10 @@ export type IssueListFilters = {
   assigneeUserId?: string;
   touchedByUserId?: string;
   inboxArchivedByUserId?: string;
+  inboxArchive?: IssueInboxArchiveFilter;
   unreadForUserId?: string;
+  /** Add the current board user's read state without filtering task membership. */
+  includeReadState?: boolean;
   labelId?: string;
   workspaceId?: string;
   executionWorkspaceId?: string;
@@ -226,6 +232,8 @@ export type IssueListFilters = {
   sortField?: "updated" | "created" | "id";
   afterId?: string;
   sortDir?: "asc" | "desc";
+  /** ISO 8601 timestamp — only issues whose stored updatedAt is strictly before it. */
+  updatedBefore?: string;
 };
 
 function issueListSearchParams(filters?: IssueListFilters) {
@@ -245,10 +253,12 @@ function issueListSearchParams(filters?: IssueListFilters) {
     params.set("assigneeUserId", filters.assigneeUserId);
   if (filters?.touchedByUserId)
     params.set("touchedByUserId", filters.touchedByUserId);
+  if (filters?.inboxArchive) params.set("inboxArchive", filters.inboxArchive);
   if (filters?.inboxArchivedByUserId)
     params.set("inboxArchivedByUserId", filters.inboxArchivedByUserId);
   if (filters?.unreadForUserId)
     params.set("unreadForUserId", filters.unreadForUserId);
+  if (filters?.includeReadState) params.set("includeReadState", "true");
   if (filters?.labelId) params.set("labelId", filters.labelId);
   if (filters?.workspaceId) params.set("workspaceId", filters.workspaceId);
   if (filters?.executionWorkspaceId)
@@ -278,6 +288,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
     params.set("offset", String(filters.offset));
   if (filters?.sortField) params.set("sortField", filters.sortField);
   if (filters?.sortDir) params.set("sortDir", filters.sortDir);
+  if (filters?.updatedBefore) params.set("updatedBefore", filters.updatedBefore);
   if (filters?.afterId) params.set("afterId", filters.afterId);
   return params;
 }
@@ -288,16 +299,30 @@ export const issuesApi = {
     detachInflightGet(path);
     return api.get<InboxMineSnapshot>(path, { ...options, cache: "no-store" });
   },
-  summaries: async (companyId: string, issueIds: readonly string[], options?: RequestOptions): Promise<IssueSummary[]> => {
+  summaries: async (companyId: string, issueIds: readonly string[], options?: RequestOptions & { navigation?: boolean }): Promise<IssueSummary[]> => {
     if (issueIds.length > ISSUE_SUMMARIES_MAX_IDS) throw new Error("Too many issue summary IDs");
     const ids = [...new Set(issueIds.map((id) => id.trim().toLowerCase()))].sort();
     if (ids.length === 0) return [];
     const params = new URLSearchParams({ ids: ids.join(",") });
+    if (options?.navigation) params.set("navigation", "true");
     const path = `/companies/${companyId}/issues/summaries?${params}`;
     // React Query deduplicates within an account; URL-only HTTP coalescing must
     // never join a request sent with the previous account's cookie.
     detachInflightGet(path);
     return api.get<IssueSummary[]>(path, { ...options, cache: "no-store" });
+  },
+  /**
+   * The task chat's first-frame reads for up to ten tasks in one request. Each
+   * item's fields have the shape of the matching single-task endpoint;
+   * missing and unreadable tasks are omitted.
+   */
+  chatBootstrap: (companyId: string, issueRefs: readonly string[], options?: RequestOptions) => {
+    const refs = [...new Set(issueRefs.map((ref) => ref.trim()).filter(Boolean))];
+    if (refs.length === 0 || refs.length > ISSUE_CHAT_BOOTSTRAP_MAX_IDS) throw new Error("Chat bootstrap needs one to ten task references");
+    const path = `/companies/${companyId}/issues/chat-bootstrap?${new URLSearchParams({ ids: refs.join(",") })}`;
+    // Never join a request sent with the previous account's cookie.
+    detachInflightGet(path);
+    return api.get<IssueChatBootstrap<RunForIssue, LiveRunForIssue, ActiveRunForIssue>>(path, { ...options, cache: "no-store" });
   },
   /** Fetch every page for bounded task-detail relations, not just the default first page. */
   listAll: async (companyId: string, filters: Omit<IssueListFilters, "limit" | "offset" | "sortField" | "sortDir" | "afterId" | "attention">, options?: RequestOptions): Promise<Issue[]> => {
@@ -419,12 +444,22 @@ export const issuesApi = {
       `/issues/${id}/stalled-review-decision`,
       data,
     ),
+  confirmRunStopped: (id: string, data: { runId: string; stopEvidence: string }) =>
+    api.post<{ runId: string; alreadyStopped: boolean; presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(
+      `/issues/${id}/recovery-actions/confirm-run-stopped`, data),
+  confirmControllerStopped: (id: string, data: { actionId: string; runId: string; stopEvidence: string }) =>
+    api.post<{ runId: string; status: "queued" }>(`/issues/${id}/recovery-actions/confirm-controller-stopped`, data),
+  confirmOwnerGone: (id: string, data: { actionId: string; recordId: string; stopEvidence: string; recordVersion?: string }) =>
+    api.post<{ recordId: string; status: "queued" | "released" }>(`/issues/${id}/recovery-actions/confirm-owner-gone`, data),
   resumeWorkspaceFinalization: (id: string, data: { actionId: string; runId: string; ownerToken: string; controllerAndCopybackStopped: true; stopEvidence: string }) =>
     api.post<{ runId: string; resultId: string | null; status: "queued" }>(`/issues/${id}/recovery-actions/resume-workspace-finalization`, data),
   retryWorkspaceExport: (id: string, data: { actionId: string; runId: string; repairNote: string }) =>
     api.post<{ runId: string; resultId: string; leaseId: string; status: "queued" }>(`/issues/${id}/recovery-actions/retry-workspace-export`, data),
-  retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null }) =>
-    api.post<{ requestId: string | null; accepted: boolean; stale: boolean; presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(`/issues/${issueId}/retry`, body),
+  retryTask: (issueId: string, body: { idempotencyKey: string; observedRunId: string | null; retryAction?: "move_forward" }) =>
+    api.post<{ requestId: string | null; accepted: boolean; stale: boolean; alreadyMovedOn?: boolean;
+      refused?: { reason: string; message: string };
+      scheduledRetry?: { outcome: "promoted" | "already_promoted" | "gate_suppressed" | "waiting" | "no_scheduled_retry"; message: string };
+      presentation: import("@paperclipai/shared").TaskInterruptionPresentation | null }>(`/issues/${issueId}/retry`, body),
   recoverWorkspace: (id: string, data: { actionId: string; runId: string; idempotencyKey: string }) =>
     api.post<{ actionId: string; status: string }>(`/issues/${id}/recovery-actions/recover-workspace`, data),
   reconstructWorkspace: (id: string, data: { actionId: string; runId: string; expectedStatusVersion: number; attachmentIds: string[];
@@ -584,7 +619,7 @@ export const issuesApi = {
       data,
     ),
   listInteractions: (id: string) =>
-    api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`),
+    api.get<IssueThreadInteraction[]>(`/issues/${id}/interactions`, { fresh: true, cache: "no-store" }),
   listAcceptedPlanDecompositions: (id: string) =>
     api.get<AcceptedPlanDecompositionSummary[]>(
       `/issues/${id}/accepted-plan-decompositions`,
@@ -702,10 +737,12 @@ export const issuesApi = {
     interrupt?: boolean,
     attachmentIds?: string[],
     clientRequestId?: string,
+    nativeCommand?: "swarm",
   ) =>
     confirmedCommentResponse(
       api.post<IssueComment>(`/issues/${id}/comments`, {
         body,
+        ...(nativeCommand ? { nativeCommand } : {}),
         ...(clientRequestId ? { clientRequestId } : {}),
         ...(reopen === undefined ? {} : { reopen }),
         ...(interrupt === undefined ? {} : { interrupt }),
@@ -745,7 +782,7 @@ export const issuesApi = {
       `/issues/${id}/documents/${encodeURIComponent(key)}/revisions`,
     ),
   getDocumentRevision: (id: string, key: string, revisionId: string) =>
-    api.get<DocumentRevision>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${encodeURIComponent(revisionId)}`),
+    api.get<ExactDocumentRevision>(`/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${encodeURIComponent(revisionId)}`),
   restoreDocumentRevision: (id: string, key: string, revisionId: string) =>
     api.post<IssueDocument>(
       `/issues/${id}/documents/${encodeURIComponent(key)}/revisions/${revisionId}/restore`,

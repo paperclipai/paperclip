@@ -45,6 +45,16 @@ export function registerTaskDrainExpiryWork(
   };
 }
 
+// Set while this server cannot renew its controller instance lease: it stops
+// dispatching new work until the lease is renewed (or it exits). It never
+// replaces an operator's drain and has no idle owner, so HTTP stays open.
+let controllerLeaseQuiesce: TaskDrainState | null = null;
+export function setControllerLeaseQuiesce(quiesced: boolean): void {
+  if (quiesced === (controllerLeaseQuiesce !== null)) return;
+  controllerLeaseQuiesce = quiesced ? { startedAt: new Date(), expiresAt: null } : null;
+  notifyDrainChanged();
+}
+
 export function readTaskDrain(now: Date): TaskDrainState | null {
   if (taskDrainState?.expiresAt && taskDrainState.expiresAt.getTime() <= now.getTime()) {
     taskDrainState = null;
@@ -52,7 +62,7 @@ export function readTaskDrain(now: Date): TaskDrainState | null {
       try { listener(); } catch (error) { process.emitWarning(`Task drain expiry notification failed: ${String(error)}`); }
     }
   }
-  return taskDrainState;
+  return taskDrainState ?? controllerLeaseQuiesce;
 }
 
 export function computeTaskDrain(opts: { ttlMs?: number | null; purpose?: "idle" } = {}): TaskDrainState {
@@ -71,7 +81,7 @@ export function startTaskDrain(opts: { ttlMs?: number | null; purpose?: "idle" }
   return drain;
 }
 export function stopTaskDrain(): { wasActive: boolean } {
-  const wasActive = readTaskDrain(new Date()) !== null;
+  const wasActive = readTaskDrain(new Date()) !== null && taskDrainState !== null;
   taskDrainState = null;
   notifyDrainChanged();
   return { wasActive };
@@ -83,6 +93,12 @@ export function isIdleTaskDrainActive(): boolean { return Boolean(readTaskDrain(
 // The generation also catches work which starts AND finishes during a scan.
 let generation = 0;
 let active = 0;
+const settledListeners = new Set<() => void>();
+/** Called (synchronously) whenever the last tracked work finishes. */
+export function subscribeIdleWorkSettled(listener: () => void): () => void {
+  settledListeners.add(listener);
+  return () => { settledListeners.delete(listener); };
+}
 export function beginIdleTrackedWork(): () => void {
   generation++;
   active++;
@@ -92,6 +108,9 @@ export function beginIdleTrackedWork(): () => void {
     finished = true;
     active--;
     generation++;
+    if (active === 0) for (const listener of settledListeners) {
+      try { listener(); } catch { /* a listener never blocks work accounting */ }
+    }
   };
 }
 export function trackIdleWork<T>(work: Promise<T>): Promise<T> {

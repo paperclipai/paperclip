@@ -330,6 +330,31 @@ describe("Codex selected native account verification", () => {
       expect(await readFile(join(home, "account-store.json"), "utf8")).toBe(auth);
     } finally { await rm(home, { recursive: true, force: true }); }
   });
+  it.each(["valid", "invalid home"])("probes the native SSH user's login without reading controller credentials (%s)", async mode => {
+    vi.stubEnv("HOME", "/controller-only/home");
+    vi.stubEnv("CODEX_HOME", "/controller-only/codex");
+    vi.stubEnv("OPENAI_API_KEY", "fixture-controller-key");
+    const readCredential = vi.spyOn(localCredentialFile, "readLocalAiCredentialFile");
+    sshExecute.mockImplementation(async command => ({ exitCode: 0, timedOut: false, stderr: "", stdout: command.args?.includes("paperclip-remote-home") ? (mode === "valid" ? "/home/remote-user\n" : "relative-home\n") : "" }));
+    nativeProbe.mockImplementation(async input => {
+      expect(input.environment.HOME).toBe("/home/remote-user");
+      expect(input.environment.CODEX_HOME).toBeUndefined();
+      expect(input.environment.OPENAI_API_KEY).toBeUndefined();
+      expect(input.transportOptions.homeMode).toBe("preconfigured");
+      expect(input.transportOptions.sourceCodexHome).toBe("");
+      expect(input.onCodexCredentialRefresh).toBeUndefined();
+      await input.onCleanupConfirmed();
+      return receipt("codex", "gpt-6.1-sol");
+    });
+    const result = await testNativeRunnerAuthentication({ ...sshContext, config: { homeMode: "preconfigured", env: { CODEX_HOME: "/controller-only/configured-home" } } }, "codex", "gpt-6.1-sol");
+    expect(result.status).toBe(mode === "valid" ? "pass" : "fail");
+    expect(readCredential).not.toHaveBeenCalled();
+    if (mode === "valid") expect(nativeProbe).toHaveBeenCalledOnce();
+    else expect(nativeProbe).not.toHaveBeenCalled();
+    expect(sshExecute.mock.calls.some(([command]) => JSON.stringify(command).includes("controller-only"))).toBe(false);
+    readCredential.mockRestore();
+  });
+
   it.each(["linux-arm64", "linux-x64"])("uses task staging and the selected %s SSH daemon without a provider pack", async target => {
     const selectedBinary = `/fixture/bin/${target}/paperclip-runnerd`;
     selectedRemoteRunner.mockResolvedValue(selectedBinary);

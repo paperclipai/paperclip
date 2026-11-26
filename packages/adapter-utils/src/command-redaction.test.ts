@@ -12,6 +12,7 @@ describe("explicit diagnostic credential forms", () => {
 import {
   REDACTED_COMMAND_TEXT_VALUE,
   collectDiagnosticEnvironmentSecrets,
+  collectHostEnvironmentTokenSecrets,
   looksLikeCredentialJwt,
   redactDiagnosticText,
   redactCommandText,
@@ -213,6 +214,29 @@ describe("diagnostic environment secret selection", () => {
     expect(new Set(selected)).toEqual(new Set([jwt, pem, key, "safe"]));
   });
 
+  // Host env of a desktop agent session: short ordinary values under names
+  // the allowlist does not know. Treating "vi" as a credential redacted it
+  // inside "service" in Sentry reports.
+  it("does not treat short or bare-number host process values under unknown names as credentials", () => {
+    expect(collectDiagnosticEnvironmentSecrets({ CHILD_EDITOR: "vi", RUN_PHASE: "RUN", FEATURE_STATE: "off",
+      SESSION_PID: "67591", XPC_FLAGS: "0x0", ASK_TOOL: "true", BATCH_SIZE: "8", LONG_NUMBER: "123456789012",
+      CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH: "1" }, [], { hostProcess: true })).toEqual([]);
+    // Credential names keep short values private, and long opaque values stay private.
+    expect(collectDiagnosticEnvironmentSecrets({ AWS_ACCESS_KEY_ID: "1", CUSTOM_BINDING: "opaque-host-secret" }, [],
+      { hostProcess: true }).sort()).toEqual(["1", "opaque-host-secret"]);
+    // An agent's configured environment keeps the fail-closed rule.
+    expect(collectDiagnosticEnvironmentSecrets({ CUSTOM_BINDING: "1" })).toEqual(["1"]);
+  });
+
+  it("keeps short host values private as whole tokens", () => {
+    const env = { CHILD_EDITOR: "vi", OPAQUE_SHORT: "k9Q", RUN_PHASE: "RUN", FEATURE_STATE: "off", LEVEL: "2",
+      SESSION_PID: "67591", LONG_SECRET: "opaque-host-secret", AWS_ACCESS_KEY_ID: "1" };
+    // Substring-private values are not repeated; only flag values (booleans, 0, 1) are exempt.
+    expect(collectHostEnvironmentTokenSecrets(env)).toEqual(["67591", "k9Q", "RUN", "vi", "2"]);
+    expect(collectHostEnvironmentTokenSecrets({ SHORT_PIN: "482", COUNT_FLAG: "1", OFF_FLAG: "0", MODE_FLAG: "yes" })).toEqual(["482"]);
+    expect(collectHostEnvironmentTokenSecrets(null)).toEqual([]);
+  });
+
   it("keeps unknown opaque values private without declarations", () => {
     expect(collectDiagnosticEnvironmentSecrets({ CUSTOM_BINDING: "opaque-host-secret" })).toEqual(["opaque-host-secret"]);
   });
@@ -226,5 +250,111 @@ describe("diagnostic environment secret selection", () => {
     const url = "postgres://user:private%20password@db.test/database";
     expect(new Set(collectDiagnosticEnvironmentSecrets({ DATABASE_URL: url, PASSWORD: "private password" })))
       .toEqual(new Set([url, "private%20password", "private password"]));
+  });
+});
+
+describe("SigV4 presigned URLs", () => {
+  const signature = "0123456789abcdef".repeat(4);
+  const query = [
+    "X-Amz-Algorithm=AWS4-HMAC-SHA256",
+    "X-Amz-Content-Sha256=UNSIGNED-PAYLOAD",
+    "X-Amz-Credential=ASIAEXAMPLEKEYID0001%2F20261118%2Fus-east-1%2Fs3%2Faws4_request",
+    "X-Amz-Date=20261118T063600Z",
+    "X-Amz-Expires=900",
+    "X-Amz-Security-Token=IQoJb3JpZ2luEXAMPLESESSION%2Ftoken%2Bvalue%3D",
+    `X-Amz-Signature=${signature}`,
+    "X-Amz-SignedHeaders=host",
+    "x-id=PutObject",
+  ];
+  const presignedUrl = `https://uploads-example.s3.us-east-1.amazonaws.com/receipts/r-1.pdf?${query.join("&")}`;
+
+  it("keeps an upload link from a JSON tool result, shell command, or markdown link usable", () => {
+    const result = JSON.stringify({ receiptId: "r-1", uploadUrl: presignedUrl });
+    expect(redactCommandText(result)).toBe(result);
+    expect(redactDiagnosticText(result)).toBe(result);
+    expect(redactCommandText(`curl -X PUT --upload-file r.pdf '${presignedUrl}'`))
+      .toBe(`curl -X PUT --upload-file r.pdf '${presignedUrl}'`);
+    expect(redactCommandText(`[upload receipt](${presignedUrl})`))
+      .toBe(`[upload receipt](${presignedUrl})`);
+  });
+
+  it("keeps a link whose query separators are JSON-escaped or double-escaped", () => {
+    const escaped = presignedUrl.replaceAll("&", "\\u0026");
+    expect(redactCommandText(`{"uploadUrl":"${escaped}"}`)).toBe(`{"uploadUrl":"${escaped}"}`);
+    const doubleEscaped = presignedUrl.replaceAll("&", "\\\\u0026");
+    expect(redactCommandText(`{\\"uploadUrl\\":\\"${doubleEscaped}\\"}`)).toBe(`{\\"uploadUrl\\":\\"${doubleEscaped}\\"}`);
+  });
+
+  it("still redacts other secret parameters inside a presigned URL", () => {
+    const url = presignedUrl.replace("&X-Amz-Signature", "&api_token=extra-secret&X-Amz-Signature");
+    const output = redactCommandText(url);
+    expect(output).not.toContain("extra-secret");
+    expect(output).toContain("X-Amz-Credential=ASIAEXAMPLEKEYID0001");
+  });
+
+  it("still hides a presigned URL assigned to a secret name", () => {
+    for (const input of [`UPLOAD_TOKEN=${presignedUrl}`, `tool --token ${presignedUrl}`]) {
+      const output = redactCommandText(input);
+      expect(output).not.toContain("X-Amz-Security-Token=IQoJ");
+      expect(output).not.toContain(signature);
+    }
+    expect(redactDiagnosticText(JSON.stringify({ token: presignedUrl }))).toBe(
+      `{"token":"${REDACTED_COMMAND_TEXT_VALUE}"}`,
+    );
+  });
+
+  it("still redacts the credential parameters when the URL is not a complete SigV4 query or collides with placeholders", () => {
+    const unsigned = presignedUrl.replace(`&X-Amz-Signature=${signature}`, "");
+    expect(redactCommandText(unsigned)).not.toContain("X-Amz-Security-Token=IQoJ");
+    const missingDate = presignedUrl.replace("&X-Amz-Date=20261118T063600Z", "");
+    expect(redactCommandText(missingDate)).not.toContain("X-Amz-Security-Token=IQoJ");
+    const missingSignedHeaders = presignedUrl.replace("&X-Amz-SignedHeaders=host", "");
+    expect(redactCommandText(missingSignedHeaders)).not.toContain("X-Amz-Security-Token=IQoJ");
+    const badScope = presignedUrl.replace(
+      "X-Amz-Credential=ASIAEXAMPLEKEYID0001%2F20261118%2Fus-east-1%2Fs3%2Faws4_request",
+      "X-Amz-Credential=not-a-sigv4-scope",
+    );
+    expect(redactCommandText(badScope)).not.toContain("not-a-sigv4-scope");
+    const spoofed = `${presignedUrl} ${String.fromCharCode(0xe000)}0${String.fromCharCode(0xe001)}`;
+    expect(redactCommandText(spoofed)).not.toContain("X-Amz-Security-Token=IQoJ");
+  });
+
+  it("still redacts standalone, percent-encoded, or malformed secrets smuggled inside SigV4 parameters", () => {
+    const jwt =
+      "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+    const smuggledTokenValues = [
+      ["sk", "smuggledsecret123456"].join("-"),
+      "%73k-smuggledsecret123456",
+      "sk%2Dsmuggledsecret123456",
+      "%2573k-smuggledsecret123456",
+      ["ghp", "smuggledtoken123456789012345"].join("_"),
+      "ghp%5Fsmuggledtoken123456789012345",
+      ["github", "pat", "smuggledtoken123456789012345"].join("_"),
+      ["sk", "live", "smuggledstripekey12345678"].join("_"),
+      "sk%5Flive%5Fsmuggledstripekey12345678",
+      jwt,
+      jwt.replaceAll(".", "%2E"),
+      "Authorization%3A%20Bearer%20secretvalue",
+      "%E0%A4%A",
+    ];
+    for (const badValue of smuggledTokenValues) {
+      const url = presignedUrl.replace(
+        "X-Amz-Security-Token=IQoJb3JpZ2luEXAMPLESESSION%2Ftoken%2Bvalue%3D",
+        `X-Amz-Security-Token=${badValue}`,
+      );
+      expect(redactCommandText(url)).not.toContain(badValue);
+    }
+
+    for (const badKeyId of ["%73k-smuggledsecret123456", "ghp%5Fsmuggledtoken123456789012345", "%E0%A4%A"]) {
+      const url = presignedUrl.replace(
+        "X-Amz-Credential=ASIAEXAMPLEKEYID0001%2F20261118%2Fus-east-1%2Fs3%2Faws4_request",
+        `X-Amz-Credential=${badKeyId}%2F20261118%2Fus-east-1%2Fs3%2Faws4_request`,
+      );
+      expect(redactCommandText(url)).not.toContain(badKeyId);
+    }
+  });
+
+  it("still collects a SigV4 presigned URL as private in diagnostic environment secrets", () => {
+    expect(collectDiagnosticEnvironmentSecrets({ PUBLIC_KEY: presignedUrl })).toEqual([presignedUrl]);
   });
 });

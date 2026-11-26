@@ -22,7 +22,10 @@ export function verifiedIdleCapabilities(req: Request): VerifiedIdleCapabilities
 /** Endpoint → method → the one action a control assertion must name to take it. */
 const ACTIONS_BY_ENDPOINT: Record<string, Record<string, CloudControlAction>> = {
   "/api/instance/ephemeral-enrollment/prepare": { POST: "ephemeral-enrollment:prepare" },
+  "/api/instance/ephemeral-enrollment/eligibility": { GET: "ephemeral-enrollment:eligibility" },
+  "/api/instance/ephemeral-enrollment/migrate": { POST: "ephemeral-enrollment:migrate" },
   "/api/instance/connector-events/wake": { POST: "connector-events:wake" },
+  "/api/instance/task-drain/status": { POST: "task-drain:read-body" },
   "/api/instance/task-drain": {
     GET: "task-drain:read",
     POST: "task-drain:start",
@@ -64,7 +67,9 @@ export function cloudControlMiddleware(): RequestHandler {
       return;
     }
     try {
-      const claims = verifyCloudControlAssertion({ compactJws: assertion, expectedAction });
+      const rawBody: unknown = Reflect.get(req, "rawBody");
+      const claims = verifyCloudControlAssertion({ compactJws: assertion, expectedAction,
+        ...(Buffer.isBuffer(rawBody) ? { rawBody } : {}) });
       controlClaims.set(req, claims);
       if (claims.idleCapabilities) idleCapabilities.set(req, claims.idleCapabilities as VerifiedIdleCapabilities);
     } catch (error) {

@@ -2,6 +2,7 @@ import { agentWakeupRequests, heartbeatRuns, statusDecisions, statusDecisionEffe
 import { and, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { boundRunIssueIdSql } from "../run-task-binding.js";
+import { NATIVE_RUN_FAILED_RETRY_CAUSE } from "./status-arbiter.js";
 
 /** Recover conversation provenance from a committed continuation, never from
  * provider-supplied source IDs or the mere presence of a chat on the task. */
@@ -34,18 +35,29 @@ export async function readNativeContinuationSource(
     ))
     .innerJoin(statusDecisionEffects, and(
       eq(statusDecisionEffects.companyId, binding.companyId), eq(statusDecisionEffects.issueId, binding.issueId),
-      eq(statusDecisionEffects.effectKind, "enqueue_continuation"),
       eq(statusDecisionEffects.targetType, "agent_wakeup_request"),
       sql`${statusDecisionEffects.targetId} = ${agentWakeupRequests.id}::text`,
       eq(statusDecisionEffects.deliveryState, "delivered"),
-      sql`${statusDecisionEffects.payload}->>'continuationKind' = 'same_agent'`,
-      sql`${agentWakeupRequests.payload}->>'continuationKind' = 'same_agent'`,
+      or(and(
+        eq(statusDecisionEffects.effectKind, "enqueue_continuation"),
+        sql`${statusDecisionEffects.payload}->>'continuationKind' = 'same_agent'`,
+        sql`${agentWakeupRequests.payload}->>'continuationKind' = 'same_agent'`,
+      ), and(
+        // The one automatic retry after a failed turn answers the same chat.
+        eq(statusDecisionEffects.effectKind, "schedule_retry"),
+        sql`${agentWakeupRequests.payload}->>'retryCause' = ${NATIVE_RUN_FAILED_RETRY_CAUSE}`,
+      )),
     ))
     .innerJoin(statusDecisions, and(
       eq(statusDecisions.id, statusDecisionEffects.decisionId), eq(statusDecisions.companyId, binding.companyId),
       eq(statusDecisions.issueId, binding.issueId), eq(statusDecisions.applicationState, "applied"),
-      eq(statusDecisions.reasonCode, "live_continuation_registered"),
-      sql`${agentWakeupRequests.idempotencyKey} = 'native-status:' || ${statusDecisions.id}::text || ':continuation'`,
+      or(and(
+        eq(statusDecisions.reasonCode, "live_continuation_registered"),
+        sql`${agentWakeupRequests.idempotencyKey} = 'native-status:' || ${statusDecisions.id}::text || ':continuation'`,
+      ), and(
+        eq(statusDecisions.reasonCode, "run_failed_partial_evidence_preserved"),
+        sql`${agentWakeupRequests.idempotencyKey} = 'native-status:' || ${statusDecisions.id}::text || ':retry'`,
+      )),
       sql`${agentWakeupRequests.payload}->>'nativeDecisionId' = ${statusDecisions.id}::text`,
     ))
     .innerJoin(source, and(

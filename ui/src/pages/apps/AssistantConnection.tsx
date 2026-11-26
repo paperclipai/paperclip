@@ -15,6 +15,9 @@ import { OpenCodeLogoIcon } from "@/components/OpenCodeLogoIcon";
 import { CompanyPatternIcon } from "@/components/CompanyPatternIcon";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
+import { PluginTile } from "./PluginMarketplace";
 
 export const ASSISTANT_CONNECTION_PATH = "/apps/assistant-connection";
 const connectionsKey = ["mcp-connections"];
@@ -68,6 +71,23 @@ export function AssistantConnectionCard({ onNavigate }: { onNavigate: (href: str
   </div>;
 }
 
+/** The same entry as a marketplace tile, for the Installed grid. Opening it shows the accounts and any load failure in full. */
+export function AssistantConnectionTile({ onNavigate }: { onNavigate: (href: string) => void }) {
+  const connections = useAssistantConnections();
+  const failed = connections.view.kind === "error";
+  return <PluginTile
+    slug="assistant-connection"
+    name="Assistant Connection (MCP)"
+    description={failed ? "Couldn’t load your connection status. Open it to try again." : "Use your Paperclip organization from Codex, Claude, OpenCode, or another assistant."}
+    brandKey="paperclip"
+    icon={<Paperclip className="size-8 shrink-0 p-1 text-foreground" aria-hidden="true" />}
+    state={failed ? "attention" : connections.loaded && connections.rows.length > 0 ? "connected" : "available"}
+    statusLabel={failed ? "Needs attention" : "Connected"}
+    action={null}
+    onOpen={() => onNavigate(ASSISTANT_CONNECTION_PATH)}
+  />;
+}
+
 /** Only copy user-visible, non-secret setup values. Never execute them here. */
 function CopyValue({ value, label }: { value: string; label: string }) {
   const [copied, setCopied] = useState(false);
@@ -75,7 +95,7 @@ function CopyValue({ value, label }: { value: string; label: string }) {
   useEffect(() => { setCopied(false); setError(false); }, [value]);
   return <div className="space-y-2">
     <div className="flex items-start gap-3 rounded-md border border-border bg-muted/30 p-3">
-      <pre className="min-w-0 flex-1 overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed">{value}</pre>
+      <pre className={cn("min-w-0 flex-1 overflow-x-auto whitespace-pre-wrap break-words font-mono text-xs leading-relaxed", ANALYTICS_MASK_CLASS)}>{value}</pre>
       <Button type="button" variant="ghost" size="icon" className="size-8 shrink-0" aria-label={`Copy ${label}`} onClick={async () => {
         try { await copyTextToClipboard(value); setCopied(true); setError(false); }
         catch { setError(true); }
@@ -98,13 +118,13 @@ export function AssistantConnection({ initialAssistant = "codex" }: { initialAss
   const [assistant, setAssistant] = useState<Assistant>(initialAssistant);
   const setup = useQuery({ queryKey: ["mcp-setup"], queryFn: publicMcpApi.setup, refetchOnWindowFocus: "always", refetchOnMount: "always" });
   const setupView = useQueryView(setup);
-  const connections = useAssistantConnections(setup.data?.enabled === true);
+  const connections = useAssistantConnections(setup.isSuccess);
   const revoke = useMutation({ mutationFn: publicMcpApi.revoke, onSuccess: (_, id) => {
     client.setQueryData<McpConnection[]>(connectionsKey, rows => rows?.filter(row => row.id !== id));
     return client.invalidateQueries({ queryKey: connectionsKey });
   } });
   useEffect(() => {
-    setBreadcrumbs([{ label: "Connectors", href: "/apps" }, { label: "Assistant Connection (MCP)" }]);
+    setBreadcrumbs([{ label: "Plugins", href: "/apps" }, { label: "Assistant Connection (MCP)" }]);
     return () => setBreadcrumbs([]);
   }, [setBreadcrumbs]);
   if (!selectedCompanyId || !selectedCompany) return <p className="text-sm text-muted-foreground">Select an organization to connect an assistant.</p>;
@@ -122,12 +142,7 @@ export function AssistantConnection({ initialAssistant = "codex" }: { initialAss
     {setupView.kind === "error" && (setupView.errorKind === "auth" || setupView.errorKind === "not_found"
       ? <div role="alert" className="space-y-3"><p className="text-sm text-destructive">{setupUnavailableCopy(setupView.errorKind)}</p><Button variant="outline" disabled={setupView.isFetching} onClick={setupView.retry}>Try again</Button></div>
       : <QueryErrorState error={setup.error} action="load assistant setup" onRetry={setupView.retry} retrying={setupView.isFetching} />)}
-    {setup.data && !setup.data.enabled && <section className="space-y-3 rounded-lg border border-border bg-muted/30 p-4">
-      <h2 className="text-sm font-semibold">Enable assistant connections</h2>
-      <p className="text-sm text-muted-foreground">An instance administrator must turn on Assistant connections (MCP) in Experimental settings. Then return here to connect your assistant.</p>
-      <Button variant="outline" asChild><Link to="/company/settings/instance/experimental">Open Experimental settings</Link></Button>
-    </section>}
-    {setup.data?.enabled && <>
+    {setup.data && <>
       <section className="space-y-4" aria-label="Invite your assistant">
         <p className="text-sm text-muted-foreground">Paste this invitation into your assistant. It will help set up the connection and ask you to approve access in Paperclip.</p>
         <div className="flex justify-end">

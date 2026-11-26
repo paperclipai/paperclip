@@ -1,8 +1,9 @@
+import { enableRoutineScheduleTrigger } from "./routine-schedule-ui.js";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { enableRoutineScheduleTrigger, routineUiStep, withRoutineTriggerCleanup } from "./routine-schedule-flow.js";
+import { routineUiStep, withRoutineTriggerCleanup } from "./routine-schedule-flow.js";
 import { JourneyError } from "./types.js";
 
 describe("routine trigger cleanup failure reporting", () => {
@@ -31,11 +32,11 @@ describe("routine trigger cleanup failure reporting", () => {
 
 describe("routine UI failure evidence", () => {
   it("retains a closed step code without browser messages or form values", async () => {
-    const error = await routineUiStep("select_project", async () => {
+    const error = await routineUiStep("fill_form", async () => {
       throw new Error("Timeout at https://private.example/?token=secret with form value private-project");
     }).catch(value => value);
     expect(error).toBeInstanceOf(JourneyError);
-    expect(error).toMatchObject({ outcome: "failed", code: "routine_select_project_failed", message: "routine_select_project_failed" });
+    expect(error).toMatchObject({ outcome: "failed", code: "routine_fill_form_failed", message: "routine_fill_form_failed" });
     expect(JSON.stringify(error)).not.toMatch(/private|token|secret/);
   });
   it("keeps a semantic journey failure instead of replacing its evidence code", async () => {
@@ -52,20 +53,16 @@ describe("routine UI failure evidence", () => {
 
 
 describe("schedule trigger controls", () => {
-  it("opens the collapsed schedule editor before its single enable action", async () => {
+  it("opens the schedule popover before one attributed resume action", async () => {
     let expanded = false, clicks = 0, resolveResponse!: (value: any) => void;
     const response = { status: () => 200 };
     const pending = new Promise<any>(resolve => { resolveResponse = resolve; });
-    const schedule = { getByRole: (_role: string, options: { name: string }) => ({ click: async () => {
-      if (options.name === "Edit schedule") { expanded = true; return; }
-      if (options.name !== "Enable trigger" || !expanded) throw new Error("schedule control is not rendered");
+    const page = { getByRole: (_role: string, options: { name: string | RegExp }) => ({ click: async () => {
+      if (options.name instanceof RegExp && options.name.test("Change schedule: Every minute")) { expanded = true; return; }
+      if (options.name !== "Resume" || !expanded) throw new Error("schedule control is not rendered");
       clicks += 1;
       resolveResponse(response);
-    } }) };
-    const page = { getByRole: (role: string, options: { name: string }) => {
-      if (role === "region" && options.name === "Schedule trigger") return schedule;
-      return schedule.getByRole(role, options);
-    }, waitForResponse: () => pending } as unknown as Parameters<typeof enableRoutineScheduleTrigger>[0];
+    } }), waitForResponse: () => pending } as unknown as Parameters<typeof enableRoutineScheduleTrigger>[0];
     expect(await enableRoutineScheduleTrigger(page, "/api/routine-triggers/owned-trigger")).toBe(response);
     expect(expanded).toBe(true);
     expect(clicks).toBe(1);
