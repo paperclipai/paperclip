@@ -7,7 +7,7 @@ import { environmentSupportsLoginPty } from "@paperclipai/shared";
 import { matchesAdapterLoginTarget, useAdapterLoginCancellation } from "./useAdapterLoginCancellation";
 import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, antigravityModelGroup, isAccountBoundAcpxAgent } from "@/lib/native-model-catalog";
 import { useConnectionModels } from "./ai-connections/useConnectionModels";
-import { agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, normalizeClaudeRunnerOptions, type AgentRunnerChoice } from "@paperclipai/shared";
+import { agentHarnessName, agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, normalizeClaudeRunnerOptions, type AgentRunnerChoice } from "@paperclipai/shared";
 import { adaptersApi } from "../api/adapters";
 import { canQualifyRunnerEnvironment, qualifyRunnerEnvironment } from "../lib/qualify-claude-setup";
 import { aiRoutingHarness } from "@paperclipai/shared";
@@ -33,6 +33,7 @@ import type {
   EnvBinding,
   EnvSecretRefBinding,
   Environment,
+  SecretVersionSelector,
 } from "@paperclipai/shared";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter, isValidBrowserCode, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
@@ -95,11 +96,19 @@ import {
   type EnvironmentVariablesEditorHandle,
 } from "./environment-variables-editor";
 import { buildFixedClaudeOAuthBinding, CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
-import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
+import { AgentSecretAccessEditor, type BindAsEnvVarRequest } from "./AgentSecretAccessEditor";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useProposalReview } from "../pages/secrets/proposal-review";
 import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
-import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
+import { listVisibleAdapterTypes } from "../adapters/metadata";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { useCloudHarnessPolicy } from "@/hooks/useCloudHarnessPolicy";
 import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -186,6 +195,18 @@ const emptyOverlay: AgentConfigOverlay = {
 
 /** Stable empty object used as fallback for missing env config to avoid new-object-per-render. */
 const EMPTY_ENV: Record<string, EnvBinding> = {};
+
+export function resolveEffectiveAgentEnv(
+  overlayAdapterConfig: Record<string, unknown>,
+  savedAdapterConfig: Record<string, unknown> | null | undefined,
+  flushedEnv?: Record<string, EnvBinding> | null,
+): Record<string, EnvBinding> {
+  if (flushedEnv !== undefined && flushedEnv !== null) return flushedEnv;
+  if (Object.prototype.hasOwnProperty.call(overlayAdapterConfig, "env")) {
+    return (overlayAdapterConfig.env as Record<string, EnvBinding> | undefined) ?? EMPTY_ENV;
+  }
+  return (savedAdapterConfig?.env as Record<string, EnvBinding> | undefined) ?? EMPTY_ENV;
+}
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
   return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local";
@@ -420,15 +441,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
   const adapterPickerDisabledTypes = useMemo(() => {
-    const next = new Set(disabledTypes);
+    const raw = new Set(disabledTypes);
+    const next = new Set(raw);
     // Fail closed while settings load. Existing native agents still render
     // their current value in edit mode, but the picker does not offer a fresh
     // native selection until the explicit experimental opt-in is known true.
     if (experimentalSettings?.enableNativeRunner !== true) {
       next.add("paperclip_runner");
     }
-    if (experimentalSettings?.enableOpenAiDot !== true || disabledTypes.has("paperclip_runner")) {
+    if (experimentalSettings?.enableOpenAiDot !== true || raw.has("paperclip_runner")) {
       next.add("openai_dot");
+    }
+    if (raw.has("paperclip_runner")) {
+      next.add("antigravity_runtime");
+      next.add("copilot_runtime");
     }
     return next;
   }, [disabledTypes, experimentalSettings?.enableNativeRunner, experimentalSettings?.enableOpenAiDot]);
@@ -479,6 +505,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       if (!selectedCompanyId) throw new Error("Select an organization to create secrets");
       return secretsApi.create(selectedCompanyId, input);
     },
+    onSuccess: () => {
+      if (!selectedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    },
+  });
+  const rotateSecret = useMutation({
+    mutationFn: (input: { secretId: string; value: string }) =>
+      secretsApi.rotate(input.secretId, { value: input.value }),
     onSuccess: () => {
       if (!selectedCompanyId) return;
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
@@ -574,7 +608,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }
 
   function flushEnvironmentDraft() {
-    return environmentVariablesEditorRef.current?.flushPendingDraft() ?? null;
+    return environmentVariablesEditorRef.current?.flushPendingDraft() ?? { status: "clean" as const };
   }
 
   /**
@@ -600,6 +634,81 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     });
   }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const [pendingEnvBindConflict, setPendingEnvBindConflict] = useState<{
+    binding: BindAsEnvVarRequest;
+    availableEnvKey: string;
+    existingKind: "plain" | "secret_ref" | "user_secret_ref";
+  } | null>(null);
+
+  const commitSecretEnvBinding = useCallback((
+    envKey: string,
+    secretId: string,
+    version: SecretVersionSelector,
+    baseEnvOverride?: Record<string, EnvBinding> | null,
+  ) => {
+    if (isCreate) return;
+    setOverlay((prev) => {
+      const existingEnv = resolveEffectiveAgentEnv(
+        prev.adapterConfig,
+        props.agent.adapterConfig as Record<string, unknown> | null | undefined,
+        baseEnvOverride,
+      );
+      return {
+        ...prev,
+        adapterConfig: {
+          ...prev.adapterConfig,
+          env: {
+            ...existingEnv,
+            [envKey]: {
+              type: "secret_ref",
+              secretId,
+              version,
+            },
+          },
+        },
+      };
+    });
+  }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const bindSecretAsEnvVar = useCallback((binding: BindAsEnvVarRequest) => {
+    if (isCreate) return;
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
+    const currentEnv = resolveEffectiveAgentEnv(
+      overlay.adapterConfig,
+      props.agent.adapterConfig as Record<string, unknown> | null | undefined,
+      flushedEnv,
+    );
+    const existing = Object.prototype.hasOwnProperty.call(currentEnv, binding.envKey)
+      ? currentEnv[binding.envKey]
+      : undefined;
+    const alreadySameSecret =
+      typeof existing === "object" &&
+      existing !== null &&
+      existing.type === "secret_ref" &&
+      existing.secretId === binding.secretId;
+    if (existing !== undefined && !alreadySameSecret && !binding.replaceExisting) {
+      let suffix = 2;
+      while (Object.prototype.hasOwnProperty.call(currentEnv, `${binding.envKey}_${suffix}`)) {
+        suffix += 1;
+      }
+      const existingKind =
+        typeof existing === "object" && existing !== null && existing.type === "secret_ref"
+          ? "secret_ref"
+          : typeof existing === "object" && existing !== null && existing.type === "user_secret_ref"
+            ? "user_secret_ref"
+            : "plain";
+      setPendingEnvBindConflict({
+        binding,
+        availableEnvKey: `${binding.envKey}_${suffix}`,
+        existingKind,
+      });
+      return;
+    }
+    commitSecretEnvBinding(binding.envKey, binding.secretId, binding.version, flushedEnv);
+  }, [isCreate, overlay.adapterConfig, !isCreate ? props.agent : undefined, commitSecretEnvBinding]); // eslint-disable-line react-hooks/exhaustive-deps
+
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {
     setOverlay({ ...emptyOverlay });
@@ -609,7 +718,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const handleSave = useCallback(async () => {
     if (isCreate) return;
-    const flushedEnv = flushEnvironmentDraft();
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const nextOverlay = flushedEnv
       ? {
           ...overlay,
@@ -642,6 +753,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // ---- Resolve values ----
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
+  const effectiveSecretsAdapterConfig = useMemo(
+    () => ({ ...config, ...overlay.adapterConfig }),
+    [config, overlay.adapterConfig],
+  );
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
   const runtimeOverlay = overlay.runtime.runtimeConfig as Record<string, unknown> | undefined;
   const currentAiConnection = (runtimeOverlay ?? runtimeConfig).aiConnection;
@@ -711,6 +826,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const isDotRunner = runnerProvider === "openai_dot";
   const isGrokBotRunner = runnerProvider === "grok_bot";
   const isMuseRunner = runnerProvider === "muse";
+  const productHarnessName = agentHarnessName(adapterType, effectiveConfig);
+  const isAntigravityRunner = adapterType === "paperclip_runner" && productHarnessName === "antigravity_runtime";
+  const isCopilotRunner = adapterType === "paperclip_runner" && productHarnessName === "copilot_runtime";
+  const isDedicatedAcpxRunner = isAntigravityRunner || isCopilotRunner;
   const isExternalRunner = isDotRunner || isGrokBotRunner || isMuseRunner;
   const showAdapterTestEnvironmentButton = !isGrokBotRunner && (props.showAdapterTestEnvironmentButton ?? true);
   const showInlineAdapterTestEnvironmentButton =
@@ -782,7 +901,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // existing agent's own page fails to save the binding.
   const handleClaudeLoginStoredEdit = async () => {
     if (isCreate) return;
-    const flushedEnv = flushEnvironmentDraft();
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const baseEnv =
       flushedEnv ??
       (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
@@ -811,7 +932,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // secret-reference binding through the normal agent-update patch.
   const handleCodexAccountBindingEdit = async (claim: CodexAccountBindingClaim) => {
     if (isCreate || !claim.companyIdentityDiffers) return;
-    const flushedEnv = flushEnvironmentDraft();
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const baseEnv =
       flushedEnv ??
       (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
@@ -864,7 +987,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // pending editor draft first and keep every unrelated binding.
   const handleApplyStoredClaudeLoginEdit = async () => {
     if (isCreate) return;
-    const flushedEnv = flushEnvironmentDraft();
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const baseEnv =
       flushedEnv ??
       (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
@@ -968,10 +1093,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     && (runnerAvailability?.defaultRunner === "paperclip" || canQualifyRunnerUpgrade);
   const upgradeRunner = async () => {
     if (isCreate || runnerUpgradePending || upgradeEnvironmentChanged) return;
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const agentId = props.agent.id;
     setRunnerUpgrade({ agentId, status: "pending" });
     try {
-      const flushedEnv = flushEnvironmentDraft();
       const nextOverlay = flushedEnv
         ? { ...overlay, adapterConfig: { ...overlay.adapterConfig, env: flushedEnv } }
         : overlay;
@@ -1161,7 +1288,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     mode,
     isCreate,
     adapterType: fieldsAdapterType,
-    hideRunnerHarness: isRunnerHarness,
+    hideRunnerHarness: isRunnerHarness || isDedicatedAcpxRunner,
     values: isCreate ? { ...props.values, ...(runnerProfile && fieldsAdapterType === "paperclip_runner" ? { adapterSchemaValues: { ...props.values.adapterSchemaValues, ...runnerProfile } } : {}) } : null,
     set: isCreate ? (patch: Partial<CreateConfigValues>) => props.onChange(patch) : null,
     config: runnerProfile && fieldsAdapterType === "paperclip_runner" ? { ...config, ...runnerProfile } : config,
@@ -1214,7 +1341,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       if (!selectedCompanyId) {
         throw new Error("Select an organization to test adapter environment");
       }
-      const flushedEnv = flushEnvironmentDraft();
+      const flushResult = flushEnvironmentDraft();
+      if (flushResult.status === "blocked") {
+        throw new Error(flushResult.reason);
+      }
+      const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
       const adapterConfigPatch = flushedEnv ? { env: flushedEnv } : undefined;
       // Probe where a real run would actually execute: the agent's own
       // environment, else the instance default. Testing the host for an
@@ -1602,6 +1733,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         const created = await createSecret.mutateAsync({ name, value });
         return created;
       }}
+      onRotateSecret={(secretId, value) => rotateSecret.mutateAsync({ secretId, value })}
       onChange={(env) =>
         isCreate
           ? set!({ envBindings: env ?? {}, envVars: "" })
@@ -1645,15 +1777,76 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "space-y-3 px-4 pb-3")}>
             <p className="text-xs text-muted-foreground">{help.secretAccess}</p>
             <AgentSecretAccessEditor
-              config={{ ...config, ...overlay.adapterConfig }}
+              config={effectiveSecretsAdapterConfig}
               secrets={availableSecrets}
               onChange={applyAccessGrants}
               onCreateSecret={(name, value) => createSecret.mutateAsync({ name, value })}
+              onRotateSecret={(secretId, value) => rotateSecret.mutateAsync({ secretId, value })}
+              onBindAsEnvVar={bindSecretAsEnvVar}
               proposals={agentBindingProposals}
               onApproveProposal={proposalReview.requestApprove}
               onRejectProposal={proposalReview.requestReject}
             />
             {proposalReview.dialogs}
+            <Dialog
+              open={pendingEnvBindConflict !== null}
+              onOpenChange={(open) => {
+                if (!open) setPendingEnvBindConflict(null);
+              }}
+            >
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Environment variable already exists</DialogTitle>
+                  <DialogDescription>
+                    <code className="font-mono">{pendingEnvBindConflict?.binding.envKey}</code> is already set as{" "}
+                    {pendingEnvBindConflict?.existingKind === "secret_ref"
+                      ? "another company secret"
+                      : pendingEnvBindConflict?.existingKind === "user_secret_ref"
+                        ? "a user secret"
+                        : "a plain value"}
+                    . Choose <code className="font-mono">{pendingEnvBindConflict?.availableEnvKey}</code> to keep the
+                    existing variable, or confirm replacing it.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter className="sm:justify-between">
+                  <Button type="button" variant="ghost" onClick={() => setPendingEnvBindConflict(null)}>
+                    Cancel
+                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        if (!pendingEnvBindConflict) return;
+                        commitSecretEnvBinding(
+                          pendingEnvBindConflict.availableEnvKey,
+                          pendingEnvBindConflict.binding.secretId,
+                          pendingEnvBindConflict.binding.version,
+                        );
+                        setPendingEnvBindConflict(null);
+                      }}
+                    >
+                      Bind as {pendingEnvBindConflict?.availableEnvKey}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      onClick={() => {
+                        if (!pendingEnvBindConflict) return;
+                        commitSecretEnvBinding(
+                          pendingEnvBindConflict.binding.envKey,
+                          pendingEnvBindConflict.binding.secretId,
+                          pendingEnvBindConflict.binding.version,
+                        );
+                        setPendingEnvBindConflict(null);
+                      }}
+                    >
+                      Replace {pendingEnvBindConflict?.binding.envKey}
+                    </Button>
+                  </div>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           </div>
         </div>
       </div>
@@ -1865,17 +2058,33 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               </div>
             </Field>
           )}
-          {showAdapterTypeField && !isGrokBotRunner && (
+          {showAdapterTypeField && !isGrokBotRunner && (() => {
+            const currentHarnessChoice = isPoolHarness
+              ? "pool"
+              : isDotRunner
+              ? "openai_dot"
+              : isMuseRunner
+                ? "muse"
+                : isAntigravityRunner
+                  ? "antigravity_runtime"
+                  : isCopilotRunner
+                    ? "copilot_runtime"
+                    : isRunnerHarness
+                      ? harnessType
+                      : adapterType;
+            return (
             <Field label="Harness" hint={help.adapterType}>
               <AdapterTypeDropdown
-                value={isPoolHarness ? "pool" : isDotRunner ? "openai_dot" : isMuseRunner ? "muse" : isRunnerHarness ? harnessType : adapterType}
+                value={currentHarnessChoice}
                 disabledTypes={adapterPickerDisabledTypes}
                 openAiDotEnabled={experimentalSettings?.enableOpenAiDot === true}
                 nativeRunnerEnabled={experimentalSettings?.enableNativeRunner === true}
+                nativeAcpxHarnessesEnabled
                 poolEnabled={!isCreate && experimentalSettings?.enableNativeRunner === true}
                 poolEligible={adapterType === "paperclip_runner" || ["codex_local", "claude_local", "grok_local", "opencode_local"].includes(adapterType)}
                 museEnabled={experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true}
                 onChange={(choice) => {
+                  if (choice === currentHarnessChoice) return;
                   setPoolSwitchError(null);
                   if (choice === "pool") {
                     if (isCreate) return;
@@ -1892,8 +2101,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   });
                   const dot = choice === "openai_dot";
                   const muse = choice === "muse";
+                  const antigravity = choice === "antigravity_runtime";
+                  const copilot = choice === "copilot_runtime";
                   const external = dot || muse;
-                  const t = external ? "paperclip_runner" : choice;
+                  const dedicatedAcpx = antigravity || copilot;
+                  const t = external || dedicatedAcpx ? "paperclip_runner" : choice;
                   if (isCreate) {
                     // Reset all adapter-specific fields to defaults when switching adapter type
                     const { adapterType: _at, ...defaults } = defaultCreateValues;
@@ -1915,6 +2127,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     if (external) {
                       nextValues.model = "";
                       nextValues.adapterSchemaValues = { provider: muse ? "muse" : "openai_dot" };
+                    } else if (dedicatedAcpx) {
+                      nextValues.model = "";
+                      nextValues.adapterSchemaValues = {
+                        provider: "acpx",
+                        acpxAgent: antigravity ? "antigravity" : "copilot",
+                        lifecycleMode: "per_turn",
+                      };
                     }
                     set!(nextValues);
                   } else {
@@ -1934,16 +2153,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
-                            : external ? ""
+                            : external || dedicatedAcpx ? ""
                             : t === "paperclip_runner"
                               ? resolvePaperclipRunnerTransitionModel(adapterType, config.model)
                               : "",
-                        effort: "",
-                        modelReasoningEffort: "",
-                        variant: "",
-                        mode: "",
+                        effort: dedicatedAcpx ? undefined : "",
+                        modelReasoningEffort: dedicatedAcpx ? undefined : "",
+                        variant: dedicatedAcpx ? undefined : "",
+                        mode: dedicatedAcpx ? undefined : "",
                         ...(external
                             ? { provider: muse ? "muse" : "openai_dot", lifecycleMode: "per_turn", allowUnmeteredProvider: false, ...(dot ? { dotAttachmentAccess: false, dotWorkspaceAccess: false } : {}) }
+                          : dedicatedAcpx
+                            ? { provider: "acpx", acpxAgent: antigravity ? "antigravity" : "copilot", lifecycleMode: "per_turn" }
                           : t === "paperclip_runner"
                             ? {
                                 ...paperclipRunnerTransitionConfig(adapterType, eff("adapterConfig", "model", config.model)),
@@ -1956,7 +2177,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               />
               {poolSwitchError && <p role="alert" className="text-sm text-destructive">{poolSwitchError}</p>}
             </Field>
-          )}
+            );
+          })()}
 
           {isPoolHarness && selectedCompanyId && <Field label="Pool" hint="Shared harness, model and account configuration.">
             <NativeSelect aria-label="Harness pool" disabled={experimentalSettings?.enableNativeRunner !== true} value={harnessPoolId ?? ""} onChange={event => { if (!isCreate) mark("runtime", "runtimeConfig", { ...selectedRuntime, aiConnection: undefined, harnessPool: { poolId: event.target.value } }); }}>

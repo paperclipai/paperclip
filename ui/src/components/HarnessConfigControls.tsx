@@ -1,6 +1,7 @@
 import { setupEfforts } from "../lib/agent-setup-fields";
 import { codexReasoningEffortOptions } from "../lib/codex-reasoning-effort";
 import { useMemo, useState } from "react";
+import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
 import type { AdapterModel } from "../api/agents";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/badge";
@@ -21,6 +22,7 @@ export function AdapterTypeDropdown({
   openAiDotEnabled = false,
   museEnabled = false,
   nativeRunnerEnabled = false,
+  nativeAcpxHarnessesEnabled = false,
   poolEnabled = false,
   poolEligible = true,
   allowedTypes,
@@ -31,20 +33,25 @@ export function AdapterTypeDropdown({
   openAiDotEnabled?: boolean;
   museEnabled?: boolean;
   nativeRunnerEnabled?: boolean;
+  nativeAcpxHarnessesEnabled?: boolean;
   poolEnabled?: boolean;
   poolEligible?: boolean;
   allowedTypes?: ReadonlySet<string>;
 }) {
   const harnessPolicy = useCloudHarnessPolicy();
   const selectedDisplay = getAdapterDisplay(value);
+  const antigravityQualified = nativeAcpxHarnessesEnabled && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "antigravity" && profile.qualified);
+  const copilotQualified = nativeAcpxHarnessesEnabled && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "copilot" && profile.qualified);
   const adapterList = useMemo(() =>
     [...listAdapterOptions(type => adapterLabels[type] ?? getAdapterLabel(type)),
+      ...(antigravityQualified ? [{ value: "antigravity_runtime", label: adapterLabels.antigravity_runtime ?? getAdapterLabel("antigravity_runtime"), experimental: false, comingSoon: false }] : []),
+      ...(copilotQualified ? [{ value: "copilot_runtime", label: adapterLabels.copilot_runtime ?? getAdapterLabel("copilot_runtime"), experimental: false, comingSoon: false }] : []),
       ...(openAiDotEnabled ? [{ value: "openai_dot", label: "OpenAI Dot", experimental: true, comingSoon: false }] : []),
       ...(poolEnabled && poolEligible && nativeRunnerEnabled && !disabledTypes.has("paperclip_runner") ? [{ value: "pool", label: "Pool", experimental: true, comingSoon: false }] : []),
       ...(museEnabled ? [{ value: "muse", label: "Muse — Personal agent", experimental: true, comingSoon: false }] : []),
     ].filter(item => harnessPolicy.isCloudHarnessAllowed(item.value) && !item.comingSoon && (item.value !== "paperclip_runner" || (nativeRunnerEnabled && !poolEnabled)) && !disabledTypes.has(item.value) && (!allowedTypes || allowedTypes.has(item.value)))
       .sort((a, b) => Number(a.value === "paperclip_runner") - Number(b.value === "paperclip_runner")),
-    [harnessPolicy, disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled, poolEnabled, poolEligible, allowedTypes]);
+    [harnessPolicy, disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled, poolEnabled, poolEligible, allowedTypes, antigravityQualified, copilotQualified]);
   return <SelectPopover aria-label="Harness" value={value} onValueChange={onChange}
     displayValue={<span className="inline-flex min-w-0 items-center gap-1.5">
       <span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={value} className="size-4" /></span>

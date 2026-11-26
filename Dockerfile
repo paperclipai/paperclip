@@ -400,7 +400,7 @@ RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 # the lockfile alone neither re-copies 2.9 GB onto the parent layer nor pushes
 # or pulls them again. The build stage writes nothing under the root
 # node_modules, so the rest of /app is copied without it.
-COPY --link --chown=node:node --from=deps /app/node_modules /app/node_modules
+COPY --link --chown=${USER_UID}:${USER_GID} --from=deps /app/node_modules /app/node_modules
 COPY --chown=node:node --exclude=node_modules --from=build /app /app
 
 # Large provider binaries first, linked so the layer does not depend on the

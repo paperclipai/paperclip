@@ -303,6 +303,12 @@ describe("the merge-queue build's Runner image in docker-merge-group.yml", () =>
     expect(record).toContain("RUNNER_INPUTS_DIGEST: ${{ needs.runner_image.outputs.inputs_digest }}");
     expect(record).toContain('--runner-inputs-digest "$RUNNER_INPUTS_DIGEST"');
   });
+
+  it("keeps merge-queue build jobs on standard GitHub-hosted matrix runners", () => {
+    const runsOn = /\n {4}runs-on: (.+)\n/.exec(buildJob)?.[1];
+    expect(runsOn).toBe("${{ matrix.runner }}");
+    expect(buildJob).not.toMatch(/cloud-release-32|CORE_PUBLICATION_RUNNER|runs-on\/fleet=/);
+  });
 });
 
 describe("the pull-request check of the application image's Runner path", () => {

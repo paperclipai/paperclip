@@ -46,6 +46,7 @@ import { createHeartbeatRunState, getAdapterSessionCodec } from "./run-state.js"
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
 import { createHeartbeatRunCompletion, isConfirmedProviderQuotaFailure, recordVerifiedRouterQuotaCooldown, type CompleteHeartbeatRunInput, type FailHeartbeatRunInput, type HeartbeatRunCompletionDependencies } from "./run-completion.js";
 import { createHeartbeatAgentStatus } from "./agent-status.js";
+import { createHeartbeatRetries } from "./retries.js";
 import { prepareNativeHeartbeatRun } from "../native-runtime/prepare-native-run.js";
 import { buildNativeCompletionContract } from "../native-runtime/completion-contracts.js";
 import { readPendingNativeRunStop } from "../native-runtime/native-cancellation-request.js";
@@ -2268,6 +2269,20 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       const fCreateErr = await fixture({}, `${tag}${randomUUID().slice(0, 6)}`);
       const [hermesCreateAgent] = await db.update(agents).set({ adapterType: "hermes_gateway" })
         .where(eq(agents.id, fCreateErr.agent.id)).returning();
+      const unreachable = () => { throw new Error("retry scheduling passed the reconciliation gate"); };
+      const realRetries = createHeartbeatRetries(db, {
+        hasCaseHandoffForRun: async () => false,
+        getAgent: unreachable, getRun: unreachable, resolveSessionBeforeForWakeup: unreachable,
+        resolveResponsibleUserIdForRunContext: unreachable, getAgentInvokability: unreachable,
+        appendRunEvent: unreachable, escalatePlanApprovalResumeFailureNeedsAttention: unreachable,
+        recordPlanApprovalResumeFailureRetry: unreachable, setRunStatusIfRunning: unreachable,
+        setWakeupStatus: unreachable, releaseIssueExecutionAndPromote: unreachable, finalizeAgentStatus: unreachable,
+        getWorktreeExecutionCutoff: unreachable, applyRunDispatchPostCommitEffects: unreachable,
+        runDispatch: { nextScheduledRetryAt: unreachable, evaluateScheduledRetryGate: unreachable,
+          promoteDueScheduledRetries: unreachable, promoteScheduledRetry: unreachable },
+      });
+      fCreateErr.deps.scheduleBoundedRetryForRun.mockImplementation((run, agent, opts) =>
+        realRetries.scheduleBoundedRetryForRun(run, agent, opts));
       await fCreateErr.completion.completeRun({
         ...fCreateErr.input,
         agent: hermesCreateAgent!,
@@ -2293,7 +2308,14 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
       expect(createErrPersisted?.status).toBe("failed");
       expect(hasConversationContinuationPolicy(createErrPersisted?.resultJson)).toBe(false);
       expect(legacyExecutionNeedsReconciliation(createErrPersisted!)).toBe(true);
-      expect(fCreateErr.deps.scheduleBoundedRetryForRun).not.toHaveBeenCalled();
+      const retryOutcomes = await Promise.all(
+        fCreateErr.deps.scheduleBoundedRetryForRun.mock.results.map(result => result.value),
+      );
+      expect(retryOutcomes).toEqual(retryOutcomes.map(() => expect.objectContaining({
+        outcome: "not_scheduled", errorCode: "legacy_execution_requires_reconciliation",
+      })));
+      expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.retryOfRunId, fCreateErr.run.id))).toEqual([]);
     }
   });
 });

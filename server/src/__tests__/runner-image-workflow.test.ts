@@ -282,12 +282,11 @@ describe("Runner image workflow", () => {
     }
   });
 
-  it("routes only canonical master amd64 pushes to the larger GitHub-hosted runner", () => {
-    const runsOn = /^ {4}runs-on: (.+)$/m.exec(jobs.build)?.[1] ?? "";
-    expect(runsOn).toBe(
-      `\${{ matrix.arch == 'amd64' && ${canonical} && (vars.CORE_PUBLICATION_RUNNER || 'cloud-release-32') || matrix.runner }}`,
-    );
-    expect(jobs.build).not.toMatch(/runs-on\/fleet=/);
+  it("builds and caches on the standard GitHub-hosted matrix runners", () => {
+    for (const job of [jobs.build, jobs.cache]) {
+      expect(/^ {4}runs-on: (.+)$/m.exec(job)?.[1]).toBe("${{ matrix.runner }}");
+      expect(job).not.toMatch(/cloud-release-32|CORE_PUBLICATION_RUNNER|runs-on\/fleet=/);
+    }
   });
 
   it("is registered with the merge-review notifier under its own name", () => {
