@@ -9,21 +9,31 @@ async function json(response: APIResponse) {
   return JSON.parse(body);
 }
 
-for (const { unfinishedWrite, pause } of [{ unfinishedWrite: false, pause: false }, { unfinishedWrite: true, pause: false }, { unfinishedWrite: false, pause: true }]) {
-  test(`embedded ACP Stop: ${unfinishedWrite ? "unknown action continues without replaying the write" : pause ? "composer pause requires Resume before continuation" : "go continues the same session with queued input"}`, async ({ page, request }) => {
+for (const { unfinishedWrite, stopResponse, sendSavedQueue = false } of [
+  { unfinishedWrite: false, stopResponse: false },
+  { unfinishedWrite: true, stopResponse: false },
+  { unfinishedWrite: false, stopResponse: true },
+  { unfinishedWrite: false, stopResponse: true, sendSavedQueue: true },
+]) {
+  test(`embedded ACP Stop: ${unfinishedWrite ? "Interrupt continues without replaying the write" : sendSavedQueue ? "Send resumes saved input after Stop" : stopResponse ? "composer Stop preserves queued input and accepts a new direction" : "Interrupt delivers queued input in the same session"}`, async ({ page, request }) => {
     test.setTimeout(120_000);
     const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-stop-browser-"));
     const company = await json(await request.post("/api/companies", { data: { name: `ACP Stop ${Date.now()}` } }));
     const originalSettings = await json(await request.get("/api/instance/settings/experimental"));
+    await page.route("**/api/instance/settings/experimental", route => route.fulfill({ json: {
+      ...originalSettings, enableClassicTaskInterface: false,
+    } }));
     try {
-      await json(await request.patch("/api/instance/settings/experimental", { data: { enableClassicTaskInterface: false } }));
       const owner = await json(await request.post(`/api/companies/${company.id}/agents`, { data: {
-        name: "ACP Stop fixture", role: "engineer", adapterType: "claude_local",
+        name: "ACP Stop fixture", role: "engineer", adapterType: "claude_local", runner: "legacy",
         adapterConfig: { engine: "acp", cwd: root, stateDir: path.join(root, "state"),
           agentCommand: `${JSON.stringify(process.execPath)} ${JSON.stringify(path.resolve("scripts/mcp-fixtures/servers/acp-stop-agent.mjs"))}`,
-          env: { PAPERCLIP_STOP_FIXTURE_ROOT: root, PAPERCLIP_STOP_FIXTURE_FINISH_TASK: "1", ...(unfinishedWrite ? { PAPERCLIP_STOP_FIXTURE_TOOL: "write" } : {}) },
+          // The ACP fixture has no provider login. Use a fixture key to keep setup offline.
+          env: { ANTHROPIC_API_KEY: "acp-stop-fixture-key", PAPERCLIP_STOP_FIXTURE_ROOT: root, PAPERCLIP_STOP_FIXTURE_FINISH_TASK: "1", ...(unfinishedWrite ? { PAPERCLIP_STOP_FIXTURE_TOOL: "write" } : {}) },
         }, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true } },
       } }));
+      await expect.poll(async () => (await json(await request.get(`/api/agents/${owner.id}`))).lifecycleState,
+        { timeout: 45_000 }).toBe("ready");
       const issue = await json(await request.post(`/api/companies/${company.id}/issues`, { data: {
         title: "ACP Stop continuation", status: "backlog", assigneeAgentId: owner.id,
       } }));
@@ -38,9 +48,9 @@ for (const { unfinishedWrite, pause } of [{ unfinishedWrite: false, pause: false
       await expect.poll(async () => JSON.stringify(await json(await request.get(`/api/issues/${issue.id}/queued-comments`))))
         .toContain("List my recent Drive files.");
 
-      // Run-level Stop leaves the task unpaused; composer Stop additionally pauses the task.
-      let stopped;
-      if (pause) {
+      // Both actions stop the response; composer Stop must not create a task hold.
+      let stopped!: { status: string; resultJson?: { executionCancellation?: { state?: string } } | null };
+      if (stopResponse) {
         await page.getByRole("button", { name: "Stop", exact: true }).click();
       } else {
         await page.getByRole("button", { name: "Interrupt", exact: true }).click();
@@ -50,34 +60,32 @@ for (const { unfinishedWrite, pause } of [{ unfinishedWrite: false, pause: false
         return stopped.resultJson?.executionCancellation?.state;
       }, { timeout: 30_000 }).toBe("acknowledged");
       expect(stopped.status).toBe("cancelled");
-      expect(stopped.resultJson.executionCancellation.state).toBe("acknowledged");
+      expect(stopped.resultJson?.executionCancellation?.state).toBe("acknowledged");
       const writesAtStop = unfinishedWrite ? await readFile(path.join(root, "writes"), "utf8") : null;
       await page.reload();
-      if (pause) {
-        await expect(page.getByTestId("paused-composer-takeover")).toBeVisible();
-        await expect(editor).toHaveCount(0);
-        await expect(page.getByRole("button", { name: "Send", exact: true })).toHaveCount(0);
-        const rejected = await request.post(`/api/issues/${issue.id}/comments`, { data: { body: "go" } });
-        expect(rejected.status()).toBe(409);
+      if (stopResponse) {
+        await expect(page.getByTestId("paused-composer-takeover")).toHaveCount(0);
+        await expect(editor).toBeVisible();
+        expect((await json(await request.get(`/api/issues/${issue.id}/tree-control/state`))).activePauseHold).toBeNull();
+        await expect(page.getByRole("button", { name: "Resume task", exact: true })).toHaveCount(0);
+        const saved = await json(await request.get(`/api/issues/${issue.id}/queued-comments`));
+        expect(JSON.stringify(saved.entries)).toContain("List my recent Drive files.");
         expect((await readFile(path.join(root, "prompts"), "utf8")).trim().split("\n")).toHaveLength(1);
-        expect(await readFile(path.join(root, "completed"), "utf8").catch(() => "")).toBe("");
-        await page.getByRole("button", { name: "Resume task", exact: true }).click();
-        const dialog = page.getByRole("dialog");
-        await dialog.getByRole("checkbox").check();
-        await dialog.getByRole("button", { name: "Resume work", exact: true }).click();
-      } else {
-        await editor.fill("go");
-        await page.getByRole("button", { name: "Send", exact: true }).click();
+        if (sendSavedQueue) {
+          await page.getByRole("button", { name: "Send queued messages", exact: true }).click();
+        } else {
+          await editor.fill("Please continue with the saved request.");
+          await page.getByRole("button", { name: "Send", exact: true }).click();
+        }
       }
       await expect(page.getByText("Answered the pending follow-up once.", { exact: false })).toBeVisible({ timeout: 30_000 });
       await expect.poll(async () => (await json(await request.get(`/api/issues/${issue.id}/live-runs`))).length).toBe(0);
       const prompts = (await readFile(path.join(root, "prompts"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
       expect(prompts).toHaveLength(2);
       expect(new Set(prompts.map(prompt => prompt.sessionId)).size).toBe(1);
-      // Resume delivers the queued follow-up in the same provider session.
-      const continuationPrompts = pause ? prompts.slice(1) : [prompts.at(-1)];
+      // Interrupt delivers immediately; after Stop, the new direction includes saved input.
+      const continuationPrompts = prompts.slice(1);
       expect(JSON.stringify(continuationPrompts)).toContain("List my recent Drive files.");
-      if (!pause) expect(JSON.stringify(continuationPrompts)).toContain("go");
       expect(await readFile(path.join(root, "completed"), "utf8")).toBe("follow-up\n");
       const completedIssue = await json(await request.get(`/api/issues/${issue.id}`));
       expect(completedIssue.executionBlocker).toBeNull();
@@ -86,7 +94,6 @@ for (const { unfinishedWrite, pause } of [{ unfinishedWrite: false, pause: false
       await expect(page.getByRole("dialog")).toHaveCount(0);
     } finally {
       await request.patch(`/api/companies/${company.id}`, { data: { status: "archived" } });
-      await request.patch("/api/instance/settings/experimental", { data: { enableClassicTaskInterface: originalSettings.enableClassicTaskInterface } });
       await rm(root, { recursive: true, force: true });
     }
   });

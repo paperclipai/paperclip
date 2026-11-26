@@ -1,244 +1,151 @@
 // @vitest-environment jsdom
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentProviderConnection } from "./AgentProviderConnection";
-import { ApiError } from "@/api/client";
+
 const mocks = vi.hoisted(() => ({
-  auth: vi.fn(),
-  login: vi.fn(),
-  personal: vi.fn(),
-  organization: vi.fn(),
+  healthGet: vi.fn(),
+  startLocalLogin: vi.fn(),
+  checkLocalLogin: vi.fn(),
+  submitLocalLoginCode: vi.fn(),
+  cancelLocalLogin: vi.fn(),
+  connectLocal: vi.fn(),
+  listConnections: vi.fn(),
 }));
-vi.mock("@/api/agents", () => ({
-  agentsApi: {
-    getAdapterAuthSignal: mocks.auth,
-    getClaudeOAuthTokenStatus: mocks.login,
+
+vi.mock("@/api/health", () => ({ healthApi: { get: mocks.healthGet } }));
+vi.mock("@/api/ai-connections", () => ({
+  aiConnectionsApi: {
+    startLocalLogin: mocks.startLocalLogin,
+    checkLocalLogin: mocks.checkLocalLogin,
+    submitLocalLoginCode: mocks.submitLocalLoginCode,
+    cancelLocalLogin: mocks.cancelLocalLogin,
+    connectLocal: mocks.connectLocal,
+    list: mocks.listConnections,
+    create: vi.fn(),
+    loginResult: vi.fn(),
   },
 }));
-vi.mock("@/api/secrets", () => ({
-  secretsApi: { listMyUserSecrets: mocks.personal, list: mocks.organization },
+vi.mock("@/api/agents", () => ({
+  agentsApi: { getAdapterAuthSignal: vi.fn().mockResolvedValue({ status: "absent" }) },
 }));
-vi.mock("../AgentConfigForm", () => ({
-  AdapterLoginPanel: () => <div>New subscription login</div>,
+vi.mock("../onboarding/SavedProviderKeySelect", () => ({
+  SavedProviderKeySelect: () => null,
+  useSavedProviderKeys: () => ({
+    options: [],
+    subscriptions: [],
+    loading: false,
+    error: false,
+    storedLogin: { data: undefined, isPending: false, isError: false, isFetching: false },
+  }),
 }));
+
 let root: Root;
 let host: HTMLDivElement;
-let client: QueryClient;
-afterEach(() => {
-  flushSync(() => root?.unmount());
-  host?.remove();
-  client?.clear();
+
+beforeEach(() => {
   vi.resetAllMocks();
-});
-async function mount(
-  adapterType: "claude_local" | "codex_local" = "claude_local",
-  savedLogin = false,
-  canLogin = true,
-  codexSubscriptions = false,
-  savedApiKeys = true,
-  cachedClaudeLogin = false,
-) {
-  const key =
-    adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : "OPENAI_API_KEY";
-  mocks.auth.mockResolvedValue({
-    status: codexSubscriptions ? "unknown" : "present",
+  mocks.startLocalLogin.mockResolvedValue({ sessionId: "hosted-session-1", expiresAt: "2099-01-01T00:00:00Z" });
+  mocks.checkLocalLogin.mockResolvedValue({
+    status: "sign_in_required",
+    authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=hosted-ui-state",
   });
-  mocks.login.mockImplementation(async () => {
-    if (savedLogin) return { secretId: "oauth", latestVersion: 1 };
-    throw new ApiError("Not found", 404, null);
-  });
-  mocks.personal.mockResolvedValue([
-    {
-      definition: {
-        id: "d1",
-        companyId: "c1",
-        key: `${key}.setup.1`,
-        name: "Personal key",
-        status: "active",
-      },
-      secret: { companyId: "c1", status: "active" },
-    },
-  ]);
-  mocks.organization.mockResolvedValue([
-    {
-      id: "s1",
-      companyId: "c1",
-      key,
-      name: "Company key",
-      scope: "company",
-      status: "active",
-    },
-    ...(codexSubscriptions
-      ? [
-          {
-            id: "codex-home",
-            companyId: "c1",
-            name: "CODEX_HOME_team",
-            scope: "company",
-            status: "active",
-          },
-        ]
-      : []),
-  ]);
-  if (!savedApiKeys) {
-    mocks.personal.mockResolvedValue([]);
-    mocks.organization.mockResolvedValue([]);
-  }
-  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  if (cachedClaudeLogin) {
-    client.setQueryData(["claude-oauth-token-status", "c1"], { secretId: "cached-claude", latestVersion: 1 });
-    mocks.auth.mockResolvedValue({ status: "absent" });
-  }
+  mocks.submitLocalLoginCode.mockResolvedValue({ ok: true });
+  mocks.cancelLocalLogin.mockResolvedValue({});
+  mocks.connectLocal.mockResolvedValue({ connectionId: "conn-1", grantId: "grant-1" });
+  mocks.listConnections.mockResolvedValue({ currentUserId: "u1", canManageConnections: true, connections: [] });
   host = document.createElement("div");
-  document.body.appendChild(host);
+  document.body.append(host);
   root = createRoot(host);
-  const test = vi.fn().mockResolvedValue(true);
-  const connected = vi.fn();
-  flushSync(() =>
+});
+
+afterEach(() => {
+  flushSync(() => root.unmount());
+  host.remove();
+});
+
+function renderConnection(adapterType: "antigravity_runtime" | "claude_local" | "codex_local", localEnvironment: boolean) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const provider = adapterType === "antigravity_runtime" ? "google" : adapterType === "claude_local" ? "anthropic" : "openai";
+  flushSync(() => {
     root.render(
       <QueryClientProvider client={client}>
         <AgentProviderConnection
-          companyId="c1"
+          companyId="company-1"
           adapterType={adapterType}
-          environmentId="e1"
-          canLogin={canLogin}
+          environmentId="sandbox-env-1"
+          canLogin={false}
+          localEnvironment={localEnvironment}
           onBack={() => {}}
-          testConnection={test}
-          onConnected={connected}
+          onConnected={() => {}}
+          testConnection={async () => true}
+          managedAccount={{
+            intent: {
+              provider,
+              method: "subscription",
+              name: "Test Account",
+              ownership: "personal",
+              agentIds: [],
+              allAgents: true,
+            },
+            onComplete: () => {},
+          }}
         />
       </QueryClientProvider>,
-    ),
-  );
-  await vi.waitFor(() => expect(mocks.personal).toHaveBeenCalled());
-  await vi.waitFor(() => expect(client.isFetching()).toBe(0));
-  if (savedApiKeys) await vi.waitFor(() => expect(host.textContent).toContain("2 saved API keys"));
-  return { test, connected, key };
+    );
+  });
 }
-function click(text: string) {
-  const button = [...host.querySelectorAll("button")].find((b) =>
-    b.textContent?.includes(text),
-  )!;
-  expect(button).toBeTruthy();
-  flushSync(() => button.click());
-}
-function openProvider() {
-  flushSync(() =>
-    (host.querySelector('[role="radio"]') as HTMLElement).click(),
-  );
-}
-describe("AgentProviderConnection reuse", () => {
-  it("defaults to subscription when no saved credentials exist", async () => {
-    await mount("claude_local", false, true, false, false);
-    expect(host.textContent).toContain("Use API key instead");
-    click("Use API key instead");
-    openProvider();
-    expect(host.querySelector('input[type="password"]')).not.toBeNull();
+
+describe("AgentProviderConnection hosted Google sign-in gating", () => {
+  it("enables hosted Google redirect sign-in for antigravity_runtime on non-local environments", async () => {
+    mocks.healthGet.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+      localAiLoginSupported: false,
+      hostedGoogleAiLoginSupported: true,
+    });
+    renderConnection("antigravity_runtime", false);
+
+    await vi.waitFor(() => expect(mocks.startLocalLogin).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(host.querySelector('input[aria-label="Antigravity redirect URL"]')).not.toBeNull());
+    expect(host.querySelector('a[href="https://accounts.google.com/o/oauth2/v2/auth?state=hosted-ui-state"]')).not.toBeNull();
+    expect(host.querySelector('img[src="/brands/apps/antigravity.svg"]')).not.toBeNull();
+    expect(host.textContent).toContain("Antigravity");
+    expect(host.textContent).toContain("Sign in to Antigravity");
+    expect(host.textContent).toContain("127.0.0.1");
   });
 
-  it("does not use a cached Claude login for Codex", async () => {
-    await mount("codex_local", false, true, false, false, true);
-    openProvider();
-    expect(host.textContent).toContain("New subscription login");
-    expect(host.textContent).not.toContain("saved Claude subscription");
-    expect(host.textContent).not.toContain("Use saved subscription");
-    expect(mocks.login).not.toHaveBeenCalled();
-  });
-  it("reuses a saved ChatGPT account when the sandbox auth signal is unknown", async () => {
-    const { test, connected } = await mount("codex_local", false, true, true);
-    openProvider();
-    expect(host.textContent).not.toContain("New subscription login");
-    click("Use saved subscription");
-    await vi.waitFor(() =>
-      expect(connected).toHaveBeenCalledWith({
-        env: {
-          CODEX_HOME: {
-            type: "secret_ref",
-            secretId: "codex-home",
-            version: "latest",
-          },
-        },
-      }),
-    );
-    expect(test).toHaveBeenCalledWith(connected.mock.calls[0][0]);
-    flushSync(() => {
-      const select = host.querySelector("select")!;
-      select.value = "";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
+  it("still exposes the Antigravity redirect paste field when local login is also supported (remote private/trusted host)", async () => {
+    mocks.healthGet.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+      deploymentExposure: "private",
+      localAiLoginSupported: true,
+      hostedGoogleAiLoginSupported: true,
     });
-    expect(host.textContent).toContain("New subscription login");
+    renderConnection("antigravity_runtime", true);
+
+    await vi.waitFor(() => expect(mocks.startLocalLogin).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(host.querySelector('input[aria-label="Antigravity redirect URL"]')).not.toBeNull());
+    expect(host.textContent).toContain("another machine");
+    expect(host.textContent).toContain("127.0.0.1");
   });
-  it.each(["claude_local", "codex_local"] as const)(
-    "passes a personal reference without credentials for %s",
-    async (adapter) => {
-      const { test, connected, key } = await mount(adapter);
-      openProvider();
-      const select = host.querySelector("select")!;
-      expect(select.value).toBe("user:d1");
-      click("Use saved API key");
-      await vi.waitFor(() =>
-        expect(connected).toHaveBeenCalledWith({
-          env: {
-            [key]: {
-              type: "user_secret_ref",
-              key: `${key}.setup.1`,
-              version: "latest",
-            },
-          },
-        }),
-      );
-      expect(test).toHaveBeenCalledWith(connected.mock.calls[0][0]);
-    },
-  );
-  it("uses an organization reference and requires a new key after switching away", async () => {
-    const { connected, key } = await mount();
-    openProvider();
-    const select = host.querySelector("select")!;
-    flushSync(() => {
-      select.value = "company:s1";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
+
+  it.each(["claude_local", "codex_local"] as const)("keeps local login disabled for %s on hosted instances", async (adapterType) => {
+    mocks.healthGet.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+      localAiLoginSupported: false,
+      hostedGoogleAiLoginSupported: true,
     });
-    click("Use saved API key");
-    await vi.waitFor(() =>
-      expect(connected).toHaveBeenCalledWith({
-        env: {
-          [key]: { type: "secret_ref", secretId: "s1", version: "latest" },
-        },
-      }),
-    );
-    flushSync(() => {
-      select.value = "";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
-    expect(host.querySelector('input[type="password"]')).not.toBeNull();
-    const button = [...host.querySelectorAll("button")].find((b) =>
-      b.textContent?.includes("Connect"),
-    )!;
-    expect(button.disabled).toBe(true);
-    await client.invalidateQueries();
-    await vi.waitFor(() => expect(client.isFetching()).toBe(0));
-    expect(host.querySelector("select")!.value).toBe("");
-    expect(host.querySelector('input[type="password"]')).not.toBeNull();
-  });
-  it("reuses saved Claude login even without a login-capable environment", async () => {
-    const { test } = await mount("claude_local", true, false);
-    openProvider();
-    await vi.waitFor(() =>
-      expect(host.textContent).toContain("Use saved subscription"),
-    );
-    click("Use saved subscription");
-    await vi.waitFor(() =>
-      expect(test).toHaveBeenCalledWith(
-        expect.objectContaining({ applyStoredClaudeLogin: true }),
-      ),
-    );
-  });
-  it("does not treat an environment credential as a stored Claude login", async () => {
-    const { test } = await mount();
-    click("Use subscription instead");
-    openProvider();
-    click("Connect");
-    await vi.waitFor(() => expect(test).toHaveBeenCalledWith({ env: {} }));
+    renderConnection(adapterType, false);
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(mocks.startLocalLogin).not.toHaveBeenCalled();
+    expect(host.textContent).toContain("does not support browser sign-in");
   });
 });

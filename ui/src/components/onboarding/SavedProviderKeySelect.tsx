@@ -1,3 +1,5 @@
+import { aiConnectionsApi } from "@/api/ai-connections";
+import type { AiProvider } from "@paperclipai/shared";
 import { useQuery } from "@tanstack/react-query";
 import { agentsApi } from "@/api/agents";
 import { ApiError } from "@/api/client";
@@ -5,6 +7,7 @@ import { secretsApi } from "@/api/secrets";
 import { queryKeys } from "@/lib/queryKeys";
 import {
   savedProviderKeys,
+  savedManagedProviderAccounts,
   savedCodexSubscriptions,
   type SavedProviderKey,
 } from "@/lib/saved-provider-credentials";
@@ -14,17 +17,22 @@ export function useSavedProviderKeys(
   envKey: string,
   enabled = true,
 ) {
+  const provider = ({ ANTHROPIC_API_KEY: "anthropic", OPENAI_API_KEY: "openai", OPENROUTER_API_KEY: "openrouter", XAI_API_KEY: "xai", GEMINI_API_KEY: "google" } as Record<string, AiProvider>)[envKey];
+  const managed = useQuery({
+    queryKey: ["ai-connections", companyId],
+    queryFn: () => aiConnectionsApi.list(companyId!),
+    enabled: Boolean(companyId && provider) && enabled,
+  });
+  const managedAccounts = provider && managed.data ? savedManagedProviderAccounts(companyId!, provider, managed.data.currentUserId, managed.data.connections) : [];
   const personal = useQuery({
     queryKey: queryKeys.secrets.myUserSecrets(companyId ?? ""),
     queryFn: () => secretsApi.listMyUserSecrets(companyId!),
     enabled: Boolean(companyId) && enabled,
-    retry: false,
   });
   const organization = useQuery({
     queryKey: queryKeys.secrets.list(companyId ?? ""),
     queryFn: () => secretsApi.list(companyId!),
     enabled: Boolean(companyId) && enabled,
-    retry: false,
   });
   const storedLogin = useQuery({
     // Disabled queries still return cached data. Keep other providers away
@@ -39,23 +47,22 @@ export function useSavedProviderKeys(
       }
     },
     enabled: Boolean(companyId) && enabled && envKey === "ANTHROPIC_API_KEY",
-    retry: false,
   });
   return {
     storedLogin,
-    options: savedProviderKeys(
+    options: [...managedAccounts.filter(account => account.aiConnection?.method === "api_key"), ...savedProviderKeys(
       companyId ?? "",
       envKey,
       personal.data ?? [],
       organization.data ?? [],
-    ),
-    subscriptions: savedCodexSubscriptions(
+    )],
+    subscriptions: [...managedAccounts.filter(account => account.aiConnection?.method === "subscription"), ...(provider === "openai" ? savedCodexSubscriptions(
       companyId ?? "",
       organization.data ?? [],
-    ),
+    ) : [])],
     // Background refreshes must not unmount an active login panel sharing this query.
-    loading: personal.isLoading || organization.isLoading || storedLogin.isLoading,
-    error: personal.isError || organization.isError,
+    loading: personal.isLoading || organization.isLoading || storedLogin.isLoading || managed.isLoading,
+    error: personal.isError || organization.isError || managed.isError,
   };
 }
 

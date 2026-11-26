@@ -1,3 +1,4 @@
+import { AgentAvatar, type AvatarAgent } from "./AgentAvatar";
 import type { ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn, relativeTime } from "../lib/utils";
@@ -13,13 +14,13 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { AgentIcon } from "./AgentIconPicker";
 import { deriveInitials } from "./Identity";
 
 export type DocumentFrameHeaderRevisionActor = {
   kind: "agent" | "user" | "system";
   name: string;
   agentIcon?: string | null;
+  agent?: AvatarAgent;
   imageUrl?: string | null;
 };
 
@@ -57,18 +58,11 @@ export interface DocumentFrameHeaderProps {
 }
 
 function RevisionActorAvatar({ actor }: { actor: DocumentFrameHeaderRevisionActor }) {
+  if (actor.kind === "agent") return <AgentAvatar agent={actor.agent} name={actor.name} size={20} />;
   return (
-    <Avatar size="xs" shape={actor.kind === "agent" ? "square" : "circle"} className="shrink-0">
-      {actor.kind === "agent" ? (
-        <AvatarFallback>
-          <AgentIcon icon={actor.agentIcon} className="h-3 w-3" />
-        </AvatarFallback>
-      ) : (
-        <>
-          {actor.imageUrl ? <AvatarImage src={actor.imageUrl} alt={actor.name} /> : null}
-          <AvatarFallback>{deriveInitials(actor.name)}</AvatarFallback>
-        </>
-      )}
+    <Avatar size="xs" className="shrink-0">
+      {actor.imageUrl ? <AvatarImage src={actor.imageUrl} alt={actor.name} /> : null}
+      <AvatarFallback>{deriveInitials(actor.name)}</AvatarFallback>
     </Avatar>
   );
 }

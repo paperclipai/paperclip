@@ -1,3 +1,4 @@
+import { discoverReportCatalog } from "./report-catalog.js";
 import path from "node:path";
 import { mkdir } from "node:fs/promises";
 import { chromium } from "@playwright/test";
@@ -24,8 +25,13 @@ function durationLabel(durationMs: number) {
 }
 
 export function renderPublicCampaignSummary(campaign: RunnerE2ECampaign) {
+  const catalog = discoverReportCatalog({
+    catalog: runnerMatrix,
+    expected: campaign.expected,
+    results: campaign.results,
+  });
   const catalogById = new Map(
-    runnerMatrix.map((execution) => [execution.id, execution]),
+    catalog.map((execution) => [execution.id, execution]),
   );
   const expectedIds = [
     ...new Set(
@@ -53,10 +59,7 @@ export function renderPublicCampaignSummary(campaign: RunnerE2ECampaign) {
   );
   const suites = [
     ...new Map(
-      runnerMatrix.map((execution) => [
-        execution.suite.id,
-        execution.suite.label,
-      ]),
+      catalog.map((execution) => [execution.suite.id, execution.suite.label]),
     ),
   ].map(([suiteId, label]) => {
     const selectedIds = expectedIds.filter(
@@ -111,12 +114,12 @@ export function renderPublicCampaignSummary(campaign: RunnerE2ECampaign) {
     <p class="eyebrow">Runner full-stack E2E</p>
     <h1>Campaign summary</h1>
     <section class="metrics">
-      <div class="metric"><strong>${passed}/${expectedIds.length}</strong><span>Known executions passed</span></div>
+      <div class="metric"><strong>${passed}/${expectedIds.length}</strong><span>Selected executions passed</span></div>
       <div class="metric"><strong>${expectedIds.length - passed}</strong><span>Failed or incomplete</span></div>
       <div class="metric"><strong>${html(durationLabel(durationMs))}</strong><span>Total test time</span></div>
     </section>
     <section class="suites">${rows}</section>
-    <footer>Generated from fixed catalog labels and sanitized numeric/status fields. Provider output is never rendered here.</footer>
+    <footer>Generated from trusted catalog labels, validated execution identities, and sanitized numeric/status fields. Provider output is never rendered here.</footer>
   </main>
 </body>
 </html>`;

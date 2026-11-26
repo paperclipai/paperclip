@@ -1,0 +1,19 @@
+#!/usr/bin/env node
+// Test-only executable boundary: real Git and the real scheduler still run.
+// Only a repository explicitly armed by the test can inject a timeout.
+import fs from "node:fs";
+import path from "node:path";
+import { spawn } from "node:child_process";
+const args = process.argv.slice(2);
+const cwd = args[0] === "-C" ? args[1] : process.cwd();
+const once = path.join(cwd, ".git", "bootstrap-fail-once");
+const always = path.join(cwd, ".git", "bootstrap-fail-always");
+if (args.includes("--ignored") && (fs.existsSync(once) || fs.existsSync(always))) {
+  if (fs.existsSync(once)) fs.unlinkSync(once);
+  setTimeout(() => process.exit(1), 60_000);
+} else {
+  const child = spawn(process.env.BOOTSTRAP_REAL_GIT || "/usr/bin/git", args, { stdio: "inherit" });
+  for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => child.kill(signal));
+  child.on("exit", (code) => process.exit(code ?? 1));
+  child.on("error", () => process.exit(1));
+}

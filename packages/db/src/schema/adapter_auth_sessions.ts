@@ -48,6 +48,10 @@ export const adapterAuthSessions = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     environmentId: uuid("environment_id").notNull().references(() => environments.id, { onDelete: "cascade" }),
+    aiConnection: jsonb("ai_connection").$type<import("@paperclipai/shared").AiConnectionLoginIntent>(),
+    connectionId: uuid("connection_id"),
+    connectionGrantId: uuid("connection_grant_id"),
+    connectionMethod: text("connection_method"),
     adapterType: text("adapter_type").$type<AgentAdapterType>().notNull(),
     // The immutable owner principal. The service sets this column one time at
     // create and never updates it. The service returns the prompt only to this

@@ -153,3 +153,19 @@ describe("status and placeholder helpers", () => {
     expect(isGenericToolName("mcp__linear__search_issues")).toBe(false);
   });
 });
+
+describe("subject rows", () => {
+  it("keeps only the verb and outcome beside a subject, live and settled alike", async () => {
+    const { subjectRowLabel } = await import("./tool-taxonomy");
+    expect(subjectRowLabel("Read a file", false)).toBe("Read");
+    expect(subjectRowLabel("Read a file · failed", false)).toBe("Read · failed");
+    expect(subjectRowLabel("Read a file · retried", false)).toBe("Read · retried");
+    expect(subjectRowLabel("Ran a command", true)).toBe("");
+  });
+
+  it("names a deleted or moved file as such, never as an edit", async () => {
+    const { toolActivityPresentation } = await import("./tool-taxonomy");
+    expect(toolActivityPresentation({ name: "delete_file" }).completedLabel).toBe("Deleted file");
+    expect(toolActivityPresentation({ name: "move_file" }).completedLabel).toBe("Moved file");
+  });
+});

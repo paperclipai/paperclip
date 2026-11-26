@@ -13,7 +13,7 @@ Operational contract for the hosted `aws_secrets_manager` secret provider used b
   copy plaintext into Paperclip.
 - Per-company AWS provider vaults (named instances of `aws_secrets_manager`
   with their own region, namespace, prefix, KMS key id, and tags) are managed
-  in the board UI under `Company Settings → Secrets → Provider vaults`. See
+  in the board UI under `Company Settings → Secrets → Vaults`. See
   [Provider Vaults](../docs/deploy/secrets.md#provider-vaults) for the operator
   model and [Provider Vaults API](../docs/api/secrets.md#provider-vaults) for
   the routes. The bootstrap trust model in this document still applies — vault

@@ -1,25 +1,18 @@
-import { and, inArray } from "drizzle-orm";
+import { orphanLoginLeases } from "./login-cleanup-state.js";
 import type { Db } from "@paperclipai/db";
-import { adapterAuthSessions } from "@paperclipai/db";
 import {
-  ADAPTER_AUTH_ACTIVE_STATUSES,
-  DISPLAYED_CODE_ADAPTER_TYPES,
-  decodePendingTerminal,
   LOGIN_LEASE_SESSION_TAG_KEY,
+  decodePendingTerminal,
   observeSandboxDelete,
   terminalCleanupWrite,
   type AdapterAuthReaperStore,
+  type AdapterLoginLeaseReference,
   type SandboxDeleteResult,
 } from "./device-login-service.js";
 import type { EnvironmentRuntimeService } from "./environment-runtime.js";
 import { environmentService } from "./environments.js";
 
 // The restart-safe cleanup backstop for adapter login sessions.
-//
-// The in-process five-minute timer in the login-session service stays the
-// primary control. This reaper is the backstop. It runs on server startup and on
-// a fixed interval, so sandbox cleanup survives a server restart and a delete
-// failure. The reaper sweeps three sets:
 //
 //  1. The expired non-terminal sessions. It deletes the login sandbox and marks
 //     the session `timed_out`.
@@ -36,16 +29,10 @@ import { environmentService } from "./environments.js";
 // resolves the terminal public status before it clears the state.
 
 /** The provider lease reference the reaper deletes through. */
-export interface LoginLeaseRef {
-  environmentId: string;
-  providerLeaseId: string;
-}
+export type LoginLeaseRef = AdapterLoginLeaseReference;
 
-/** A login-tagged provider lease. The tag carries the session identifier, so the
- *  reaper matches the lease against the live session rows. */
-export interface TaggedLease extends LoginLeaseRef {
-  sessionId: string;
-}
+/** A login-tagged lease carries its authoritative internal session identifier. */
+export type TaggedLease = LoginLeaseRef;
 
 /**
  * The sandbox side the reaper drives. A production runtime binds it to the
@@ -118,6 +105,7 @@ export function createDeviceLoginReaper(deps: DeviceLoginReaperDeps) {
       retried += 1;
       const observation = await observeSandboxDelete(() =>
         runtime.deleteSandbox({
+          sessionId: row.id,
           environmentId: row.environmentId,
           providerLeaseId: row.providerLeaseId!,
         }),
@@ -187,6 +175,7 @@ export function createDeviceLoginReaper(deps: DeviceLoginReaperDeps) {
       const observation = row.providerLeaseId
         ? await observeSandboxDelete(() =>
             runtime.deleteSandbox({
+              sessionId: row.id,
               environmentId: row.environmentId,
               providerLeaseId: row.providerLeaseId!,
             }),
@@ -220,15 +209,13 @@ export function createDeviceLoginReaper(deps: DeviceLoginReaperDeps) {
       store.listLeaseReferences(),
       runtime.listTaggedLeases(),
     ]);
-    const referencedSet = new Set(referenced);
+    const referenceKey = (ref: LoginLeaseRef) => JSON.stringify([ref.sessionId, ref.environmentId, ref.providerLeaseId]);
+    const referencedSet = new Set(referenced.map(referenceKey));
     let deleted = 0;
     for (const lease of tagged) {
-      if (referencedSet.has(lease.providerLeaseId)) continue;
+      if (referencedSet.has(referenceKey(lease))) continue;
       const observation = await observeSandboxDelete(() =>
-        runtime.deleteSandbox({
-          environmentId: lease.environmentId,
-          providerLeaseId: lease.providerLeaseId,
-        }),
+        runtime.deleteSandbox(lease),
       );
       // A confirmed delete removes the orphan. A failed delete leaves it for the
       // next sweep.
@@ -283,7 +270,8 @@ export function createProductionLoginSessionReaperRuntime(
         return { outcome: "not_found" };
       }
       const leases = await environmentsSvc.listLeases(ref.environmentId);
-      const lease = leases.find((candidate) => candidate.providerLeaseId === ref.providerLeaseId);
+      const lease = leases.find(candidate => candidate.providerLeaseId === ref.providerLeaseId
+        && candidate.metadata?.[LOGIN_LEASE_SESSION_TAG_KEY] === ref.sessionId);
       if (!lease) {
         // No live lease row holds this provider lease. The sandbox is already
         // released, so the delete is an idempotent confirmation.
@@ -308,35 +296,8 @@ export function createProductionLoginSessionReaperRuntime(
       return { outcome: "deleted" };
     },
     async listTaggedLeases() {
-      // The candidate environments are those with a login session that still
-      // owns a lease. An orphan session row keeps its environment, so this set
-      // covers every orphan lease.
-      const environmentRows = await deps.db
-        .selectDistinct({ environmentId: adapterAuthSessions.environmentId })
-        .from(adapterAuthSessions)
-        .where(
-          and(
-            // The shared table also holds the setup-token rows. Filter by the
-            // closed set of displayed-code adapter types, so the orphan sweep
-            // reads only displayed-code rows.
-            inArray(adapterAuthSessions.adapterType, DISPLAYED_CODE_ADAPTER_TYPES),
-            inArray(adapterAuthSessions.status, [
-              ...ADAPTER_AUTH_ACTIVE_STATUSES,
-              "cleanup_pending",
-            ]),
-          ),
-        );
-      const tagged: TaggedLease[] = [];
-      for (const { environmentId } of environmentRows) {
-        const leases = await environmentsSvc.listLeases(environmentId, { status: "active" });
-        for (const lease of leases) {
-          const sessionId = lease.metadata?.[LOGIN_LEASE_SESSION_TAG_KEY];
-          if (typeof sessionId === "string" && lease.providerLeaseId) {
-            tagged.push({ environmentId, providerLeaseId: lease.providerLeaseId, sessionId });
-          }
-        }
-      }
-      return tagged;
+      const rows = await orphanLoginLeases(deps.db);
+      return rows.map(row => ({ environmentId: row.environmentId!, providerLeaseId: row.providerLeaseId!, sessionId: row.sessionId }));
     },
   };
 }

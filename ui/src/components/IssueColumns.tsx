@@ -1,3 +1,7 @@
+import { AgentIdentity } from "@/components/AgentIdentity";
+import { AgentQueueWaitChip } from "./AgentQueueWait";
+import type { IssueWaiting } from "../lib/liveIssueIds";
+import type { AvatarAgent } from "./AgentAvatar";
 import type { ReactNode } from "react";
 import { deriveOriginatingActor, type Issue } from "@paperclipai/shared";
 import { Columns3 } from "lucide-react";
@@ -17,9 +21,11 @@ import { formatAssigneeUserLabel } from "../lib/assignees";
 import type { InboxIssueColumn } from "../lib/inbox";
 import { cn } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
+import { issueUpdatedTime } from "../lib/issue-filters";
 import { Identity } from "./Identity";
 import { StatusIcon } from "./StatusIcon";
 import { Badge } from "@/components/ui/badge";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export const issueTrailingColumns: InboxIssueColumn[] = ["assignee", "kickedOffBy", "project", "workspace", "parent", "labels", "updated"];
 
@@ -61,7 +67,7 @@ export function issueColumnDescription(
 }
 
 export function issueActivityTimestamp(issue: Issue): string {
-  return timeAgo(issue.lastActivityAt ?? issue.lastExternalCommentAt ?? issue.updatedAt);
+  return timeAgo(issueUpdatedTime(issue));
 }
 
 export function issueActivityText(issue: Issue): string {
@@ -180,6 +186,7 @@ export function IssueColumnPicker({
 export function InboxIssueMetaLeading({
   issue,
   isLive,
+  waiting = null,
   subtreeLiveCount = 0,
   showSubtreeLiveChip = true,
   showStatus = true,
@@ -189,6 +196,8 @@ export function InboxIssueMetaLeading({
 }: {
   issue: Issue;
   isLive: boolean;
+  /** Set when every live run of the task is still waiting to start. */
+  waiting?: IssueWaiting | null;
   subtreeLiveCount?: number;
   showSubtreeLiveChip?: boolean;
   showStatus?: boolean;
@@ -200,7 +209,7 @@ export function InboxIssueMetaLeading({
     <>
       {showStatus ? (
         <span className="hidden shrink-0 items-center sm:inline-flex">
-          {statusSlot ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} />}
+          {statusSlot ?? <StatusIcon {...taskStatusIconProps(issue)} />}
         </span>
       ) : null}
       {checklistStepNumber !== null ? (
@@ -213,7 +222,9 @@ export function InboxIssueMetaLeading({
           {issue.identifier ?? issue.id.slice(0, 8)}
         </span>
       ) : null}
-      {isLive && (
+      {isLive && waiting ? (
+        <AgentQueueWaitChip queue={waiting.queue} />
+      ) : isLive && (
         <Badge variant="ghost"
           className={cn(
             "px-1.5 sm:gap-1.5 sm:px-2",
@@ -271,6 +282,8 @@ export function InboxIssueTrailingColumns({
   workspaceId,
   workspaceName,
   assigneeName,
+  assigneeAgent,
+  creatorAgent,
   assigneeUserName,
   assigneeUserAvatarUrl,
   creatorAgentName,
@@ -290,6 +303,8 @@ export function InboxIssueTrailingColumns({
   workspaceId?: string | null;
   workspaceName: string | null;
   assigneeName: string | null;
+  assigneeAgent?: AvatarAgent;
+  creatorAgent?: AvatarAgent;
   assigneeUserName?: string | null;
   assigneeUserAvatarUrl?: string | null;
   creatorAgentName?: string | null;
@@ -322,11 +337,10 @@ export function InboxIssueTrailingColumns({
           if (issue.assigneeAgentId) {
             return (
               <span key={column} className="min-w-0 text-xs text-foreground">
-                <Identity
-                  name={assigneeName ?? issue.assigneeAgentId.slice(0, 8)}
+                <AgentIdentity
+                  agent={assigneeAgent ?? { id: issue.assigneeAgentId, name: assigneeName ?? issue.assigneeAgentId.slice(0, 8) }}
                   size="sm"
-                  shape="square"
-                  className="min-w-0"
+                  className="min-w-0 max-w-full"
                 />
               </span>
             );
@@ -339,7 +353,7 @@ export function InboxIssueTrailingColumns({
                   name={userLabel}
                   avatarUrl={assigneeUserAvatarUrl}
                   size="sm"
-                  className="min-w-0"
+                  className="min-w-0 max-w-full"
                 />
               </span>
             );
@@ -359,11 +373,10 @@ export function InboxIssueTrailingColumns({
               <Tooltip key={column}>
                 <TooltipTrigger asChild>
                   <span className="min-w-0 text-xs text-foreground">
-                    <Identity
-                      name={name}
+                    <AgentIdentity
+                      agent={creatorAgent ?? { id: originatingActor.id, name }}
                       size="sm"
-                      shape="square"
-                      className="min-w-0"
+                      className="min-w-0 max-w-full"
                     />
                   </span>
                 </TooltipTrigger>
@@ -382,7 +395,7 @@ export function InboxIssueTrailingColumns({
                       name={creatorUserLabel}
                       avatarUrl={creatorUserAvatarUrl}
                       size="sm"
-                      className="min-w-0"
+                      className="min-w-0 max-w-full"
                     />
                   </span>
                 </TooltipTrigger>

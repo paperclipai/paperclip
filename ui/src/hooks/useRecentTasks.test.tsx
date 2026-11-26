@@ -1,0 +1,506 @@
+// @vitest-environment jsdom
+
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ISSUE_SUMMARIES_MAX_IDS } from "@paperclipai/shared";
+import { ApiError } from "@/api/client";
+import { queryKeys } from "@/lib/queryKeys";
+import {
+  getRecentTasksStorageKey,
+  readRecentTasks,
+  recordRecentTask,
+  RECENT_TASKS_UPDATED_EVENT,
+} from "@/lib/recent-tasks";
+import { RECENT_TASK_SUMMARY_CONCURRENCY, useRecentTasks } from "./useRecentTasks";
+
+const { getIssue, summaries } = vi.hoisted(() => ({ getIssue: vi.fn(), summaries: vi.fn() }));
+vi.mock("@/api/issues", () => ({ issuesApi: { get: getIssue, summaries } }));
+
+(globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
+
+const task = (updatedAt: number, title: string, status: "todo" | "done" = "todo") => ({
+  id: "issue-1", companyId: "company-1", identifier: "TASK-1", title, status,
+  updatedAt: new Date(updatedAt), hiddenAt: null, projectId: null, isParticipantForMe: true,
+});
+const storageKey = getRecentTasksStorageKey("company-1", "user-1");
+// Node 24 uses jsdom Storage; newer Node versions use the setup's storage shim.
+// jsdom's Storage proxy does not support spying on instance methods.
+const storageMethods = window.localStorage instanceof window.Storage ? window.Storage.prototype : window.localStorage;
+
+describe("recent task synchronization", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let clients: QueryClient[];
+  let renders: number;
+
+  function RecentTasks({ name, companyId = "company-1", userId = "user-1", pinnedTaskIds }: { name: string; companyId?: string; userId?: string; pinnedTaskIds?: string[] }) {
+    const { entries, pinnedTasks } = useRecentTasks({ companyId, userId, pinnedTaskIds });
+    renders += 1;
+    // Fail promptly if a regression restores the cross-cache render loop.
+    if (renders > 100) throw new Error("Recent Tasks did not settle");
+    return <div data-tab={name} data-pins={pinnedTasks.map(task => task.title).join(",")}>{entries.map((entry) => `${entry.title}:${entry.status}`).join(",")}</div>;
+  }
+
+  function client(snapshot?: ReturnType<typeof task>) {
+    const value = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    if (snapshot) {
+      value.setQueryData(queryKeys.issues.detail(snapshot.id), snapshot);
+      value.setQueryData(queryKeys.issues.summaryBatch("company-1", "user-1", [snapshot.id]), [snapshot]);
+    }
+    clients.push(value);
+    return value;
+  }
+
+  async function flush() {
+    await act(async () => {
+      for (let index = 0; index < 5; index += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+
+  beforeEach(() => {
+    localStorage.clear();
+    getIssue.mockReset();
+    summaries.mockReset();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+    clients = [];
+    renders = 0;
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    clients.forEach((value) => value.clear());
+    container.remove();
+    vi.restoreAllMocks();
+  });
+
+  it("restores readable task pins independently of participation and drops tasks omitted by authorization", async () => {
+    const recent = task(10, "Recent task");
+    const pinned = { ...task(20, "Pinned task"), id: "pinned", isParticipantForMe: false };
+    const otherCompany = { ...task(20, "Other company"), id: "foreign", companyId: "company-2" };
+    recordRecentTask(recent, "user-1");
+    const pins = [pinned.id, otherCompany.id, "missing"];
+    const cache = client();
+    summaries.mockResolvedValue([recent, pinned, otherCompany]);
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="pinned" pinnedTaskIds={pins} /></QueryClientProvider>));
+    await flush();
+    expect(summaries).toHaveBeenCalledTimes(1);
+    expect(summaries.mock.calls[0]?.[1]).toEqual(["foreign", "issue-1", "missing", "pinned"]);
+    expect(container.textContent).toBe("Recent task:todo");
+    const visiblePins = () => container.querySelector("[data-pins]")?.getAttribute("data-pins");
+    expect(visiblePins()).toBe("Pinned task");
+    expect(readRecentTasks(storageKey, "company-1").map(entry => entry.id)).toEqual([recent.id]);
+
+    summaries.mockResolvedValue([recent]);
+    await act(async () => { await cache.invalidateQueries({ queryKey: queryKeys.issues.summaries("company-1") }); });
+    await flush();
+    expect(visiblePins()).toBe("");
+
+    const revisited = { ...pinned, isParticipantForMe: true };
+    summaries.mockResolvedValue([recent, revisited]);
+    await act(async () => recordRecentTask(revisited, "user-1", 30));
+    await flush();
+    expect(summaries).toHaveBeenCalledTimes(3);
+    expect(visiblePins()).toBe("Pinned task");
+    expect(container.textContent).toBe("Pinned task:todo,Recent task:todo");
+  });
+
+  it("settles independent stale and fresh query caches and displays the newer snapshot in both", async () => {
+    const older = task(10, "Old title");
+    const newer = task(20, "New title", "done");
+    recordRecentTask(older, "user-1");
+    const staleClient = client(older);
+    const freshClient = client(newer);
+    const setItem = vi.spyOn(storageMethods, "setItem");
+    await act(async () => root.render(<>
+      <QueryClientProvider client={staleClient}><RecentTasks name="stale" /></QueryClientProvider>
+      <QueryClientProvider client={freshClient}><RecentTasks name="fresh" /></QueryClientProvider>
+    </>));
+    await flush();
+    expect(container.querySelector('[data-tab="stale"]')?.textContent).toBe("New title:done");
+    expect(container.querySelector('[data-tab="fresh"]')?.textContent).toBe("New title:done");
+    expect(setItem).toHaveBeenCalledTimes(1);
+    expect(getIssue).not.toHaveBeenCalled();
+    const settledRenders = renders;
+    await flush();
+    expect(renders).toBe(settledRenders);
+
+    // A real query update still propagates after the two caches settle.
+    await act(async () => {
+      freshClient.setQueryData(queryKeys.issues.detail(newer.id), task(30, "Renamed", "done"));
+    });
+    await flush();
+    expect(container.querySelector('[data-tab="stale"]')?.textContent).toBe("Renamed:done");
+    expect(readRecentTasks(storageKey, "company-1")[0]?.snapshotUpdatedAt).toBe(30);
+    expect(setItem).toHaveBeenCalledTimes(2);
+  });
+
+  it("receives storage updates without republishing cached data", async () => {
+    const cached = task(20, "Cached", "done");
+    recordRecentTask(cached, "user-1");
+    await act(async () => root.render(
+      <QueryClientProvider client={client(cached)}><RecentTasks name="receiver" /></QueryClientProvider>,
+    ));
+    await flush();
+    // Simulate a concurrent write from another tab with an older snapshot.
+    const incoming = { ...readRecentTasks(storageKey, "company-1")[0], title: "Older", snapshotUpdatedAt: 10 };
+    localStorage.setItem(storageKey, JSON.stringify([incoming]));
+    const setItem = vi.spyOn(storageMethods, "setItem");
+    const publish = vi.fn();
+    window.addEventListener(RECENT_TASKS_UPDATED_EVENT, publish);
+    try {
+      await act(async () => { window.dispatchEvent(new StorageEvent("storage", { key: storageKey })); });
+      await flush();
+      expect(container.textContent).toBe("Cached:done");
+      expect(setItem).not.toHaveBeenCalled();
+      expect(publish).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener(RECENT_TASKS_UPDATED_EVENT, publish);
+    }
+  });
+
+  it("ignores writes from the old application after migration", async () => {
+    const legacyKey = "paperclip.recentTasks:company-1:user-1";
+    localStorage.setItem(legacyKey, JSON.stringify([{ ...task(10, "Legacy"), recordedAt: 100 }]));
+    await act(async () => root.render(
+      <QueryClientProvider client={client(task(20, "Current", "done"))}><RecentTasks name="current" /></QueryClientProvider>,
+    ));
+    await flush();
+    expect(container.textContent).toBe("Current:done");
+    const settledRenders = renders;
+    await act(async () => {
+      localStorage.setItem(legacyKey, "[]");
+      window.dispatchEvent(new StorageEvent("storage", { key: legacyKey }));
+      window.dispatchEvent(new CustomEvent(RECENT_TASKS_UPDATED_EVENT, { detail: { storageKey: legacyKey, entries: [] } }));
+    });
+    await flush();
+    expect(renders).toBe(settledRenders);
+    expect(container.textContent).toBe("Current:done");
+    expect(readRecentTasks(storageKey, "company-1")[0]?.recordedAt).toBe(100);
+  });
+
+  it.each([403, 500])("retains snapshots when the batch fails with %s", async (status) => {
+    recordRecentTask(task(10, "Unavailable"), "user-1");
+    summaries.mockRejectedValue(new ApiError("Unavailable", status, null));
+    await act(async () => root.render(
+      <QueryClientProvider client={client()}><RecentTasks name="unavailable" /></QueryClientProvider>,
+    ));
+    await flush();
+    expect(readRecentTasks(storageKey, "company-1")).toHaveLength(1);
+    expect(container.textContent).toBe("");
+    expect(summaries).toHaveBeenCalledTimes(1);
+    expect(getIssue).not.toHaveBeenCalled();
+  });
+
+  it("fetches five tasks once without activating detail queries", async () => {
+    const tasks = Array.from({ length: 5 }, (_, i) => ({ ...task(i + 1, `Task ${i}`), id: `issue-${i}` }));
+    tasks.forEach(issue => recordRecentTask(issue, "user-1"));
+    summaries.mockResolvedValue(tasks);
+    const cache = client();
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="batch" /></QueryClientProvider>));
+    await flush();
+    expect(summaries).toHaveBeenCalledTimes(1);
+    expect(summaries.mock.calls[0][1]).toEqual(tasks.map(issue => issue.id).sort());
+    expect(getIssue).not.toHaveBeenCalled();
+    expect(cache.getQueryCache().findAll({ queryKey: ["issues", "detail"] })).toEqual([]);
+  });
+  it("keeps a canceled task in Recents and removes it on archive without dropping its pin", async () => {
+    const opened = task(10, "Recent task");
+    const cancelled = { ...opened, status: "cancelled" as const, updatedAt: new Date(20) };
+    recordRecentTask(opened, "user-1", 10);
+    summaries.mockResolvedValue([opened]);
+    const cache = client();
+    const pins = [opened.id];
+    const refresh = async () => {
+      await act(async () => { await cache.invalidateQueries({ queryKey: queryKeys.issues.summaries("company-1") }); });
+      await flush();
+    };
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="status" pinnedTaskIds={pins} /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toBe("Recent task:todo");
+
+    summaries.mockResolvedValue([cancelled]);
+    await refresh();
+    expect(container.textContent).toBe("Recent task:cancelled");
+    expect(readRecentTasks(storageKey, "company-1")[0]?.recordedAt).toBe(10);
+
+    await act(async () => recordRecentTask(cancelled, "user-1", 30));
+    expect(readRecentTasks(storageKey, "company-1")[0]?.recordedAt).toBe(30);
+
+    summaries.mockResolvedValue([{ ...cancelled, isArchivedForMe: true }]);
+    await refresh();
+    expect(container.textContent).toBe("");
+    expect(container.querySelector("[data-pins]")?.getAttribute("data-pins")).toBe("Recent task");
+    expect(readRecentTasks(storageKey, "company-1")).toEqual([]);
+  });
+
+  it("keeps loaded navigation state on a failed refresh without storing personal unread projections", async () => {
+    const parent = { ...task(10, "Parent"), parentId: null, subtaskCount: 14, unreadSubtaskCount: 12, isUnreadForMe: true };
+    recordRecentTask(parent, "user-1");
+    summaries.mockResolvedValue([parent]);
+    const cache = client();
+    let entries: ReturnType<typeof useRecentTasks>["entries"] = [];
+    function State() { entries = useRecentTasks({ companyId: "company-1", userId: "user-1" }).entries; return null; }
+    await act(async () => root.render(<QueryClientProvider client={cache}><State /></QueryClientProvider>));
+    await flush();
+    expect(entries[0]).toMatchObject({ isUnreadForMe: true });
+    expect(readRecentTasks(storageKey, "company-1")[0]).not.toHaveProperty("isUnreadForMe");
+    expect(entries[0]).not.toHaveProperty("subtaskCount");
+    const stable = entries;
+    await act(async () => root.render(<QueryClientProvider client={cache}><State /></QueryClientProvider>));
+    expect(entries).toBe(stable);
+    summaries.mockRejectedValue(new ApiError("Unavailable", 503, null));
+    await act(async () => { await cache.invalidateQueries({ queryKey: queryKeys.issues.summaries("company-1") }); });
+    await flush();
+    expect(entries[0]).toMatchObject({ isUnreadForMe: true });
+  });
+
+  it("does not fetch empty history", async () => {
+    await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="empty" /></QueryClientProvider>));
+    await flush();
+    expect(summaries).not.toHaveBeenCalled();
+  });
+
+  it.each(["account", "company"])("retains confirmed rows after a new batch fails, without crossing %s scopes", async (change) => {
+    const personal = task(10, "My work");
+    recordRecentTask(personal, "user-1", 10);
+    summaries.mockResolvedValue([personal]);
+    const cache = client();
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="retained" /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toBe("My work:todo");
+
+    summaries.mockRejectedValue(new ApiError("Unavailable", 503, null));
+    await act(async () => { recordRecentTask({ ...task(20, "Unverified"), id: "unknown" }, "user-1"); });
+    await flush();
+    expect(container.textContent).toBe("My work:todo");
+    expect(readRecentTasks(storageKey, "company-1")).toHaveLength(2);
+
+    const companyId = change === "company" ? "company-2" : "company-1";
+    const userId = change === "account" ? "user-2" : "user-1";
+    recordRecentTask({ ...personal, companyId, title: "Unverified other scope" }, userId);
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="retained" companyId={companyId} userId={userId} /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toBe("");
+  });
+
+  it("debounces personal reorders even when storage contains an unverified candidate", async () => {
+    const older = task(10, "Older");
+    const newer = { ...task(20, "Newer"), id: "newer" };
+    const unknown = { ...task(30, "Unverified"), id: "unknown", isParticipantForMe: undefined };
+    [older, newer, unknown].forEach((issue, index) => recordRecentTask(issue, "user-1", index + 1));
+    summaries.mockResolvedValue([older, newer, unknown]);
+    await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="debounced" /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toBe("Newer:todo,Older:todo");
+    vi.useFakeTimers();
+    try {
+      await act(async () => { recordRecentTask(older, "user-1", 100); });
+      expect(container.textContent).toBe("Newer:todo,Older:todo");
+      await act(async () => { await vi.advanceTimersByTimeAsync(999); });
+      expect(container.textContent).toBe("Newer:todo,Older:todo");
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(container.textContent).toBe("Older:todo,Newer:todo");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("hides unverified visits and removes automated history only after a successful participation read", async () => {
+    const personal = { ...task(10, "My work"), isParticipantForMe: true };
+    const automated = { ...task(20, "Routine scan"), id: "routine", isParticipantForMe: false };
+    recordRecentTask(personal, "user-1");
+    recordRecentTask(automated, "user-1");
+    let resolve!: (rows: unknown[]) => void;
+    summaries.mockReturnValueOnce(new Promise(done => { resolve = done; })).mockResolvedValue([personal]);
+    await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="participation" /></QueryClientProvider>));
+    expect(container.textContent).toBe("");
+    expect(readRecentTasks(storageKey, "company-1")).toHaveLength(2);
+    await act(async () => { resolve([personal, automated]); });
+    await flush();
+    expect(container.textContent).toBe("My work:todo");
+    expect(readRecentTasks(storageKey, "company-1").map(entry => entry.id)).toEqual([personal.id]);
+    expect(readRecentTasks(storageKey, "company-1")[0]).not.toHaveProperty("isParticipantForMe");
+  });
+
+  it("does not trust a participation flag from local storage or a full-detail cache", async () => {
+    localStorage.setItem(storageKey, JSON.stringify([{ ...task(10, "Imported review"), recordedAt: 10 }]));
+    const cache = client();
+    cache.setQueryData(queryKeys.issues.detail("issue-1"), task(20, "Cached review"));
+    summaries.mockResolvedValue([{ ...task(30, "Review finished"), isParticipantForMe: false }]);
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="imported" /></QueryClientProvider>));
+    await flush();
+    expect(container.textContent).toBe("");
+    expect(readRecentTasks(storageKey, "company-1")).toEqual([]);
+  });
+
+  it("admits an automated task after the viewer participates despite a cached negative result", async () => {
+    const automated = { ...task(10, "Review"), isParticipantForMe: false };
+    recordRecentTask(automated, "user-1");
+    summaries.mockResolvedValue([automated]);
+    const cache = client();
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="joined" /></QueryClientProvider>));
+    await flush();
+    expect(readRecentTasks(storageKey, "company-1")).toEqual([]);
+    summaries.mockResolvedValue([{ ...automated, isParticipantForMe: true }]);
+    await act(async () => { recordRecentTask(automated, "user-1", 100); });
+    await flush();
+    expect(container.textContent).toBe("Review:todo");
+    expect(readRecentTasks(storageKey, "company-1")[0]?.recordedAt).toBe(100);
+  });
+
+  it("fetches a 25-task history in one request", async () => {
+    const tasks = Array.from({ length: 25 }, (_, i) => ({ ...task(i + 1, `Task ${i}`), id: `issue-${String(i).padStart(2, "0")}` }));
+    tasks.forEach(issue => recordRecentTask(issue, "user-1"));
+    summaries.mockResolvedValue(tasks);
+    await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="staging-size" /></QueryClientProvider>));
+    await flush();
+    expect(summaries).toHaveBeenCalledTimes(1);
+    expect(summaries.mock.calls[0][1]).toHaveLength(25);
+  });
+
+  it.each([false, true])("refreshes long histories in parallel bounded requests without pruning on a partial failure (%s)", async fails => {
+    // Three chunks, all in flight together within the concurrency limit.
+    const count = ISSUE_SUMMARIES_MAX_IDS * 2 + 3;
+    const tasks = Array.from({ length: count }, (_, i) => ({ ...task(i + 1, `Task ${i}`), id: `issue-${String(i).padStart(3, "0")}` }));
+    tasks.forEach(issue => recordRecentTask(issue, "user-1"));
+    const pending: Array<() => void> = [];
+    summaries.mockImplementation(async (_company, ids: string[]) => {
+      expect(ids.length).toBeLessThanOrEqual(ISSUE_SUMMARIES_MAX_IDS);
+      const call = summaries.mock.calls.length;
+      // Each chunk waits until the test releases it, so all three must be in flight together.
+      await new Promise<void>(resolve => pending.push(resolve));
+      if (fails && call === 2) throw new ApiError("Unavailable", 500, null);
+      return tasks.filter(issue => ids.includes(issue.id)).map(issue => ({ ...issue, title: `Refreshed ${issue.title}`, updatedAt: new Date(10_000) }));
+    });
+    await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="long-history" /></QueryClientProvider>));
+    await flush();
+    expect(summaries).toHaveBeenCalledTimes(3);
+    expect(pending).toHaveLength(3);
+    pending.forEach(resolve => resolve());
+    await flush();
+    const entries = readRecentTasks(storageKey, "company-1");
+    expect(entries).toHaveLength(count);
+    expect(entries.every(entry => entry.title.startsWith("Refreshed"))).toBe(!fails);
+    expect(getIssue).not.toHaveBeenCalled();
+  });
+
+  it("limits how many summary chunks are in flight at once", async () => {
+    const count = ISSUE_SUMMARIES_MAX_IDS * 5;
+    const tasks = Array.from({ length: count }, (_, i) => ({ ...task(i + 1, `Task ${i}`), id: `issue-${String(i).padStart(3, "0")}` }));
+    tasks.forEach(issue => recordRecentTask(issue, "user-1"));
+    const pending: Array<() => void> = [];
+    summaries.mockImplementation(async (_company, ids: string[]) => {
+      await new Promise<void>(resolve => pending.push(resolve));
+      return tasks.filter(issue => ids.includes(issue.id));
+    });
+    await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="many" /></QueryClientProvider>));
+    await flush();
+    expect(summaries).toHaveBeenCalledTimes(RECENT_TASK_SUMMARY_CONCURRENCY);
+    while (pending.length) {
+      pending.splice(0).forEach(resolve => resolve());
+      await flush();
+    }
+    expect(summaries).toHaveBeenCalledTimes(5);
+    expect(readRecentTasks(storageKey, "company-1")).toHaveLength(count);
+  });
+
+  it("prunes successful omissions without resurrecting cached full details", async () => {
+    const missing = task(10, "Removed");
+    recordRecentTask(missing, "user-1");
+    const cache = client();
+    cache.setQueryData(queryKeys.issues.detail(missing.id), task(30, "Cached secret"));
+    summaries.mockResolvedValue([]);
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="missing" /></QueryClientProvider>));
+    await flush();
+    expect(readRecentTasks(storageKey, "company-1")).toEqual([]);
+    expect(container.textContent).toBe("");
+  });
+
+  it("does not prune a task added while an older batch is pending", async () => {
+    recordRecentTask(task(10, "Missing old task"), "user-1");
+    let resolveFirst!: (rows: unknown[]) => void;
+    summaries.mockReturnValueOnce(new Promise(resolve => { resolveFirst = resolve; }))
+      .mockReturnValue(new Promise(() => {}));
+    await act(async () => root.render(<QueryClientProvider client={client()}><RecentTasks name="race" /></QueryClientProvider>));
+    const added = { ...task(20, "New task"), id: "issue-2" };
+    await act(async () => { recordRecentTask(added, "user-1"); });
+    await act(async () => { resolveFirst([]); });
+    await flush();
+    expect(readRecentTasks(storageKey, "company-1").some(entry => entry.id === added.id)).toBe(true);
+    expect(container.textContent).not.toContain("New task");
+  });
+
+  it("isolates an account switch while the old request is pending", async () => {
+    recordRecentTask(task(10, "Old account task"), "user-1");
+    recordRecentTask({ ...task(20, "New account task"), id: "issue-2" }, "user-2");
+    let resolveOld!: (rows: unknown[]) => void;
+    summaries.mockReturnValueOnce(new Promise(resolve => { resolveOld = resolve; }))
+      .mockResolvedValue([{ ...task(20, "New account task"), id: "issue-2" }]);
+    const cache = client();
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="account" /></QueryClientProvider>));
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="account" userId="user-2" /></QueryClientProvider>));
+    await act(async () => { resolveOld([task(30, "Old response")]); });
+    await flush();
+    expect(container.textContent).toBe("New account task:todo");
+    expect(readRecentTasks(getRecentTasksStorageKey("company-1", "user-2"), "company-1")[0]?.id).toBe("issue-2");
+    expect(summaries.mock.calls.map(call => call[1])).toEqual([["issue-1"], ["issue-2"]]);
+  });
+
+  it("refreshes a cached omission when the user revisits an accessible task", async () => {
+    const first = task(10, "First");
+    const second = { ...task(20, "Second"), id: "issue-2" };
+    recordRecentTask(first, "user-1");
+    recordRecentTask(second, "user-1");
+    summaries.mockResolvedValue([second]);
+    const cache = client();
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="revisited" /></QueryClientProvider>));
+    await flush();
+    expect(readRecentTasks(storageKey, "company-1").map(entry => entry.id)).toEqual([second.id]);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(cache.getQueryState(queryKeys.issues.summaryBatch("company-1", "user-1", [second.id]))?.status).toBe("success");
+    summaries.mockResolvedValue([first, second]);
+    await act(async () => { recordRecentTask(first, "user-1", 30); });
+    await flush();
+    expect(readRecentTasks(storageKey, "company-1").map(entry => entry.id).sort()).toEqual([first.id, second.id]);
+    expect(summaries.mock.calls.filter(call => call[1].length === 2)).toHaveLength(2);
+  });
+
+  it("keeps a revisited task when refreshing its cached omission fails", async () => {
+    const first = task(10, "First");
+    const second = { ...task(20, "Second"), id: "issue-2" };
+    recordRecentTask(first, "user-1");
+    recordRecentTask(second, "user-1");
+    summaries.mockResolvedValue([second]);
+    const cache = client();
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="retry-failed" /></QueryClientProvider>));
+    await flush();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    summaries.mockRejectedValue(new ApiError("Unavailable", 500, null));
+    await act(async () => { recordRecentTask(first, "user-1", 30); });
+    await flush();
+    expect(readRecentTasks(storageKey, "company-1").map(entry => entry.id).sort()).toEqual([first.id, second.id]);
+    expect(cache.getQueryState(queryKeys.issues.summaryBatch("company-1", "user-1", [first.id, second.id]))?.status).toBe("error");
+    expect(summaries.mock.calls.filter(call => call[1].length === 2)).toHaveLength(2);
+  });
+
+  it("prunes a revisited task when a fresh response repeats the cached omission", async () => {
+    const first = task(10, "First");
+    const second = { ...task(20, "Second"), id: "issue-2" };
+    recordRecentTask(first, "user-1");
+    recordRecentTask(second, "user-1");
+    const rows = [second];
+    summaries.mockResolvedValue(rows);
+    const cache = client();
+    await act(async () => root.render(<QueryClientProvider client={cache}><RecentTasks name="still-missing" /></QueryClientProvider>));
+    await flush();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    await act(async () => { recordRecentTask(first, "user-1", 30); });
+    await flush();
+    expect(summaries.mock.calls.filter(call => call[1].length === 2)).toHaveLength(2);
+    expect(readRecentTasks(storageKey, "company-1").map(entry => entry.id)).toEqual([second.id]);
+  });
+});

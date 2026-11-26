@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TelemetryClient } from "./client.js";
+import { TelemetryClient, type TelemetryOutgoingBatch, type TelemetrySendResult, type TelemetryTransport } from "./client.js";
+import { trackAgentTaskRun, trackCompanyImported } from "./events.js";
 import { resolveTelemetryConfig } from "./config.js";
 import type { TelemetryConfig, TelemetryDimensions, TelemetryState } from "./types.js";
+
+const CONTRACT_KEYS = new Set(["app", "schemaVersion", "installId", "version", "events", "batchId"]);
 
 const TEST_STATE: TelemetryState = {
   installId: "test-install",
@@ -174,7 +177,8 @@ describe("TelemetryClient chunking (count + bytes)", () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true });
     vi.stubGlobal("fetch", fetchMock);
     const cap = 2;
-    const { client } = makeClient(undefined, { maxEventsPerBatch: cap });
+    const maxBodyBytes = 4096;
+    const { client } = makeClient(undefined, { maxEventsPerBatch: cap, maxBodyBytes });
 
     for (let i = 0; i < 5; i++) client.track("install.started", {});
     await client.flush();
@@ -185,6 +189,14 @@ describe("TelemetryClient chunking (count + bytes)", () => {
     expect(bodies.map((b) => (b.events as unknown[]).length)).toEqual([2, 2, 1]);
     for (const body of bodies) {
       expect((body.events as unknown[]).length).toBeLessThanOrEqual(cap);
+      for (const key of Object.keys(body)) {
+        expect(CONTRACT_KEYS.has(key)).toBe(true);
+      }
+      expect(body.schemaVersion).toBe("1");
+    }
+    for (const call of fetchMock.mock.calls) {
+      const body = String((call[1] as RequestInit).body);
+      expect(Buffer.byteLength(body)).toBeLessThanOrEqual(maxBodyBytes);
     }
   });
 
@@ -200,6 +212,7 @@ describe("TelemetryClient chunking (count + bytes)", () => {
     await client.flush();
 
     expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+    expect(sentBodies().reduce((sum, body) => sum + (body.events as unknown[]).length, 0)).toBe(6);
     for (const call of fetchMock.mock.calls) {
       const body = String((call[1] as RequestInit).body);
       expect(Buffer.byteLength(body)).toBeLessThanOrEqual(maxBodyBytes);
@@ -394,6 +407,7 @@ describe("TelemetryClient batched retry + backoff", () => {
 
     const bodies = sentBodies();
     expect(bodies[0]?.batchId).toBe(bodies[1]?.batchId); // identical id on retry
+    expect(bodies[1]?.events).toEqual(bodies[0]?.events);
     client.stop();
   });
 
@@ -611,5 +625,98 @@ describe("TelemetryClient bounded pending-retry store", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
     expect(vi.getTimerCount()).toBe(1);
     client.stop();
+  });
+});
+
+describe("TelemetryClient transport seam", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function makeTransport(overrides: Partial<TelemetryTransport> = {}) {
+    const send = vi.fn(async (_batch: TelemetryOutgoingBatch): Promise<TelemetrySendResult> => ({ kind: "ok" }));
+    const transport: TelemetryTransport = {
+      hashesPrivateRefs: false,
+      captureEventContext: vi.fn(() => ({ tag: "ctx" })),
+      send,
+      ...overrides,
+    };
+    return { transport, send };
+  }
+
+  it("keeps hashing private refs on the default collector path", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+    const { client } = makeClient();
+    expect(client.privateRefsHashed).toBe(true);
+
+    trackAgentTaskRun(client, { agentId: "agent-1", state: "succeeded", taskId: "task-raw-id" });
+    await client.flush();
+
+    const body = sentBody();
+    expect(body.events[0].dimensions.task_id).toBe(client.hashPrivateRef("task-raw-id"));
+    expect(body.events[0].dimensions.task_id).not.toBe("task-raw-id");
+    expect(Object.keys(body).sort()).toEqual([...CONTRACT_KEYS].sort());
+  });
+
+  it("sends each batch to the transport only, never to the collector", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal("fetch", fetchMock);
+    const { transport, send } = makeTransport();
+    const client = new TelemetryClient(
+      { enabled: true, endpoint: "http://localhost:9999/ingest" },
+      () => TEST_STATE,
+      "0.0.0-test",
+      () => 0.5,
+      transport,
+    );
+
+    trackAgentTaskRun(client, { agentId: "agent-1", state: "succeeded", taskId: "task-raw-id" });
+    trackCompanyImported(client, { sourceType: "github", sourceRef: "acme/private", isPrivate: true });
+    await client.flush();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(send).toHaveBeenCalledTimes(1);
+    const batch = send.mock.calls[0]![0];
+    expect(batch.installId).toBe("test-install");
+    expect(batch.events.map(({ event }) => event.dimensions)).toEqual([
+      { agent_id: "agent-1", state: "succeeded", task_id: "task-raw-id" },
+      // Private source refs are customer content and stay hashed on Cloud too.
+      { source_type: "github", source_ref: client.hashPrivateRef("acme/private"), source_ref_hashed: true },
+    ]);
+    expect(batch.events.map(({ context }) => context)).toEqual([{ tag: "ctx" }, { tag: "ctx" }]);
+    // The per-event context never leaks into the event object itself.
+    expect(Object.keys(batch.events[0]!.event).sort()).toEqual(["dimensions", "name", "occurredAt"]);
+  });
+
+  it("retries a transport batch with the same events instead of switching sender", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+      vi.stubGlobal("fetch", fetchMock);
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const send = vi
+        .fn<(batch: TelemetryOutgoingBatch) => Promise<TelemetrySendResult>>()
+        .mockResolvedValueOnce({ kind: "network" })
+        .mockResolvedValue({ kind: "ok" });
+      const client = new TelemetryClient(
+        { enabled: true },
+        () => TEST_STATE,
+        "0.0.0-test",
+        () => 0.5,
+        { hashesPrivateRefs: false, send },
+      );
+      client.track("routine.created", {});
+      await client.flush();
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(send.mock.calls[1]![0].batchId).toBe(send.mock.calls[0]![0].batchId);
+      expect(fetchMock).not.toHaveBeenCalled();
+      client.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
