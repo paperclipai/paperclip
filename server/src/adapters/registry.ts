@@ -66,6 +66,17 @@ import {
 } from "@paperclipai/adapter-cursor-cloud/server";
 import { agentConfigurationDoc as cursorCloudAgentConfigurationDoc } from "@paperclipai/adapter-cursor-cloud";
 import {
+  execute as agyExecute,
+  listAgySkills,
+  syncAgySkills,
+  testEnvironment as agyTestEnvironment,
+  sessionCodec as agySessionCodec,
+} from "@paperclipai/adapter-agy-local/server";
+import {
+  agentConfigurationDoc as agyAgentConfigurationDoc,
+  models as agyModels,
+} from "@paperclipai/adapter-agy-local";
+import {
   execute as geminiExecute,
   listGeminiSkills,
   syncGeminiSkills,
@@ -867,6 +878,21 @@ const cursorCloudAdapter: ServerAdapterModule = {
   getConfigSchema: getCursorCloudConfigSchema,
 };
 
+const agyLocalAdapter: ServerAdapterModule = {
+  type: "agy_local",
+  runtimeToolDelivery: "environment",
+  execute: agyExecute,
+  testEnvironment: agyTestEnvironment,
+  listSkills: listAgySkills,
+  syncSkills: syncAgySkills,
+  sessionCodec: agySessionCodec,
+  models: agyModels,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  agentConfigurationDoc: agyAgentConfigurationDoc,
+};
+
 const geminiLocalAdapter: ServerAdapterModule = {
   type: "gemini_local",
   runtimeToolDelivery: "environment",
@@ -1032,6 +1058,7 @@ function registerBuiltInAdapters() {
     piLocalAdapter,
     cursorCloudAdapter,
     cursorLocalAdapter,
+    agyLocalAdapter,
     geminiLocalAdapter,
     grokLocalAdapter,
     kimiLocalAdapter,

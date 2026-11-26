@@ -28,6 +28,7 @@ const CURATED_MODEL_ORDER_ADAPTERS: ReadonlySet<string> = new Set([
   "claude_local",
   "codex_local",
   "paperclip_runner",
+  "agy_local",
   "gemini_local",
   "grok_local",
   "kimi_local",

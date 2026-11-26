@@ -658,3 +658,4 @@ tests are the source of truth.
 | Small integration API contracts | [integration-api-notes.md](integration-api-notes.md) |
 | Private tasks and projects | [ISSUE-PRIVACY.md](ISSUE-PRIVACY.md) |
 | Agent deliverables | [AGENT-ARTIFACTS.md](AGENT-ARTIFACTS.md) |
+| Antigravity CLI adapter (`agy_local`) | [agy-local-adapter.md](agy-local-adapter.md) |

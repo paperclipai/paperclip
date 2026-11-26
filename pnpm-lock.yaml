@@ -86,6 +86,9 @@ importers:
       '@clack/prompts':
         specifier: ^1.7.0
         version: 1.7.0
+      '@paperclipai/adapter-agy-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/agy-local
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
@@ -178,6 +181,25 @@ importers:
       tsx:
         specifier: ^4.23.15
         version: 4.23.15
+      typescript:
+        specifier: ^7.0.2
+        version: 7.0.2
+
+  packages/adapters/agy-local:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
+      '@paperclipai/shared':
+        specifier: workspace:*
+        version: link:../../shared
+      picocolors:
+        specifier: ^1.1.1
+        version: 1.1.1
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
@@ -956,6 +978,9 @@ importers:
       '@grpc/grpc-js':
         specifier: 1.14.5
         version: 1.14.5
+      '@lydell/node-pty':
+        specifier: 1.2.0-beta.18
+        version: 1.2.0-beta.18
       '@modelcontextprotocol/sdk':
         specifier: ^1.31.0
         version: 1.31.0(zod@4.6.7)
@@ -971,6 +996,9 @@ importers:
       '@opentelemetry/resources':
         specifier: 2.10.0
         version: 2.10.0(@opentelemetry/api@1.9.1)
+      '@paperclipai/adapter-agy-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/agy-local
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
@@ -1243,6 +1271,9 @@ importers:
       '@mdxeditor/editor':
         specifier: ^4.2.3
         version: 4.2.3(@codemirror/language@6.12.4)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.5(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)(typescript@7.0.2)(yjs@13.6.32)
+      '@paperclipai/adapter-agy-local':
+        specifier: workspace:*
+        version: link:../packages/adapters/agy-local
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
@@ -3338,6 +3369,39 @@ packages:
 
   '@livekit/protocol@1.52.1':
     resolution: {integrity: sha512-X8DxKlNbzk6Lh+v630+mjdFHSotdAFwIyzxSRSUql2DbTxCnlpa7JsvFGc6Na3mXiex2OFh0iiQtWwOBP0rIYA==}
+
+  '@lydell/node-pty-darwin-arm64@1.2.0-beta.18':
+    resolution: {integrity: sha512-gJizeNHkkKCoggtj5Q0yf4btK6dPfr7E063SrOh1jHXp3IyjiErU4KwT7Cn29qb/OY5pBo/Utctenl03MyBtAg==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@lydell/node-pty-darwin-x64@1.2.0-beta.18':
+    resolution: {integrity: sha512-xnJQz+i5v7pkR1xo14ffTwvMm2DoK3KqPACQaJqxtMVkM7ojv14/KmkaV2jte7Q0BIzfU+VbKVUL9Zmf23G8VQ==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@lydell/node-pty-linux-arm64@1.2.0-beta.18':
+    resolution: {integrity: sha512-fM8jRcZDZwG7ihEOx/R7N1aGHdT4Fd6IQj1d6Jp7Qb9FeDWlIwLuVlxUkJOsW4V1ZmJe1xZl2+WR0RjqMvb2+Q==}
+    cpu: [arm64]
+    os: [linux]
+
+  '@lydell/node-pty-linux-x64@1.2.0-beta.18':
+    resolution: {integrity: sha512-LGikvfcvoPrxXO7o1gCsd5ErrRWnQFYLxjJfX0uwBpi0oGPiTERUBLzKspzZs7wjXZqF30mnNB/C09uotu5vRA==}
+    cpu: [x64]
+    os: [linux]
+
+  '@lydell/node-pty-win32-arm64@1.2.0-beta.18':
+    resolution: {integrity: sha512-S6h4G3zYGe+pPQxhlNxg+MvJNUIwXFxhnUufx1QT45TgratKMxQfoGPidvnwoLwuXQ3hqQ7SsI93rH8RUoL09g==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@lydell/node-pty-win32-x64@1.2.0-beta.18':
+    resolution: {integrity: sha512-wBSMeAwEL04t694ln+QbLnc98YeF3mAwWm/NP8acYDAobPw/WK7KKpk8z07iyxv0gRH2Z2/L/f6vgtnBgxE0Bg==}
+    cpu: [x64]
+    os: [win32]
+
+  '@lydell/node-pty@1.2.0-beta.18':
+    resolution: {integrity: sha512-ryy4liRcw6QBBKWDIbJgTW7Pw8NI2xjri/5s/LZg/jJ8ZVg8MgA1xI/vjpT5qTvDvPjUpU5NybJBrKRgK/QvlA==}
 
   '@marijn/find-cluster-break@1.0.4':
     resolution: {integrity: sha512-Wy0V7+SGUjnF9/TkiM1hKVDPj7jKXduPNboMVtHTA8dySMURWqfg/JZ9E2Sq8JgSJmkl7k7Qe9FLeMSrSraWmQ==}
@@ -8261,7 +8325,6 @@ packages:
 
   opencode-ai@1.18.34:
     resolution: {integrity: sha512-9WUS2T0t4HHDVzXvuwTHF0nvhXvZ9mQ0r+ozCvKdJu0LVoQpOzqAW4qWTC3ygNc5Oedcc7j+Oct24JYlQYnySA==}
-    cpu: [arm64, x64]
     os: [darwin, linux, win32]
     hasBin: true
 
@@ -11776,6 +11839,33 @@ snapshots:
   '@livekit/protocol@1.52.1':
     dependencies:
       '@bufbuild/protobuf': 1.10.0
+
+  '@lydell/node-pty-darwin-arm64@1.2.0-beta.18':
+    optional: true
+
+  '@lydell/node-pty-darwin-x64@1.2.0-beta.18':
+    optional: true
+
+  '@lydell/node-pty-linux-arm64@1.2.0-beta.18':
+    optional: true
+
+  '@lydell/node-pty-linux-x64@1.2.0-beta.18':
+    optional: true
+
+  '@lydell/node-pty-win32-arm64@1.2.0-beta.18':
+    optional: true
+
+  '@lydell/node-pty-win32-x64@1.2.0-beta.18':
+    optional: true
+
+  '@lydell/node-pty@1.2.0-beta.18':
+    optionalDependencies:
+      '@lydell/node-pty-darwin-arm64': 1.2.0-beta.18
+      '@lydell/node-pty-darwin-x64': 1.2.0-beta.18
+      '@lydell/node-pty-linux-arm64': 1.2.0-beta.18
+      '@lydell/node-pty-linux-x64': 1.2.0-beta.18
+      '@lydell/node-pty-win32-arm64': 1.2.0-beta.18
+      '@lydell/node-pty-win32-x64': 1.2.0-beta.18
 
   '@marijn/find-cluster-break@1.0.4': {}
 
