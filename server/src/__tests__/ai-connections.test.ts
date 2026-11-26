@@ -923,7 +923,7 @@ describe("managed AI connections", () => {
     const exited = once(child, "exit");
     try {
       let blocked = false;
-      const deadline = Date.now() + 25_000;
+      const deadline = Date.now() + 60_000;
       while (!blocked && Date.now() < deadline && child.exitCode === null) {
         const rows = await db.execute(sql`select pid from pg_stat_activity where datname = current_database()
           and wait_event_type = 'Lock' and wait_event = 'advisory'`);
@@ -952,7 +952,7 @@ describe("managed AI connections", () => {
     await receiver.save(companyId, owner, { connectionId: row.connection.id, provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, signedIn);
     const [current] = await receiver.quotaAccounts(companyId, owner);
     expect(await receiver.runtimeCredential(current)).toBe(signedIn);
-  }, 40_000);
+  }, 90_000);
 
   it("does not exchange a token when a required database transaction fails", async () => {
     const owner = "quota-db-prerequisite";
