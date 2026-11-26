@@ -14,6 +14,7 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 import type {
+  ChatExecutionDefaults,
   ChatAdapterCapabilities,
   ChatConcurrencyPolicy,
   ChatDeliveryState,
@@ -44,6 +45,8 @@ export const chatEndpoints = pgTable(
     connectionId: uuid("connection_id").notNull(),
     provider: text("provider").$type<ChatProvider>().notNull(),
     publicId: text("public_id").notNull(),
+    publicationMode: text("publication_mode").$type<"automatic" | "explicit">().notNull().default("automatic"),
+    externalExecutionPolicy: text("external_execution_policy").$type<"restricted" | "agent">().notNull().default("restricted"),
     assignedAgentId: uuid("assigned_agent_id")
       .notNull()
       .references(() => agents.id, { onDelete: "restrict" }),
@@ -62,9 +65,12 @@ export const chatEndpoints = pgTable(
     botUsername: text("bot_username"),
     botDisplayName: text("bot_display_name"),
     botAvatarUrl: text("bot_avatar_url"),
+    communicationInstructions: text("communication_instructions").notNull().default(""),
+    executionDefaults: jsonb("execution_defaults").$type<ChatExecutionDefaults>(),
     allowDirectMessages: boolean("allow_direct_messages")
       .notNull()
       .default(true),
+    requireAtMention: boolean("require_at_mention").notNull().default(false),
     allowGroupChats: boolean("allow_group_chats").notNull().default(false),
     allowUnlinkedPeople: boolean("allow_unlinked_people")
       .notNull()
@@ -109,9 +115,12 @@ export const chatEndpoints = pgTable(
       .defaultNow(),
   },
   (table) => [
+    check("chat_endpoints_publication_mode_check", sql`${table.publicationMode} in ('automatic', 'explicit')`),
+    check("chat_endpoints_execution_policy_check", sql`${table.externalExecutionPolicy} in ('restricted', 'agent')`),
+    check("chat_endpoints_email_policy_check", sql`${table.provider} <> 'agentmail' or (${table.publicationMode} = 'explicit' and ${table.externalExecutionPolicy} = 'agent')`),
     check(
       "chat_endpoints_provider_check",
-      sql`${table.provider} in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram')`,
+      sql`${table.provider} in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'speko', 'agentmail', 'imessage-photon')`,
     ),
     check(
       "chat_endpoints_status_check",
@@ -132,6 +141,9 @@ export const chatEndpoints = pgTable(
     ),
     index("chat_endpoints_status_idx").on(table.companyId, table.status),
     uniqueIndex("chat_endpoints_public_id_uq").on(table.publicId),
+    uniqueIndex("chat_endpoints_agentmail_inbox_uq")
+      .on(table.botExternalId)
+      .where(sql`${table.provider} = 'agentmail' and ${table.status} != 'archived' and ${table.botExternalId} is not null`),
     uniqueIndex("chat_endpoints_connection_uq").on(table.connectionId),
     // A native provider identity can back only one live Paperclip endpoint.
     // Historical archived/revoked endpoints retain attribution without
@@ -147,6 +159,9 @@ export const chatEndpoints = pgTable(
     // one native bot identity. Excluding providerAccountId closes the race
     // where concurrent setup in two guilds could otherwise claim that bot for
     // two Paperclip agents after both application-level prechecks passed.
+    uniqueIndex("chat_endpoints_photon_number_uq")
+      .on(table.botExternalId)
+      .where(sql`${table.provider} = 'imessage-photon' and ${table.status} <> 'archived' and ${table.botExternalId} is not null`),
     uniqueIndex("chat_endpoints_live_discord_bot_external_uq")
       .on(table.provider, table.botExternalId)
       .where(
@@ -207,6 +222,7 @@ export const chatEndpointResources = pgTable(
       .notNull()
       .default("available"),
     enabled: boolean("enabled").notNull().default(false),
+    executionDefaults: jsonb("execution_defaults").$type<ChatExecutionDefaults>(),
     metadata: jsonb("metadata")
       .$type<Record<string, unknown>>()
       .notNull()
@@ -270,7 +286,7 @@ export const chatExternalPrincipals = pgTable(
   (table) => [
     check(
       "chat_external_principals_provider_check",
-      sql`${table.provider} in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram')`,
+      sql`${table.provider} in ('slack', 'github', 'discord', 'microsoft-teams', 'telegram', 'speko', 'agentmail', 'imessage-photon')`,
     ),
     check(
       "chat_external_principals_kind_check",
@@ -367,6 +383,8 @@ export const chatConversations = pgTable(
     externalLabel: text("external_label").notNull(),
     providerUrl: text("provider_url"),
     isDirectMessage: boolean("is_direct_message").notNull().default(false),
+    // Immutable initial task context, never refreshed from endpoint settings.
+    communicationGuidance: text("communication_guidance"),
     state: text("state").notNull().default("active"),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
@@ -469,6 +487,11 @@ export const chatDeliveries = pgTable(
       table.endpointId,
       table.deduplicationKey,
     ),
+    // Review checks find their delivery by the GitHub webhook delivery id.
+    index("chat_deliveries_github_automatic_delivery_idx")
+      .on(table.endpointId, sql`(${table.normalizedEvent}->'githubAutomatic'->'context'->>'deliveryId')`)
+      .where(sql`(${table.normalizedEvent}->'githubAutomatic'->'context'->>'deliveryId') is not null`)
+      .concurrently(),
     foreignKey({
       columns: [table.companyId, table.endpointId],
       foreignColumns: [chatEndpoints.companyId, chatEndpoints.id],
@@ -546,6 +569,8 @@ export const chatPublications = pgTable(
       name: "chat_publications_company_comment_fk",
     }),
     index("chat_publications_work_idx").on(table.state, table.nextAttemptAt),
+    index("chat_publications_comment_destination_idx").on(table.companyId, table.commentId, table.endpointId, table.conversationId)
+      .where(sql`${table.commentId} is not null`),
     uniqueIndex("chat_publications_idempotency_uq").on(
       table.companyId,
       table.idempotencyKey,
@@ -618,6 +643,16 @@ export const chatMessageLinks = pgTable(
       table.conversationId,
       table.providerMessageId,
     ),
+    // Source-comment and delivery lookups (GitHub review waits and checks).
+    // These also serve the comment and delivery `on delete set null` actions.
+    index("chat_message_links_company_comment_idx")
+      .on(table.companyId, table.commentId)
+      .where(sql`${table.commentId} is not null`)
+      .concurrently(),
+    index("chat_message_links_delivery_idx")
+      .on(table.deliveryId)
+      .where(sql`${table.deliveryId} is not null`)
+      .concurrently(),
     foreignKey({
       columns: [table.companyId, table.conversationId],
       foreignColumns: [chatConversations.companyId, chatConversations.id],
@@ -655,10 +690,37 @@ export const chatActions = pgTable(
       .defaultNow(),
   },
   (table) => [
+    index("chat_actions_continuation_work_idx")
+      .on(table.companyId, table.id)
+      .where(sql`${table.kind} = 'interaction_wakeup' AND ${table.status} IN ('issued', 'processing')`),
+    index("chat_actions_confirmation_recovery_idx")
+      .on(table.companyId, table.id)
+      .where(sql`${table.kind} = 'confirmation_response' AND ${table.status} = 'processing'`),
     uniqueIndex("chat_actions_provider_action_uq").on(
       table.endpointId,
       table.providerActionId,
     ),
+    // Chat-admission checks read an issue's inbound input and its failed-run
+    // retries by company and payload issue id.
+    index("chat_actions_company_issue_kind_idx")
+      .on(table.companyId, sql`(${table.payload}->>'issueId')`, table.kind, table.status)
+      .where(sql`${table.kind} IN ('inbound_wakeup', 'failed_run_retry')`)
+      .concurrently(),
+    index("chat_actions_github_stale_head_idx").on(table.companyId, table.endpointId,
+      sql`(${table.payload}->'event'->>'deliveryId')`).where(sql`${table.kind} = 'github_review_check'
+        and ${table.status} = 'cancelled' and ${table.result}->>'code' = 'stale_head'`),
+    index("chat_actions_github_check_work_idx").on(table.id).where(sql`${table.kind} = 'github_review_check'
+      and (${table.status} = 'received' or (${table.status} = 'failed' and ${table.result}->>'retryable' = 'true'))`),
+    index("chat_actions_github_task_publications_idx")
+      .on(table.companyId, table.endpointId, sql`(${table.payload}->'session'->>'issueId')`, table.updatedAt)
+      .where(sql`${table.kind} = 'github_review_publication' and ${table.status} = 'processed'`)
+      .concurrently(),
+    index("chat_actions_github_terminal_work_idx").on(table.id).where(sql`${table.kind} = 'github_response_comment'
+      and ${table.status} = 'processed' and ${table.deliveryId} is not null
+      and coalesce(${table.result}->>'final', 'false') <> 'true'`),
+    index("chat_actions_github_ack_work_idx").on(table.id).where(sql`${table.kind} = 'github_response_comment'
+      and ${table.deliveryId} is not null and coalesce(${table.result}->>'final', 'false') <> 'true'
+      and (${table.status} = 'received' or (${table.status} = 'failed' and ${table.result}->>'retryable' = 'true'))`),
     foreignKey({
       columns: [table.companyId, table.deliveryId],
       foreignColumns: [chatDeliveries.companyId, chatDeliveries.id],

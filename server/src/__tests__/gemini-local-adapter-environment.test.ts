@@ -68,7 +68,7 @@ describe("gemini_local environment diagnostics", () => {
     await fs.rm(path.dirname(cwd), { recursive: true, force: true });
   });
 
-  it("passes model and yolo flags to the hello probe", async () => {
+  it("passes model and default yolo flags to the hello probe", async () => {
     const root = path.join(
       os.tmpdir(),
       `paperclip-gemini-local-probe-${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -87,7 +87,6 @@ describe("gemini_local environment diagnostics", () => {
         command: "gemini",
         cwd,
         model: "gemini-2.5-pro",
-        yolo: true,
         env: {
           GEMINI_API_KEY: "test-key",
           PAPERCLIP_TEST_ARGS_PATH: argsCapturePath,

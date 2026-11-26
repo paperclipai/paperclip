@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   findMissingVendorDependencies,
   findRunnerExternalPackages,
+  findRunnerRuntimePackages,
 } from "./verify-runner-vendor-dependencies.mjs";
 
 describe("findMissingVendorDependencies", () => {
@@ -87,6 +88,15 @@ describe("findRunnerExternalPackages", () => {
     expect(externalPackageNames).toEqual(new Set(["smol-toml"]));
   });
 
+  it("checks dynamically resolved bundled providers even without a JavaScript import", async () => {
+    const entryPoints = writeFixture();
+    const profiles = JSON.parse(readFileSync(new URL("../../packages/paperclip-runner/acpx-profiles.json", import.meta.url), "utf8"));
+    const packages = await findRunnerRuntimePackages(entryPoints, profiles);
+    expect(findMissingVendorDependencies(packages, new Set(["smol-toml", "@agentclientprotocol/codex-acp"])))
+      .toEqual(["@agentclientprotocol/claude-agent-acp"]);
+    expect(packages.has("pi-acp")).toBe(false);
+  });
+
   it("throws a clear, actionable error when an entry point is missing", async () => {
     fixtureDir = mkdtempSync(join(tmpdir(), "paperclip-runner-vendor-fixture-"));
     const missingEntryPoint = join(fixtureDir, "index.js");
@@ -95,4 +105,13 @@ describe("findRunnerExternalPackages", () => {
       /expected build output at .*index\.js.*Run "pnpm --filter @paperclipai\/paperclip-runner build" first/s,
     );
   });
+});
+
+// Claude is resolved through createRequire at runtime, outside esbuild's graph.
+it("ships the qualified Claude ACP server with the vendored runner", () => {
+  const server = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const profiles = JSON.parse(readFileSync(new URL("../../packages/paperclip-runner/acpx-profiles.json", import.meta.url), "utf8"));
+  const claude = profiles.profiles.claude;
+  expect(server.dependencies[claude.agentServerPackage]).toBe(claude.agentServerVersion);
+  expect(server.bundleDependencies).toContain(claude.agentServerPackage);
 });

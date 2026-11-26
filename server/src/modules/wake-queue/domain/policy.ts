@@ -13,6 +13,9 @@
 // This file only branches on that facts object; it never queries a
 // database, reads the clock, or reads the wake context payload directly.
 
+/** The error a saved wake records when a completed run already received all of its messages. */
+export const QUEUED_MESSAGES_DELIVERED_REASON = "Queued messages were already delivered to a completed run";
+
 export type WakeAdmissionFacts = {
   /** True when the active execution run's agent and this wake's own agent share an execution-agent-name key. */
   isSameExecutionAgent: boolean;
@@ -22,6 +25,10 @@ export type WakeAdmissionFacts = {
   shouldQueueFollowupForRunningWake: boolean;
   /** True when the active execution run still stands as a live coalesce target after the zombie-run filter runs. */
   availableActiveExecutionRunPresent: boolean;
+  /** Missing means ordinary legacy admission, preserving its existing behavior. */
+  allowRunCoalescing?: boolean;
+  /** False when a durable input's actor does not match the target wake receipt. */
+  sameDurableActor?: boolean;
 };
 
 export type WakeAdmissionDecision =
@@ -39,6 +46,8 @@ export type WakeAdmissionDecision =
  */
 export function decideWakeAdmission(facts: WakeAdmissionFacts): WakeAdmissionDecision {
   if (
+    facts.allowRunCoalescing !== false &&
+    facts.sameDurableActor !== false &&
     facts.isSameExecutionAgent &&
     !facts.shouldDeferFollowupWake &&
     !facts.shouldQueueFollowupForRunningWake &&
@@ -136,6 +145,7 @@ export type DeferredWakeAgentFacts = {
   agentFound: boolean;
   /** True when the agent is invokable (status, org chain). Meaningless when agentFound is false. */
   invokable: boolean;
+  paused?: boolean;
 };
 
 export type DeferredWakePauseHoldFacts = {
@@ -152,6 +162,7 @@ export type DeferredWakeOutcomeFacts = {
 
 export type DeferredWakeOutcomeDecision =
   | { kind: "fail_not_invokable" }
+  | { kind: "defer_agent_pause" }
   | { kind: "cancel_pause_hold" }
   | { kind: "promote" };
 
@@ -174,17 +185,18 @@ export function decideQueuedCommentAction(
   return { kind: "proceed" };
 }
 
-/** Decides the outcome for a deferred wake whose queued-comment action resolved to "proceed" (or finished its rewrite): fail, cancel, or promote. */
 export function decideWakeOutcome(facts: DeferredWakeOutcomeFacts): DeferredWakeOutcomeDecision {
   const { agent, pauseHold } = facts;
 
-  if (!agent.agentFound || !agent.invokable) {
+  if (!agent.agentFound || (!agent.invokable && !agent.paused)) {
     return { kind: "fail_not_invokable" };
   }
 
   if (pauseHold.activePauseHold && !pauseHold.treeHoldInteractionWake) {
     return { kind: "cancel_pause_hold" };
   }
+
+  if (agent.paused) return { kind: "defer_agent_pause" };
 
   return { kind: "promote" };
 }
@@ -216,6 +228,9 @@ export type ReleaseRecoveryImmediateFacts = {
   isConfigurationIncompleteFailedRun: boolean;
   /** didAutomaticRecoveryFail(run, expectedRetryReason) for the issue's own status branch. */
   automaticRecoveryAlreadyFailed: boolean;
+  automaticRecoveryRetryableBeforeProviderWork?: boolean;
+  /** Exact admitted-chat lineage or a non-retryable failure forbids generic continuation. */
+  sourceRequiresExplicitRecovery?: boolean;
 };
 
 export type ReleaseRecoveryFacts = {
@@ -265,6 +280,98 @@ export function deriveImmediateRecoveryContextLabels(issueStatus: string): Immed
       };
 }
 
+// Pure decision rules for the three queued-comment queue mutations (edit,
+// reorder, discard): the queue-mutation target check every mutation runs
+// first, the wake and queue-run status classification the initial lock
+// step needs, the reorder set-equality check, the queue-entry permission
+// fields the response carries, the actor-ownership check discard enforces,
+// and the empty-versus-partial outcome a discard resolves to. As with every
+// other decision in this file, the caller reads the database and packs the
+// result into a facts object; this file only branches on that object.
+
+export type QueuedCommentWakeLookupFacts = {
+  /** True when a wake row was found for the submitted queue id. */
+  wakePresent: boolean;
+  /** True when the wake's own payload still names this issue. */
+  wakeIssueIdMatches: boolean;
+  /** True when the wake's payload still carries one or more queued comment ids. */
+  hasQueuedCommentIds: boolean;
+  /** The wake row's own status. Meaningless when `wakePresent` is false. */
+  wakeStatus: string | null;
+  /** True when the wake row carries a linked heartbeat run id. */
+  wakeHasRunId: boolean;
+};
+
+export type QueuedCommentWakeLookupDecision =
+  | { kind: "not_pending" }
+  | { kind: "deferred" }
+  /** The caller must read the linked heartbeat run next and confirm it is still queued. */
+  | { kind: "check_queue_run" }
+  | { kind: "already_dispatching" };
+
+/**
+ * Classifies a locked wake row into the queue state a mutation needs: still
+ * waiting behind an active run (`deferred`), queued behind a not-yet-running
+ * turn (needs a second read to confirm, `check_queue_run`), already being
+ * dispatched, or no longer a pending queue at all.
+ */
+export function decideQueuedCommentWakeLookup(facts: QueuedCommentWakeLookupFacts): QueuedCommentWakeLookupDecision {
+  if (!facts.wakePresent || !facts.wakeIssueIdMatches || !facts.hasQueuedCommentIds) {
+    return { kind: "not_pending" };
+  }
+  if (facts.wakeStatus === "deferred_issue_execution") return { kind: "deferred" };
+  if (facts.wakeStatus === "queued" && facts.wakeHasRunId) return { kind: "check_queue_run" };
+  if (
+    facts.wakeStatus === "claimed" ||
+    facts.wakeStatus === "running" ||
+    (facts.wakeHasRunId && (facts.wakeStatus === "succeeded" || facts.wakeStatus === "failed"))
+  ) {
+    return { kind: "already_dispatching" };
+  }
+  return { kind: "not_pending" };
+}
+
+export type QueuedCommentReorderFacts = {
+  currentIds: string[];
+  orderedIds: string[];
+};
+
+export type QueuedCommentReorderDecision = { kind: "ok" } | { kind: "mismatch" };
+
+/** Decides whether a submitted order is a permutation of the queue's current comment ids: no duplicates, no drops, no additions. */
+export function decideQueuedCommentReorder(facts: QueuedCommentReorderFacts): QueuedCommentReorderDecision {
+  const orderedSet = new Set(facts.orderedIds);
+  if (
+    orderedSet.size !== facts.orderedIds.length ||
+    facts.orderedIds.length !== facts.currentIds.length ||
+    facts.currentIds.some((id) => !orderedSet.has(id))
+  ) {
+    return { kind: "mismatch" };
+  }
+  return { kind: "ok" };
+}
+
+export type QueuedCommentActorOwnershipFacts = {
+  actorType: "agent" | "user";
+  actorId: string;
+  actorAgentId: string | null;
+  authorAgentId: string | null;
+  authorUserId: string | null;
+};
+
+/**
+ * Decides whether the actor discarding a queued message authored it. A user
+ * actor must be the board user who wrote the message. An agent actor must be
+ * the agent that wrote it, because an agent actor can discard its own queued
+ * message through the general comment-delete route.
+ */
+export function decideQueuedCommentActorOwnsEntry(facts: QueuedCommentActorOwnershipFacts): boolean {
+  if (facts.actorType === "agent") {
+    return facts.actorAgentId !== null && facts.authorAgentId === facts.actorAgentId;
+  }
+  return facts.authorUserId === facts.actorId;
+}
+
 /**
  * Decides the release-recovery outcome once the deferred-wake queue is
  * empty and no wake was promoted. The review-participant branch and the
@@ -308,11 +415,12 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
   if (shared.isStrandedRecoveryOrigin) return { kind: "blocked_recovery_in_place" };
 
   const shouldBlockImmediately =
+    immediate.sourceRequiresExplicitRecovery === true ||
     !shared.recoveryAgentInvokable ||
     !shared.recoveryAgentPresent ||
     immediate.isWorkspaceValidationFailedRun ||
     immediate.isConfigurationIncompleteFailedRun ||
-    immediate.automaticRecoveryAlreadyFailed;
+    (immediate.automaticRecoveryAlreadyFailed && immediate.automaticRecoveryRetryableBeforeProviderWork !== true);
   if (shouldBlockImmediately) {
     const notice: ReleaseRecoveryBlockedNoticeKind = immediate.isWorkspaceValidationFailedRun
       ? "workspace_validation"
@@ -321,6 +429,7 @@ export function decideReleaseRecovery(facts: ReleaseRecoveryFacts): ReleaseRecov
         : "immediate_execution_path";
     return { kind: "blocked", notice };
   }
+  if (immediate.automaticRecoveryAlreadyFailed) return { kind: "released" };
 
   return { kind: "queue_recovery" };
 }

@@ -29,7 +29,7 @@ export const reportProgressAction = {
   },
   "documentation": {
     "title": "Report durable progress",
-    "description": "Append a durable progress comment to the active mock task.",
+    "description": "Append a durable progress comment to the active task.",
     "note": null
   },
   "examples": {
@@ -70,7 +70,7 @@ export const reportProgressAction = {
       "operationId": "report_progress",
       "version": 1,
       "title": "Report durable progress",
-      "description": "Append a durable progress comment to the active mock task.",
+      "description": "Append a durable progress comment to the active task.",
       "exposure": "always",
       "requiredClaims": [],
       "allowedModes": [
@@ -106,7 +106,7 @@ export const reportProgressAction = {
         "properties": {
           "commandId": {
             "type": "string",
-            "description": "Stable mock command identifier.",
+            "description": "Stable command identifier.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -122,7 +122,7 @@ export const reportProgressAction = {
           },
           "entityRefs": {
             "type": "array",
-            "description": "Mock entities affected by the operation.",
+            "description": "Entities affected by the operation.",
             "items": {
               "type": "string",
               "minLength": 1

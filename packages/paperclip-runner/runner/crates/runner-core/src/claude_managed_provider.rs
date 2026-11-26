@@ -2491,7 +2491,7 @@ fn extract_event_list(value: Value) -> Vec<Value> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::{ErrorKind, Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -2670,6 +2670,9 @@ mod tests {
     }
 
     fn read_http_request(socket: &mut TcpStream) -> Result<CapturedRequest, std::io::Error> {
+        // Darwin inherits the listener's nonblocking flag on accept. Wait for
+        // request bytes within the timeout instead of dropping an early accept.
+        socket.set_nonblocking(false)?;
         socket.set_read_timeout(Some(Duration::from_secs(2)))?;
         let mut bytes = Vec::new();
         let mut buffer = [0_u8; 4096];
@@ -2720,6 +2723,34 @@ mod tests {
             )
             .into_owned(),
         })
+    }
+
+    #[test]
+    fn fake_service_waits_for_request_bytes_on_an_accepted_nonblocking_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let (mut accepted, _) = listener.accept().unwrap();
+        // Reproduce Darwin's inherited listener flag on every test platform.
+        accepted.set_nonblocking(true).unwrap();
+        let (result_tx, result_rx) = mpsc::channel();
+        let reader = thread::spawn(move || {
+            result_tx.send(read_http_request(&mut accepted)).unwrap();
+        });
+        assert!(matches!(
+            result_rx.recv_timeout(Duration::from_millis(25)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        client
+            .write_all(b"POST /delayed HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}")
+            .unwrap();
+        let request = result_rx
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            .unwrap();
+        reader.join().unwrap();
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/delayed");
+        assert_eq!(request.body, "{}");
     }
 
     fn send_json_response(socket: &mut TcpStream, status: &str, value: &Value) {
@@ -2967,6 +2998,33 @@ mod tests {
             move |key, beta| NetworkWorker::start_at(key, beta, &origin, false),
         )
         .map_err(|error| error.cause)
+    }
+
+    pub(crate) fn disconnected_executor_fixture(
+        config: ClaudeManagedProviderConfig,
+    ) -> (Box<dyn Provider>, impl Fn() -> Vec<String>) {
+        let service = FakeAnthropicService::start(Vec::new(), Vec::new());
+        let origin = service.origin.clone();
+        let provider = ClaudeManagedProvider::start_with_worker(
+            &config,
+            Vec::new(),
+            "test-scope",
+            None,
+            None,
+            0,
+            Vec::new(),
+            SensitiveApiKey("anthropic-test-secret".to_owned()),
+            move |key, beta| NetworkWorker::start_at(key, beta, &origin, false),
+        )
+        .map_err(|error| error.cause)
+        .unwrap();
+        (Box::new(provider), move || {
+            service
+                .captured()
+                .iter()
+                .map(|request| format!("{} {}", request.method, request.path))
+                .collect()
+        })
     }
 
     #[test]

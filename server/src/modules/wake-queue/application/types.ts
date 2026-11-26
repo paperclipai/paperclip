@@ -21,9 +21,22 @@ export type RunSnapshot = {
   contextSnapshot: Record<string, unknown>;
   /** `resultJson.configurationIncomplete`, already parsed; non-null only on a configuration-incomplete failed run. */
   configurationIncompletePayload: Record<string, unknown> | null;
+  /** The host schedules failed conversation turns with its durable retry budget. */
+  conversationContinuation?: boolean;
+  /**
+   * True when a person deliberately stopped this run: the board cancel route
+   * (`resultJson.cancelledByActorType` of `user`/`board`), an operator interrupt,
+   * or an agent pause. Release must not immediately re-queue such a run.
+   */
+  operatorStopped?: boolean;
+  retryableBeforeProviderWork?: boolean;
+  executionRetryAccounting?: Record<string, unknown> | null;
 };
 
 export type IssueSnapshot = {
+  conversationAgentId?: string | null;
+  conversationUserId?: string | null;
+  conversationState?: string | null;
   id: string;
   companyId: string;
   identifier: string;
@@ -42,11 +55,14 @@ export type IssueSnapshot = {
   originRunId: string | null;
 };
 
+export type IssueAttributionSnapshot = Pick<IssueSnapshot, "id" | "responsibleUserId" | "parentId" | "originKind" | "originId" | "originRunId">;
+
 export type InvokableAgentSnapshot = {
   id: string;
   companyId: string;
   name: string | null;
   invokable: boolean;
+  paused?: boolean;
 };
 
 /** A new heartbeat run reached the queued state and should be published and dispatched. */
@@ -67,7 +83,12 @@ export type IssueReopenedEffect = {
 };
 
 /** Explicit post-commit work a caller applies only after the release transaction commits. */
-export type PostCommitEffect = RunQueuedEffect | IssueReopenedEffect;
+export type PostCommitEffect = RunQueuedEffect | IssueReopenedEffect | {
+  kind: "conversation_retry_requested";
+  companyId: string;
+  runId: string;
+  reviewParticipant: boolean;
+};
 
 export type ReleaseOutcome =
   | { kind: "released" }

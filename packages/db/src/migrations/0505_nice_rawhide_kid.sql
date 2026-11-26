@@ -1,0 +1,2 @@
+-- paperclip:migration-compat online_compatible: a new partial index built concurrently; no lock held long and the previous release ignores it
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "chat_actions_github_task_publications_idx" ON "chat_actions" USING btree ("company_id","endpoint_id",("payload"->'session'->>'issueId'),"updated_at") WHERE "chat_actions"."kind" = 'github_review_publication' and "chat_actions"."status" = 'processed';

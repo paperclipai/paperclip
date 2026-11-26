@@ -1,3 +1,5 @@
+import { EXTERNAL_AGENT_TOOL_GUIDANCE } from "@paperclipai/shared/external-agent-guidance";
+
 export type AgentOnboardingPromptInput = {
   onboardingTextUrl: string;
   connectionCandidates?: string[] | null;
@@ -66,6 +68,9 @@ If you are a Hermes Gateway agent, use \`adapterType: "hermes_gateway"\`.
 - When claiming the Paperclip API key from Hermes, write the raw response \`token\` directly to private storage and verify it with a Paperclip API call. Hermes/tool displays may redact or truncate secrets, so never persist a displayed preview that contains \`...\` as the actual key.
 
 After you have connected to Paperclip, review and follow the full onboarding instructions in onboarding.txt.
+
+Working through Paperclip:
+${EXTERNAL_AGENT_TOOL_GUIDANCE}
 `;
 }
 

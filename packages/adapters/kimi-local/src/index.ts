@@ -8,9 +8,10 @@ export const SANDBOX_INSTALL_COMMAND = buildSandboxNpmInstallCommand("@moonshot-
 export const DEFAULT_KIMI_LOCAL_MODEL = "kimi-code/kimi-for-coding";
 
 export const models = [
-  { id: DEFAULT_KIMI_LOCAL_MODEL, label: "K2.7 Coding" },
+  { id: DEFAULT_KIMI_LOCAL_MODEL, label: "K2.8 Preview" },
   { id: "kimi-code/kimi-for-coding-highspeed", label: "K2.7 Coding Highspeed" },
   { id: "kimi-code/k3", label: "K3" },
+  { id: "kimi-code/k3-256k", label: "K3 (256K)" },
 ];
 
 /**
@@ -26,7 +27,11 @@ export type KimiEffort = (typeof KIMI_SUPPORTED_EFFORTS)[number];
  * Models that advertise `support_efforts` in Kimi's model catalog. Keep in
  * sync with `models` above; only these accept KIMI_MODEL_THINKING_EFFORT.
  */
-export const EFFORT_CAPABLE_MODELS = new Set<string>(["kimi-code/k3"]);
+export const EFFORT_CAPABLE_MODELS = new Set<string>([
+  DEFAULT_KIMI_LOCAL_MODEL,
+  "kimi-code/k3",
+  "kimi-code/k3-256k",
+]);
 
 export function modelSupportsEffort(model: string): boolean {
   return EFFORT_CAPABLE_MODELS.has(model.trim());
@@ -65,7 +70,7 @@ Core fields:
 - instructionsFilePath (string, optional): absolute path to a markdown instructions file prepended to the run prompt. Sibling files in the same directory (HEARTBEAT.md, SOUL.md, TOOLS.md) are made readable via --add-dir for local runs.
 - promptTemplate (string, optional): run prompt template
 - model (string, optional): Kimi model alias (provider/model). Defaults to kimi-code/kimi-for-coding.
-- effort (string, optional): thinking effort (low | medium | high | max). CLI lane only (engine=cli): forwarded as KIMI_MODEL_THINKING_EFFORT for effort-capable models (currently kimi-code/k3); "medium" maps to "high" since Kimi has no medium tier. Ignored for models without support_efforts, and NOT forwarded on the default ACP engine lane (Kimi ACP exposes a separate "thinking" option that is not wired yet) — pin engine=cli when effort control matters.
+- effort (string, optional): thinking effort (low | medium | high | max). CLI lane only (engine=cli): forwarded as KIMI_MODEL_THINKING_EFFORT for effort-capable models (K2.8 Preview, K3, and K3 256K); "medium" maps to "high" since Kimi has no medium tier. Ignored for models without support_efforts, and NOT forwarded on the default ACP engine lane (Kimi ACP exposes a separate "thinking" option that is not wired yet) — pin engine=cli when effort control matters.
 - command (string, optional): defaults to "kimi"
 - extraArgs (string[], optional): additional CLI args
 - env (object, optional): KEY=VALUE environment variables

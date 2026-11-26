@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   decidePreDrain,
   decideQueuedCommentAction,
+  decideQueuedCommentActorOwnsEntry,
+  decideQueuedCommentReorder,
+  decideQueuedCommentWakeLookup,
   decideReleaseRecovery,
   decideWakeAdmission,
   decideWakeOutcome,
@@ -10,6 +13,9 @@ import {
   type DeferredWakeQueuedCommentFacts,
   type ImmediateRecoveryContextLabels,
   type PreDrainFacts,
+  type QueuedCommentActorOwnershipFacts,
+  type QueuedCommentReorderFacts,
+  type QueuedCommentWakeLookupFacts,
   type ReleaseRecoveryFacts,
   type WakeAdmissionFacts,
 } from "./policy.js";
@@ -242,6 +248,28 @@ describe("decideWakeOutcome", () => {
       expected: { kind: "fail_not_invokable" },
     },
     {
+      name: "defer_agent_pause: a paused recipient keeps its accepted request",
+      facts: { ...baseWakeOutcomeFacts, agent: { agentFound: true, invokable: false, paused: true } },
+      expected: { kind: "defer_agent_pause" },
+    },
+    {
+      name: "fail_not_invokable: a pause cannot authorize a missing recipient",
+      facts: { ...baseWakeOutcomeFacts, agent: { agentFound: false, invokable: false, paused: true } },
+      expected: { kind: "fail_not_invokable" },
+    },
+    {
+      name: "cancel_pause_hold: an explicit task hold still suppresses a paused recipient",
+      facts: { agent: { agentFound: true, invokable: false, paused: true },
+        pauseHold: { activePauseHold: true, treeHoldInteractionWake: false } },
+      expected: { kind: "cancel_pause_hold" },
+    },
+    {
+      name: "defer_agent_pause: a permitted tree interaction cannot invoke a paused agent",
+      facts: { agent: { agentFound: true, invokable: false, paused: true },
+        pauseHold: { activePauseHold: true, treeHoldInteractionWake: true } },
+      expected: { kind: "defer_agent_pause" },
+    },
+    {
       name: "fail_not_invokable: the agent is found but not invokable",
       facts: { ...baseWakeOutcomeFacts, agent: { agentFound: true, invokable: false } },
       expected: { kind: "fail_not_invokable" },
@@ -361,6 +389,45 @@ describe("decideReleaseRecovery", () => {
       facts: {
         ...baseReleaseRecoveryFacts,
         immediate: { ...baseReleaseRecoveryFacts.immediate, applies: true },
+        shared: { ...baseReleaseRecoveryFacts.shared, recoveryAgentInvokable: false },
+      },
+      expected: { kind: "blocked", notice: "immediate_execution_path" },
+    },
+    {
+      name: "released: an automatic retry failed before provider work and the stranded sweep owns its bounded budget",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        immediate: {
+          ...baseReleaseRecoveryFacts.immediate,
+          applies: true,
+          automaticRecoveryAlreadyFailed: true,
+          automaticRecoveryRetryableBeforeProviderWork: true,
+        },
+      },
+      expected: { kind: "released" },
+    },
+    {
+      name: "blocked: an automatic retry failed and provider work may have started",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        immediate: {
+          ...baseReleaseRecoveryFacts.immediate,
+          applies: true,
+          automaticRecoveryAlreadyFailed: true,
+        },
+      },
+      expected: { kind: "blocked", notice: "immediate_execution_path" },
+    },
+    {
+      name: "blocked: a pre-provider retry failure still blocks when the recovery agent is not invokable",
+      facts: {
+        ...baseReleaseRecoveryFacts,
+        immediate: {
+          ...baseReleaseRecoveryFacts.immediate,
+          applies: true,
+          automaticRecoveryAlreadyFailed: true,
+          automaticRecoveryRetryableBeforeProviderWork: true,
+        },
         shared: { ...baseReleaseRecoveryFacts.shared, recoveryAgentInvokable: false },
       },
       expected: { kind: "blocked", notice: "immediate_execution_path" },
@@ -517,6 +584,11 @@ describe("decideWakeAdmission", () => {
       expected: { kind: "coalesce" },
     },
     {
+      name: "defer: a wake that refuses run coalescing, such as a question reaction, waits for its own turn",
+      facts: { ...baseWakeAdmissionFacts, allowRunCoalescing: false },
+      expected: { kind: "defer" },
+    },
+    {
       name: "defer: same execution agent, but the running agent needs a fresh session",
       facts: { ...baseWakeAdmissionFacts, shouldDeferFollowupWake: true },
       expected: { kind: "defer" },
@@ -541,6 +613,169 @@ describe("decideWakeAdmission", () => {
   for (const testCase of cases) {
     it(testCase.name, () => {
       expect(decideWakeAdmission(testCase.facts)).toEqual(testCase.expected);
+    });
+  }
+});
+
+describe("decideQueuedCommentWakeLookup", () => {
+  const baseFacts: QueuedCommentWakeLookupFacts = {
+    wakePresent: true,
+    wakeIssueIdMatches: true,
+    hasQueuedCommentIds: true,
+    wakeStatus: "deferred_issue_execution",
+    wakeHasRunId: false,
+  };
+
+  const cases: Array<{
+    name: string;
+    facts: QueuedCommentWakeLookupFacts;
+    expected: ReturnType<typeof decideQueuedCommentWakeLookup>;
+  }> = [
+    {
+      name: "not_pending: no wake row was found",
+      facts: { ...baseFacts, wakePresent: false },
+      expected: { kind: "not_pending" },
+    },
+    {
+      name: "not_pending: the wake's payload names a different issue",
+      facts: { ...baseFacts, wakeIssueIdMatches: false },
+      expected: { kind: "not_pending" },
+    },
+    {
+      name: "not_pending: the wake's payload carries no queued comment ids",
+      facts: { ...baseFacts, hasQueuedCommentIds: false },
+      expected: { kind: "not_pending" },
+    },
+    {
+      name: "deferred: the wake is still waiting behind an active execution run",
+      facts: baseFacts,
+      expected: { kind: "deferred" },
+    },
+    {
+      name: "check_queue_run: the wake is queued and carries a linked run id",
+      facts: { ...baseFacts, wakeStatus: "queued", wakeHasRunId: true },
+      expected: { kind: "check_queue_run" },
+    },
+    {
+      name: "not_pending: the wake is queued but carries no linked run id",
+      facts: { ...baseFacts, wakeStatus: "queued", wakeHasRunId: false },
+      expected: { kind: "not_pending" },
+    },
+    {
+      name: "already_dispatching: the wake was claimed",
+      facts: { ...baseFacts, wakeStatus: "claimed" },
+      expected: { kind: "already_dispatching" },
+    },
+    {
+      name: "already_dispatching: the wake is running",
+      facts: { ...baseFacts, wakeStatus: "running" },
+      expected: { kind: "already_dispatching" },
+    },
+    {
+      name: "already_dispatching: the wake succeeded and still carries a run id",
+      facts: { ...baseFacts, wakeStatus: "succeeded", wakeHasRunId: true },
+      expected: { kind: "already_dispatching" },
+    },
+    {
+      name: "already_dispatching: the wake failed and still carries a run id",
+      facts: { ...baseFacts, wakeStatus: "failed", wakeHasRunId: true },
+      expected: { kind: "already_dispatching" },
+    },
+    {
+      name: "not_pending: the wake succeeded but carries no run id",
+      facts: { ...baseFacts, wakeStatus: "succeeded", wakeHasRunId: false },
+      expected: { kind: "not_pending" },
+    },
+    {
+      name: "not_pending: the wake was cancelled",
+      facts: { ...baseFacts, wakeStatus: "cancelled" },
+      expected: { kind: "not_pending" },
+    },
+  ];
+
+  for (const testCase of cases) {
+    it(testCase.name, () => {
+      expect(decideQueuedCommentWakeLookup(testCase.facts)).toEqual(testCase.expected);
+    });
+  }
+});
+
+describe("decideQueuedCommentReorder", () => {
+  const cases: Array<{
+    name: string;
+    facts: QueuedCommentReorderFacts;
+    expected: ReturnType<typeof decideQueuedCommentReorder>;
+  }> = [
+    {
+      name: "ok: the submitted order is a permutation of the current ids",
+      facts: { currentIds: ["a", "b", "c"], orderedIds: ["c", "a", "b"] },
+      expected: { kind: "ok" },
+    },
+    {
+      name: "mismatch: the submitted order carries a duplicate id",
+      facts: { currentIds: ["a", "b"], orderedIds: ["a", "a"] },
+      expected: { kind: "mismatch" },
+    },
+    {
+      name: "mismatch: the submitted order drops an id",
+      facts: { currentIds: ["a", "b", "c"], orderedIds: ["a", "b"] },
+      expected: { kind: "mismatch" },
+    },
+    {
+      name: "mismatch: the submitted order adds an id the queue does not have",
+      facts: { currentIds: ["a", "b"], orderedIds: ["a", "b", "c"] },
+      expected: { kind: "mismatch" },
+    },
+    {
+      name: "mismatch: the submitted order names an id the current queue does not have",
+      facts: { currentIds: ["a", "b"], orderedIds: ["a", "c"] },
+      expected: { kind: "mismatch" },
+    },
+  ];
+
+  for (const testCase of cases) {
+    it(testCase.name, () => {
+      expect(decideQueuedCommentReorder(testCase.facts)).toEqual(testCase.expected);
+    });
+  }
+});
+
+describe("decideQueuedCommentActorOwnsEntry", () => {
+  const cases: Array<{
+    name: string;
+    facts: QueuedCommentActorOwnershipFacts;
+    expected: boolean;
+  }> = [
+    {
+      name: "owns: a user actor authored the comment",
+      facts: { actorType: "user", actorId: "user-1", actorAgentId: null, authorAgentId: null, authorUserId: "user-1" },
+      expected: true,
+    },
+    {
+      name: "does not own: a user actor did not author the comment",
+      facts: { actorType: "user", actorId: "user-1", actorAgentId: null, authorAgentId: null, authorUserId: "user-2" },
+      expected: false,
+    },
+    {
+      name: "owns: an agent actor authored the comment as that agent",
+      facts: { actorType: "agent", actorId: "agent-1", actorAgentId: "agent-1", authorAgentId: "agent-1", authorUserId: null },
+      expected: true,
+    },
+    {
+      name: "does not own: an agent actor authored a different comment",
+      facts: { actorType: "agent", actorId: "agent-1", actorAgentId: "agent-1", authorAgentId: "agent-2", authorUserId: null },
+      expected: false,
+    },
+    {
+      name: "does not own: an agent actor with no resolved agent id",
+      facts: { actorType: "agent", actorId: "agent-1", actorAgentId: null, authorAgentId: null, authorUserId: null },
+      expected: false,
+    },
+  ];
+
+  for (const testCase of cases) {
+    it(testCase.name, () => {
+      expect(decideQueuedCommentActorOwnsEntry(testCase.facts)).toBe(testCase.expected);
     });
   }
 });

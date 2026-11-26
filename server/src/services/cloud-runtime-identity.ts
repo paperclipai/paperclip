@@ -1,4 +1,6 @@
-import { createPublicKey, timingSafeEqual, verify, type JsonWebKey } from "node:crypto";
+import { DEFAULT_JSON_BODY_LIMIT_BYTES } from "../http/body-limits.js";
+import { parseIdleCapabilities, type IdleCapabilities } from "./idle-incoming-wake-capability.js";
+import { createHash, createPublicKey, timingSafeEqual, verify, type JsonWebKey } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { instanceSettings } from "@paperclipai/db";
@@ -231,7 +233,7 @@ function decodeJsonPart(part: string, label: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
-function publicKeyForKid(env: NodeJS.ProcessEnv, kid: string) {
+export function cloudRuntimePublicKeyForKid(env: NodeJS.ProcessEnv, kid: string) {
   const raw = nonEmpty(env.PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS);
   if (!raw) throw new Error("PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS is not configured");
   let parsed: unknown;
@@ -276,7 +278,7 @@ function verifyClaims(input: {
   ) {
     throw new Error("Cloud runtime identity protected header is invalid");
   }
-  const key = publicKeyForKid(input.env, header.kid);
+  const key = cloudRuntimePublicKeyForKid(input.env, header.kid);
   const signature = Buffer.from(encodedSignature, "base64url");
   const signingInput = Buffer.from(`${encodedHeader}.${encodedPayload}`, "ascii");
   if (!verify(null, signingInput, key, signature)) {
@@ -426,4 +428,209 @@ export function resetCloudRuntimeIdentityForTests() {
   initialized = false;
   startupOrigin = null;
   currentIdentity = null;
+}
+
+// ---------------------------------------------------------------------------
+// Cloud control assertions
+//
+// A second, deliberately separate use of the same Cloud signing key: where the
+// runtime identity assertion above is a ONE-TIME origin claim applied at
+// bootstrap, a control assertion authorizes a single management call from the
+// Cloud control plane — today, only the task-drain admission hold, so Cloud
+// can stop new agent work and wait for quiescence before it restarts the
+// container for a deploy. The audience, JWS type, and claim shape are
+// disjoint from the runtime identity assertion, so neither token can ever be
+// replayed as the other, and the verifier binds each assertion to one exact
+// action so a "read status" token cannot start or stop a drain.
+// ---------------------------------------------------------------------------
+
+export const CLOUD_CONTROL_HEADER = "x-paperclip-cloud-control";
+export const CLOUD_CONTROL_AUDIENCE = "paperclip-cloud-control/v1";
+export const CLOUD_CONTROL_JWS_TYPE = "paperclip-cloud-control+jwt";
+export const CLOUD_CONTROL_ACTIONS = [
+  "ephemeral-enrollment:prepare",
+  "ephemeral-enrollment:eligibility",
+  "ephemeral-enrollment:migrate",
+  "task-drain:read",
+  "task-drain:read-body",
+  "task-drain:start",
+  "task-drain:stop",
+  "lifecycle:read",
+  "lifecycle:unarchive-primary",
+  "connector-events:wake",
+  "mcp-device:mint",
+  "mcp-dot:principal",
+] as const;
+export type CloudControlAction = (typeof CLOUD_CONTROL_ACTIONS)[number];
+
+/** Control calls are immediate; a stolen assertion should age out fast. */
+const CLOUD_CONTROL_MAX_LIFETIME_SECONDS = 5 * 60;
+
+/**
+ * Single-use fence: a verified assertion's requestId is consumed atomically
+ * (module state; JS execution is single-threaded per process) and a replay
+ * of the same id is rejected for as long as the original could still be
+ * alive. Process-local on purpose — the drain state this protects is
+ * itself process-local, so a restart clears both together. Entries prune
+ * lazily at their expiry.
+ */
+const consumedControlRequestIds = new Map<string, number>();
+
+function consumeControlRequestId(requestId: string, expSeconds: number, nowMs: number): boolean {
+  for (const [id, expiresAtMs] of consumedControlRequestIds) {
+    if (expiresAtMs <= nowMs) consumedControlRequestIds.delete(id);
+  }
+  if (consumedControlRequestIds.has(requestId)) {
+    return false;
+  }
+  consumedControlRequestIds.set(requestId, expSeconds * 1000);
+  return true;
+}
+
+/** Test seam: modules sharing a process must be able to reset the fence. */
+export function resetCloudControlReplayFenceForTests() {
+  consumedControlRequestIds.clear();
+}
+
+export type CloudControlClaims = {
+  v: 1;
+  iss: typeof CLOUD_RUNTIME_IDENTITY_ISSUER;
+  aud: typeof CLOUD_CONTROL_AUDIENCE;
+  sub: string;
+  action: CloudControlAction;
+  requestId: string;
+  idleCapabilities?: IdleCapabilities;
+  bodySha256?: string;
+  iat: number;
+  exp: number;
+};
+
+/**
+ * Verify a Cloud control assertion for one exact action on this instance.
+ * Signed with the same key set as the runtime identity assertion
+ * (PAPERCLIP_CLOUD_RUNTIME_IDENTITY_JWKS) but under its own JWS type and
+ * audience. Instances without a Cloud stack identity reject every assertion —
+ * the feature is inert when self-hosted.
+ */
+export function verifyCloudControlAssertion(input: {
+  compactJws: string;
+  rawBody?: Uint8Array;
+  expectedAction: CloudControlAction;
+  env?: NodeJS.ProcessEnv;
+  now?: Date;
+}): CloudControlClaims {
+  const env = input.env ?? process.env;
+  const now = input.now ?? new Date();
+  const parts = input.compactJws.split(".");
+  if (parts.length !== 3 || parts.some((part) => part.length === 0)) {
+    throw new Error("Cloud control assertion is not a compact JWS");
+  }
+  const [encodedHeader, encodedPayload, encodedSignature] = parts;
+  const header = decodeJsonPart(encodedHeader, "protected header");
+  if (
+    header.alg !== "EdDSA"
+    || header.typ !== CLOUD_CONTROL_JWS_TYPE
+    || typeof header.kid !== "string"
+    || !header.kid
+  ) {
+    throw new Error("Cloud control protected header is invalid");
+  }
+  const key = cloudRuntimePublicKeyForKid(env, header.kid);
+  const signature = Buffer.from(encodedSignature, "base64url");
+  const signingInput = Buffer.from(`${encodedHeader}.${encodedPayload}`, "ascii");
+  if (!verify(null, signingInput, key, signature)) {
+    throw new Error("Cloud control signature is invalid");
+  }
+
+  const payload = decodeJsonPart(encodedPayload, "payload");
+  const configuredStackId = nonEmpty(env.PAPERCLIP_CLOUD_STACK_ID);
+  const nowSeconds = Math.floor(now.getTime() / 1000);
+  if (
+    payload.v !== 1
+    || payload.iss !== CLOUD_RUNTIME_IDENTITY_ISSUER
+    || payload.aud !== CLOUD_CONTROL_AUDIENCE
+    || typeof payload.sub !== "string"
+    || typeof payload.action !== "string"
+    || typeof payload.requestId !== "string"
+    || typeof payload.iat !== "number"
+    || !Number.isInteger(payload.iat)
+    || typeof payload.exp !== "number"
+    || !Number.isInteger(payload.exp)
+  ) {
+    throw new Error("Cloud control claims are incomplete");
+  }
+  if (!configuredStackId || payload.sub !== configuredStackId) {
+    throw new Error("Cloud control assertion stack does not match this instance");
+  }
+  if (
+    !(CLOUD_CONTROL_ACTIONS as readonly string[]).includes(payload.action)
+    || payload.action !== input.expectedAction
+  ) {
+    throw new Error("Cloud control assertion does not authorize this action");
+  }
+  if (
+    !payload.requestId
+    || payload.requestId.trim() !== payload.requestId
+    || payload.requestId.length > 256
+  ) {
+    throw new Error("Cloud control assertion request id is invalid");
+  }
+  if (
+    payload.exp <= nowSeconds
+    || payload.iat > nowSeconds + MAX_CLOCK_SKEW_SECONDS
+    || payload.exp <= payload.iat
+    || payload.exp - payload.iat > CLOUD_CONTROL_MAX_LIFETIME_SECONDS
+  ) {
+    throw new Error("Cloud control assertion is expired or has an invalid lifetime");
+  }
+  if (payload.action === "task-drain:read-body") {
+    if (payload.idleCapabilities !== undefined || typeof payload.bodySha256 !== "string" || !/^[a-f0-9]{64}$/.test(payload.bodySha256)
+      || !input.rawBody || input.rawBody.byteLength === 0 || input.rawBody.byteLength > DEFAULT_JSON_BODY_LIMIT_BYTES) {
+      throw new Error("Invalid Cloud idle status body binding");
+    }
+    const raw = Buffer.from(input.rawBody);
+    if (createHash("sha256").update(raw).digest("hex") !== payload.bodySha256) throw new Error("Cloud idle status body digest changed");
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+    let body: unknown;
+    try { body = JSON.parse(text); }
+    catch { throw new Error("Invalid Cloud idle status body JSON"); }
+    if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).join() !== "idleCapabilities") {
+      throw new Error("Invalid Cloud idle status body");
+    }
+    payload.idleCapabilities = parseIdleCapabilities(Reflect.get(body, "idleCapabilities"));
+  } else {
+    if (payload.bodySha256 !== undefined) throw new Error("Cloud body binding requires task-drain:read-body");
+    if (payload.idleCapabilities !== undefined) {
+      if (payload.action !== "task-drain:read") throw new Error("Idle capabilities require task-drain:read");
+      payload.idleCapabilities = parseIdleCapabilities(payload.idleCapabilities);
+    }
+  }
+  // Consumed LAST, only after every other check passed: a rejected
+  // assertion must not burn its request id, or an attacker could deny a
+  // legitimate call by replaying a mangled copy of it first.
+  if (!consumeControlRequestId(payload.requestId, payload.exp + MAX_CLOCK_SKEW_SECONDS, now.getTime())) {
+    throw new Error("Cloud control assertion has already been used");
+  }
+  return payload as CloudControlClaims;
+}
+
+export function verifyCloudConnectorReceipt<T extends { binding: { instanceId: string } }>(input: { compactJws: string; env?: NodeJS.ProcessEnv }, parseReceipt: (value: unknown) => T): T {
+  const env = input.env ?? process.env;
+  if (Buffer.byteLength(input.compactJws, "ascii") > 12_000 || !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(input.compactJws))
+    throw new Error("Invalid connector ACK receipt encoding");
+  const [headerPart, payloadPart, signaturePart] = input.compactJws.split(".");
+  const header = decodeJsonPart(headerPart, "connector receipt header");
+  if (Object.keys(header).sort().join() !== "alg,kid,typ" || header.alg !== "EdDSA"
+    || header.typ !== "paperclip-connector-ack-receipt+jwt" || typeof header.kid !== "string" || !header.kid)
+    throw new Error("Invalid connector ACK receipt header");
+  const key = cloudRuntimePublicKeyForKid(env, header.kid);
+  if (!verify(null, Buffer.from(`${headerPart}.${payloadPart}`, "ascii"), key, Buffer.from(signaturePart, "base64url")))
+    throw new Error("Invalid connector ACK receipt signature");
+  const claims = decodeJsonPart(payloadPart, "connector receipt claims");
+  if (Object.keys(claims).sort().join() !== "aud,iss,receipt,sub,v" || claims.v !== 1 || claims.iss !== CLOUD_RUNTIME_IDENTITY_ISSUER
+    || claims.aud !== "paperclip-connector-ack-receipt/v1" || claims.sub !== nonEmpty(env.PAPERCLIP_CLOUD_STACK_ID))
+    throw new Error("Invalid connector ACK receipt claims");
+  const receipt = parseReceipt(claims.receipt);
+  if (receipt.binding.instanceId !== claims.sub) throw new Error("Connector ACK receipt instance changed");
+  return receipt;
 }

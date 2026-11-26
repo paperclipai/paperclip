@@ -13,11 +13,16 @@ export const models = [
   { id: DEFAULT_GEMINI_LOCAL_MODEL, label: "Auto" },
   { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
   { id: "gemini-3.1-pro-preview-customtools", label: "Gemini 3.1 Pro Preview (Custom Tools)" },
+  { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash" },
+  { id: "gemini-3.7-flash", label: "Gemini 3.7 Flash" },
+  { id: "gemini-3.6-flash", label: "Gemini 3.6 Flash" },
+  { id: "gemini-3.5-flash", label: "Gemini 3.5 Flash" },
+  { id: "gemini-3.5-flash-lite", label: "Gemini 3.5 Flash Lite" },
+  { id: "gemini-3.1-flash-lite", label: "Gemini 3.1 Flash Lite" },
+  { id: "gemini-3-flash-preview", label: "Gemini 3 Flash Preview" },
   { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
   { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash Lite" },
-  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
-  { id: "gemini-2.0-flash-lite", label: "Gemini 2.0 Flash Lite" },
 ];
 
 export const agentConfigurationDoc = `# gemini_local agent configuration
@@ -55,6 +60,10 @@ Operational fields:
 - graceSec (number, optional): SIGTERM grace period in seconds
 
 Notes:
+- Explicit ACP models are set via \`GEMINI_MODEL\` before startup; this avoids unsupported \`session/set_config_option\` calls while preserving the ACP transport. Auto continues to use the installed CLI's model selection.
+- Local turns include the current selected skill root and Paperclip artifact workflow guidance, including after a disposable connection home changes.
+- Local ACP workspaces use their canonical directory so Gemini's resolved file paths match the client boundary. Missing files retain ACP resource-not-found semantics. Gemini CLI 0.58.0 still mishandles the plain error object during native new-file creation; the installed-CLI compatibility smoke documents this remaining limitation.
+- Gemini shell commands may reject command substitution. Build JSON request bodies in workspace files and pass them with \`curl --data-binary @file\`, or use the selected skill's helpers.
 - Gemini ACP is the preferred auto lane when Node >=24.11.0 and the local Gemini CLI command is available. It runs Gemini CLI's native \`gemini --acp\` server through Paperclip's shared ACP engine, including selected skill links, Paperclip runtime prompt/env guidance, model config, and persistent ACP session state. Missing prerequisites fail both default and explicit ACP runs with an actionable setup error; the adapter never switches engines automatically.
 - Runs use --prompt for non-interactive execution, not stdin.
 - The adapter sets a headless-safe terminal/browser environment for Gemini CLI child processes so unattended runs do not wait on browser auth or 256-color terminal prompts.

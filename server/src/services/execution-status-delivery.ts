@@ -1,5 +1,6 @@
-import { and, eq, isNotNull } from "drizzle-orm";
-import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, eq, isNotNull, sql } from "drizzle-orm";
+import { heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 import { publishLiveEvent } from "./live-events.js";
 import { logger } from "../middleware/logger.js";
 
@@ -12,10 +13,27 @@ export async function deliverExecutionStatuses(
   } = {},
 ) {
   const rows = await db
-    .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
-      status: heartbeatRuns.status, startedAt: heartbeatRuns.startedAt, finishedAt: heartbeatRuns.finishedAt,
-      executionStatusDeliveryId: heartbeatRuns.executionStatusDeliveryId })
+    .select({
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      issueId: issues.id,
+      status: heartbeatRuns.status,
+      startedAt: heartbeatRuns.startedAt,
+      finishedAt: heartbeatRuns.finishedAt,
+      executionStatusDeliveryId: heartbeatRuns.executionStatusDeliveryId,
+    })
     .from(heartbeatRuns)
+    .leftJoin(
+      issues,
+      and(
+        eq(issues.companyId, heartbeatRuns.companyId),
+        eq(issues.id, sql`coalesce(
+          ${heartbeatRuns.nativeIssueId},
+          ${canonicalExecutionUuid(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`)}
+        )`),
+      ),
+    )
     .where(isNotNull(heartbeatRuns.executionStatusDeliveryId))
     .limit(100);
   let delivered = 0;
@@ -27,7 +45,10 @@ export async function deliverExecutionStatuses(
         payload: {
           // This retryable broadcast only invalidates caches. Provider output,
           // errors, and tool results stay behind the run API's access/redaction policy.
-          runId: run.id, agentId: run.agentId, status: run.status,
+          runId: run.id,
+          agentId: run.agentId,
+          issueId: run.issueId,
+          status: run.status,
           startedAt: run.startedAt?.toISOString() ?? null,
           finishedAt: run.finishedAt?.toISOString() ?? null,
           deliveryId: run.executionStatusDeliveryId,
