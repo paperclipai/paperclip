@@ -2,7 +2,9 @@
 # Copy this file and set the required env vars before running.
 #
 #   cd docker
-#   export BETTER_AUTH_SECRET="$(openssl rand -hex 32)"
+#   Set BETTER_AUTH_SECRET and PAPERCLIP_TOOL_ACTION_SIGNING_SECRET in .env
+#   once, using a separate `openssl rand -hex 32` value for each. Reuse them
+#   on restarts; do not replace existing deployment secrets.
 #   export ANTHROPIC_API_KEY="sk-ant-..."
 #   docker compose -f docker-compose.quickstart.yml up --build
 #
@@ -11,6 +13,13 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+    # Ceiling on processes. The image makes tini PID 1 so orphaned agent
+    # descendants are reaped instead of piling up as zombies; this is the
+    # backstop if something leaks anyway — the container hits its own limit and
+    # dies visibly rather than starving the host of pids.
+    pids_limit: 2048
+    # Includes the shared 30s adapter-settlement window and final cleanup.
+    stop_grace_period: 90s
     ports:
       - "${PAPERCLIP_PORT:-3100}:3100"
     environment:
@@ -28,9 +37,14 @@ services:
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private"
       # Base URL users will access the UI at
       PAPERCLIP_PUBLIC_URL: "${PAPERCLIP_PUBLIC_URL:-http://localhost:3100}"
+      # Extra hostnames the instance accepts beyond the public URL host
+      # (LAN or Tailscale aliases), comma-separated; empty means none
+      PAPERCLIP_ALLOWED_HOSTNAMES: "${PAPERCLIP_ALLOWED_HOSTNAMES:-}"
 
       # ── Required secret for session signing (generate with: openssl rand -hex 32) ──
       BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?BETTER_AUTH_SECRET must be set}"
+      # Independent secret for signed approval-gated tool actions.
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: "${PAPERCLIP_TOOL_ACTION_SIGNING_SECRET:-}"
     volumes:
       # Persistent data directory (database, agent workspaces, uploads)
       - "${PAPERCLIP_DATA_DIR:-../data/docker-paperclip}:/paperclip"

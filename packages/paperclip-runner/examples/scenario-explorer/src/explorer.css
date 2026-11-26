@@ -1,0 +1,904 @@
+/*
+ * Capability scenario explorer — explorer-local layout only.
+ *
+ * Every value resolves through a --pcr-* token from the SDK sheet; no hex, no
+ * raw pixels, no font stacks are declared here (DESIGN.md principles 2-4).
+ * Hierarchy comes from surface and position, not decoration.
+ */
+
+body {
+  margin: 0;
+}
+
+.pcr7-shell {
+  display: grid;
+  gap: var(--pcr-space-4);
+  padding: var(--pcr-space-4);
+  max-width: var(--pcr-page-width);
+  margin-inline: auto;
+}
+
+.pcr7-columns {
+  display: grid;
+  grid-template-columns: var(--pcr-rail-width) minmax(0, 1fr) var(--pcr-inspector-width);
+  gap: var(--pcr-space-4);
+  align-items: start;
+}
+
+.pcr7-rail,
+.pcr7-center,
+.pcr7-inspector {
+  min-width: 0;
+  display: grid;
+  gap: var(--pcr-space-3);
+  align-content: start;
+}
+
+/*
+ * The rails scroll with the page rather than in their own overflow box: the
+ * acceptance screenshots are full-page captures, and an inner scroll container
+ * would clip the very evidence the matrix asks to see (all 16 group facets,
+ * the full exposure list, every diff domain).
+ */
+.pcr7-rail,
+.pcr7-inspector {
+  padding: var(--pcr-space-3);
+  background: var(--pcr-card);
+  border: 0.0625rem solid var(--pcr-border);
+  border-radius: var(--pcr-radius-md);
+}
+
+.pcr7-rail-title,
+.pcr7-inspector h3 {
+  font-size: var(--pcr-font-size-sm);
+  font-weight: var(--pcr-weight-semibold);
+  margin: 0;
+}
+
+.pcr7-muted {
+  color: var(--pcr-muted-foreground);
+  font-size: var(--pcr-font-size-xs);
+}
+
+.pcr7-label {
+  color: var(--pcr-muted-foreground);
+  font-size: var(--pcr-font-size-xs);
+  font-weight: var(--pcr-weight-semibold);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin: var(--pcr-space-2) 0 var(--pcr-space-1);
+}
+
+.pcr7-block {
+  display: block;
+}
+
+.pcr7-mono {
+  font-family: var(--pcr-font-mono);
+  font-size: var(--pcr-font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+/* Picker ------------------------------------------------------------ */
+
+.pcr7-field {
+  display: grid;
+  gap: var(--pcr-space-1);
+}
+
+.pcr7-input {
+  min-height: var(--pcr-touch-target);
+  padding: var(--pcr-space-2) var(--pcr-space-3);
+  border: 0.0625rem solid var(--pcr-border);
+  border-radius: var(--pcr-radius-sm);
+  background: var(--pcr-background);
+  color: var(--pcr-foreground);
+}
+
+.pcr7-input:focus-visible,
+.pcr7-facet-value:focus-visible,
+.pcr7-case-list:focus-visible,
+.pcr7-rail:focus-visible,
+.pcr7-center:focus-visible,
+.pcr7-inspector:focus-visible,
+.pcr7-run-header:focus-visible,
+.pcr7-chip:focus-visible,
+.pcr7-linkish:focus-visible,
+.pcr7-segmented button:focus-visible {
+  outline: 0.125rem solid var(--pcr-ring);
+  outline-offset: 0.125rem;
+}
+
+.pcr7-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pcr-space-1);
+}
+
+.pcr7-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pcr-space-1);
+  min-height: var(--pcr-touch-target);
+  padding: var(--pcr-space-1) var(--pcr-space-2);
+  border: 0.0625rem solid var(--pcr-border);
+  border-radius: var(--pcr-radius-sm);
+  background: var(--pcr-accent-surface);
+  color: var(--pcr-foreground);
+  cursor: pointer;
+}
+
+.pcr7-facet {
+  border-top: 0.0625rem solid var(--pcr-border);
+  padding-top: var(--pcr-space-2);
+}
+
+.pcr7-facet-summary {
+  cursor: pointer;
+  font-size: var(--pcr-font-size-xs);
+  font-weight: var(--pcr-weight-semibold);
+  min-height: var(--pcr-touch-target);
+  display: flex;
+  align-items: center;
+}
+
+.pcr7-facet-values {
+  display: grid;
+  gap: var(--pcr-space-1);
+}
+
+.pcr7-facet-value {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--pcr-space-2);
+  align-items: center;
+  min-height: var(--pcr-touch-target);
+  padding: var(--pcr-space-1) var(--pcr-space-2);
+  border: 0;
+  border-radius: var(--pcr-radius-sm);
+  background: transparent;
+  color: var(--pcr-foreground);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pcr7-facet-value[aria-pressed="true"] {
+  background: var(--pcr-accent-surface);
+  font-weight: var(--pcr-weight-semibold);
+}
+
+.pcr7-facet-value:disabled {
+  color: var(--pcr-muted-foreground);
+  cursor: not-allowed;
+}
+
+.pcr7-facet-count {
+  color: var(--pcr-muted-foreground);
+  font-family: var(--pcr-font-mono);
+  font-size: var(--pcr-font-size-xs);
+}
+
+/*
+ * The case list is the one genuinely long thing in the rail (106 rows), so it
+ * is the one thing that scrolls in its own box. Facets stay in page flow, so a
+ * full-page capture still shows all 16 group values and their counts.
+ */
+.pcr7-case-list {
+  display: grid;
+  gap: var(--pcr-space-2);
+  max-height: calc(var(--pcr-facet-height) * 6);
+  overflow-y: auto;
+}
+
+.pcr7-case-group-title {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--pcr-space-2);
+  margin: 0;
+  padding: var(--pcr-space-1) 0;
+  background: var(--pcr-card);
+  font-size: var(--pcr-font-size-xs);
+  font-weight: var(--pcr-weight-semibold);
+  z-index: var(--pcr-z-banner);
+}
+
+.pcr7-case-row {
+  display: grid;
+  gap: var(--pcr-space-1);
+  padding: var(--pcr-space-2);
+  border-left: 0.125rem solid transparent;
+  border-radius: var(--pcr-radius-sm);
+  cursor: pointer;
+  min-height: var(--pcr-touch-target);
+}
+
+.pcr7-case-row[data-selected="true"] {
+  background: var(--pcr-accent-surface);
+  border-left-color: var(--pcr-accent);
+}
+
+.pcr7-case-title {
+  font-size: var(--pcr-font-size-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.pcr7-case-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pcr-space-1);
+}
+
+/* Run view ---------------------------------------------------------- */
+
+.pcr7-center {
+  max-width: var(--pcr-center-width);
+}
+
+.pcr7-run-header,
+.pcr7-intro {
+  display: grid;
+  gap: var(--pcr-space-3);
+  padding: var(--pcr-space-4);
+  background: var(--pcr-card);
+  border: 0.0625rem solid var(--pcr-border);
+  border-radius: var(--pcr-radius-md);
+}
+
+.pcr7-run-title h1 {
+  font-size: var(--pcr-font-size-lg);
+  line-height: var(--pcr-line-tight);
+}
+
+.pcr7-badge-row,
+.pcr7-redaction-row,
+.pcr7-assertion-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pcr-space-1);
+  align-items: center;
+}
+
+.pcr7-run-controls {
+  display: grid;
+  gap: var(--pcr-space-2);
+}
+
+.pcr7-segmented {
+  display: flex;
+  gap: var(--pcr-space-1);
+  padding: var(--pcr-space-1);
+  background: var(--pcr-muted);
+  border-radius: var(--pcr-radius-sm);
+  width: fit-content;
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+.pcr7-segmented button {
+  min-height: var(--pcr-touch-target);
+  padding: var(--pcr-space-1) var(--pcr-space-3);
+  border: 0;
+  border-radius: var(--pcr-radius-sm);
+  background: transparent;
+  color: var(--pcr-foreground);
+  cursor: pointer;
+}
+
+.pcr7-segmented button[aria-selected="true"],
+.pcr7-segmented button[aria-checked="true"] {
+  background: var(--pcr-card);
+  font-weight: var(--pcr-weight-semibold);
+  box-shadow: var(--pcr-shadow-sm);
+}
+
+.pcr7-segmented button:disabled {
+  color: var(--pcr-muted-foreground);
+  cursor: not-allowed;
+}
+
+.pcr7-segmented--mobile {
+  display: none;
+}
+
+/* Transcript -------------------------------------------------------- */
+
+.pcr7-transcript {
+  list-style: none;
+  display: grid;
+  gap: var(--pcr-space-2);
+  margin: 0;
+  padding: 0;
+}
+
+.pcr7-transcript-item {
+  min-width: 0;
+}
+
+.pcr7-transcript-item[data-channel="agent"] {
+  margin-left: var(--pcr-timeline-column);
+}
+
+.pcr7-transcript-item[data-highlighted="true"] > * {
+  outline: 0.125rem solid var(--pcr-accent);
+  outline-offset: 0.125rem;
+}
+
+.pcr7-agent-message {
+  display: flex;
+  gap: var(--pcr-space-2);
+  padding: var(--pcr-space-3);
+  background: var(--pcr-card);
+  border: 0.0625rem solid var(--pcr-border);
+  border-radius: var(--pcr-radius-md);
+}
+
+.pcr7-gutter {
+  color: var(--pcr-muted-foreground);
+  font-family: var(--pcr-font-mono);
+}
+
+.pcr7-call,
+.pcr7-result {
+  background: var(--pcr-card);
+}
+
+/*
+ * The SDK gives every direct span child of a disclosure summary `min-width: 0`
+ * so long tool names can wrap. A Badge is also a span, and it sets
+ * `white-space: nowrap`, so at 390px it was being squeezed below its own
+ * content and pushing the page into horizontal scroll. Badges keep their
+ * intrinsic width here; only the descriptive text shrinks.
+ */
+.pcr7-shell .pcr-disclosure-summary {
+  flex-wrap: wrap;
+}
+
+.pcr7-shell .pcr-disclosure-summary > [data-slot="badge"] {
+  flex: none;
+}
+
+/*
+ * The SDK badge capitalises every word and collapses the whitespace between
+ * its flex children. The interaction map §0 fixes the exact label strings
+ * ("Optional tool", "Not run") and requires the status icon to read as a
+ * separate token from its text, so both are corrected here rather than in the
+ * frozen SDK sheet.
+ */
+.pcr7-shell .pcr-badge {
+  gap: var(--pcr-space-1);
+  text-transform: none;
+}
+
+.pcr7-result--denied {
+  background: var(--pcr-danger-surface);
+  border-color: var(--pcr-danger);
+}
+
+.pcr7-control-plane {
+  background: var(--pcr-muted);
+  border-color: var(--pcr-border);
+}
+
+.pcr7-escape-hatch {
+  padding: var(--pcr-space-2);
+  background: var(--pcr-warning-surface);
+  color: var(--pcr-warning);
+  border-radius: var(--pcr-radius-sm);
+  font-weight: var(--pcr-weight-medium);
+}
+
+.pcr7-system-note {
+  padding: var(--pcr-space-3);
+  background: var(--pcr-surface-raised);
+  border: 0.0625rem dashed var(--pcr-border);
+  border-radius: var(--pcr-radius-md);
+  color: var(--pcr-muted-foreground);
+}
+
+.pcr7-detail-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: var(--pcr-space-1) var(--pcr-space-3);
+  margin: var(--pcr-space-2) 0;
+}
+
+.pcr7-detail-list dd {
+  margin: 0;
+  min-width: 0;
+  font-size: var(--pcr-font-size-xs);
+}
+
+.pcr7-json {
+  max-height: var(--pcr-transcript-height);
+  overflow: auto;
+}
+
+.pcr7-redaction {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--pcr-space-1);
+  padding: var(--pcr-space-1) var(--pcr-space-2);
+  background: var(--pcr-warning-surface);
+  color: var(--pcr-warning);
+  border-radius: var(--pcr-radius-sm);
+  font-size: var(--pcr-font-size-xs);
+}
+
+/* Inspector --------------------------------------------------------- */
+
+.pcr7-panel {
+  display: grid;
+  gap: var(--pcr-space-3);
+  min-width: 0;
+}
+
+.pcr7-panel-section {
+  display: grid;
+  gap: var(--pcr-space-1);
+  padding-bottom: var(--pcr-space-2);
+  border-bottom: 0.0625rem solid var(--pcr-border);
+}
+
+.pcr7-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--pcr-space-1);
+}
+
+.pcr7-exposure,
+.pcr7-assertions,
+.pcr7-diff-rows,
+.pcr7-diff-fields {
+  list-style: none;
+  display: grid;
+  gap: var(--pcr-space-1);
+  margin: 0;
+  padding: 0;
+  font-size: var(--pcr-font-size-xs);
+}
+
+.pcr7-assertions > li {
+  display: grid;
+  gap: var(--pcr-space-1);
+  padding: var(--pcr-space-2);
+  background: var(--pcr-surface-raised);
+  border-radius: var(--pcr-radius-sm);
+}
+
+.pcr7-expected-observed {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--pcr-space-2);
+}
+
+.pcr7-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--pcr-font-size-xs);
+}
+
+.pcr7-table th,
+.pcr7-table td {
+  text-align: left;
+  vertical-align: top;
+  padding: var(--pcr-space-2);
+  border-bottom: 0.0625rem solid var(--pcr-border);
+}
+
+.pcr7-table tbody tr[data-outcome="denied"],
+.pcr7-table tbody tr[data-outcome="absent"] {
+  background: var(--pcr-danger-surface);
+}
+
+.pcr7-missing {
+  color: var(--pcr-danger);
+}
+
+.pcr7-diff-rows > li {
+  display: grid;
+  gap: var(--pcr-space-1);
+  padding: var(--pcr-space-2);
+  background: var(--pcr-surface-raised);
+  border-radius: var(--pcr-radius-sm);
+}
+
+.pcr7-diff-marker {
+  font-weight: var(--pcr-weight-semibold);
+}
+
+.pcr7-diff-fields {
+  padding-left: var(--pcr-space-3);
+  color: var(--pcr-muted-foreground);
+}
+
+.pcr7-empty {
+  display: grid;
+  gap: var(--pcr-space-2);
+  padding: var(--pcr-space-4);
+  background: var(--pcr-surface-raised);
+  border: 0.0625rem dashed var(--pcr-border);
+  border-radius: var(--pcr-radius-md);
+  justify-items: start;
+}
+
+.pcr7-empty-title {
+  font-weight: var(--pcr-weight-semibold);
+}
+
+.pcr7-linkish {
+  border: 0;
+  background: transparent;
+  color: var(--pcr-accent);
+  cursor: pointer;
+  padding: var(--pcr-space-1) 0;
+  text-decoration: underline;
+}
+
+.pcr7-parity-verdict {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--pcr-space-2);
+}
+
+/* Accessibility helpers --------------------------------------------- */
+
+.pcr7-visually-hidden {
+  position: absolute;
+  width: 0.0625rem;
+  height: 0.0625rem;
+  padding: 0;
+  margin: calc(-1 * 0.0625rem);
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.pcr7-skip-link {
+  position: absolute;
+  left: calc(-1 * var(--pcr-page-width));
+  background: var(--pcr-card);
+  padding: var(--pcr-space-2);
+  border-radius: var(--pcr-radius-sm);
+}
+
+.pcr7-skip-link:focus {
+  position: static;
+}
+
+
+/* Scenario chat — chat surface (7I interaction map §1-§5) ------------------ *
+ *
+ * The activity rail is wider than the 7F inspector because it carries the
+ * per-turn evidence rather than a tab of it. Everything else is the same
+ * shell, the same tokens, and the same two-channel grammar.
+ */
+
+.pcr7-shell[data-surface="chat"] .pcr7-columns {
+  grid-template-columns: var(--pcr-rail-width) minmax(0, 1fr) var(--pcr-activity-width);
+}
+
+.pcr7-surface-nav {
+  display: flex;
+  gap: var(--pcr-space-2);
+  flex-wrap: wrap;
+}
+
+.pcr7-chat {
+  display: grid;
+  gap: var(--pcr-space-3);
+  align-content: start;
+  min-width: 0;
+}
+
+.pcr7-session-header {
+  display: grid;
+  gap: var(--pcr-space-2);
+}
+
+.pcr7-session-header .pcr7-run-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--pcr-space-2);
+}
+
+.pcr7-session-header .pcr7-run-controls > .pcr7-muted {
+  flex-basis: 100%;
+}
+
+.pcr7-chat-scroll {
+  min-width: 0;
+}
+
+.pcr7-chat-conversation,
+.pcr7-chat-entries {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--pcr-space-3);
+  min-width: 0;
+}
+
+.pcr7-chat-turn {
+  display: grid;
+  gap: var(--pcr-space-2);
+  min-width: 0;
+}
+
+.pcr7-chat-entry {
+  min-width: 0;
+}
+
+/*
+ * The board's own words are the only right-aligned thing on the surface, so a
+ * stranger can find "what did I ask" without reading a single label.
+ */
+.pcr7-user-message {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.pcr7-user-message p {
+  margin: 0;
+  padding: var(--pcr-space-2) var(--pcr-space-3);
+  background: var(--pcr-accent-surface);
+  border: 0.0625rem solid var(--pcr-border);
+  border-radius: var(--pcr-radius-md);
+  max-width: 85%;
+  overflow-wrap: anywhere;
+}
+
+.pcr7-chat-seed-label,
+.pcr7-activity-prompt {
+  margin: 0;
+  color: var(--pcr-muted-foreground);
+  font-size: var(--pcr-font-size-xs);
+  overflow-wrap: anywhere;
+}
+
+.pcr7-turn-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--pcr-space-2);
+  width: 100%;
+  min-height: var(--pcr-touch-target);
+  padding: var(--pcr-space-2) var(--pcr-space-3);
+  background: var(--pcr-muted);
+  border: 0.0625rem solid var(--pcr-border);
+  border-radius: var(--pcr-radius-md);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pcr7-turn-strip[data-active="true"] {
+  border-color: var(--pcr-accent);
+}
+
+.pcr7-turn-strip-label {
+  font-weight: var(--pcr-weight-semibold);
+  font-size: var(--pcr-font-size-sm);
+}
+
+.pcr7-turn-strip-counts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--pcr-space-2);
+}
+
+.pcr7-turn-count {
+  color: var(--pcr-muted-foreground);
+  font-size: var(--pcr-font-size-xs);
+}
+
+.pcr7-turn-count[data-tone="danger"] {
+  color: var(--pcr-danger);
+}
+
+.pcr7-turn-pending {
+  margin: 0;
+  padding: var(--pcr-space-2) var(--pcr-space-3);
+  background: var(--pcr-surface-raised);
+  border: 0.0625rem dashed var(--pcr-border);
+  border-radius: var(--pcr-radius-md);
+  color: var(--pcr-muted-foreground);
+  font-size: var(--pcr-font-size-xs);
+}
+
+.pcr7-streaming-caret {
+  display: inline-block;
+  width: var(--pcr-space-2);
+  height: var(--pcr-space-3);
+  margin-right: var(--pcr-space-2);
+  background: var(--pcr-accent);
+  vertical-align: middle;
+  animation: pcr7-caret var(--pcr-motion-medium) steps(2, start) infinite alternate;
+}
+
+@keyframes pcr7-caret {
+  to {
+    opacity: 0.2;
+  }
+}
+
+.pcr7-chat-failure {
+  margin: 0;
+  padding: var(--pcr-space-2) var(--pcr-space-3);
+  background: var(--pcr-danger-surface);
+  border: 0.0625rem solid var(--pcr-danger);
+  border-radius: var(--pcr-radius-md);
+  color: var(--pcr-danger);
+  font-size: var(--pcr-font-size-sm);
+  overflow-wrap: anywhere;
+}
+
+.pcr7-chat-composer {
+  display: grid;
+  gap: var(--pcr-space-2);
+  min-width: 0;
+}
+
+.pcr7-segment-chip {
+  color: var(--pcr-danger);
+}
+
+/* Activity stream ---------------------------------------------------- */
+
+.pcr7-activity {
+  display: grid;
+  gap: var(--pcr-space-3);
+  min-width: 0;
+}
+
+.pcr7-activity-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--pcr-space-2);
+}
+
+.pcr7-activity-group {
+  border: 0.0625rem solid var(--pcr-border);
+  border-radius: var(--pcr-radius-md);
+  background: var(--pcr-surface-raised);
+  min-width: 0;
+}
+
+.pcr7-activity-group h3 {
+  margin: 0;
+}
+
+.pcr7-activity-group-header {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pcr-space-1);
+  width: 100%;
+  min-height: var(--pcr-touch-target);
+  padding: var(--pcr-space-2) var(--pcr-space-3);
+  background: none;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: var(--pcr-weight-semibold);
+  text-align: left;
+  cursor: pointer;
+}
+
+.pcr7-activity-group-title {
+  margin: 0;
+  padding: var(--pcr-space-2) var(--pcr-space-3);
+  font-size: var(--pcr-font-size-sm);
+}
+
+.pcr7-activity-group-body {
+  display: grid;
+  gap: var(--pcr-space-3);
+  padding: 0 var(--pcr-space-3) var(--pcr-space-3);
+  min-width: 0;
+}
+
+.pcr7-activity-section {
+  display: grid;
+  gap: var(--pcr-space-2);
+  min-width: 0;
+}
+
+.pcr7-activity-calls {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--pcr-space-2);
+  min-width: 0;
+}
+
+.pcr7-activity-verdict {
+  margin: 0;
+  font-size: var(--pcr-font-size-xs);
+}
+
+.pcr7-diff-domain {
+  display: grid;
+  gap: var(--pcr-space-1);
+  min-width: 0;
+}
+
+/* Responsive: one content-driven breakpoint (UX map §6) -------------- */
+
+@media (max-width: 64rem) {
+  .pcr7-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pcr7-segmented--mobile {
+    display: flex;
+    position: sticky;
+    top: 0;
+    width: 100%;
+    z-index: var(--pcr-z-banner);
+  }
+
+  .pcr7-rail,
+  .pcr7-center,
+  .pcr7-inspector {
+    display: none;
+  }
+
+  .pcr7-shell[data-segment="scenarios"] .pcr7-rail,
+  .pcr7-shell[data-segment="run"] .pcr7-center,
+  .pcr7-shell[data-segment="chat"] .pcr7-center,
+  .pcr7-shell[data-segment="inspect"] .pcr7-inspector,
+  .pcr7-shell[data-segment="activity"] .pcr7-inspector {
+    display: grid;
+  }
+
+  /*
+   * The composer sits in the thumb zone on the Chat segment. It is sticky
+   * rather than fixed so it never covers the last turn strip when the
+   * conversation is short.
+   */
+  .pcr7-shell[data-segment="chat"] .pcr7-chat-composer {
+    position: sticky;
+    bottom: 0;
+    padding: var(--pcr-space-2) 0;
+    background: var(--pcr-background);
+    z-index: var(--pcr-z-banner);
+  }
+
+  .pcr7-shell[data-surface="chat"] .pcr7-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pcr7-user-message p {
+    max-width: 100%;
+  }
+
+  .pcr7-expected-observed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .pcr7-detail-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pcr-root *,
+  .pcr-root *::before,
+  .pcr-root *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

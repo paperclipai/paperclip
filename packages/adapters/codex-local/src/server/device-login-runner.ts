@@ -80,6 +80,9 @@ export type DeviceLoginResult = LoginRunnerResult;
 export interface RunDeviceLoginOptions extends LoginRunnerLifecycleOptions {
   /** The login command. Defaults to {@link CODEX_DEVICE_LOGIN_COMMAND}. */
   command?: string;
+  /** Parses the prompt from the login output. Defaults to
+   *  {@link parseDeviceLoginPrompt}. */
+  parsePrompt?: (output: string) => DeviceLoginPrompt | null;
   /** Receives the parsed prompt one time in memory. The caller displays it. */
   onPrompt: DeviceLoginPromptSink;
   /**
@@ -105,6 +108,7 @@ export async function runDeviceLogin(
 ): Promise<DeviceLoginResult> {
   const { onPrompt, onCredential, authPath, timeoutMs, signal } = options;
   const command = options.command ?? CODEX_DEVICE_LOGIN_COMMAND;
+  const parsePrompt = options.parsePrompt ?? parseDeviceLoginPrompt;
   const log = options.log ?? (() => {});
 
   let promptSurfaced = false;
@@ -120,7 +124,7 @@ export async function runDeviceLogin(
   const onStdout = (chunk: string): void => {
     if (promptSurfaced) return;
     buffer += chunk;
-    const prompt = parseDeviceLoginPrompt(buffer);
+    const prompt = parsePrompt(buffer);
     if (prompt) {
       promptSurfaced = true;
       buffer = "";

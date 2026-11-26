@@ -1,6 +1,8 @@
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
 import { formatCents } from "../lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 export const typeLabel: Record<string, string> = {
   hire_agent: "Hire Agent",
@@ -51,7 +53,7 @@ function PayloadField({ label, value }: { label: string; value: unknown }) {
   return (
     <div className="flex items-center gap-2">
       <span className="text-muted-foreground w-20 sm:w-24 shrink-0 text-xs">{label}</span>
-      <span>{String(value)}</span>
+      <span className={ANALYTICS_MASK_CLASS}>{String(value)}</span>
     </div>
   );
 }
@@ -116,12 +118,12 @@ export function CeoStrategyPayload({ payload }: { payload: Record<string, unknow
     <div className="mt-3 space-y-1.5 text-sm">
       <PayloadField label="Title" value={payload.title} />
       {!!plan && (
-        <div className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap font-mono text-xs max-h-48 overflow-y-auto">
+        <div className={cn("mt-2 rounded-md bg-muted/40 px-3 py-2 text-sm text-muted-foreground whitespace-pre-wrap font-mono text-xs max-h-48 overflow-y-auto", ANALYTICS_MASK_CLASS)}>
           {String(plan)}
         </div>
       )}
       {!plan && (
-        <pre className="mt-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground overflow-x-auto max-h-48">
+        <pre className={cn("mt-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground overflow-x-auto max-h-48", ANALYTICS_MASK_CLASS)}>
           {JSON.stringify(payload, null, 2)}
         </pre>
       )}
@@ -143,7 +145,7 @@ export function BudgetOverridePayload({ payload }: { payload: Record<string, unk
         </div>
       ) : null}
       {!!payload.guidance && (
-        <p className="text-muted-foreground">{String(payload.guidance)}</p>
+        <p className={cn("text-muted-foreground", ANALYTICS_MASK_CLASS)}>{String(payload.guidance)}</p>
       )}
     </div>
   );
@@ -229,7 +231,7 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
           <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
             Proposed comment
           </p>
-          <pre className="max-h-48 overflow-auto rounded-lg border border-border/60 bg-muted/50 px-3.5 py-3 font-mono text-xs leading-5 text-muted-foreground whitespace-pre-wrap">
+          <pre className={cn("max-h-48 overflow-auto rounded-lg border border-border/60 bg-muted/50 px-3.5 py-3 font-mono text-xs leading-5 text-muted-foreground whitespace-pre-wrap", ANALYTICS_MASK_CLASS)}>
             {proposedComment}
           </pre>
         </div>

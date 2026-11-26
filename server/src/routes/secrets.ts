@@ -116,6 +116,16 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   const runRedactions = createRunSecretRedactionRegistry(db);
   const defaultProvider = getConfiguredSecretProvider();
 
+  async function assertSecretCatalogReadAllowed(req: Parameters<typeof assertBoard>[0], companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "secrets:read",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
   function agentSecretContext(req: Parameters<typeof assertBoard>[0]) {
     if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
       throw forbidden("Run-bound agent authentication required");
@@ -233,9 +243,13 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     assertCompanyAccess(req, companyId);
     const status = typeof req.query.status === "string" ? req.query.status : null;
     const page = proposalListPage(req.query);
+    if (req.query.order !== undefined && req.query.order !== "created" && req.query.order !== "resolved") {
+      throw unprocessable("order must be created or resolved");
+    }
     const rows = await proposals.listForBoard(companyId, status, {
       limit: page.limit + 1,
       offset: page.offset,
+      order: req.query.order === "resolved" ? "resolved" : "created",
     });
     const hasMore = rows.length > page.limit;
     setProposalPaginationHeaders(res, page, hasMore);
@@ -576,6 +590,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertSecretCatalogReadAllowed(req, companyId);
     const secrets = await svc.list(companyId);
     res.json(secrets.map(({ id, name, key, status }) => ({ id, name, key, status })));
   });
@@ -873,9 +888,16 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     res.json({ ok: true });
   });
 
-  router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {
+  router.post("/companies/:companyId/secrets", (req, _res, next) => {
     const companyId = req.params.companyId as string;
+    if (req.actor.type === "agent") {
+      assertCompanyAccess(req, companyId);
+      throw forbidden("Company secret creation requires a human board operator. Ask the human to enter the value in Settings → Secrets for this company. Do not send secret values in chat or tool calls. You can finish the current conversation response with these secure-entry instructions without claiming that credential setup is complete. If you need a resumable wait, first create a non-governing secure-save acknowledgment with request_human_input with interactionKind=\"confirmation\"; ask only whether secure entry is complete, never ask for the secret value in that card. Wait only on the actual saved request.");
+    }
     assertCompanySecretWrite(req, companyId);
+    next();
+  }, validate(createSecretSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
 
     const created = await svc.create(
       companyId,
@@ -1104,7 +1126,17 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     );
     if (!existing) return;
 
-    const removed = await svc.remove(id);
+    const resolvedByUserId = req.actor.userId ?? "board";
+    const reason = "The referenced secret was deleted.";
+    const removed = await svc.remove(id, {
+      beforeDelete: async (secret) => {
+        const rejected = await proposals.rejectPendingBindingsForSecret(secret.companyId, secret.id, { resolvedByUserId, reason });
+        // Same signal as an ordinary rejection, so the proposing agent continues.
+        for (const proposal of rejected) {
+          await notifySecretProposalResolution({ proposal, status: "rejected", userId: resolvedByUserId, reason, issues, heartbeat });
+        }
+      },
+    });
     if (!removed) {
       res.status(404).json({ error: "Secret not found" });
       return;

@@ -7,6 +7,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { InviteLandingPage } from "./InviteLanding";
 import { queryKeys } from "../lib/queryKeys";
+import { isBlockedFromReplay } from "@/lib/analytics/replay-recording.test-utils";
 
 const getInviteMock = vi.hoisted(() => vi.fn());
 const acceptInviteMock = vi.hoisted(() => vi.fn());
@@ -78,6 +79,18 @@ async function flushReact() {
   flushSync(() => {});
 }
 
+function renderInviteLanding(root: ReturnType<typeof createRoot>, queryClient: QueryClient) {
+  root.render(
+    <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
+      <QueryClientProvider client={queryClient}>
+        <Routes>
+          <Route path="/invite/:token" element={<InviteLandingPage />} />
+        </Routes>
+      </QueryClientProvider>
+    </MemoryRouter>,
+  );
+}
+
 describe("InviteLandingPage", () => {
   let container: HTMLDivElement;
 
@@ -105,7 +118,6 @@ describe("InviteLandingPage", () => {
       companyId: "company-1",
       companyName: "Acme Robotics",
       companyLogoUrl: "/api/invites/pcp_invite_test/logo",
-      companyBrandColor: "#114488",
       inviteType: "company_join",
       allowedJoinTypes: "both",
       humanRole: "operator",
@@ -130,6 +142,88 @@ describe("InviteLandingPage", () => {
     vi.clearAllMocks();
   });
 
+  it("keeps agent-invite onboarding on legacy adapters", async () => {
+    getInviteMock.mockResolvedValue({
+      id: "invite-1",
+      companyId: "company-1",
+      companyName: "Acme Robotics",
+      companyLogoUrl: null,
+      inviteType: "company_join",
+      allowedJoinTypes: "agent",
+      humanRole: null,
+      expiresAt: "2027-03-07T00:10:00.000Z",
+      inviteMessage: null,
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      renderInviteLanding(root, queryClient);
+    });
+    await flushReact();
+    await flushReact();
+
+    const adapterSelect = Array.from(container.querySelectorAll("select")).find((select) =>
+      Array.from(select.options).some((option) => option.value === "claude_local"),
+    );
+    expect(adapterSelect).toBeTruthy();
+    expect(Array.from(adapterSelect!.options).map((option) => option.value))
+      .not.toContain("paperclip_runner");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it.each([
+    { availableHarnesses: ["gemini_local"] },
+    { availableHarnesses: [] },
+    { availableHarnesses: ["gemini_local"], nextHarnesses: ["codex_local"] },
+    { availableHarnesses: ["gemini_local"], nextHarnesses: [] },
+  ])("submits only the displayed allowed invite adapter (policy=$availableHarnesses, next=$nextHarnesses)", async ({ availableHarnesses, nextHarnesses }) => {
+    let policy = availableHarnesses;
+    getInviteMock.mockResolvedValue({ id: "invite-1", companyId: "company-1", companyName: "Example",
+      inviteType: "company_join", allowedJoinTypes: "agent" });
+    const health = { status: "ok", deploymentMode: "authenticated", cloud: { managed: true, availableHarnesses: policy } };
+    healthGetMock.mockResolvedValue(health);
+    acceptInviteMock.mockResolvedValue({ id: "request-1", requestType: "agent", status: "pending_approval" });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.health, health);
+    try {
+      await act(async () => renderInviteLanding(root, queryClient));
+      await flushReact();
+      await flushReact();
+      const input = container.querySelector("input")!;
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "Example agent");
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      if (nextHarnesses !== undefined) {
+        policy = nextHarnesses;
+        const updatedHealth = { ...health, cloud: { managed: true, availableHarnesses: policy } };
+        healthGetMock.mockResolvedValue(updatedHealth);
+        await act(async () => { queryClient.setQueryData(queryKeys.health, updatedHealth); });
+        await flushReact();
+      }
+      const select = container.querySelector("select")!;
+      expect(select.value).toBe(policy[0] ?? "");
+      const submit = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Submit"))!;
+      expect(submit).toBeTruthy();
+      expect(submit.disabled).toBe(policy.length === 0);
+      await act(async () => submit.click());
+      await flushReact();
+      if (policy.length) expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", expect.objectContaining({ adapterType: policy[0] }));
+      else expect(acceptInviteMock).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+      queryClient.clear();
+    }
+  });
+
   it("defaults invite auth to account creation and guides existing users back to sign in", async () => {
     signUpEmailMock.mockRejectedValue(
       Object.assign(new Error("User already exists. Use another email."), {
@@ -144,15 +238,7 @@ describe("InviteLandingPage", () => {
     });
 
     await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-          <QueryClientProvider client={queryClient}>
-            <Routes>
-              <Route path="/invite/:token" element={<InviteLandingPage />} />
-            </Routes>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
+      renderInviteLanding(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -222,15 +308,7 @@ describe("InviteLandingPage", () => {
     });
 
     await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-          <QueryClientProvider client={queryClient}>
-            <Routes>
-              <Route path="/invite/:token" element={<InviteLandingPage />} />
-            </Routes>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
+      renderInviteLanding(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -279,15 +357,7 @@ describe("InviteLandingPage", () => {
     });
 
     await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-          <QueryClientProvider client={queryClient}>
-            <Routes>
-              <Route path="/invite/:token" element={<InviteLandingPage />} />
-            </Routes>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
+      renderInviteLanding(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -354,15 +424,7 @@ describe("InviteLandingPage", () => {
     });
 
     await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-          <QueryClientProvider client={queryClient}>
-            <Routes>
-              <Route path="/invite/:token" element={<InviteLandingPage />} />
-            </Routes>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
+      renderInviteLanding(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -445,15 +507,7 @@ describe("InviteLandingPage", () => {
     });
 
     await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-          <QueryClientProvider client={queryClient}>
-            <Routes>
-              <Route path="/invite/:token" element={<InviteLandingPage />} />
-            </Routes>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
+      renderInviteLanding(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -530,15 +584,7 @@ describe("InviteLandingPage", () => {
     });
 
     await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-          <QueryClientProvider client={queryClient}>
-            <Routes>
-              <Route path="/invite/:token" element={<InviteLandingPage />} />
-            </Routes>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
+      renderInviteLanding(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -547,7 +593,7 @@ describe("InviteLandingPage", () => {
 
     expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
     expect(container.textContent).toContain("Request to join Acme Robotics");
-    expect(container.textContent).toContain("A company admin must approve your request to join.");
+    expect(container.textContent).toContain("An organization admin must approve your request to join.");
     expect(container.textContent).toContain(
       "Ask them to visit Settings → Members to approve your request.",
     );
@@ -572,13 +618,46 @@ describe("InviteLandingPage", () => {
     });
   });
 
+  it("blocks the one-time claim secret and the tokenized onboarding URL from session replay", async () => {
+    acceptInviteMock.mockResolvedValue({
+      id: "join-1",
+      companyId: "company-1",
+      requestType: "human",
+      status: "pending_approval",
+      claimSecret: "pcp_claim_Vb38nQe7Rw",
+      claimApiKeyPath: "/api/join-requests/join-1/claim-api-key",
+      onboarding: { textInstructions: { url: "https://paperclip.example.test/api/invites/pcp_invite_Hx9dLq/onboarding.txt" } },
+    });
+    getSessionMock.mockResolvedValue({
+      session: { id: "session-1", userId: "user-1" },
+      user: { id: "user-1", name: "Jane Example", email: "jane@example.com", image: null },
+    });
+
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    await act(async () => {
+      renderInviteLanding(root, queryClient);
+    });
+    await flushReact();
+    await flushReact();
+    await flushReact();
+    await flushReact();
+
+    expect(isBlockedFromReplay("pcp_claim_Vb38nQe7Rw", container)).toBe(true);
+    expect(isBlockedFromReplay("pcp_invite_Hx9dLq", container)).toBe(true);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
   it("auto-completes a previously accepted human invite after sign-in", async () => {
     getInviteMock.mockResolvedValue({
       id: "invite-1",
       companyId: "company-1",
       companyName: "Acme Robotics",
       companyLogoUrl: "/api/invites/pcp_invite_test/logo",
-      companyBrandColor: "#114488",
       inviteType: "company_join",
       allowedJoinTypes: "both",
       humanRole: "operator",
@@ -614,15 +693,7 @@ describe("InviteLandingPage", () => {
     });
 
     await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-          <QueryClientProvider client={queryClient}>
-            <Routes>
-              <Route path="/invite/:token" element={<InviteLandingPage />} />
-            </Routes>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
+      renderInviteLanding(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -645,7 +716,6 @@ describe("InviteLandingPage", () => {
       companyId: "company-1",
       companyName: "Acme Robotics",
       companyLogoUrl: "/api/invites/pcp_invite_test/logo",
-      companyBrandColor: "#114488",
       inviteType: "company_join",
       allowedJoinTypes: "human",
       humanRole: "operator",
@@ -661,15 +731,7 @@ describe("InviteLandingPage", () => {
     });
 
     await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-          <QueryClientProvider client={queryClient}>
-            <Routes>
-              <Route path="/invite/:token" element={<InviteLandingPage />} />
-            </Routes>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
+      renderInviteLanding(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -703,15 +765,7 @@ describe("InviteLandingPage", () => {
     });
 
     await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-          <QueryClientProvider client={queryClient}>
-            <Routes>
-              <Route path="/invite/:token" element={<InviteLandingPage />} />
-            </Routes>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
+      renderInviteLanding(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -816,15 +870,7 @@ describe("InviteLandingPage", () => {
       const queryClient = createAppLikeQueryClient("user-1");
 
       await act(async () => {
-        root.render(
-          <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-            <QueryClientProvider client={queryClient}>
-              <Routes>
-                <Route path="/invite/:token" element={<InviteLandingPage />} />
-              </Routes>
-            </QueryClientProvider>
-          </MemoryRouter>,
-        );
+        renderInviteLanding(root, queryClient);
       });
       await flushReact();
       await flushReact();
@@ -902,15 +948,7 @@ describe("InviteLandingPage", () => {
       const queryClient = createAppLikeQueryClient("user-1");
 
       await act(async () => {
-        root.render(
-          <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-            <QueryClientProvider client={queryClient}>
-              <Routes>
-                <Route path="/invite/:token" element={<InviteLandingPage />} />
-              </Routes>
-            </QueryClientProvider>
-          </MemoryRouter>,
-        );
+        renderInviteLanding(root, queryClient);
       });
       await flushReact();
       await flushReact();
@@ -918,7 +956,7 @@ describe("InviteLandingPage", () => {
       await flushReact();
 
       expect(listCompaniesMock).toHaveBeenCalled();
-      expect(container.textContent).not.toContain("Already in this company");
+      expect(container.textContent).not.toContain("Already in this organization");
       expect(acceptInviteMock).toHaveBeenCalledWith("pcp_invite_test", { requestType: "human" });
       expect(container.textContent).toContain("Request to join Acme Robotics");
 
@@ -937,15 +975,7 @@ describe("InviteLandingPage", () => {
       const queryClient = createAppLikeQueryClient("user-1");
 
       await act(async () => {
-        root.render(
-          <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-            <QueryClientProvider client={queryClient}>
-              <Routes>
-                <Route path="/invite/:token" element={<InviteLandingPage />} />
-              </Routes>
-            </QueryClientProvider>
-          </MemoryRouter>,
-        );
+        renderInviteLanding(root, queryClient);
       });
       await flushReact();
       await flushReact();
@@ -969,21 +999,13 @@ describe("InviteLandingPage", () => {
       const queryClient = createAppLikeQueryClient(null);
 
       await act(async () => {
-        root.render(
-          <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-            <QueryClientProvider client={queryClient}>
-              <Routes>
-                <Route path="/invite/:token" element={<InviteLandingPage />} />
-              </Routes>
-            </QueryClientProvider>
-          </MemoryRouter>,
-        );
+        renderInviteLanding(root, queryClient);
       });
       await flushReact();
       await flushReact();
       await flushReact();
 
-      expect(container.textContent).toContain("Already in this company");
+      expect(container.textContent).toContain("Already in this organization");
       expect(acceptInviteMock).not.toHaveBeenCalled();
 
       await act(async () => {
@@ -1010,26 +1032,18 @@ describe("InviteLandingPage", () => {
     });
 
     await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-          <QueryClientProvider client={queryClient}>
-            <Routes>
-              <Route path="/invite/:token" element={<InviteLandingPage />} />
-            </Routes>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
+      renderInviteLanding(root, queryClient);
     });
     await flushReact();
     await flushReact();
 
     expect(container.textContent).toContain("Join Acme Robotics");
-    expect(container.textContent).toContain("Already in this company");
+    expect(container.textContent).toContain("Already in this organization");
     expect(container.textContent).toContain("This account already belongs to Acme Robotics.");
     expect(acceptInviteMock).not.toHaveBeenCalled();
 
     const openButton = Array.from(container.querySelectorAll("button")).find(
-      (button) => button.textContent === "Open company",
+      (button) => button.textContent === "Open organization",
     );
     expect(openButton).not.toBeNull();
 
@@ -1052,15 +1066,7 @@ describe("InviteLandingPage", () => {
     });
 
     await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-          <QueryClientProvider client={queryClient}>
-            <Routes>
-              <Route path="/invite/:token" element={<InviteLandingPage />} />
-            </Routes>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
+      renderInviteLanding(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -1108,15 +1114,7 @@ describe("InviteLandingPage", () => {
     });
 
     await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-          <QueryClientProvider client={queryClient}>
-            <Routes>
-              <Route path="/invite/:token" element={<InviteLandingPage />} />
-            </Routes>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
+      renderInviteLanding(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -1160,20 +1158,12 @@ describe("InviteLandingPage", () => {
     });
 
     await act(async () => {
-      root.render(
-        <MemoryRouter initialEntries={["/invite/pcp_invite_test"]}>
-          <QueryClientProvider client={queryClient}>
-            <Routes>
-              <Route path="/invite/:token" element={<InviteLandingPage />} />
-            </Routes>
-          </QueryClientProvider>
-        </MemoryRouter>,
-      );
+      renderInviteLanding(root, queryClient);
     });
     await flushReact();
 
     expect(container.textContent).toContain("Checking your access...");
-    expect(container.textContent).not.toContain("Accept company invite");
+    expect(container.textContent).not.toContain("Accept organization invite");
     expect(acceptInviteMock).not.toHaveBeenCalled();
 
     await act(async () => {
