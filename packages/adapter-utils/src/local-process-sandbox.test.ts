@@ -103,6 +103,32 @@ describe("local process sandbox", () => {
     expect(target.args.slice(-3)).toEqual([process.execPath, "-e", "console.log('ok')"]);
   });
 
+  it.runIf(process.platform === "linux")("mounts /usr before the compatibility symlink targets", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-usr-order-"));
+    cleanup.push(root);
+    const workspace = path.join(root, "workspace");
+    await fs.mkdir(workspace);
+
+    const target = await buildLocalProcessSandboxSpawnTarget({
+      executable: process.execPath,
+      args: ["-e", "process.exit(0)"],
+      cwd: workspace,
+      options: { workspaceDir: workspace, filesystemScope: "workspace" },
+    });
+
+    const bindIndex = (source: string) =>
+      target.args.findIndex((arg, index) =>
+        (arg === "--ro-bind" || arg === "--bind") &&
+        target.args[index + 1] === source &&
+        target.args[index + 2] === source);
+    const usrIndex = bindIndex("/usr");
+    expect(usrIndex).toBeGreaterThanOrEqual(0);
+    for (const compatibilityPath of ["/bin", "/sbin", "/lib", "/lib64"]) {
+      const index = bindIndex(compatibilityPath);
+      if (index >= 0) expect(index).toBeGreaterThan(usrIndex);
+    }
+  });
+
   it.runIf(process.platform === "linux")("binds a confined absolute alias to the synchronized workspace", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-fs-alias-"));
     cleanup.push(root);
