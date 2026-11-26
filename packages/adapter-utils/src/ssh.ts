@@ -652,11 +652,21 @@ async function clearLocalDirectory(
 ): Promise<void> {
   await fs.mkdir(localDir, { recursive: true });
   const preserve = new Set(preserveEntries);
-  const entries = await fs.readdir(localDir);
+  const entries = await fs.readdir(localDir, { withFileTypes: true });
   await Promise.all(
     entries
-      .filter((entry) => !preserve.has(entry))
-      .map((entry) => fs.rm(path.join(localDir, entry), { recursive: true, force: true })),
+      .filter((entry) => !preserve.has(entry.name))
+      .map(async (entry) => {
+        const entryPath = path.join(localDir, entry.name);
+        // The remote tar drops `.git` at every depth, so a nested one (such as
+        // a worktree's link file) is never restored and must survive the clear.
+        if (preserve.has(".git") && entry.isDirectory()) {
+          await clearLocalDirectory(entryPath, [".git"]);
+          if ((await fs.readdir(entryPath)).length === 0) await fs.rmdir(entryPath);
+          return;
+        }
+        await fs.rm(entryPath, { recursive: true, force: true });
+      }),
   );
 }
 
