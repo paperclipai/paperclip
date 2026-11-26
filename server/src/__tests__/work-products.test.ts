@@ -1,5 +1,13 @@
+import { issues } from "@paperclipai/db";
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { SQL } from "drizzle-orm";
 import { describe, expect, it, vi } from "vitest";
-import { workProductService } from "../services/work-products.ts";
+import {
+  enrichWorkProductMetadataWithDiff,
+  refreshPullRequestWorkProductMetadata,
+  workProductDiffSummaryFromEventPayload,
+  workProductService,
+} from "../services/work-products.ts";
 
 function createWorkProductRow(overrides: Partial<Record<string, unknown>> = {}) {
   const now = new Date("2026-03-17T00:00:00.000Z");
@@ -28,7 +36,133 @@ function createWorkProductRow(overrides: Partial<Record<string, unknown>> = {}) 
   };
 }
 
+function retentionReads(insideTransaction: () => boolean) {
+  return vi.fn(async (query: SQL) => {
+    const statement = new PgDialect().sqlToQuery(query);
+    expect(insideTransaction()).toBe(true);
+    expect(statement.params).toContain("company-1");
+    expect(statement.params).toContain("issue-1");
+    if (statement.sql.includes("origin_kind")) return [{ id: "issue-1", originKind: null, originId: null }];
+    if (statement.sql.includes("with recursive affected")) return [{ issueId: "issue-1" }];
+    throw new Error(`Unexpected work-product fixture query: ${statement.sql}`);
+  });
+}
+
 describe("workProductService", () => {
+  it("extracts runner totals and enriches work-product metadata", () => {
+    const summary = workProductDiffSummaryFromEventPayload({
+      schema: "paperclip.workspace.diff.v1",
+      totals: { files: 3, additions: 17, deletions: 5 },
+    });
+
+    expect(summary).toEqual({ changedFiles: 3, additions: 17, deletions: 5 });
+    expect(enrichWorkProductMetadataWithDiff({ repo: "paperclipai/paperclip" }, summary)).toEqual({
+      repo: "paperclipai/paperclip",
+      changedFiles: 3,
+      additions: 17,
+      deletions: 5,
+    });
+
+    const prpEvent = {
+      schema: "paperclip.prp.event.v1",
+      payload: { totals: { files: 2, additions: 9, deletions: 4 } },
+    };
+    expect(workProductDiffSummaryFromEventPayload({ prpEvent })).toEqual({
+      changedFiles: 2,
+      additions: 9,
+      deletions: 4,
+    });
+    expect(workProductDiffSummaryFromEventPayload(prpEvent)).toEqual({
+      changedFiles: 2,
+      additions: 9,
+      deletions: 4,
+    });
+  });
+
+  it("refreshes pull-request state without mutating the stored work product", async () => {
+    const product = createWorkProductRow({
+      companyId: "company-1",
+      url: "https://github.com/paperclipai/paperclip/pull/42",
+      metadata: {
+        repo: "paperclipai/paperclip",
+        number: 42,
+        additions: 17,
+        deletions: 5,
+        changedFiles: 3,
+        state: "open",
+        draft: false,
+      },
+    }) as any;
+    const resolve = vi.fn(async () => ({
+      state: "open" as const,
+      workProductState: "merged" as const,
+      draft: false,
+      headRef: "feature/rich-cards",
+      headSha: "abc123",
+      baseRef: "master",
+      additions: 20,
+      deletions: 7,
+      changedFiles: 4,
+    }));
+
+    const [refreshed] = await refreshPullRequestWorkProductMetadata([product], resolve);
+
+    expect(resolve).toHaveBeenCalledWith("company-1", {
+      host: "github.com",
+      owner: "paperclipai",
+      repo: "paperclip",
+      number: 42,
+    });
+    expect(refreshed?.metadata).toMatchObject({
+      state: "merged",
+      draft: false,
+      baseRef: "master",
+      headRef: "feature/rich-cards",
+      additions: 20,
+      deletions: 7,
+      changedFiles: 4,
+    });
+    expect(product.metadata.state).toBe("open");
+  });
+
+  it.each([
+    { url: "https://github.com/example/private-repo/pull/42" },
+    { repository: "example/private-repo", number: 42 },
+  ])("refreshes a PR whose identity is stored only in metadata: %j", async (metadata) => {
+    const product = createWorkProductRow({ url: null, metadata }) as any;
+    const resolve = vi.fn(async () => ({ state: "merged" as const, workProductState: "merged" as const, headRef: null, headSha: null }));
+    const [refreshed] = await refreshPullRequestWorkProductMetadata([product], resolve);
+    expect(resolve).toHaveBeenCalledWith("company-1", {
+      host: "github.com", owner: "example", repo: "private-repo", number: 42,
+    });
+    expect(refreshed.metadata).toMatchObject({ state: "merged" });
+    expect(product.metadata).toEqual(metadata);
+  });
+
+  it("retains the saved PR when the provider cannot access it", async () => {
+    const product = createWorkProductRow({ url: null, metadata: { url: "https://github.com/example/private-repo/pull/42" } }) as any;
+    const resolve = vi.fn(async () => { throw new Error("Not found"); });
+    const [refreshed] = await refreshPullRequestWorkProductMetadata([product], resolve);
+    expect(refreshed).toBe(product);
+  });
+
+  it("resolves GitHub commit stats when runner diff events are unavailable", async () => {
+    const resolveCommitDetails = vi.fn(async () => ({ additions: 13, deletions: 2, changedFiles: 3 }));
+    const svc = workProductService({} as any, { resolveCommitDetails });
+
+    await expect(svc.resolveCommitDiffSummary("company-1", {
+      provider: "github",
+      url: "https://github.com/paperclipai/paperclip/commit/9c12ae7b41e5",
+      metadata: null,
+    })).resolves.toEqual({ additions: 13, deletions: 2, changedFiles: 3 });
+    expect(resolveCommitDetails).toHaveBeenCalledWith("company-1", {
+      host: "github.com",
+      owner: "paperclipai",
+      repo: "paperclip",
+      sha: "9c12ae7b41e5",
+    });
+  });
+
   it("uses a transaction when creating a new primary work product", async () => {
     const updatedWhere = vi.fn(async () => undefined);
     const updateSet = vi.fn(() => ({ where: updatedWhere }));
@@ -39,11 +173,21 @@ describe("workProductService", () => {
     const insertValues = vi.fn(() => ({ returning: insertReturning }));
     const txInsert = vi.fn(() => ({ values: insertValues }));
 
+    const ownerWhere = vi.fn(async () => [{ createdByUserId: "user-1", responsibleUserId: null }]);
+    const txSelect = vi.fn(() => ({ from: vi.fn(() => ({ where: ownerWhere })) }));
+
+    let transactionOpen = false;
     const tx = {
+      execute: retentionReads(() => transactionOpen),
       update: txUpdate,
       insert: txInsert,
+      select: txSelect,
+      transaction: async (read: (input: unknown) => Promise<unknown>) => read(tx),
     };
-    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
+    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => {
+      transactionOpen = true;
+      try { return await callback(tx); } finally { transactionOpen = false; }
+    });
 
     const svc = workProductService({ transaction } as any);
     const result = await svc.createForIssue("issue-1", "company-1", {
@@ -58,14 +202,41 @@ describe("workProductService", () => {
     expect(transaction).toHaveBeenCalledTimes(1);
     expect(txUpdate).toHaveBeenCalledTimes(1);
     expect(txInsert).toHaveBeenCalledTimes(1);
+    expect(ownerWhere).toHaveBeenCalledTimes(1);
+    expect(result?.id).toBe("work-product-1");
+  });
+
+  it("keeps the new work product when the telemetry owner read fails", async () => {
+    const insertedRow = createWorkProductRow();
+    const txInsert = vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(async () => [insertedRow]) })) }));
+    let transactionOpen = false;
+    const tx = {
+      execute: retentionReads(() => transactionOpen),
+      update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => undefined) })) })),
+      insert: txInsert,
+      transaction: vi.fn(async () => { throw new Error("owner read failed"); }),
+    };
+    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => {
+      transactionOpen = true;
+      try { return await callback(tx); } finally { transactionOpen = false; }
+    });
+
+    const result = await workProductService({ transaction } as any).createForIssue("issue-1", "company-1", {
+      type: "pull_request", provider: "github", title: "PR 1", status: "open", reviewState: "draft", isPrimary: false,
+    });
+
+    expect(tx.transaction).toHaveBeenCalledTimes(1);
     expect(result?.id).toBe("work-product-1");
   });
 
   it("uses a transaction when promoting an existing work product to primary", async () => {
     const existingRow = createWorkProductRow({ isPrimary: false });
 
-    const selectWhere = vi.fn(async () => [existingRow]);
-    const selectFrom = vi.fn(() => ({ where: selectWhere }));
+    const selectFrom = vi.fn((table: unknown) => {
+      const rows = table === issues ? [{ id: "issue-1" }] : [existingRow];
+      const query = Promise.resolve(rows);
+      return Object.assign(query, { where: vi.fn(() => query), orderBy: vi.fn(() => query), for: vi.fn(() => query) });
+    });
     const txSelect = vi.fn(() => ({ from: selectFrom }));
 
     const updateReturning = vi
@@ -75,11 +246,16 @@ describe("workProductService", () => {
     const updateSet = vi.fn(() => ({ where: updateWhere }));
     const txUpdate = vi.fn(() => ({ set: updateSet }));
 
+    let transactionOpen = false;
     const tx = {
+      execute: retentionReads(() => transactionOpen),
       select: txSelect,
       update: txUpdate,
     };
-    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => await callback(tx));
+    const transaction = vi.fn(async (callback: (input: typeof tx) => Promise<unknown>) => {
+      transactionOpen = true;
+      try { return await callback(tx); } finally { transactionOpen = false; }
+    });
 
     const svc = workProductService({ transaction } as any);
     const result = await svc.update("work-product-1", {
@@ -88,7 +264,7 @@ describe("workProductService", () => {
     });
 
     expect(transaction).toHaveBeenCalledTimes(1);
-    expect(txSelect).toHaveBeenCalledTimes(1);
+    expect(txSelect).toHaveBeenCalled();
     expect(txUpdate).toHaveBeenCalledTimes(2);
     expect(result?.reviewState).toBe("ready_for_review");
   });

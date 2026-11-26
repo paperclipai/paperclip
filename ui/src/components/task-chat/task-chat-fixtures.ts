@@ -39,7 +39,7 @@ export function buildScenario(id: TaskChatStateId): TaskChatScenario {
       return {
         surface: "thread",
         items: [
-          { id: "mk-start", kind: "marker", variant: "session_start", label: "Session started", detail: "claude · Agent mode" },
+          { id: "mk-start", kind: "marker", variant: "session_start", label: "Session started", detail: "claude · Auto mode" },
           ...exchangePrefix(),
         ],
       };

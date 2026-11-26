@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": [
+    "src/**/*.test.ts",
+    "src/browser/**",
+    "src/devtools/**",
+    "src/issue-thread/**",
+    "src/react/**",
+    "src/scenarios/**",
+    "src/standalone/**"
+  ]
+}

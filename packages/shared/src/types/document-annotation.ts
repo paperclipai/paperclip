@@ -1,6 +1,7 @@
 import type {
   DocumentAnnotationAnchorConfidence,
   DocumentAnnotationAnchorState,
+  DocumentAnnotationCommentReactionName,
   DocumentAnnotationThreadStatus,
   IssueCommentAuthorType,
   IssueThreadInteractionContinuationPolicy,
@@ -101,8 +102,22 @@ export interface DocumentAnnotationComment {
   authorUserId: string | null;
   createdByRunId: string | null;
   issueCommentId?: string | null;
+  reactions?: DocumentAnnotationCommentReactionSummary[];
   createdAt: Date;
   updatedAt: Date;
+}
+
+export interface DocumentAnnotationCommentReactionActor {
+  actorType: "agent" | "user";
+  agentId: string | null;
+  userId: string | null;
+}
+
+export interface DocumentAnnotationCommentReactionSummary {
+  reaction: DocumentAnnotationCommentReactionName;
+  count: number;
+  reactedByMe: boolean;
+  actors: DocumentAnnotationCommentReactionActor[];
 }
 
 export interface DocumentAnnotationAnchorRemapSnapshot {
@@ -230,5 +245,24 @@ export interface PlanReviewContext {
     maxTotalBodyChars: number;
     maxAnchorTextChars: number;
   };
+  truncated: boolean;
+}
+
+export interface DocumentReviewContextDocument {
+  documentKey: string;
+  documentId: string;
+  title: string | null;
+  latestRevisionId: string | null;
+  latestRevisionNumber: number | null;
+  threads: PlanReviewContextThread[];
+  totals: PlanReviewContext["totals"];
+  truncated: boolean;
+}
+
+export interface DocumentReviewContext {
+  issueId: string;
+  documents: DocumentReviewContextDocument[];
+  totals: PlanReviewContext["totals"];
+  limits: PlanReviewContext["limits"];
   truncated: boolean;
 }

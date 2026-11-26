@@ -324,3 +324,171 @@ test.describe("Multi-user: authenticated mode", () => {
     }
   });
 });
+
+
+test("agent chats keep personal identity and ordinary company visibility", async ({ browser, page }) => {
+  test.setTimeout(120_000);
+  expect((await (await page.request.get(`${BASE}/api/health`)).json()).deploymentMode).toBe("authenticated");
+  await signUp(page, { ...ownerUser, email: `chat-${ownerUser.email}` });
+  const bootstrapToken = new URL(createBootstrapInvite()).pathname.split("/").at(-1);
+  expect((await sessionJsonRequest(page, `${BASE}/api/invites/${bootstrapToken}/accept`, { method: "POST", data: { requestType: "human" } })).ok).toBe(true);
+  const company = await createCompanyForSession(page, `Chat identity ${runId}`);
+  const companyPrefix = company.issuePrefix ?? company.id;
+  const invite = await sessionJsonRequest<{ inviteUrl: string }>(page, `${BASE}/api/companies/${company.id}/invites`, { method: "POST", data: { allowedJoinTypes: "human", humanRole: "operator" } });
+  expect(invite.ok).toBe(true);
+  const invited = await newPage(browser);
+  try {
+    await signUp(invited.page, { ...invitedUser, email: `chat-${invitedUser.email}` });
+    const inviteToken = new URL(invite.json!.inviteUrl, BASE).pathname.split("/").at(-1);
+    const joined = await sessionJsonRequest(invited.page, `${BASE}/api/invites/${inviteToken}/accept`, { method: "POST", data: { requestType: "human" } });
+    expect(joined.ok).toBe(true);
+      // Persistent chats are personal identities, not private messaging.
+      const originalFlags = await sessionJsonRequest<Record<string, boolean>>(page, `${BASE}/api/instance/settings/experimental`);
+      const enable = await sessionJsonRequest(page, `${BASE}/api/instance/settings/experimental`, { method: "PATCH", data: { enableAgentChat: true } });
+      expect(enable.ok).toBe(true);
+      try {
+        const createdAgent = await sessionJsonRequest<{ id: string }>(page, `${BASE}/api/companies/${company.id}/agents`, { method: "POST", data: {
+          name: "Personal chat identity", adapterType: "process",
+          adapterConfig: { command: process.execPath, args: ["-e", "process.exit(0)"] },
+          runtimeConfig: { heartbeat: { enabled: false } },
+        } });
+        expect(createdAgent.ok).toBe(true);
+        const agentId = createdAgent.json!.id;
+        const chatEndpoint = `${BASE}/api/companies/${company.id}/chats/${agentId}`;
+        await page.goto(`${BASE}/${companyPrefix}/chats/${agentId}`);
+        await invited.page.goto(`${BASE}/${companyPrefix}/chats/${agentId}`);
+        expect((await sessionJsonRequest(page, chatEndpoint)).json).toBeNull();
+        expect((await sessionJsonRequest(invited.page, chatEndpoint)).json).toBeNull();
+        const ownerChat = await sessionJsonRequest<{ id: string; conversationUserId: string }>(page, chatEndpoint, { method: "POST", data: {} });
+        const memberChat = await sessionJsonRequest<{ id: string; conversationUserId: string }>(invited.page, chatEndpoint, { method: "POST", data: {} });
+        expect(ownerChat.ok).toBe(true); expect(memberChat.ok).toBe(true);
+        expect(ownerChat.json!.id).not.toBe(memberChat.json!.id);
+        expect(ownerChat.json!.conversationUserId).not.toBe(memberChat.json!.conversationUserId);
+        expect((await sessionJsonRequest(invited.page, `${BASE}/api/issues/${ownerChat.json!.id}`)).ok).toBe(true);
+        expect((await sessionJsonRequest(page, `${BASE}/api/issues/${memberChat.json!.id}`)).ok).toBe(true);
+        await page.reload(); await invited.page.reload();
+        await page.getByRole("button", { name: "Star Personal chat identity", exact: true }).click();
+        await expect(page.getByRole("button", { name: "Unstar Personal chat identity", exact: true })).toBeAttached();
+        await expect(invited.page.getByRole("button", { name: "Star Personal chat identity", exact: true })).toBeAttached();
+        const ownerRecent = await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith("paperclip.recentAgentChats:")));
+        const memberRecent = await invited.page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith("paperclip.recentAgentChats:")));
+        expect(ownerRecent.some(key => key.endsWith(ownerChat.json!.conversationUserId))).toBe(true);
+        expect(memberRecent.some(key => key.endsWith(memberChat.json!.conversationUserId))).toBe(true);
+        const another = await createCompanyForSession(page, `Private company ${runId}`);
+        const forbidden = await sessionJsonRequest(invited.page, `${BASE}/api/companies/${another.id}/chats/${agentId}`);
+        expect([403, 404]).toContain(forbidden.status);
+      } finally {
+        const restore = await sessionJsonRequest(page, `${BASE}/api/instance/settings/experimental`, { method: "PATCH", data: { enableAgentChat: originalFlags.json!.enableAgentChat } });
+        expect(restore.ok).toBe(true);
+      }
+  } finally { await invited.context.close(); }
+});
+
+test("task toasts follow personal involvement in multiplayer", async ({ browser, page }, testInfo) => {
+  test.setTimeout(180_000);
+  page.setDefaultTimeout(15_000);
+  // Observe the real socket handshake so mutations after navigation do not
+  // race subscription setup. No network responses or event payloads are mocked.
+  await page.addInitScript(() => {
+    const NativeWebSocket = window.WebSocket;
+    const sockets: WebSocket[] = [];
+    (window as unknown as { toastTestSockets: WebSocket[] }).toastTestSockets = sockets;
+    window.WebSocket = class extends NativeWebSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        sockets.push(this);
+      }
+    };
+  });
+  await signUp(page, { ...ownerUser, email: `toasts-${ownerUser.email}` });
+  const bootstrapToken = new URL(createBootstrapInvite()).pathname.split("/").at(-1);
+  expect((await sessionJsonRequest(page, `${BASE}/api/invites/${bootstrapToken}/accept`, {
+    method: "POST", data: { requestType: "human" },
+  })).ok).toBe(true);
+  const company = await createCompanyForSession(page, `Personal notifications ${runId}`);
+  const prefix = company.issuePrefix ?? company.id;
+  const invite = await sessionJsonRequest<{ inviteUrl: string }>(page, `${BASE}/api/companies/${company.id}/invites`, {
+    method: "POST", data: { allowedJoinTypes: "human", humanRole: "operator" },
+  });
+  expect(invite.ok).toBe(true);
+  const other = await newPage(browser);
+  try {
+    await signUp(other.page, { ...invitedUser, email: `toasts-${invitedUser.email}` });
+    const token = new URL(invite.json!.inviteUrl, BASE).pathname.split("/").at(-1);
+    expect((await sessionJsonRequest(other.page, `${BASE}/api/invites/${token}/accept`, {
+      method: "POST", data: { requestType: "human" },
+    })).ok).toBe(true);
+    const session = await sessionJsonRequest<{ user: { id: string } }>(page, `${BASE}/api/auth/get-session`);
+    const viewerId = session.json!.user.id;
+    const task = await sessionJsonRequest<{ id: string; identifier: string }>(other.page, `${BASE}/api/companies/${company.id}/issues`, {
+      method: "POST", data: { title: "Another person's task", status: "backlog" },
+    });
+    expect(task.ok).toBe(true);
+    const id = task.json!.id;
+    const frames: Array<{ toastEligible?: boolean; payload: { entityId?: string; action?: string } }> = [];
+    page.on("websocket", socket => socket.on("framereceived", frame => {
+      try { frames.push(JSON.parse(String(frame.payload))); } catch { /* ignore control frames */ }
+    }));
+    await page.goto(`${BASE}/${prefix}/issues?view=all`);
+    await expect(page.getByText("Another person's task", { exact: true }).first()).toBeVisible();
+    await other.page.goto(`${BASE}/${prefix}/issues?view=all`);
+    const toasts = page.locator('aside[aria-live="polite"]');
+    async function waitForSocket() {
+      await page.waitForFunction((companyId) =>
+        (window as unknown as { toastTestSockets: WebSocket[] }).toastTestSockets.some(socket =>
+          socket.url.includes(`/companies/${companyId}/events/ws`) && socket.readyState === WebSocket.OPEN), company.id);
+    }
+    async function update(title: string, eligible: boolean) {
+      await waitForSocket();
+      // Let the existing two-second server list cache expire after navigation.
+      // This case tests steady-state notification scoping, not cache TTL policy.
+      await page.waitForTimeout(2200);
+      const before = frames.length;
+      expect((await sessionJsonRequest(other.page, `${BASE}/api/issues/${id}`, {
+        method: "PATCH", data: { title },
+      })).ok).toBe(true);
+      await expect.poll(() => frames.slice(before).find(e => e.payload.entityId === id && e.payload.action === "issue.updated")?.toastEligible)
+        .toBe(eligible);
+      await expect(page.getByText(title, { exact: true }).first()).toBeVisible();
+      if (eligible) {
+        await expect(toasts).toContainText("Invited User updated");
+        await testInfo.attach(title, { body: await page.screenshot(), contentType: "image/png" });
+        await page.getByRole("button", { name: "Dismiss notification" }).click();
+      } else {
+        await expect(toasts).toHaveCount(0);
+      }
+      // Each qualifying update is a distinct observation, outside deduplication.
+      await page.waitForTimeout(3600);
+    }
+    await update("Unrelated update still refreshes the list", false);
+    // Visiting alone must not subscribe the user.
+    await page.getByRole("link", { name: `Open ${task.json!.identifier}: Unrelated update still refreshes the list`, exact: true }).click();
+    await expect(page).toHaveURL(new RegExp(`/issues/(${id}|${task.json!.identifier})`));
+    await page.goto(`${BASE}/${prefix}/issues?view=all`);
+    await update("Viewing is still quiet", false);
+    // Use persisted API fixtures to vary participation, observing actual live UI.
+    expect((await sessionJsonRequest(other.page, `${BASE}/api/issues/${id}/comments`, {
+      method: "POST", data: { body: `Please review [Owner](user://${viewerId}).` },
+    })).ok).toBe(true);
+    await expect(toasts).toContainText("Invited User commented on");
+    await testInfo.attach("First mention notifies", { body: await page.screenshot(), contentType: "image/png" });
+    await page.getByRole("button", { name: "Dismiss notification" }).click();
+    await page.reload();
+    await expect(page.getByText("Viewing is still quiet", { exact: true }).first()).toBeVisible();
+    await update("Historical mention survives reload", true);
+    // Same event must not toast to its author in the second authenticated session.
+    await expect(other.page.locator('aside[aria-live="polite"]')).toHaveCount(0);
+    // Viewing the qualifying task suppresses redundant notifications.
+    await page.getByRole("link", { name: `Open ${task.json!.identifier}: Historical mention survives reload`, exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Historical mention survives reload", exact: true })).toBeVisible();
+    await waitForSocket();
+    const beforeComment = frames.length;
+    expect((await sessionJsonRequest(other.page, `${BASE}/api/issues/${id}/comments`, {
+      method: "POST", data: { body: "Already visible in the task." },
+    })).ok).toBe(true);
+    await expect.poll(() => frames.slice(beforeComment).find(e => e.payload.entityId === id && e.payload.action === "issue.comment_added")?.toastEligible)
+      .toBe(true);
+    await expect(page.getByText("Already visible in the task.", { exact: true }).first()).toBeVisible();
+    await expect(toasts).toHaveCount(0);
+  } finally { await other.context.close(); }
+});

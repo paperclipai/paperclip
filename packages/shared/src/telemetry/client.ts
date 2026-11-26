@@ -74,6 +74,43 @@ const BATCH_ID_HEX_LENGTH = 32;
  * so it can be cancelled when the batch is evicted from the bounded store,
  * otherwise the timer would keep firing for a batch that no longer exists.
  */
+/** Outcome of delivering one batch, as classified by the client's retry logic. */
+export type TelemetrySendResult =
+  | { kind: "ok" }
+  | { kind: "status"; status: number; retryAfterMs?: number }
+  | { kind: "network" };
+
+/**
+ * One wire-ready batch handed to a custom transport. `events` pairs each event
+ * with the opaque context the transport captured when the event was tracked.
+ */
+export interface TelemetryOutgoingBatch {
+  app: string;
+  schemaVersion: string;
+  installId: string;
+  version: string;
+  batchId: string;
+  events: ReadonlyArray<{ event: TelemetryEvent; context: unknown }>;
+}
+
+/**
+ * Narrow seam for a host that delivers telemetry somewhere other than the
+ * default collector. When a client has a transport, every flushed batch goes
+ * to `send` and never to the collector endpoints, so each batch has exactly
+ * one sender. Without a transport the client behaves exactly as before.
+ */
+export interface TelemetryTransport {
+  /**
+   * Whether typed helpers hash private task ids before emission. The default
+   * collector path always hashes. Private source refs stay hashed on every
+   * path, because they are customer content rather than identifiers.
+   */
+  readonly hashesPrivateRefs: boolean;
+  /** Captures per-event context at track time (for example the acting request). */
+  captureEventContext?(): unknown;
+  send(batch: TelemetryOutgoingBatch): Promise<TelemetrySendResult>;
+}
+
 interface PendingBatch {
   events: TelemetryEvent[];
   batchId: string;
@@ -95,6 +132,10 @@ export class TelemetryClient {
   // `maxPendingRetryBatches`. Insertion order == age (oldest at the front).
   private pending: PendingBatch[] = [];
   private readonly retryTimers = new Set<ReturnType<typeof setTimeout>>();
+  private readonly transport: TelemetryTransport | null;
+  // Per-event transport context, kept off the event object so the collector
+  // envelope stays byte-identical whether or not a transport is configured.
+  private readonly eventContexts = new WeakMap<TelemetryEvent, unknown>();
 
   constructor(
     config: TelemetryConfig,
@@ -103,12 +144,16 @@ export class TelemetryClient {
     // Injectable RNG for backoff jitter — defaults to `Math.random`; tests pass
     // a seeded function for deterministic backoff. Callers keep the 3-arg form.
     random: () => number = Math.random,
+    // Optional custom delivery. Omitted on self-hosted installs, which keep the
+    // default collector path unchanged.
+    transport?: TelemetryTransport,
   ) {
     this.config = config;
     this.caps = resolveCaps(config);
     this.stateFactory = stateFactory;
     this.version = version;
     this.random = random;
+    this.transport = transport ?? null;
   }
 
   /**
@@ -116,9 +161,19 @@ export class TelemetryClient {
    * backend event schema.
    */
   track<K extends TelemetryEventName>(eventName: K, ...args: TrackArgs<K>): void {
-    if (!Object.hasOwn(PAPERCLIP_EVENTS, eventName)) return;
+    if (!this.isRegisteredEventName(eventName)) return;
     const [dimensions] = args;
     this.enqueue(eventName, dimensions);
+  }
+
+  /**
+   * Whether `track` would enqueue this first-party event name rather than drop
+   * it as unregistered. Lets a caller with an expensive payload (e.g. one that
+   * needs database reads) skip building dimensions for a proposed event the
+   * client would discard anyway.
+   */
+  isRegisteredEventName(eventName: string): boolean {
+    return Object.hasOwn(PAPERCLIP_EVENTS, eventName);
   }
 
   /**
@@ -134,11 +189,15 @@ export class TelemetryClient {
     if (!this.config.enabled) return;
     this.getState(); // ensure state is initialised (side-effect: creates state file on first call)
 
-    this.queue.push({
+    const event: TelemetryEvent = {
       name: eventName,
       occurredAt: new Date().toISOString(),
       dimensions: { ...dimensions } as TelemetryDimensions,
-    });
+    };
+    if (this.transport?.captureEventContext) {
+      this.eventContexts.set(event, this.transport.captureEventContext());
+    }
+    this.queue.push(event);
 
     if (this.queue.length >= BATCH_SIZE) {
       void this.flush();
@@ -259,8 +318,7 @@ export class TelemetryClient {
    * terminal failure or after `maxAttempts` the batch is dropped-and-logged.
    */
   private async attemptSend(batch: PendingBatch): Promise<void> {
-    const body = JSON.stringify(this.buildEnvelope(batch.events, batch.batchId));
-    const outcome = this.classifyOutcome(await this.postEnvelope(body));
+    const outcome = this.classifyOutcome(await this.deliver(batch));
 
     if (outcome.kind === "ok") return;
 
@@ -295,8 +353,26 @@ export class TelemetryClient {
     });
   }
 
+  /** Sends one batch through exactly one sender: the transport, or else the collector. */
+  private async deliver(batch: PendingBatch): Promise<TelemetrySendResult> {
+    const envelope = this.buildEnvelope(batch.events, batch.batchId);
+    if (!this.transport) return this.postEnvelope(JSON.stringify(envelope));
+    try {
+      return await this.transport.send({
+        app: envelope.app,
+        schemaVersion: envelope.schemaVersion,
+        installId: envelope.installId,
+        version: envelope.version,
+        batchId: envelope.batchId,
+        events: batch.events.map((event) => ({ event, context: this.eventContexts.get(event) })),
+      });
+    } catch {
+      return { kind: "network" };
+    }
+  }
+
   private classifyOutcome(
-    result: { kind: "ok" } | { kind: "status"; status: number; retryAfterMs?: number } | { kind: "network" },
+    result: TelemetrySendResult,
   ): { kind: "ok" } | { kind: "retry"; retryAfterMs?: number } | { kind: "terminal"; status: number } {
     if (result.kind === "ok") return { kind: "ok" };
     if (result.kind === "network") return { kind: "retry" };
@@ -398,9 +474,7 @@ export class TelemetryClient {
    * surface the last transient status if every endpoint returns one — matching
    * the pre-retry loop's endpoint-fallback behavior.
    */
-  private async postEnvelope(
-    body: string,
-  ): Promise<{ kind: "ok" } | { kind: "status"; status: number; retryAfterMs?: number } | { kind: "network" }> {
+  private async postEnvelope(body: string): Promise<TelemetrySendResult> {
     const endpoints = this.resolveEndpoints();
     let lastTransient: { kind: "status"; status: number; retryAfterMs?: number } | undefined;
     for (const endpoint of endpoints) {
@@ -469,6 +543,14 @@ export class TelemetryClient {
       .update(state.salt + value)
       .digest("hex")
       .slice(0, 16);
+  }
+
+  /**
+   * Whether typed helpers hash private references on this client. Always true
+   * on the default collector path; only a transport can turn it off.
+   */
+  get privateRefsHashed(): boolean {
+    return this.transport?.hashesPrivateRefs ?? true;
   }
 
   private getState(): TelemetryState {

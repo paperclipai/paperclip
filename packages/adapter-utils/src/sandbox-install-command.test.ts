@@ -9,9 +9,11 @@ describe("buildSandboxNpmInstallCommand", () => {
     expect(command).toContain("npm install -g --prefix \"$HOME/.local\" '@google/gemini-cli'");
   });
 
-  it("bootstraps npm from a portable Node tarball when missing", () => {
+  it("bootstraps npm from a portable Node tarball when missing or unsupported", () => {
     const command = buildSandboxNpmInstallCommand("@google/gemini-cli");
-    expect(command).toContain("if ! command -v npm >/dev/null 2>&1; then");
+    expect(command).toContain("if ! command -v npm >/dev/null 2>&1 || ! command -v node >/dev/null 2>&1 ||");
+    expect(command).toContain("process.versions.node");
+    expect(command).toContain("v[0]>24||(v[0]===24&&v[1]>=11)");
     expect(command).toContain("https://nodejs.org/dist/");
     expect(command).toContain('export PATH="$HOME/.local/bin:$PATH"');
   });

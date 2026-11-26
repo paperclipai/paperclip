@@ -31,6 +31,7 @@ export const redactEnvForLogs = serverUtils.redactEnvForLogs;
 export const buildPaperclipEnv = serverUtils.buildPaperclipEnv;
 export const agentNodeEnvDefault = serverUtils.agentNodeEnvDefault;
 export const applyAgentNodeEnvDefault = serverUtils.applyAgentNodeEnvDefault;
+export const buildRuntimeToolsEnv = serverUtils.buildRuntimeToolsEnv;
 export const isPaperclipRuntimeEnvKey = serverUtils.isPaperclipRuntimeEnvKey;
 export const isForbiddenConfigEnvKey = serverUtils.isForbiddenConfigEnvKey;
 export const defaultPathForPlatform = serverUtils.defaultPathForPlatform;
