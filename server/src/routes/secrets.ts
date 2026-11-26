@@ -25,12 +25,10 @@ import { authorizationDeniedDetails } from "../services/authorization.js";
 import { accessService } from "../services/access.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { issueService } from "../services/issues.js";
-import {
-  queueIssueAssignmentWakeup,
-  type IssueAssignmentWakeupDeps,
-} from "../services/issue-assignment-wakeup.js";
+import type { IssueAssignmentWakeupDeps } from "../services/issue-assignment-wakeup.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
-import { logger } from "../middleware/logger.js";
+import { notifySecretProposalResolution } from "../services/secret-proposal-notifications.js";
+import { assertCanResolveProposal } from "../services/secret-proposal-authorization.js";
 
 type SecretRoutesDeps = {
   heartbeat?: IssueAssignmentWakeupDeps;
@@ -118,6 +116,16 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
   const runRedactions = createRunSecretRedactionRegistry(db);
   const defaultProvider = getConfiguredSecretProvider();
 
+  async function assertSecretCatalogReadAllowed(req: Parameters<typeof assertBoard>[0], companyId: string) {
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "secrets:read",
+      resource: { type: "company", companyId },
+    });
+    if (decision.allowed) return;
+    throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+  }
+
   function agentSecretContext(req: Parameters<typeof assertBoard>[0]) {
     if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
       throw forbidden("Run-bound agent authentication required");
@@ -168,20 +176,6 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     });
   }
 
-  async function assertCanResolveProposal(req: Parameters<typeof assertBoard>[0], proposal: {
-    kind: string;
-    targetId: string | null;
-  }) {
-    if (proposal.kind === "secret") {
-      assertSecretDefinitionAdmin(req, req.params.companyId as string);
-      return;
-    }
-    const decision = await bindingApprovalDecision(req, proposal);
-    if (decision && !decision.allowed) {
-      throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
-    }
-  }
-
   async function boardProposalView(req: Parameters<typeof assertBoard>[0], proposal: Awaited<ReturnType<typeof proposals.listForBoard>>[number]) {
     if (proposal.status !== "pending") {
       return { ...proposal, viewerCanApprove: false, approveBlockReason: "Proposal is no longer pending" };
@@ -195,49 +189,6 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       viewerCanApprove: decision?.allowed ?? true,
       approveBlockReason: decision && !decision.allowed ? decision.explanation : null,
     };
-  }
-
-  async function notifyProposalResolution(input: {
-    proposal: { originIssueId: string | null; kind: string; proposedName: string | null; configPath: string | null };
-    status: "approved" | "rejected";
-    userId: string;
-    reason?: string | null;
-  }) {
-    if (!input.proposal.originIssueId) return;
-    try {
-      const issue = await issues.getById(input.proposal.originIssueId);
-      if (!issue) return;
-      const subject = input.proposal.kind === "secret"
-        ? `secret proposal \`${input.proposal.proposedName ?? "unnamed"}\``
-        : `binding proposal \`${input.proposal.configPath ?? "unknown"}\``;
-      const reason = input.reason ? `\n\nReason: ${input.reason}` : "";
-      try {
-        await issues.addComment(
-          issue.id,
-          `Secret proposal resolution\n\n- Proposal: ${subject}\n- Status: **${input.status}**${reason}`,
-          { userId: input.userId },
-        );
-      } catch (err) {
-        logger.warn(
-          { err, issueId: issue.id, proposalStatus: input.status },
-          "failed to post secret proposal resolution comment",
-        );
-      }
-      await queueIssueAssignmentWakeup({
-        heartbeat,
-        issue,
-        reason: "secret_proposal_resolved",
-        mutation: `secret_proposal_${input.status}`,
-        contextSource: "secret.proposal.resolution",
-        requestedByActorType: "user",
-        requestedByActorId: input.userId,
-      });
-    } catch (err) {
-      logger.warn(
-        { err, issueId: input.proposal.originIssueId, proposalStatus: input.status },
-        "failed to notify origin issue about secret proposal resolution",
-      );
-    }
   }
 
   router.post("/agents/me/secret-proposals", async (req, res) => {
@@ -257,7 +208,8 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
         })
       : body.kind === "binding"
         ? await proposals.createBinding({ companyId: context.companyId, heartbeatRunId: context.heartbeatRunId }, {
-            secretId: body.secretId, secretProposalId: body.secretProposalId, targetAgentId: body.targetAgentId,
+            secretId: body.secretId, sourceConfigPath: body.sourceConfigPath,
+            secretProposalId: body.secretProposalId, targetAgentId: body.targetAgentId,
             configPath: body.configPath, justification: body.justification, bindingTargetPolicy: "self_and_reports",
           })
         : (() => { throw unprocessable("kind must be secret or binding"); })();
@@ -291,9 +243,13 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     assertCompanyAccess(req, companyId);
     const status = typeof req.query.status === "string" ? req.query.status : null;
     const page = proposalListPage(req.query);
+    if (req.query.order !== undefined && req.query.order !== "created" && req.query.order !== "resolved") {
+      throw unprocessable("order must be created or resolved");
+    }
     const rows = await proposals.listForBoard(companyId, status, {
       limit: page.limit + 1,
       offset: page.offset,
+      order: req.query.order === "resolved" ? "resolved" : "created",
     });
     const hasMore = rows.length > page.limit;
     setProposalPaginationHeaders(res, page, hasMore);
@@ -305,14 +261,27 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     assertCompanySecretWrite(req, companyId);
     const proposal = await proposals.getById(companyId, req.params.id as string);
     if (!proposal) throw notFound("Secret proposal not found");
-    await assertCanResolveProposal(req, proposal);
+    await assertCanResolveProposal({
+      db,
+      actor: req.actor,
+      companyId,
+      proposal,
+      assertSecretDefinitionAdmin: () => assertSecretDefinitionAdmin(req, companyId),
+    });
     const resolvedByUserId = req.actor.userId ?? "board";
     const approved = await proposals.approve(companyId, proposal.id, {
       resolvedByUserId,
       cascade: req.body?.cascade === true,
       overrides: req.body?.overrides,
+      assertCanResolve: (lockedProposal, txDb) => assertCanResolveProposal({
+        db: txDb,
+        actor: req.actor,
+        companyId,
+        proposal: lockedProposal,
+        assertSecretDefinitionAdmin: () => assertSecretDefinitionAdmin(req, companyId),
+      }),
     });
-    await notifyProposalResolution({ proposal, status: "approved", userId: resolvedByUserId });
+    await notifySecretProposalResolution({ proposal, status: "approved", userId: resolvedByUserId, issues, heartbeat });
     res.json(await boardProposalView(req, await proposals.view(approved)));
   });
 
@@ -324,12 +293,25 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     if (!reason) throw unprocessable("Rejection reason is required");
     const existing = await proposals.getById(companyId, req.params.id as string);
     if (!existing) throw notFound("Secret proposal not found");
-    await assertCanResolveProposal(req, existing);
+    await assertCanResolveProposal({
+      db,
+      actor: req.actor,
+      companyId,
+      proposal: existing,
+      assertSecretDefinitionAdmin: () => assertSecretDefinitionAdmin(req, companyId),
+    });
     const resolvedByUserId = req.actor.userId ?? "board";
     const proposal = await proposals.transition(companyId, req.params.id as string, "rejected", {
       resolvedByUserId, reason,
     });
-    await notifyProposalResolution({ proposal: existing, status: "rejected", userId: resolvedByUserId, reason });
+    await notifySecretProposalResolution({
+      proposal: existing,
+      status: "rejected",
+      userId: resolvedByUserId,
+      reason,
+      issues,
+      heartbeat,
+    });
     res.json(await boardProposalView(req, await proposals.view(proposal)));
   });
 
@@ -348,7 +330,10 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
       details: { count: secrets.length },
     });
     res.json({
-      secrets: secrets.map(({ secretId: _secretId, bindingId: _bindingId, configPath: _configPath, ...secret }) => secret),
+      secrets: secrets.map(({ secretId, bindingId: _bindingId, configPath: _configPath, ...secret }) => ({
+        ...secret,
+        secretRef: secretId,
+      })),
     });
   });
 
@@ -605,6 +590,7 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     assertBoardOrAgent(req);
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
+    await assertSecretCatalogReadAllowed(req, companyId);
     const secrets = await svc.list(companyId);
     res.json(secrets.map(({ id, name, key, status }) => ({ id, name, key, status })));
   });
@@ -902,9 +888,16 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     res.json({ ok: true });
   });
 
-  router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {
+  router.post("/companies/:companyId/secrets", (req, _res, next) => {
     const companyId = req.params.companyId as string;
+    if (req.actor.type === "agent") {
+      assertCompanyAccess(req, companyId);
+      throw forbidden("Company secret creation requires a human board operator. Ask the human to enter the value in Settings → Secrets for this company. Do not send secret values in chat or tool calls. You can finish the current conversation response with these secure-entry instructions without claiming that credential setup is complete. If you need a resumable wait, first create a non-governing secure-save acknowledgment with request_human_input with interactionKind=\"confirmation\"; ask only whether secure entry is complete, never ask for the secret value in that card. Wait only on the actual saved request.");
+    }
     assertCompanySecretWrite(req, companyId);
+    next();
+  }, validate(createSecretSchema), async (req, res) => {
+    const companyId = req.params.companyId as string;
 
     const created = await svc.create(
       companyId,
@@ -1133,7 +1126,17 @@ export function secretRoutes(db: Db, deps: SecretRoutesDeps = {}) {
     );
     if (!existing) return;
 
-    const removed = await svc.remove(id);
+    const resolvedByUserId = req.actor.userId ?? "board";
+    const reason = "The referenced secret was deleted.";
+    const removed = await svc.remove(id, {
+      beforeDelete: async (secret) => {
+        const rejected = await proposals.rejectPendingBindingsForSecret(secret.companyId, secret.id, { resolvedByUserId, reason });
+        // Same signal as an ordinary rejection, so the proposing agent continues.
+        for (const proposal of rejected) {
+          await notifySecretProposalResolution({ proposal, status: "rejected", userId: resolvedByUserId, reason, issues, heartbeat });
+        }
+      },
+    });
     if (!removed) {
       res.status(404).json({ error: "Secret not found" });
       return;

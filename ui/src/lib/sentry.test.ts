@@ -1,0 +1,866 @@
+// @vitest-environment jsdom
+
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * Tests for the browser Sentry gate. Unlike the server gate,
+ * `@sentry/browser` is a real development dependency of this package (see
+ * the constraint in the plan), so most tests here run against the true SDK
+ * instead of a stand-in.
+ *
+ * The module holds module-scoped state (the readiness promise, the client
+ * handle), so each test resets the module registry and imports a fresh copy.
+ */
+
+const DSN = "https://public@o0.ingest.sentry.io/1";
+
+/**
+ * `initBrowserErrorMonitoring` wraps `window.fetch` once per module instance.
+ * Each fresh import is a new instance, so remove the current instance's
+ * wrapper before the module registry resets. Otherwise a later test inherits
+ * stacked wrappers and wrapper tags. A `fetch` stub that a test installed
+ * itself is not a wrapper, so it stays in place.
+ */
+async function resetFetchDiagnostics() {
+  const diagnostics = await import("./fetch-rejection-origin");
+  diagnostics.__resetFetchRejectionDiagnostics();
+}
+
+async function importFreshSentry() {
+  await resetFetchDiagnostics();
+  vi.resetModules();
+  return await import("./sentry");
+}
+
+/**
+ * Register a fake `@sentry/browser` module for the next dynamic import. Used
+ * by the tests that only care about the call the module makes into the SDK,
+ * not the shape of a captured event.
+ *
+ * `init` and `setClient` both write one shared `attachedClient` variable —
+ * the real SDK's `Sentry.init` and `Sentry.getCurrentScope().setClient` both
+ * mutate the same module-global scope, not a value scoped to one caller. A
+ * race that lets a stale `setClient(undefined)` land after a newer
+ * `Sentry.init` needs a mock that tracks this shared state to catch it —
+ * two mocks that record calls independently cannot see the clobber.
+ */
+function mockSentryPackage() {
+  let nextClientId = 0;
+  let attachedClient: { id: string; close: (timeout?: number) => Promise<boolean> } | null = null;
+
+  // One shared `close` mock, attached to every client `init` creates. The
+  // fix reads the client with `getClient()` and calls `client.close()`
+  // directly, so the mocked client — not the mocked module — needs the
+  // `close` method a test can hold open or reject.
+  const close = vi.fn(async () => true);
+  const init = vi.fn((_options: Record<string, unknown>) => {
+    attachedClient = { id: `client-${nextClientId++}`, close };
+  });
+  const captureException = vi.fn(() => (attachedClient ? "event-id" : undefined));
+  const getClient = vi.fn(() => attachedClient ?? undefined);
+  const setClient = vi.fn((client: typeof attachedClient | undefined) => {
+    attachedClient = client ?? null;
+  });
+  const getCurrentScope = vi.fn(() => ({ setClient }));
+
+  vi.doMock("@sentry/browser", () => ({ init, captureException, close, getClient, getCurrentScope }));
+
+  return {
+    init,
+    captureException,
+    close,
+    getClient,
+    getCurrentScope,
+    setClient,
+    /** The `id` of whichever client `init`/`setClient` last attached, or `null` if none is. */
+    attachedClientId: () => attachedClient?.id ?? null,
+  };
+}
+
+/**
+ * Hold a mocked `close()` call open until the test releases it. Returns the
+ * release function. Used to put a teardown mid-flight without a second,
+ * truly concurrent dynamic `import()` of the mocked `@sentry/browser` module
+ * — Vitest does not guarantee two in-flight `import()` calls for one mocked
+ * specifier both resolve against the same mock instance, so a test must
+ * never rely on that to race two sign-ins.
+ */
+function holdCloseOpen(mocks: ReturnType<typeof mockSentryPackage>): () => void {
+  let release = () => {};
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  mocks.close.mockImplementationOnce(async () => {
+    await gate;
+    return true;
+  });
+  return release;
+}
+
+afterEach(async () => {
+  vi.restoreAllMocks();
+  vi.doUnmock("@sentry/browser");
+  await resetFetchDiagnostics();
+});
+
+// A representative default-integration list, shaped like the array
+// `@sentry/browser@10.71.0`'s `getDefaultIntegrations()` returns. Recorded
+// 2026-08-25 with `node -e` against the published package.
+const DEFAULT_INTEGRATION_NAMES = [
+  "InboundFilters",
+  "FunctionToString",
+  "ConversationId",
+  "BrowserApiErrors",
+  "Breadcrumbs",
+  "GlobalHandlers",
+  "LinkedErrors",
+  "Dedupe",
+  "HttpContext",
+  "CultureContext",
+  "BrowserSession",
+];
+
+describe("initBrowserErrorMonitoring", () => {
+  it("initializes with the DSN it receives", async () => {
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring } = await importFreshSentry();
+
+    await initBrowserErrorMonitoring(DSN, "staging");
+
+    expect(mocks.init).toHaveBeenCalledTimes(1);
+    expect(mocks.init.mock.calls[0][0]).toMatchObject({ dsn: DSN, environment: "staging" });
+  });
+
+  it("a second call starts no second client", async () => {
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring } = await importFreshSentry();
+
+    await initBrowserErrorMonitoring(DSN);
+    await initBrowserErrorMonitoring(DSN);
+
+    expect(mocks.init).toHaveBeenCalledTimes(1);
+  });
+
+  it("wraps fetch once, and a fresh test import starts from the page's own fetch", async () => {
+    const pageFetch = window.fetch;
+    mockSentryPackage();
+    const first = await importFreshSentry();
+    await first.initBrowserErrorMonitoring(DSN);
+    await first.initBrowserErrorMonitoring(DSN);
+    const wrapped = window.fetch;
+    expect(wrapped).not.toBe(pageFetch);
+    const { readFetchWrapperState } = await import("./fetch-rejection-origin");
+    expect(readFetchWrapperState()).not.toBe("after");
+
+    mockSentryPackage();
+    const second = await importFreshSentry();
+    expect(window.fetch).toBe(pageFetch);
+    await second.initBrowserErrorMonitoring(DSN);
+    const diagnostics = await import("./fetch-rejection-origin");
+    expect(diagnostics.readFetchWrapperState()).not.toBe("after");
+    expect(diagnostics.readFetchWrapperState()).not.toBe("both");
+  });
+});
+
+describe("teardownBrowserErrorMonitoring", () => {
+  it("is a no-op when monitoring never started", async () => {
+    const { teardownBrowserErrorMonitoring } = await importFreshSentry();
+
+    await expect(teardownBrowserErrorMonitoring()).resolves.toBeUndefined();
+  });
+
+  it("closes the running client and detaches it from the current scope", async () => {
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, teardownBrowserErrorMonitoring } = await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+
+    await teardownBrowserErrorMonitoring();
+
+    expect(mocks.close).toHaveBeenCalledTimes(1);
+    expect(mocks.setClient).toHaveBeenCalledWith(undefined);
+  });
+
+  it("detaches the client from the current scope before close() settles", async () => {
+    // The client stays attached, and stays enabled, for the whole `close()`
+    // call — a signed-out page can still reach it until detach runs. Hold
+    // `close()` open and assert the detach already ran while it is still
+    // pending, so a regression back to close-then-detach fails this test.
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, teardownBrowserErrorMonitoring } = await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+    const releaseClose = holdCloseOpen(mocks);
+
+    const teardownDone = teardownBrowserErrorMonitoring();
+    // Give the queued teardown operation a few turns of the microtask queue
+    // to run up to its `await client.close()` call, without waiting for
+    // `close()` itself to settle — the gate above holds that call open.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mocks.setClient).toHaveBeenCalledWith(undefined);
+    expect(mocks.close).toHaveBeenCalledTimes(1);
+
+    releaseClose();
+    await expect(teardownDone).resolves.toBeUndefined();
+  });
+
+  it("detaches the client from the current scope even when close() rejects, and still resolves", async () => {
+    const mocks = mockSentryPackage();
+    mocks.close.mockRejectedValueOnce(new Error("close timed out"));
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { initBrowserErrorMonitoring, teardownBrowserErrorMonitoring } = await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+
+    // The returned promise must resolve, not reject: SentryGate.tsx discards
+    // it with a bare `void` call, so a rejection would surface as an
+    // unhandled promise rejection in the browser.
+    await expect(teardownBrowserErrorMonitoring()).resolves.toBeUndefined();
+
+    expect(mocks.setClient).toHaveBeenCalledWith(undefined);
+    expect(consoleErrorSpy).toHaveBeenCalled();
+  });
+
+  it("stops captureBrowserException from reaching the client", async () => {
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, teardownBrowserErrorMonitoring, captureBrowserException } =
+      await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+    await teardownBrowserErrorMonitoring();
+
+    captureBrowserException(new Error("boom after sign-out"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mocks.captureException).not.toHaveBeenCalled();
+  });
+
+  it("a call to initBrowserErrorMonitoring after teardown starts a fresh client", async () => {
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, teardownBrowserErrorMonitoring } = await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+    await teardownBrowserErrorMonitoring();
+
+    await initBrowserErrorMonitoring(DSN);
+
+    expect(mocks.init).toHaveBeenCalledTimes(2);
+  });
+
+  it("a sign-back-in that overlaps a still-in-flight teardown ends up monitored, not silently disabled", async () => {
+    // A sign-out whose `Sentry.close()` call is still in flight when the
+    // browser signs back in. `Sentry.init` and `Sentry.getCurrentScope().
+    // setClient` both mutate ONE shared scope, so the old teardown's
+    // `setClient(undefined)` call, if it lands after the new sign-in's
+    // `Sentry.init`, would detach the NEW client rather than the old one —
+    // silently disabling monitoring for the session that just signed in.
+    // The fix serializes the two: the old teardown's close-and-detach must
+    // finish in full before the new sign-in's `Sentry.init` runs.
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, teardownBrowserErrorMonitoring, captureBrowserException } =
+      await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+    expect(mocks.init).toHaveBeenCalledTimes(1);
+    const clientAId = mocks.attachedClientId();
+    expect(clientAId).not.toBeNull();
+
+    const releaseClose = holdCloseOpen(mocks);
+    const teardownDone = teardownBrowserErrorMonitoring();
+    // The sign-back-in's own `Sentry.init` is now queued behind the
+    // in-flight teardown, so its returned promise settles only once the
+    // gate below releases — await it after releasing, not before.
+    const signInBDone = initBrowserErrorMonitoring(DSN);
+
+    releaseClose();
+    await teardownDone;
+    await signInBDone;
+
+    expect(mocks.close).toHaveBeenCalledTimes(1);
+    expect(mocks.init).toHaveBeenCalledTimes(2);
+    // The old teardown's close-and-detach ran to completion BEFORE the new
+    // sign-in's `Sentry.init`, so the client left attached is the new one —
+    // not `undefined`, and not the old client A ever reused.
+    const clientBId = mocks.attachedClientId();
+    expect(clientBId).not.toBeNull();
+    expect(clientBId).not.toBe(clientAId);
+
+    captureBrowserException(new Error("boom after the race"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mocks.captureException).toHaveBeenCalledWith(expect.any(Error));
+  });
+});
+
+describe("captureBrowserException", () => {
+  it("does not throw when the gate is closed", async () => {
+    const { captureBrowserException } = await importFreshSentry();
+
+    expect(() => captureBrowserException(new Error("boom"))).not.toThrow();
+  });
+
+  it("reaches the client once the gate opens", async () => {
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, captureBrowserException } = await importFreshSentry();
+
+    await initBrowserErrorMonitoring(DSN);
+    captureBrowserException(new Error("boom"));
+    // captureBrowserException resolves asynchronously; give its internal
+    // promise a turn to settle before asserting.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mocks.captureException).toHaveBeenCalledWith(expect.any(Error));
+  });
+
+  it("sends sanitized per-error context captured before the queue runs", async () => {
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, captureBrowserException } = await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+    document.documentElement.classList.add("translated-ltr");
+    const error = new DOMException("insertBefore failed", "NotFoundError");
+    captureBrowserException(error, {
+      boundary: "route", componentStack: "\n    at TaskDetail (https://tenant.example/tasks/private-id?token=private-value:1:2)",
+    });
+    document.documentElement.classList.remove("translated-ltr");
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocks.captureException).toHaveBeenCalledWith(error, {
+      tags: { react_error_boundary: "route" },
+      contexts: {
+        react: { componentStack: "\n    at TaskDetail" },
+        browser_state: expect.objectContaining({ translation_marker: true }),
+        page_lifecycle: expect.objectContaining({ pagehide_seen: false }),
+      },
+    });
+    expect(JSON.stringify(mocks.captureException.mock.calls)).not.toContain("private-value");
+    captureBrowserException(new Error("unrelated error"));
+    // Initialization is idempotent and provides a barrier on the same queue.
+    await initBrowserErrorMonitoring(DSN);
+    expect(mocks.captureException).toHaveBeenLastCalledWith(expect.any(Error));
+  });
+
+  it("still captures the original error if component diagnostics fail", async () => {
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, captureBrowserException } = await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+    const error = new Error("original error");
+    expect(() => captureBrowserException(error, {
+      boundary: "app",
+      get componentStack(): string { throw new Error("diagnostic failure"); },
+    })).not.toThrow();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(mocks.captureException).toHaveBeenCalledWith(error);
+  });
+});
+
+describe("captureQueryException", () => {
+  it("does not throw when the gate is closed", async () => {
+    const { captureQueryException } = await importFreshSentry();
+
+    expect(() => captureQueryException(new Error("boom"), ["issues"])).not.toThrow();
+  });
+
+  it("groups each failing query's server error by status and query name", async () => {
+    const mocks = mockSentryPackage();
+    const { initBrowserErrorMonitoring, captureQueryException } = await importFreshSentry();
+    await initBrowserErrorMonitoring(DSN);
+    const issuesError = Object.assign(new Error("Internal server error"), { status: 500 });
+    const agentsError = Object.assign(new Error("Internal server error"), { status: 500 });
+
+    captureQueryException(issuesError, ["issues", "company-uuid", "detail", "PAP-1"]);
+    captureQueryException(agentsError, ["agents", "company-uuid"]);
+    await initBrowserErrorMonitoring(DSN);
+
+    expect(mocks.captureException).toHaveBeenNthCalledWith(1, issuesError, {
+      tags: { query_kind: "issues", api_status: "500" },
+      fingerprint: ["api-error", "500", "issues"],
+    });
+    expect(mocks.captureException).toHaveBeenNthCalledWith(2, agentsError, {
+      tags: { query_kind: "agents", api_status: "500" },
+      fingerprint: ["api-error", "500", "agents"],
+    });
+    expect(JSON.stringify(mocks.captureException.mock.calls)).not.toMatch(/company-uuid|PAP-1/);
+  });
+});
+
+describe("browser error diagnostics with the real SDK", () => {
+  it("emits bounded component and translation context without page data or scope leakage", async () => {
+    const Sentry = await vi.importActual<typeof import("@sentry/browser")>("@sentry/browser");
+    const events: Array<Record<string, unknown>> = [];
+    vi.doMock("@sentry/browser", () => ({
+      ...Sentry,
+      init: (options: Parameters<typeof Sentry.init>[0]) => Sentry.init({
+        ...options,
+        transport: () => ({ send: async () => ({}), flush: async () => true }),
+        beforeSend: async (event, hint) => {
+          const enriched = await options?.beforeSend?.(event, hint) ?? event;
+          events.push(enriched as unknown as Record<string, unknown>);
+          return enriched;
+        },
+      }),
+    }));
+    const gate = await importFreshSentry();
+    await gate.initBrowserErrorMonitoring(DSN, "staging");
+    const previousPath = window.location.pathname + window.location.search;
+    window.history.replaceState({}, "", "/tasks/sentry-fixture-secret-task-7fa83e?token=private-capability");
+    document.documentElement.classList.add("translated-ltr", "private-customer-class");
+    try {
+      gate.captureBrowserException(new DOMException("insertBefore failed", "NotFoundError"), {
+        boundary: "route",
+        componentStack: "\n    at TaskDetail (https://tenant.example/tasks/sentry-fixture-secret-task-7fa83e?token=private-capability:3:4)",
+      });
+      document.documentElement.classList.remove("translated-ltr");
+      gate.captureBrowserException(new Error("unrelated failure"));
+      await gate.initBrowserErrorMonitoring(DSN, "staging");
+      await Sentry.flush(2000);
+      expect(events).toHaveLength(2);
+      expect(events[0]).toMatchObject({
+        environment: "staging",
+        tags: { react_error_boundary: "route" },
+        contexts: {
+          react: { componentStack: "\n    at TaskDetail" },
+          browser_state: { translation_marker: true },
+        },
+      });
+      expect(events[1]).not.toHaveProperty("contexts.react");
+      expect(events[1]).toHaveProperty("contexts.browser_state.translation_marker", false);
+      expect(events[1]).not.toHaveProperty("tags.react_error_boundary");
+      for (const event of events) {
+        expect(event).not.toHaveProperty("request");
+        expect(event.breadcrumbs).toBeUndefined();
+      }
+      for (const secret of ["tenant.example", "sentry-fixture-secret-task-7fa83e", "private-capability", "private-customer-class"]) {
+        expect(JSON.stringify(events)).not.toContain(secret);
+      }
+      await gate.teardownBrowserErrorMonitoring();
+      gate.captureBrowserException(new Error("after sign-out"), { boundary: "app", componentStack: "\n    at TaskDetail" });
+      await gate.teardownBrowserErrorMonitoring();
+      expect(events).toHaveLength(2);
+    } finally {
+      await gate.teardownBrowserErrorMonitoring();
+      document.documentElement.classList.remove("translated-ltr", "private-customer-class");
+      window.history.replaceState({}, "", previousPath);
+    }
+  });
+});
+
+describe("unhandled rejection attribution through the gate", () => {
+  it("pairs a dispatched undefined rejection with its event shape and page lifecycle", async () => {
+    const Sentry = await vi.importActual<typeof import("@sentry/browser")>("@sentry/browser");
+    const events: Array<Record<string, unknown>> = [];
+    vi.doMock("@sentry/browser", () => ({
+      ...Sentry,
+      init: (options: Parameters<typeof Sentry.init>[0]) => Sentry.init({
+        ...options,
+        transport: () => ({ send: async () => ({}), flush: async () => true }),
+        beforeSend: async (event, hint) => {
+          const enriched = await options?.beforeSend?.(event, hint) ?? event;
+          events.push(enriched as unknown as Record<string, unknown>);
+          return enriched;
+        },
+      }),
+    }));
+    const gate = await importFreshSentry();
+    // The production init path registers the snapshot listener before the SDK handler.
+    await gate.initBrowserErrorMonitoring(DSN, "staging");
+    try {
+      window.dispatchEvent(new Event("pagehide"));
+      const event = new Event("unhandledrejection");
+      Object.defineProperty(event, "reason", { value: undefined });
+      Object.defineProperty(event, "promise", { value: Promise.resolve() });
+      window.dispatchEvent(event);
+      await Sentry.flush(2000);
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        tags: { browser_rejection_kind: "undefined", browser_rejection_event: "synthetic" },
+        contexts: {
+          rejection_event: { trusted: false, promise: "native" },
+          page_lifecycle: { pagehide_seen: true, last_transition: "pagehide", since_transition: "<1s" },
+        },
+        exception: { values: [{ type: "UnhandledRejection" }] },
+      });
+      expect(events[0]).not.toHaveProperty("request");
+    } finally {
+      window.dispatchEvent(new Event("pageshow"));
+      await gate.teardownBrowserErrorMonitoring();
+    }
+  });
+});
+
+/**
+ * Call the `integrations` option with the given default list. The real
+ * `@sentry/browser` option type allows `integrations` to be an array instead
+ * of a function, so this guard narrows it before the call — this gate always
+ * builds a function, never an array, but the type does not know that.
+ */
+function resolveIntegrations(
+  options: ReturnType<typeof import("./sentry")["buildBrowserSentryInitOptions"]>,
+  defaults: Array<{ name: string }>,
+) {
+  if (typeof options.integrations !== "function") {
+    throw new Error("expected buildBrowserSentryInitOptions to set a function, not an array");
+  }
+  return options.integrations(defaults);
+}
+
+describe("buildBrowserSentryInitOptions", () => {
+  it("keeps the loaded bundle's release when the server version changes", async () => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    vi.stubGlobal("__PAPERCLIP_BUILD_COMMIT__", commit);
+    vi.stubEnv("PAPERCLIP_BUILD_COMMIT", "abcdef0123456789abcdef0123456789abcdef01");
+    try {
+      const { buildBrowserSentryInitOptions } = await importFreshSentry();
+      expect(buildBrowserSentryInitOptions(DSN).release).toBe(commit);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("does not invent a release for an unstamped bundle", async () => {
+    vi.stubGlobal("__PAPERCLIP_BUILD_COMMIT__", null);
+    try {
+      const { buildBrowserSentryInitOptions } = await importFreshSentry();
+      expect(buildBrowserSentryInitOptions(DSN).release).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("sets the recorded built-in privacy options", async () => {
+    const { buildBrowserSentryInitOptions } = await importFreshSentry();
+
+    const options = buildBrowserSentryInitOptions(DSN);
+
+    expect(options.sendDefaultPii).toBe(false);
+    expect(options.tracesSampleRate).toBe(0);
+  });
+
+  it("ignores only Firefox for iOS's injected-script errors", async () => {
+    const { buildBrowserSentryInitOptions } = await importFreshSentry();
+
+    expect(buildBrowserSentryInitOptions(DSN).ignoreErrors).toEqual(["__firefox__"]);
+  });
+
+  it("names the plugin whose blob module raised an error, without its URL", async () => {
+    const { buildBrowserSentryInitOptions } = await importFreshSentry();
+    const origins = await import("./plugin-module-origins");
+    const blobUrl = "blob:https://tenant.example/0b5f1f4e-module";
+    origins.rememberPluginModuleUrl(blobUrl, "acme.dashboard");
+    const beforeSend = buildBrowserSentryInitOptions(DSN).beforeSend!;
+    const eventFor = (filename: string) => ({
+      exception: { values: [{
+        type: "AbortError",
+        mechanism: { type: "auto.browser.global_handlers.onunhandledrejection", handled: false },
+        stacktrace: { frames: [{ filename: "/assets/index.js" }, { filename, abs_path: filename }] },
+      }] },
+    });
+    const reason = new DOMException("signal is aborted without reason", "AbortError");
+
+    const plugin = await beforeSend(eventFor(blobUrl) as never, { originalException: reason });
+    expect(plugin?.tags).toMatchObject({ browser_plugin_module: "acme.dashboard" });
+    expect(JSON.stringify(plugin?.tags)).not.toContain("blob:");
+
+    const unmapped = await beforeSend(eventFor("blob:https://tenant.example/other") as never, { originalException: reason });
+    expect(unmapped?.tags).toMatchObject({ browser_plugin_module: "unmapped" });
+
+    const host = await beforeSend(eventFor("/assets/other.js") as never, { originalException: reason });
+    expect(host?.tags).not.toHaveProperty("browser_plugin_module");
+  });
+
+  it("adds diagnostics without a transaction filter", async () => {
+    const { buildBrowserSentryInitOptions } = await importFreshSentry();
+
+    const options = buildBrowserSentryInitOptions(DSN);
+
+    expect(options.beforeSend).toBeTypeOf("function");
+    expect(options.beforeSendTransaction).toBeUndefined();
+  });
+
+  it("the resolved integration list holds no HttpContext integration and no Breadcrumbs integration", async () => {
+    const { buildBrowserSentryInitOptions } = await importFreshSentry();
+
+    const options = buildBrowserSentryInitOptions(DSN);
+    const resolved = resolveIntegrations(options, DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
+    const names = resolved.map((i) => i.name);
+
+    expect(names).not.toContain("HttpContext");
+    expect(names).not.toContain("Breadcrumbs");
+  });
+
+  it("the resolved integration list keeps GlobalHandlers, BrowserApiErrors, Dedupe, and LinkedErrors", async () => {
+    const { buildBrowserSentryInitOptions } = await importFreshSentry();
+
+    const options = buildBrowserSentryInitOptions(DSN);
+    const resolved = resolveIntegrations(options, DEFAULT_INTEGRATION_NAMES.map((name) => ({ name })));
+    const names = resolved.map((i) => i.name);
+
+    expect(names).toEqual(
+      expect.arrayContaining(["GlobalHandlers", "BrowserApiErrors", "Dedupe", "LinkedErrors"]),
+    );
+  });
+});
+
+/**
+ * Tests against the real `@sentry/browser` SDK. `@sentry/browser` is not an
+ * optional dependency here — it is a real, always-installed development
+ * dependency of this package (see the module comment in `sentry.ts`) — so
+ * these tests run unconditionally.
+ */
+describe("captured event shape against the real @sentry/browser SDK", () => {
+  /**
+   * Initialize the real SDK with this module's exact options, plus a
+   * transport stub so no event leaves the test process, plus `beforeSend`
+   * so the test can inspect the resolved event after the production diagnostic
+   * hook runs, before it would have been sent.
+   */
+  async function initRealSentryForTest(
+    onEvent: (event: Record<string, unknown>) => void,
+    environment?: string | null,
+  ) {
+    const { buildBrowserSentryInitOptions } = await importFreshSentry();
+    const Sentry = await import("@sentry/browser");
+    const options = buildBrowserSentryInitOptions(DSN, environment);
+    Sentry.init({
+      ...options,
+      transport: () => ({ send: async () => ({}), flush: async () => true }),
+      beforeSend: async (event, hint) => {
+        const enriched = options.beforeSend ? await options.beforeSend(event, hint) : event;
+        if (enriched) onEvent(enriched as unknown as Record<string, unknown>);
+        return enriched;
+      },
+    });
+    return Sentry;
+  }
+
+  it("enriches an undefined global rejection without page data or suppression", async () => {
+    let captured: Record<string, unknown> | null = null;
+    const Sentry = await initRealSentryForTest((event) => { captured = event; }, "staging");
+    const previousHandler = window.onunhandledrejection;
+    try {
+      expect(previousHandler).toBeTypeOf("function");
+      document.documentElement.classList.add("translated-ltr", "private-class");
+      window.onunhandledrejection?.call(window, { reason: undefined } as PromiseRejectionEvent);
+      await Sentry.flush(2000);
+      expect(captured).toMatchObject({
+        tags: { browser_rejection_kind: "undefined", browser_build_mode: "development" },
+        contexts: { browser_state: { translation_marker: true } },
+        exception: { values: [{ type: "UnhandledRejection" }] },
+      });
+      expect(captured).not.toHaveProperty("request");
+      expect((captured as unknown as Record<string, unknown>).breadcrumbs).toBeUndefined();
+      expect(JSON.stringify(captured)).not.toContain("private-class");
+    } finally {
+      document.documentElement.classList.remove("translated-ltr", "private-class");
+      await Sentry.close();
+    }
+  });
+
+  it("drops only the rejection carrying the app's own request cancellation", async () => {
+    const captured: Record<string, unknown>[] = [];
+    const Sentry = await initRealSentryForTest((event) => { captured.push(event); });
+    const { intentionalAbortReason } = await import("./intentional-abort");
+    try {
+      window.onunhandledrejection?.call(window, { reason: intentionalAbortReason() } as PromiseRejectionEvent);
+      await Sentry.flush(2000);
+      expect(captured).toEqual([]);
+
+      window.onunhandledrejection?.call(window, {
+        reason: new DOMException("signal is aborted without reason", "AbortError"),
+      } as PromiseRejectionEvent);
+      await Sentry.flush(2000);
+      expect(captured).toHaveLength(1);
+      expect(captured[0]).toMatchObject({ exception: { values: [{ type: "AbortError" }] } });
+    } finally {
+      await Sentry.close();
+    }
+  });
+
+  it("tags a stackless network rejection with who started the request, and no URL", async () => {
+    const captured: Record<string, unknown>[] = [];
+    const Sentry = await initRealSentryForTest((event) => { captured.push(event); });
+    const diagnostics = await import("./fetch-rejection-origin");
+    const previousFetch = window.fetch;
+    const failure = new TypeError("Failed to fetch");
+    failure.stack = "TypeError: Failed to fetch";
+    window.fetch = Function.prototype.call.bind(() => Promise.reject(failure), null) as unknown as typeof fetch;
+    try {
+      diagnostics.startFetchRejectionDiagnostics(window);
+      await expect(window.fetch("/api/companies/private-company-id/issues")).rejects.toBe(failure);
+
+      window.onunhandledrejection?.call(window, { reason: failure } as PromiseRejectionEvent);
+      // A different value, so the SDK's Dedupe integration keeps both events.
+      window.onunhandledrejection?.call(window, { reason: new TypeError("Load failed") } as PromiseRejectionEvent);
+      await Sentry.flush(2000);
+      expect(captured).toHaveLength(2);
+      expect(captured[0]).toMatchObject({
+        tags: {
+          browser_rejection_kind: "object",
+          browser_fetch_initiator: "other",
+          browser_fetch_wrapper: "none",
+        },
+        exception: { values: [{ type: "TypeError", value: "Failed to fetch" }] },
+      });
+      expect(captured[1]).toMatchObject({ tags: { browser_fetch_initiator: "unrecorded" } });
+      expect(JSON.stringify(captured)).not.toContain("private-company-id");
+    } finally {
+      diagnostics.__resetFetchRejectionDiagnostics();
+      window.fetch = previousFetch;
+      await Sentry.close();
+    }
+  });
+
+  describe("posthog-js request timeouts", () => {
+    function postHogTimeoutError(message = "PostHog request timed out after 3000ms"): Error {
+      const error = new Error(message);
+      Object.defineProperty(error, "name", { value: "AbortError" });
+      return error;
+    }
+
+    async function initCountingSentry() {
+      const { buildBrowserSentryInitOptions } = await importFreshSentry();
+      const Sentry = await import("@sentry/browser");
+      const send = vi.fn(async () => ({}));
+      Sentry.init({
+        ...buildBrowserSentryInitOptions(DSN, "production"),
+        transport: () => ({ send, flush: async () => true }),
+      });
+      const sentEvents = () => send.mock.calls.map((call: unknown[]) => JSON.stringify(call[0]))
+        .filter((envelope) => envelope.includes("\"type\":\"event\""));
+      return { Sentry, sentEvents };
+    }
+
+    function rejectUnhandled(reason: unknown) {
+      window.onunhandledrejection?.call(window, { reason } as PromiseRejectionEvent);
+    }
+
+    it("drops posthog-js's own timeout when it escapes as an unhandled rejection", async () => {
+      const { Sentry, sentEvents } = await initCountingSentry();
+      try {
+        rejectUnhandled(postHogTimeoutError());
+        rejectUnhandled(postHogTimeoutError("PostHog request timed out"));
+        await Sentry.flush(2000);
+        expect(sentEvents()).toHaveLength(0);
+      } finally {
+        await Sentry.close();
+      }
+    });
+
+    it.each([
+      ["another AbortError", () => Object.assign(new Error("The user aborted a request."), { name: "AbortError" })],
+      ["the same text on a plain Error", () => new Error("PostHog request timed out after 3000ms")],
+      ["a string reason with the same text", () => "PostHog request timed out after 3000ms"],
+    ])("still reports %s", async (_label, makeReason) => {
+      const { Sentry, sentEvents } = await initCountingSentry();
+      try {
+        rejectUnhandled(makeReason());
+        await Sentry.flush(2000);
+        expect(sentEvents()).toHaveLength(1);
+      } finally {
+        await Sentry.close();
+      }
+    });
+
+    it("still reports the same error when Paperclip code captures it", async () => {
+      const { Sentry, sentEvents } = await initCountingSentry();
+      try {
+        Sentry.captureException(postHogTimeoutError());
+        await Sentry.flush(2000);
+        expect(sentEvents()).toHaveLength(1);
+      } finally {
+        await Sentry.close();
+      }
+    });
+  });
+
+  it.each([
+    ["staging", "staging"],
+    ["production", "production"],
+    [null, "production"],
+    [undefined, "production"],
+  ])("emits environment %s as %s without page context", async (environment, expected) => {
+    let captured: Record<string, unknown> | null = null;
+    const Sentry = await initRealSentryForTest((event) => { captured = event; }, environment);
+    try {
+      Sentry.captureException(new Error("environment attribution check"));
+      await Sentry.flush(2000);
+      expect(captured).toMatchObject({ environment: expected });
+      expect(captured).not.toHaveProperty("request");
+      expect((captured as unknown as Record<string, unknown>).breadcrumbs).toBeUndefined();
+    } finally {
+      await Sentry.close();
+    }
+  });
+
+  it("attaches the bundle release to an emitted event without page context", async () => {
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    vi.stubGlobal("__PAPERCLIP_BUILD_COMMIT__", commit);
+    try {
+      let captured: Record<string, unknown> | null = null;
+      const Sentry = await initRealSentryForTest((event) => { captured = event; });
+      Sentry.captureException(new Error("bundle attribution check"));
+      await Sentry.flush(2000);
+      expect(captured).toMatchObject({ release: commit });
+      expect(captured).not.toHaveProperty("request");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("an event from a page URL that holds a test capability value carries no request URL, no query string, and no referrer", async () => {
+    window.history.pushState({}, "", "/dashboard?token=test-capability-value");
+    Object.defineProperty(document, "referrer", {
+      value: "https://from.example/previous-page",
+      configurable: true,
+    });
+    let captured: Record<string, unknown> | null = null;
+    const Sentry = await initRealSentryForTest((event) => {
+      captured = event;
+    });
+
+    Sentry.captureException(new Error("boom"));
+    await Sentry.flush(2000);
+
+    expect(captured).not.toBeNull();
+    // `HttpContext` is the only default integration that writes
+    // `event.request`. With it removed, the field never appears.
+    expect((captured as unknown as Record<string, unknown>).request).toBeUndefined();
+  });
+
+  it.each([
+    ["TypeError", "undefined is not an object (evaluating 'window.__firefox__.reader')"],
+    ["ReferenceError", "Can't find variable: __firefox__"],
+  ])("drops a global %s from Firefox for iOS's injected scripts and keeps the app's own errors", async (type, message) => {
+    const captured: Array<Record<string, unknown>> = [];
+    const Sentry = await initRealSentryForTest((event) => { captured.push(event); });
+    try {
+      const injected = type === "TypeError" ? new TypeError(message) : new ReferenceError(message);
+      window.onerror?.call(window, `${type}: ${message}`, "https://example.test/MYB/decisions", 1, 19, injected);
+      window.onerror?.call(window, "TypeError: app failure", "https://example.test/assets/index.js", 1, 1, new TypeError("app failure"));
+      await Sentry.flush(2000);
+      expect(captured.map((event) => (event.exception as { values: Array<{ value: string }> }).values[0]?.value))
+        .toEqual(["app failure"]);
+    } finally {
+      await Sentry.close();
+    }
+  });
+
+  it("an event captured after a console call and a fetch call carries no breadcrumb", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn(async () => new Response("ok")) as unknown as typeof fetch;
+    let captured: Record<string, unknown> | null = null;
+    const Sentry = await initRealSentryForTest((event) => {
+      captured = event;
+    });
+
+    // eslint-disable-next-line no-console
+    console.warn("a console call the Breadcrumbs integration would otherwise record");
+    await fetch("/api/probe?token=test-capability-value");
+    Sentry.captureException(new Error("boom"));
+    await Sentry.flush(2000);
+
+    globalThis.fetch = originalFetch;
+    expect(captured).not.toBeNull();
+    expect((captured as unknown as Record<string, unknown>).breadcrumbs).toBeUndefined();
+  });
+});

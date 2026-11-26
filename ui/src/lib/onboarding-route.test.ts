@@ -8,7 +8,6 @@ import {
   shouldRedirectCompanylessRouteToOnboarding,
   shouldRouteAgentlessCompanyToOnboarding,
   ONBOARDING_AGENT_STEP,
-  ONBOARDING_MISSION_STEP,
 } from "./onboarding-route";
 
 describe("isOnboardingPath", () => {
@@ -42,7 +41,7 @@ describe("resolveRouteOnboardingOptions", () => {
         companyPrefix: "pap",
         companies: [{ id: "company-1", issuePrefix: "PAP" }],
       }),
-    ).toEqual({ initialStep: 2, companyId: "company-1" });
+    ).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "company-1" });
   });
 
   it("falls back to company creation when the prefixed company is missing", () => {
@@ -152,7 +151,7 @@ describe("companyPrefixFromOnboardingPath", () => {
         companyPrefix: companyPrefixFromOnboardingPath(pathname),
         companies,
       }),
-    ).toEqual({ initialStep: 2, companyId: "c1" });
+    ).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
   });
 });
 
@@ -170,7 +169,7 @@ describe("navigating away from a company's onboarding route", () => {
       companyPrefix: companyPrefixFromOnboardingPath("/PC1/onboarding"),
       companies,
     });
-    expect(onCompanyRoute).toEqual({ initialStep: 2, companyId: "c1" });
+    expect(onCompanyRoute).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
 
     const afterNavigating = resolveRouteOnboardingOptions({
       pathname: "/onboarding",
@@ -226,6 +225,29 @@ describe("shouldRouteAgentlessCompanyToOnboarding", () => {
     ).toBe(false);
   });
 
+  it("does not trust a cached empty list while it is being refreshed", () => {
+    // The wizard hires the first agent and lands on the first task. A
+    // dashboard reached from there can still hold the empty list it cached
+    // before the hire, with the refetch in flight — offering on it reopens
+    // "Create your first agent" for a company that just got one.
+    expect(
+      shouldRouteAgentlessCompanyToOnboarding({
+        pathname: "/PC1/dashboard",
+        agentsLoaded: true,
+        agentsRefreshing: true,
+        agentCount: 0,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRouteAgentlessCompanyToOnboarding({
+        pathname: "/PC1/dashboard",
+        agentsLoaded: true,
+        agentsRefreshing: false,
+        agentCount: 0,
+      }),
+    ).toBe(true);
+  });
+
   it("does not redirect onto onboarding from onboarding", () => {
     // The loop: finish the wizard without creating an agent, and a redirect
     // that ignored the current path would send you straight back in.
@@ -244,41 +266,51 @@ describe("shouldRouteAgentlessCompanyToOnboarding", () => {
 describe("resolveRouteOnboardingOptions — the agent step", () => {
   const companies = [{ id: "c1", issuePrefix: "PC1" }];
 
-  it("opens a company that already has its mission on the agent step", () => {
-    // Cloud collected the mission at signup and the seed wrote it as a
-    // company-level goal. Re-asking it is the seam the seeded arc removes.
+  it("opens an existing company on the agent step", () => {
     expect(
       resolveRouteOnboardingOptions({
         pathname: "/PC1/onboarding",
         companyPrefix: "PC1",
         companies,
-        companyHasMission: true,
       }),
     ).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
   });
 
-  it("still asks for the mission when the company has none", () => {
+  it("never resolves into the create wizard on a managed stack", () => {
+    // POST /companies is a 403 floor on Cloud-managed stacks — a create wizard
+    // there is a dead end wearing a form. A managed stack holds exactly one
+    // company, so the useful reading of a bare or unmatched onboarding path is
+    // that company's agent arc.
+    const one = [{ id: "c1", issuePrefix: "PC1" }];
     expect(
       resolveRouteOnboardingOptions({
-        pathname: "/PC1/onboarding",
-        companyPrefix: "PC1",
-        companies,
-        companyHasMission: false,
+        pathname: "/onboarding",
+        companies: one,
+        cloudManaged: true,
       }),
-    ).toEqual({ initialStep: 2, companyId: "c1" });
+    ).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
+    expect(
+      resolveRouteOnboardingOptions({
+        pathname: "/NOPE/onboarding",
+        companyPrefix: "NOPE",
+        companies: one,
+        cloudManaged: true,
+      }),
+    ).toEqual({ initialStep: ONBOARDING_AGENT_STEP, companyId: "c1" });
   });
 
-  it("treats an unknown mission as absent while the goal query is in flight", () => {
-    // Costing the mission step is recoverable; skipping a question that was
-    // never answered leaves the company without one.
-    expect(
-      resolveRouteOnboardingOptions({
-        pathname: "/PC1/onboarding",
-        companyPrefix: "PC1",
-        companies,
-        companyHasMission: undefined,
-      }),
-    ).toEqual({ initialStep: 2, companyId: "c1" });
+  it("opens nothing on a managed stack whose companies are not exactly one", () => {
+    // Zero companies means the list is still loading or errored — offering
+    // creation would 403; opening an arc would name nobody. Do neither.
+    for (const companies of [[], [{ id: "c1", issuePrefix: "PC1" }, { id: "c2", issuePrefix: "PC2" }]]) {
+      expect(
+        resolveRouteOnboardingOptions({
+          pathname: "/onboarding",
+          companies,
+          cloudManaged: true,
+        }),
+      ).toBeNull();
+    }
   });
 
   it("keeps sending an unmatched prefix to company creation", () => {
@@ -287,26 +319,13 @@ describe("resolveRouteOnboardingOptions — the agent step", () => {
         pathname: "/NOPE/onboarding",
         companyPrefix: "NOPE",
         companies,
-        companyHasMission: true,
       }),
     ).toEqual({ initialStep: 1 });
   });
 });
 
 describe("onboardingStepForCompany", () => {
-  it("skips the mission question for a company that has one", () => {
-    expect(onboardingStepForCompany(true)).toBe(ONBOARDING_AGENT_STEP);
-  });
-
-  it("asks for the mission when the company has none", () => {
-    expect(onboardingStepForCompany(false)).toBe(ONBOARDING_MISSION_STEP);
-  });
-
-  it("asks for the mission when the lookup has not answered", () => {
-    // Both an in-flight and a failed lookup arrive here as `undefined`.
-    // Costing the mission step is recoverable — the customer answers it. The
-    // opposite error skips a question nobody answered and leaves the company
-    // without a mission.
-    expect(onboardingStepForCompany(undefined)).toBe(ONBOARDING_MISSION_STEP);
+  it("opens an existing company on the agent step", () => {
+    expect(onboardingStepForCompany()).toBe(ONBOARDING_AGENT_STEP);
   });
 });

@@ -45,6 +45,10 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     createdAt: "2026-07-09T12:00:00Z",
     updatedAt: "2026-07-09T12:00:00Z",
     relatedIssue: null,
+    audience: { kind: "pool", userId: null, reason: "none" },
+    stale: null,
+    required: false,
+    changeFingerprint: "fixture.other", closeModes: ["archive", "snooze"], obligationKey: null, obligationLeadId: null,
     project: null,
     workspace: null,
     expiresAt: null,
@@ -104,9 +108,16 @@ describe("isInlineResolvable", () => {
     expect(isInlineResolvable(buildItem({ sourceKind: "review", inlineResolvable: false }))).toBe(false);
   });
 
-  it("deep-links recovery/failure/budget rows rather than inlining", () => {
-    for (const kind of ["recovery_action", "failed_run", "budget_alert", "blocker_attention"] as AttentionSourceKind[]) {
+  it("deep-links recovery/blocker/agent-error rows rather than inlining", () => {
+    for (const kind of ["recovery_action", "blocker_attention", "agent_error_alert"] as AttentionSourceKind[]) {
       expect(isInlineResolvable(buildItem({ sourceKind: kind, inlineResolvable: true }))).toBe(false);
+    }
+  });
+
+  it("inlines failed-run Retry and budget verbs only when the server flags them (PAP-749 Rule 7)", () => {
+    for (const kind of ["failed_run", "budget_alert"] as AttentionSourceKind[]) {
+      expect(isInlineResolvable(buildItem({ sourceKind: kind, inlineResolvable: true }))).toBe(true);
+      expect(isInlineResolvable(buildItem({ sourceKind: kind, inlineResolvable: false }))).toBe(false);
     }
   });
 });
@@ -118,6 +129,7 @@ describe("attentionBadgeCount", () => {
       generatedAt: "2026-07-09T12:00:00Z",
       totalCount: 3,
       deskBadgeCount: 2,
+      viewCounts: { mine: 2, unassigned: 1, company: 0, archived: 0, all: 3 },
       nextCursor: "next-page",
       countsBySourceKind: {} as AttentionFeed["countsBySourceKind"],
       items: [buildItem({ id: "1" }), buildItem({ id: "2" }), buildItem({ id: "3" })],
@@ -185,6 +197,9 @@ describe("attentionIsNewToday", () => {
 });
 
 describe("sourceMeta + severityStyle", () => {
+  it("uses a generic task label for persisted legacy productivity decisions", () => {
+    expect(sourceMeta("productivity_review").label).toBe("Task");
+  });
   it("labels every catalog source kind", () => {
     const kinds: AttentionSourceKind[] = [
       "approval",
@@ -399,6 +414,16 @@ describe("attentionDetailLine (§7)", () => {
     expect(line).toContain("exit code 1");
   });
 
+  it("shows budget amounts as dollars, not cents (PAP-767)", () => {
+    const line = attentionDetailLine(
+      buildItem({
+        sourceKind: "budget_alert",
+        detail: { kind: "budget", observedPercent: 100, amountObserved: 10000, amountLimit: 10000, images: [] },
+      }),
+    );
+    expect(line).toBe("100% of budget used ($100.00 / $100.00)");
+  });
+
   it("returns null when there is no detail block", () => {
     expect(attentionDetailLine(buildItem({ detail: null }))).toBeNull();
   });
@@ -430,14 +455,22 @@ describe("sortAttentionItems", () => {
   });
 });
 
+// `attentionDateBucket` walks back from the start of the *local* day
+// (`setHours(0, 0, 0, 0)`), so every date fixture below is local too. Pinned to
+// UTC instants they drift across the boundary under test: `2026-07-09T23:00:00Z`
+// is 08:00 on the 10th at UTC+9 and buckets as "today", and at UTC+14 and UTC-11
+// even the mid-morning fixtures land on the wrong calendar day.
+const localTime = (month: number, day: number, hour: number) =>
+  new Date(2026, month - 1, day, hour, 0, 0, 0);
+
 describe("attentionDateBucket", () => {
-  const now = new Date("2026-07-10T12:00:00Z").getTime();
+  const now = localTime(7, 10, 12).getTime();
 
   it("buckets by rolling calendar-day windows relative to now", () => {
-    expect(attentionDateBucket("2026-07-10T09:00:00Z", now)).toBe("today");
-    expect(attentionDateBucket("2026-07-09T23:00:00Z", now)).toBe("yesterday");
-    expect(attentionDateBucket("2026-07-06T09:00:00Z", now)).toBe("this_week");
-    expect(attentionDateBucket("2026-06-01T09:00:00Z", now)).toBe("earlier");
+    expect(attentionDateBucket(localTime(7, 10, 9).toISOString(), now)).toBe("today");
+    expect(attentionDateBucket(localTime(7, 9, 23).toISOString(), now)).toBe("yesterday");
+    expect(attentionDateBucket(localTime(7, 6, 9).toISOString(), now)).toBe("this_week");
+    expect(attentionDateBucket(localTime(6, 1, 9).toISOString(), now)).toBe("earlier");
   });
 
   it("treats invalid timestamps as earlier", () => {
@@ -446,7 +479,7 @@ describe("attentionDateBucket", () => {
 });
 
 describe("groupAttentionItems", () => {
-  const now = new Date("2026-07-10T12:00:00Z").getTime();
+  const now = localTime(7, 10, 12).getTime();
 
   it("leaves None as one unlabeled group that preserves caller sort order", () => {
     const items = sortAttentionItems(
@@ -464,9 +497,9 @@ describe("groupAttentionItems", () => {
 
   it("groups by date into fixed Today/Yesterday/This week/Earlier order", () => {
     const items = [
-      buildItem({ id: "earlier", activityAt: "2026-06-01T00:00:00Z" }),
-      buildItem({ id: "today", activityAt: "2026-07-10T08:00:00Z" }),
-      buildItem({ id: "yesterday", activityAt: "2026-07-09T08:00:00Z" }),
+      buildItem({ id: "earlier", activityAt: localTime(6, 1, 9).toISOString() }),
+      buildItem({ id: "today", activityAt: localTime(7, 10, 8).toISOString() }),
+      buildItem({ id: "yesterday", activityAt: localTime(7, 9, 8).toISOString() }),
     ];
     const groups = groupAttentionItems(items, "date", { now });
     expect(groups.map((g) => g.label)).toEqual(["Today", "Yesterday", "Earlier"]);
@@ -508,8 +541,8 @@ describe("groupAttentionItems", () => {
   it("preserves the caller-provided intra-group order (sort governs within a bucket)", () => {
     const items = sortAttentionItems(
       [
-        buildItem({ id: "t1", activityAt: "2026-07-10T08:00:00Z" }),
-        buildItem({ id: "t2", activityAt: "2026-07-10T10:00:00Z" }),
+        buildItem({ id: "t1", activityAt: localTime(7, 10, 8).toISOString() }),
+        buildItem({ id: "t2", activityAt: localTime(7, 10, 10).toISOString() }),
       ],
       "newest",
     );
@@ -530,6 +563,21 @@ describe("filterAttentionItems", () => {
   it("returns everything when no filters are active", () => {
     expect(filterAttentionItems(items, defaultAttentionFilterState)).toHaveLength(2);
     expect(countActiveAttentionFilters(defaultAttentionFilterState)).toBe(0);
+  });
+
+  it("searches visible decision context case-insensitively and combines it with filters", () => {
+    const decision = buildItem({
+      subject: { ...approval.subject, title: "Review connector recovery", identifier: "DES-3" },
+      whyNow: "Verification complete", originAgentName: "Connector engineer",
+      project: approval.project, workspace: { id: "ws", name: "Sandbox" },
+      detail: { kind: "generic", summaryExcerpt: "Reconnect safely", images: [] },
+    });
+    for (const query of ["  REVIEW   connector ", "des-3", "verification", "engineer", "ALPHA", "sandbox", "reconnect"]) {
+      expect(filterAttentionItems([decision, join], defaultAttentionFilterState, query)).toEqual([decision]);
+    }
+    expect(filterAttentionItems([decision], defaultAttentionFilterState, "review nonexistent")).toEqual([]);
+    expect(filterAttentionItems([decision], { ...defaultAttentionFilterState, severities: ["low"] }, "connector")).toEqual([]);
+    expect(filterAttentionItems(items, defaultAttentionFilterState, "   ")).toBe(items);
   });
 
   it("filters by source kind", () => {

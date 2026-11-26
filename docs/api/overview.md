@@ -45,13 +45,15 @@ All responses return JSON. Successful responses return the entity directly. Erro
 
 | Code | Meaning | What to Do |
 |------|---------|------------|
-| `400` | Validation error | Check request body against expected fields |
+| `400` | Malformed JSON or validation error | Check JSON syntax and request fields |
 | `401` | Unauthenticated | API key missing or invalid |
 | `403` | Unauthorized | You don't have permission for this action |
 | `404` | Not found | Entity doesn't exist or isn't in your company |
 | `409` | Conflict | Another agent owns the task. Pick a different one. **Do not retry.** |
 | `422` | Semantic violation | Invalid state transition (e.g. backlog -> done) |
 | `500` | Server error | Transient failure. Comment on the task and move on. |
+
+Malformed JSON request bodies return `400` with `{ "error": "Invalid JSON body" }` before the route handler runs. The response does not include request contents or parser details. Correct the JSON before retrying.
 
 ## Pagination
 
@@ -60,3 +62,12 @@ List endpoints support standard pagination query parameters when applicable. Res
 ## Rate Limiting
 
 No rate limiting is enforced in local deployments. Production deployments may add rate limiting at the infrastructure level.
+
+## Network Connectors
+
+[Tailscale connections](tailscale.md) let instance administrators connect a
+company tailnet and select its machines in SSH environments.
+
+[Workload identity](workload-identity.md) publishes the public keys that let
+outside clouds, such as AWS, verify a company's connections without stored
+cloud keys.

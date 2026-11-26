@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -119,6 +120,29 @@ describe("managed install store", () => {
     expect(removeManagedPathBlock(rcPath)).toBe(true);
     expect(fs.readFileSync(rcPath, "utf8")).not.toContain("paperclipai managed PATH");
     expect(fs.statSync(rcPath).mode & 0o777).toBe(0o640);
+  });
+
+  it("uses the pinned Node for child tools even with an older node first on the service PATH", () => {
+    const entrypoint = path.join(paths.currentPath, "node_modules", "paperclipai", "dist", "index.js");
+    fs.mkdirSync(path.dirname(entrypoint), { recursive: true });
+    fs.writeFileSync(entrypoint, `console.log(require("node:child_process").execFileSync("node", ["-p", "process.execPath"], {encoding: "utf8"}).trim())`);
+    const oldBin = path.join(root, "old-bin");
+    fs.mkdirSync(oldBin);
+    fs.writeFileSync(path.join(oldBin, "node"), "#!/bin/sh\nexit 42\n", { mode: 0o755 });
+    writeManagedShim(paths);
+    const output = execFileSync(paths.shimPath, [], { env: { ...process.env, PATH: oldBin }, encoding: "utf8" });
+    expect(fs.realpathSync(output.trim())).toBe(fs.realpathSync(process.execPath));
+    expect(removeManagedShim(paths)).toBe(true);
+  });
+
+  it("upgrades and removes the original managed shim format", () => {
+    writeManagedShim(paths);
+    const original = fs.readFileSync(paths.shimPath, "utf8").split("\n").filter((line) => !line.startsWith("export PATH=")).join("\n");
+    fs.writeFileSync(paths.shimPath, original);
+    writeManagedShim(paths);
+    expect(fs.readFileSync(paths.shimPath, "utf8")).toContain("export PATH=");
+    fs.writeFileSync(paths.shimPath, original);
+    expect(removeManagedShim(paths)).toBe(true);
   });
 
   it("rejects marker substrings that are not the exact managed shim format", () => {

@@ -167,7 +167,7 @@ export function skillFolderDisplayPath(
   const trail = folderBreadcrumbTrail(model, folderId);
   if (trail.length === 0) return null;
   const labels = trail.map((folder) => reservedRootLabel(folder));
-  if (!trail[0]?.systemKey) labels.unshift("Company");
+  if (!trail[0]?.systemKey) labels.unshift("Organization");
   return labels.join(" / ");
 }
 
@@ -189,7 +189,7 @@ export function skillFolderPathDisplayFallback(folderPath: string | null | undef
   if (root === "my") labels[0] = "My Skills";
   else if (root === "projects") labels[0] = "Projects";
   else if (root === "bundled") labels[0] = "Bundled";
-  else labels.unshift("Company");
+  else labels.unshift("Organization");
   return labels.join(" / ");
 }
 

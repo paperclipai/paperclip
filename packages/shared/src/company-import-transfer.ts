@@ -78,6 +78,29 @@ export interface CompanyImportTransferCreated {
   alreadyCompleted: boolean;
   totalParts: number;
   missingParts: number[];
+  /**
+   * Where the prior completed apply landed, so an alreadyCompleted rejection
+   * can point at the existing company instead of reading as data loss.
+   * Null/absent when the run's company link was never written or the company
+   * has since been deleted.
+   */
+  company?: { id: string; name: string | null; issuePrefix: string | null } | null;
+}
+
+/**
+ * Human-facing message for an `alreadyCompleted` declaration. Shared by the
+ * web and CLI clients so the copy (and the pointer to the landed company)
+ * stays identical everywhere the rejection surfaces.
+ */
+export function buildAlreadyImportedMessage(
+  company: CompanyImportTransferCreated["company"],
+): string {
+  // "landed in", not "created": a completed transfer may have created a new
+  // company or merged into an existing one, and the caller cannot tell which.
+  const location = company
+    ? ` The earlier import landed in the company "${company.name ?? company.id}"${company.issuePrefix ? ` (${company.issuePrefix})` : ""} — open it from the company switcher.`
+    : "";
+  return `This exact package was already imported by a completed transfer.${location} Re-export the package to import it again.`;
 }
 
 /** Response of the resume-polling GET for one transfer. */

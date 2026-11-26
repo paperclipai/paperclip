@@ -147,7 +147,9 @@ function Chip({ children }: { children: React.ReactNode }) {
 }
 
 function AppRow({ app }: { app: GatewayAppRow }) {
-  const href = app.connection ? `/apps/${app.connection.id}/setup` : `/apps/app/${app.application.id}/setup`;
+  const href = app.connection
+    ? `/apps/${app.connection.id}/permissions`
+    : `/apps/app/${app.application.id}/permissions`;
   return (
     <li className="flex items-center justify-between gap-3 py-2.5">
       <div className="min-w-0">

@@ -1,0 +1,1602 @@
+{
+  "source": "https://docs.arcade.dev/en/resources/integrations",
+  "verifiedAt": "2026-10-02",
+  "apps": [
+    {
+      "slug": "airtable",
+      "toolkit": "airtable",
+      "name": "Airtable",
+      "logoUrl": "https://design-system.arcade.dev/icons/airtable.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/airtable",
+      "aliases": [
+        "Airtable",
+        "airtable"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "airtable-api",
+      "toolkit": "airtable-api",
+      "name": "Airtable API",
+      "logoUrl": "https://design-system.arcade.dev/icons/airtable.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/airtable-api",
+      "aliases": [
+        "AirtableApi",
+        "airtable-api"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "apollo",
+      "toolkit": "apollo",
+      "name": "Apollo",
+      "logoUrl": "https://design-system.arcade.dev/icons/apollo.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/sales/apollo",
+      "aliases": [
+        "Apollo",
+        "apollo"
+      ],
+      "category": "sales"
+    },
+    {
+      "slug": "arcade-engine-api",
+      "toolkit": "arcade-engine-api",
+      "name": "Arcade Engine API",
+      "logoUrl": "https://design-system.arcade.dev/icons/arcade.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations",
+      "aliases": [
+        "ArcadeEngineApi",
+        "arcade-engine-api"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "asana",
+      "toolkit": "asana",
+      "name": "Asana",
+      "logoUrl": "https://design-system.arcade.dev/icons/asana.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/asana",
+      "aliases": [
+        "Asana",
+        "asana"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "asana-api",
+      "toolkit": "asana-api",
+      "name": "Asana API",
+      "logoUrl": "https://design-system.arcade.dev/icons/asana.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/asana-api",
+      "aliases": [
+        "AsanaApi",
+        "asana-api"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "ashby",
+      "toolkit": "ashby",
+      "name": "Ashby",
+      "logoUrl": "https://design-system.arcade.dev/icons/ashby.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/ashby",
+      "aliases": [
+        "Ashby",
+        "ashby"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "ashby-api",
+      "toolkit": "ashby-api",
+      "name": "Ashby API",
+      "logoUrl": "https://design-system.arcade.dev/icons/ashby.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/ashby-api",
+      "aliases": [
+        "AshbyApi",
+        "ashby-api"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "attio",
+      "toolkit": "attio",
+      "name": "Attio",
+      "logoUrl": "https://design-system.arcade.dev/icons/attio.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/sales/attio",
+      "aliases": [
+        "Attio",
+        "attio"
+      ],
+      "category": "sales"
+    },
+    {
+      "slug": "box-api",
+      "toolkit": "box-api",
+      "name": "Box API",
+      "logoUrl": "https://design-system.arcade.dev/icons/box.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/box-api",
+      "aliases": [
+        "BoxApi",
+        "box-api"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "brightdata",
+      "toolkit": "brightdata",
+      "name": "Bright Data",
+      "logoUrl": "https://design-system.arcade.dev/icons/brightdata.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/brightdata",
+      "aliases": [
+        "Brightdata",
+        "brightdata"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "calendly",
+      "toolkit": "calendly",
+      "name": "Calendly",
+      "logoUrl": "https://design-system.arcade.dev/icons/calendly.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/calendly",
+      "aliases": [
+        "Calendly",
+        "calendly"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "calendly-api",
+      "toolkit": "calendly-api",
+      "name": "Calendly API",
+      "logoUrl": "https://design-system.arcade.dev/icons/calendly.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/calendly-api",
+      "aliases": [
+        "CalendlyApi",
+        "calendly-api"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "clickhouse",
+      "toolkit": "clickhouse",
+      "name": "Clickhouse",
+      "logoUrl": "https://design-system.arcade.dev/icons/clickhouse.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/databases/clickhouse",
+      "aliases": [
+        "Clickhouse",
+        "clickhouse"
+      ],
+      "category": "databases"
+    },
+    {
+      "slug": "clickup",
+      "toolkit": "clickup",
+      "name": "ClickUp",
+      "logoUrl": "https://design-system.arcade.dev/icons/clickup.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/clickup",
+      "aliases": [
+        "ClickUp",
+        "clickup"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "clickup-api",
+      "toolkit": "clickup-api",
+      "name": "ClickUp API",
+      "logoUrl": "https://design-system.arcade.dev/icons/clickup.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/clickup-api",
+      "aliases": [
+        "ClickUpApi",
+        "clickup-api"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "closeio",
+      "toolkit": "closeio",
+      "name": "Close.io",
+      "logoUrl": "https://design-system.arcade.dev/icons/closeio.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations",
+      "aliases": [
+        "CloseIO",
+        "closeio"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "confluence",
+      "toolkit": "confluence",
+      "name": "Confluence",
+      "logoUrl": "https://design-system.arcade.dev/icons/confluence.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/confluence",
+      "aliases": [
+        "Confluence",
+        "confluence"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "cursor-agents",
+      "toolkit": "cursor-agents",
+      "name": "Cursor Agents",
+      "logoUrl": "https://design-system.arcade.dev/icons/cursor.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/cursor-agents",
+      "aliases": [
+        "CursorAgents",
+        "cursor-agents"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "cursor-agents-api",
+      "toolkit": "cursor-agents-api",
+      "name": "Cursor Agents API",
+      "logoUrl": "https://design-system.arcade.dev/icons/cursor.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/cursor-agents-api",
+      "aliases": [
+        "CursorAgentsApi",
+        "cursor-agents-api"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "customerio",
+      "toolkit": "customerio",
+      "name": "Customer.io",
+      "logoUrl": "https://design-system.arcade.dev/icons/customerio.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/customer-support/customerio",
+      "aliases": [
+        "Customerio",
+        "customerio"
+      ],
+      "category": "customer-support"
+    },
+    {
+      "slug": "customerio-api",
+      "toolkit": "customerio-api",
+      "name": "Customer.io API",
+      "logoUrl": "https://design-system.arcade.dev/icons/customerio.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/customer-support/customerio-api",
+      "aliases": [
+        "CustomerioApi",
+        "customerio-api"
+      ],
+      "category": "customer-support"
+    },
+    {
+      "slug": "customerio-pipelines-api",
+      "toolkit": "customerio-pipelines-api",
+      "name": "Customer.io Pipelines API",
+      "logoUrl": "https://design-system.arcade.dev/icons/customerio.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/customer-support/customerio-pipelines-api",
+      "aliases": [
+        "CustomerioPipelinesApi",
+        "customerio-pipelines-api"
+      ],
+      "category": "customer-support"
+    },
+    {
+      "slug": "customerio-track-api",
+      "toolkit": "customerio-track-api",
+      "name": "Customer.io Track API",
+      "logoUrl": "https://design-system.arcade.dev/icons/customerio.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/customer-support/customerio-track-api",
+      "aliases": [
+        "CustomerioTrackApi",
+        "customerio-track-api"
+      ],
+      "category": "customer-support"
+    },
+    {
+      "slug": "datadog",
+      "toolkit": "datadog",
+      "name": "Datadog",
+      "logoUrl": "https://design-system.arcade.dev/icons/datadog.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/datadog",
+      "aliases": [
+        "Datadog",
+        "datadog"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "datadog-api",
+      "toolkit": "datadog-api",
+      "name": "Datadog API",
+      "logoUrl": "https://design-system.arcade.dev/icons/datadog.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/datadog-api",
+      "aliases": [
+        "DatadogApi",
+        "datadog-api"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "daytona",
+      "toolkit": "daytona",
+      "name": "Daytona",
+      "logoUrl": "https://design-system.arcade.dev/icons/daytona.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/daytona",
+      "aliases": [
+        "Daytona",
+        "daytona"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "discord",
+      "toolkit": "discord",
+      "name": "Discord",
+      "logoUrl": "https://design-system.arcade.dev/icons/discord.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations",
+      "aliases": [
+        "Discord",
+        "discord"
+      ],
+      "category": "social"
+    },
+    {
+      "slug": "discord-bot",
+      "toolkit": "discord-bot",
+      "name": "Discord Bot",
+      "logoUrl": "https://design-system.arcade.dev/icons/discord.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/social-communication/discord-bot",
+      "aliases": [
+        "DiscordBot",
+        "discord-bot"
+      ],
+      "category": "social"
+    },
+    {
+      "slug": "dropbox",
+      "toolkit": "dropbox",
+      "name": "Dropbox",
+      "logoUrl": "https://design-system.arcade.dev/icons/dropbox.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/dropbox",
+      "aliases": [
+        "Dropbox",
+        "dropbox"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "e2b",
+      "toolkit": "e2b",
+      "name": "E2B",
+      "logoUrl": "https://design-system.arcade.dev/icons/e2b.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/e2b",
+      "aliases": [
+        "E2b",
+        "e2b"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "exa-api",
+      "toolkit": "exa-api",
+      "name": "Exa API",
+      "logoUrl": "https://design-system.arcade.dev/icons/exa.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/search/exa-api",
+      "aliases": [
+        "ExaApi",
+        "exa-api"
+      ],
+      "category": "search"
+    },
+    {
+      "slug": "figma",
+      "toolkit": "figma",
+      "name": "Figma",
+      "logoUrl": "https://design-system.arcade.dev/icons/figma.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/figma",
+      "aliases": [
+        "Figma",
+        "figma"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "figma-api",
+      "toolkit": "figma-api",
+      "name": "Figma API",
+      "logoUrl": "https://design-system.arcade.dev/icons/figma.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/figma-api",
+      "aliases": [
+        "FigmaApi",
+        "figma-api"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "firecrawl",
+      "toolkit": "firecrawl",
+      "name": "Firecrawl",
+      "logoUrl": "https://design-system.arcade.dev/icons/firecrawl.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/firecrawl",
+      "aliases": [
+        "Firecrawl",
+        "firecrawl"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "fireflies",
+      "toolkit": "fireflies",
+      "name": "Fireflies",
+      "logoUrl": "https://design-system.arcade.dev/icons/fireflies.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/fireflies",
+      "aliases": [
+        "Fireflies",
+        "fireflies"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "fly-io",
+      "toolkit": "fly-io",
+      "name": "Fly.io",
+      "logoUrl": "https://design-system.arcade.dev/icons/fly-io.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/fly-io",
+      "aliases": [
+        "FlyIo",
+        "fly-io"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "forkable",
+      "toolkit": "forkable",
+      "name": "Forkable",
+      "logoUrl": "https://design-system.arcade.dev/icons/forkable.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/forkable",
+      "aliases": [
+        "Forkable",
+        "forkable"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "freshdesk",
+      "toolkit": "freshdesk",
+      "name": "Freshdesk",
+      "logoUrl": "https://design-system.arcade.dev/icons/freshdesk.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/customer-support/freshdesk",
+      "aliases": [
+        "Freshdesk",
+        "freshdesk"
+      ],
+      "category": "customer-support"
+    },
+    {
+      "slug": "freshservice",
+      "toolkit": "freshservice",
+      "name": "Freshservice",
+      "logoUrl": "https://design-system.arcade.dev/icons/freshservice.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/customer-support/freshservice",
+      "aliases": [
+        "Freshservice",
+        "freshservice"
+      ],
+      "category": "customer-support"
+    },
+    {
+      "slug": "freshservice-api",
+      "toolkit": "freshservice-api",
+      "name": "Freshservice API",
+      "logoUrl": "https://design-system.arcade.dev/icons/freshservice.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/customer-support/freshservice-api",
+      "aliases": [
+        "FreshserviceApi",
+        "freshservice-api"
+      ],
+      "category": "customer-support"
+    },
+    {
+      "slug": "github",
+      "toolkit": "github",
+      "name": "GitHub",
+      "logoUrl": "https://design-system.arcade.dev/icons/github.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/github",
+      "aliases": [
+        "Github",
+        "github"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "github-api",
+      "toolkit": "github-api",
+      "name": "GitHub API",
+      "logoUrl": "https://design-system.arcade.dev/icons/github.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/github-api",
+      "aliases": [
+        "GithubApi",
+        "github-api"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "glean",
+      "toolkit": "glean",
+      "name": "Glean",
+      "logoUrl": "https://design-system.arcade.dev/icons/glean.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/search/glean",
+      "aliases": [
+        "Glean",
+        "glean"
+      ],
+      "category": "search"
+    },
+    {
+      "slug": "gmail",
+      "toolkit": "gmail",
+      "name": "Gmail",
+      "logoUrl": "https://design-system.arcade.dev/icons/gmail.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/gmail",
+      "aliases": [
+        "Gmail",
+        "gmail"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "google-calendar",
+      "toolkit": "google-calendar",
+      "name": "Google Calendar",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-calendar.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/google-calendar",
+      "aliases": [
+        "GoogleCalendar",
+        "google-calendar"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "google-contacts",
+      "toolkit": "google-contacts",
+      "name": "Google Contacts",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-contacts.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/google-contacts",
+      "aliases": [
+        "GoogleContacts",
+        "google-contacts"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "google-docs",
+      "toolkit": "google-docs",
+      "name": "Google Docs",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-docs.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/google-docs",
+      "aliases": [
+        "GoogleDocs",
+        "google-docs"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "google-drive",
+      "toolkit": "google-drive",
+      "name": "Google Drive",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-drive.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/google-drive",
+      "aliases": [
+        "GoogleDrive",
+        "google-drive"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "google-finance",
+      "toolkit": "google_finance",
+      "name": "Google Finance",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-finance.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/search/google_finance",
+      "aliases": [
+        "GoogleFinance",
+        "google_finance"
+      ],
+      "category": "search"
+    },
+    {
+      "slug": "google-flights",
+      "toolkit": "google_flights",
+      "name": "Google Flights",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-flights.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/search/google_flights",
+      "aliases": [
+        "GoogleFlights",
+        "google_flights"
+      ],
+      "category": "search"
+    },
+    {
+      "slug": "google-forms",
+      "toolkit": "google-forms",
+      "name": "Google Forms",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-forms.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations",
+      "aliases": [
+        "GoogleForms",
+        "google-forms"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "google-hotels",
+      "toolkit": "google_hotels",
+      "name": "Google Hotels",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-hotels.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/search/google_hotels",
+      "aliases": [
+        "GoogleHotels",
+        "google_hotels"
+      ],
+      "category": "search"
+    },
+    {
+      "slug": "google-jobs",
+      "toolkit": "google_jobs",
+      "name": "Google Jobs",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-jobs.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/search/google_jobs",
+      "aliases": [
+        "GoogleJobs",
+        "google_jobs"
+      ],
+      "category": "search"
+    },
+    {
+      "slug": "google-maps",
+      "toolkit": "google_maps",
+      "name": "Google Maps",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-maps.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/search/google_maps",
+      "aliases": [
+        "GoogleMaps",
+        "google_maps"
+      ],
+      "category": "search"
+    },
+    {
+      "slug": "google-news",
+      "toolkit": "google_news",
+      "name": "Google News",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-news.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/search/google_news",
+      "aliases": [
+        "GoogleNews",
+        "google_news"
+      ],
+      "category": "search"
+    },
+    {
+      "slug": "google-search",
+      "toolkit": "google_search",
+      "name": "Google Search",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-search.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/search/google_search",
+      "aliases": [
+        "GoogleSearch",
+        "google_search"
+      ],
+      "category": "search"
+    },
+    {
+      "slug": "google-sheets",
+      "toolkit": "google-sheets",
+      "name": "Google Sheets",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-sheets.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/google-sheets",
+      "aliases": [
+        "GoogleSheets",
+        "google-sheets"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "google-shopping",
+      "toolkit": "google_shopping",
+      "name": "Google Shopping",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-shopping.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/search/google_shopping",
+      "aliases": [
+        "GoogleShopping",
+        "google_shopping"
+      ],
+      "category": "search"
+    },
+    {
+      "slug": "google-slides",
+      "toolkit": "google-slides",
+      "name": "Google Slides",
+      "logoUrl": "https://design-system.arcade.dev/icons/google-slides.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/google-slides",
+      "aliases": [
+        "GoogleSlides",
+        "google-slides"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "granola",
+      "toolkit": "granola",
+      "name": "Granola",
+      "logoUrl": "https://design-system.arcade.dev/icons/granola.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/granola",
+      "aliases": [
+        "Granola",
+        "granola"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "hubspot",
+      "toolkit": "hubspot",
+      "name": "HubSpot",
+      "logoUrl": "https://design-system.arcade.dev/icons/hubspot.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/sales/hubspot",
+      "aliases": [
+        "Hubspot",
+        "hubspot"
+      ],
+      "category": "sales"
+    },
+    {
+      "slug": "hubspot-automation-api",
+      "toolkit": "hubspot-automation-api",
+      "name": "HubSpot Automation API",
+      "logoUrl": "https://design-system.arcade.dev/icons/hubspot.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/sales/hubspot-automation-api",
+      "aliases": [
+        "HubspotAutomationApi",
+        "hubspot-automation-api"
+      ],
+      "category": "sales"
+    },
+    {
+      "slug": "hubspot-cms-api",
+      "toolkit": "hubspot-cms-api",
+      "name": "HubSpot CMS API",
+      "logoUrl": "https://design-system.arcade.dev/icons/hubspot.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/sales/hubspot-cms-api",
+      "aliases": [
+        "HubspotCmsApi",
+        "hubspot-cms-api"
+      ],
+      "category": "sales"
+    },
+    {
+      "slug": "hubspot-conversations-api",
+      "toolkit": "hubspot-conversations-api",
+      "name": "HubSpot Conversations API",
+      "logoUrl": "https://design-system.arcade.dev/icons/hubspot.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/sales/hubspot-conversations-api",
+      "aliases": [
+        "HubspotConversationsApi",
+        "hubspot-conversations-api"
+      ],
+      "category": "sales"
+    },
+    {
+      "slug": "hubspot-crm-api",
+      "toolkit": "hubspot-crm-api",
+      "name": "HubSpot CRM API",
+      "logoUrl": "https://design-system.arcade.dev/icons/hubspot.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/sales/hubspot-crm-api",
+      "aliases": [
+        "HubspotCrmApi",
+        "hubspot-crm-api"
+      ],
+      "category": "sales"
+    },
+    {
+      "slug": "hubspot-events-api",
+      "toolkit": "hubspot-events-api",
+      "name": "HubSpot Events API",
+      "logoUrl": "https://design-system.arcade.dev/icons/hubspot.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/sales/hubspot-events-api",
+      "aliases": [
+        "HubspotEventsApi",
+        "hubspot-events-api"
+      ],
+      "category": "sales"
+    },
+    {
+      "slug": "hubspot-marketing-api",
+      "toolkit": "hubspot-marketing-api",
+      "name": "HubSpot Marketing API",
+      "logoUrl": "https://design-system.arcade.dev/icons/hubspot.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/sales/hubspot-marketing-api",
+      "aliases": [
+        "HubspotMarketingApi",
+        "hubspot-marketing-api"
+      ],
+      "category": "sales"
+    },
+    {
+      "slug": "hubspot-meetings-api",
+      "toolkit": "hubspot-meetings-api",
+      "name": "HubSpot Meetings API",
+      "logoUrl": "https://design-system.arcade.dev/icons/hubspot.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/sales/hubspot-meetings-api",
+      "aliases": [
+        "HubspotMeetingsApi",
+        "hubspot-meetings-api"
+      ],
+      "category": "sales"
+    },
+    {
+      "slug": "hubspot-users-api",
+      "toolkit": "hubspot-users-api",
+      "name": "HubSpot Users API",
+      "logoUrl": "https://design-system.arcade.dev/icons/hubspot.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/sales/hubspot-users-api",
+      "aliases": [
+        "HubspotUsersApi",
+        "hubspot-users-api"
+      ],
+      "category": "sales"
+    },
+    {
+      "slug": "imgflip",
+      "toolkit": "imgflip",
+      "name": "Imgflip",
+      "logoUrl": "https://design-system.arcade.dev/icons/imgflip.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/entertainment/imgflip",
+      "aliases": [
+        "Imgflip",
+        "imgflip"
+      ],
+      "category": "entertainment"
+    },
+    {
+      "slug": "insightly",
+      "toolkit": "insightly",
+      "name": "Insightly",
+      "logoUrl": "https://design-system.arcade.dev/icons/insightly.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/sales/insightly",
+      "aliases": [
+        "Insightly",
+        "insightly"
+      ],
+      "category": "sales"
+    },
+    {
+      "slug": "intercom-api",
+      "toolkit": "intercom-api",
+      "name": "Intercom API",
+      "logoUrl": "https://design-system.arcade.dev/icons/intercom.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/customer-support/intercom-api",
+      "aliases": [
+        "IntercomApi",
+        "intercom-api"
+      ],
+      "category": "customer-support"
+    },
+    {
+      "slug": "jira",
+      "toolkit": "jira",
+      "name": "Jira",
+      "logoUrl": "https://design-system.arcade.dev/icons/jira.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/jira",
+      "aliases": [
+        "Jira",
+        "jira"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "linear",
+      "toolkit": "linear",
+      "name": "Linear",
+      "logoUrl": "https://design-system.arcade.dev/icons/linear.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/linear",
+      "aliases": [
+        "Linear",
+        "linear"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "linkedin",
+      "toolkit": "linkedin",
+      "name": "LinkedIn",
+      "logoUrl": "https://design-system.arcade.dev/icons/linkedin.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/social-communication/linkedin",
+      "aliases": [
+        "Linkedin",
+        "linkedin"
+      ],
+      "category": "social"
+    },
+    {
+      "slug": "luma-api",
+      "toolkit": "luma-api",
+      "name": "Luma API",
+      "logoUrl": "https://design-system.arcade.dev/icons/luma.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/luma-api",
+      "aliases": [
+        "LumaApi",
+        "luma-api"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "mailchimp-marketing-api",
+      "toolkit": "mailchimp-marketing-api",
+      "name": "Mailchimp API",
+      "logoUrl": "https://design-system.arcade.dev/icons/mailchimp.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/mailchimp-marketing-api",
+      "aliases": [
+        "MailchimpMarketingApi",
+        "mailchimp-marketing-api"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "math",
+      "toolkit": "math",
+      "name": "Math",
+      "logoUrl": "https://design-system.arcade.dev/icons/math-toolkit.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/math",
+      "aliases": [
+        "Math",
+        "math"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "microsoft-excel",
+      "toolkit": "microsoft-excel",
+      "name": "Microsoft Excel",
+      "logoUrl": "https://design-system.arcade.dev/icons/microsoft-excel.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/microsoft-excel",
+      "aliases": [
+        "MicrosoftExcel",
+        "microsoft-excel"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "microsoft-onedrive",
+      "toolkit": "microsoft-onedrive",
+      "name": "Microsoft OneDrive",
+      "logoUrl": "https://design-system.arcade.dev/icons/microsoft-onedrive.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/microsoft-onedrive",
+      "aliases": [
+        "MicrosoftOnedrive",
+        "microsoft-onedrive"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "microsoft-outlook-calendar",
+      "toolkit": "microsoft-outlook-calendar",
+      "name": "Microsoft Outlook Calendar",
+      "logoUrl": "https://design-system.arcade.dev/icons/microsoft-outlook-calendar.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/microsoft-outlook-calendar",
+      "aliases": [
+        "MicrosoftOutlookCalendar",
+        "microsoft-outlook-calendar"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "microsoft-outlook-mail",
+      "toolkit": "microsoft-outlook-mail",
+      "name": "Microsoft Outlook Mail",
+      "logoUrl": "https://design-system.arcade.dev/icons/microsoft-outlook-mail.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/microsoft-outlook-mail",
+      "aliases": [
+        "MicrosoftOutlookMail",
+        "microsoft-outlook-mail"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "microsoft-power-bi",
+      "toolkit": "microsoft-power-bi",
+      "name": "Microsoft Power BI",
+      "logoUrl": "https://design-system.arcade.dev/icons/microsoft-power-bi.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/microsoft-power-bi",
+      "aliases": [
+        "MicrosoftPowerBI",
+        "microsoft-power-bi"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "microsoft-powerpoint",
+      "toolkit": "microsoft-powerpoint",
+      "name": "Microsoft PowerPoint",
+      "logoUrl": "https://design-system.arcade.dev/icons/microsoft-powerpoint.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/microsoft-powerpoint",
+      "aliases": [
+        "MicrosoftPowerpoint",
+        "microsoft-powerpoint"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "microsoft-sharepoint",
+      "toolkit": "microsoft-sharepoint",
+      "name": "Microsoft SharePoint",
+      "logoUrl": "https://design-system.arcade.dev/icons/microsoft-sharepoint.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/microsoft-sharepoint",
+      "aliases": [
+        "MicrosoftSharePoint",
+        "microsoft-sharepoint"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "microsoft-teams",
+      "toolkit": "microsoft-teams",
+      "name": "Microsoft Teams",
+      "logoUrl": "https://design-system.arcade.dev/icons/microsoft-teams.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/social-communication/microsoft-teams",
+      "aliases": [
+        "MicrosoftTeams",
+        "microsoft-teams"
+      ],
+      "category": "social"
+    },
+    {
+      "slug": "microsoft-users",
+      "toolkit": "microsoft-users",
+      "name": "Microsoft Users",
+      "logoUrl": "https://design-system.arcade.dev/icons/microsoft.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/microsoft-users",
+      "aliases": [
+        "MicrosoftUsers",
+        "microsoft-users"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "microsoft-word",
+      "toolkit": "microsoft-word",
+      "name": "Microsoft Word",
+      "logoUrl": "https://design-system.arcade.dev/icons/microsoft-word.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/microsoft-word",
+      "aliases": [
+        "MicrosoftWord",
+        "microsoft-word"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "miro-api",
+      "toolkit": "miro-api",
+      "name": "Miro API",
+      "logoUrl": "https://design-system.arcade.dev/icons/miro.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/miro-api",
+      "aliases": [
+        "MiroApi",
+        "miro-api"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "mixpanel",
+      "toolkit": "mixpanel",
+      "name": "Mixpanel",
+      "logoUrl": "https://design-system.arcade.dev/icons/mixpanel.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/mixpanel",
+      "aliases": [
+        "Mixpanel",
+        "mixpanel"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "mongodb",
+      "toolkit": "mongodb",
+      "name": "MongoDB",
+      "logoUrl": "https://design-system.arcade.dev/icons/mongodb.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/databases/mongodb",
+      "aliases": [
+        "MongoDB",
+        "mongodb"
+      ],
+      "category": "databases"
+    },
+    {
+      "slug": "nimble",
+      "toolkit": "nimble",
+      "name": "Nimble",
+      "logoUrl": "https://docs.arcade.dev/images/partners/nimble.png",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/search/nimble",
+      "aliases": [
+        "Nimble",
+        "nimble"
+      ],
+      "category": "search"
+    },
+    {
+      "slug": "notion",
+      "toolkit": "notion",
+      "name": "Notion",
+      "logoUrl": "https://design-system.arcade.dev/icons/notion.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/notion",
+      "aliases": [
+        "Notion",
+        "notion"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "obsidian",
+      "toolkit": "obsidian",
+      "name": "Obsidian",
+      "logoUrl": "https://design-system.arcade.dev/icons/obsidian.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations",
+      "aliases": [
+        "Obsidian",
+        "obsidian"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "pagerduty",
+      "toolkit": "pagerduty",
+      "name": "PagerDuty",
+      "logoUrl": "https://design-system.arcade.dev/icons/pagerduty.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/pagerduty",
+      "aliases": [
+        "PagerDuty",
+        "pagerduty"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "pagerduty-api",
+      "toolkit": "pagerduty-api",
+      "name": "PagerDuty API",
+      "logoUrl": "https://design-system.arcade.dev/icons/pagerduty.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/pagerduty-api",
+      "aliases": [
+        "PagerDutyApi",
+        "pagerduty-api"
+      ],
+      "category": "customer-support"
+    },
+    {
+      "slug": "postgres",
+      "toolkit": "postgres",
+      "name": "Postgres",
+      "logoUrl": "https://design-system.arcade.dev/icons/postgres.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/databases/postgres",
+      "aliases": [
+        "Postgres",
+        "postgres"
+      ],
+      "category": "databases"
+    },
+    {
+      "slug": "posthog",
+      "toolkit": "posthog",
+      "name": "PostHog",
+      "logoUrl": "https://design-system.arcade.dev/icons/posthog.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/posthog",
+      "aliases": [
+        "Posthog",
+        "posthog"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "posthog-api",
+      "toolkit": "posthog-api",
+      "name": "PostHog API",
+      "logoUrl": "https://design-system.arcade.dev/icons/posthog.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/posthog-api",
+      "aliases": [
+        "PosthogApi",
+        "posthog-api"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "postman",
+      "toolkit": "postman",
+      "name": "Postman",
+      "logoUrl": "https://design-system.arcade.dev/icons/postman.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/postman",
+      "aliases": [
+        "Postman",
+        "postman"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "pylon",
+      "toolkit": "pylon",
+      "name": "Pylon",
+      "logoUrl": "https://design-system.arcade.dev/icons/pylon.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/customer-support/pylon",
+      "aliases": [
+        "Pylon",
+        "pylon"
+      ],
+      "category": "customer-support"
+    },
+    {
+      "slug": "pylon-api",
+      "toolkit": "pylon-api",
+      "name": "Pylon API",
+      "logoUrl": "https://design-system.arcade.dev/icons/pylon.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/customer-support/pylon-api",
+      "aliases": [
+        "PylonApi",
+        "pylon-api"
+      ],
+      "category": "customer-support"
+    },
+    {
+      "slug": "reddit",
+      "toolkit": "reddit",
+      "name": "Reddit",
+      "logoUrl": "https://design-system.arcade.dev/icons/reddit.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/social-communication/reddit",
+      "aliases": [
+        "Reddit",
+        "reddit"
+      ],
+      "category": "social"
+    },
+    {
+      "slug": "resend",
+      "toolkit": "resend",
+      "name": "Resend",
+      "logoUrl": "https://design-system.arcade.dev/icons/resend.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/resend",
+      "aliases": [
+        "Resend",
+        "resend"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "salesforce",
+      "toolkit": "salesforce",
+      "name": "Salesforce",
+      "logoUrl": "https://design-system.arcade.dev/icons/salesforce.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/sales/salesforce",
+      "aliases": [
+        "Salesforce",
+        "salesforce"
+      ],
+      "category": "sales"
+    },
+    {
+      "slug": "servicenow",
+      "toolkit": "servicenow",
+      "name": "ServiceNow",
+      "logoUrl": "https://design-system.arcade.dev/icons/servicenow.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/customer-support/servicenow",
+      "aliases": [
+        "ServiceNow",
+        "servicenow"
+      ],
+      "category": "customer-support"
+    },
+    {
+      "slug": "slack",
+      "toolkit": "slack",
+      "name": "Slack",
+      "logoUrl": "https://design-system.arcade.dev/icons/slack.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/social-communication/slack",
+      "aliases": [
+        "Slack",
+        "slack"
+      ],
+      "category": "social"
+    },
+    {
+      "slug": "slack-api",
+      "toolkit": "slack-api",
+      "name": "Slack API",
+      "logoUrl": "https://design-system.arcade.dev/icons/slack.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/social-communication/slack-api",
+      "aliases": [
+        "SlackApi",
+        "slack-api"
+      ],
+      "category": "social"
+    },
+    {
+      "slug": "snowflake",
+      "toolkit": "snowflake",
+      "name": "Snowflake",
+      "logoUrl": "https://design-system.arcade.dev/icons/snowflake.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/databases/snowflake",
+      "aliases": [
+        "Snowflake",
+        "snowflake"
+      ],
+      "category": "databases"
+    },
+    {
+      "slug": "spotify",
+      "toolkit": "spotify",
+      "name": "Spotify",
+      "logoUrl": "https://design-system.arcade.dev/icons/spotify.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/entertainment/spotify",
+      "aliases": [
+        "Spotify",
+        "spotify"
+      ],
+      "category": "entertainment"
+    },
+    {
+      "slug": "squareup-api",
+      "toolkit": "squareup-api",
+      "name": "SquareUp API",
+      "logoUrl": "https://design-system.arcade.dev/icons/square.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/squareup-api",
+      "aliases": [
+        "SquareUpApi",
+        "squareup-api"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "stripe",
+      "toolkit": "stripe",
+      "name": "Stripe",
+      "logoUrl": "https://design-system.arcade.dev/icons/stripe.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/payments/stripe",
+      "aliases": [
+        "Stripe",
+        "stripe"
+      ],
+      "category": "payments"
+    },
+    {
+      "slug": "stripe-api",
+      "toolkit": "stripe_api",
+      "name": "Stripe API",
+      "logoUrl": "https://design-system.arcade.dev/icons/stripe.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/payments/stripe_api",
+      "aliases": [
+        "StripeApi",
+        "stripe_api"
+      ],
+      "category": "payments"
+    },
+    {
+      "slug": "tavily",
+      "toolkit": "tavily",
+      "name": "Tavily",
+      "logoUrl": "https://docs.arcade.dev/images/partners/tavily.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/search/tavily",
+      "aliases": [
+        "Tavily",
+        "tavily"
+      ],
+      "category": "search"
+    },
+    {
+      "slug": "telegram",
+      "toolkit": "telegram",
+      "name": "Telegram",
+      "logoUrl": "https://design-system.arcade.dev/icons/telegram.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/social-communication/telegram",
+      "aliases": [
+        "Telegram",
+        "telegram"
+      ],
+      "category": "social"
+    },
+    {
+      "slug": "ticktick-api",
+      "toolkit": "ticktick-api",
+      "name": "TickTick API",
+      "logoUrl": "https://design-system.arcade.dev/icons/ticktick.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/ticktick-api",
+      "aliases": [
+        "TickTickApi",
+        "ticktick-api"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "trello-api",
+      "toolkit": "trello-api",
+      "name": "Trello API",
+      "logoUrl": "https://design-system.arcade.dev/icons/trello.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/trello-api",
+      "aliases": [
+        "TrelloApi",
+        "trello-api"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "twilio",
+      "toolkit": "twilio",
+      "name": "Twilio",
+      "logoUrl": "https://design-system.arcade.dev/icons/twilio.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations",
+      "aliases": [
+        "Twilio",
+        "twilio"
+      ],
+      "category": "social"
+    },
+    {
+      "slug": "twitch",
+      "toolkit": "twitch",
+      "name": "Twitch",
+      "logoUrl": "https://design-system.arcade.dev/icons/twitch.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations",
+      "aliases": [
+        "Twitch",
+        "twitch"
+      ],
+      "category": "entertainment"
+    },
+    {
+      "slug": "vercel",
+      "toolkit": "vercel",
+      "name": "Vercel",
+      "logoUrl": "https://design-system.arcade.dev/icons/vercel.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/vercel",
+      "aliases": [
+        "Vercel",
+        "vercel"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "vercel-api",
+      "toolkit": "vercel-api",
+      "name": "Vercel API",
+      "logoUrl": "https://design-system.arcade.dev/icons/vercel.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/vercel-api",
+      "aliases": [
+        "VercelApi",
+        "vercel-api"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "walmart",
+      "toolkit": "walmart",
+      "name": "Walmart",
+      "logoUrl": "https://design-system.arcade.dev/icons/walmart.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/search/walmart",
+      "aliases": [
+        "Walmart",
+        "walmart"
+      ],
+      "category": "search"
+    },
+    {
+      "slug": "weaviate-api",
+      "toolkit": "weaviate-api",
+      "name": "Weaviate API",
+      "logoUrl": "https://design-system.arcade.dev/icons/weaviate.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/databases/weaviate-api",
+      "aliases": [
+        "WeaviateApi",
+        "weaviate-api"
+      ],
+      "category": "databases"
+    },
+    {
+      "slug": "workday",
+      "toolkit": "workday",
+      "name": "Workday",
+      "logoUrl": "https://design-system.arcade.dev/icons/workday.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/workday",
+      "aliases": [
+        "Workday",
+        "workday"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "x",
+      "toolkit": "x",
+      "name": "X",
+      "logoUrl": "https://design-system.arcade.dev/icons/x.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/social-communication/x",
+      "aliases": [
+        "X",
+        "x"
+      ],
+      "category": "social"
+    },
+    {
+      "slug": "xero-api",
+      "toolkit": "xero-api",
+      "name": "Xero API",
+      "logoUrl": "https://design-system.arcade.dev/icons/xero.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/productivity/xero-api",
+      "aliases": [
+        "XeroApi",
+        "xero-api"
+      ],
+      "category": "productivity"
+    },
+    {
+      "slug": "youtube",
+      "toolkit": "youtube",
+      "name": "Youtube",
+      "logoUrl": "https://design-system.arcade.dev/icons/youtube.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/search/youtube",
+      "aliases": [
+        "Youtube",
+        "youtube"
+      ],
+      "category": "search"
+    },
+    {
+      "slug": "yugabytedb",
+      "toolkit": "yugabytedb",
+      "name": "YugabyteDB",
+      "logoUrl": "https://design-system.arcade.dev/icons/yugabytedb.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/databases/yugabytedb",
+      "aliases": [
+        "YugabyteDB",
+        "yugabytedb"
+      ],
+      "category": "databases"
+    },
+    {
+      "slug": "zendesk",
+      "toolkit": "zendesk",
+      "name": "Zendesk",
+      "logoUrl": "https://design-system.arcade.dev/icons/zendesk.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/customer-support/zendesk",
+      "aliases": [
+        "Zendesk",
+        "zendesk"
+      ],
+      "category": "customer-support"
+    },
+    {
+      "slug": "zoho-books-api",
+      "toolkit": "zoho-books-api",
+      "name": "Zoho Books API",
+      "logoUrl": "https://design-system.arcade.dev/icons/zoho-books.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/payments/zoho-books-api",
+      "aliases": [
+        "ZohoBooksApi",
+        "zoho-books-api"
+      ],
+      "category": "payments"
+    },
+    {
+      "slug": "zoho-creator-api",
+      "toolkit": "zoho-creator-api",
+      "name": "Zoho Creator API",
+      "logoUrl": "https://design-system.arcade.dev/icons/zoho-creator.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/development/zoho-creator-api",
+      "aliases": [
+        "ZohoCreatorApi",
+        "zoho-creator-api"
+      ],
+      "category": "development"
+    },
+    {
+      "slug": "zoom",
+      "toolkit": "zoom",
+      "name": "Zoom",
+      "logoUrl": "https://design-system.arcade.dev/icons/zoom.svg",
+      "docsUrl": "https://docs.arcade.dev/en/resources/integrations/social-communication/zoom",
+      "aliases": [
+        "Zoom",
+        "zoom"
+      ],
+      "category": "social"
+    }
+  ]
+}

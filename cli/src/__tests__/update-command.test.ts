@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { flipCurrentAtomic, initializeInstallStore, payloadPathFor, readInstallManifest, resolveInstallStorePaths, writeInstallManifestAtomic, type InstallManifest, type InstallRecord } from "../install-store.js";
+import { writeManagedShim, flipCurrentAtomic, initializeInstallStore, payloadPathFor, readInstallManifest, resolveInstallStorePaths, writeInstallManifestAtomic, type InstallManifest, type InstallRecord } from "../install-store.js";
 import type { CommandRunner } from "../commands/install.js";
 import { compareVersions, detectInstallMode, resolveUpdateRequest, rollbackManagedInstall, updateCommand } from "../commands/update.js";
 
@@ -36,6 +36,56 @@ afterEach(() => {
 });
 
 describe("update command", () => {
+  it.each(["npm", "git", "global-npm"] as const)("rejects %s updates on unsupported Node before any update work", async (source) => {
+    const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
+    const payload = payloadPathFor(paths, "npm", "1.0.0");
+    const entrypoint = createPayload(payload, "1.0.0");
+    flipCurrentAtomic(payload, paths);
+    const manifest: InstallManifest = { schemaVersion: 1, ...record(payload, "1.0.0"), source: source === "git" ? "git" : "npm", previous: [] };
+    writeInstallManifestAtomic(manifest, paths);
+    const runCommand = vi.fn<CommandRunner>();
+    const backup = vi.fn();
+    const restartActiveService = vi.fn();
+    const nodeVersion = Object.getOwnPropertyDescriptor(process.versions, "node")!;
+    Object.defineProperty(process.versions, "node", { ...nodeVersion, value: "22.22.2" });
+    try {
+      await expect(updateCommand({ yes: true }, {
+        paths,
+        executablePath: source === "global-npm" ? path.join(root, "lib", "node_modules", "paperclipai", "dist", "index.js") : entrypoint,
+        runCommand, backup, restartActiveService,
+      })).rejects.toThrow("npx paperclipai@latest install --yes");
+      expect(runCommand).not.toHaveBeenCalled();
+      expect(backup).not.toHaveBeenCalled();
+      expect(restartActiveService).not.toHaveBeenCalled();
+      expect(readInstallManifest(paths)).toEqual(manifest);
+      expect(fs.realpathSync(paths.currentPath)).toBe(fs.realpathSync(payload));
+    } finally {
+      Object.defineProperty(process.versions, "node", nodeVersion);
+    }
+  });
+
+  it("keeps update checks, dry runs, and rollback available on unsupported Node", async () => {
+    const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
+    const oldPayload = payloadPathFor(paths, "npm", "1.0.0"); createPayload(oldPayload, "1.0.0");
+    const payload = payloadPathFor(paths, "npm", "2.0.0"); const executablePath = createPayload(payload, "2.0.0");
+    flipCurrentAtomic(payload, paths);
+    writeInstallManifestAtomic({ schemaVersion: 1, ...record(payload, "2.0.0"), previous: [record(oldPayload, "1.0.0")] }, paths);
+    const runCommand = vi.fn(async () => ({ stdout: '\"3.0.0\"\n', stderr: "" }));
+    const restartActiveService = vi.fn(async () => false);
+    const nodeVersion = Object.getOwnPropertyDescriptor(process.versions, "node")!;
+    Object.defineProperty(process.versions, "node", { ...nodeVersion, value: "22.22.2" });
+    try {
+      await updateCommand({ check: true }, { paths, executablePath, runCommand });
+      await updateCommand({ dryRun: true }, { paths, executablePath, runCommand });
+      expect(readInstallManifest(paths)?.version).toBe("2.0.0");
+      await updateCommand({ rollback: true }, { paths, executablePath, restartActiveService });
+      expect(readInstallManifest(paths)?.version).toBe("1.0.0");
+      expect(restartActiveService).toHaveBeenCalledWith("1.0.0");
+    } finally {
+      Object.defineProperty(process.versions, "node", nodeVersion);
+    }
+  });
+
   it("orders SemVer prerelease identifiers numerically", () => {
     expect(compareVersions("1.0.0-canary.10", "1.0.0-canary.2")).toBeGreaterThan(0);
     expect(compareVersions("1.0.0-1", "1.0.0-alpha")).toBeLessThan(0);
@@ -72,12 +122,16 @@ describe("update command", () => {
     fs.writeFileSync(path.join(newPayload, "node_modules", "paperclipai", "package.json"), JSON.stringify({ version: "0.3.1" }));
     flipCurrentAtomic(oldPayload, paths);
     writeInstallManifestAtomic({ schemaVersion: 1, source: "git", version: "0.3.1", channel: "pinned", repo: "paperclipai/paperclip", ref: "master", sha: oldSha, payloadPath: oldPayload, installedAt: "2026-07-22T00:00:00.000Z", previous: [] }, paths);
+    writeManagedShim(paths);
+    // Simulate a launcher generated before child-runtime PATH pinning existed.
+    fs.writeFileSync(paths.shimPath, fs.readFileSync(paths.shimPath, "utf8").replace(/^export PATH=.*\n/m, ""));
     const backup = vi.fn(async () => undefined);
     const confirm = vi.fn(async () => true);
     const restartActiveService = vi.fn(async () => true);
     const runCommand = vi.fn(async (file: string) => file === "curl" ? { stdout: JSON.stringify({ sha: newSha }), stderr: "" } : { stdout: "0.3.1\n", stderr: "" });
     await updateCommand({}, { paths, executablePath: executable, runCommand, backup, confirm, restartActiveService, hasInstanceData: () => true, now: () => new Date("2026-07-22T12:00:00Z") });
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining(`commit ${newSha.slice(0, 12)}`));
+    expect(fs.readFileSync(paths.shimPath, "utf8")).toContain(`export PATH='${path.dirname(process.execPath)}'`);
     expect(backup).toHaveBeenCalledOnce();
     expect(restartActiveService).toHaveBeenCalledWith("0.3.1");
     expect(readInstallManifest(paths)?.sha).toBe(newSha);
@@ -134,6 +188,9 @@ describe("update command", () => {
     const paths = resolveInstallStorePaths(); initializeInstallStore(paths);
     const oldPayload = payloadPathFor(paths, "npm", "1.0.0"); const executable = createPayload(oldPayload, "1.0.0"); flipCurrentAtomic(oldPayload, paths);
     writeInstallManifestAtomic({ schemaVersion: 1, ...record(oldPayload, "1.0.0"), previous: [] }, paths);
+    writeManagedShim(paths);
+    // Simulate a launcher generated before child-runtime PATH pinning existed.
+    fs.writeFileSync(paths.shimPath, fs.readFileSync(paths.shimPath, "utf8").replace(/^export PATH=.*\n/m, ""));
     const backup = vi.fn(async () => undefined);
     const restartActiveService = vi.fn(async () => true);
     const runCommand = vi.fn(async (file: string, args: string[]) => {
@@ -142,6 +199,7 @@ describe("update command", () => {
       return { stdout: "2.0.0\n", stderr: "" };
     });
     await updateCommand({}, { paths, executablePath: executable, runCommand, backup, restartActiveService, hasInstanceData: () => true, now: () => new Date("2026-07-22T12:00:00Z") });
+    expect(fs.readFileSync(paths.shimPath, "utf8")).toContain(`export PATH='${path.dirname(process.execPath)}'`);
     expect(backup).toHaveBeenCalledOnce();
     expect(restartActiveService).toHaveBeenCalledWith("2.0.0");
     expect(readInstallManifest(paths)?.version).toBe("2.0.0");

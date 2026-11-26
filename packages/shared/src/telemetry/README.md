@@ -1,7 +1,9 @@
 # Telemetry Data Contract
 
 This document explains how contributors should use Paperclip's public telemetry
-contract. It intentionally does not list individual events or dimensions.
+contract. It does not duplicate the full list of individual events or
+dimensions. It documents extra semantic and privacy rules where the generated
+shape is not sufficient.
 
 The canonical source for first-party event names, dimensions, optionality,
 allowed primitive value types, and enum descriptions is
@@ -15,18 +17,18 @@ types as the final authority for emitted first-party telemetry shapes.
 
 Use these files when reviewing or changing telemetry code:
 
-| Contract item | Public source |
-| --- | --- |
-| First-party event names | `PaperclipEventName` in `generated/paperclip-telemetry.ts` |
-| Per-event dimensions and optionality | `EventDimensionsMap` in `generated/paperclip-telemetry.ts` |
-| Enum descriptions for telemetry dimensions | `PAPERCLIP_ENUM_DESCRIPTIONS` in `generated/paperclip-telemetry.ts` |
-| Schema version and event envelope helpers | `SCHEMA_VERSION`, `makeEvent()`, and `makeBatch()` in `generated/paperclip-telemetry.ts` |
-| Runtime-safe event names and dimensions | `TelemetryEventName` and `TelemetryEventDimensions` in `types.ts` |
-| Allowed primitive dimension values | `TelemetryDimensionValue` in `types.ts` |
-| Shared reusable enum domains | Named exports in `constants.ts` |
-| First-party typed emit helpers | `events.ts` |
-| Generic client behavior | `client.ts` |
-| Retention windows and event class assignments | `RETENTION_DAYS` and `EVENT_RETENTION_CLASS` in `retention.ts` |
+| Contract item                                 | Public source                                                                            |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| First-party event names                       | `PaperclipEventName` in `generated/paperclip-telemetry.ts`                               |
+| Per-event dimensions and optionality          | `EventDimensionsMap` in `generated/paperclip-telemetry.ts`                               |
+| Enum descriptions for telemetry dimensions    | `PAPERCLIP_ENUM_DESCRIPTIONS` in `generated/paperclip-telemetry.ts`                      |
+| Schema version and event envelope helpers     | `SCHEMA_VERSION`, `makeEvent()`, and `makeBatch()` in `generated/paperclip-telemetry.ts` |
+| Runtime-safe event names and dimensions       | `TelemetryEventName` and `TelemetryEventDimensions` in `types.ts`                        |
+| Allowed primitive dimension values            | `TelemetryDimensionValue` in `types.ts`                                                  |
+| Shared reusable enum domains                  | Named exports in `constants.ts`                                                          |
+| First-party typed emit helpers                | `events.ts`                                                                              |
+| Generic client behavior                       | `client.ts`                                                                              |
+| Retention windows and event class assignments | `RETENTION_DAYS` and `EVENT_RETENTION_CLASS` in `retention.ts`                           |
 
 Do not copy generated event lists or dimension tables into this README. They
 will drift as the generated contract changes.
@@ -51,241 +53,273 @@ to a stable reporting shape.
 Do not add client-side lowercasing, alias mapping, or fallback mapping unless
 the generated telemetry contract specifically requires that emitted value.
 
+The `adapter_type` dimension on `agent.task_run` and `agent.task_completed` is
+not an alias map. For a Paperclip runner agent, the server sends the harness
+that `agentHarnessType()` resolves from the agent configuration. The receiving
+layer does not get that configuration, so it cannot derive the harness from
+`paperclip_runner`. The emitter sends the resolved value raw. It does not fall
+back to `other`.
+
 If a dimension is privacy-protected before emission, emit only the protected
 value and its matching public marker as defined by the typed helper or generated
 contract. Do not emit private source material in telemetry dimensions.
 
-## Sandbox Startup Trace Spans
+Credential-bearing chat setup failures replace provider-controlled error names,
+messages, and stacks with a fresh generic error before the HTTP error handler
+reports the crash. The existing `error.handler_crash` event still uses its
+generated `error_code: string` contract; this path emits only `Error`, never a
+provider-supplied error name that may contain a credential. This is a privacy
+boundary, not enum canonicalization. Test the value reaching the telemetry
+helper as well as the separate crash-reporting and local logging sinks.
 
-Paperclip opens OpenTelemetry spans on the sandbox start path. These spans are a
-separate telemetry surface from the first-party events above. The generated
-telemetry contract does not cover them, so this section is their canonical
-contract.
+## Server Startup Privacy
 
-The spans are opt-in. Paperclip exports them only when an OTLP endpoint is
-configured. With no endpoint the whole span path is a no-op. Paperclip opens the
-spans only for a run that targets a remote sandbox. A local run and an SSH run
-stay out of these spans.
+The startup helper emits the raw Node.js operating system family once when an
+enabled server telemetry client initializes. It omits OS versions, CPU
+architecture, hostnames, and other machine details. The usual telemetry opt-out
+and CI suppression apply before client initialization. If state storage fails
+at startup, the server disables telemetry for that process and continues to run.
+The warning contains no storage path or underlying error. Container and WSL servers
+report their runtime platform; this does not identify the underlying physical
+host's OS. Count distinct installation identifiers by platform to compare
+installations, since restart event counts also reflect restart frequency.
 
-Every span attribute uses the closed `paperclip.sandbox.startup.` prefix and
-rides a fixed allowlist. A command line, an argument, an environment value, a
-file path, program output, or a raw identifier never rides a span. It rides
-neither as an attribute nor as an event. The producer bounds each free-form
-value:
+Contract syncs may also register existing proposals. Remove each adopted
+proposal marker and update its helper and transport tests in the same change.
+The connector helpers preserve raw enum values and send only catalog connector
+keys and the approved lifecycle and invocation dimensions. Connection names,
+credentials, tool arguments, and tool results stay out of those events.
 
-- A command basename maps to a small known set. Any other value maps to `other`.
-- A region maps to a small known set. Any other value maps to `unknown`.
-- An image id, a sandbox id, and a lease id ride only as a non-reversible short
-  hash.
+## Interaction Resolver Events
 
-Each numeric attribute is finite. Paperclip omits an attribute when its value is
-absent, never a misleading `0`.
+`interaction.created` records the interaction kind and whether the create
+request used a deprecated resolver-policy alias. It does not record the prompt,
+title, options, questions, target identifier, creator identifier, or resolver
+identifier.
 
-### Spans
+`interaction.resolved` records the low-cardinality interaction outcome defined
+in the generated contract. Its `legacy_inherited_restriction` dimension is
+`true` only when stored migration provenance preserves a legacy resolver-policy
+restriction. It is `false` for canonical new writes. This dimension describes
+policy provenance. It does not contain user content or an identifier.
 
-| Span | Scope | Parent |
-| --- | --- | --- |
-| `sandbox.startup` | The one root span for a sandbox bring-up. | none (root) |
-| `workspace.resolve` | Workspace resolution step. | `sandbox.startup` |
-| `codex-home.seed` | Managed-home seed step. | `sandbox.startup` |
-| `skills.reconcile` | Skills reconcile step. | `sandbox.startup` |
-| `stage.sync` | Workspace stage-sync step. | `sandbox.startup` |
-| `snapshot.git` | Host-side git workspace enumeration inside `stage.sync` (`git status --ignored`, the HEAD diffs, `ls-files`). | `stage.sync` |
-| `snapshot.baseline` | Host-side baseline workspace content-hash walk inside `stage.sync`, kept for restore. | `stage.sync` |
-| `pack` | Host-side workspace tarball build inside `stage.sync`. | `stage.sync` |
-| `bridge.paperclip` | Paperclip bridge start step. | `sandbox.startup` |
-| `bridge.process-session` | Process-session bridge start step. | `sandbox.startup` |
-| `acp.handshake` | ACP session handshake step. | `sandbox.startup` |
-| `sandbox.agentSession.sendInput` | One outbound ACP message to the agent — the socket handler's one `writeTextFile` exec. | the active run span |
-| `sandbox.agentSession.pollOutput` | One 100 ms poll tick — `list`, then `read`+`remove` per file found (`1 + 2n` execs). | the active run span |
-| `sandbox.callbackBridge.relayRequest` | One Paperclip-API callback request — read the request, write the response, remove it. | the active run span |
-| `sandbox.agentProcess` | The persistent streamed agent process the process-session bridge launches; open until the process settles or the bridge tears down, whichever comes first. | the active run span |
-| `sandbox.exec` | One host-to-sandbox execution. | the active step or wrapper span |
+Emit `interaction.resolved` only after the complete decision transaction commits.
+Conversational answers include the card outcome, source-message reference, and
+activity audit in that transaction. A rollback or matching retry must not emit
+a resolution event. This changes emission timing only: message text, comment IDs,
+and user IDs remain in the instance database and are not added to telemetry.
 
-A step span name is the step name. The `sandbox.exec` span parents to the step
-span that runs the execution, so each execution nests under its step. Within
-`stage.sync`, the host-side sub-steps `snapshot.git`, `snapshot.baseline`, and
-`pack` open as child spans of the step, so the host work at the head of the step
-is attributed rather than showing as a gap. A run-time
-`sandbox.exec` span parents instead to the run-time wrapper span that runs it
-(`sandbox.agentSession.sendInput`, `sandbox.agentSession.pollOutput`,
-`sandbox.callbackBridge.relayRequest`, or `sandbox.agentProcess`). Each run-time
-wrapper span parents to the live run span (`agent.turn` during the turn,
-`task.run` otherwise). With no active trace context the exec span opens
-unparented.
+Use `trackInteractionCreated()` and `trackInteractionResolved()` from
+`events.ts` to emit these events. The generated contract remains the authority
+for their exact dimensions and optionality.
 
-`sandbox.agentProcess` wraps the persistent streamed agent process. The
-process-session bridge launches it during `bridge.process-session`, so it opens
-under `task.run` — no turn has started yet. It therefore overlaps the sibling
-`agent.turn` rather than nesting under it or dangling off the short-lived bring-up
-step. The span ends when the process settles or when the bridge tears down,
-whichever comes first. The bridge tears down before the run root span ends, so
-the span never outlives `task.run` even when the process lingers past teardown
-(the sandbox `execute` has no cancel, so a lingering process cannot be forced to
-resolve).
+## Agent Task Run Events
 
-The root span sets the error status when the bring-up fails. Each step span sets
-the error status when its step fails. The `sandbox.exec` span sets the error
-status when the exit code is non-zero or the execution throws.
+`agent.task_run` records one terminal state for one agent run: `succeeded`,
+`interrupted`, `failed`, `cancelled`, or `timed_out`. Emit it once per run, at
+the run's terminal transition. Do not emit it for a run that is still active.
 
-### Outcome values
+The event's `task_id` dimension is optional and privacy-protected. Never emit
+the raw task id. Pass the raw id to `trackAgentTaskRun()` in `events.ts`. The
+helper calls `hashPrivateRef()` on `client.ts`, which derives the emitted
+value with a salted hash of the per-installation secret.
 
-The `paperclip.sandbox.startup.outcome` attribute uses a closed value set:
+Use `trackAgentTaskRun()` to emit this event. The generated contract remains
+the authority for its exact dimensions and optionality.
 
-- `ok` — the step or the execution settled with a success result.
-- `skipped` — a warm cache skipped the step; the step ran no work.
-- `failed` — the step or the execution threw, or the exit code was non-zero.
+Failed, timed-out, and interrupted runs also carry `failure_cause`. The server
+picks this code from the run's stored error code and its provider failure
+category, in `server/src/services/agent-task-run-telemetry.ts`. The code is a
+fixed enum. It never contains error text, provider messages, or SQL. An error
+code that the mapping does not know is sent as `unknown`. The provider failure
+category decides the code only for the generic `adapter_failed` and
+`provider_failed` codes, or when there is no error code. The mapping reuses the
+run failure code sets in `server/src/services/continuation-cause.ts`, and a
+test fails when a code in those sets has no telemetry code.
 
-### Root span attributes
+The `adapter_type` dimension on `agent.task_run` and `agent.task_completed`
+reports the harness the agent runs, as `agentHarnessType()` resolves it. A
+Paperclip runner agent therefore reports its underlying harness (for example
+`claude_local` or `codex_local`), not `paperclip_runner`. The one rename is the
+Copilot harness: `agentHarnessType()` returns `acpx:copilot`, and telemetry
+sends `copilot_runtime`, the name `agentRuntimeSettingsHarness()` also uses.
+Every runner harness is in the generated `adapter_type` enum. A test in
+`server/src/__tests__/agent-task-run-telemetry.test.ts` fails when a runner
+harness is missing from the contract. Add it to the telemetry-backend schema
+first, then copy the regenerated contract here.
 
-The `sandbox.startup` root span uses this closed attribute allowlist.
+`agent.task_completed` records one task completion when an agent moves a task
+from a non-`done` status into `done`. Both the REST issue update route and the
+native status decision committer (`commitNativeStatusDecision` via
+`emitAgentTaskCompleted`) emit this event once per committed transition into
+`done`. Native completion starts the emit after the transaction commits without
+awaiting it, so telemetry lookups never block or fail run finalization. A
+rolled-back transaction, a replayed native decision (`replayed: true`), or a
+commit on a task that is already `done` (for example, already closed by the
+issue route) emits nothing. Native completion sends the same dimensions as the
+issue route, including `telemetryAdapterType()` for Paperclip runner harnesses
+and `withTelemetryActor()` / `resolveTelemetryPerson()` for Cloud company and
+person attribution.
 
-| Attribute | Type | Optional | Meaning |
-| --- | --- | --- | --- |
-| `paperclip.sandbox.startup.root.wall_ms` | number | no | The root-span wall time of the whole bring-up. |
-| `paperclip.sandbox.startup.root.work_ms` | number | no | The sum of the step wall times. |
-| `paperclip.sandbox.startup.root.diff_ms` | number | no | `work_ms − wall_ms`; the overlap the parallel steps saved. |
-| `paperclip.sandbox.startup.provider` | string | yes | The normalized provider family. |
-| `paperclip.sandbox.startup.cold_start` | boolean | yes | Whether the bring-up is a cold start. |
-| `paperclip.sandbox.startup.region` | string | yes | The clamped region label. |
-| `paperclip.sandbox.startup.image_id` | string | yes | The hashed image id. |
-| `paperclip.sandbox.startup.sandbox_id` | string | yes | The hashed sandbox id. |
-| `paperclip.sandbox.startup.lease_id` | string | yes | The hashed lease id. |
+## Product Lifecycle Events
 
-### Step span attributes
+`model.connected`, `task.created`, `task.completed`, `task.blocked`,
+`plan.created`, `plan.approved`, and `artifact.created` describe the main
+product path. Their dimensions are enums, booleans, and counts only. They never
+contain a task title, a document body, a plan step, a connection or account
+name, an email, a URL, a repository name, or an endpoint address.
 
-Each bring-up step span uses this closed attribute allowlist. The step name
-rides the span name, so no `step` attribute repeats it.
+The server emits these events through
+`server/src/services/product-telemetry.ts`. Each emit site runs inside the
+transaction that writes the change, and the helper sends the event only after
+that transaction commits (`afterTransactionCommit` in `@paperclipai/db`). A
+rolled-back write sends nothing. This includes a write in a savepoint that
+rolls back while the outer transaction commits. The
+helper also wraps the track call in `withTelemetryCompany()`, so Cloud direct
+delivery gets the company for background writes.
 
-| Attribute | Type | Optional | Meaning |
-| --- | --- | --- | --- |
-| `paperclip.sandbox.startup.step.wall_ms` | number | no | The wall time of the step. |
-| `paperclip.sandbox.startup.outcome` | string | no | The step outcome (`ok`, `skipped`, or `failed`). |
-| `paperclip.sandbox.startup.provider` | string | yes | The normalized provider family. |
-| `paperclip.sandbox.startup.batch` | string | yes | A shared tag that marks two parallel steps as one batch. |
-| `paperclip.sandbox.startup.handshake.create_runtime.wall_ms` | number | yes | The create-runtime sub-time of the `acp.handshake` step. |
-| `paperclip.sandbox.startup.handshake.ensure_session.wall_ms` | number | yes | The ensure-session sub-time of the `acp.handshake` step. |
+These rules keep one event per real change:
 
-The round-trip count and the provider durations no longer ride a step span. The
-per-execution `sandbox.exec` child spans carry that detail.
+- `task.created` is sent for a newly inserted task only. Chat conversations,
+  company imports, and create requests that return an existing task do not send
+  it. `created_by_kind` is `routine` for a routine-run task and `onboarding` for
+  the first task from the onboarding wizard. Otherwise it is the acting kind.
+- `task.completed` and `task.blocked` are sent when a task's status changes
+  from another value to `done` or `blocked`. Writing the same status again
+  sends nothing. `issueService.update` covers most writers. The two direct
+  writers that block a task (the dispatch check for unrunnable workspace
+  settings and execution recovery) call the same helper as a system write.
+  A new direct status writer must call it too.
+- `blocked_reason` is derived at the transition. A blocking task that is not
+  done gives `waiting_on_task`. A cancelled blocker counts, because it stays
+  unresolved until someone changes the relation. Otherwise, the unblock owner gives `waiting_for_person` or
+  `waiting_for_agent`. A system write with neither gives `needs_recovery`. A
+  person or agent write with neither gives `unspecified`.
+- `plan.created` is sent for the first revision of a task's `plan` document
+  only.
+- `plan.approved` is sent when a person or agent accepts a confirmation request
+  whose target is the task's `plan` document.
+- `model.connected` is sent for a new AI provider connection. A reconnect of an
+  existing connection does not send it.
+- `artifact.created` is sent for a new task work product. A work product
+  provider outside `paperclip`, `github`, `vercel`, and `s3` is sent as
+  `custom`, so a private service name never leaves the installation.
 
-### `sandbox.exec` span attributes
+The actor kind is `agent` when an agent acts, `user` when a person acts, and
+`system` when neither does.
 
-The `sandbox.exec` span uses this closed attribute allowlist. Paperclip omits a
-numeric attribute when the provider does not report the value.
+On Cloud direct delivery, each of these events also names the responsible
+person with `withTelemetryActor()` and `resolveTelemetryPerson()`: the task
+creator, else the task's responsible user, else the run owner (the acting
+person, the plan author, or the user who owns the model connection). A live
+request still wins. The self-hosted collector envelope does not change.
 
-| Attribute | Type | Optional | Meaning |
-| --- | --- | --- | --- |
-| `paperclip.sandbox.startup.provider` | string | no | The normalized provider family. |
-| `paperclip.sandbox.startup.exec.command` | string | no | The clamped `argv[0]` command label. |
-| `paperclip.sandbox.startup.exec.exit_code` | number | yes | The numeric process exit code. |
-| `paperclip.sandbox.startup.exec.wall_ms` | number | no | The host-measured wall time of the execution. |
-| `paperclip.sandbox.startup.exec.wait_before_ms` | number | yes | The provider handle-fetch wait before the execution ran. |
-| `paperclip.sandbox.startup.exec.sandbox_ms` | number | yes | The in-sandbox run time of the execution. |
-| `paperclip.sandbox.startup.exec.network_ms` | number | yes | The transport time the host adds; `wall_ms − wait_before_ms − sandbox_ms`. |
-| `paperclip.sandbox.startup.exec.critical_path` | boolean | no | Whether the execution sits on the startup critical path. |
-| `paperclip.sandbox.startup.exec.cache_hit` | boolean | yes | Whether the provider served the sandbox handle from its warm cache. |
-| `paperclip.sandbox.startup.outcome` | string | no | The execution outcome (`ok` or `failed`). |
+## Connector Events
 
-The plugin decides the cache hit at the sandbox-handle lookup. The span no
-longer infers a cache hit from `wait_before_ms == 0`. Paperclip omits the
-`cache_hit` attribute when the provider does not report the value.
+`connection.created`, `connection.updated`, and `connection.invoked` describe
+tool connectors. `connection.app_linked` and `connection.app_requested`
+describe apps reached through the Composio, Arcade, and Executor aggregator
+gateways. The server emits all of them through
+`server/src/services/connector-telemetry.ts`.
 
-To add a span attribute, extend the `SANDBOX_STARTUP_SPAN_ATTRS` allowlist in
-the code first. Keep the attribute low-cardinality and free of user content.
+- `connector_key` is a slug from the shared connector catalog. Every other
+  connection, including custom MCP servers and plugin connectors, sends the
+  literal `custom`.
+- `server_domain` is sent only when `connector_key` is `custom`. It is the
+  registrable domain of the remote server (the ICANN public suffix plus one
+  label, from `tldts`), so `mcp.example.com/sse?token=...` sends `example.com`.
+  The path, query, port, credentials, and subdomains are never sent. IP
+  addresses, loopback, single-label hosts, non-ICANN or special-use suffixes
+  (such as `.local`, `.internal`, `.home.arpa`, `.onion`), non-HTTP schemes,
+  and unparsable addresses send `private`. Local stdio servers send `stdio`. A
+  remote connection with no address yet omits the field.
+- `app` is a slug from the shared aggregator app catalog
+  (`aggregator-app-catalog.ts`), resolved from the provider's toolkit name.
+  Every other toolkit, including Executor custom integrations, sends `other`.
+  The provider's own app name or account name is never sent.
+- `connection.app_linked` is sent when a person's cached app observation
+  changes to `connected` from any other status or from no observation. A
+  re-sync that finds the app still connected sends nothing.
+- `connection.app_requested` is sent once per request to add an app: from
+  the app setup screens (`origin: user`), or from the tool gateway when an
+  agent calls `COMPOSIO_MANAGE_CONNECTIONS` with `add`, or when an Arcade tool
+  call answers with an authorization step (`origin: agent`). `outcome` is
+  read from each app's own result: `needs_auth` when the provider returns a
+  sign-in step for that app, `succeeded` when the app is connected, and
+  `failed` otherwise. A sign-in link for another app in the same request
+  never counts.
 
-### Provider spans
+## Cloud Direct Delivery
 
-A sandbox provider plugin also opens spans for its own sync steps. These spans
-use the `sandbox.daytona.` name prefix. They share the
-`paperclip.sandbox.startup.` attribute prefix and obey the same opt-in and
-no-user-content rules as the startup spans above.
+Self-hosted installs are unchanged. They post every batch to the collector,
+private references stay hashed by `hashPrivateRef()`, and the collector and
+its loader apply their anonymization. A self-hosted server never loads
+`posthog-node`.
 
-The plugin worker runs in a separate process from the host. So the host treats
-every field of a worker-sent span as untrusted input. The host re-clamps the
-span name and every attribute at one boundary, the `span.record` host handler,
-before it records the span.
+A Paperclip Cloud stack can send telemetry straight to PostHog instead. The
+server turns this on only when the instance is Cloud-managed and
+`PAPERCLIP_POSTHOG_PROJECT_TOKEN`, `PAPERCLIP_CLOUD_STACK_ID`, and
+`PAPERCLIP_POSTHOG_ENVIRONMENT` are set.
+`PAPERCLIP_POSTHOG_DIRECT=0` sends through the collector again. The server owns
+this transport (`server/src/services/posthog-direct/`). This package only
+exposes the `TelemetryTransport` seam on `TelemetryClient`:
 
-| Span | Scope | Parent |
-| --- | --- | --- |
-| `sandbox.daytona.pack` | The host-local pack step that builds the upload tarball. It makes no sandbox round trip. | the active startup step span |
-| `sandbox.daytona.transfer` | The transfer step that uploads the files to the sandbox. | the active startup step span |
-| `sandbox.daytona.ensureDirectory` | The `mkdir -p` step that ensures a directory exists before a write. | the active startup step span |
-| `sandbox.daytona.checkSymlinkEscape` | The re-check step that a path resolves inside the workspace root before use. | the active startup step span |
-| `sandbox.daytona.promote` | The atomic move of a staged temp onto its target via a pinned dir handle. | the active startup step span |
-| `sandbox.daytona.extractTarball` | The one round trip that re-checks the path, runs `tar -xf`, and removes the scratch tarball. | the active startup step span |
-| `sandbox.daytona.postUploadCommand` | One caller-supplied post-upload command. | the active startup step span |
-| `sandbox.daytona.session.open` | The create of the one persistent session for a lease, on the first in-run command. | the active run span |
-| `sandbox.daytona.session.close` | The delete of that persistent session on lease release. | the active run span |
-| `sandbox.daytona.other` | Any span name outside the known set. | the active startup step span |
+- With a transport, each flushed batch goes to the transport and never to the
+  collector. One batch has exactly one sender.
+- A transport with `hashesPrivateRefs: false` makes the typed helpers emit raw
+  task ids. Private source refs (for example a private repository name) are
+  customer content, not identifiers, so they stay hashed on every path and
+  `source_ref_hashed` stays `true` for them.
+- The transport can capture per-event context at track time. That context is
+  never added to the collector envelope.
+- Background work (heartbeat runs, routine runs, connection invocations, and
+  interactions) has no request. The server emit site wraps the track call in
+  `withTelemetryCompany(companyId, fn)` from
+  `server/src/telemetry-company-scope.ts`, with the company of the entity it
+  reports on. Only the direct transport reads this scope, and it uses it only
+  when no live request supplies a company. The collector envelope and the
+  dimensions do not change.
+- Agent-driven events (`agent.task_run`, `agent.task_completed`, and
+  `agent.first_heartbeat`) also name the person responsible for the work, with
+  `withTelemetryActor({ companyId, person }, fn)` and
+  `resolveTelemetryPerson()` from the same file. The person is the user who
+  created the task, else the task's responsible user (who assigned or
+  delegated it), else the user who owns the run (for `agent.first_heartbeat`,
+  the user who created the agent). The emit site reads these ids from rows it
+  already loads; the transport does no database reads. A signed-in user on a
+  live request always wins over this scope. With no person, the event stays on
+  `workspace:<stackId>` with `$process_person_profile: false`. Every direct
+  event carries `attributed_via`: `request`, `task_creator`, `task_assigner`,
+  `run_owner`, or `none`. The collector path never reads this scope, so the
+  self-hosted envelope does not change.
 
-The host clamps the span name to the closed set of leaf names above (`pack`,
-`transfer`, `ensureDirectory`, `checkSymlinkEscape`, `promote`, `extractTarball`,
-`postUploadCommand`, `session.open`, and `session.close`). The host maps a known
-name to `sandbox.daytona.<name>`. The host maps any other value to
-`sandbox.daytona.other`, so a span name never carries free-form data. Only the
-daytona provider emits these spans today, so the segment is the literal
-`daytona`.
+Cloud is Paperclip's own service under the Cloud terms, so its events carry
+real identifiers: raw agent and task ids, the stack id, and the company and
+acting user ids when known. Event names, dimension names, metadata keys, the
+deterministic event uuid, and enum fallback normalization stay the same as the
+collector path, so existing insights keep working. Request headers from the
+browser SDK only link an event to a browser session. They never set identity
+or grant access. Do not use this path to send fields that are not in the
+generated contract.
 
-The `sandbox.daytona.*` spans use this closed attribute allowlist. The host
-drops every other key, so a command, an argument, a path, an id, a standard
-output, or a standard error never rides a provider span. The host records only
-the attributes that the producer sends for one span.
+On each start, a Cloud server with direct delivery also sends one
+`cloud.workspace_started` event and a workspace `$groupidentify`, straight
+through the PostHog client. Neither is in the generated contract, and neither
+goes through `TelemetryClient` or the collector. The event carries
+`install_hash`, the sha256 of the install id, which is the same value the
+collector stores as `install_id`. It lets an offline job join a workspace's
+pre-switch history. No other event carries `install_hash`.
 
-| Attribute | Type | Optional | Meaning |
-| --- | --- | --- | --- |
-| `paperclip.sandbox.startup.provider` | string | no | The normalized provider family. |
-| `paperclip.sandbox.startup.outcome` | string | yes | The step outcome (`ok`, `skipped`, or `failed`). |
-| `paperclip.sandbox.startup.pack.wall_ms` | number | yes | The host-local wall time of the pack step. It rides the `sandbox.daytona.pack` span. |
-| `paperclip.sandbox.startup.transfer.wall_ms` | number | yes | The wall time of the transfer step. It rides the `sandbox.daytona.transfer` span. |
-| `paperclip.sandbox.startup.transfer.guard.count` | number | yes | The number of serial guard round trips before one transfer. It rides the `sandbox.daytona.transfer` span. |
+### Other Data Paths
 
-The `span.record` host handler enforces the allowlist. It re-maps `provider`
-through the provider-family normalizer. It keeps `outcome` only when the value
-is `ok`, `skipped`, or `failed`. It keeps a numeric attribute only when the
-value is a finite number. It drops a status message and keeps only the numeric
-status code. The handler never throws, because observability must not change the
-sync control flow.
+This document covers Paperclip Telemetry only. The generated Telemetry
+contract covers neither the Observability path nor the run-log path. Two other
+data paths document their own contract in their own file:
 
-The `span.record` host method needs the `environment.drivers.register`
-capability. So only a plugin that registers an environment driver may emit a
-provider span. The capability gate rejects a provider span from any other
-plugin.
-
-The host parents each provider span to the active startup step span. The host
-mints a W3C `traceparent` from the active step and passes it to the plugin
-worker on the per-call invocation channel. The worker tags its span with the
-`traceparent` and treats the value as opaque. The worker never derives the
-parent from it. The host recovers the `traceparent` from its own invocation
-record, so a worker can never forge a parent. The host validates the
-`traceparent` and rejects a missing or malformed value. With no active host
-trace context the worker sends no span, so the whole provider-span path is a
-no-op.
-
-## Sandbox Startup Run-Log Event
-
-Paperclip writes one `run.startup.step` event to the run log for each bring-up
-step. This event is a run-log record, not a first-party telemetry event. The
-generated telemetry contract does not cover it, so this section is its canonical
-contract.
-
-The event payload carries only three fields.
-
-| Field | Type | Meaning |
-| --- | --- | --- |
-| `step` | string | The bring-up step name, for example `stage.sync`. |
-| `durationMs` | number | The wall time of the step. A skipped step reports `0`. |
-| `outcome` | string | The step outcome (`ok`, `skipped`, or `failed`). |
-
-The event no longer carries the per-step round-trip count or the provider
-duration fields. It dropped `roundTrips`, `providerExecMs`, `providerGetMs`,
-`createRuntimeMs`, and `ensureSessionMs`. The startup spans in the section above
-carry that detail now. The `sandbox.exec` child spans hold the round-trip and
-provider durations. The `acp.handshake` step span holds the create-runtime and
-ensure-session sub-times.
-
-To read the detailed timing, use the startup spans. The spans need an OTLP
-endpoint. A run with no endpoint keeps only the three run-log fields above.
+- [Observability](../../../../doc/observability.md) — the operator-enabled
+  OpenTelemetry trace path and Sentry error monitoring.
+- [Run-Log Events](../../../../doc/run-log-events.md) — events written to the
+  local `heartbeat_run_events` table.
 
 ## Dimension Values
 
@@ -347,7 +381,9 @@ For stable event work:
    should have a stable helper API.
 7. Update tests for helper behavior, including raw pass-through for enum-like
    values when that is the intended boundary.
-8. Update this README only when the contributor workflow, source-of-truth
+8. Keep the telemetry transport contract assertions in `client.test.ts`, which
+   owns the emitted-envelope, retry, and payload-size boundaries.
+9. Update this README only when the contributor workflow, source-of-truth
    pointers, or durable invariants change. Do not add an event catalog here.
 
 Before opening a pull request, verify that the emitted code, typed helpers, and
@@ -367,11 +403,21 @@ concern — updating a retention window does not require a schema version bump.
 
 Current classes:
 
-| Class | Window | Description |
-| --- | --- | --- |
+| Class                    | Window  | Description                                                  |
+| ------------------------ | ------- | ------------------------------------------------------------ |
 | `operational_enum_count` | 90 days | Enum/boolean/count/bucket events. No token material, no PII. |
 
 When a new event carries only enums, booleans, counts, or coarse buckets and
 no token material or PII, assign it to `operational_enum_count` in
 `EVENT_RETENTION_CLASS`. If no existing class fits, define a new class in
 `RETENTION_DAYS` and document it here.
+
+## GitHub-synced skills
+
+The legacy import endpoint retains `skill.imported` with its existing `source_type`.
+For source-managed GitHub skills, `skill_ref` is omitted, including public sources:
+the saved repository may be private and its key contains user-authored names.
+Source discovery, selection, and refresh add no first-party telemetry events.
+Repository URLs, paths, commits, connection IDs, names, and file contents stay out
+of these telemetry dimensions. Review this suppression in privacy review alongside
+changes to the legacy import caller; the event schema and envelope are unchanged.
