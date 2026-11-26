@@ -347,7 +347,7 @@ export function CoordinatorNeedsYou() {
     const receipt = settlingIds.has(id) ? recentItems.find(entry => entry.id === id) : undefined;
     const phase = !receipt ? "pending" : ["cancelled", "expired"].includes(receipt.outcome) ? "closed" : "resolved";
     const refetchAll = () => { void feed.refetch(); void recent.refetch(); };
-    // Focus (PAP-770, PAP-775 IA5): a card about an artifact opens it beside the card (or in a sheet on mobile).
+    // Focus (PAP-770, PAP-775 IA5): a card about an artifact opens it beside the card.
     const artifact = needsYouArtifact(item);
     // The card stays highlighted while any of its artifacts is open beside it (UI9).
     const panelOpen = reviewPanelOpen && (isMobile || panelVisible);

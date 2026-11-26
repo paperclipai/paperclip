@@ -31,7 +31,6 @@ vi.mock("@/context/PanelContext", () => ({
     openPanel: fixture.openPanel,
     closePanel: fixture.closePanel,
     setPanelVisible: fixture.setPanelVisible,
-    // Desktop panel starts closed on mobile; mobile sheet must NOT auto-close because of this.
     panelVisible: false,
   }),
 }));

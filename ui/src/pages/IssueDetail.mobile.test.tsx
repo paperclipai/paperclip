@@ -324,7 +324,6 @@ describe("IssueDetail & AgentChat mobile parity", () => {
     });
     await flush();
 
-    // 1. More task actions (...) menu is reachable on mobile (not hidden inside hidden md:flex)
     const moreButton = container.querySelector<HTMLButtonElement>('button[aria-label="More task actions"]');
     expect(moreButton).not.toBeNull();
     expect(moreButton!.closest(".hidden")).toBeNull();
@@ -337,7 +336,6 @@ describe("IssueDetail & AgentChat mobile parity", () => {
     expect(document.body.textContent).toContain("Copy as markdown");
     expect(document.body.textContent).toContain("Hide this task");
 
-    // 2. Mobile header Properties button opens mobile TaskSidePanel Sheet
     const mobilePropsBtn = container.querySelector<HTMLButtonElement>('button[aria-label="Properties"]');
     expect(mobilePropsBtn).not.toBeNull();
     expect(document.querySelector('[data-testid="mobile-task-side-panel"]')).toBeNull();
@@ -349,7 +347,6 @@ describe("IssueDetail & AgentChat mobile parity", () => {
     expect(document.querySelector('[data-testid="mobile-task-side-panel"]')).not.toBeNull();
     expect(document.querySelector('[data-testid="task-side-panel-sentinel"]')?.textContent).toContain("PAP-6794");
 
-    // 3. BreadcrumbBar top-right toggle reflects open state and toggles mobile sheet closed/open
     const hideToggle = container.querySelector<HTMLButtonElement>('button[aria-label="Hide properties"]');
     expect(hideToggle).not.toBeNull();
     await act(async () => {
