@@ -2,7 +2,7 @@ import { environmentSupportsLoginPty } from "@paperclipai/shared";
 import { matchesAdapterLoginTarget, useAdapterLoginCancellation } from "./useAdapterLoginCancellation";
 import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, antigravityModelGroup, isAccountBoundAcpxAgent } from "@/lib/native-model-catalog";
 import { useConnectionModels } from "./ai-connections/useConnectionModels";
-import { agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, normalizeClaudeRunnerOptions, type AgentRunnerChoice } from "@paperclipai/shared";
+import { agentHarnessName, agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, normalizeClaudeRunnerOptions, type AgentRunnerChoice } from "@paperclipai/shared";
 import { adaptersApi } from "../api/adapters";
 import { canQualifyRunnerEnvironment, qualifyRunnerEnvironment } from "../lib/qualify-claude-setup";
 import { aiRoutingHarness } from "@paperclipai/shared";
@@ -821,8 +821,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const isDotRunner = runnerProvider === "openai_dot";
   const isGrokBotRunner = runnerProvider === "grok_bot";
   const isMuseRunner = runnerProvider === "muse";
-  const isAntigravityRunner = adapterType === "paperclip_runner" && harnessType === "antigravity_runtime";
-  const isCopilotRunner = adapterType === "paperclip_runner" && harnessType === "copilot_runtime";
+  const productHarnessName = agentHarnessName(adapterType, effectiveConfig);
+  const isAntigravityRunner = adapterType === "paperclip_runner" && productHarnessName === "antigravity_runtime";
+  const isCopilotRunner = adapterType === "paperclip_runner" && productHarnessName === "copilot_runtime";
   const isDedicatedAcpxRunner = isAntigravityRunner || isCopilotRunner;
   const isExternalRunner = isDotRunner || isGrokBotRunner || isMuseRunner;
   const showAdapterTestEnvironmentButton = !isGrokBotRunner && (props.showAdapterTestEnvironmentButton ?? true);
@@ -2084,6 +2085,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 disabledTypes={adapterPickerDisabledTypes}
                 openAiDotEnabled={experimentalSettings?.enableOpenAiDot === true}
                 nativeRunnerEnabled={experimentalSettings?.enableNativeRunner === true}
+                nativeAcpxHarnessesEnabled
                 museEnabled={experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true}
                 onChange={(choice) => {
                   if (choice === currentHarnessChoice) return;
@@ -4346,6 +4348,7 @@ export function AdapterTypeDropdown({
   openAiDotEnabled = false,
   museEnabled = false,
   nativeRunnerEnabled = false,
+  nativeAcpxHarnessesEnabled = false,
 }: {
   value: string;
   onChange: (type: string) => void;
@@ -4353,12 +4356,13 @@ export function AdapterTypeDropdown({
   openAiDotEnabled?: boolean;
   museEnabled?: boolean;
   nativeRunnerEnabled?: boolean;
+  nativeAcpxHarnessesEnabled?: boolean;
 }) {
   const cloud = Boolean(useCloudInstance());
   const harnessPolicy = useCloudHarnessPolicy();
   const selectedDisplay = getAdapterDisplay(value);
-  const antigravityQualified = PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "antigravity" && profile.qualified);
-  const copilotQualified = PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "copilot" && profile.qualified);
+  const antigravityQualified = nativeAcpxHarnessesEnabled && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "antigravity" && profile.qualified);
+  const copilotQualified = nativeAcpxHarnessesEnabled && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "copilot" && profile.qualified);
   const adapterList = useMemo(() =>
     [...listAdapterOptions(type => adapterLabels[type] ?? getAdapterLabel(type)),
       ...(antigravityQualified ? [{ value: "antigravity_runtime", label: adapterLabels.antigravity_runtime ?? getAdapterLabel("antigravity_runtime"), experimental: false, comingSoon: false }] : []),

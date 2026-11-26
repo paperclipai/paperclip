@@ -7,7 +7,7 @@ import type { Agent, Environment } from "@paperclipai/shared";
 import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
-import { AgentConfigForm } from "./AgentConfigForm";
+import { AdapterTypeDropdown, AgentConfigForm } from "./AgentConfigForm";
 import { isBlockedFromReplay } from "@/lib/analytics/replay-recording.test-utils";
 import { ApiError } from "../api/client";
 import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
@@ -393,5 +393,88 @@ describe("AgentConfigForm session replay masking", () => {
     expect(container.querySelector('button[aria-label="Harness"]')?.textContent).toContain("Google Antigravity");
     expect(container.querySelector('button[aria-label="Harness"] img[src="/brands/apps/antigravity.svg"]')).not.toBeNull();
     expect(container.querySelector('button[aria-label="ACP agent"]')).toBeNull();
+  });
+
+  it("displays an existing Copilot paperclip_runner agent as GitHub Copilot and keeps its saved model on re-selection", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AgentConfigForm
+                mode="edit"
+                agent={makeAgent({
+                  adapterType: "paperclip_runner",
+                  adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.4", lifecycleMode: "per_turn" },
+                })}
+                onSave={onSave}
+                hidePromptTemplate
+                showAdapterTypeField
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const harnessTrigger = container.querySelector<HTMLButtonElement>('button[aria-label="Harness"]');
+    expect(harnessTrigger?.textContent).toContain("GitHub Copilot");
+    expect(harnessTrigger?.querySelector('img[src="/brands/apps/github-copilot.svg"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="ACP agent"]')).toBeNull();
+    expect(container.textContent).toContain("gpt-5.4");
+
+    await act(async () => {
+      harnessTrigger!.click();
+    });
+    await flushReact();
+    const copilotOption = document.body.querySelector<HTMLElement>('[data-value="copilot_runtime"]');
+    expect(copilotOption).not.toBeNull();
+    await act(async () => {
+      copilotOption!.click();
+    });
+    await flushReact();
+
+    // Re-selecting the active Copilot harness is a no-op and preserves the saved model.
+    expect(container.textContent).toContain("gpt-5.4");
+    expect(container.textContent).not.toContain("Unsaved changes");
+  });
+
+  it("keeps native ACPX harnesses opt-in on AdapterTypeDropdown so raw adapter callers never offer them", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AdapterTypeDropdown value="codex_local" onChange={vi.fn()} disabledTypes={new Set()} />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Harness"]');
+    expect(trigger).not.toBeNull();
+    await act(async () => {
+      trigger!.click();
+    });
+    await flushReact();
+
+    expect(document.body.querySelector('[data-value="antigravity_runtime"]')).toBeNull();
+    expect(document.body.querySelector('[data-value="copilot_runtime"]')).toBeNull();
   });
 });
