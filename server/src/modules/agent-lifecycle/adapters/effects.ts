@@ -25,6 +25,11 @@ export interface LifecycleEffects {
   recordCreation(db: Db, companyId: string, agentId: string): Promise<void>;
   recordStatus(db: Db, companyId: string, agentId: string, before: string, after: string): Promise<void>;
   clearPrimary(db: Db, companyId: string, agentId: string): Promise<unknown>;
+  checkStaffingHire(db: Db, companyId: string, id: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<{
+    reportsTo: string | null | undefined;
+    bounded: boolean;
+  }>;
+  checkStaffingTransition(db: Db, current: AgentConfigurationRecord, command: string, actor?: UpdateAgentOptions["staffingActor"]): Promise<void>;
   prepareHire(db: Db, companyId: string, data: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData>;
   initializeHire(db: Db, agent: AgentHireRecord, options?: CreateAgentOptions): Promise<void>;
   prepareHireApproval(db: Db, agent: AgentHireRecord, payload?: Record<string, unknown> | null): Promise<AgentConfigurationPatch>;

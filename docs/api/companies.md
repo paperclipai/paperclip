@@ -114,3 +114,14 @@ Returns whether agent trace export is set up for the company. Every member of th
 | `budgetMonthlyCents` | number | Monthly budget limit |
 | `createdAt` | string | ISO timestamp |
 | `updatedAt` | string | ISO timestamp |
+
+## Reporting-line staffing
+
+A company owner can opt in with `PATCH /api/companies/{companyId}` and
+`{"staffingPolicy":{"enabled":true,"maxDepth":50,"maxDirectReports":12}}`.
+The policy defaults to off. Turn off `requireBoardApprovalForNewAgents` before
+enabling it. The root is at depth zero. Setup, pending, paused, and terminating
+agents count toward the direct-report limit until termination or rejection
+settles. Turn off staffing with `{"staffingPolicy":{"enabled":false}}`.
+Agents hired under this policy keep their existing work permissions and lose
+their delegated staffing authority.

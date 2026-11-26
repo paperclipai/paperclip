@@ -10,6 +10,7 @@ import { and, desc, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  companies,
   plugins,
   pluginManagedResources,
   agentInstructionHeads as heads,
@@ -275,6 +276,9 @@ export function agentInstructionRevisionService(db: Db) {
     const result = await db.transaction(async (tx) => {
       // Only a legacy revision can restore new bytes. A save or the current ETag
       // restores the current bytes, which resolveRevision checks under the lock.
+      if (actor.type === "agent" && actor.agentId !== input.agentId) {
+        await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, input.companyId)).for("no key update");
+      }
       const [restoredInput] = "restoreRevisionId" in input
         ? await tx.select().from(revisions).where(and(owner(input, input.entryFile), eq(revisions.id, input.restoreRevisionId))) : [];
       const submittedContent = (bytes ?? (restoredInput ? Buffer.from(restoredInput.contentBase64, "base64") : Buffer.alloc(0))).toString("utf8");

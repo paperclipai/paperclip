@@ -234,6 +234,7 @@ export function createLifecycleStore(db: Db, effects: LifecycleEffects): Lifecyc
       return effects.transaction(db, existing.companyId, async tx => {
         const [agent] = await tx.select().from(agents).where(eq(agents.id, id)).for("update", command === "reconcile" ? { skipLocked: true } : undefined);
         if (!agent) return null;
+        await effects.checkStaffingTransition(tx, agent, command, options.staffingActor);
         return changeLockedAgent(tx, effects, agent, command, options);
       });
     },

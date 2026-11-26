@@ -257,3 +257,45 @@ Any other value returns `422`. Only the current content is kept for a save
 record. When a save's content is no longer current, a read of that save returns
 `404` with code `INSTRUCTION_REVISION_CONTENT_NOT_RETAINED`. The save stays in
 the history list.
+
+## Delegated staffing
+
+In a company with reporting-line staffing enabled, an eligible agent can hire
+through either native creation endpoint. The default manager is the caller.
+An explicit manager must be inside the caller's branch. Configuration and
+lifecycle commands apply to strict descendants. Moving a report also requires
+authority over the destination. Move or retire direct reports before retiring
+their manager. Existing task visibility and assignments are preserved.
+
+An owner can approve an exact runtime choice for a named agent membership.
+Send the following shape to
+`PATCH /api/companies/{companyId}/members/{memberId}/permissions`:
+
+```json
+{
+  "grants": [
+    {
+      "permissionKey": "agents:delegate_resources",
+      "scope": {
+        "choices": [
+          {
+            "environmentId": "<existing sandbox environment UUID>",
+            "adapterType": "paperclip_runner",
+            "provider": "codex",
+            "model": "gpt-5.4",
+            "includeDescendants": true
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+`includeDescendants` defaults to false. The owner can revoke the grant by
+sending an empty `grants` array to the same agent membership. The update
+only changes staffing resource authority. Use `defaultEnvironmentId` and
+`adapterConfig.provider` and `adapterConfig.model` to select a matching
+choice. Use `instructionsBundle` for the role brief. Tool, workspace, and
+credential bindings require separate owner configuration. A hire with
+`adapterType: "process"` and no runtime configuration remains paused.

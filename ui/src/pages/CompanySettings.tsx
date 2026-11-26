@@ -5,6 +5,7 @@ import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type InteractionResolverGovernance,
+  type ReportingLineStaffingPolicy,
   type IssueThreadInteractionKind,
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
@@ -30,6 +31,7 @@ import {
 } from "../components/InteractionGovernancePanel";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
+  DraftNumberInput,
   Field,
   HintIcon,
   ToggleField,
@@ -90,6 +92,21 @@ export function CompanySettings() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     }
+  });
+
+  const boardAccess = useQuery({
+    queryKey: queryKeys.access.currentBoardAccess,
+    queryFn: accessApi.getCurrentBoardAccess,
+    enabled: !!selectedCompanyId,
+  });
+  const boardAuthority = boardAccess.data;
+  const canManageStaffing = boardAuthority?.source === "local_implicit" || boardAuthority?.isInstanceAdmin ||
+    boardAuthority?.memberships?.some(member => member.companyId === selectedCompanyId &&
+      member.status === "active" && member.membershipRole === "owner");
+  const staffingPolicy = selectedCompany?.staffingPolicy ?? { enabled: false, maxDepth: 50, maxDirectReports: 12 };
+  const staffingMutation = useMutation({
+    mutationFn: (policy: ReportingLineStaffingPolicy) => companiesApi.update(selectedCompanyId!, { staffingPolicy: policy }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.companies.all }),
   });
 
   const settingsMutation = useMutation({
@@ -398,6 +415,36 @@ export function CompanySettings() {
             toggleTestId="company-settings-team-approval-toggle"
           />
         </div>
+        {canManageStaffing && (
+          <div className="space-y-3">
+            <ToggleField
+              label="Reporting-line staffing"
+              hint="Allow agents to hire and manage reports in their branch. Turn off board approval for new hires to enable this."
+              checked={staffingPolicy.enabled}
+              onChange={(enabled) => staffingMutation.mutate({ ...staffingPolicy, enabled })}
+              disabled={staffingMutation.isPending || !!selectedCompany.requireBoardApprovalForNewAgents}
+            />
+            {staffingPolicy.enabled && (
+              <div className="flex flex-wrap gap-3">
+                <label className="flex items-center gap-2 text-sm">
+                  Maximum reporting depth
+                  <DraftNumberInput className="w-20 rounded-md border bg-background px-2 py-1" min={1} max={1000}
+                    value={staffingPolicy.maxDepth} disabled={staffingMutation.isPending}
+                    onCommit={(maxDepth) => staffingMutation.mutate({ ...staffingPolicy, maxDepth })} />
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  Maximum direct reports
+                  <DraftNumberInput className="w-20 rounded-md border bg-background px-2 py-1" min={1} max={1000}
+                    value={staffingPolicy.maxDirectReports} disabled={staffingMutation.isPending}
+                    onCommit={(maxDirectReports) => staffingMutation.mutate({ ...staffingPolicy, maxDirectReports })} />
+                </label>
+              </div>
+            )}
+            {staffingMutation.error && (
+              <p className="text-xs text-destructive" role="alert">{describeError(staffingMutation.error).body}</p>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Decisions */}

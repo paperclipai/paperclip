@@ -3971,7 +3971,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       : [];
     const permissionGrantsByAgentId = new Map<string, PortableAgentPermissionGrant[]>();
     for (const row of agentPermissionGrantRows) {
-      if (!VALID_PERMISSION_KEYS.has(row.permissionKey as PermissionKey)) continue;
+      if (row.permissionKey === "agents:delegate_resources" || !VALID_PERMISSION_KEYS.has(row.permissionKey as PermissionKey)) continue;
       const grants = permissionGrantsByAgentId.get(row.principalId) ?? [];
       grants.push({
         permissionKey: row.permissionKey as PermissionKey,

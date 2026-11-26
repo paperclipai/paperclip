@@ -19,7 +19,7 @@ export const hireAgentAction = {
   },
   documentation: {
     title: "Hire a native agent",
-    description: "Create a persistent native Runner teammate with an identity and persona. The teammate reports to the caller and inherits the caller's native runtime; provider, adapter, environment, and credential settings are selected by Paperclip and are never caller-supplied here.",
+    description: "Create a persistent native Runner teammate with an identity and persona. The teammate reports to the caller and uses the native hiring policy. Reporting-line staffing requires an owner-approved runtime choice. Credentials are never supplied through this tool.",
     note: "Use list_agents first when a suitable teammate may already exist.",
   },
   examples: {
@@ -40,7 +40,7 @@ export const hireAgentAction = {
       operationId: "hire_agent",
       version: 1,
       title: "Hire a native agent",
-      description: "Create a persistent native Runner teammate with an identity and persona. The teammate reports to the caller and inherits the caller's native runtime; provider, adapter, environment, and credential settings are selected by Paperclip and are never caller-supplied here. Reuse a suitable teammate from list_agents when possible.",
+      description: "Create a persistent native Runner teammate with an identity and persona. The teammate reports to the caller and uses the native hiring policy. Reporting-line staffing requires an owner-approved runtime choice. Credentials are never supplied through this tool. Reuse a suitable teammate from list_agents when possible.",
       exposure: "optional",
       requiredClaims: ["delegation:agents:create"],
       allowedModes: ["standard", "skill_test"],

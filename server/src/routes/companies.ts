@@ -1,3 +1,4 @@
+import { assertStaffingOwner } from "../services/reporting-line-staffing.js";
 import { createHash, randomUUID } from "node:crypto";
 import express, { Router, type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
@@ -1264,6 +1265,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       body = updateCompanyBrandingSchema.parse(req.body);
     } else {
       body = updateCompanySchema.parse(req.body);
+      if (body.staffingPolicy !== undefined) await assertStaffingOwner(db, companyId, req.actor);
     }
 
     const existingCompany = await svc.getById(companyId);

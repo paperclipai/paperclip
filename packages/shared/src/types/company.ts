@@ -14,6 +14,12 @@ export type InteractionResolverGovernance = Partial<
   Record<IssueThreadInteractionKind, InteractionResolverKindGovernance>
 >;
 
+export interface ReportingLineStaffingPolicy {
+  enabled: boolean;
+  maxDepth: number;
+  maxDirectReports: number;
+}
+
 export interface Company {
   id: string;
   name: string;
@@ -43,6 +49,7 @@ export interface Company {
    */
   budgetOwnerUserId: string | null;
   requireBoardApprovalForNewAgents: boolean;
+  staffingPolicy?: ReportingLineStaffingPolicy | null;
   interactionResolverGovernance: InteractionResolverGovernance;
   feedbackDataSharingEnabled: boolean;
   feedbackDataSharingConsentAt: Date | null;

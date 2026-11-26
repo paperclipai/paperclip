@@ -1,3 +1,4 @@
+import { staffingPolicyFor } from "../reporting-line-staffing.js";
 import { assertAgentInteraction } from "../agent-interaction-policy.js";
 import { authorizationDeniedDetails } from "../authorization.js";
 import { budgetServiceInTransaction } from "../budgets.js";
@@ -342,14 +343,25 @@ export function taskBridgeApiRequest(tool: string, input: Record<string, any>): 
   return { operationId: operation.operationId, pathParams: { id: input.taskId, ...(input.key ? { key: input.key } : {}) }, ...(body ? { body } : {}) };
 }
 
-function hireAgentApiRequest(input: Record<string, unknown>, binding: Pick<Binding, "companyId" | "agentId" | "issueId">): RunnerApiCall {
-  const body: Record<string, unknown> = {
-    name: requiredString(input.name), adapterType: "paperclip_runner", inheritRuntimeFrom: "caller",
-    reportsTo: binding.agentId, sourceIssueId: binding.issueId,
-  };
-  if (input.role !== undefined) body.role = input.role;
+async function hireAgentApiRequest(db: Db, input: Record<string, unknown>, binding: Pick<Binding, "companyId" | "agentId" | "issueId">): Promise<RunnerApiCall> {
+  const staffing = await staffingPolicyFor(db, binding.companyId);
+  const body: Record<string, unknown> = { name: requiredString(input.name), reportsTo: binding.agentId, sourceIssueId: binding.issueId };
+  if (staffing) {
+    const [caller] = await db.select({
+      adapterType: agents.adapterType, adapterConfig: agents.adapterConfig, environmentId: agents.defaultEnvironmentId,
+    }).from(agents).where(and(eq(agents.id, binding.agentId), eq(agents.companyId, binding.companyId)));
+    if (caller?.adapterType === "paperclip_runner" && caller.environmentId && caller.adapterConfig.provider && caller.adapterConfig.model) {
+      body.adapterType = "paperclip_runner";
+      body.defaultEnvironmentId = caller.environmentId;
+      body.adapterConfig = { provider: caller.adapterConfig.provider, model: caller.adapterConfig.model };
+    } else body.adapterType = "process";
+  } else {
+    body.adapterType = "paperclip_runner";
+    body.inheritRuntimeFrom = "caller";
+    if (input.role !== undefined) body.role = input.role;
+    if (input.capabilities !== undefined) body.capabilities = input.capabilities;
+  }
   if (input.title !== undefined) body.title = input.title;
-  if (input.capabilities !== undefined) body.capabilities = input.capabilities;
   if (typeof input.instructions === "string" && input.instructions.trim()) {
     body.instructionsBundle = { entryFile: "AGENTS.md", files: { "AGENTS.md": input.instructions } };
   }
@@ -564,7 +576,7 @@ export class PaperclipRunnerToolAuthority {
         const parsed = RUNNER_BRIDGE_SCHEMAS.get(call.tool)!.safeParse(call.arguments);
         if (!parsed.success) return null;
         request = taskBridgeApiRequest(call.tool, parsed.data as Record<string, any>);
-      } else if (call.tool === "hire_agent") request = hireAgentApiRequest(input, this.binding);
+      } else if (call.tool === "hire_agent") request = await hireAgentApiRequest(this.db, input, this.binding);
       let validated: ReturnType<typeof validateRunnerApiCall>;
       try {
         validated = validateRunnerApiCall(request, {
@@ -1000,7 +1012,7 @@ export class PaperclipRunnerToolAuthority {
       }
       case "search_api": return withCompanyPagePaths(searchRunnerApi(call.arguments), await this.#companyPagePrefix());
       case "hire_agent": {
-        return hireAgentResult(await this.#callApi(call.callId, hireAgentApiRequest(input, this.binding)), context.actor.adapterConfig?.provider);
+        return hireAgentResult(await this.#callApi(call.callId, await hireAgentApiRequest(this.db, input, this.binding)), context.actor.adapterConfig?.provider);
       }
       case "call_api": {
         // PRP reserves operationId/callId for semantic result identity. The

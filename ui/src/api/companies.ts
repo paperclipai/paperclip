@@ -109,6 +109,7 @@ export const companiesApi = {
         | "defaultDecisionOwnerUserId"
         | "budgetOwnerUserId"
         | "requireBoardApprovalForNewAgents"
+        | "staffingPolicy"
         | "interactionResolverGovernance"
         | "feedbackDataSharingEnabled"
         | "logoAssetId"

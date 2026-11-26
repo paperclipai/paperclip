@@ -854,6 +854,7 @@ export {
 export type {
   Company,
   InteractionResolverGovernance,
+  ReportingLineStaffingPolicy,
   InteractionResolverKindGovernance,
   GenerateSummarySlotRequest,
   GenerateSummarySlotResponse,
@@ -2019,6 +2020,7 @@ export {
   createCompanySchema,
   interactionResolverGovernanceSchema,
   updateCompanySchema,
+  reportingLineStaffingPolicySchema,
   updateCompanyBrandingSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,
@@ -2599,6 +2601,7 @@ export {
   updateCompanyMemberWithPermissionsSchema,
   archiveCompanyMemberSchema,
   updateMemberPermissionsSchema,
+  staffingResourceScopeSchema,
   updateAgentPermissionGrantSchema,
   type UpdateAgentPermissionGrant,
   searchAdminUsersQuerySchema,
