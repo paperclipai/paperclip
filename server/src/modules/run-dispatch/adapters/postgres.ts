@@ -190,14 +190,15 @@ function buildReviewParticipantFacts(input: {
   isInReview: boolean;
   executionState: ReturnType<typeof parseIssueExecutionState>;
 }): ReviewParticipantFacts {
-  const currentParticipant = input.executionState?.currentParticipant ?? null;
+  const isPending = input.executionState?.status === "pending";
+  const currentParticipant = isPending ? (input.executionState?.currentParticipant ?? null) : null;
   return {
     isInReview: input.isInReview,
     hasParticipant: currentParticipant !== null,
     participantIsAgent: currentParticipant?.type === "agent",
     participantAgentId:
       currentParticipant?.type === "agent" ? (currentParticipant.agentId ?? null) : null,
-    currentStageType: input.executionState?.currentStageType ?? null,
+    currentStageType: isPending ? (input.executionState?.currentStageType ?? null) : null,
     currentParticipant: currentParticipant as Record<string, unknown> | null,
   };
 }
