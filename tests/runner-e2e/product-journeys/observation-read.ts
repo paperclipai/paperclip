@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { ConnectionFailure } from "../connection-config.js";
+import { ConnectionFailure, isTransientConnectionFailure } from "../connection-config.js";
 import type { ConnectionApi } from "../connection-target.js";
 import { JourneyError } from "./types.js";
 
@@ -20,7 +20,7 @@ export function createObservedReader(api: Pick<ConnectionApi, "get">, deadlineAt
           const expired = new Promise<never>((_resolve, reject) => {
             timer = setTimeout(() => reject(new JourneyError("failed", "observation_read_deadline")), remaining);
           });
-          const value = await Promise.race([api.get<T>(route, { timeoutMs: Math.min(30_000, remaining) }), expired]);
+          const value = await Promise.race([api.get<T>(route, { timeoutMs: Math.min(30_000, remaining), retry: false }), expired]);
           if (Date.now() >= deadline()) throw new JourneyError("failed", "observation_read_deadline");
           return value;
         }
@@ -28,7 +28,7 @@ export function createObservedReader(api: Pick<ConnectionApi, "get">, deadlineAt
           if (!(error instanceof ConnectionFailure)) throw error;
           const code = error.message;
           if (code === "api_request_failed" || /^api_status_[1-5][0-9]{2}$/.test(code)) failures.push({ route, code });
-          if (!(code === "api_request_failed" || /^api_status_(408|429|502|503|504)$/.test(code))) throw error;
+          if (!isTransientConnectionFailure(error)) throw error;
           const remaining = deadline() - Date.now();
           if (remaining > 0) await new Promise(resolve => setTimeout(resolve, Math.min(1000, remaining)));
         }

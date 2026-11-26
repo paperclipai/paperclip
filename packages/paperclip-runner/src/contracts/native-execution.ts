@@ -1,10 +1,12 @@
+import { parseNativeCursorCloudConfig, type NativeCursorCloudConfig } from "./cursor-cloud.js";
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import type { DotBindingSnapshot, MuseBindingSnapshot, ExternalBotProviderKind } from "./external-provider.js";
 import { QUALIFIED_ACPX_VERSION, QUALIFIED_ACPX_PROFILE_DATA } from "../drivers/acpx/generated-profiles.js";
-import { isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drivers/acpx/profile-compatibility.js";
+import { isDecodableAcpxVersion, isSupportedAcpxProfileVersion, type AcpxProfileVersion } from "../drivers/acpx/profile-compatibility.js";
 import { isProviderMode } from "./provider-mode.js";
+import { GENERATED_ANTIGRAVITY_SWARM_PROVIDER_MODE, GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS } from "../drivers/acpx/generated-sidecar-contract.js";
 import { createHash } from "node:crypto";
 import type { PrpStructuredRunResult, PrpTerminalState } from "../protocol/replay-contract.js";
 import { explicitTaskSkillNames, parseNativeRuntimeContext, type NativeRuntimeContextSnapshot } from "./runtime-context.js";
@@ -24,6 +26,10 @@ export const NATIVE_MODEL_ENVELOPE_SCHEMA_V1 = "paperclip.native-model-envelope.
 export const NATIVE_MODEL_ENVELOPE_SCHEMA_V2 = "paperclip.native-model-envelope.v2" as const;
 export const NATIVE_MODEL_ENVELOPE_SCHEMA = "paperclip.native-model-envelope.v3" as const;
 export const NATIVE_SESSION_IDLE_TIMEOUT_MAX_MS = 86_400_000;
+/** Antigravity's native swarm provider mode; its request travels in `provider.swarmRequest` (protocol/provider-schemas/acpx-sidecar.schema.json). */
+export const ANTIGRAVITY_SWARM_PROVIDER_MODE = GENERATED_ANTIGRAVITY_SWARM_PROVIDER_MODE;
+/** The longest /swarm request the swarm route sends (the server refuses longer ones up front). */
+export const NATIVE_SWARM_REQUEST_MAX_CHARS = GENERATED_ANTIGRAVITY_SWARM_REQUEST_MAX_CHARS;
 
 export type NativeExecutionMode = "default" | "plan";
 
@@ -120,6 +126,7 @@ export interface NativeAcpxProfileSnapshot {
 }
 
 export type NativeProviderConfig =
+  | { kind: "cursor_cloud"; model: string; cursorCloud: NativeCursorCloudConfig }
   | { kind: "codex"; model: string | null; approvalPolicy?: NativeCodexApprovalPolicy }
   | { kind: "opencode"; model: string; permissionMode?: NativeOpenCodePermissionMode }
   | {
@@ -145,6 +152,7 @@ export type NativeProviderConfig =
       model: string;
       permissionMode?: NativeAcpxPermissionMode;
       mode?: string;
+      swarmRequest?: string;
       piThinkingLevel?: "off" | "low" | "high" | "max";
       /** Present only in persisted v1-v3 inputs. */
       permissionPolicy?: "interactive";
@@ -154,13 +162,15 @@ export type NativeProviderConfig =
 export type NativeProviderConfigV4 =
   | { kind: "codex"; model: string | null; approvalPolicy: NativeCodexApprovalPolicy }
   | { kind: "opencode"; model: string; permissionMode: NativeOpenCodePermissionMode }
-  | Extract<NativeProviderConfig, { kind: "claude_managed" | "aws_agentcore" }>
+  | Extract<NativeProviderConfig, { kind: "claude_managed" | "aws_agentcore" | "cursor_cloud" }>
   | {
       kind: "acpx";
       agent: NativeAcpxAgent;
       model: string;
       permissionMode: NativeAcpxPermissionMode;
       mode?: string;
+      /** The signed-in user's recorded /swarm request, verbatim; present only for Antigravity's swarm mode. */
+      swarmRequest?: string;
       piThinkingLevel?: "off" | "low" | "high" | "max";
       profile: NativeAcpxProfileSnapshot;
     };
@@ -195,7 +205,7 @@ export interface NativeExecutionInputV1 {
   };
   session: {
     normalizedSessionId: string | null;
-    driverKind: "codex_app_server" | "opencode_server" | "claude_managed_agents_api" | "aws_agentcore_harness_api" | "acpx_runtime";
+    driverKind: "cursor_cloud_api" | "codex_app_server" | "opencode_server" | "claude_managed_agents_api" | "aws_agentcore_harness_api" | "acpx_runtime";
     protocolVersion: 1;
     lifecyclePolicy: NativeSessionLifecyclePolicy;
   };
@@ -312,6 +322,11 @@ export interface NativeModelEnvelopeV2 {
 export interface NativeModelEnvelopeV3 extends Omit<NativeModelEnvelopeV2, "schema" | "task" | "completionContract"> {
   requestedSkills: string[];
   constraints?: string[];
+  /**
+   * The user's recorded /swarm request, carried apart from `task.prompt` (which
+   * holds rendered wake and task context). The swarm route sends only this.
+   */
+  swarmRequest?: string;
   schema: typeof NATIVE_MODEL_ENVELOPE_SCHEMA;
   task: Pick<NativeExecutionInputV2["task"], "identifier" | "title" | "prompt" | "workMode">;
   completionContract: Omit<StrictCompletionContractInput, "criteria"> & {
@@ -530,7 +545,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   }
   if (
     (
-      session.driverKind !== "codex_app_server"
+      session.driverKind !== "cursor_cloud_api"
+      && session.driverKind !== "codex_app_server"
       && session.driverKind !== "opencode_server"
       && session.driverKind !== "claude_managed_agents_api"
       && session.driverKind !== "aws_agentcore_harness_api"
@@ -569,22 +585,25 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     ? { kind: "codex", model: null }
     : record(input.provider, "input.provider");
   if (
-    provider.kind !== "codex"
+    provider.kind !== "cursor_cloud"
+    && provider.kind !== "codex"
     && provider.kind !== "opencode"
     && provider.kind !== "claude_managed"
     && provider.kind !== "aws_agentcore"
     && provider.kind !== "acpx"
   ) {
-    throw new NativeExecutionInputError("input.provider.kind must be codex, opencode, claude_managed, aws_agentcore, or acpx");
+    throw new NativeExecutionInputError("input.provider.kind must be cursor_cloud, codex, opencode, claude_managed, aws_agentcore, or acpx");
   }
   exactKeys(
     provider,
-    provider.kind === "claude_managed"
+    provider.kind === "cursor_cloud"
+      ? ["kind", "model", "cursorCloud"]
+      : provider.kind === "claude_managed"
       ? ["kind", "model", "managedProfile", "maxSessionListCostUsd"]
       : provider.kind === "aws_agentcore"
         ? ["kind", "model", "agentCoreProfile", "maxEstimatedSessionCostUsd", "invocationLimits"]
       : provider.kind === "acpx"
-        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", "piThinkingLevel", ...(isV4 ? ["mode"] : []), ...(isV9 ? ["claudeEffort"] : []), ...(isV10 ? ["grokEffort", "grokDisableWebSearch"] : [])]
+        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", "piThinkingLevel", ...(isV4 ? ["mode", "swarmRequest"] : []), ...(isV9 ? ["claudeEffort"] : []), ...(isV10 ? ["grokEffort", "grokDisableWebSearch"] : [])]
       : provider.kind === "codex" && isV4
         ? ["kind", "model", "approvalPolicy", ...(isV5 ? ["reasoningEffort", "webSearch"] : [])]
         : provider.kind === "opencode" && isV4
@@ -593,7 +612,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     "input.provider",
   );
   if (
-    (provider.kind === "codex" && session.driverKind !== "codex_app_server")
+    (provider.kind === "cursor_cloud" && session.driverKind !== "cursor_cloud_api")
+    || (provider.kind === "codex" && session.driverKind !== "codex_app_server")
     || (provider.kind === "opencode" && session.driverKind !== "opencode_server")
     || (provider.kind === "claude_managed" && session.driverKind !== "claude_managed_agents_api")
     || (provider.kind === "aws_agentcore" && session.driverKind !== "aws_agentcore_harness_api")
@@ -608,7 +628,12 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     throw new NativeExecutionInputError("input.provider.model is required for opencode in provider/model form");
   }
   let parsedProvider: NativeProviderConfigV9 | NativeProviderConfig | NativeProviderConfigV5;
-  if (provider.kind === "claude_managed") {
+  if (provider.kind === "cursor_cloud") {
+    if (!isV5 || !providerModel || providerModel.length > 240 || /[\x00-\x1f\x7f]/.test(providerModel) || lifecyclePolicy.mode !== "per_turn") {
+      throw new NativeExecutionInputError("Cursor Cloud requires a model and per-turn lifecycle in a v5 or later input");
+    }
+    parsedProvider = { kind: "cursor_cloud", model: providerModel, cursorCloud: parseNativeCursorCloudConfig(provider.cursorCloud) };
+  } else if (provider.kind === "claude_managed") {
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for claude_managed");
     }
@@ -710,6 +735,14 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (provider.mode !== undefined && !isProviderMode(provider.mode)) {
       throw new NativeExecutionInputError("input.provider.mode must be a bounded nonempty provider mode identifier");
     }
+    const swarmMode = provider.agent === "antigravity" && provider.mode === ANTIGRAVITY_SWARM_PROVIDER_MODE;
+    if (swarmMode !== (provider.swarmRequest !== undefined)) {
+      throw new NativeExecutionInputError("input.provider.swarmRequest is required for, and only for, the Antigravity swarm mode");
+    }
+    if (provider.swarmRequest !== undefined && (typeof provider.swarmRequest !== "string" || provider.swarmRequest.trim().length === 0
+      || provider.swarmRequest.length > NATIVE_SWARM_REQUEST_MAX_CHARS)) {
+      throw new NativeExecutionInputError(`input.provider.swarmRequest must be non-empty text of at most ${NATIVE_SWARM_REQUEST_MAX_CHARS} characters`);
+    }
     if (providerModel === null) {
       throw new NativeExecutionInputError("input.provider.model is required for acpx");
     }
@@ -742,7 +775,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     if (
       profile.driverKind !== "acpx_runtime"
       || profile.protocolVersion !== 1
-      || profile.acpxVersion !== QUALIFIED_ACPX_VERSION
+      || !isDecodableAcpxVersion(profile.acpxVersion)
       || profile.agent !== provider.agent
       || !isSupportedAcpxProfileVersion(provider.agent, profile.agentProfileVersion)
     ) {
@@ -764,6 +797,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
         ? { permissionMode: provider.permissionMode as NativeAcpxPermissionMode }
         : { permissionPolicy: "interactive" as const }),
       ...(provider.mode === undefined ? {} : { mode: provider.mode as string }),
+      ...(provider.swarmRequest === undefined ? {} : { swarmRequest: provider.swarmRequest as string }),
       ...(claudeEffort === undefined ? {} : { claudeEffort }),
       ...(grokEffort === undefined ? {} : { grokEffort }),
       ...(grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch }),
@@ -994,7 +1028,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
     return {
       schema: NATIVE_MODEL_ENVELOPE_SCHEMA_V1,
       task: structuredClone(input.task),
-      workspace: input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"
+      workspace: input.provider.kind === "cursor_cloud" || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"
         ? null
         : { cwd: input.workspace.cwd },
       completionContract: structuredClone(input.completionContract.contract),
@@ -1018,9 +1052,11 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
           : input.task.prompt,
         workMode: input.task.workMode,
       },
+      ...(input.provider.kind === "acpx" && "swarmRequest" in input.provider && input.provider.swarmRequest !== undefined
+        ? { swarmRequest: input.provider.swarmRequest } : {}),
       executionMode: input.executionMode,
       planningContext: structuredClone(input.planningContext),
-      workspace: input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V8 || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore" ? null : { cwd: input.workspace.cwd },
+      workspace: input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V8 || input.provider.kind === "cursor_cloud" || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore" ? null : { cwd: input.workspace.cwd },
       completionContract: {
         ...structuredClone(input.completionContract.contract),
         criteria: input.completionContract.contract.criteria.map((criterion) => {
@@ -1043,7 +1079,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
     },
     executionMode: input.executionMode,
     planningContext: structuredClone(input.planningContext),
-    workspace: input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"
+    workspace: input.provider.kind === "cursor_cloud" || input.provider.kind === "claude_managed" || input.provider.kind === "aws_agentcore"
       ? null
       : { cwd: input.workspace.cwd },
     completionContract: structuredClone(input.completionContract.contract),

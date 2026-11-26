@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { expect, test, type Page } from "@playwright/test";
 import { longChatFixture, type ChatFixture } from "./agent-chat-fixture";
+import { coordinatorTaskQuestion, coordinatorTaskQuestionAttention } from "../../../ui/src/fixtures/coordinatorTaskQuestion";
 
 let fixture: ChatFixture;
 let chatPath: string;
@@ -96,6 +97,38 @@ test("cold long chat reveals one recent window without full-history reads or red
   await page.screenshot({ path: info.outputPath("recent-chat.png") });
 });
 
+test("clicking away and reopening cached questions keeps the latest reply in view", async ({ page }, info) => {
+  const question = {
+    ...coordinatorTaskQuestion,
+    payload: { ...coordinatorTaskQuestion.payload, questionSet: {
+      schema: "paperclip.question_set.v1", questions: [
+        { id: "reply", prompt: "Give a reply", answerMode: "text", required: true },
+      ],
+    } },
+  };
+  await page.route("**/pending-questions", route => route.fulfill({ json: [coordinatorTaskQuestionAttention] }));
+  await page.route("**/api/issues/task-launch/interactions", async route => {
+    await new Promise(resolve => setTimeout(resolve, 600));
+    await route.fulfill({ json: [question] });
+  });
+  const gap = () => scroller(page).evaluate(root => root.scrollHeight - root.clientHeight - root.scrollTop);
+  await page.goto(chatPath); await ready(page);
+  await expect(page.getByTestId("question-text-answer-composer")).toBeVisible();
+  await expect.poll(gap).toBeLessThanOrEqual(2);
+  await editor(page).fill("Keep my draft on return.");
+  const navigation = page.viewportSize()!.width < 768
+    ? page.getByRole("navigation", { name: "Mobile navigation" })
+    : page.getByRole("navigation", { name: "Workspace navigation" });
+  await navigation.getByRole("link", { name: "Tasks", exact: true }).click();
+  await navigation.getByRole("link", { name: page.viewportSize()!.width < 768 ? /^Chat/ : "History Fixture", exact: true }).click();
+  await ready(page);
+  await expect.poll(gap).toBeLessThanOrEqual(2);
+  await expect(editor(page)).toContainText("Keep my draft on return.");
+  await page.waitForTimeout(400);
+  expect(await gap()).toBeLessThanOrEqual(2);
+  await page.screenshot({ path: info.outputPath("cached-return.png") });
+});
+
 test("upward scrolling loads one delayed page and preserves the row, viewport and draft", async ({ page }, info) => {
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
@@ -129,7 +162,7 @@ test("upward scrolling loads one delayed page and preserves the row, viewport an
 test("failed history stops automatic retries and leaves a working inline retry", async ({ page }) => {
   let attempts = 0;
   await page.route(`**/api/issues/${fixture.issue.id}/comments?**`, async route => {
-    if (++attempts === 1) await route.fulfill({ status: 500, json: { error: "Synthetic older-page failure" } });
+    if (++attempts === 1) await route.fulfill({ status: 422, json: { error: "Synthetic older-page failure" } });
     else await route.continue();
   });
   await page.goto(chatPath); await ready(page);
@@ -157,7 +190,7 @@ test("Back restores paged history and the reading position", async ({ page }) =>
     ? page.getByRole("navigation", { name: "Mobile navigation" })
     : page.getByRole("navigation", { name: "Workspace navigation" });
   await navigation.getByRole("link", { name: "Tasks", exact: true }).click();
-  await expect(page).toHaveURL(/\/issues$/);
+  await expect(page).toHaveURL(/\/issues(?:\?|$)/);
   await page.goBack(); await ready(page);
   await expect(page.locator('[id^="comment-"]')).toHaveCount(70);
   expect(Math.abs(await offset(page, saved.id) - saved.top)).toBeLessThanOrEqual(2);

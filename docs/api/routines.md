@@ -89,6 +89,12 @@ PATCH /api/routines/{routineId}
 
 All fields from create are updatable. `baseRevisionId` is optional for backward compatibility; when provided, stale values return `409 Conflict` with the current revision id. **Agents can only update routines assigned to themselves and cannot reassign a routine to another agent.**
 
+When `env` contains a variable that an active plugin environment sets on its
+own tasks (`protectedEnvironmentKeys`), create and update still save it. The
+response then includes `configurationWarnings` entries with code
+`protected_environment_variable`, a `field` such as `env.KEY`, and a `message`
+that names those environments.
+
 ## List Revisions
 
 ```
@@ -96,6 +102,15 @@ GET /api/routines/{routineId}/revisions
 ```
 
 Returns append-only routine definition revisions newest first. Snapshots include routine fields and safe trigger metadata only; webhook secret values and `secretId` are never returned.
+
+## Description Comment Reactions
+
+```
+PUT    /api/routines/{routineId}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+DELETE /api/routines/{routineId}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+```
+
+Adds or removes a `done`, `check`, `thumbs_up` or `question` reaction on a routine description annotation comment. See [Comment Reactions](issues.md#comment-reactions) for the response shape and rules. Routine reactions do not wake an agent.
 
 ## Restore Revision
 
@@ -187,6 +202,8 @@ POST /api/routines/{routineId}/run
 
 Fires a run immediately, bypassing the schedule. Concurrency policy still applies.
 
+A run an agent starts through this endpoint is always recorded with source `manual`; the server ignores a `source` value an agent sends. Board callers may send `manual` or `api`.
+
 `triggerId` is optional. When supplied, the server validates the trigger belongs to this routine (`403`) and is enabled (`409`), then records the run against that trigger and updates its `lastFiredAt`. Omit it for a generic manual run with no trigger attribution.
 
 ## Fire Public Trigger
@@ -241,6 +258,12 @@ runs asynchronously, so acceptance does not mean the agent has finished.
 Concurrency policy can coalesce or skip a delivery while work is active.
 Payload fields or a nested `variables` object supply declared routine variables;
 nested values take precedence. The full payload is retained in run history.
+For app-webhook triggers, the sender's JSON is also copied into the execution
+task. Normal webhook intake does not apply a provider-specific field allowlist
+or a general payload scrubber. Send only data suitable for company-readable
+routine history; authentication and creation provenance do not certify the
+payload's privacy. See the [Sentry tutorial](../guides/board-operator/sentry-run-failure-repairs.md)
+for source-side scrubbing and setup checks.
 
 For bearer, GitHub HMAC, and unsigned triggers, send a stable `Idempotency-Key`
 when retrying a delivery to receive the original run without creating another
@@ -258,53 +281,38 @@ For local HTTPS testing, proxy an isolated test instance through Tailscale Serve
 use Funnel only if the sender is outside the tailnet. Existing routine and agent
 execution controls still apply, including the isolated-worktree execution gate.
 
-### Sentry run-failure intake
+### Verified creation provenance
 
-```
-POST /api/routine-triggers/public/{publicId}/sentry-run-failures
-```
+The receiving routine and its run are recorded as the new task's direct origin.
+Paperclip can also retain the run that invoked the routine. Authenticated agent
+calls to the routine run API record a validated caller run. For an ordinary
+public webhook, optionally send `X-Paperclip-Source-Run-Token` containing a
+current, standard Paperclip run JWT from the same instance and company. The
+trigger still authenticates with its own secret. Invalid, expired, foreign, or
+stopped caller credentials return `401` before dispatch.
 
-Use this endpoint for a routine that repairs failed Paperclip tasks. Create a
-`bearer` webhook trigger and replace `/fire` in its URL with
-`/sentry-run-failures`. Configure a Sentry custom integration to send the
-trigger's `Authorization: Bearer <webhookSecret>` header. Keep that credential
-private. This endpoint requires bearer authentication even if another signing
-mode is set on the trigger.
+The source reference is stored as `createdByRunId` on the routine run, separate
+from `triggerPayload`. Sender JSON and plain run-ID headers cannot establish
+trusted caller ancestry. Without the source credential, a public webhook starts
+a new external receiving-routine origin. This metadata grants no additional
+execution or source-read authority. A source reference remains recorded after
+run retention; unresolved ancestry is unknown, never assumed independent.
 
-In Sentry, select **An event is captured**, filter the `event_kind` tag to
-`run_failure`, and send notifications through the custom integration. Add
-environment, company, and instance URL filters to select the intended instance.
-Select notification delivery on every trigger to include repeated events in an
-existing Sentry issue. Issue-created or regression conditions do not cover every
-failed run.
+### Routine-wide execution receipts
 
-The receiver accepts Sentry event-alert payloads with `action: "triggered"` and
-`data.event.tags`. Tags can be pairs, key/value objects, or a dictionary. It
-validates the `task_id` and `run_id` against the receiving company's database and
-requires a terminal failed, timed-out, or cancelled run for that task. A supplied
-`company_id` must match. Unrelated or unavailable sources return `202` with
-`status: "ignored"` and create no work.
+Send `X-Paperclip-Idempotency-Scope: routine` with a stable `Idempotency-Key` to
+deduplicate execution receipts across webhook triggers on one routine. The
+default is `trigger`. Keep the key and scope stable on retries. Routine scope
+uses a deterministic receipt identity, so deleting the original trigger does
+not let the same occurrence start another task. Scope does not change ordinary
+concurrency, pause, company, permission, or budget controls.
 
-Before dispatch, the server follows task parents and creation-run provenance.
-It ignores tasks created by the receiving repair routine, their descendants,
-and tasks from another Sentry run-failure repair routine. Missing or excessive
-provenance also stops dispatch. This check runs before a repair task or agent
-wakeup is created. Prompts alone do not provide this loop protection.
+Timestamped HMAC always uses trigger-scoped anti-replay receipts and rejects a
+routine-scope request with `400`. Setup checks create no routine runs; their
+content-free test receipts remain associated with the setup trigger.
 
-Routine history is company-readable. Private tasks, tasks in private projects,
-and tasks the assigned repair agent cannot read are ignored to preserve source
-privacy. Accepted payloads contain only validated source identifiers, a bounded
-error code, and an optional Sentry event ID. Arbitrary webhook instructions and
-variables are discarded. The routine receives `task_identifier`, `task_id`, and
-`run_id` variables from the validated source.
-
-Retries and multiple Sentry events for one failed run share one routine receipt,
-including deliveries through different triggers on the same routine. A distinct
-failed run can create another task. Source-run variables form part of the
-execution fingerprint, so different failed runs do not coalesce into an active
-repair. Retry deduplication applies regardless of the concurrency policy.
-Setup-pending triggers accept authenticated connection checks without creating
-work.
+For a worked example that uses the normal webhook with Sentry, see
+[Repair Failed Runs from Sentry](../guides/board-operator/sentry-run-failure-repairs.md).
 
 ## List Runs
 
@@ -350,7 +358,9 @@ Routine detail exposes `setupPending` and `lastWebhookDelivery` (`status`, `rece
 
 Finish setup with `PATCH /api/routine-triggers/{id}` and `{ "setupPending": false }`. Future deliveries use normal routine dispatch and still respect the routine's enabled state. Test events are not dispatched on activation. Retries with the same `Idempotency-Key`, GitHub `X-GitHub-Delivery`, or timestamp-HMAC replay key remain test receipts after activation. Send a unique delivery ID per event so a sender's retries can be recognized. Requests without a delivery ID are new events after activation.
 
-For compatibility, API-created triggers without `setupPending: true` are immediately live. Completed triggers cannot be returned to setup mode. Checking a previously enabled webhook observes real deliveries and can start the routine; the management UI explains this difference.
+For compatibility, API-created triggers without `setupPending: true` are immediately live.
+
+To test a live webhook again, send `PATCH /api/routine-triggers/{id}` with `{ "setupPending": true }`. Only enabled, non-removed webhook triggers on a routine that is not archived can enter test mode: other trigger kinds return `422`, and a disabled or removed webhook or an archived routine returns `409`. While testing, every authenticated delivery, including real events from the sender, is recorded as a test and never starts the routine. Each test delivery's `lastWebhookDelivery.previous` holds the last real delivery from before testing (or `null`). Sending `{ "setupPending": false }` returns the webhook to live and restores that last real delivery as `lastWebhookDelivery`. Events received while testing are not replayed, and retries of them with the same delivery ID stay test receipts.
 
 Trigger cards support removal with Undo. `PATCH` with `{ "archived": true }` excludes a trigger from routine detail and scheduling, and rejects its webhook deliveries. Setting `archived` back to `false` restores the same URL and credentials. `DELETE` remains the permanent deletion API.
 

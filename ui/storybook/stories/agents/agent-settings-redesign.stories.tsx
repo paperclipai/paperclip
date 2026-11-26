@@ -93,7 +93,9 @@ export const CodexNativeMobile: Story = { ...RunnerRuntime, globals: { viewport:
 export const CodexLegacyAdvanced: Story = { ...CodexRuntime, play: async ({ canvasElement }) => {
   const canvas = within(canvasElement);
   await userEvent.click(await canvas.findByRole("button", { name: "Advanced" }));
-  await expect(await canvas.findByRole("button", { name: "Runner" })).toHaveTextContent("Legacy runner");
+  await expect(canvas.queryByRole("button", { name: "Runner" })).not.toBeInTheDocument();
+  await expect(await canvas.findByText("Command", { exact: true })).toBeVisible();
+  await expect(await canvas.findByText("Extra args (comma-separated)", { exact: true })).toBeVisible();
 } };
 export const Secrets: Story = {
   name: "Secrets & variables",

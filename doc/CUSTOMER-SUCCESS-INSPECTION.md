@@ -1,7 +1,7 @@
 # Cloud customer-success inspection support
 
-Paperclip exposes `/api/customer-success/v1/run-authority` and `/read` for the
-coordinated Cloud inspection broker. This foundation supports one registered
+Paperclip exposes `/api/customer-success/v1/run-authority`, `/run-liveness`,
+`/read` and `/read-v2` for the coordinated Cloud inspection broker. This foundation supports one registered
 Paperclip agent; bot creation, scheduling, scoring and reporting are separate.
 
 The authority endpoint is disabled unless
@@ -11,6 +11,20 @@ agent's existing provisioned Ed25519 identity and an active running heartbeat;
 paused, cancelled/stopped, finished and unsupported-runtime agents are rejected.
 No identity GET provisions keys. Normal API JWT compatibility remains unchanged;
 legacy signatures are rejected specifically at this authority boundary.
+
+The run liveness check (`POST /run-liveness`) is also disabled unless
+`PAPERCLIP_CUSTOMER_SUCCESS_AUTHORITY_ENABLED=true`. It lets Cloud ask, with its
+own inspection key rather than an agent credential, whether one run of one agent
+in one company is live. It refuses cookies and `Authorization` headers and
+accepts only an Ed25519 JWS in the inspection header, verified against
+`PAPERCLIP_CUSTOMER_SUCCESS_INSPECTION_JWKS`, with type
+`paperclip-inspection-liveness+jwt`, audience
+`paperclip-customer-success-liveness/v1`, this stack as subject and a window of
+at most sixty seconds. The canonical JSON body `{agentId, companyId, runId}` must
+equal the signed claims. The answer is `{version: 1, companyId, agentId, runId,
+active}`, using the same run rules as the authority endpoint (one shared
+predicate) but without requiring a provisioned identity key. It runs in a
+read-only transaction and creates no actor, session, activity or key.
 
 Tenant reads are disabled unless
 `PAPERCLIP_CUSTOMER_SUCCESS_INSPECTION_ENABLED=true`. Configure the public-only
@@ -52,6 +66,23 @@ existing project/workspace checks. Binary envelopes and inclusive byte ranges
 pass through Cloud; ranges cap at 1 MiB, JSON at 2 MiB, and lists at 100 rows.
 Remote or unsnapshotted resources report unavailable; large content requires
 pagination or download ranges. No storage credentials or bypass URLs are issued.
+
+Summary reads keep a fleet-wide refresh cheap:
+
+- `count` takes a catalogued `resource`, `companyId` and optional `parentId`,
+  and returns `{total, byStatus}`: counts grouped by the reader's `status`
+  column, or `byStatus: null` when it has none. No row content is read out.
+- `order` (`list` only) is `newest` or `oldest` by creation time, with the table's
+  primary key as tie-breaker so offset pages never repeat or skip rows. Without it, lists keep their original id order.
+- `view: "summary"` (`list`/`get` on `runs` only) returns an allowlist of ids,
+  status, error code, retry counters and timestamps plus a computed
+  `durationMs`, and leaves out the large JSON columns (result, usage, context
+  snapshot, runner profile). `RUN_SUMMARY_COLUMNS` is the allowlist.
+
+Queries that use `count`, `order` or `view` are served only on `/read-v2`
+(`inspectionReadPath` picks the path); `/read` refuses them. A tenant that
+predates them answers 404 on `/read-v2`, so Cloud fails closed with
+`tenant_inspection_version_unsupported` instead of misreading the query.
 
 Existing config/event/run redactions and path/symlink/secret-file/size restrictions
 remain in use. Authentication account/session, secret, private-key/encrypted-key

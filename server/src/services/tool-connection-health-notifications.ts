@@ -1,5 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { isGoogleWorkspaceConnection } from "./tool-access/connections/google-content-retention.js";
 
 type HealthChange = string | { companyId: string; id: string } | { companyId: string; applicationId: string };
 export type HealthScope = { companyId?: string; connectionId?: string; applicationId?: string };
@@ -15,13 +16,18 @@ export function healthScope(hint: string): HealthScope {
   throw new Error("Invalid tool connection health scope");
 }
 
-export const notifyToolConnectionHealth = (transaction: object, target: HealthChange) =>
-  notifyDeliveryWork(transaction, DELIVERY_QUEUES.toolConnectionHealth, typeof target === "string" ? target
+export const notifyToolConnectionHealth = async (transaction: object, target: HealthChange) => {
+  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.toolReviewRecovery, typeof target === "string" ? target : target.companyId);
+  await notifyDeliveryWork(transaction, DELIVERY_QUEUES.toolConnectionHealth, typeof target === "string" ? target
     : "id" in target ? `${target.companyId}:connection:${target.id}` : `${target.companyId}:application:${target.applicationId}`);
+};
 
 export function writeToolConnectionHealthChange<T>(db: Db, target: HealthChange, write: (transaction: Db) => Promise<T>): Promise<T> {
   return db.transaction(async tx => {
     await notifyToolConnectionHealth(tx, target);
+    if (typeof target === "object" && "id" in target && await isGoogleWorkspaceConnection(tx as unknown as Db, target)) {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.googleTechnicalInformation);
+    }
     return write(tx as unknown as Db);
   });
 }

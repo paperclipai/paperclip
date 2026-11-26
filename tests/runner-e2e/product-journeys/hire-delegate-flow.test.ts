@@ -16,7 +16,7 @@ type Row = Record<string, any>;
 const directories: string[] = [];
 afterEach(async () => { vi.mocked(sendChatMessage).mockReset(); await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
-async function fixture(options: { readError?: Error; mutate?(agents: Row[], tasks: Row[]): void; ownError?: Error; firstSendError?: Error; connectionList?: Row; connectionReadError?: Error } = {}) {
+async function fixture(options: { storedBody?: string; readError?: Error; mutate?(agents: Row[], tasks: Row[]): void; ownError?: Error; firstSendError?: Error; connectionList?: Row; connectionReadError?: Error } = {}) {
   const campaignId = "journey-1-deadbeef", names = hireDelegateNames(campaignId), owned: Row[] = [], comments: Row[] = [];
   const binding = { connectionId: "approved" }, lead = { id: "lead", companyId: "company", name: `Lead ${campaignId}`, permissions: { canCreateAgents: true }, runtimeConfig: { aiConnection: binding } };
   const hire = { id: "hired", companyId: "company", name: names.hire, reportsTo: lead.id, adapterType: "paperclip_runner",
@@ -35,7 +35,7 @@ async function fixture(options: { readError?: Error; mutate?(agents: Row[], task
   const stop = new JourneyError("failed", "test_stop_before_delegation");
   vi.mocked(sendChatMessage).mockImplementation(async (_page, text) => {
     if (sent) throw stop;
-    sent = true; if (options.firstSendError) throw options.firstSendError; comments.push({ id: "user-comment", authorUserId: "user", body: text });
+    sent = true; if (options.firstSendError) throw options.firstSendError; comments.push({ id: "user-comment", authorUserId: "user", body: options.storedBody ?? text });
   });
   const api = { origin: "https://qa.example.test", async get(route: string) {
     if (route === "/api/instance/settings/experimental") return { enableAgentChat: true };
@@ -354,4 +354,20 @@ it.each(["earlier-handoff", "foreign-company", "foreign-chat", "wrong-run", "for
     { id: "review", identifier: "QA-2", title: "Review" }, Date.now() + 10,
     { companyId: "company", chatId: "chat", runId: "callback" })).toBe(false);
   expect(clicked).toBe(false);
+});
+
+
+it("retains an exact failed message comparison before grading, without retaining raw bodies", async () => {
+  const f = await fixture({ storedBody: "A changed private fixture message" });
+  await expect(f.run()).rejects.toMatchObject({ code: "hire_user_messages_stored_once" });
+  const raw = await readFile(path.join(f.directory, "hire-user-message-checks.json"), "utf8");
+  const receipt = JSON.parse(raw);
+  expect(receipt).toMatchObject({ schema: "paperclip.product-journey.hire-user-messages/v1", checks: [
+    { turn: 1, matches: false, added: [{ id: "user-comment", matches: false }] },
+  ] });
+  expect(receipt.checks[0].expected.sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(receipt.checks[0].added[0].body.sha256).not.toBe(receipt.checks[0].expected.sha256);
+  expect(raw).not.toContain("private fixture message");
+  expect(raw).not.toContain("Hire exactly one");
+  expect(sendChatMessage).toHaveBeenCalledTimes(1);
 });

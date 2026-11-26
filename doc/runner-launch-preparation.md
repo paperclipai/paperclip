@@ -10,6 +10,20 @@ The built-in TypeScript implementation constructs the provider descriptor in
 By default, the SDK prepares local files. It stages remote files through the
 existing execution driver.
 
+## Managed sandbox storage
+
+Core holds a 256 MiB runner relaunch reserve only in managed sandboxes. It
+creates the reserve when there is at least 2 GiB of additional free space and
+1,024 free inodes. It leaves scarce capacity available to an existing agent.
+A relaunch releases that reserve before it stages the replacement runner.
+This reserve is recovery headroom; it does not limit the agent's downloads.
+
+When runner diagnostics confirm a full sandbox disk, the saved run error and
+run details show that cause ahead of a later lost-turn or restore error. Raw
+failure diagnostics remain in the run's diagnostic evidence. Older saved runs
+with `sandbox_disk_full` get the same display without a data migration.
+Download budgets and image policy belong to the deployment environment.
+
 ## Environment-owned preparation
 
 An execution driver can supply `prepareLaunch`.

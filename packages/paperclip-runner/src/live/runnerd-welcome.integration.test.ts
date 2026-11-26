@@ -39,7 +39,7 @@ it("starts one provider after delayed bootstrap admission and retains it for a s
       await bundle.transport.request("turn/start", { input: [{ type: "text", text }] });
       for await (const event of bundle.transport.notifications()) {
         if (event.method === "turn/completed") {
-          expect(event.params).toMatchObject({ threadId: opened.thread.id });
+          expect(event.params).toMatchObject({ threadId: (opened.thread as { id: string }).id });
           terminalTurns.push(event.params);
           break;
         }

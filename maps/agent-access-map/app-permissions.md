@@ -111,7 +111,7 @@ retain their saved profile assignments, including deliberately removed grants.
 Non-empty saves still remove legacy connection-wide include entries from the
 managed app profile when no new targets are added.
 Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
-Verification: `not-run` — individual agent-authenticated operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. [Installation permission regressions](../../server/src/__tests__/tool-connection-installs.test.ts) exercise operator HTTP requests, persisted assignments, tool-policy decisions, and access-extension audit records with PostgreSQL. Those fixtures do not qualify agent authentication. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Verification: `not-run` — individual agent-authenticated operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
 Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
 ## `action-policy`
 
@@ -313,7 +313,7 @@ Gaps: Agent invocation is denied by the stated policy. The authorized human or o
 
 API: `present` — `POST /api/tool-gateway/action-requests/{id}/decline`; JSON REST.
 Agent access: `restricted` — existing human setup or approval surface; agent can identify the saved setup and inspect the result.
-Policy: Human consent, identity confirmation, action approval, or trusted-host administration. This endpoint does not delegate human identity or self-approval to an agent.
+Policy: Human consent, identity confirmation, action approval, or trusted-host administration. This endpoint does not delegate human identity or self-approval to an agent. A distinct later direct-human comment, bound to the active source run and the same responsible person, can ask for a new review after that person's rejection. It grants no execution authority. Same-intent retries and rejection continuations retain the rejection; all current policy and approval checks still apply.
 Evidence: `source-only` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above.
 Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
 Gaps: Agent invocation is denied by the stated policy. The authorized human or operator must perform this step; this entry does not claim delegated execution.

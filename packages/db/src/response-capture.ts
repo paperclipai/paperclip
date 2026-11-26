@@ -34,11 +34,18 @@ export function responseCaptureWindow(value: string | undefined, now = Date.now(
   return { start, end };
 }
 
-export function publicDatabaseCallers(stack: string | undefined): string[] {
+export function publicDatabaseCallers(stack: string | undefined, bundled = false): string[] {
   const callers: string[] = [];
   for (const line of (stack ?? "").split("\n")) {
     const match = line.match(/[/\\]server[/\\](?:src|dist)[/\\]((?:services|routes|modules|middleware)[/\\][A-Za-z0-9_./\\-]+\.[cm]?[jt]s):(\d+):(\d+)/);
-    if (!match) continue;
+    if (!match) {
+      const bundledMatch = line.match(/[/\\]server[/\\]dist-runtime[/\\]((?:server|index|chunk-[A-Z0-9]{8})\.mjs):([1-9]\d{0,8}):([1-9]\d{0,8})\)?$/);
+      // The wrapper boundary makes the first generated frame the application
+      // call site. Deeper frames may be capture/transaction helpers in this same
+      // chunk, so retain only this build-specific anchor without source maps.
+      if (bundledMatch && bundled) { callers.push(`dist-runtime/${bundledMatch[1]}:${bundledMatch[2]}:${bundledMatch[3]}`); break; }
+      continue;
+    }
     const relative = match[1]!.replaceAll("\\", "/");
     if (relative.split("/").includes("..")) continue;
     const caller = `${relative}:${match[2]}:${match[3]}`;
@@ -283,7 +290,15 @@ export function installDatabaseResponseCapture<T extends object>(db: T, schema: 
       });
     }
   }
-  function sqlMetadata(value: unknown): Metadata {
+  function callers(boundary: Function, bundled: boolean): string[] {
+    if (!capture!.active()) return [];
+    const owner = operationScope.getStore();
+    if (owner && owner !== "http.request") return [];
+    const error: { stack?: string } = {};
+    Error.captureStackTrace(error, boundary);
+    return publicDatabaseCallers(error.stack, bundled);
+  }
+  function sqlMetadata(value: unknown, boundary: Function): Metadata {
     const scoped = capture!.scope.getStore();
     const text = typeof value === "string" ? value : "";
     let table = "other";
@@ -292,15 +307,17 @@ export function installDatabaseResponseCapture<T extends object>(db: T, schema: 
     }
     return scoped ? { ...scoped, table: scoped.table === "other" ? table : scoped.table }
       : { operation: text.match(/^\s*(select|insert|update|delete)\b/i)?.[1]?.toLowerCase() ?? "execute",
-        table, callers: capture!.active() && !operationScope.getStore() ? publicDatabaseCallers(new Error().stack) : [] };
+        // Unscoped driver calls can come through bundled ORM helpers. Their
+        // generated locations are not trustworthy application construction sites.
+        table, callers: callers(boundary, false) };
   }
   function client(value: unknown) {
     if ((!object(value) && typeof value !== "function") || capture!.clients.has(value)) return;
     capture!.clients.add(value);
     const target = value as Record<string, unknown>;
-    replace(target, "unsafe", original => function (this: unknown, ...args: unknown[]) {
+    replace(target, "unsafe", original => function capturedUnsafe(this: unknown, ...args: unknown[]) {
       const result = Reflect.apply(original, this, args);
-      if (!capture!.expired()) { try { driverQuery(result, sqlMetadata(args[0])); } catch {} }
+      if (!capture!.expired()) { try { driverQuery(result, sqlMetadata(args[0], capturedUnsafe)); } catch {} }
       return result;
     });
     for (const method of ["begin", "savepoint"]) {
@@ -323,14 +340,14 @@ export function installDatabaseResponseCapture<T extends object>(db: T, schema: 
     if (!object(value) || capture!.roots.has(value)) return;
     capture!.roots.add(value);
     for (const method of ["select", "selectDistinct", "selectDistinctOn", "insert", "update", "delete", "execute", "with"] as const) {
-      replace(value, method, original => function (this: unknown, ...args: unknown[]) {
+      replace(value, method, original => function capturedRoot(this: unknown, ...args: unknown[]) {
         const result = Reflect.apply(original, this, args);
         if (capture!.expired()) return result;
         try {
           if (method === "with") { root(result); return result; }
           const operation = method.startsWith("select") ? "select" : method;
           const metadata = { operation, table: operation === "select" || method === "execute" ? "other" : tableName(args[0]),
-            callers: capture!.active() && !operationScope.getStore() ? publicDatabaseCallers(new Error().stack) : [] };
+            callers: callers(capturedRoot, true) };
           if (operation === "select") factory(result, "from", metadata, true);
           else if (method === "insert") factory(result, "values", metadata);
           else if (method === "update") factory(result, "set", metadata);

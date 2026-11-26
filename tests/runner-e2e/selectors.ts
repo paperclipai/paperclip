@@ -1,4 +1,5 @@
 import { runnerMatrix } from "./catalog.js";
+import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
 import type { MatrixExecution, MatrixJob } from "./types.js";
 
 export interface RunnerSelectorOptions {
@@ -26,6 +27,19 @@ export interface RunnerSelectorOptions {
 }
 
 export class RunnerSelectorError extends Error {}
+
+/**
+ * CI passes the selected cell here rather than as `--id`. Every agent can read
+ * another process's argv in /proc, and the cell id names the case under test.
+ */
+export const RUNNER_SELECTED_ID_ENV = "PAPERCLIP_RUNNER_E2E_SELECTED_ID";
+
+/** Adds the environment's selected cell to the arguments and removes it from the environment. */
+export function selectorArgumentsWithEnvironment(args: readonly string[], env: NodeJS.ProcessEnv = process.env): string[] {
+  const selected = env[RUNNER_SELECTED_ID_ENV]?.trim();
+  delete env[RUNNER_SELECTED_ID_ENV];
+  return selected ? [...args, "--id", selected] : [...args];
+}
 
 function valueFor(args: string[], index: number, flag: string): string {
   const value = args[index + 1];
@@ -195,6 +209,14 @@ export function selectRunnerExecutions(
   const selected = matrix.filter((execution) => {
     if (options.ids.length > 0) return options.ids.includes(execution.id);
     if (execution.suite.manualOnly && !options.suites.includes(execution.suite.id) && !options.list) return false;
+    const unfilteredList = options.list && options.groups.length + options.suites.length + options.profiles.length
+      + options.environments.length + options.cases.length === 0;
+    // An opt-in profile requires its own name; a suite selector alone never adds it.
+    if (execution.profile.explicitOnly && !unfilteredList && !options.profiles.includes(execution.profile.id)) return false;
+    const explicitGroup = execution.task.explicitGroup;
+    // Naming any of the task's own groups (for example `slow`) also opts in.
+    if (explicitGroup && !unfilteredList && !options.groups.some(group => group === explicitGroup || execution.task.groups.includes(group))
+      && !options.cases.includes(execution.task.id)) return false;
     if (
       options.all ||
       (options.list &&
@@ -226,7 +248,7 @@ export function selectRunnerExecutions(
 export function buildMatrixJobs(
   executions: readonly MatrixExecution[],
 ): MatrixJob[] {
-  if (executions.some(e => ["provider_connection", "github_review_journey", "antigravity_agent_journey"].includes(e.task.flow))) throw new RunnerSelectorError("Attended connection journeys require explicit private setup profiles; they are not admitted to paid CI matrix jobs yet.");
+  if (executions.some(e => ["provider_connection", "github_review_journey", "antigravity_agent_journey", "antigravity_swarm_journey"].includes(e.task.flow))) throw new RunnerSelectorError("Attended connection journeys require explicit private setup profiles; they are not admitted to paid CI matrix jobs yet.");
   return executions
     .map((execution) => ({
       executionId: execution.id,
@@ -248,4 +270,20 @@ export function buildMatrixJobs(
       needsDaytona: execution.environment.id === "daytona",
     }))
     .sort((left, right) => left.executionId.localeCompare(right.executionId));
+}
+
+/**
+ * The pending ACPX candidates the selected Daytona cells run. The Daytona
+ * image and the controller's provider pack must both carry exactly these
+ * (`--candidate-providers`), derived from the profiles rather than typed in.
+ * A released provider is in the default pack and is never listed.
+ */
+export function daytonaCandidateProviders(executions: readonly MatrixExecution[]): string[] {
+  const candidates = new Set<string>();
+  for (const execution of executions) {
+    const candidate = execution.profile.qualificationCandidate;
+    if (execution.environment.id === "daytona" && candidate &&
+        QUALIFIED_ACPX_PROFILES[candidate].qualificationStatus === "pending") candidates.add(candidate);
+  }
+  return [...candidates].sort();
 }

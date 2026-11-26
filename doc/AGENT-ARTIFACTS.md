@@ -5,6 +5,29 @@ must be attached to the Paperclip issue before the agent chooses a final
 disposition. A local workspace path is not enough, because cloud users and
 reviewers often cannot access the agent's disk.
 
+## Read attached files in native runs
+
+Native runs receive readable paths for the exact files admitted in their
+current wake. A compatible remote Runner downloads files over HTTPS from the
+configured tenant origin using short-lived grants. The tenant verifies each
+grant against the live run and the exact authorized attachment. Runner verifies
+the size and SHA-256 and clears its local copy at turn end. Linux SSH and
+command-backed sandbox targets can also stage files through their bound
+transport when Runner download is unavailable. Image inputs must be opened
+with the provider's image-capable file reader.
+
+The same paths support authorized historical external-chat reads. Their
+existing conversation and source-comment checks still apply. External-chat
+history tools grant access only within the authorized conversation.
+Plugin Runner tasks require a compatible Runner build and HTTPS access to
+the tenant download endpoint.
+
+Temporary slots are isolated per staging operation. Cleanup clears the verified
+file after the turn and refuses symlinks or replacement files. Abrupt controller
+or remote-host failure can interrupt cleanup; sandbox disposal remains the
+backstop for ephemeral environments. Retained provider sessions and checkpoints
+keep their existing format and identity across this change.
+
 ## Upload files from a task
 
 People can open the task's Artifacts tab and use the upload icon, or drop files
@@ -27,6 +50,12 @@ remote workspace. Supply a workspace-relative `contentRef`, basename `filename`,
 The tool verifies the file, stores an attachment and artifact work product, and
 binds it to the response. Generic API tools and a legacy API key are unnecessary.
 
+`register_deliverable` stores the file on its current task. A completion report
+can also cite a file on a direct child task that is done, because the child's
+own completion verified that file. A parent that delegated a file to a child
+links the child's file and does not register a copy. The child's file does not
+count as delivery of a file that the parent's own request names.
+
 Named JSON file outputs and explicit publication requests require the same
 verified delivery evidence as other file outputs. A saved summary document does
 not replace a requested downloadable JSON file. Reading JSON inputs or discussing
@@ -34,6 +63,18 @@ their contents inline does not by itself require a file attachment.
 JSON output intent is recognized from a direct filename or an explicit output
 destination. Ambiguous descriptions of input files joined by `to` remain text
 requests; use `as`, `into`, or an explicit output file when an artifact is required.
+A `Deliverable:` or `Deliverables` label also states the output. A file named
+on that line, or in the list directly below it (blank lines between items are
+allowed), is a requested file. This includes relative paths such as
+`dist/index.html` and web page files such as `index.html` and `styles.css`.
+Items that describe a repository change, pull request, commit, or branch do
+not count, nor do files named as inputs (`a comparison of input.csv and
+baseline.csv`), files the item forbids (`do not create report.pdf`), files to
+be edited in place (`update styles.css`) unless the item also asks to publish
+them, files to be written inline in the reply (`index.html and styles.css inline
+in the reply`), or items that say no files are created. An inline or no-upload
+instruction about another output in the same item does not cancel a named file
+(`index.html and a short summary in the reply`).
 
 The completion gate permits a narrow sentence-bound exception for one requested
 file when the following sentence explicitly qualifies it, for example:

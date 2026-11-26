@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readFileSync, statSync } from "node:fs";
 
-export const selectableGroups = ["general-server-without-chat", "general-workspaces-a",
-  "general-workspaces-b", "general-workspaces-c", "serialized"];
+export const selectableGroups = ["general-server-without-chat", "general-chat",
+  "general-workspaces-a", "general-workspaces-b", "general-workspaces-c", "serialized"];
 
 export function selectionHash(manifest) {
   return createHash("sha256").update(JSON.stringify({ version: manifest.version, lanes: manifest.lanes })).digest("hex");
@@ -18,7 +18,7 @@ export function validateSelection(manifest, { head, hash } = {}) {
   const seen = new Set();
   for (const [group, lane] of Object.entries(manifest.lanes)) {
     assert.ok(selectableGroups.includes(group), `Unknown selection group: ${group}`);
-    assert.ok(Array.isArray(lane.shards) && lane.shards.length > 0 && lane.shards.length <= 12);
+    assert.ok(Array.isArray(lane.shards) && lane.shards.length > 0 && lane.shards.length <= 24);
     for (const shard of lane.shards) {
       assert.ok(shard && typeof shard === "object" && !Array.isArray(shard));
       let count = 0;
