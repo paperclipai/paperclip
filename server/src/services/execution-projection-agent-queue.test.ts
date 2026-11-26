@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { executionProjectionsForRuns } from "./execution-projection.js";
 import { agentQueuedRunLine, clearAgentQueueLineCache, queuedRunDispatchFacts, worktreeExecutionCutoff } from "./heartbeat/queued-run-line.js";
@@ -241,5 +241,42 @@ const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_00
     await other.queue({ priority: "critical", createdMinutesAgo: 50 });
     const projection = (await executionProjectionsForRuns(db, f.companyId, [mine], now)).get(mine);
     expect(projection?.agentQueue).toMatchObject({ position: 1, queuedCount: 1, runningCount: 1 });
+  });
+
+  async function settledRunRead(companyId: string, runIds: string[]) {
+    let captured: { sql: string; params: unknown[] } | undefined;
+    const captureDb = new Proxy(db, { get(target, key) {
+      if (key !== "selectDistinctOn") return Reflect.get(target, key);
+      return (...args: unknown[]) => {
+        const builder = Reflect.apply(Reflect.get(target, key), target, args);
+        const from = builder.from.bind(builder);
+        builder.from = (...tables: unknown[]) => {
+          const selection = from(...tables);
+          const execute = selection.execute.bind(selection);
+          selection.execute = async (...rest: unknown[]) => {
+            captured = selection.toSQL();
+            return execute(...rest);
+          };
+          return selection;
+        };
+        return builder;
+      };
+    }});
+    await executionProjectionsForRuns(captureDb as Db, companyId, runIds, now);
+    if (!captured) throw new Error("The projection did not read the latest settled runs");
+    return captured;
+  }
+
+  it("reads the latest settled run of a queued task by index, not the agent's whole run history", async () => {
+    const f = await fixture({ maxConcurrentRuns: 2, running: 0 });
+    await db.$client.unsafe(`insert into heartbeat_runs (company_id, agent_id, status, created_at, finished_at, context_snapshot)
+      select $1::uuid, $2::uuid, 'succeeded', $3::timestamptz - n * interval '1 second', $3::timestamptz - n * interval '1 second',
+        jsonb_build_object('issueId', gen_random_uuid()::text)
+      from generate_series(1, 1500) n`, [f.companyId, f.agentId, minutesAgo(60).toISOString()]);
+    await db.$client.unsafe("analyze heartbeat_runs");
+    const runId = await f.queue({ priority: "medium", createdMinutesAgo: 5 });
+    const read = await settledRunRead(f.companyId, [runId]);
+    const [explain] = await db.$client.unsafe(`explain (format json) ${read.sql}`, read.params as never[]);
+    expect(JSON.stringify(explain)).toContain("heartbeat_runs_company_agent_issue_settled_idx");
   });
 });

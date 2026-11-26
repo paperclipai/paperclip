@@ -557,9 +557,8 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
     } finally { vi.unstubAllEnvs(); }
   });
 
-  it("does not inspect unrelated company history for a small issue page", async () => {
-    const f = await seedInterruptionFixture(db, { selected: 2, history: 3, unrelated: 1500, payloadBytes: 4096 });
-    const query = await captureInterruptionQuery(db, taskInterruptionPresentations, f.companyId, f.input);
+  async function inspectedRunRows(companyId: string, input: Parameters<typeof taskInterruptionPresentations>[2]) {
+    const query = await captureInterruptionQuery(db, taskInterruptionPresentations, companyId, input);
     const [explain] = await db.$client.unsafe(`explain (analyze, buffers, format json) ${query.sql}`, query.params as never[]);
     const inspected: number[] = [];
     const visit = (node: Record<string, unknown>) => {
@@ -568,6 +567,12 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       for (const child of node.Plans as Record<string, unknown>[] ?? []) visit(child);
     };
     visit(explain["QUERY PLAN"][0].Plan);
+    return inspected;
+  }
+
+  it("does not inspect unrelated company history for a small issue page", async () => {
+    const f = await seedInterruptionFixture(db, { selected: 2, history: 3, unrelated: 1500, payloadBytes: 4096 });
+    const inspected = await inspectedRunRows(f.companyId, f.input);
     expect(inspected.length).toBeGreaterThan(0);
     expect(Math.max(...inspected)).toBeLessThan(30);
     await markFailuresFresh(f.companyId);
@@ -577,6 +582,18 @@ describe.skipIf(!support.supported)("task interruption latest run query", () => 
       companyId: f.companyId, taskId: issue.id, runId: presentations.get(issue.id)!.observedRunId,
       runStatus: "failed", agentAdapter: "process",
     }));
+  });
+
+  it("does not walk the company's native runs for issues that have none", async () => {
+    const f = await seedInterruptionFixture(db, { selected: 2, history: 2, unrelated: 0, payloadBytes: 0 });
+    const nativeIssueIds = Array.from({ length: 5 }, () => randomUUID());
+    await db.$client.unsafe(`insert into heartbeat_runs (company_id, agent_id, status, native_issue_id, created_at)
+      select $1::uuid, $2::uuid, 'succeeded', ($3::uuid[])[1 + n % 5], timestamp '2026-10-29 00:00:00+00' + n * interval '1 second'
+      from generate_series(1, 1500) n`, [f.companyId, f.agentId, nativeIssueIds]);
+    await db.$client.unsafe("analyze heartbeat_runs");
+    const inspected = await inspectedRunRows(f.companyId, f.input);
+    expect(inspected.length).toBeGreaterThan(0);
+    expect(Math.max(...inspected)).toBeLessThan(30);
   });
 
   it("preserves native, first-class and text legacy precedence, ties, and tenant scope", async () => {
