@@ -6544,7 +6544,15 @@ async function assertPluginTaskReattachmentBinding(input: {
   return taskId;
 }
 
-async function migrateRunnerdStateRootForExecution(input: {
+async function migrateRunnerdStateRootForExecution(
+  input: Omit<Parameters<typeof migrateRunnerdStateRoot>[0], "onPluginCheckpointRetired">,
+): Promise<{ binding?: VerifiedWarmTransitionBinding; pluginCheckpointRetired: boolean }> {
+  let pluginCheckpointRetired = false;
+  const binding = await migrateRunnerdStateRoot({ ...input, onPluginCheckpointRetired: () => { pluginCheckpointRetired = true; } });
+  return { binding, pluginCheckpointRetired };
+}
+
+async function migrateRunnerdStateRoot(input: {
   db: Db;
   execution: NativeExecutionInput;
   preparedExecutionAdmission?: NativePreparedExecutionAdmission;
@@ -8979,13 +8987,12 @@ function loadWarmNativeCheckpoint(
   return resumed;
 }
 
-function allowReplacementAfterConfirmedStateLoss(
-  checkpoint: PersistedNativeSession,
-  execution: NativeExecutionInput,
-): PersistedNativeSession {
-  if (antigravityForcesSameSessionRecovery(execution.provider)) return checkpoint;
-  if (checkpoint.goal != null && checkpoint.goal.status !== "complete") return checkpoint;
-  return { ...checkpoint, providerRecoveryPolicy: "allow_replacement_after_resume_failure" };
+export function providerSessionReplaceableAfterStateLoss(
+  checkpoint: Pick<PersistedNativeSession, "goal">,
+  execution: Pick<NativeExecutionInput, "provider">,
+): boolean {
+  if (antigravityForcesSameSessionRecovery(execution.provider)) return false;
+  return checkpoint.goal == null || checkpoint.goal.status === "complete";
 }
 
 async function releaseWarmNativeSession(
@@ -11353,7 +11360,7 @@ async function executePaperclipNativeSessionAttempt(
     }
   }
   if (input.useRunnerd) {
-    retainedTransition = await timeController("state_migration", () => migrateRunnerdStateRootForExecution({
+    const migration = await timeController("state_migration", () => migrateRunnerdStateRootForExecution({
       db: input.db,
       execution: input.execution,
       preparedExecutionAdmission: input.preparedExecutionAdmission,
@@ -11365,8 +11372,9 @@ async function executePaperclipNativeSessionAttempt(
       runnerExecutionTarget: input.runnerExecutionTarget,
       bootstrapRetryLeaseOwner: input.leaseOwner,
       pluginCheckpointUnavailableConfirmed,
-      onPluginCheckpointRetired: () => { pluginCheckpointRetired = true; },
     }));
+    retainedTransition = migration.binding;
+    pluginCheckpointRetired = migration.pluginCheckpointRetired;
   }
   const durableRunnerBinding = input.useRunnerd
     ? loadRunnerdDurableBinding(input.execution, retainedTransition)
@@ -12925,9 +12933,9 @@ async function executePaperclipNativeSessionAttempt(
               });
             },
             existingSession: existingWarmSession,
-            persistedSession: pluginCheckpointRetired && persistedWarmSession
-              ? allowReplacementAfterConfirmedStateLoss(persistedWarmSession, input.execution)
-              : persistedWarmSession,
+            persistedSession: persistedWarmSession,
+            replaceAfterConfirmedProviderStateLoss: pluginCheckpointRetired && persistedWarmSession
+              ? providerSessionReplaceableAfterStateLoss(persistedWarmSession, input.execution) : false,
             keepSessionOpen: warmSessionId !== null,
             sessionGoalControl: input.sessionGoalControl,
             resumeSessionGoalHeartbeat: input.resumeSessionGoalHeartbeat,
@@ -16641,7 +16649,7 @@ export async function createRunnerdBackend(input: {
         input.execution.binding.runId ||
       hasRetainedWarmTransitionEvidence(scopedRunnerdStateRoot(input.execution))
     ) {
-      retainedTransition = await migrateRunnerdStateRootForExecution({
+      retainedTransition = (await migrateRunnerdStateRootForExecution({
         db: input.db,
         execution: input.execution,
         preparedExecutionAdmission: input.preparedExecutionAdmission,
@@ -16651,7 +16659,7 @@ export async function createRunnerdBackend(input: {
         onLog: input.onLog,
         restartRecovery: input.restartRecovery,
         runnerExecutionTarget: input.runnerExecutionTarget,
-      });
+      })).binding;
     }
     input.executionContext?.signal.throwIfAborted();
     const backend = await createRunnerdBackendWithinSessionClaim(

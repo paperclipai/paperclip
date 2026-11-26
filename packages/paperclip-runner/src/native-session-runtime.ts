@@ -395,6 +395,7 @@ export interface ExecuteNativeSessionOptions {
   onSessionQuarantined?: (reason: string) => Promise<void> | void;
   existingSession?: NativeSession;
   persistedSession?: PersistedNativeSession | null;
+  replaceAfterConfirmedProviderStateLoss?: boolean;
   keepSessionOpen?: boolean;
   /** Apply a structured session-goal control instead of starting an ordinary turn. */
   sessionGoalControl?: NativeSessionGoalControl | null;
@@ -2119,6 +2120,18 @@ function checkpointCursor(cursor: string | null | undefined): number {
  */
 const GOVERNED_WAIT_PROVIDER_WORK_PROOF_TIMEOUT_MS = 30_000;
 
+function runnerProvedSavedStateGone(
+  checkpoint: PersistedNativeSession,
+  recovery: NativeSessionRecoveryResult,
+  restartInterruption: boolean,
+): boolean {
+  return recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE &&
+    recovery.resumeStateUnavailable === true &&
+    !restartInterruption &&
+    checkpoint.activeTurnId === null &&
+    Array.isArray(checkpoint.pendingRuntimeRequests) && checkpoint.pendingRuntimeRequests.length === 0;
+}
+
 async function governedWaitFollowUpMayStartFresh(input: {
   input: NativeExecutionInput;
   checkpoint: PersistedNativeSession;
@@ -2131,14 +2144,10 @@ async function governedWaitFollowUpMayStartFresh(input: {
   if (
     checkpoint.providerRecoveryPolicy !== "allow_replacement_after_governed_wait" ||
     ("homeMode" in input.input && input.input.homeMode === "preconfigured") ||
-    recovery.failureClass !== PROVIDER_STATE_INCOMPATIBLE ||
-    recovery.resumeStateUnavailable !== true ||
-    input.restartInterruption ||
+    !runnerProvedSavedStateGone(checkpoint, recovery, input.restartInterruption) ||
     checkpoint.identity.runId !== input.input.binding.runId ||
     !(checkpoint.cursor === null || checkpoint.cursor === "0") ||
-    checkpoint.activeTurnId !== null ||
     !Array.isArray(checkpoint.terminalTurns) || checkpoint.terminalTurns.length > 0 ||
-    !Array.isArray(checkpoint.pendingRuntimeRequests) || checkpoint.pendingRuntimeRequests.length > 0 ||
     checkpoint.semanticResult !== null ||
     checkpoint.terminal !== null ||
     checkpoint.governedWait !== undefined ||
@@ -2778,7 +2787,11 @@ export async function executeNativeSession(
         controlPlane: options.controlPlane,
         timeoutMs: recoveryTimeoutMs,
       });
-      if (!replacementAllowed && !governedWaitFollowUpLostState) {
+      const confirmedStateLoss = !replacementAllowed && !governedWaitFollowUpLostState &&
+        options.replaceAfterConfirmedProviderStateLoss === true &&
+        !("homeMode" in input && input.homeMode === "preconfigured") &&
+        runnerProvedSavedStateGone(providerRecoveryCheckpoint, recovery, Boolean(checkpointedInterruption));
+      if (!replacementAllowed && !governedWaitFollowUpLostState && !confirmedStateLoss) {
         if (recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE) {
           throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
         }
@@ -2791,7 +2804,7 @@ export async function executeNativeSession(
         throw failure;
       }
       continuityBreak = {
-        reason: governedWaitFollowUpLostState
+        reason: governedWaitFollowUpLostState || confirmedStateLoss
           ? `saved provider state is unavailable, so the follow-up continues in a fresh provider session without the earlier conversation context (${recovery.reason ?? "unknown"})`
           : recovery.reason ?? "provider session is no longer recoverable",
         previousDriverSessionId: providerRecoveryCheckpoint.sessionId,
