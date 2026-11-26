@@ -71,8 +71,8 @@ export function agentTaskSettled(state: TaskState, count: number) {
     && state.interactions.every(row => row.status !== "pending");
 }
 
-/** Owned-task observations only: other work in a persistent QA company cannot affect this grade. */
-export function validateAgentTaskState(context: JourneyContext, issueId: string, state: TaskState, maxRuns: number, allowedCancelled: string[] = [], deadlineAt?: number) {
+/** Check every binding before inspecting outcomes or retaining failure evidence. */
+export function validateAgentTaskBindings(context: JourneyContext, issueId: string, state: TaskState, maxRuns: number) {
   const agent = context.agent!;
   if (state.currentIssue.id !== issueId || state.currentIssue.companyId !== context.company.id
     || state.currentIssue.assigneeAgentId !== agent.id || state.taskRuns.length > maxRuns) throw new JourneyError("failed", "agent_task_binding_mismatch");
@@ -84,6 +84,14 @@ export function validateAgentTaskState(context: JourneyContext, issueId: string,
     if (retiredBeforeProviderStart(run)) continue;
     if (!active(run) && (run.runtimeMode !== "native" || run.contextSnapshot?.paperclipEnvironment?.id !== context.environmentId
       || provider?.kind !== agent.provider || provider?.model !== agent.model)) throw new JourneyError("failed", "agent_run_binding_mismatch");
+  }
+}
+
+/** Owned-task observations only: other work in a persistent QA company cannot affect this grade. */
+export function validateAgentTaskState(context: JourneyContext, issueId: string, state: TaskState, maxRuns: number, allowedCancelled: string[] = [], deadlineAt?: number) {
+  validateAgentTaskBindings(context, issueId, state, maxRuns);
+  for (const run of state.taskRuns) {
+    if (retiredBeforeProviderStart(run)) continue;
     // A projected exact-session retry is still work in progress. Keep observing
     // the same run under the original campaign deadline and run limit.
     if (deadlineAt !== undefined && isPendingNativeRecovery(run, deadlineAt)) continue;

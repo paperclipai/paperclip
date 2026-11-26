@@ -420,6 +420,15 @@ Cloud evidence is private; the public history publisher rejects these bundles.
 The private provider uses conditional S3 identity/stack leases and intent/receipt
 ownership manifests. An expired lease permits cleanup recovery, not reuse.
 
+If the question/resume journey finds a failed agent run before a stable question
+checkpoint, it saves `private-stories/question-answer-resume/clarification-run-failure.json`.
+This private receipt contains only the bound task/run IDs, run status and a
+bounded machine error code. It excludes raw errors and provider state. All run
+bindings are checked before capture. The failed verdict and missing checkpoints
+stay unchanged. A receipt write error keeps the original run failure and adds
+`clarification_failure_evidence_write_failed` as its cause. This receipt does not
+establish the cause of the agent failure or qualify a live run.
+
 Managed self-hosted instances are removed after every attempt. Existing Cloud
 stacks retain the QA account and declared baseline while removing verified
 run-owned fixtures. Successful disposable stacks are deleted. Failed disposable
