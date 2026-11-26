@@ -8,7 +8,7 @@ import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { readSystemRecovery } from "../system-recovery-state.js";
 import { completedWorkspaceRecoveryCondition, readWorkspaceRecovery, verifiedWorkspaceRepairReceipt } from "../workspace-recovery-receipt.js";
 import { nativeSha256 } from "./canonical.js";
-import { hasNewerIssueRun } from "./external-chat-wait-authorization.js";
+import { hasNewerIssueRun } from "./native-run-ownership.js";
 
 export const nativeWorkspaceFinalizationBlockSchema = z.object({
   schema: z.literal("paperclip.native-workspace-finalization-block.v1"),

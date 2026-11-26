@@ -5927,6 +5927,39 @@ describe("native external-chat response wait", () => {
     }));
   });
 
+  it.each([
+    ["no other owner", "authorized"],
+    ["another execution run", "revoked"],
+    ["another checkout run", "revoked"],
+    ["a terminal finalization", "revoked"],
+    ["a committed decision other than a lost wait", "revoked"],
+  ] as const)("authorizes a settled run's lost wait only with %s", async (gate, expected) => {
+    const fixture = await seedWaitTurn();
+    await db.update(companyMemberships).set({ status: "suspended", updatedAt: new Date() })
+      .where(eq(companyMemberships.principalId, fixture.userId));
+    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    await db.update(companyMemberships).set({ status: "active", updatedAt: new Date() })
+      .where(eq(companyMemberships.principalId, fixture.userId));
+    const [run] = await db.select({ createdAt: heartbeatRuns.createdAt }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    // An older run, so only the named owner check can revoke the wait.
+    const [other] = await db.insert(heartbeatRuns).values({ companyId: fixture.companyId, agentId: fixture.agentId,
+      invocationSource: "automation", status: "succeeded", finishedAt: new Date(),
+      createdAt: new Date(run!.createdAt.getTime() - 60_000), contextSnapshot: {} }).returning();
+    await db.update(issues).set({
+      executionRunId: gate === "another execution run" ? other!.id : null,
+      checkoutRunId: gate === "another checkout run" ? other!.id : null,
+    }).where(eq(issues.id, fixture.issueId));
+    if (gate === "a terminal finalization") await db.update(nativeRunFinalizations).set({ phase: "terminal_failure" })
+      .where(eq(nativeRunFinalizations.runId, fixture.runId));
+    if (gate === "a committed decision other than a lost wait") await db.update(statusDecisions)
+      .set({ reasonCode: "response_wake_waiting_for_input" }).where(eq(statusDecisions.runId, fixture.runId));
+
+    await expect(chatWaitAuthority.resolveExternalChatResponseWaitAuthorization({ db, binding: {
+      companyId: fixture.companyId, issueId: fixture.issueId, runId: fixture.runId, agentId: fixture.agentId,
+    } })).resolves.toBe(expected);
+  });
+
   it("queues one continuation for a lost wait when recovery passes overlap through the real queue", async () => {
     const fixture = await seedWaitTurn();
     await db.update(companyMemberships).set({ status: "suspended", updatedAt: new Date() })

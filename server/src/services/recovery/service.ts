@@ -2014,13 +2014,17 @@ export function recoveryService(
       issue.status !== "in_progress" || latestRun?.status !== "succeeded" ||
       latestRun.agentId !== agentId || latestRun.agentId !== issue.assigneeAgentId ||
       !isExternalChatPresentationContext(latestRun.contextSnapshot) ||
-      parseObject(latestRun.resultJson).finalizationReasonCode !== EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST ||
-      await resolveExternalChatResponseWaitAuthorization({ db, binding: {
-        companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId,
-      } }) !== "authorized"
+      parseObject(latestRun.resultJson).finalizationReasonCode !== EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST
     ) return null;
-    if (await hasQueuedIssueWake(issue.companyId, issue.id, agentId) ||
-      await isInvocationBudgetBlocked(issue, agentId)) return "skipped";
+    // The caller already proved the invocation budget clear for this task.
+    const [authorization, queuedWake] = await Promise.all([
+      resolveExternalChatResponseWaitAuthorization({ db, binding: {
+        companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId,
+      } }),
+      hasQueuedIssueWake(issue.companyId, issue.id, agentId),
+    ]);
+    if (authorization !== "authorized") return null;
+    if (queuedWake) return "skipped";
     const queued = await enqueueStrandedIssueRecovery({
       issueId: issue.id,
       agentId,
