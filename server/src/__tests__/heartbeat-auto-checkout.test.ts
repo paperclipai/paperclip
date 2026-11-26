@@ -4,6 +4,20 @@ import {
 } from "../services/heartbeat.ts";
 
 describe("shouldAutoCheckoutIssueForWake", () => {
+  it.each([
+    { issueAssigneeAgentId: "another-agent" }, { isDependencyReady: false },
+    { issueStatus: "done" }, { issueStatus: "cancelled" }, { issueStatus: "in_review" },
+    { contextSnapshot: {} }, { contextSnapshot: { wakeReason: "issue_comment_mentioned" } },
+    { contextSnapshot: { wakeReason: "source_scoped_recovery_action" } },
+    { contextSnapshot: { wakeReason: "execution_resumed" } },
+    { contextSnapshot: { wakeReason: "context_compaction", contextCompactionRequestId: "req-1" } },
+  ])("does not grant an automatic checkout outside the eligible assigned wake: %j", override => {
+    expect(shouldAutoCheckoutIssueForWake({
+      contextSnapshot: { wakeReason: "issue_assigned" }, issueStatus: "todo",
+      issueAssigneeAgentId: "agent-1", isDependencyReady: true, agentId: "agent-1", ...override,
+    })).toBe(false);
+  });
+
   it("auto-checks out an assigned todo issue for an actionable wake", () => {
     expect(shouldAutoCheckoutIssueForWake({
       contextSnapshot: { wakeReason: "issue_assigned" },

@@ -41,7 +41,7 @@ endpoint and branches:
 | --- | --- |
 | Nothing needed | Discovered actions, straight to review. |
 | Needs authorization, and publishes discoverable OAuth metadata | **Sign in to continue** — a browser sign-in at the provider. |
-| Needs authorization, but no discoverable sign-in | A prompt to add the key or headers its docs list, under **Advanced authentication**. |
+| Needs authorization, but no discoverable sign-in | A prompt to add the key or headers its docs list, with the sign-in options open below it. |
 | Needs a client you registered yourself | A prompt for a client ID and secret. The draft connection is kept — you don't start over. |
 | Not a valid address / private network / unreachable | The specific problem and which field to change. |
 
@@ -62,6 +62,54 @@ back that step while retaining the established draft identity.
 Later health checks still require the user's authorization and return an
 actionable `422` error when it is missing.
 
+### Personal apps on shared agents
+
+Installing a personal app on an agent does not require every user who runs that
+agent to connect the app. Runs start without probing optional apps or warning
+about another user's missing credentials. The installed app's cached tools stay
+available even when its shared health check needs attention.
+
+Authorization happens when the agent calls an app tool. Paperclip uses the run's
+responsible user, never another user's personal grant. If that user has not
+connected the app, the tool returns `user_authorization_required` and adds an
+inline connection request. Unrelated work can continue without using the app.
+Disabled or uninstalled apps remain unavailable.
+
+Optional assigned apps do not emit run-start connection warnings, including
+unavailable shared apps. Their health state and reconnect controls remain in
+Apps. An unrelated run does not need to act on that state.
+
+### Connecting another Paperclip instance
+
+Every Paperclip serves its assistant connection at `/mcp/paperclip` (see
+[Public Paperclip MCP connection](../public-mcp.md)). Pasting that address
+connects your agents to another instance — for example a colleague's — so they
+can file and follow tasks there. Paperclip recognizes the address and, using
+only the address you typed (nothing the other server says):
+
+- names the connection after that instance with its distinctive part first —
+  `acme Paperclip` for `acme.paperclip.app`, `localhost-3101 Paperclip` for a
+  local instance — and prefixes its tools with the same host-derived label,
+  so agents see
+  `mcp.acme-paperclip-<id>:paperclip-create-task` (native runners:
+  `app_mcp_acme_paperclip_…_paperclip_create_task_…`), never a bare
+  `create_task` that looks like their own. Other address-based connections
+  keep their existing tool names. Setup records the prefix on the connection
+  (`paperclipPeerToolNamespace`) when it is created, so renaming or
+  reconnecting never changes tool names that saved tool-name rules, agents or
+  pending approvals refer to. Paperclip connections created before this keep
+  their original names;
+- adds agent instructions (template `paperclip.peer`, editable and
+  resettable under **Agent instructions** on the connection's Permissions page)
+  saying these tools act on a different
+  Paperclip, that agents keep using their own Paperclip tools for their own
+  work, and that links from the other instance must be quoted in full;
+- refuses the address of this same instance (`paperclip_self_connection`,
+  422), because its tools are already built in.
+
+Actions start on, as for any other connection. A name or instructions you
+supply yourself are kept.
+
 ### Slack app access
 
 If Slack reports that MCP access is disabled for the app, ask the Slack app
@@ -70,15 +118,27 @@ connection. Signing in alone does not enable that app setting. Paperclip shows
 this as a setup error and keeps the connection available for retry. See
 [Slack's MCP app requirements](https://docs.slack.dev/ai/slack-mcp-server/#app-identity).
 
-### Advanced authentication
+### Choosing how the server signs in
 
-Collapsed by default. Open it when the server's docs are specific:
+The connect screen states the sign-in choice in one line, **Paperclip asks the
+server how to sign in.**, with a **Change** link, the same shape as the access
+line below it. **Change** lists five options (six for organization connections), each with its fields directly
+beneath it when selected:
 
-- **No sign-in needed** — the server is open to anyone with the address.
+- **Let Paperclip check** — the default; Paperclip probes and walks you through it.
 - **Key or token** — sent as an `Authorization` header.
+- **Browser sign-in** — you sign in at the provider. **Use your own client ID**
+  reveals a client ID and secret, for providers that require you to register
+  Paperclip first.
 - **Custom headers** — for servers that name their own headers.
-- **Browser sign-in** — optionally with a client ID and secret you registered
-  yourself, for providers that require preregistration.
+- **No sign-in needed** — the server is open to anyone with the address.
+- **Machine sign-in** — organization connections only. Paperclip signs in as a
+  client you registered with the provider, using a Paperclip key or a client
+  secret, with no person involved. It runs its own setup and test in place of
+  **Check link**. See [Machine sign-in](./MCP-CLIENT-CREDENTIALS.md).
+
+**Done** collapses the list back to a one-line summary of the choice. It stays
+open while the chosen option still needs a value.
 
 Every value you enter becomes a Paperclip secret. Values are write-only: they
 never appear in stored config JSON, logs, activity details, API responses after
@@ -98,8 +158,10 @@ You never choose this; Paperclip resolves it and the wizard shows none of it.
 Recorded here for security review and diagnostics. In preference order:
 
 1. **Deployment-preconfigured client.** `PAPERCLIP_TOOL_OAUTH_<PROVIDER>_CLIENT_ID`
-   / `_SECRET`, or the unsuffixed `PAPERCLIP_TOOL_OAUTH_CLIENT_ID` / `_SECRET`.
-   Always wins when set.
+   / `_SECRET` and the unsuffixed `PAPERCLIP_TOOL_OAUTH_CLIENT_ID` / `_SECRET`
+   apply only to gallery apps, at the token endpoint their app definition
+   fixes. A pasted server never gets a deployment client. Add a client of your
+   own to the connection, or use CIMD or dynamic registration.
 2. **Client ID Metadata Document (CIMD).** When the authorization server
    advertises `client_id_metadata_document_supported`, Paperclip presents the URL
    of its own published metadata document as the `client_id`. Nothing is
@@ -113,7 +175,7 @@ Recorded here for security review and diagnostics. In preference order:
    advertises a `registration_endpoint`. Paperclip registers a public client
    (`token_endpoint_auth_method: none`, `application_type: web`, PKCE S256).
 4. **Manual preregistered client.** The client ID and secret you paste under
-   **Advanced authentication → Browser sign-in**.
+   **Change → Browser sign-in → Use your own client ID**.
 
 A generic connection may register (tiers 2 and 3) **only after** validated
 protected-resource and authorization-server discovery actually produced a
@@ -181,6 +243,59 @@ definition.
 The discovered auth kind, issuer, and resource are persisted on the connection,
 so refresh, reconnect, revoke and diagnostics all use the generic path instead of
 falling back to `authKind: none` semantics.
+
+### Staying connected after access-token expiry
+
+For generic MCP connections, Paperclip adds `offline_access` to the selected
+tool scopes when the **authorization server** advertises it in
+`scopes_supported` and does not explicitly exclude the refresh-token grant.
+This works even when the MCP server's challenge or protected-resource metadata
+lists only tool scopes. Paperclip requests `prompt=consent`, stores the actual
+requested scopes for callback completion and reconnect, and refreshes access
+tokens using its existing encrypted-vault and rotating-token lease paths.
+Curated Apps continue to use their reviewed scope and authorization-parameter
+allowlists.
+
+The provider still decides whether to issue a refresh token. Existing grants
+without one require another sign-in; reconnect also discovers refresh support
+for older generic connections that already cached their OAuth endpoints.
+Transport failures and provider-revoked refresh tokens are separate errors.
+
+#### Local OAuth expiry simulation
+
+Run the standalone MCP/OAuth test server with no external credentials:
+
+```sh
+node scripts/mcp-fixtures/servers/oauth-refresh-fixture.mjs
+```
+
+It binds only to `127.0.0.1` and prints an MCP URL. Add that URL through
+**Apps → Connect an app → Connect your own MCP server** on a local/private
+Paperclip instance with a loopback HTTP callback URL, approve the test consent
+page, and use **read_status**.
+Access tokens last two minutes; later calls should refresh without another
+sign-in. Stop the fixture with Ctrl-C; all provider state is in memory.
+
+The fixture separates the MCP resource's `mcp:read` scope from the identity
+provider's `offline_access` scope. It issues refresh tokens only with offline
+consent and a registered refresh grant, enforces PKCE/client/resource binding,
+rejects expired access tokens, and rotates refresh tokens after every use.
+Diagnostics record only protocol events and scope names, never token values.
+
+Run the fixture controls and Paperclip integration regressions:
+
+```sh
+node --test scripts/mcp-fixtures/servers/oauth-refresh-fixture.test.mjs
+pnpm exec vitest run server/src/__tests__/generic-mcp-connection.test.ts
+```
+
+The integration tests use actual loopback HTTP and a disposable PostgreSQL
+database. They cover shared and personal sign-in, a successful gateway tool
+call, two expiry/refresh rotations without another sign-in, scope overrides,
+unsupported refresh, and reconnecting a legacy cached connection. Provider time
+and cached expiry timestamps are advanced explicitly, so no real-time wait is
+needed. The standalone controls prove that omitting offline scope or consent
+creates an access-only grant that loses MCP access after expiry.
 
 ## Curated definitions remain optional
 

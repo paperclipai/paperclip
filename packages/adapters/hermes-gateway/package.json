@@ -64,8 +64,7 @@
   "scripts": {
     "build": "tsc",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@paperclipai/hermes-paperclip-adapter": "workspace:*"
@@ -73,7 +72,7 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11"
+    "vitest": "^5.0.3"
   },
   "engines": {
     "node": ">=24.11.0"

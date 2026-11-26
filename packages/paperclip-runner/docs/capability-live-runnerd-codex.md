@@ -3,7 +3,7 @@
 > **Reference lab, not the production sandbox topology.** This API remains the
 > runner-lab/session implementation used by UI and recovery tests. Production
 > sandbox execution and live protocol evals use the Rust-owned bridge described
-> in [`../../../doc/plans/2026-08-20-single-daemon-runner-tool-bridge.md`](../../../doc/plans/2026-08-20-single-daemon-runner-tool-bridge.md): external control plane → PRP → one Rust `paperclip-runnerd` → provider. The TypeScript dispatcher below does not run in the sandbox.
+> in [the runner architecture](architecture.md): external control plane → PRP → one Rust `paperclip-runnerd` → provider. The TypeScript dispatcher below does not run in the sandbox.
 
 Capability binds the provider-neutral semantic catalog to a real package-local
 `paperclip-runnerd` process and a real Codex app-server session. Paperclip data

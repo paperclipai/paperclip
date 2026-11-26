@@ -34,11 +34,9 @@ Provider calls use real credentials and incur usage. The fixture uses Claude Son
 not automated by this live suite. Integration tests cover subscription inheritance,
 credential serialization, and automatic retry after the parent's lease is released.
 
-For representative coverage of the newer native runner, put
-`PAPERCLIP_RUNNER_API_TOOLS_ENABLED=true` in the disposable data directory's
-`instances/default/.env`, then restart test-drive. Test-drive clears inherited
-`PAPERCLIP_*` variables before loading that file. The existing opt-in managed API
-tools are how native agents hire. Then use:
+The newer native runner enables its managed API and hiring tools by default.
+No enabling environment variable is required. Operator restrictions still apply;
+see [Runner API tools](../../doc/runner-api-tools.md). For native coverage, use:
 
 ```sh
 HIRING_AI_LIVE=1 HIRING_AI_RUNNER=native HIRING_AI_TEST_URL=http://127.0.0.1:3100 \

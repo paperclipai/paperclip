@@ -8,6 +8,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { GoalTree } from "../components/GoalTree";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Target, Plus } from "lucide-react";
 
@@ -22,11 +23,13 @@ export function Goals() {
     setBreadcrumbs([{ label: "Goals" }]);
   }, [setBreadcrumbs]);
 
-  const { data: goals, isLoading, error } = useQuery({
+  const goalsQuery = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
     queryFn: () => goalsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: goals, isLoading } = goalsQuery;
+  const goalsView = useQueryView(goalsQuery);
 
   const deleteGoal = useMutation({
     mutationFn: (id: string) => goalsApi.remove(id),
@@ -44,16 +47,28 @@ export function Goals() {
   });
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Target} message="Select an organization to view goals." />;
+    return <EmptyState placement="upper" icon={Target} message="Select an organization to view goals." />;
   }
 
-  if (isLoading) {
+  // Keep a loaded list on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the page.
+  if (isLoading || goalsView.kind === "reconnecting") {
     return <PageSkeleton variant="list" />;
+  }
+  if (goalsView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={goalsView.error}
+        action="load goals"
+        onRetry={goalsView.retry}
+        retrying={goalsView.isFetching}
+      />
+    );
   }
 
   return (
     <div className="space-y-4">
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
       {deleteErrorMessage && (
         <p className="text-sm text-destructive" role="alert">
           {deleteErrorMessage}
@@ -61,7 +76,7 @@ export function Goals() {
       )}
 
       {goals && goals.length === 0 && (
-        <EmptyState
+        <EmptyState placement="upper"
           icon={Target}
           message="No goals yet."
           action="Add Goal"

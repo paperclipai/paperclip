@@ -1,3 +1,4 @@
+import { isAiAuthenticationRepairable } from "./ai-auth-failure.js";
 import type { HeartbeatRunStatus, IssueStatus, RunLivenessState } from "@paperclipai/shared";
 
 export type RunLivenessActionability =
@@ -37,6 +38,10 @@ export interface RunLivenessClassificationInput {
   errorCode?: string | null;
   continuationAttempt?: number | null;
   evidence?: Partial<RunLivenessEvidenceInput> | null;
+  /** Set by the controller only after creating a durable connection card. */
+  authenticationRepairRequested?: boolean;
+  /** Set by the controller only after auto-attaching a GitHub connection card. */
+  githubConnectionRequested?: boolean;
 }
 
 export interface RunLivenessClassification {
@@ -320,6 +325,14 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
     return output("needs_followup", input.errorCode ? `Run interrupted (${input.errorCode})` : "Run interrupted");
   }
 
+  if (input.runStatus === "failed" && input.authenticationRepairRequested && isAiAuthenticationRepairable(input)) {
+    return output("blocked", "Waiting for provider authentication repair", "Complete the connection request to continue this task");
+  }
+
+  if (input.runStatus === "failed" && input.githubConnectionRequested) {
+    return output("blocked", "Waiting for GitHub connection", "Complete the connection request to continue this task");
+  }
+
   if (input.runStatus !== "succeeded") {
     if (hasUnmanagedBackgroundTaskEvidence(input.resultJson)) {
       return output("failed", UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON);
@@ -329,6 +342,10 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
 
   if (issueStatus === "done" || issueStatus === "cancelled") {
     return output("completed", `Issue is ${issueStatus}`);
+  }
+
+  if (input.githubConnectionRequested) {
+    return output("blocked", "Waiting for GitHub connection", "Complete the connection request to continue this task");
   }
 
   if (declaredBlocker(input)) {
