@@ -55,6 +55,7 @@ export function PluginTile({
   statusLabel,
   action,
   onOpen,
+  icon,
 }: {
   slug: string;
   name: string;
@@ -66,6 +67,8 @@ export function PluginTile({
   statusLabel: string;
   action: PluginTileAction | null;
   onOpen: () => void;
+  /** Replaces the brand logo for an entry that is not a catalog app. */
+  icon?: ReactNode;
 }) {
   const installed = state !== "available";
   return (
@@ -76,7 +79,7 @@ export function PluginTile({
       className="group relative flex min-w-0 flex-col gap-3 rounded-2xl bg-muted/50 p-5 transition-colors hover:bg-muted"
     >
       <div className="flex min-h-8 items-center gap-3">
-        <AppLogo name={name} brandKey={brandKey} logoUrl={logoUrl} darkLogoUrl={darkLogoUrl} size={32} compact className="bg-transparent" />
+        {icon ?? <AppLogo name={name} brandKey={brandKey} logoUrl={logoUrl} darkLogoUrl={darkLogoUrl} size={32} compact className="bg-transparent" />}
         <h3 className="min-w-0 flex-1 truncate text-sm font-semibold text-foreground">
           <button
             type="button"

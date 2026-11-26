@@ -56,7 +56,7 @@ export function resolveAppsConnectRouteKey(input: {
 
 export function canEnterAppsConnect(
   searchParams: URLSearchParams,
-  { chatConnectorsEnabled = false, githubReviewBotsEnabled = false }: { chatConnectorsEnabled?: boolean; githubReviewBotsEnabled?: boolean } = {},
+  { chatConnectorsEnabled = false }: { chatConnectorsEnabled?: boolean } = {},
 ): boolean {
   if (searchParams.get("aiLogin")?.trim()) return true;
   if (searchParams.get("byo") === "1") {
@@ -69,7 +69,7 @@ export function canEnterAppsConnect(
     );
   }
   const source = searchParams.get("source") ?? "";
-  if (["google-ai", "gateway"].includes(source)) return true;
+  if (["google", "google-ai", "gateway"].includes(source)) return true;
   // Router connectors are registered by installed plugins, not the static
   // catalog. AppsConnect resolves this reserved slug against the host gallery
   // before rendering the pool wizard; unknown/uninstalled routers show its
@@ -80,10 +80,10 @@ export function canEnterAppsConnect(
   // plugin instead of bouncing back to the catalog.
   if (isPluginAppSlug(source)) return true;
   const entry = getAppStoreDefinition(source);
-  const channelEnabled = source === "github-code-review-bot" ? githubReviewBotsEnabled : chatConnectorsEnabled;
+  const alwaysAvailableChannel = source === "agentmail" || source === "github-code-review-bot";
+  const channelEnabled = alwaysAvailableChannel || chatConnectorsEnabled;
   if (
     !channelEnabled &&
-    source !== "agentmail" &&
     entry?.methods.some((method) => method.purpose === "channel") &&
     !entry.methods.some((method) => (method.purpose ?? "tool") !== "channel" && method.transport !== "chat_sdk")
   ) return false;
@@ -95,5 +95,5 @@ export function canEnterAppsConnect(
     getConnectableAppDefinition(source)
     && (searchParams.get("reconnect")?.trim() || searchParams.get("resume")?.trim())
   ) return true;
-  return source === "agentmail" || channelEnabled ? appSupportsCatalogSetup(entry) : appSupportsToolCatalogSetup(entry);
+  return channelEnabled ? appSupportsCatalogSetup(entry) : appSupportsToolCatalogSetup(entry);
 }

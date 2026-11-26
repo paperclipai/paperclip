@@ -53,6 +53,9 @@ describe("native connectors that need a customer-created OAuth app", () => {
     const slack = getConnectableAppDefinition("slack")!;
     expect(nativeConnectorRequiresCustomerOAuthApp(slack, {})).toBe(true);
     expect(nativeConnectorRequiresCustomerOAuthApp(slack, { enableChatConnectors: true })).toBe(false);
+    const githubBot = getConnectableAppDefinition("github-code-review-bot")!;
+    expect(nativeConnectorRequiresCustomerOAuthApp(githubBot, {})).toBe(false);
+    expect(nativeConnectorRequiresCustomerOAuthApp(githubBot, { enableGitHubReviewBots: false })).toBe(false);
   });
 
   it("does not flag connectors with a managed, dynamic-registration, or credential path", () => {

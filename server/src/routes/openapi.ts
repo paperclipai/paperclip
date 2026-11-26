@@ -1517,7 +1517,6 @@ const BOARD_ONLY_OPERATIONS = new Set([
   // Cancelling a question is board-only (routes/issues.ts rejects agent actors). Withdraw is not listed here: its
   // route admits the card's creator agent and the task's assignee, so agents withdraw their own pending card there.
   "POST /api/issues/{id}/interactions/{interactionId}/cancel",
-  "POST /api/issues/{id}/retry",
   "GET /api/companies/{companyId}/prompt-injection-prevention",
   "PUT /api/companies/{companyId}/prompt-injection-prevention",
   "GET /api/companies/{companyId}/prompt-injection-prevention/models",
@@ -2590,7 +2589,7 @@ registry.registerPath({
   summary: "Create a chat endpoint",
   description:
     "Creates one provider bot endpoint bound permanently to one Paperclip agent. Provider setup and verification happen in later calls. "
-    + "Chat providers need Chat connectors, and GitHub needs GitHub review bots, turned on by an instance admin in Experimental settings at /<prefix>/company/settings/instance/experimental. "
+    + "Experimental chat providers need Chat connectors turned on by an instance admin in Experimental settings at /<prefix>/company/settings/instance/experimental; AgentMail and GitHub are always available. "
     + "While that setting is off, connections_search shows the provider as unavailable and this call is refused; agents cannot change it. Link that page as [Experimental settings](/<prefix>/company/settings/instance/experimental) and reply.",
   request: {
     params: z.object({ companyId: z.string().uuid() }),
@@ -11957,7 +11956,7 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Request one durable task retry from current input and preserved results",
   body: taskRetrySchema,
-  responses: { 200: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+  responses: { 200: r.ok(), 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict, 429: r.tooManyRequests },
 });
 
 registerCurrentRoute({

@@ -155,6 +155,54 @@ test.describe("Onboarding wizard", () => {
     expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
   });
 
+  test("the mark and labels keep their size as a single model source collapses", async ({ page }) => {
+    await page.route("**/api/adapters", async (route) => {
+      const response = await route.fetch();
+      const adapters = await response.json();
+      await route.fulfill({ response, json: adapters.map((adapter: { type: string }) =>
+        adapter.type === "codex_local" ? { ...adapter, disabled: true } : adapter,
+      ) });
+    });
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await page.clock.install();
+    await page.goto("/onboarding");
+    await page.getByPlaceholder("e.g. Northwind Labs").fill(`E2E-Picker-${Date.now()}`);
+    await page.getByRole("button", { name: /^Continue/ }).click();
+    await page.locator("#onboarding-agent-name").fill("Ada");
+    await page.locator("#onboarding-agent-name").press("Enter");
+    await page.getByRole("button", { name: "Use API key instead" }).click();
+    const group = page.getByRole("radiogroup", { name: "Model source" });
+    await expect(group.getByRole("radio")).toHaveCount(1);
+    const source = group.getByRole("radio", { name: /Claude/ });
+    await source.focus();
+    await page.evaluate(() => document.fonts.ready);
+    await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now() + 1000)));
+
+    const content = [source.locator("img"), source.getByText("Claude", { exact: true }), source.getByText("API key", { exact: true })];
+    const measureContent = () => Promise.all(content.map((locator) => locator.evaluate((element) => {
+      const range = document.createRange();
+      if (element instanceof HTMLImageElement) range.selectNode(element);
+      else range.selectNodeContents(element);
+      const { width, height } = range.getBoundingClientRect();
+      return { width, height };
+    })));
+    const tileWidth = () => source.evaluate((element) => element.getBoundingClientRect().width);
+    const resting = await measureContent();
+    const fullWidth = await tileWidth();
+
+    await source.press("Enter");
+    await page.clock.runFor(80);
+    const movingWidth = await tileWidth();
+    const moving = await measureContent();
+    await page.clock.runFor(512);
+    expect(movingWidth).toBeLessThan(fullWidth);
+    expect(movingWidth).toBeGreaterThan(await tileWidth());
+    for (const [index, bounds] of moving.entries()) {
+      expect(bounds.width).toBeCloseTo(resting[index]!.width, 1);
+      expect(bounds.height).toBeCloseTo(resting[index]!.height, 1);
+    }
+  });
+
   test("connect step starts the sign-in when the source is chosen, rather than hiring, when the signal reports no credential", async ({
     page,
   }) => {

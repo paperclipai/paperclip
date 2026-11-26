@@ -43,8 +43,8 @@ Use `paperclipai email inboxes --company-id <company-id>`, then `email send --co
 
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use a
 test provider account/channel with permission to send messages. Gates differ:
-AgentMail bypasses the chat-connectors UI gate, GitHub uses
-`enableGitHubReviewBots`, and other chat providers use `enableChatConnectors`.
+AgentMail and GitHub bypass the chat-connectors UI gate; other chat providers
+use `enableChatConnectors`.
 Setup is covered in [connection setup](./connection-setup.md).
 
 ### `external-thread`

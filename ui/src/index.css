@@ -476,6 +476,7 @@
   --motion-ease-scroll-pill-in: cubic-bezier(0.23, 1, 0.32, 1);
   --motion-ease-scroll-pill-out: cubic-bezier(0.7, 0, 0.84, 0);
   --motion-pane-glide: 320ms;           /* properties-pane maximize/restore glide */
+  --plan-pane-attention-duration: 520ms;
   --motion-pane-reveal: var(--motion-duration-slow);
   --motion-ease-pane-reveal: var(--motion-ease-out-expo);
   --motion-pane-width-reset: 200ms;
@@ -1487,6 +1488,22 @@ html:has(.paperclip-app-shell[data-keyboard-open="true"] [data-classic-task-shel
 /* Properties-pane maximize/restore glide (left animates between docked and
    sidebar-flush while the pane is position:fixed). */
 .tc-pane-glide { transition: left var(--motion-pane-glide) var(--motion-ease-standard); }
+[data-plan-pane-attention]:focus {
+  outline: var(--sz-2px) solid transparent;
+  outline-offset: calc(-1 * var(--sz-2px));
+  animation: plan-pane-attention var(--plan-pane-attention-duration) var(--motion-ease-standard) both;
+}
+@keyframes plan-pane-attention {
+  from { outline-color: var(--plan-pane-attention-start, transparent); }
+  25% { outline-color: var(--ring); }
+  to { outline-color: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-plan-pane-attention]:focus {
+    --plan-pane-attention-start: var(--ring);
+    animation-timing-function: steps(1, end);
+  }
+}
 .properties-panel-docked {
   transition: width var(--motion-pane-reveal) var(--motion-ease-pane-reveal),
     opacity var(--motion-pane-reveal) var(--motion-ease-pane-reveal);

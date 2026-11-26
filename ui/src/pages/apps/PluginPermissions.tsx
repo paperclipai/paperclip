@@ -181,7 +181,10 @@ function ConnectionPermissions({ companyId, connection }: { companyId: string; c
   if (!loaded) return <p className={NOTE}>Loading actions…</p>;
   if (reads.length + writes.length === 0) return <p className={NOTE}>This account hasn’t listed any actions yet.</p>;
 
-  const canConfigure = grantsQuery.data?.capabilities?.canConfigure === true;
+  // After a failed refresh the values on screen may be out of date, and a save replaces what is stored,
+  // so changes wait until every read succeeds again.
+  const stale = staleReads(queries);
+  const canConfigure = grantsQuery.data?.capabilities?.canConfigure === true && stale.length === 0;
   const change = (ids: string[], next: ActionPolicy) => {
     setSaveError(null);
     save({ ...actionPermissionMutation(ids, next, enabledIds, askFirstIds), access: savedAccess });
@@ -190,6 +193,14 @@ function ConnectionPermissions({ companyId, connection }: { companyId: string; c
     <>
       {reads.length > 0 ? <ActionBlock title="Reads" entries={reads} enabledIds={enabledIds} askFirstIds={askFirstIds} disabled={!canConfigure || pending} onChange={change} /> : null}
       {writes.length > 0 ? <ActionBlock title="Writes" entries={writes} enabledIds={enabledIds} askFirstIds={askFirstIds} disabled={!canConfigure || pending} onChange={change} /> : null}
+      {stale.length > 0 ? (
+        <p role="status" className="flex flex-wrap items-center gap-x-2 px-4 text-sm text-muted-foreground">
+          Couldn’t refresh these permissions, so changes are paused.
+          <Button type="button" variant="link" size="sm" className="h-auto p-0" disabled={stale.some((query) => query.isFetching)} onClick={() => stale.forEach((query) => void query.refetch())}>
+            Try again
+          </Button>
+        </p>
+      ) : null}
       {saveError ? (
         <p role="alert" className="px-4 text-sm text-destructive">
           Couldn’t save that. {saveError}
@@ -197,6 +208,11 @@ function ConnectionPermissions({ companyId, connection }: { companyId: string; c
       ) : null}
     </>
   );
+}
+
+/** The reads whose last attempt failed: what they loaded earlier may no longer match what is saved. */
+export function staleReads<T extends { error: unknown }>(reads: readonly T[]): T[] {
+  return reads.filter((read) => read.error != null);
 }
 
 /** Tool permissions for a connected plugin: one block for what it reads and one for what it changes, per account. */

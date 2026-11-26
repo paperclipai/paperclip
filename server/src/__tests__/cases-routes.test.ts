@@ -46,6 +46,7 @@ import { assertCaseTrustedForExecution, canActorReadCase, canActorReceiveCase, r
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { subscribeCompanyLiveEvents } from "../services/live-events.js";
 import type { StorageService } from "../storage/types.js";
+import { uniqueIssuePrefix } from "./helpers/issue-prefix.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -166,7 +167,7 @@ describeEmbeddedPostgres("cases routes", () => {
   async function seedCompany(prefix = "CASE") {
     const [company] = await db.insert(companies).values({
       name: `${prefix} Co`,
-      issuePrefix: `${prefix}${randomUUID().replace(/-/g, "").slice(0, 4)}`,
+      issuePrefix: uniqueIssuePrefix(prefix),
     }).returning();
     return company!;
   }
@@ -360,7 +361,7 @@ describeEmbeddedPostgres("cases routes", () => {
 
     const byIdentifier = await http.get(`/api/cases/${created.body.identifier}`).expect(200);
     expect(byIdentifier.body.id).toBe(created.body.id);
-    expect(byIdentifier.body.identifier).toMatch(/^REF[A-Z0-9]{4}-C1$/);
+    expect(byIdentifier.body.identifier).toMatch(/^REF[A-Z0-9]{12}-C1$/);
   });
 
   it("auto-links run writes to their issue with a work link and event", async () => {

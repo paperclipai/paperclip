@@ -6544,7 +6544,15 @@ async function assertPluginTaskReattachmentBinding(input: {
   return taskId;
 }
 
-async function migrateRunnerdStateRootForExecution(input: {
+async function migrateRunnerdStateRootForExecution(
+  input: Omit<Parameters<typeof migrateRunnerdStateRoot>[0], "onPluginCheckpointRetired">,
+): Promise<{ binding?: VerifiedWarmTransitionBinding; pluginCheckpointRetired: boolean }> {
+  let pluginCheckpointRetired = false;
+  const binding = await migrateRunnerdStateRoot({ ...input, onPluginCheckpointRetired: () => { pluginCheckpointRetired = true; } });
+  return { binding, pluginCheckpointRetired };
+}
+
+async function migrateRunnerdStateRoot(input: {
   db: Db;
   execution: NativeExecutionInput;
   preparedExecutionAdmission?: NativePreparedExecutionAdmission;
@@ -6556,6 +6564,7 @@ async function migrateRunnerdStateRootForExecution(input: {
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   bootstrapRetryLeaseOwner?: string;
   pluginCheckpointUnavailableConfirmed?: boolean;
+  onPluginCheckpointRetired?: () => void;
 }): Promise<VerifiedWarmTransitionBinding | undefined> {
   const scoped = scopedRunnerdStateRoot(input.execution);
   await restoreWarmRunnerdController(input);
@@ -6728,7 +6737,10 @@ async function migrateRunnerdStateRootForExecution(input: {
       if (verification === "terminal_state_indeterminate" && !input.retainedWarmOwnerRunId
         && (!input.restartRecovery || input.restartRecovery.kind === "bootstrap_incomplete")) {
         const retirement = await retireFinishedPerTurnRunnerdOwner({ ...input, root: scoped, identity, pluginCheckpointUnavailableConfirmed });
-        if (retirement.retired) return;
+        if (retirement.retired) {
+          if (pluginCheckpointUnavailableConfirmed) input.onPluginCheckpointRetired?.();
+          return;
+        }
         if (retirement.refused !== "lifecycle_not_per_turn") retirementRefusal = `; retirement_refused=${retirement.refused}`;
       }
       if (
@@ -8975,6 +8987,14 @@ function loadWarmNativeCheckpoint(
   return resumed;
 }
 
+export function providerSessionReplaceableAfterStateLoss(
+  checkpoint: Pick<PersistedNativeSession, "goal">,
+  execution: Pick<NativeExecutionInput, "provider">,
+): boolean {
+  if (antigravityForcesSameSessionRecovery(execution.provider)) return false;
+  return checkpoint.goal == null || checkpoint.goal.status === "complete";
+}
+
 async function releaseWarmNativeSession(
   sessionId: string,
   ownerToken: symbol,
@@ -9319,6 +9339,7 @@ function classifyNativeSessionFailure(
   | "native_session_cleanup_quarantined"
   | "native_adopted_runner_authentication_timeout"
   | "runner_remote_provider_artifact_incompatible"
+  | "runner_remote_provider_launch_unprepared"
   | "runner_remote_provider_verification_unavailable"
   | "provider_process_exited"
   | "provider_stdout_closed"
@@ -9405,6 +9426,9 @@ function classifyNativeSessionFailure(
     return "native_provider_model_rejected";
   if (/native_adopted_runner_authentication_timeout/i.test(message)) {
     return "native_adopted_runner_authentication_timeout";
+  }
+  if (/runner_remote_provider_launch_unprepared/i.test(message)) {
+    return "runner_remote_provider_launch_unprepared";
   }
   if (/runner_remote_provider_artifact_incompatible/i.test(message)) {
     return "runner_remote_provider_artifact_incompatible";
@@ -9630,6 +9654,7 @@ export async function nativeProviderRecoveryEvidence(input: {
     ReturnType<typeof nativeSessionFailureSourceCode>
   >([
     "runner_remote_provider_artifact_incompatible",
+    "runner_remote_provider_launch_unprepared",
     "provider_process_exited",
     "provider_stdout_closed",
     "provider_process_output_closed",
@@ -11276,6 +11301,7 @@ async function executePaperclipNativeSessionAttempt(
     } else releasedWarmSource(input, cachedReleasedOwner.pluginTaskId ?? null);
   }
   let pluginCheckpointUnavailableConfirmed = false;
+  let pluginCheckpointRetired = false;
   if (input.useRunnerd && canRecoverWarmOwner && !input.backend &&
       input.runnerExecutionTarget?.kind === "remote" &&
       input.execution.session.lifecyclePolicy.mode === "warm" &&
@@ -11339,7 +11365,7 @@ async function executePaperclipNativeSessionAttempt(
     }
   }
   if (input.useRunnerd) {
-    retainedTransition = await timeController("state_migration", () => migrateRunnerdStateRootForExecution({
+    const migration = await timeController("state_migration", () => migrateRunnerdStateRootForExecution({
       db: input.db,
       execution: input.execution,
       preparedExecutionAdmission: input.preparedExecutionAdmission,
@@ -11352,6 +11378,8 @@ async function executePaperclipNativeSessionAttempt(
       bootstrapRetryLeaseOwner: input.leaseOwner,
       pluginCheckpointUnavailableConfirmed,
     }));
+    retainedTransition = migration.binding;
+    pluginCheckpointRetired = migration.pluginCheckpointRetired;
   }
   const durableRunnerBinding = input.useRunnerd
     ? loadRunnerdDurableBinding(input.execution, retainedTransition)
@@ -12911,6 +12939,8 @@ async function executePaperclipNativeSessionAttempt(
             },
             existingSession: existingWarmSession,
             persistedSession: persistedWarmSession,
+            replaceAfterConfirmedProviderStateLoss: pluginCheckpointRetired && persistedWarmSession
+              ? providerSessionReplaceableAfterStateLoss(persistedWarmSession, input.execution) : false,
             keepSessionOpen: warmSessionId !== null,
             sessionGoalControl: input.sessionGoalControl,
             resumeSessionGoalHeartbeat: input.resumeSessionGoalHeartbeat,
@@ -16624,7 +16654,7 @@ export async function createRunnerdBackend(input: {
         input.execution.binding.runId ||
       hasRetainedWarmTransitionEvidence(scopedRunnerdStateRoot(input.execution))
     ) {
-      retainedTransition = await migrateRunnerdStateRootForExecution({
+      retainedTransition = (await migrateRunnerdStateRootForExecution({
         db: input.db,
         execution: input.execution,
         preparedExecutionAdmission: input.preparedExecutionAdmission,
@@ -16634,7 +16664,7 @@ export async function createRunnerdBackend(input: {
         onLog: input.onLog,
         restartRecovery: input.restartRecovery,
         runnerExecutionTarget: input.runnerExecutionTarget,
-      });
+      })).binding;
     }
     input.executionContext?.signal.throwIfAborted();
     const backend = await createRunnerdBackendWithinSessionClaim(
@@ -19531,6 +19561,23 @@ async function createRunnerdBackendWithinSessionClaim(
         }, sessionScopeId);
         replacementBackend = fresh;
         return fresh.openSession(sessionInput);
+      }
+      // The archive dropped the restored provider artifacts and their launch
+      // paths. The replacement transport reads its launch inputs when it is
+      // built, before its Runner is staged, so stage them again first. Without
+      // this a session restored from saved artifacts (which never selects a
+      // pack root) replaces itself with no OpenCode executable, and any other
+      // session launches from the pack root while its saved receipt names the
+      // artifact root, which the next continuation's Runner rejects.
+      if (requiresRemoteProviderPack) {
+        // Force a full preparation here rather than relying on the archive
+        // having cleared it: a prepared flag or cached launch inputs left over
+        // from the archived session would make this a silent no-op.
+        remotePrepared = false;
+        openCodeLaunchArtifacts = undefined;
+        await prepareNativeRemoteRunner({ target, runnerIngressAuthorized: input.runnerIngressAuthorized === true,
+          runnerPublicUrl: input.runnerPublicUrl, runnerCaBundlePath: input.runnerCaBundlePath,
+          runId: input.execution.binding.runId, prepareRemote: prepareRemoteRunner });
       }
       cursorCloudRuntime?.register();
       try {

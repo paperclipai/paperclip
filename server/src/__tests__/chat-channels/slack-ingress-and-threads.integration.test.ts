@@ -35,7 +35,7 @@ describeEmbeddedPostgres("chat channels: slack ingress and threads", () => {
   const { seedCompany, readChatConversationsByEndpointId, readIssueCommentsByIssueId, readChatDeliveriesByEndpointId, readChatDeliveriesById, readIssuesById, readChatPublicationsByEndpointId, readToolConnectionsById, readIssuesByCompanyId, readChatPublicationsByCommentId, readHeartbeatRunsByCompanyId, createService, recordSlackUrlVerification, signedSlackWebhookRequest, chatWakeContext, addSelectedChatFinal, qualifySetupRoundTrip, configuredSlackEndpoint, deliverMessage } = h;
   const { recordGitHubWebhookVerification, configuredGitHubEndpoint } = gh;
 
-  it("refuses to create a chat endpoint while its provider experiment is off", async () => {
+  it("refuses experimental chat endpoints while chat connectors are off, but always allows GitHub review bots", async () => {
     const settings = instanceSettingsService(db);
     const previous = await settings.getExperimental();
     try {
@@ -43,14 +43,17 @@ describeEmbeddedPostgres("chat channels: slack ingress and threads", () => {
       const fixture = await seedCompany();
       const { service } = createService();
       const app = routesApp(db, fixture.companyId, service);
-      for (const provider of ["imessage-photon", "slack", "github"]) {
+      for (const provider of ["imessage-photon", "slack"]) {
         const response = await request(app).post(`/api/companies/${fixture.companyId}/chat-endpoints`)
           .send({ provider, assignedAgentId: fixture.assignedAgentId }).expect(403);
         expect(response.body.error).toContain("/<prefix>/company/settings/instance/experimental");
       }
       expect(await service.list(fixture.companyId)).toEqual([]);
+      const githubResponse = await request(app).post(`/api/companies/${fixture.companyId}/chat-endpoints`)
+        .send({ provider: "github", assignedAgentId: fixture.assignedAgentId }).expect(201);
+      expect(githubResponse.body.provider).toBe("github");
     } finally {
-      await settings.updateExperimental({ enableChatConnectors: previous.enableChatConnectors, enableGitHubReviewBots: previous.enableGitHubReviewBots });
+      await settings.updateExperimental({ enableChatConnectors: previous.enableChatConnectors });
     }
   });
 

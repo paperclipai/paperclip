@@ -471,8 +471,8 @@ function AppsConnectEntryRoute({
 } = {}) {
   const location = useLocation();
   const searchParams = new URLSearchParams(location.search);
-  const { enabled: chatConnectorsEnabled, githubEnabled: githubReviewBotsEnabled } = useChatConnectorsEnabled();
-  return canEnterAppsConnect(searchParams, { chatConnectorsEnabled, githubReviewBotsEnabled })
+  const { enabled: chatConnectorsEnabled } = useChatConnectorsEnabled();
+  return canEnterAppsConnect(searchParams, { chatConnectorsEnabled })
     ? <AppsConnect credentialSource={credentialSource} />
     : <Navigate to="/apps" replace />;
 }
