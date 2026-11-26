@@ -27,6 +27,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { initPluginBridge } from "./plugins/bridge-init";
 import { PluginLauncherProvider } from "./plugins/launchers";
 import { startChunkLoadRecovery } from "./lib/chunk-load-recovery";
+import { startGlobalActivityTracker } from "./lib/activity-loader";
 import { startPerfMeasureReaper } from "./lib/perf-measure-reaper";
 import { startTranslationDomGuard } from "./lib/translation-dom-guard";
 import { getOrCreatePaperclipReactRoot } from "./lib/react-root";
@@ -48,6 +49,8 @@ initPluginBridge(React, ReactDOM);
 startPerfMeasureReaper();
 
 startChunkLoadRecovery();
+
+startGlobalActivityTracker();
 
 startTranslationDomGuard();
 

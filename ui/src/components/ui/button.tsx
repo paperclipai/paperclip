@@ -5,7 +5,7 @@ import { Slot } from "radix-ui"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-(--tp-color-background-color-border-color-box-shadow-opacity) disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3) aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all duration-150 active:scale-95 active:brightness-95 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3) aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive",
   {
     variants: {
       variant: {
@@ -44,24 +44,54 @@ const Button = React.forwardRef<
   React.ComponentProps<"button"> &
     VariantProps<typeof buttonVariants> & {
       asChild?: boolean
+      loading?: boolean
     }
 >(function Button({
   className,
   variant = "default",
   size = "default",
   asChild = false,
+  loading = false,
+  onClick,
   ...props
 }, ref) {
   const Comp = asChild ? Slot.Root : "button"
+  const [asyncPending, setAsyncPending] = React.useState(false)
+  const mountedRef = React.useRef(true)
+
+  React.useEffect(() => {
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+    }
+  }, [])
+
+  const isBusy = Boolean(loading || asyncPending)
+
+  const handleClick: React.MouseEventHandler<HTMLButtonElement> | undefined = onClick
+    ? (event) => {
+        if (isBusy) return
+        const result: unknown = onClick(event)
+        if (result && typeof (result as PromiseLike<unknown>).then === "function") {
+          setAsyncPending(true)
+          Promise.resolve(result).finally(() => {
+            if (mountedRef.current) setAsyncPending(false)
+          })
+        }
+      }
+    : undefined
 
   return (
     <Comp
       ref={ref}
+      {...props}
       data-slot="button"
       data-variant={variant}
       data-size={size}
+      data-loading={isBusy ? "true" : undefined}
+      aria-busy={isBusy || props["aria-busy"] ? true : undefined}
+      onClick={asChild ? onClick : handleClick}
       className={cn(buttonVariants({ variant, size, className }))}
-      {...props}
     />
   )
 })

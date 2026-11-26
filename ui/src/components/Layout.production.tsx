@@ -5,6 +5,7 @@ import { CloudTrialGate } from "./CloudTrialGate";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { PluginAppShellOverlays } from "./PluginAppShellOverlays";
 import {
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -13,6 +14,7 @@ import {
   useState,
   type CSSProperties,
 } from "react";
+import { RouteContentLoading } from "./AnimatedPaperclipIcon";
 import { useQuery } from "@tanstack/react-query";
 import {
   Outlet,
@@ -598,7 +600,9 @@ export function Layout() {
                   />
                 ) : (
                   <RouteErrorBoundary>
-                    <Outlet />
+                    <Suspense fallback={<RouteContentLoading />}>
+                      <Outlet />
+                    </Suspense>
                   </RouteErrorBoundary>
                 )}
               </main>
