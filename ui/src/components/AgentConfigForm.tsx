@@ -28,6 +28,7 @@ import type {
   EnvBinding,
   EnvSecretRefBinding,
   Environment,
+  SecretVersionSelector,
 } from "@paperclipai/shared";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter, isValidBrowserCode, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
 import type { AdapterModel } from "../api/agents";
@@ -92,7 +93,15 @@ import {
   type EnvironmentVariablesEditorHandle,
 } from "./environment-variables-editor";
 import { buildFixedClaudeOAuthBinding, CLAUDE_OAUTH_TOKEN_ENV_KEY } from "./environment-variables-editor/model";
-import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
+import { AgentSecretAccessEditor, type BindAsEnvVarRequest } from "./AgentSecretAccessEditor";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useProposalReview } from "../pages/secrets/proposal-review";
 import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
@@ -185,6 +194,18 @@ const emptyOverlay: AgentConfigOverlay = {
 
 /** Stable empty object used as fallback for missing env config to avoid new-object-per-render. */
 const EMPTY_ENV: Record<string, EnvBinding> = {};
+
+export function resolveEffectiveAgentEnv(
+  overlayAdapterConfig: Record<string, unknown>,
+  savedAdapterConfig: Record<string, unknown> | null | undefined,
+  flushedEnv?: Record<string, EnvBinding> | null,
+): Record<string, EnvBinding> {
+  if (flushedEnv !== undefined && flushedEnv !== null) return flushedEnv;
+  if (Object.prototype.hasOwnProperty.call(overlayAdapterConfig, "env")) {
+    return (overlayAdapterConfig.env as Record<string, EnvBinding> | undefined) ?? EMPTY_ENV;
+  }
+  return (savedAdapterConfig?.env as Record<string, EnvBinding> | undefined) ?? EMPTY_ENV;
+}
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
   return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local";
@@ -483,6 +504,14 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
     },
   });
+  const rotateSecret = useMutation({
+    mutationFn: (input: { secretId: string; value: string }) =>
+      secretsApi.rotate(input.secretId, { value: input.value }),
+    onSuccess: () => {
+      if (!selectedCompanyId) return;
+      queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    },
+  });
 
   const uploadMarkdownImage = useMutation({
     mutationFn: async ({ file, namespace }: { file: File; namespace: string }) => {
@@ -572,7 +601,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }
 
   function flushEnvironmentDraft() {
-    return environmentVariablesEditorRef.current?.flushPendingDraft() ?? null;
+    return environmentVariablesEditorRef.current?.flushPendingDraft() ?? { status: "clean" as const };
   }
 
   /**
@@ -598,6 +627,81 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     });
   }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const [pendingEnvBindConflict, setPendingEnvBindConflict] = useState<{
+    binding: BindAsEnvVarRequest;
+    availableEnvKey: string;
+    existingKind: "plain" | "secret_ref" | "user_secret_ref";
+  } | null>(null);
+
+  const commitSecretEnvBinding = useCallback((
+    envKey: string,
+    secretId: string,
+    version: SecretVersionSelector,
+    baseEnvOverride?: Record<string, EnvBinding> | null,
+  ) => {
+    if (isCreate) return;
+    setOverlay((prev) => {
+      const existingEnv = resolveEffectiveAgentEnv(
+        prev.adapterConfig,
+        props.agent.adapterConfig as Record<string, unknown> | null | undefined,
+        baseEnvOverride,
+      );
+      return {
+        ...prev,
+        adapterConfig: {
+          ...prev.adapterConfig,
+          env: {
+            ...existingEnv,
+            [envKey]: {
+              type: "secret_ref",
+              secretId,
+              version,
+            },
+          },
+        },
+      };
+    });
+  }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const bindSecretAsEnvVar = useCallback((binding: BindAsEnvVarRequest) => {
+    if (isCreate) return;
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
+    const currentEnv = resolveEffectiveAgentEnv(
+      overlay.adapterConfig,
+      props.agent.adapterConfig as Record<string, unknown> | null | undefined,
+      flushedEnv,
+    );
+    const existing = Object.prototype.hasOwnProperty.call(currentEnv, binding.envKey)
+      ? currentEnv[binding.envKey]
+      : undefined;
+    const alreadySameSecret =
+      typeof existing === "object" &&
+      existing !== null &&
+      existing.type === "secret_ref" &&
+      existing.secretId === binding.secretId;
+    if (existing !== undefined && !alreadySameSecret && !binding.replaceExisting) {
+      let suffix = 2;
+      while (Object.prototype.hasOwnProperty.call(currentEnv, `${binding.envKey}_${suffix}`)) {
+        suffix += 1;
+      }
+      const existingKind =
+        typeof existing === "object" && existing !== null && existing.type === "secret_ref"
+          ? "secret_ref"
+          : typeof existing === "object" && existing !== null && existing.type === "user_secret_ref"
+            ? "user_secret_ref"
+            : "plain";
+      setPendingEnvBindConflict({
+        binding,
+        availableEnvKey: `${binding.envKey}_${suffix}`,
+        existingKind,
+      });
+      return;
+    }
+    commitSecretEnvBinding(binding.envKey, binding.secretId, binding.version, flushedEnv);
+  }, [isCreate, overlay.adapterConfig, !isCreate ? props.agent : undefined, commitSecretEnvBinding]); // eslint-disable-line react-hooks/exhaustive-deps
+
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {
     setOverlay({ ...emptyOverlay });
@@ -607,7 +711,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   const handleSave = useCallback(async () => {
     if (isCreate) return;
-    const flushedEnv = flushEnvironmentDraft();
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const nextOverlay = flushedEnv
       ? {
           ...overlay,
@@ -640,6 +746,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   // ---- Resolve values ----
   const config = !isCreate ? ((props.agent.adapterConfig ?? {}) as Record<string, unknown>) : {};
+  const effectiveSecretsAdapterConfig = useMemo(
+    () => ({ ...config, ...overlay.adapterConfig }),
+    [config, overlay.adapterConfig],
+  );
   const runtimeConfig = !isCreate ? ((props.agent.runtimeConfig ?? {}) as Record<string, unknown>) : {};
   const runtimeOverlay = overlay.runtime.runtimeConfig as Record<string, unknown> | undefined;
   const currentAiConnection = (runtimeOverlay ?? runtimeConfig).aiConnection;
@@ -777,7 +887,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // existing agent's own page fails to save the binding.
   const handleClaudeLoginStoredEdit = async () => {
     if (isCreate) return;
-    const flushedEnv = flushEnvironmentDraft();
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const baseEnv =
       flushedEnv ??
       (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
@@ -806,7 +918,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // secret-reference binding through the normal agent-update patch.
   const handleCodexAccountBindingEdit = async (claim: CodexAccountBindingClaim) => {
     if (isCreate || !claim.companyIdentityDiffers) return;
-    const flushedEnv = flushEnvironmentDraft();
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const baseEnv =
       flushedEnv ??
       (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
@@ -859,7 +973,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // pending editor draft first and keep every unrelated binding.
   const handleApplyStoredClaudeLoginEdit = async () => {
     if (isCreate) return;
-    const flushedEnv = flushEnvironmentDraft();
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const baseEnv =
       flushedEnv ??
       (eff("adapterConfig", "env", (config.env ?? EMPTY_ENV) as Record<string, EnvBinding>));
@@ -963,10 +1079,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     && (runnerAvailability?.defaultRunner === "paperclip" || canQualifyRunnerUpgrade);
   const upgradeRunner = async () => {
     if (isCreate || runnerUpgradePending || upgradeEnvironmentChanged) return;
+    const flushResult = flushEnvironmentDraft();
+    if (flushResult.status === "blocked") return;
+    const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
     const agentId = props.agent.id;
     setRunnerUpgrade({ agentId, status: "pending" });
     try {
-      const flushedEnv = flushEnvironmentDraft();
       const nextOverlay = flushedEnv
         ? { ...overlay, adapterConfig: { ...overlay.adapterConfig, env: flushedEnv } }
         : overlay;
@@ -1215,7 +1333,11 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       if (!selectedCompanyId) {
         throw new Error("Select an organization to test adapter environment");
       }
-      const flushedEnv = flushEnvironmentDraft();
+      const flushResult = flushEnvironmentDraft();
+      if (flushResult.status === "blocked") {
+        throw new Error(flushResult.reason);
+      }
+      const flushedEnv = flushResult.status === "flushed" ? flushResult.value : null;
       const adapterConfigPatch = flushedEnv ? { env: flushedEnv } : undefined;
       // Probe where a real run would actually execute: the agent's own
       // environment, else the instance default. Testing the host for an
@@ -1609,6 +1731,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         const created = await createSecret.mutateAsync({ name, value });
         return created;
       }}
+      onRotateSecret={(secretId, value) => rotateSecret.mutateAsync({ secretId, value })}
       onChange={(env) =>
         isCreate
           ? set!({ envBindings: env ?? {}, envVars: "" })
@@ -1652,15 +1775,76 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "space-y-3 px-4 pb-3")}>
             <p className="text-xs text-muted-foreground">{help.secretAccess}</p>
             <AgentSecretAccessEditor
-              config={{ ...config, ...overlay.adapterConfig }}
+              config={effectiveSecretsAdapterConfig}
               secrets={availableSecrets}
               onChange={applyAccessGrants}
               onCreateSecret={(name, value) => createSecret.mutateAsync({ name, value })}
+              onRotateSecret={(secretId, value) => rotateSecret.mutateAsync({ secretId, value })}
+              onBindAsEnvVar={bindSecretAsEnvVar}
               proposals={agentBindingProposals}
               onApproveProposal={proposalReview.requestApprove}
               onRejectProposal={proposalReview.requestReject}
             />
             {proposalReview.dialogs}
+            <Dialog
+              open={pendingEnvBindConflict !== null}
+              onOpenChange={(open) => {
+                if (!open) setPendingEnvBindConflict(null);
+              }}
+            >
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Environment variable already exists</DialogTitle>
+                  <DialogDescription>
+                    <code className="font-mono">{pendingEnvBindConflict?.binding.envKey}</code> is already set as{" "}
+                    {pendingEnvBindConflict?.existingKind === "secret_ref"
+                      ? "another company secret"
+                      : pendingEnvBindConflict?.existingKind === "user_secret_ref"
+                        ? "a user secret"
+                        : "a plain value"}
+                    . Choose <code className="font-mono">{pendingEnvBindConflict?.availableEnvKey}</code> to keep the
+                    existing variable, or confirm replacing it.
+                  </DialogDescription>
+                </DialogHeader>
+                <DialogFooter className="sm:justify-between">
+                  <Button type="button" variant="ghost" onClick={() => setPendingEnvBindConflict(null)}>
+                    Cancel
+                  </Button>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        if (!pendingEnvBindConflict) return;
+                        commitSecretEnvBinding(
+                          pendingEnvBindConflict.availableEnvKey,
+                          pendingEnvBindConflict.binding.secretId,
+                          pendingEnvBindConflict.binding.version,
+                        );
+                        setPendingEnvBindConflict(null);
+                      }}
+                    >
+                      Bind as {pendingEnvBindConflict?.availableEnvKey}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      onClick={() => {
+                        if (!pendingEnvBindConflict) return;
+                        commitSecretEnvBinding(
+                          pendingEnvBindConflict.binding.envKey,
+                          pendingEnvBindConflict.binding.secretId,
+                          pendingEnvBindConflict.binding.version,
+                        );
+                        setPendingEnvBindConflict(null);
+                      }}
+                    >
+                      Replace {pendingEnvBindConflict?.binding.envKey}
+                    </Button>
+                  </div>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
           </div>
         </div>
       </div>

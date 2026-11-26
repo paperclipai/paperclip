@@ -5,8 +5,8 @@ test("Daytona uses the ordinary access and credential wizard", async ({ page, re
   expect(response.ok()).toBe(true);
   const company = await response.json();
   await page.goto(`/${company.issuePrefix}/apps`);
-  await expect(page.getByRole("heading", { name: "Connectors", exact: true })).toBeVisible();
-  await page.getByRole("searchbox", { name: "Search connectors" }).fill("Daytona");
+  await expect(page.getByRole("heading", { name: "Plugins", exact: true })).toBeVisible();
+  await page.getByRole("searchbox", { name: "Search plugins" }).fill("Daytona");
   const card = page.getByRole("list", { name: "Connector list" }).getByRole("listitem").filter({ hasText: "Daytona" });
   await expect(card).toHaveCount(1);
   // App marks are decorative (empty alt), so they have no accessible img role.

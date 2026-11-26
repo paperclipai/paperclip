@@ -10,6 +10,8 @@
 type RunnerModule = typeof import("@paperclipai/paperclip-runner");
 
 export type {
+  AntigravityBrowserLoginFailureReason,
+  AntigravityBrowserLoginState,
   GeneratedAntigravitySwarmChannel,
   GeneratedAntigravitySwarmCredentialFacts,
   NativeCursorCloudConfig,
@@ -243,6 +245,7 @@ export const GENERATED_ANTIGRAVITY_SWARM_DEFAULT_CHANNEL = runner.GENERATED_ANTI
 export const readGeneratedAntigravitySwarmCredentialFacts = runner.readGeneratedAntigravitySwarmCredentialFacts;
 export const discoverAntigravityModels = runner.discoverAntigravityModels;
 export const AntigravityModelDiscoveryCleanupError = runner.AntigravityModelDiscoveryCleanupError;
+export const AntigravityRuntimeUnavailableError = runner.AntigravityRuntimeUnavailableError;
 export const PROVIDER_PACK_COMPATIBILITY = runner.PROVIDER_PACK_COMPATIBILITY;
 export const bundledRemoteProviderPackManifestPath = runner.bundledRemoteProviderPackManifestPath;
 export const bundledRemoteRunnerBinary = runner.bundledRemoteRunnerBinary;

@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
 
 /** Standalone source for local, SSH, and sandbox runtimes. No secrets in files. */
-export function githubLauncherSource(options: { brokerFile?: boolean; interpreterPath?: string } = {}): string {
+export function githubLauncherSource(options: { brokerFile?: boolean; interpreterPath?: string; anonymous?: boolean } = {}): string {
   if (options.interpreterPath !== undefined && (typeof options.interpreterPath !== "string"
     || !isAbsolute(options.interpreterPath) || /[\s\0]/u.test(options.interpreterPath))) {
     throw new Error("GitHub launcher interpreter must be an absolute path without whitespace");
@@ -10,6 +10,7 @@ export function githubLauncherSource(options: { brokerFile?: boolean; interprete
   // then publishes a replacement to broker.json. Only that file can change, so
   // only broker-file launchers wait for it; an inherited URL never recovers.
   const brokerRecoveryMs = options.brokerFile ? 60_000 : 0;
+  const anonymousLauncher = options.anonymous === true;
   return String.raw`#!${options.interpreterPath ?? "/usr/bin/env node"}
 const fs = require('node:fs');
 const path = require('node:path');
@@ -36,7 +37,9 @@ if (!['git', 'gh'].includes(program) || !executable) {
 const localGitCommands = new Set(['init', 'status', 'add', 'config', 'rev-parse', 'log', 'diff', 'diff-files', 'write-tree', 'show', 'branch', 'checkout', 'switch', 'restore', 'reset', 'rm', 'mv', 'worktree', 'grep', 'blame', 'describe', 'ls-files', 'ls-tree', 'cat-file', 'rev-list', 'merge-base', 'show-ref', 'for-each-ref', 'symbolic-ref', 'check-ignore', 'version', 'help']);
 const gitValueOptions = ['-C', '-c', '--git-dir', '--work-tree', '--namespace', '--config-env', '--super-prefix', '--attr-source'];
 const gitFlagOptions = ['-p', '-P', '--paginate', '--no-pager', '--bare', '--no-replace-objects', '--no-lazy-fetch', '--no-optional-locks', '--no-advice', '--literal-pathspecs', '--glob-pathspecs', '--noglob-pathspecs', '--icase-pathspecs'];
-function isLocalGit(args) {
+const localGhCommands = new Set(['--version', '--help', '-h', 'version', 'help']);
+function isLocalCommand(args) {
+  if (program === 'gh') return args.length > 0 && localGhCommands.has(args[0]);
   if (program !== 'git') return false;
   for (let index = 0; index < args.length; index++) {
     const arg = args[index];
@@ -56,6 +59,8 @@ function connectorRepositoryTool(args) {
 }
 async function main() {
   let env = { ...process.env };
+  const anonymousLauncher = ${anonymousLauncher ? 'true' : 'false'};
+  let brokerAnonymous = false;
 ${options.brokerFile ? String.raw`
   delete env.PAPERCLIP_API_URL;
   delete env.PAPERCLIP_API_KEY;
@@ -67,9 +72,16 @@ ${options.brokerFile ? String.raw`
   const readBroker = () => {
     let broker;
     try { broker = JSON.parse(fs.readFileSync(path.join(directory, 'broker.json'), 'utf8')); }
-    catch (error) { return error && error.code === 'ENOENT' ? 'absent' : 'unreadable'; }
-    // A failed replacement bridge publishes empty values, which also means no broker.
-    if (!broker || typeof broker.url !== 'string' || typeof broker.token !== 'string' || !broker.url || !broker.token) return 'absent';
+    catch (error) {
+      if (error && error.code === 'ENOENT') { brokerAnonymous = false; return 'absent'; }
+      return 'unreadable';
+    }
+    // A failed replacement bridge publishes empty values without anonymous: true.
+    if (!broker || typeof broker.url !== 'string' || typeof broker.token !== 'string' || !broker.url || !broker.token) {
+      brokerAnonymous = Boolean(broker && broker.anonymous === true);
+      return 'absent';
+    }
+    brokerAnonymous = false;
     env.PAPERCLIP_GITHUB_BROKER_URL = broker.url;
     env.PAPERCLIP_GITHUB_BROKER_TOKEN = broker.token;
     return 'present';
@@ -110,7 +122,7 @@ ${options.brokerFile ? String.raw`
       GIT_CONFIG_KEY_4: 'user.useConfigOnly', GIT_CONFIG_VALUE_4: 'true',
     });
     const base = env.PAPERCLIP_GITHUB_BROKER_URL || env.PAPERCLIP_API_URL;
-    const askBroker = !isLocalGit(process.argv.slice(2));
+    const askBroker = !anonymousLauncher && !brokerAnonymous && !isLocalCommand(process.argv.slice(2));
     try {
     let response;
     if (askBroker && base && env.PAPERCLIP_GITHUB_BROKER_TOKEN) {

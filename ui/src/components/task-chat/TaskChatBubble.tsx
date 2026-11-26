@@ -11,11 +11,11 @@ import { isVideoLikeOutput } from "@/lib/issue-output";
 import { AgentAvatar, type AvatarAgent } from "../AgentAvatar";
 import { Identity } from "../Identity";
 import { paperclipHumanAvatarUrl } from "@/lib/issue-chat-human-author";
-import { useCallback, useContext, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 import { useEmailComment } from "@/components/EmailMessageCard";
-import type { IssueAttachment } from "@paperclipai/shared";
+import type { Agent, IssueAttachment } from "@paperclipai/shared";
 import { IssueGalleryContext } from "@/context/IssueGalleryContext";
-import { cn } from "@/lib/utils";
+import { agentRouteRef, cn } from "@/lib/utils";
 import { agentDetailHref } from "@/pages/agent-detail-navigation";
 import { useStreamlinedTaskChatPresentation } from "./presentation-mode";
 import { MarkdownBody } from "@/components/MarkdownBody";
@@ -87,6 +87,8 @@ function initialsForName(name: string) {
   return name.slice(0, 2).toUpperCase();
 }
 
+export const TaskTranscriptAgents = createContext<ReadonlyMap<string, Agent> | null>(null);
+
 export function TaskChatAgentIdentity({
   agentName,
   agentIcon,
@@ -96,6 +98,7 @@ export function TaskChatAgentIdentity({
   agentIcon?: string | null;
   agent?: AvatarAgent;
 }) {
+  const taskAgents = useContext(TaskTranscriptAgents);
   const identity = (
     <>
       <span data-testid="task-chat-agent-avatar"><AgentAvatar agent={agent} name={agentName} size={24} /></span>
@@ -103,18 +106,19 @@ export function TaskChatAgentIdentity({
     </>
   );
   const className = "flex items-center gap-2 px-1";
-  return agent?.id ? (
+  if (!agent?.id) {
+    return <span className={className} data-testid="task-chat-agent-identity">{identity}</span>;
+  }
+  const member = taskAgents?.get(agent.id);
+  const agentRef = member && member.status !== "terminated" ? agentRouteRef(member) : agent.id;
+  return (
     <Link
-      to={agentDetailHref(agent.id)}
+      to={taskAgents ? `/chats/${encodeURIComponent(agentRef)}` : agentDetailHref(agent.id)}
       className={cn(className, "no-underline hover:no-underline")}
       data-testid="task-chat-agent-identity"
     >
       {identity}
     </Link>
-  ) : (
-    <span className={className} data-testid="task-chat-agent-identity">
-      {identity}
-    </span>
   );
 }
 

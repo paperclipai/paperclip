@@ -1,4 +1,6 @@
 import { currentControllerProcess } from "../controller-process-identity.js";
+import { isConfirmedStoppedUnavailablePluginCheckpoint } from "../environment-task-runtime.js";
+import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { isAntigravitySwarmExecution } from "../antigravity-swarm.js";
 import { applyNativeAcceptedOutcome, nativeRetainsWarmSession, readNativeAcceptedOutcome, type NativeAcceptedOutcome } from "./native-accepted-outcome.js";
 import { settleReattachRun } from "../heartbeat/run-admission.js";
@@ -56,7 +58,8 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { nativeProviderPackAdmissionFailureCode, prepareNativeProviderPackAdmission, rememberAdmittedNativeProviderPack, rememberRecoveredNativeProviderPack, recordNativeProviderPackAdmission, type NativeProviderPackAdmissionSource } from "./native-provider-pack-admission.js";
-import { type ProviderPackInstallation, providerPackIncompatible, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
+import { type AdmittedProviderPackReceipt, type PackProvider, type ProviderPackInstallation, providerPackIncompatible, verifyRemoteProviderPack as verifyRemoteProviderPackIdentity } from "./remote-provider-pack-verification.js";
+import { toPackProvider } from "./provider-pack-compatibility.js";
 import { writeEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { NATIVE_SESSION_EXECUTION_LEASE_TTL_MS, lockNativeExecutionLeaseForReacquire, nativeExecutionLeaseHeldCondition, releaseUnstartedNativeExecutionClaim, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 export { renewNativeSessionExecutionLease } from "./native-execution-lease.js";
@@ -116,7 +119,7 @@ import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { resolveAcpxQualification, resolveAntigravityCandidateAdmission, resolveKimiCandidateAdmission } from "./acpx-qualification.js";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 import { prepareGrokRunnerCredentials } from "./grok-runner-credentials.js";
-import { AntigravityConnectionConfigurationError } from "./antigravity-connection-policy.js";
+import { AntigravityConnectionConfigurationError, antigravityConnectionRefusal } from "./antigravity-connection-policy.js";
 import { antigravityCandidateTarget, antigravityForcesSameSessionRecovery, antigravityReleasePending, antigravityUsesRunScopedState, assertAntigravityExecutionAdmissible } from "./antigravity-release.js";
 import { ANTIGRAVITY_SWARM_UNAVAILABLE } from "../antigravity-swarm-refusal.js";
 import { bindAntigravityCredentialTurn, bindAntigravityTransportRetirement, prepareAntigravityRunnerCredentials } from "./antigravity-runner-credentials.js";
@@ -148,7 +151,7 @@ import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { hasAcknowledgedNativeLifecycleStopIntent, hasAcknowledgedNativeReassignmentStopIntent, hasAcknowledgedNativeStopIntent, hasAcknowledgedNativeRunStopReceipt } from "../acknowledged-native-stop.js";
 import { stoppedCodexTurnIsTextOnly } from "./stopped-codex-turn.js";
-import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, prepareVerifiedRemoteProviderPack, remoteProviderPackEntryRefusal, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets } from "./remote-provider-pack.js";
+import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256, isMissingProviderPackBinaryError, prepareVerifiedRemoteProviderPack, remoteProviderPackEntryRefusal, providerPackProvenanceReuseAllowed, useVerifiedPreinstalledRemoteProviderPack, shouldUseBundledAcpxImageAssets, verifiedProviderPackAdmissionReceipt } from "./remote-provider-pack.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { selectRemotePiCompanion } from "./remote-pi-companion.js";
 import { scheduledResumeContinuationAllowed } from "./scheduled-resume-continuation.js";
@@ -6032,7 +6035,7 @@ async function recoverPluginRunnerCheckpoint(input: {
   db: Db;
   execution: NativeExecutionInput;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
-}, scoped: string): Promise<void> {
+}, scoped: string): Promise<{ checkpointUnavailable?: true } | void> {
   const target = input.runnerExecutionTarget;
   if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask || !target.leaseId ||
       target.sandboxLeaseAcquisition?.outcome === "resumed") return;
@@ -6078,7 +6081,18 @@ async function recoverPluginRunnerCheckpoint(input: {
   if (!isSettledRemoteWarmControlState(control, identity)) return deny("journal_not_settled");
   const resumeFrom = await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
     leaseId: target.leaseId, priorIdentity: identity, inspectCheckpoint: true });
-  const checkpoint = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "read_state", identity, resumeFrom }));
+  let checkpoint: ReturnType<typeof environmentTaskResultSchema.parse>;
+  try {
+    checkpoint = environmentTaskResultSchema.parse(await target.runnerTask({ kind: "read_state", identity, resumeFrom }));
+  } catch (error) {
+    // When the provider explicitly attests that the prior task stopped and its
+    // retained session state is no longer available, allow the caller to retire
+    // the settled prior root cleanly into a fresh session instead of failing.
+    if (!quarantined && isConfirmedStoppedUnavailablePluginCheckpoint(error)) {
+      return { checkpointUnavailable: true };
+    }
+    throw error;
+  }
   if (checkpoint.kind !== "state" || checkpoint.state.lifecycle !== "suspended" ||
       !Array.isArray(checkpoint.state.outbox) || checkpoint.state.outbox.length !== 0 ||
       checkpoint.state.pendingTerminalDelivery != null || checkpoint.state.pendingProviderCleanup != null ||
@@ -6237,18 +6251,27 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
   execution: NativeExecutionInput;
   projectedControlBytes?: string;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
+  pluginCheckpointUnavailableConfirmed?: boolean;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }): Promise<{ finished: true; run: typeof heartbeatRuns.$inferSelect; recheck: () => Promise<string | null> }
   | { finished: false; refused: string }> {
   const target = input.runnerExecutionTarget;
   // A resumed sandbox still holds the prior Runner's own lifecycle, which its
-  // existing recovery path reads. Plugin tasks own a separate saved checkpoint.
+  // existing recovery path reads. Plugin tasks own a separate saved checkpoint,
+  // unless the provider explicitly confirmed it is stopped and no state remains.
   const refuse = (refused: string) => ({ finished: false as const, refused });
   const lifecycle = input.execution.session.lifecyclePolicy.mode;
   const localRunner = !target || target.kind === "local";
   if (lifecycle !== "per_turn" && !(lifecycle === "warm" && !localRunner)) return refuse("lifecycle_not_per_turn");
+  let confirmedGonePluginTask = false;
   if (!localRunner) {
-    if (target.kind !== "remote" || target.transport !== "sandbox" || !target.runner || target.runnerTask) {
+    confirmedGonePluginTask = Boolean(
+      input.pluginCheckpointUnavailableConfirmed
+      && target.kind === "remote" && target.transport === "sandbox" && target.runnerTask
+      && await remoteExecutionHasStopped(input.db, input.execution.binding.companyId, input.identity.runId),
+    );
+    if (target.kind !== "remote" || target.transport !== "sandbox"
+      || (!confirmedGonePluginTask && (!target.runner || target.runnerTask))) {
       return refuse("target_not_sandbox_runner");
     }
     if (!["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) {
@@ -6272,6 +6295,9 @@ async function inspectFinishedPerTurnRunnerdOwner(input: {
     currentProviderLeaseId: target?.kind === "remote" && target.transport === "sandbox"
       ? target.sandboxLeaseAcquisition?.providerLeaseId : undefined,
   });
+  if (confirmedGonePluginTask && !remoteRunnerGone) {
+    return refuse("prior_lease_active");
+  }
   const parkedGovernedWait = remoteRunnerGone && await priorRunParkedOnGovernedWait(input.db, {
     companyId: binding.companyId, issueId: binding.issueId, runId: identity.runId });
   const projectionOptions = { localRunner, controlBytes: input.projectedControlBytes, remoteRunnerGone, parkedGovernedWait };
@@ -6518,7 +6544,15 @@ async function assertPluginTaskReattachmentBinding(input: {
   return taskId;
 }
 
-async function migrateRunnerdStateRootForExecution(input: {
+async function migrateRunnerdStateRootForExecution(
+  input: Omit<Parameters<typeof migrateRunnerdStateRoot>[0], "onPluginCheckpointRetired">,
+): Promise<{ binding?: VerifiedWarmTransitionBinding; pluginCheckpointRetired: boolean }> {
+  let pluginCheckpointRetired = false;
+  const binding = await migrateRunnerdStateRoot({ ...input, onPluginCheckpointRetired: () => { pluginCheckpointRetired = true; } });
+  return { binding, pluginCheckpointRetired };
+}
+
+async function migrateRunnerdStateRoot(input: {
   db: Db;
   execution: NativeExecutionInput;
   preparedExecutionAdmission?: NativePreparedExecutionAdmission;
@@ -6529,6 +6563,8 @@ async function migrateRunnerdStateRootForExecution(input: {
   restartRecovery?: NativeRestartRecoveryClaim;
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   bootstrapRetryLeaseOwner?: string;
+  pluginCheckpointUnavailableConfirmed?: boolean;
+  onPluginCheckpointRetired?: () => void;
 }): Promise<VerifiedWarmTransitionBinding | undefined> {
   const scoped = scopedRunnerdStateRoot(input.execution);
   await restoreWarmRunnerdController(input);
@@ -6541,8 +6577,10 @@ async function migrateRunnerdStateRootForExecution(input: {
     issueId: input.execution.binding.issueId,
     stateKey: basename(scoped),
   });
-  if (!input.restartRecovery && !input.retainedWarmOwnerRunId) {
-    await recoverPluginRunnerCheckpoint(input, scoped);
+  let pluginCheckpointUnavailableConfirmed = input.pluginCheckpointUnavailableConfirmed === true;
+  if (!input.restartRecovery && !input.retainedWarmOwnerRunId && !pluginCheckpointUnavailableConfirmed) {
+    const recovered = await recoverPluginRunnerCheckpoint(input, scoped);
+    if (recovered?.checkpointUnavailable) pluginCheckpointUnavailableConfirmed = true;
   }
   if (
     input.allowLocalRecovery &&
@@ -6698,8 +6736,11 @@ async function migrateRunnerdStateRootForExecution(input: {
       let retirementRefusal = "";
       if (verification === "terminal_state_indeterminate" && !input.retainedWarmOwnerRunId
         && (!input.restartRecovery || input.restartRecovery.kind === "bootstrap_incomplete")) {
-        const retirement = await retireFinishedPerTurnRunnerdOwner({ ...input, root: scoped, identity });
-        if (retirement.retired) return;
+        const retirement = await retireFinishedPerTurnRunnerdOwner({ ...input, root: scoped, identity, pluginCheckpointUnavailableConfirmed });
+        if (retirement.retired) {
+          if (pluginCheckpointUnavailableConfirmed) input.onPluginCheckpointRetired?.();
+          return;
+        }
         if (retirement.refused !== "lifecycle_not_per_turn") retirementRefusal = `; retirement_refused=${retirement.refused}`;
       }
       if (
@@ -8048,6 +8089,9 @@ export function resolveNativeHarnessPersistenceProfile(
                 ...(execution.provider.agent === "grok"
                   ? ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp", "config.toml", "logs"].map((entry) =>
                     `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/grok-home/${entry}`)
+                  : execution.provider.agent === "antigravity"
+                  ? ["acp_token.json", "auth-refresh.json", "auth-refresh.json.tmp", "logs"].map((entry) =>
+                    `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/antigravity-home/antigravity-acp/${entry}`)
                   : execution.provider.agent === "codex"
                   ? CODEX_HOME_CHECKPOINT_EXCLUDED_ENTRIES.map(
                       (entry) =>
@@ -8941,6 +8985,14 @@ function loadWarmNativeCheckpoint(
     persistWarmNativeCheckpoint(execution, configDigest, resumed);
   }
   return resumed;
+}
+
+export function providerSessionReplaceableAfterStateLoss(
+  checkpoint: Pick<PersistedNativeSession, "goal">,
+  execution: Pick<NativeExecutionInput, "provider">,
+): boolean {
+  if (antigravityForcesSameSessionRecovery(execution.provider)) return false;
+  return checkpoint.goal == null || checkpoint.goal.status === "complete";
 }
 
 async function releaseWarmNativeSession(
@@ -11053,6 +11105,7 @@ async function executePaperclipNativeSessionAttempt(
   assertAntigravityExecutionAdmissible({
     execution: input.execution, useRunnerd: input.useRunnerd, backend: input.backend,
     restartRecovery: input.restartRecovery, remoteTarget: input.runnerExecutionTarget?.kind === "remote",
+    pluginTask: input.runnerExecutionTarget?.kind === "remote" && input.runnerExecutionTarget.transport === "sandbox" && Boolean(input.runnerExecutionTarget.runnerTask),
   });
   if (input.execution.provider.kind === "acpx" && input.execution.provider.agent === "kimi"
     && QUALIFIED_ACPX_PROFILES.kimi.qualificationStatus === "pending") {
@@ -11242,6 +11295,8 @@ async function executePaperclipNativeSessionAttempt(
       } finally { cachedReleasedOwner.busy = wasBusy; }
     } else releasedWarmSource(input, cachedReleasedOwner.pluginTaskId ?? null);
   }
+  let pluginCheckpointUnavailableConfirmed = false;
+  let pluginCheckpointRetired = false;
   if (input.useRunnerd && canRecoverWarmOwner && !input.backend &&
       input.runnerExecutionTarget?.kind === "remote" &&
       input.execution.session.lifecyclePolicy.mode === "warm" &&
@@ -11258,7 +11313,8 @@ async function executePaperclipNativeSessionAttempt(
         pluginTaskDescription = description;
       }
       if (taskTarget.sandboxLeaseAcquisition?.outcome !== "resumed" && !portableSource) {
-        await recoverPluginRunnerCheckpoint(input, root);
+        const recovered = await recoverPluginRunnerCheckpoint(input, root);
+        if (recovered?.checkpointUnavailable) pluginCheckpointUnavailableConfirmed = true;
       }
     }
     if (durableIdentityMatchesSession(identity, input.execution) && identity.runId !== input.execution.binding.runId) {
@@ -11304,7 +11360,7 @@ async function executePaperclipNativeSessionAttempt(
     }
   }
   if (input.useRunnerd) {
-    retainedTransition = await timeController("state_migration", () => migrateRunnerdStateRootForExecution({
+    const migration = await timeController("state_migration", () => migrateRunnerdStateRootForExecution({
       db: input.db,
       execution: input.execution,
       preparedExecutionAdmission: input.preparedExecutionAdmission,
@@ -11315,7 +11371,10 @@ async function executePaperclipNativeSessionAttempt(
       restartRecovery: input.restartRecovery,
       runnerExecutionTarget: input.runnerExecutionTarget,
       bootstrapRetryLeaseOwner: input.leaseOwner,
+      pluginCheckpointUnavailableConfirmed,
     }));
+    retainedTransition = migration.binding;
+    pluginCheckpointRetired = migration.pluginCheckpointRetired;
   }
   const durableRunnerBinding = input.useRunnerd
     ? loadRunnerdDurableBinding(input.execution, retainedTransition)
@@ -12875,6 +12934,8 @@ async function executePaperclipNativeSessionAttempt(
             },
             existingSession: existingWarmSession,
             persistedSession: persistedWarmSession,
+            replaceAfterConfirmedProviderStateLoss: pluginCheckpointRetired && persistedWarmSession
+              ? providerSessionReplaceableAfterStateLoss(persistedWarmSession, input.execution) : false,
             keepSessionOpen: warmSessionId !== null,
             sessionGoalControl: input.sessionGoalControl,
             resumeSessionGoalHeartbeat: input.resumeSessionGoalHeartbeat,
@@ -14948,6 +15009,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
   runner: CommandManagedRuntimeRunner;
   configuredProviderPackRoot: string | null;
   manifest: RemoteProviderPackManifest;
+  provider?: PackProvider;
   signal?: AbortSignal;
   trace?: NativeRunTrace;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => void | Promise<void>;
@@ -14963,7 +15025,8 @@ export async function prepareRemoteProviderPackOnTarget(input: {
   const seal = remoteProviderPackSeal(remoteTarget);
   const verifyRemoteProviderPack = (packRoot: string, acceptProvenance = false) =>
     verifyRemoteProviderPackIdentity({ runner: remoteCommandRunner, cwd: remoteTarget.remoteCwd, packRoot,
-      manifest: expectedProviderPackManifest, acceptProvenance: acceptProvenance && input.acceptProvenanceDifferences === true,
+      manifest: expectedProviderPackManifest, ...(input.provider ? { provider: input.provider } : {}),
+      acceptProvenance: acceptProvenance && input.acceptProvenanceDifferences === true,
       ...(seal ? { seal } : {}) });
   const discoverPreinstalledProviderPack = async () => {
     if (!remoteTarget || !remoteCommandRunner) return [];
@@ -15043,6 +15106,7 @@ export async function prepareRemoteProviderPackOnTarget(input: {
         sourceDigest: readRemoteProviderPackIdentity(configuredProviderPackRoot, false).digest,
         expectedDigest: expectedProviderPackManifest.digest,
         manifest: expectedProviderPackManifest,
+        ...(input.provider ? { provider: input.provider } : {}),
         signal: input.signal,
         runner: remoteCommandRunner,
         cwd: remoteTarget.remoteCwd,
@@ -15057,6 +15121,30 @@ export async function prepareRemoteProviderPackOnTarget(input: {
           targetPath: stagedRemoteProviderPackRoot,
           mode: 0o700,
         }),
+        verifyStagedCore: async () => {
+          const escapedTarget = stagedRemoteProviderPackRoot.replaceAll("'", "'\\''");
+          const writable = await remoteCommandRunner.execute({
+            command: "sh",
+            args: ["-c", `test ! -L '${escapedTarget}' && test -d '${escapedTarget}'`],
+            cwd: remoteTarget.remoteCwd,
+            bypassSession: true,
+            timeoutMs: 10_000,
+          });
+          if (writable.exitCode !== 0 || writable.timedOut) return false;
+          try {
+            await verifyRemoteProviderPackIdentity({
+              runner: remoteCommandRunner,
+              cwd: remoteTarget.remoteCwd,
+              packRoot: stagedRemoteProviderPackRoot,
+              manifest: expectedProviderPackManifest,
+              provider: { kind: "opencode" },
+              ...(seal ? { seal } : {}),
+            });
+            return true;
+          } catch {
+            return false;
+          }
+        },
         verifyUploaded: async () => { await verifyRemoteProviderPack(stagedRemoteProviderPackRoot); },
       });
       activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
@@ -16561,7 +16649,7 @@ export async function createRunnerdBackend(input: {
         input.execution.binding.runId ||
       hasRetainedWarmTransitionEvidence(scopedRunnerdStateRoot(input.execution))
     ) {
-      retainedTransition = await migrateRunnerdStateRootForExecution({
+      retainedTransition = (await migrateRunnerdStateRootForExecution({
         db: input.db,
         execution: input.execution,
         preparedExecutionAdmission: input.preparedExecutionAdmission,
@@ -16571,7 +16659,7 @@ export async function createRunnerdBackend(input: {
         onLog: input.onLog,
         restartRecovery: input.restartRecovery,
         runnerExecutionTarget: input.runnerExecutionTarget,
-      });
+      })).binding;
     }
     input.executionContext?.signal.throwIfAborted();
     const backend = await createRunnerdBackendWithinSessionClaim(
@@ -16989,12 +17077,25 @@ async function createRunnerdBackendWithinSessionClaim(
     const resumeFrom = !retainedOwner && !adopting && !input.relaunchReleased && prior && prior.environmentLeaseId !== remoteTarget.leaseId
       ? await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
           leaseId: remoteTarget.leaseId!, priorIdentity: prior }) : undefined;
+    if (provider.kind === "acpx" && provider.agent === "antigravity") {
+      const refusal = antigravityConnectionRefusal({
+        apiKey: Boolean(input.runnerEnvironment?.GEMINI_API_KEY?.trim()),
+        remote: true,
+        lifecycleMode: input.execution.session.lifecyclePolicy.mode,
+        releasePending: antigravityReleasePending(),
+        remoteCandidateAdmitted: false,
+      });
+      if (refusal) throw new AntigravityConnectionConfigurationError(refusal);
+    }
     const credentials = await preparePluginRunnerCredentials({
       provider: provider.kind === "acpx" ? provider.agent : provider.kind,
       identity: input.managedAiCredentialIdentity, accountIdentity: input.managedAiAccountIdentity,
       home: input.managedAiCredentialHome, environment: input.runnerEnvironment ?? {},
     });
-    if (credentials.needsWriteback && !input.managedAiCredentialWriteback) throw new Error("Plugin Runner credential writeback authority unavailable");
+    if (credentials.needsWriteback && (!input.managedAiCredentialWriteback
+      || (credentials.credential?.type === "provider-env") !== Boolean(input.managedAiCredentialWriteback.google))) {
+      throw new Error("Plugin Runner credential writeback authority unavailable");
+    }
     // Same-lease recovery already has a writeback binding. A portable move creates a new lease.
     if ((!adopting || input.remoteWarmRecovery?.portableSourceTaskId) && input.managedAiCredentialWriteback && credentials.accountIdentity) {
       if (!remoteTarget.leaseId) throw new Error("Plugin Runner credential lease unavailable");
@@ -17319,17 +17420,28 @@ async function createRunnerdBackendWithinSessionClaim(
     : remoteTarget
     ? remoteOpenCodeArtifacts?.runnerBinary || remoteClaudeRunnerBinary || input.runnerRemoteBinaryPath?.trim() || remotePiCompanion?.runnerBinary || (useBundledRemoteImageAssets ? await verifiedBundledRemoteRunnerBinary() : await resolvePaperclipRunnerBinaryAsync())
     : await resolvePaperclipRunnerBinaryAsync();
-  const selectProviderPackAuthority = (reattach: boolean) => requiresRemoteProviderPack ? resolveRemoteProviderPackAuthority({
-    stateDirectory: root,
-    binding: { companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
-      workspaceId: providerPackWorkspaceId(input.execution.binding.executionWorkspaceId, input.execution.binding.runId, effectiveEnvironmentLeaseId), sessionId: nativeSessionKey(input.execution),
-      runnerInstanceId: effectiveRunnerInstanceId, environmentLeaseId: effectiveEnvironmentLeaseId,
-      remoteCwd: remoteTarget!.remoteCwd, providerDigest: nativeSha256(input.execution.provider) },
-    reattach,
-    retainProviderPack: !providerArtifacts && (reattach || retainProviderPack),
-    runnerArtifact: () => readRunnerdArtifactBinding(controllerRunnerBinary),
-    current: () => providerArtifacts?.manifest as RemoteProviderPackManifest ?? resolveCurrentProviderPackManifest(),
-  }) : null;
+  let providerPackAuthorityFromFallback = false;
+  const providerPackAuthorityBinding = () => ({
+    companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
+    workspaceId: providerPackWorkspaceId(input.execution.binding.executionWorkspaceId, input.execution.binding.runId, effectiveEnvironmentLeaseId), sessionId: nativeSessionKey(input.execution),
+    runnerInstanceId: effectiveRunnerInstanceId, environmentLeaseId: effectiveEnvironmentLeaseId,
+    remoteCwd: remoteTarget!.remoteCwd, providerDigest: nativeSha256(input.execution.provider),
+  });
+  const selectProviderPackAuthority = (reattach: boolean) => {
+    providerPackAuthorityFromFallback = false;
+    return requiresRemoteProviderPack ? resolveRemoteProviderPackAuthority({
+      stateDirectory: root,
+      binding: providerPackAuthorityBinding(),
+      reattach,
+      retainProviderPack: !providerArtifacts && (reattach || retainProviderPack),
+      runnerArtifact: () => readRunnerdArtifactBinding(controllerRunnerBinary),
+      current: () => {
+        if (providerArtifacts?.manifest) return providerArtifacts.manifest as RemoteProviderPackManifest;
+        providerPackAuthorityFromFallback = true;
+        return resolveCurrentProviderPackManifest();
+      },
+    }) : null;
+  };
   let providerPackAuthority = adoptingPersistedRemoteRunner ? null : selectProviderPackAuthority(reattachProviderPack);
   let expectedProviderPackManifest: RemoteProviderPackManifest | null = providerPackAuthority?.manifest
     ?? providerArtifacts?.manifest as RemoteProviderPackManifest ?? null;
@@ -17436,13 +17548,15 @@ async function createRunnerdBackendWithinSessionClaim(
       })
     : Promise.resolve();
 
+  const packProvider = toPackProvider(input.execution.provider);
   const verifyRemoteProviderPack = async (packRoot: string) => {
     if (providerPackVerified && packRoot === activeRemoteProviderPackRoot) return;
     if (!remoteTarget || !remoteCommandRunner || !expectedProviderPackManifest)
       return;
     const seal = remoteProviderPackSeal(remoteTarget);
     await verifyRemoteProviderPackIdentity({ runner: remoteCommandRunner,
-      cwd: remoteTarget.remoteCwd, packRoot, manifest: expectedProviderPackManifest, ...(seal ? { seal } : {}) });
+      cwd: remoteTarget.remoteCwd, packRoot, manifest: expectedProviderPackManifest,
+      ...(packProvider ? { provider: packProvider } : {}), ...(seal ? { seal } : {}) });
     providerPackVerified = true;
   };
 
@@ -17467,9 +17581,55 @@ async function createRunnerdBackendWithinSessionClaim(
   // standard app-image path is the default transport source, not an upgrade request.
   const explicitProviderPackSelection = Boolean(input.runnerRemoteProviderPackPath?.trim()
     && input.runnerRemoteProviderPackPath.trim() !== "/opt/paperclip-runner/provider-pack");
-  const useInstalledProviderPack = async () => {
+  const loadAdmittedProviderPackReceipt = async (): Promise<AdmittedProviderPackReceipt | undefined> => {
+    if (!retainProviderPack || !providerPackAuthorityFromFallback || explicitProviderPackSelection) return undefined;
+    const candidateRunIds = [...new Set([
+      ...(input.remoteWarmRecovery ? [input.remoteWarmRecovery.identity.runId] : []),
+      ...(input.providerPackAdmissionSource ? [input.providerPackAdmissionSource.runId] : []),
+      durableIdentity?.runId,
+      input.execution.binding.runId,
+    ].filter((value): value is string => typeof value === "string" && value.length > 0))];
+    const sessionId = nativeSessionKey(input.execution);
+    for (const sourceRunId of candidateRunIds) {
+      let source: { receipt?: unknown; state?: unknown } | undefined =
+        input.providerPackAdmissionSource?.runId === sourceRunId ? input.providerPackAdmissionSource : undefined;
+      if (!source && input.db && typeof input.db.select === "function") {
+        try {
+          source = (await input.db.select({
+            receipt: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeProviderPackAdmission'`,
+            state: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeProviderPackAdmissionState'`,
+          }).from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, sourceRunId),
+            eq(heartbeatRuns.companyId, input.execution.binding.companyId),
+            eq(heartbeatRuns.agentId, input.execution.binding.agentId),
+            eq(heartbeatRuns.runtimeMode, "native"),
+          )).limit(1))[0];
+        } catch {
+          source = undefined;
+        }
+      }
+      const verified = verifiedProviderPackAdmissionReceipt({
+        receipt: source?.receipt,
+        state: source?.state,
+        companyId: input.execution.binding.companyId,
+        agentId: input.execution.binding.agentId,
+        runId: sourceRunId,
+        sessionId,
+        runnerInstanceId: sourceRunId === input.remoteWarmRecovery?.identity.runId
+          ? input.remoteWarmRecovery.identity.runnerInstanceId
+          : effectiveRunnerInstanceId,
+        environmentLeaseId: sourceRunId === input.remoteWarmRecovery?.identity.runId
+          ? input.remoteWarmRecovery.identity.environmentLeaseId
+          : effectiveEnvironmentLeaseId,
+      });
+      if (verified) return verified;
+    }
+    return undefined;
+  };
+  const useInstalledProviderPack = async (onImmutableRejected?: (error: unknown) => void) => {
     const expected = expectedProviderPackManifest;
     if (!expected || !remoteTarget || !remoteCommandRunner) return false;
+    const admittedReceipt = await loadAdmittedProviderPackReceipt();
     for (const installation of remoteNativeArtifacts?.providerPackInventory() ?? []) {
       try {
         const manifest = await measureNativeRunnerSpan(input.trace, "provider_pack.compatibility", () => verifyRemoteProviderPackIdentity({
@@ -17479,14 +17639,29 @@ async function createRunnerdBackendWithinSessionClaim(
           requireExactIdentity: retainProviderPack || explicitProviderPackSelection,
           requireCurrentOpenCodeProxy: !retainProviderPack
             && runnerEnvironment?.PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS === "1",
+          ...(admittedReceipt ? { admittedReceipt } : {}),
         }), { attributes: { target: installation.root === stagedRemoteProviderPackRoot ? "workspace" : "image" } });
-        if (!retainProviderPack) providerPackAuthority!.select(manifest);
+        if (!retainProviderPack) {
+          providerPackAuthority!.select(manifest);
+        } else if (admittedReceipt && providerPackAuthority && manifest.digest !== providerPackAuthority.manifest.digest) {
+          const preservedRunner = providerPackAuthority.runnerArtifact;
+          providerPackAuthority = resolveRemoteProviderPackAuthority({
+            stateDirectory: root,
+            binding: providerPackAuthorityBinding(),
+            reattach: false,
+            retainProviderPack: false,
+            runnerArtifact: () => preservedRunner,
+            current: () => manifest,
+          });
+          providerPackAuthorityFromFallback = false;
+        }
         expectedProviderPackManifest = manifest;
         activeRemoteProviderPackRoot = installation.root;
         providerPackVerified = true;
         return true;
       } catch (error) {
         if (error instanceof Error && error.name === "AbortError") throw error;
+        if (installation.immutable) onImmutableRejected?.(error);
       }
     }
     return false;
@@ -17509,13 +17684,30 @@ async function createRunnerdBackendWithinSessionClaim(
         return;
       }
       await remoteNativeArtifacts?.verifyRemoteRunner(requiredMode, undefined, true);
-      if (requiresRemoteProviderPack && await useInstalledProviderPack()) {
+      if (artifactStorage && providerArtifacts) {
+        providerPackVerified = true;
         remotePrepared = true;
         return;
       }
-      if (requiresRemoteProviderPack && stagedRemoteProviderPackRoot) {
-        await verifyRemoteProviderPack(stagedRemoteProviderPackRoot);
-        activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+      if (requiresRemoteProviderPack) {
+        let immutableRejection: unknown = null;
+        if (await useInstalledProviderPack(error => { immutableRejection ??= error; })) {
+          remotePrepared = true;
+          return;
+        }
+        if (stagedRemoteProviderPackRoot) {
+          try {
+            await verifyRemoteProviderPack(stagedRemoteProviderPackRoot);
+          } catch (error) {
+            if (immutableRejection && isMissingProviderPackBinaryError(error)) {
+              throw immutableRejection;
+            }
+            throw error;
+          }
+          activeRemoteProviderPackRoot = stagedRemoteProviderPackRoot;
+        } else if (immutableRejection) {
+          throw immutableRejection;
+        }
       }
       remotePrepared = true;
       return;
@@ -17541,7 +17733,8 @@ async function createRunnerdBackendWithinSessionClaim(
       const sourceSignals = [startupSignal, contextSignal].filter((signal): signal is AbortSignal => !!signal);
       const prepared = await prepareRemoteProviderPackOnTarget({
         target: remoteTarget, runner: remoteCommandRunner, configuredProviderPackRoot,
-        manifest: expectedProviderPackManifest, trace: input.trace, onLog: input.onLog,
+        manifest: expectedProviderPackManifest, ...(packProvider ? { provider: packProvider } : {}),
+        trace: input.trace, onLog: input.onLog,
         signal: sourceSignals.length ? AbortSignal.any(sourceSignals) : undefined,
         acceptProvenanceDifferences: providerPackProvenanceReuseAllowed({ retainProviderPack, explicitProviderPackSelection,
           authoritySelectable: providerPackAuthority !== null }),
@@ -17571,7 +17764,8 @@ async function createRunnerdBackendWithinSessionClaim(
       signal: providerArtifactsSignal() });
     const bootstrap = activeRemoteProviderPackRoot
       ? { root: activeRemoteProviderPackRoot, manifest: expectedProviderPackManifest }
-      : remoteNativeArtifacts?.providerPackInventory().find(pack => pack.immutable);
+      : remoteNativeArtifacts?.providerPackInventory().find(pack =>
+          pack.immutable && typeof (pack.manifest as RemoteProviderPackManifest | null)?.payload?.artifacts?.nodeCommand?.path === "string");
     if (!bootstrap) throw new Error("native_provider_artifacts_bootstrap_unavailable");
     const bootstrapManifest = bootstrap.manifest as RemoteProviderPackManifest;
     openCodeLaunchArtifacts = await prepareRemoteOpenCodeArtifacts({ runner: remoteCommandRunner,
@@ -18763,12 +18957,20 @@ async function createRunnerdBackendWithinSessionClaim(
               signalVerifiedRecoveryProcess(localRecoveryProcess, signal),
           }
         : undefined;
-  if (adoptingPersistedRemoteRunner && !adoptedProcess && requiresRemoteProviderPack) {
+  if (input.restartRecovery?.kind === "reattach_remote_runner" && !adoptedProcess && requiresRemoteProviderPack) {
     // Bind the relaunch to the pack this session was admitted with (the saved
     // authority, verified as an exact installed identity), never a newer one.
     relaunchesSettledRemoteRunner = true;
-    providerPackAuthority = selectProviderPackAuthority(true);
-    expectedProviderPackManifest = providerPackAuthority?.manifest ?? expectedProviderPackManifest;
+    if (artifactStorage && !providerArtifacts && durableBinding !== null && durableIdentityMatchesSession(durableIdentity, input.execution)) {
+      providerArtifacts = await recordedSessionProviderArtifacts(input.db, input.execution, durableIdentity.runId);
+      if (providerArtifacts) legacyProviderContinuity = false;
+    }
+    if (adoptingPersistedRemoteRunner || providerArtifacts) {
+      providerPackAuthority = selectProviderPackAuthority(true);
+      expectedProviderPackManifest = providerPackAuthority?.manifest
+        ?? providerArtifacts?.manifest as RemoteProviderPackManifest
+        ?? expectedProviderPackManifest;
+    }
   }
   if (adoptedProcess && remoteTarget) {
     const markSpawned = resolveRemoteRunnerProcessSpawned as (() => void) | null;
@@ -19193,10 +19395,19 @@ async function createRunnerdBackendWithinSessionClaim(
     }
     if (antigravityCredential?.home && antigravityCredential.credential && !boundManagedSessions.has(session)) {
       boundManagedSessions.add(session);
-      const runtimeHome = resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", "acpx", "acpx",
-        acpxRuntimeSessionDirectoryName(nativeSessionKey(input.execution)), "antigravity-home");
+      const relativeHome = `acpx/acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(input.execution))}/antigravity-home`;
+      const runtimeHome = resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", relativeHome);
+      const runtimeStore = remoteRunnerFilesystemRoot && remoteCommandRunner
+        ? createNativeCredentialStore({
+            provider: "antigravity",
+            localHome: join(runtimeHome, "antigravity-acp"),
+            remoteHome: posix.join(remoteRunnerFilesystemRoot, relativeHome, "antigravity-acp"),
+            runner: remoteCommandRunner,
+          })
+        : undefined;
       return bindAntigravityCredentialTurn(session, {
         managedHome: antigravityCredential.home, credential: antigravityCredential.credential, runtimeHome,
+        ...(runtimeStore ? { runtimeStore } : {}),
       });
     }
     const destinationHome = credentialProvider === "grok" ? grokCredential?.home : input.managedAiCredentialHome;

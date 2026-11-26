@@ -122,15 +122,15 @@ const filePhaseLabels: Record<ChatFileTransferPhase, string> = {
 };
 
 export function useIssueChatBinding(companyId: string, issueId: string) {
-  const { enabled, githubEnabled } = useChatConnectorsEnabled();
-  const queryEnabled = (enabled || githubEnabled) && Boolean(companyId && issueId) && !issueId.startsWith("chat:");
+  const { enabled } = useChatConnectorsEnabled();
+  const queryEnabled = Boolean(companyId && issueId) && !issueId.startsWith("chat:");
   const query = useQuery({
     queryKey: ["issue-chat-binding", companyId, issueId],
     queryFn: () => chatEndpointsApi.getIssueBinding(issueId),
     enabled: queryEnabled,
   });
   return {
-    binding: queryEnabled && chatProviderVisible(query.data?.provider, enabled, githubEnabled) ? (query.data ?? null) : null,
+    binding: queryEnabled && chatProviderVisible(query.data?.provider, enabled) ? (query.data ?? null) : null,
     isLoading: queryEnabled && query.isLoading,
   };
 }

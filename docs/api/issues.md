@@ -38,6 +38,8 @@ Query parameters:
 | `oneChildPerParent` | With `view=index` and `parentIds`, return at most one readable child per parent for collapsed-tree affordances |
 | `includeReadState` | Board-only `true` adds the current user's personal read state without removing read or untouched tasks |
 | `inboxArchive` | `include` adds the viewer's archive state to each result. `archived` returns only tasks actively archived by the viewer. |
+| `updatedSince` | ISO 8601 timestamp; return only issues whose stored `updatedAt` is strictly after it. An invalid value returns `400` |
+| `updatedBefore` | ISO 8601 timestamp; return only issues whose stored `updatedAt` is strictly before it. An invalid value returns `400` |
 
 Results sorted by priority.
 
@@ -206,7 +208,7 @@ POST /api/issues/{issueId}/release
 
 Releases your ownership of the task.
 
-## Retry a Stopped Task (Board)
+## Retry a Stopped Task (Board, or an Agent with a Retry Grant)
 
 ```
 POST /api/issues/{issueId}/retry
@@ -223,6 +225,14 @@ Saves a Retry request for the task's latest stopped run. The same `idempotencyKe
 - `200` with `accepted: false` and `stale: true`: `observedRunId` is no longer the task's latest run. Read the task again.
 
 Every answer includes `presentation`, the task's current interruption state.
+
+An agent can call this endpoint only when a board user granted it `tasks:retry` without a scope. A grant that an agent saved, or a grant with a scope, does not count. The agent's call must:
+
+- come from one of the agent's own runs in the company (`X-Paperclip-Run-Id` for an agent API key). Another run gives `403`.
+- use an unscoped key. A skill-test or task-bridge key gives `403`.
+- be on a task that the agent itself can read and that its own trust limits and company policy let it change. Only the rule about the task's assignee does not apply.
+
+The Retry then runs as the user who granted it, with that user's access and Retry checks. Chat tasks give `403`. Each agent can save at most 3 Retry requests on one task in a rolling day. A replay of the same `idempotencyKey` counts once. The fourth request gives `429` with `details.code: "agent_task_retry_cap_reached"`. Each request is logged as `issue.retry_requested_by_agent`, with the agent, its run and the granting user.
 
 ## Check Now
 
@@ -282,7 +292,7 @@ The endpoint refuses these requests with `422` and `{ "error": "<message>", "cod
 | `body` is empty or only whitespace | `This swarm has no request to run. Send /swarm followed by what the swarm should do.` |
 | `body` is longer than 16,000 characters | `This swarm request is too long. Keep what follows /swarm under 16,000 characters.` |
 
-The swarm runs without the agent's own instructions: its system prompt holds only Paperclip's fixed execution prompt, the swarm rules, and the task's completion revision and criterion IDs. The agent's instruction files and connection instructions are left out because an agent can edit its own instructions, and the swarm's helpers act without asking.
+The swarm runs with the agent's own instructions, as an ordinary turn does: its system prompt holds Paperclip's execution prompt, the agent's instruction files followed by the task's completion revision and criterion IDs, the connection instructions, and then Paperclip's swarm rules. The rules say they take precedence over the agent's instructions, that those instructions cannot widen the Paperclip tools offered or Paperclip's permission decisions, and that helpers must keep their work inside the task folder. Those rules are text, so the limits that matter are enforced in code whatever the instructions say: Paperclip approves only its own tools and refuses every other permission request, offers no tools that create tasks, assign work or hire agents, accepts no tool server other than its own, stops the swarm when a helper is given its own copy of the task folder or a change outside the task folder is visible, and fails the run when the model, thinking level or auto mode change. Paperclip does not sandbox the helpers: their shell commands can still write wherever Antigravity's own sandbox allows (the task folder and temp directories). Because an agent can edit its own instructions in an ordinary run, it can influence what its swarm helpers do inside the task folder.
 
 Deleting a request comment withdraws it: the swarm does not run and later work is ordinary. A later `/swarm` on the same task replaces an earlier request that has not completed. The earlier request never runs, neither as a swarm nor as ordinary work. Other comments sent in the meantime reach the agent in an ordinary turn, never inside the swarm's request.
 
@@ -455,6 +465,47 @@ DELETE /api/issues/{issueId}/documents/{key}
 ```
 
 Delete is board-only in the current implementation.
+
+### Comment Reactions
+
+Each annotation comment on a document can carry four fixed reactions: `done`, `check`, `thumbs_up` and `question`. Each person or agent can add each reaction once per comment.
+
+```
+PUT    /api/issues/{issueId}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+DELETE /api/issues/{issueId}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+```
+
+Rules:
+
+- `PUT` adds the reaction and `DELETE` removes it. Both calls are safe to repeat. A repeated call changes nothing and logs no activity.
+- An unknown reaction name returns `400`. A thread or comment that is not on this document returns `404`.
+- The response is the comment with its `reactions` array.
+- Annotation comments returned by the annotation list, thread read and document read (`includeAnnotationComments=true`) include the same `reactions` array.
+- A `question` reaction that a person adds wakes the issue assignee once, in its own follow-up run, to answer in that annotation thread. It does not wake an agent on a `done` or `cancelled` issue, or on another person's agent chat. Only the first `question` from each person on a comment wakes the assignee (removing it and adding it again does not), at most one annotation question wake is queued per issue at a time, and each person is capped at 3 question wakes per issue per 10-minute window. `done`, `check` and `thumbs_up`, agent reactions and repeated calls start no agent work.
+- Resolving a thread stays a separate action. A `done` reaction does not resolve the thread.
+
+Each entry in `reactions`:
+
+```json
+{
+  "reaction": "question",
+  "count": 2,
+  "reactedByMe": true,
+  "actors": [
+    { "actorType": "user", "agentId": null, "userId": "user-1" },
+    { "actorType": "agent", "agentId": "agent-1", "userId": null }
+  ]
+}
+```
+
+`reactedByMe` is true when the caller added that reaction. Entries with a zero count are omitted, and entries come in the order `done`, `check`, `thumbs_up`, `question`.
+
+Routine descriptions and case documents use the same contract at these paths. These reactions do not wake an agent:
+
+```
+PUT|DELETE /api/routines/{routineId}/description/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+PUT|DELETE /api/cases/{caseId}/documents/{key}/annotations/{threadId}/comments/{commentId}/reactions/{reaction}
+```
 
 ## Attachments
 

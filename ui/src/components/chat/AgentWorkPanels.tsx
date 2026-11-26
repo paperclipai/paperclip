@@ -22,6 +22,9 @@ import { Link } from "@/lib/router";
 import { cn, formatDate, relativeTime } from "@/lib/utils";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
 import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { useIssueUpdatedFilterNow } from "@/hooks/useIssueUpdatedFilterNow";
+
+const EMPTY_AGENT_TASKS: Issue[] = [];
 
 /**
  * The agent-scoped side panels shown beside an agent chat: every task the
@@ -134,16 +137,18 @@ export function AgentTasksPanel({
     ...companyProjectsQuery(companyId),
   });
 
+  const agentTasks = tasksQuery.data ?? EMPTY_AGENT_TASKS;
+  const updatedFilterNow = useIssueUpdatedFilterNow(agentTasks, filters.updatedWithin);
   const visible = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    const scoped = (tasksQuery.data ?? []).filter((task) => {
+    const scoped = agentTasks.filter((task) => {
       if (task.id === excludeIssueId) return false;
       if (!needle) return true;
       return task.title.toLowerCase().includes(needle)
         || (task.identifier ?? "").toLowerCase().includes(needle);
     });
-    return sortAgentTasks(applyIssueFilters(scoped, filters), sortField, sortDir);
-  }, [tasksQuery.data, excludeIssueId, query, filters, sortField, sortDir]);
+    return sortAgentTasks(applyIssueFilters(scoped, filters, null, false, undefined, {}, updatedFilterNow), sortField, sortDir);
+  }, [agentTasks, excludeIssueId, query, filters, sortField, sortDir, updatedFilterNow]);
 
   const activeFilterCount = countActiveIssueFilters(filters);
   const total = (tasksQuery.data ?? []).filter((task) => task.id !== excludeIssueId).length;

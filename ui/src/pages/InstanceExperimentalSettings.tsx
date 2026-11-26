@@ -249,6 +249,8 @@ export function InstanceExperimentalSettings() {
     experimentalQuery.data?.enableSimplifiedEnglishInteractions === true;
   const enableFirstTaskPlanProposal =
     experimentalQuery.data?.enableFirstTaskPlanProposal === true;
+  const enableCloudTrialInference =
+    experimentalQuery.data?.enableCloudTrialInference === true;
   const enableSmokeLab = experimentalQuery.data?.enableSmokeLab === true;
   const autoRestartDevServerWhenIdle = experimentalQuery.data?.autoRestartDevServerWhenIdle === true;
   const isVisible = (key: InstanceFeatureKey) => !hiddenSettings.has(experimentalSettingKey(key));
@@ -321,18 +323,6 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
-          title="AWS connector"
-          description="Let agents work in AWS through AWS's hosted MCP server, with short-lived credentials made for each connection."
-          footnote="Off by default. While off, the AWS connector cannot be set up or run."
-          checked={experimentalQuery.data?.enableAwsConnector === true}
-          onCheckedChange={(checked) => toggleMutation.mutate({ enableAwsConnector: checked })}
-          disabled={toggleMutation.isPending}
-          settingKey="enableAwsConnector"
-          managed={managedKeys.enableAwsConnector}
-          ariaLabel="Toggle AWS connector experimental setting"
-        />
-
-        <ExperimentalToggleCard
           title="Beta skills"
           description="Allow agents to pin beta releases of the Paperclip core skill. Disabling this returns every agent to the default live skill without removing saved pins."
           checked={enableBetaSkills}
@@ -369,13 +359,26 @@ export function InstanceExperimentalSettings() {
         <ExperimentalToggleCard
           title="Chat connectors"
           description="Connect agents to Slack, Discord, Microsoft Teams, and Telegram conversations."
-          footnote="Turning this off hides experimental chat setup and connected-task controls. Existing chat connections keep running. AgentMail, GitHub review bots, and tool connectors are controlled separately."
+          footnote="Turning this off hides experimental chat setup and connected-task controls. Existing chat connections keep running. AgentMail, GitHub review bots, and tool connectors are unaffected."
           checked={enableChatConnectors}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableChatConnectors: checked })}
           disabled={toggleMutation.isPending}
           settingKey="enableChatConnectors"
           managed={managedKeys.enableChatConnectors}
           ariaLabel="Toggle chat connectors experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="Cloud starter inference"
+          description="Lets new Cloud workspaces start their first agent right away (OpenCode / GPT-6 Luna via server proxy) before asking the user to connect a model provider."
+          checked={enableCloudTrialInference}
+          onCheckedChange={(checked) =>
+            toggleMutation.mutate({ enableCloudTrialInference: checked })
+          }
+          disabled={toggleMutation.isPending}
+          settingKey="enableCloudTrialInference"
+          managed={managedKeys.enableCloudTrialInference}
+          ariaLabel="Toggle Cloud starter inference experimental setting"
         />
 
         <ExperimentalToggleCard
@@ -516,18 +519,6 @@ export function InstanceExperimentalSettings() {
           settingKey="enableFirstTaskPlanProposal"
           managed={managedKeys.enableFirstTaskPlanProposal}
           ariaLabel="Toggle first task plan proposal experimental setting"
-        />
-
-        <ExperimentalToggleCard
-          title="GitHub review bots"
-          description="Connect agents to GitHub with their own App identity to review pull requests and respond to issues."
-          footnote="Independent of Chat connectors. Turning this off hides setup and management; existing bots keep running. GitHub tool connections stay available."
-          checked={experimentalQuery.data?.enableGitHubReviewBots === true}
-          onCheckedChange={(checked) => toggleMutation.mutate({ enableGitHubReviewBots: checked })}
-          disabled={toggleMutation.isPending}
-          settingKey="enableGitHubReviewBots"
-          managed={managedKeys.enableGitHubReviewBots}
-          ariaLabel="Toggle GitHub review bots experimental setting"
         />
 
         <ExperimentalToggleCard

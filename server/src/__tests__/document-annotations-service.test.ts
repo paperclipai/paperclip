@@ -2,13 +2,19 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
+  agents,
+  agentWakeupRequests,
+  authUsers,
   companies,
+  companyMemberships,
   createDb,
   documentAnnotationAnchorSnapshots,
+  documentAnnotationCommentReactions,
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
   documents,
+  heartbeatRuns,
   issueComments,
   issueDocuments,
   issueThreadInteractions,
@@ -18,9 +24,11 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
 import { documentAnnotationService } from "../services/document-annotations.js";
 import { documentService } from "../services/documents.js";
 import { buildPaperclipWakePayload } from "../services/heartbeat.js";
+import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
 import { buildDocumentReviewContext, buildPlanReviewContext, PLAN_REVIEW_CONTEXT_LIMITS } from "../services/plan-review-context.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -57,6 +65,7 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
 
   afterEach(async () => {
     await db.delete(documentAnnotationAnchorSnapshots);
+    await db.delete(documentAnnotationCommentReactions);
     await db.delete(documentAnnotationComments);
     await db.delete(documentAnnotationThreads);
     await db.delete(issueThreadInteractions);
@@ -64,8 +73,14 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     await db.delete(issueDocuments);
     await db.delete(documents);
     await db.delete(issueComments);
+    await db.update(issues).set({ executionRunId: null });
+    await db.delete(heartbeatRuns);
+    await db.delete(agentWakeupRequests);
     await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companyMemberships);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -628,6 +643,543 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
         }),
       ],
     });
+  });
+
+  async function createAnnotatedIssue() {
+    const created = await createIssueWithDocument("standard");
+    const thread = await annotations.createThread(
+      created.issueId,
+      "plan",
+      {
+        baseRevisionId: created.document.latestRevisionId!,
+        baseRevisionNumber: created.document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Is this step ready?",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user" },
+    );
+    return { ...created, thread, comment: thread.comments[0]! };
+  }
+
+  it("adds, repeats safely, and removes comment reactions with counts and reacted-by-me", async () => {
+    const { companyId, issueId, thread, comment } = await createAnnotatedIssue();
+    const user = { actorType: "user" as const, actorId: "board-user", userId: "board-user" };
+    const agentId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Reviewer", role: "worker", adapterType: "process", adapterConfig: {} });
+    const agent = { actorType: "agent" as const, actorId: agentId, agentId };
+    const target = { kind: "issue" as const, issueId, key: "plan" };
+    const react = (actor: typeof user | typeof agent, reaction: "done" | "question", present: boolean) =>
+      annotations.setCommentReaction({ target, threadId: thread.id, commentId: comment.id, reaction, present, actor });
+
+    const added = await react(user, "question", true);
+    expect(added.changed).toBe(true);
+    expect(added.firstAdd).toBe(true);
+    expect(added.comment.reactions).toEqual([
+      { reaction: "question", count: 1, reactedByMe: true, actors: [{ actorType: "user", agentId: null, userId: "board-user" }] },
+    ]);
+    expect((await react(user, "question", true)).changed).toBe(false);
+    await react(agent, "question", true);
+    await react(agent, "done", true);
+
+    const [listed] = await annotations.listThreadsForIssueDocument(issueId, "plan", {
+      includeComments: true,
+      viewer: { actorType: "user", actorId: "board-user" },
+    }) as unknown as Array<{ comments: Array<{ reactions?: unknown[] }> }>;
+    expect(listed!.comments[0]!.reactions).toEqual([
+      { reaction: "done", count: 1, reactedByMe: false, actors: [{ actorType: "agent", agentId, userId: null }] },
+      expect.objectContaining({ reaction: "question", count: 2, reactedByMe: true }),
+    ]);
+    const asAgent = await annotations.getThreadForIssueDocument(issueId, "plan", thread.id, { actorType: "agent", actorId: agentId });
+    expect(asAgent!.comments[0]!.reactions).toEqual([
+      expect.objectContaining({ reaction: "done", reactedByMe: true }),
+      expect.objectContaining({ reaction: "question", count: 2, reactedByMe: true }),
+    ]);
+
+    const removed = await react(user, "question", false);
+    expect(removed.changed).toBe(true);
+    expect(removed.comment.reactions).toEqual([
+      expect.objectContaining({ reaction: "done", count: 1, reactedByMe: false }),
+      expect.objectContaining({ reaction: "question", count: 1, reactedByMe: false }),
+    ]);
+    expect((await react(user, "question", false)).changed).toBe(false);
+
+    const readded = await react(user, "question", true);
+    expect(readded.changed).toBe(true);
+    expect(readded.firstAdd).toBe(false);
+    expect(readded.comment.reactions).toEqual([
+      expect.objectContaining({ reaction: "done", count: 1 }),
+      expect.objectContaining({ reaction: "question", count: 2, reactedByMe: true }),
+    ]);
+  });
+
+  it("rejects a reaction on a comment that belongs to another issue's thread", async () => {
+    const { issueId, thread } = await createAnnotatedIssue();
+    const other = await createAnnotatedIssue();
+
+    await expect(annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: other.comment.id,
+      reaction: "done",
+      present: true,
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    })).rejects.toMatchObject({ status: 404 });
+    await expect(annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: other.thread.id,
+      commentId: other.comment.id,
+      reaction: "done",
+      present: true,
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("marks a question reaction wake on the annotation delta", async () => {
+    const { companyId, issueId, thread, comment } = await createAnnotatedIssue();
+
+    const payload = await buildPaperclipWakePayload({
+      db,
+      companyId,
+      contextSnapshot: {
+        issueId,
+        annotationCommentId: comment.id,
+        annotationThreadId: thread.id,
+        annotationReaction: "question",
+        annotationReactionUserId: "board-user",
+        wakeReason: "issue_commented",
+      },
+    });
+
+    expect(payload?.annotationDeltas).toMatchObject([
+      expect.objectContaining({
+        id: comment.id,
+        threadId: thread.id,
+        reaction: { name: "question", author: { type: "user", id: "board-user" } },
+      }),
+    ]);
+  });
+
+  async function setupAssignedAnnotatedIssue(opts: { waitingChat?: boolean } = {}) {
+    const created = await createAnnotatedIssue();
+    const agentId = randomUUID();
+    const userId = `user-${randomUUID()}`;
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: userId,
+      name: "Reviewer",
+      email: `${userId}@example.test`,
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companyMemberships).values({
+      companyId: created.companyId,
+      principalType: "user",
+      principalId: userId,
+      status: "active",
+      membershipRole: "owner",
+    });
+    const [agent] = await db.insert(agents).values({
+      id: agentId,
+      companyId: created.companyId,
+      name: "Reviewer Agent",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { enabled: true } },
+    }).returning();
+    await db.update(issues).set({
+      assigneeAgentId: agentId,
+      ...(opts.waitingChat
+        ? {
+            status: "in_review",
+            conversationAgentId: agentId,
+            conversationUserId: userId,
+            conversationState: "waiting",
+          }
+        : { status: "in_progress" }),
+    }).where(eq(issues.id, created.issueId));
+
+    const deps = createHeartbeatQueueTestDependencies(db);
+    deps.getAgent.mockResolvedValue(agent!);
+    deps.instanceSettings.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false } as never);
+    deps.issuesSvc.getDependencyReadiness.mockResolvedValue({
+      issueId: created.issueId,
+      isDependencyBlocked: false,
+      unresolvedBlockerCount: 0,
+      unresolvedBlockers: [],
+      blockedBy: [],
+      blocking: [],
+    } as never);
+    const queue = createHeartbeatQueue(db, deps);
+    return { ...created, agentId, userId, queue };
+  }
+
+  it("saves a recoverable wake request with a person's first question and resumes it if immediate wakeup fails", async () => {
+    const { companyId, issueId, thread, comment, agentId, userId, queue } = await setupAssignedAnnotatedIssue();
+    const actor = { actorType: "user" as const, actorId: userId, userId };
+
+    const added = await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comment.id,
+      reaction: "question",
+      present: true,
+      actor,
+    });
+    expect(added.firstAdd).toBe(true);
+    expect(added.questionWakeRequestId).toEqual(expect.any(String));
+
+    // Removing and re-adding must not create a second durable wake request.
+    await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comment.id,
+      reaction: "question",
+      present: false,
+      actor,
+    });
+    const readded = await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comment.id,
+      reaction: "question",
+      present: true,
+      actor,
+    });
+    expect(readded.firstAdd).toBe(false);
+    expect(readded.questionWakeRequestId).toBeNull();
+
+    const savedWakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(savedWakes).toHaveLength(1);
+    expect(savedWakes[0]).toMatchObject({
+      id: added.questionWakeRequestId,
+      agentId,
+      status: "deferred_issue_execution",
+      requestedByActorType: "user",
+      requestedByActorId: userId,
+    });
+
+    // Simulate the route crashing or wakeup failing before dispatch: recovery promotes the saved receipt once.
+    await queue.resumeDeferredExecutionReceipts({ companyId, requestId: added.questionWakeRequestId! });
+    await queue.resumeDeferredExecutionReceipts({ companyId, requestId: added.questionWakeRequestId! });
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    expect(runs).toHaveLength(1);
+    expect(["queued", "running"]).toContain(runs[0]!.status);
+    expect(runs[0]).toMatchObject({
+      agentId,
+      issueId,
+      responsibleUserId: userId,
+      contextSnapshot: expect.objectContaining({
+        issueId,
+        annotationCommentId: comment.id,
+        annotationThreadId: thread.id,
+        annotationReaction: "question",
+        annotationReactionUserId: userId,
+        source: "issue.document_annotation_reaction",
+      }),
+    });
+    const [recoveredReceipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, added.questionWakeRequestId!));
+    expect(recoveredReceipt).toMatchObject({ status: "coalesced", runId: runs[0]!.id });
+  });
+
+  it("wakes an idle waiting agent chat when a person adds a question reaction", async () => {
+    const { companyId, issueId, thread, comment, agentId, userId, queue } = await setupAssignedAnnotatedIssue({ waitingChat: true });
+
+    const added = await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comment.id,
+      reaction: "question",
+      present: true,
+      actor: { actorType: "user", actorId: userId, userId },
+    });
+    expect(added.questionWakeRequestId).toEqual(expect.any(String));
+
+    const run = await queue.trackWakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId,
+        annotationCommentId: comment.id,
+        annotationThreadId: thread.id,
+        annotationReaction: "question",
+        mutation: "annotation_reaction",
+      },
+      allowRunCoalescing: false,
+      executionWaitRequestId: added.questionWakeRequestId!,
+      requestedByActorType: "user",
+      requestedByActorId: userId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        annotationCommentId: comment.id,
+        annotationThreadId: thread.id,
+        annotationReaction: "question",
+        annotationReactionUserId: userId,
+        source: "issue.document_annotation_reaction",
+        wakeReason: "issue_commented",
+      },
+    });
+
+    expect(run).not.toBeNull();
+    expect(run).toMatchObject({
+      agentId,
+      issueId,
+      status: "queued",
+      contextSnapshot: expect.objectContaining({
+        annotationCommentId: comment.id,
+        annotationReaction: "question",
+      }),
+    });
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, added.questionWakeRequestId!));
+    expect(receipt).toMatchObject({ status: "coalesced", runId: run!.id });
+    const allRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    expect(allRuns).toHaveLength(1);
+  });
+
+  it("defers a question reaction behind a running turn without coalescing or duplicating the saved receipt", async () => {
+    const { companyId, issueId, thread, comment, agentId, userId, queue } = await setupAssignedAnnotatedIssue();
+    const activeRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      scopeKind: "issue",
+      issueId,
+      invocationSource: "assignment",
+      status: "running",
+      contextSnapshot: { issueId },
+    });
+    await db.update(issues).set({ executionRunId: activeRunId }).where(eq(issues.id, issueId));
+
+    const added = await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comment.id,
+      reaction: "question",
+      present: true,
+      actor: { actorType: "user", actorId: userId, userId },
+    });
+    const result = await queue.trackWakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId,
+        annotationCommentId: comment.id,
+        annotationThreadId: thread.id,
+        annotationReaction: "question",
+        mutation: "annotation_reaction",
+      },
+      allowRunCoalescing: false,
+      executionWaitRequestId: added.questionWakeRequestId!,
+      requestedByActorType: "user",
+      requestedByActorId: userId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        annotationCommentId: comment.id,
+        annotationThreadId: thread.id,
+        annotationReaction: "question",
+        annotationReactionUserId: userId,
+        source: "issue.document_annotation_reaction",
+        wakeReason: "issue_commented",
+      },
+    });
+
+    expect(result).toBeNull();
+    const deferredRows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(deferredRows).toHaveLength(1);
+    expect(deferredRows[0]).toMatchObject({
+      id: added.questionWakeRequestId,
+      status: "deferred_issue_execution",
+      runId: null,
+    });
+    expect(deferredRows[0]!.payload?.executionWait).toBeUndefined();
+  });
+
+  it("refuses to wake another user's agent chat from a non-owner question reaction", async () => {
+    const { companyId, issueId, thread, comment, agentId, queue } = await setupAssignedAnnotatedIssue({ waitingChat: true });
+    const otherUserId = `other-${randomUUID()}`;
+    const now = new Date();
+    await db.insert(authUsers).values({
+      id: otherUserId,
+      name: "Other Member",
+      email: `${otherUserId}@example.test`,
+      emailVerified: true,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: otherUserId,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    const added = await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comment.id,
+      reaction: "question",
+      present: true,
+      actor: { actorType: "user", actorId: otherUserId, userId: otherUserId },
+    });
+    expect(added.changed).toBe(true);
+    expect(added.questionWakeRequestId).toBeNull();
+    expect(added.questionWakeSuppressed).toBe(true);
+
+    const savedWakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
+    expect(savedWakes).toHaveLength(0);
+
+    // Even direct wake admission as a non-owner is rejected by preflight and locked admission.
+    const directRun = await queue.trackWakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId,
+        annotationCommentId: comment.id,
+        annotationThreadId: thread.id,
+        annotationReaction: "question",
+        mutation: "annotation_reaction",
+      },
+      allowRunCoalescing: false,
+      requestedByActorType: "user",
+      requestedByActorId: otherUserId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        annotationCommentId: comment.id,
+        annotationThreadId: thread.id,
+        annotationReaction: "question",
+        annotationReactionUserId: otherUserId,
+        source: "issue.document_annotation_reaction",
+        wakeReason: "issue_commented",
+      },
+    });
+    expect(directRun).toBeNull();
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    expect(runs).toHaveLength(0);
+  });
+
+  it("bounds question reaction wakes across many distinct comments by pending backlog and per-window cap", async () => {
+    const { companyId, issueId, thread, comment, agentId, userId, queue } = await setupAssignedAnnotatedIssue();
+    const actor = { actorType: "user" as const, actorId: userId, userId };
+    const comments = [comment];
+    for (let i = 0; i < 4; i += 1) {
+      comments.push(await annotations.addComment(issueId, "plan", thread.id, { body: `Follow-up ${i + 1}` }, actor));
+    }
+
+    async function admitAndFinishQuestionWake(commentId: string, requestId: string) {
+      const run = await queue.trackWakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: {
+          issueId,
+          annotationCommentId: commentId,
+          annotationThreadId: thread.id,
+          annotationReaction: "question",
+          mutation: "annotation_reaction",
+        },
+        allowRunCoalescing: false,
+        executionWaitRequestId: requestId,
+        requestedByActorType: "user",
+        requestedByActorId: userId,
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          annotationCommentId: commentId,
+          annotationThreadId: thread.id,
+          annotationReaction: "question",
+          annotationReactionUserId: userId,
+          source: "issue.document_annotation_reaction",
+          wakeReason: "issue_commented",
+        },
+      });
+      expect(run).not.toBeNull();
+      await db.update(heartbeatRuns)
+        .set({ status: "succeeded", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, run!.id));
+      await db.update(agentWakeupRequests)
+        .set({ status: "completed", finishedAt: new Date() })
+        .where(eq(agentWakeupRequests.runId, run!.id));
+      await db.update(issues)
+        .set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
+        .where(eq(issues.id, issueId));
+    }
+
+    // While the first question wake is still pending, questioning additional distinct comments creates no extra wakes.
+    const first = await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comments[0]!.id,
+      reaction: "question",
+      present: true,
+      actor,
+    });
+    expect(first.questionWakeRequestId).toEqual(expect.any(String));
+    const secondWhilePending = await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comments[1]!.id,
+      reaction: "question",
+      present: true,
+      actor,
+    });
+    expect(secondWhilePending.changed).toBe(true);
+    expect(secondWhilePending.questionWakeRequestId).toBeNull();
+    expect(secondWhilePending.questionWakeSuppressed).toBe(true);
+
+    // Normal admission coalesces the original receipt into a new primary wake row; both rows must count as ONE wake
+    // so the rolling 3-per-10-minute allowance still permits 3 full question wakes before suppressing the 4th.
+    await admitAndFinishQuestionWake(comments[0]!.id, first.questionWakeRequestId!);
+    const secondWake = await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comments[2]!.id,
+      reaction: "question",
+      present: true,
+      actor,
+    });
+    expect(secondWake.questionWakeRequestId).toEqual(expect.any(String));
+    await admitAndFinishQuestionWake(comments[2]!.id, secondWake.questionWakeRequestId!);
+
+    const thirdWake = await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comments[3]!.id,
+      reaction: "question",
+      present: true,
+      actor,
+    });
+    expect(thirdWake.questionWakeSuppressed).toBe(false);
+    expect(thirdWake.questionWakeRequestId).toEqual(expect.any(String));
+    await admitAndFinishQuestionWake(comments[3]!.id, thirdWake.questionWakeRequestId!);
+
+    const fourthCapped = await annotations.setCommentReaction({
+      target: { kind: "issue", issueId, key: "plan" },
+      threadId: thread.id,
+      commentId: comments[4]!.id,
+      reaction: "question",
+      present: true,
+      actor,
+    });
+    expect(fourthCapped.changed).toBe(true);
+    expect(fourthCapped.questionWakeRequestId).toBeNull();
+    expect(fourthCapped.questionWakeSuppressed).toBe(true);
+
+    const originalReceipts = (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId)))
+      .filter((row) => row.idempotencyKey?.startsWith("annotation-question-reaction:"));
+    expect(originalReceipts).toHaveLength(3);
   });
 
   it("fails closed when an annotation delta comment id points at a different issue", async () => {

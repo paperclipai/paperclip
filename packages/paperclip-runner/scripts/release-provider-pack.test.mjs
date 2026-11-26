@@ -31,6 +31,10 @@ function fixture() {
   payload.providers.kimi = { version: profiles.profiles.kimi.agentServerVersion,
     profileDigest: profiles.profiles.kimi.commandDigest, closureDigest: `sha256:${kimiClosures["linux-x64"]}`,
     qualification: "qualified", path: "provider-assets/kimi/linux-x64", sha256: digest };
+  payload.providers.antigravity = { version: profiles.profiles.antigravity.agentServerVersion,
+    profileDigest: profiles.profiles.antigravity.commandDigest,
+    closureDigest: `sha256:${antigravityDistributions.platforms["linux-x64"].closureSha256}`,
+    qualification: "qualified", path: "provider-assets/antigravity/linux-x64", sha256: digest };
   return payload;
 }
 function seal(payload) { return { schema: "paperclip-runner/remote-provider-pack/v1", payload,
@@ -209,32 +213,33 @@ const antigravityProfile = profiles.profiles.antigravity;
 const antigravityEntry = qualification => ({ version: antigravityProfile.agentServerVersion, profileDigest: antigravityProfile.commandDigest,
   closureDigest: `sha256:${antigravityDistributions.platforms["linux-x64"].closureSha256}`, qualification,
   path: "provider-assets/antigravity/linux-x64", sha256: digest });
-function releasedAntigravityProfiles() {
-  const released = structuredClone(profiles); delete released.profiles.antigravity.qualificationStatus; return released;
+function pendingAntigravityProfiles() {
+  const pending = structuredClone(profiles); pending.profiles.antigravity.qualificationStatus = "pending"; return pending;
 }
 
-test("pending Antigravity may ship only as one patched linux-x64 candidate", () => {
-  assert.equal(antigravityProfile.qualificationStatus, "pending");
-  const absent = seal(fixture());
-  assert.equal(verifyReleaseProviderPack(absent, revision), absent);
-  const candidate = fixture(); candidate.candidateProviders = { antigravity: antigravityEntry("pending") };
-  assert.equal(verifyReleaseProviderPack(seal(candidate), revision).payload, candidate);
-  const promoted = fixture(); promoted.providers.antigravity = antigravityEntry("qualified");
-  assert.throws(() => verifyReleaseProviderPack(seal(promoted), revision), /Antigravity identity/);
-  const both = fixture(); both.providers.antigravity = antigravityEntry("pending"); both.candidateProviders = { antigravity: antigravityEntry("pending") };
+test("released Antigravity requires one ordinary identity and never a candidate", () => {
+  assert.equal(antigravityProfile.qualificationStatus, undefined);
+  const payload = fixture();
+  assert.equal(verifyReleaseProviderPack(seal(payload), revision).payload, payload);
+  const missing = fixture(); delete missing.providers.antigravity;
+  assert.throws(() => verifyReleaseProviderPack(seal(missing), revision), /Antigravity identity/);
+  const candidate = fixture(); delete candidate.providers.antigravity; candidate.candidateProviders = { antigravity: antigravityEntry("pending") };
+  assert.throws(() => verifyReleaseProviderPack(seal(candidate), revision), /Antigravity identity/);
+  const both = fixture(); both.candidateProviders = { antigravity: antigravityEntry("pending") };
   assert.throws(() => verifyReleaseProviderPack(seal(both), revision), /Antigravity identity/);
 });
 
-test("released Antigravity requires one ordinary identity and never a candidate", () => {
-  const released = releasedAntigravityProfiles();
-  const expected = { profiles: released, distributions, kimiClosures, antigravityDistributions };
-  const payload = fixture(); payload.providers.antigravity = antigravityEntry("qualified");
-  assert.equal(verifyReleaseProviderPack(seal(payload), revision, "linux-x64", expected).payload, payload);
-  const missing = fixture();
-  assert.throws(() => verifyReleaseProviderPack(seal(missing), revision, "linux-x64", expected), /Antigravity identity/);
-  const candidate = fixture(); candidate.candidateProviders = { antigravity: antigravityEntry("pending") };
-  assert.throws(() => verifyReleaseProviderPack(seal(candidate), revision, "linux-x64", expected), /Antigravity identity/);
-  const both = structuredClone(payload); both.candidateProviders = { antigravity: antigravityEntry("pending") };
+test("historical pending Antigravity may ship only as one patched linux-x64 candidate", () => {
+  const pending = pendingAntigravityProfiles();
+  const expected = { profiles: pending, distributions, kimiClosures, antigravityDistributions };
+  const absentPayload = fixture(); delete absentPayload.providers.antigravity;
+  const absent = seal(absentPayload);
+  assert.equal(verifyReleaseProviderPack(absent, revision, "linux-x64", expected), absent);
+  const candidate = fixture(); delete candidate.providers.antigravity; candidate.candidateProviders = { antigravity: antigravityEntry("pending") };
+  assert.equal(verifyReleaseProviderPack(seal(candidate), revision, "linux-x64", expected).payload, candidate);
+  const promoted = fixture();
+  assert.throws(() => verifyReleaseProviderPack(seal(promoted), revision, "linux-x64", expected), /Antigravity identity/);
+  const both = fixture(); both.providers.antigravity = antigravityEntry("pending"); both.candidateProviders = { antigravity: antigravityEntry("pending") };
   assert.throws(() => verifyReleaseProviderPack(seal(both), revision, "linux-x64", expected), /Antigravity identity/);
 });
 
@@ -243,17 +248,17 @@ for (const [name, change] of [
   ["darwin closure", { closureDigest: `sha256:${antigravityDistributions.platforms["darwin-arm64"].closureSha256}` }],
   ["older runtime version", { version: "1.4.3" }], ["older profile", { profileDigest: digest }],
   ["foreign path", { path: "provider-assets/antigravity/linux-arm64" }], ["unbound tree", { sha256: "stale" }],
-  ["qualification", { qualification: "qualified" }], ["extra field", { executable: "agy_acp_server.par" }],
-]) test(`rejects an Antigravity candidate with a stale ${name}`, () => {
-  const payload = fixture(); payload.candidateProviders = { antigravity: { ...antigravityEntry("pending"), ...change } };
+  ["qualification", { qualification: "pending" }], ["extra field", { executable: "agy_acp_server.par" }],
+]) test(`rejects a released Antigravity entry with a stale ${name}`, () => {
+  const payload = fixture(); payload.providers.antigravity = { ...antigravityEntry("qualified"), ...change };
   assert.throws(() => verifyReleaseProviderPack(seal(payload), revision), /Antigravity identity/);
 });
 
 test("frozen Antigravity validation reads the release's own patched closure", () => {
   const frozen = structuredClone(antigravityDistributions); frozen.platforms["linux-x64"].closureSha256 = "c".repeat(64);
   const frozenProfiles = structuredClone(profiles); frozenProfiles.profiles.antigravity.commandDigest = "sha256:" + "e".repeat(64);
-  const payload = fixture(); payload.candidateProviders = { antigravity: { ...antigravityEntry("pending"),
-    profileDigest: frozenProfiles.profiles.antigravity.commandDigest, closureDigest: `sha256:${"c".repeat(64)}` } };
+  const payload = fixture(); payload.providers.antigravity = { ...antigravityEntry("qualified"),
+    profileDigest: frozenProfiles.profiles.antigravity.commandDigest, closureDigest: `sha256:${"c".repeat(64)}` };
   // Without the release's frozen declaration a different profile fails closed.
   assert.throws(() => verifyReleaseProviderPack(seal(payload), revision, "linux-x64", { profiles: frozenProfiles, distributions, kimiClosures }), /Antigravity identity/);
   assert.equal(verifyReleaseProviderPack(seal(payload), revision, "linux-x64", { profiles: frozenProfiles, distributions, kimiClosures, antigravityDistributions: frozen }).payload, payload);
