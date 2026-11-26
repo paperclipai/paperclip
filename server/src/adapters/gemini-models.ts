@@ -10,10 +10,13 @@ const execFileAsync = promisify(execFile);
 
 const AGY_MODELS_TIMEOUT_MS = 5_000;
 const GEMINI_MODELS_CACHE_TTL_MS = 60_000;
+const GEMINI_REFRESH_COOLDOWN_MS = 10_000;
 const ANSI_ESCAPE_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 
 let cached: { expiresAt: number; models: AdapterModel[] } | null = null;
 let discoveryGeneration = 0;
+let lastRefreshAt = 0;
+let inFlightDiscovery: { generation: number; promise: Promise<AdapterModel[]> } | null = null;
 
 type ModelsCommandResult = {
   status: number | null;
@@ -39,15 +42,16 @@ function dedupeModels(models: AdapterModel[]): AdapterModel[] {
 
 function resolveAgyExecutable(): string | null {
   const override = process.env.PAPERCLIP_ANTIGRAVITY_COMMAND?.trim();
-  if (override) return override;
-  const localBin = path.join(os.homedir(), ".local", "bin", "agy");
-  if (existsSync(localBin)) return localBin;
-  return "agy";
+  return override || null;
 }
 
-function defaultAntigravityDataDir(): string {
-  return process.env.ANTIGRAVITY_APP_DATA_DIR?.trim()
-    || path.join(os.homedir(), ".gemini", "antigravity-cli");
+function defaultAntigravityDataDir(): string | null {
+  const override = process.env.ANTIGRAVITY_APP_DATA_DIR?.trim();
+  if (override) return override;
+  if (process.env.PAPERCLIP_ANTIGRAVITY_COMMAND?.trim()) {
+    return path.join(os.homedir(), ".gemini", "antigravity-cli");
+  }
+  return null;
 }
 
 async function runAgyModelsCommand(): Promise<ModelsCommandResult> {
@@ -56,6 +60,7 @@ async function runAgyModelsCommand(): Promise<ModelsCommandResult> {
   if (!executable) {
     return { status: 1, stdout: "", stderr: "", hasError: true };
   }
+  const dataDir = defaultAntigravityDataDir();
   try {
     const { stdout, stderr } = await execFileAsync(executable, ["models"], {
       timeout: AGY_MODELS_TIMEOUT_MS,
@@ -63,7 +68,7 @@ async function runAgyModelsCommand(): Promise<ModelsCommandResult> {
       env: {
         ...process.env,
         HOME: process.env.HOME || os.homedir(),
-        ANTIGRAVITY_APP_DATA_DIR: defaultAntigravityDataDir(),
+        ...(dataDir ? { ANTIGRAVITY_APP_DATA_DIR: dataDir } : {}),
       },
     });
     return { status: 0, stdout: String(stdout ?? ""), stderr: String(stderr ?? ""), hasError: false };
@@ -101,27 +106,50 @@ export async function listGeminiModels(): Promise<AdapterModel[]> {
   }
 
   const generation = discoveryGeneration;
-  const res = await runAgyModelsCommand();
-  const discovered = !res.hasError && res.status === 0
-    ? parseAgyModelsOutput(res.stdout)
-    : [];
-
-  const merged = discovered.length > 0
-    ? dedupeModels([
-        geminiFallbackModels[0]!,
-        ...discovered,
-        ...geminiFallbackModels.slice(1),
-      ])
-    : [...geminiFallbackModels];
-
-  if (generation === discoveryGeneration) {
-    cached = { expiresAt: Date.now() + GEMINI_MODELS_CACHE_TTL_MS, models: merged };
-    return merged;
+  if (inFlightDiscovery && inFlightDiscovery.generation === generation) {
+    return inFlightDiscovery.promise;
   }
-  return cached ? cached.models : merged;
+
+  const run = (async () => {
+    const res = await runAgyModelsCommand();
+    const discovered = !res.hasError && res.status === 0
+      ? parseAgyModelsOutput(res.stdout)
+      : [];
+
+    const merged = discovered.length > 0
+      ? dedupeModels([
+          geminiFallbackModels[0]!,
+          ...discovered,
+          ...geminiFallbackModels.slice(1),
+        ])
+      : [...geminiFallbackModels];
+
+    if (generation === discoveryGeneration) {
+      cached = { expiresAt: Date.now() + GEMINI_MODELS_CACHE_TTL_MS, models: merged };
+      return merged;
+    }
+    return cached ? cached.models : merged;
+  })().finally(() => {
+    if (inFlightDiscovery?.generation === generation) {
+      inFlightDiscovery = null;
+    }
+  });
+
+  inFlightDiscovery = { generation, promise: run };
+  return run;
 }
 
 export async function refreshGeminiModels(): Promise<AdapterModel[]> {
+  const now = Date.now();
+  if (now - lastRefreshAt < GEMINI_REFRESH_COOLDOWN_MS) {
+    if (inFlightDiscovery && inFlightDiscovery.generation === discoveryGeneration) {
+      return inFlightDiscovery.promise;
+    }
+    if (cached) {
+      return cached.models;
+    }
+  }
+  lastRefreshAt = now;
   discoveryGeneration += 1;
   cached = null;
   return listGeminiModels();
@@ -134,7 +162,9 @@ export async function detectGeminiModel(): Promise<{
   candidates?: string[];
 } | null> {
   try {
-    const settingsPath = path.join(defaultAntigravityDataDir(), "settings.json");
+    const dataDir = defaultAntigravityDataDir();
+    if (!dataDir) return null;
+    const settingsPath = path.join(dataDir, "settings.json");
     if (!existsSync(settingsPath)) return null;
     const raw = JSON.parse(readFileSync(settingsPath, "utf8")) as { model?: unknown };
     const configured = typeof raw.model === "string" ? raw.model.trim() : "";
@@ -165,5 +195,7 @@ export function setGeminiModelsRunnerForTests(runner: ModelsRunner | null): void
 
 export function resetGeminiModelsCacheForTests(): void {
   discoveryGeneration += 1;
+  lastRefreshAt = 0;
+  inFlightDiscovery = null;
   cached = null;
 }

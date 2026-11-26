@@ -25,6 +25,8 @@ describe("adapter model listing", () => {
     delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
     delete process.env.CLAUDE_CODE_USE_BEDROCK;
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
+    delete process.env.PAPERCLIP_ANTIGRAVITY_COMMAND;
+    delete process.env.ANTIGRAVITY_APP_DATA_DIR;
     resetClaudeModelsCacheForTests();
     resetCodexModelsCacheForTests();
     resetCursorModelsCacheForTests();
@@ -446,5 +448,38 @@ describe("adapter model listing", () => {
 
     const cachedAfterStale = await listAdapterModels("gemini_local");
     expect(cachedAfterStale.some((m) => m.id === "gemini-4-hydrogen-xhigh")).toBe(true);
+  });
+
+  it("coalesces concurrent discovery and enforces refresh cooldown on gemini_local", async () => {
+    let calls = 0;
+    setGeminiModelsRunnerForTests(async () => {
+      calls += 1;
+      return {
+        status: 0,
+        stdout: "gemini-4-hydrogen-high   Gemini 4 Hydrogen (High)\n",
+        stderr: "",
+        hasError: false,
+      };
+    });
+
+    const [a, b] = await Promise.all([
+      listAdapterModels("gemini_local"),
+      listAdapterModels("gemini_local"),
+    ]);
+    expect(calls).toBe(1);
+    expect(a.some((m) => m.id === "gemini-4-hydrogen-high")).toBe(true);
+    expect(b.some((m) => m.id === "gemini-4-hydrogen-high")).toBe(true);
+
+    const refreshedFirst = await refreshAdapterModels("gemini_local");
+    const refreshedSecond = await refreshAdapterModels("gemini_local");
+    expect(calls).toBe(2);
+    expect(refreshedSecond).toEqual(refreshedFirst);
+  });
+
+  it("keeps standard gemini_local catalog free of Antigravity discovery when opted out", async () => {
+    setGeminiModelsRunnerForTests(null);
+    const models = await listAdapterModels("gemini_local");
+    expect(models.some((m) => m.id === "claude-sonnet-4-6")).toBe(false);
+    expect(models.some((m) => m.id === "gemini-3.8-flash")).toBe(true);
   });
 });
