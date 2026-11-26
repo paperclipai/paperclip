@@ -67,8 +67,6 @@ import {
 import { agentConfigurationDoc as cursorCloudAgentConfigurationDoc } from "@paperclipai/adapter-cursor-cloud";
 import {
   execute as agyExecute,
-  listAgySkills,
-  syncAgySkills,
   testEnvironment as agyTestEnvironment,
   sessionCodec as agySessionCodec,
 } from "@paperclipai/adapter-agy-local/server";
@@ -883,8 +881,6 @@ const agyLocalAdapter: ServerAdapterModule = {
   runtimeToolDelivery: "environment",
   execute: agyExecute,
   testEnvironment: agyTestEnvironment,
-  listSkills: listAgySkills,
-  syncSkills: syncAgySkills,
   sessionCodec: agySessionCodec,
   models: agyModels,
   supportsLocalAgentJwt: true,

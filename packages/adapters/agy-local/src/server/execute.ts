@@ -6,6 +6,7 @@ import {
   asString,
   asStringArray,
   buildPaperclipEnv,
+  buildRuntimeToolsEnv,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   ensureAbsoluteDirectory,
   ensureCommandResolvable,
@@ -72,7 +73,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const envConfig = parseObject(config.env);
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent, ctx.agentIdentity) };
+  const env: Record<string, string> = {
+    ...buildPaperclipEnv(agent, ctx.agentIdentity),
+    ...buildRuntimeToolsEnv(ctx.runtimeTools),
+  };
   env.PAPERCLIP_RUN_ID = runId;
   const taskId = nonEmpty(context.taskId) ?? nonEmpty(context.issueId);
   if (taskId) env.PAPERCLIP_TASK_ID = taskId;

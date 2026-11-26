@@ -36,7 +36,7 @@ export function parseAgyStdoutLine(line: string, ts: string): TranscriptEntry[] 
   }
   if (!parsed) return [{ kind: "stdout", ts, text: line }];
 
-  const type = asString(parsed.type);
+  const type = asString(parsed.event);
 
   if (type === "init") {
     const init = asRecord(parsed.init) ?? {};

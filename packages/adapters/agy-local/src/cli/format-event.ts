@@ -24,7 +24,7 @@ export function printAgyStreamEvent(raw: string, debug: boolean): void {
     return;
   }
 
-  const type = asString(parsed.type);
+  const type = asString(parsed.event);
   if (type === "init") {
     const init = asRecord(parsed.init) ?? {};
     console.log(pc.blue(`agy init: model=${asString(init.model, "unknown")} conversation=${asString(parsed.conversation_id)}`));
