@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Message } from "chat";
+import { parseMarkdown } from "chat";
+import { githubExplicitMentionEvent } from "./chat-github-events.js";
 import { createHash, generateKeyPairSync } from "node:crypto";
 import {
   canonicalGitHubAttachmentUrl,
   githubAttachmentCommentRequest,
   githubAttachmentCommentFetch,
+  isGitHubAttachmentCommentRequest,
   githubAttachmentDiagnosticCode,
   githubAttachmentLocator,
   githubAttachmentLimitOmissions,
@@ -71,6 +74,48 @@ function canonicalComment(overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
 }
+
+describe("GitHub description and review-summary attachment provenance", () => {
+  it.each(["issues", "pull_request", "pull_request_review"])("recovers images from an admitted %s body across a restart", async event => {
+    const body = `@maya inspect ![Image](${imageUrl}) [proof](${fileUrl})`;
+    const source = { id: 4242, number: 42, body };
+    const mention = githubExplicitMentionEvent(event, {
+      action: event === "pull_request_review" ? "submitted" : "opened",
+      repository: { id: 12, full_name: "paperclipai/chat-e2e" }, sender: { id: 77, login: "octocat" },
+      issue: source, pull_request: source, review: source,
+    }, "body-delivery", "maya")!;
+    const inbound = message({ id: mention.messageId, threadId: mention.threadId, raw: mention.raw, formatted: parseMarkdown(body) });
+    const attachments = githubPublicAttachmentsFromMessage(inbound);
+    expect(attachments).toHaveLength(2);
+    const saved = JSON.parse(JSON.stringify(githubAttachmentLocator(attachments[0])));
+    const recovered = rehydrateGitHubPublicAttachment(saved, { threadId: mention.threadId, messageId: mention.messageId })!;
+    const expectedUrl = `https://api.github.com/repos/paperclipai/chat-e2e/${event === "issues" ? "issues/42" : event === "pull_request" ? "pulls/42" : "pulls/42/reviews/4242"}`;
+    const apiRequest = githubAttachmentCommentRequest(recovered)!;
+    expect(apiRequest.url).toBe(expectedUrl);
+    expect(isGitHubAttachmentCommentRequest(apiRequest)).toBe(true);
+    const canonical = { id: 4242, body, body_html: canonicalComment().body_html,
+      ...(event === "pull_request_review" ? { pull_request_url: "https://api.github.com/repos/paperclipai/chat-e2e/pulls/42" } : { number: 42, url: expectedUrl }),
+    };
+    expect(resolveGitHubCommentAttachmentTarget(recovered, canonical)?.href).toBe(signedImageUrl);
+    expect(resolveGitHubCommentAttachmentTarget(recovered, { ...canonical, id: 999 })).toBeNull();
+    expect(resolveGitHubCommentAttachmentTarget(recovered, { ...canonical, body: "Edited after admission" })).toBeNull();
+    expect(resolveGitHubCommentAttachmentTarget(recovered, { ...canonical, number: 99, pull_request_url: "https://api.github.com/repos/another/repo/pulls/42" })).toBeNull();
+    request.mockResolvedValueOnce(new Response("private", { status: 404 }));
+    request.mockResolvedValueOnce(new Response(png, { headers: { "content-type": "image/png" } }));
+    const resolve = vi.fn(async () => canonical);
+    const prepared = await prepareGitHubPublicAttachment(recovered, undefined, resolve);
+    expect(await prepared.fetchData!()).toEqual(png);
+    expect(resolve).toHaveBeenCalledWith(apiRequest, expect.any(AbortSignal));
+    expect(JSON.stringify(saved)).not.toMatch(/jwt|body_html|private-user-images/);
+  });
+  it("rejects mismatched source kinds and arbitrary authenticated API paths", () => {
+    const value = message({ id: "mention-event:body-delivery", raw: { type: "issue_description", source: { id: 4242, number: 42, body: imageUrl }, repository: { full_name: "other/repo" }, prNumber: 42 } });
+    expect(githubPublicAttachmentsFromMessage(value)).toEqual([]);
+    for (const suffix of ["issues/42/reviews/4242", "pulls/42/files", "issues/42?redirect=other", "../secret"]) {
+      expect(isGitHubAttachmentCommentRequest({ url: `https://api.github.com/repos/paperclipai/chat-e2e/${suffix}`, accept: "application/vnd.github.full+json" })).toBe(false);
+    }
+  });
+});
 
 describe("GitHub exact-comment private image resolution", () => {
   it("imports the live-observed exact signed anchor and image after locator restart", async () => {

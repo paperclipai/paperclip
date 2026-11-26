@@ -3,6 +3,7 @@ import { Link, useLocation, useNavigate, useParams } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { isUuidLike, type ProjectWorkspace } from "@paperclipai/shared";
 import { ArrowLeft, Check, ExternalLink, Loader2, Sparkles } from "lucide-react";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
@@ -22,6 +23,7 @@ import { useCompany } from "../context/CompanyContext";
 import { useManagedSandboxOnly } from "../hooks/useManagedSandboxOnly";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef, projectWorkspaceUrl } from "../lib/utils";
+import { safeExternalHttpUrl } from "@/lib/safe-url";
 
 type WorkspaceFormState = {
   name: string;
@@ -83,16 +85,6 @@ const VISIBILITY_OPTIONS: Array<{ value: ProjectWorkspaceVisibility; label: stri
   { value: "default", label: "Default" },
   { value: "advanced", label: "Advanced" },
 ];
-
-function isSafeExternalUrl(value: string | null | undefined) {
-  if (!value) return false;
-  try {
-    const parsed = new URL(value);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
 
 function isAbsolutePath(value: string) {
   return value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value);
@@ -277,6 +269,7 @@ export function ProjectWorkspaceDetail() {
     queryFn: () => projectsApi.get(routeProjectRef, lookupCompanyId),
     enabled: canFetchProject,
   });
+  const projectView = useQueryView(projectQuery);
 
   const project = projectQuery.data ?? null;
   const workspace = useMemo(
@@ -391,12 +384,18 @@ export function ProjectWorkspaceDetail() {
     },
   });
 
-  if (projectQuery.isLoading) return <p className="text-sm text-muted-foreground">Loading workspace…</p>;
-  if (projectQuery.error) {
+  if (projectQuery.isLoading || projectView.kind === "reconnecting") {
+    return <p className="text-sm text-muted-foreground">Loading workspace…</p>;
+  }
+  if (projectView.kind === "error") {
     return (
-      <p className="text-sm text-destructive">
-        {projectQuery.error instanceof Error ? projectQuery.error.message : "Failed to load workspace"}
-      </p>
+      <QueryErrorState
+        size="page"
+        error={projectQuery.error}
+        action="load this workspace"
+        onRetry={projectView.retry}
+        retrying={projectView.isFetching}
+      />
     );
   }
   if (!project || !workspace || !form || !initialState) {
@@ -692,7 +691,7 @@ export function ProjectWorkspaceDetail() {
               </DetailRow>
             )}
             <DetailRow label="Repo">
-              {workspace.repoUrl && isSafeExternalUrl(workspace.repoUrl) ? (
+              {workspace.repoUrl && safeExternalHttpUrl(workspace.repoUrl) ? (
                 <a href={workspace.repoUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 hover:underline">
                   {workspace.repoUrl}
                   <ExternalLink className="h-3 w-3" />

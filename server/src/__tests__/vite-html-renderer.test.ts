@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { applyUiBranding } from "../ui-branding.js";
 import { createCachedViteHtmlRenderer, type ViteWatcherHost } from "../vite-html-renderer.js";
 
 function createWatcher() {
@@ -27,8 +28,34 @@ describe("createCachedViteHtmlRenderer", () => {
   const tempDirs: string[] = [];
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     for (const dir of tempDirs.splice(0)) {
       fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores retired snippet settings in branded development HTML", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-vite-html-"));
+    tempDirs.push(tempDir);
+    fs.writeFileSync(path.join(tempDir, "index.html"), "<html><body>App</body></html>");
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", "{}");
+    vi.stubEnv("PAPERCLIP_CLOUD_UI_SNIPPET", '<script src="https://example.com/legacy-plain.js"></script>');
+    vi.stubEnv("PAPERCLIP_CLOUD_UI_SNIPPET_B64", Buffer.from('<script src="https://example.com/legacy-encoded.js"></script>').toString("base64"));
+    const renderer = createCachedViteHtmlRenderer({
+      vite: { watcher: createWatcher(), transformIndexHtml: async (_url, html) => html },
+      uiRoot: tempDir,
+      brandHtml: applyUiBranding,
+    });
+    try {
+      const html = await renderer.render("/");
+      expect(html).toContain("App");
+      expect(html).not.toContain("legacy-plain.js");
+      expect(html).not.toContain("legacy-encoded.js");
+      vi.stubEnv("PAPERCLIP_CLOUD_UI_SNIPPET", undefined);
+
+      expect(await renderer.render("/issues")).not.toContain("legacy-encoded.js");
+    } finally {
+      renderer.dispose();
     }
   });
 
