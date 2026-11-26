@@ -163,7 +163,8 @@ export function heldExecutionWhere(options: { includeActive?: boolean } = {}) {
         and not exists (select 1 from ${heartbeatRuns} newer where newer.company_id = source.company_id and newer.id <> source.id
           and (newer.native_issue_id = ${issues.id} or newer.issue_id = ${issues.id} or newer.context_snapshot->>'issueId' = ${issues.id}::text)
           and not ${cancelledAtDispatch("newer")}
-          and (newer.status in ('queued', 'running', 'scheduled_retry') or (newer.created_at, newer.id) > (source.created_at, source.id))))`,
+          and (newer.status in ('queued', 'running', 'scheduled_retry') or (newer.created_at, newer.id) > (source.created_at, source.id)))
+        offset 0)`,
   )!;
 }
 
