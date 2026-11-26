@@ -122,6 +122,12 @@
       "measuredMs": 10673
     },
     {
+      "path": "server/src/__tests__/git-workspace-expiration.test.ts",
+      "category": "workspace-recovery-soak",
+      "reason": "Git workspace TTL expiration & cleanup sweep soak (81 cases, 198s)",
+      "measuredMs": 198261
+    },
+    {
       "path": "server/src/__tests__/github-skill-source.test.ts",
       "category": "provider-adapter-soak",
       "reason": "External provider, adapter CLI, sandbox-provider, or container-image integration soak (29.0s in run 45238253588)",
