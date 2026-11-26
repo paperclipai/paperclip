@@ -275,7 +275,7 @@ function TaskChatBubbleContent({
       data-conversation-message={isHuman ? "human" : "agent"}
       ref={readRef}
       className={cn(
-        "flex w-full flex-col gap-1",
+        "flex w-full min-w-0 flex-col gap-1",
         animateEntry && "tc-enter-bubble",
         isOwnMessage ? "items-end" : "items-start",
       )}
@@ -306,7 +306,7 @@ function TaskChatBubbleContent({
             isHuman ? "task-chat-human-bubble" : "task-chat-agent-bubble"
           }
           className={cn(
-            "break-words py-2 text-sm",
+            "min-w-0 max-w-full break-words py-2 text-sm",
             isOwnMessage
               ? "max-w-(--pct-85) rounded-2xl rounded-br-sm bg-(--liveness-blue) px-3.5 text-white"
               : "w-full bg-transparent px-1 text-foreground",
@@ -336,7 +336,7 @@ function TaskChatBubbleContent({
           <span className="text-xs text-muted-foreground">
             Images · {imageRefs.length}
           </span>
-          <div className="grid grid-cols-4 gap-2">
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {imageRefs
               .slice(0, imageRefs.length > 4 ? 3 : 4)
               .map((ref, index) => (
