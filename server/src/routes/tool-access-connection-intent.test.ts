@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   cloudConnectorEnrollmentReturnPath,
+  cloudConnectorEnrollmentOutcomeHtml,
   connectionIntentOAuthOutcomeHtml,
+  githubInstallationRecovery,
 } from "./tool-access.js";
 
 describe("Cloud connector enrollment return path", () => {
@@ -26,6 +28,23 @@ describe("Cloud connector enrollment return path", () => {
     );
   });
 
+  it.each(["APP", "QA / Apps"])("returns Tailscale enrollment to the verified company once: %s", (prefix) => {
+    expect(cloudConnectorEnrollmentReturnPath(prefix, "/apps/tailscale")).toBe(
+      `/${encodeURIComponent(prefix)}/apps/tailscale?cloud_connector=enrolled`,
+    );
+  });
+
+  it.each([
+    "https://evil.example/apps/tailscale",
+    "//evil.example/apps/tailscale",
+    "/OTHER/apps/tailscale",
+    "/apps/tailscale/unknown",
+  ])("rejects an untrusted Tailscale enrollment destination: %s", (returnTo) => {
+    expect(cloudConnectorEnrollmentReturnPath("APP", returnTo)).toBe(
+      "/APP/apps/connections?cloud_connector=enrolled",
+    );
+  });
+
   it("rejects external and unrelated enrollment return paths", () => {
     expect(cloudConnectorEnrollmentReturnPath("APP", "https://evil.example/apps/connect")).toBe(
       "/APP/apps/connections?cloud_connector=enrolled",
@@ -33,6 +52,13 @@ describe("Cloud connector enrollment return path", () => {
     expect(cloudConnectorEnrollmentReturnPath("APP", "/settings")).toBe(
       "/APP/apps/connections?cloud_connector=enrolled",
     );
+  });
+
+  it("resumes the same GitHub draft after enrollment without a second company prefix", () => {
+    expect(cloudConnectorEnrollmentReturnPath("GIT", "/apps/chat/connect?provider=github&purpose=chat&resume=draft-1"))
+      .toBe("/GIT/apps/chat/connect?provider=github&purpose=chat&resume=draft-1&cloud_connector=enrolled");
+    expect(cloudConnectorEnrollmentReturnPath("GIT", "https://evil.example/apps/chat/connect?resume=draft-1"))
+      .toBe("/GIT/apps/connections?cloud_connector=enrolled");
   });
 });
 
@@ -57,6 +83,62 @@ describe("connection intent OAuth callback document", () => {
       );
     },
   );
+
+  it("tells the opener why a failed sign-in failed, using only safe codes", () => {
+    const failed = connectionIntentOAuthOutcomeHtml({
+      interactionId: "interaction-123",
+      issueId: null,
+      outcome: "failed",
+      code: "oauth_state_expired",
+    });
+    expect(failed).toContain('"code":"oauth_state_expired"');
+
+    const unsafe = connectionIntentOAuthOutcomeHtml({
+      interactionId: "interaction-123",
+      issueId: null,
+      outcome: "failed",
+      code: "</script><b>",
+    });
+    expect(unsafe).not.toContain('"code"');
+
+    const connected = connectionIntentOAuthOutcomeHtml({
+      interactionId: "interaction-123",
+      issueId: null,
+      outcome: "connected",
+      code: "oauth_state_expired",
+    });
+    expect(connected).not.toContain('"code"');
+  });
+
+  it("sends GitHub install links only for a missing GitHub installation", () => {
+    const recovery = githubInstallationRecovery("github_installation_required", {
+      installationUrl: "https://github.com/apps/paperclip-for-github/installations/new",
+      managementUrl: "https://evil.test/settings",
+    });
+    expect(recovery).toEqual({
+      installationUrl: "https://github.com/apps/paperclip-for-github/installations/new",
+      managementUrl: null,
+    });
+    expect(githubInstallationRecovery("oauth_state_expired", { installationUrl: "https://github.com/x" })).toBeNull();
+
+    const html = connectionIntentOAuthOutcomeHtml({
+      interactionId: "interaction-123",
+      issueId: null,
+      outcome: "failed",
+      code: "github_installation_required",
+      recovery,
+    });
+    expect(html).toContain('"recovery":{"installationUrl":"https://github.com/apps/paperclip-for-github/installations/new","managementUrl":null}');
+
+    const other = connectionIntentOAuthOutcomeHtml({
+      interactionId: "interaction-123",
+      issueId: null,
+      outcome: "failed",
+      code: "oauth_state_expired",
+      recovery,
+    });
+    expect(other).not.toContain('"recovery"');
+  });
 
   it("can return a localhost callback outcome to the numeric-loopback opener", () => {
     const html = connectionIntentOAuthOutcomeHtml({
@@ -92,5 +174,27 @@ describe("connection intent OAuth callback document", () => {
     expect(html).not.toContain("</script><script>alert(1)</script>");
     expect(html).toContain("\\u003c/script>");
     expect(html).toContain('window.location.replace("/issues")');
+  });
+});
+
+describe("inline enrollment completion", () => {
+  it("closes enrollment without redirecting the task and retains a safe setup fallback", () => {
+    const html = cloudConnectorEnrollmentOutcomeHtml("GMA", "/apps/connect?source=gmail&intent=request-1&enrollment_host=dialog");
+    expect(html).toContain("window.close()");
+    expect(html).not.toContain("window.location");
+    expect(html).toContain("/GMA/apps/connect?source=gmail&intent=request-1");
+    expect(html).toContain("cloud_connector=enrolled");
+  });
+
+  it("does not embed an external fallback or script-significant return path", () => {
+    expect(cloudConnectorEnrollmentOutcomeHtml("GMA", "https://evil.example/")).not.toContain("evil.example");
+    expect(cloudConnectorEnrollmentOutcomeHtml("GMA", "/apps/connect?source=</script>")).not.toContain("source=</script>");
+  });
+
+  it("returns a task enrollment fallback to its verified task", () => {
+    const html = cloudConnectorEnrollmentOutcomeHtml("GMA", "/apps/connect?source=gmail", "task-1");
+    expect(html).toContain("Return to task");
+    expect(html).toContain("/GMA/issues/task-1");
+    expect(html).not.toContain("/apps/connect");
   });
 });

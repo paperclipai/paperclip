@@ -71,4 +71,18 @@ describe("create-paperclip-plugin entrypoints", () => {
       },
     });
   });
+
+  it("scaffolds a plugin connector for the connector template", async () => {
+    const { scaffoldPluginProject } = await import("./index.js");
+    const outputDir = scaffoldPluginProject({ pluginName: "records-plugin", outputDir: path.join(makeTempDir(), "records-plugin"), template: "connector" });
+    const manifest = fs.readFileSync(path.join(outputDir, "src", "manifest.ts"), "utf8");
+    const worker = fs.readFileSync(path.join(outputDir, "src", "worker.ts"), "utf8");
+    expect(manifest).toContain('"connectors.provide"');
+    expect(manifest).toContain('transport: "plugin"');
+    expect(manifest).toContain('name: "lookup_record"');
+    expect(worker).toContain('ctx.connectors.register("records", "lookup_record"');
+    expect(worker).toContain("`Record ${id} (${region})`");
+    const defaults = scaffoldPluginProject({ pluginName: "plain-plugin", outputDir: path.join(makeTempDir(), "plain-plugin") });
+    expect(fs.readFileSync(path.join(defaults, "src", "manifest.ts"), "utf8")).not.toContain("connectors.provide");
+  });
 });

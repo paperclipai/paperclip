@@ -43,7 +43,7 @@ export type GeminiExecutionEngine = "cli" | "acp";
 export interface GeminiEngineSelection {
   engine: GeminiExecutionEngine;
   explicit: boolean;
-  fallbackReason?: string;
+  unavailableReason?: string;
 }
 
 type GeminiEngineResolutionInput =
@@ -72,15 +72,15 @@ export async function resolveGeminiExecutionEngineForRun(
   input: GeminiEngineResolutionInput,
 ): Promise<GeminiEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
-  if (selection.explicit || selection.engine !== "acp") return selection;
+  // Engine availability must never change the agent's execution or permission contract.
+  if (selection.engine === "cli") return selection;
+  const unavailable = (reason: string): GeminiEngineSelection => ({
+    ...selection,
+    unavailableReason: `${reason} Repair the ACP setup, or explicitly set engine=cli to use the CLI engine.`,
+  });
 
-  const fallbackReason = await defaultGeminiAcpFallbackReason(input);
-  if (!fallbackReason) return selection;
-  return { engine: "cli", explicit: false, fallbackReason };
-}
-
-export function formatGeminiAcpFallbackMessage(reason: string): string {
-  return `[paperclip] Gemini ACP default unavailable; falling back to Gemini CLI. ${reason} Set engine=acp to require ACP or engine=cli to silence this fallback.\n`;
+  const reason = await geminiAcpUnavailableReason(input);
+  return reason ? unavailable(reason) : selection;
 }
 
 function firstNonEmptyString(...values: unknown[]): string | undefined {
@@ -329,7 +329,7 @@ async function commandIsResolvable(
         token,
         target,
         resolveAdapterExecutionTargetCwd(target, asString(input?.config.cwd, ""), process.cwd()),
-        process.env,
+        target.transport === "ssh" ? { PATH: process.env.PATH } : {},
       );
       return true;
     } catch {
@@ -353,21 +353,23 @@ function sandboxTargetHasProcessSessionBridge(
   return target?.kind === "remote" && target.transport === "sandbox" && Boolean(target.runner);
 }
 
-async function defaultGeminiAcpFallbackReason(
+async function geminiAcpUnavailableReason(
   input: GeminiEngineResolutionInput,
 ): Promise<string | null> {
   const target = readAdapterExecutionTarget({
     executionTarget: input.executionTarget,
     legacyRemoteExecution: input.executionTransport?.remoteExecution,
   });
-  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target)) {
+  const managedSsh = target?.kind === "remote" && target.transport === "ssh"
+    && target.spec.useHostAuth === false && Boolean(input.config.managedAiConnection);
+  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target) && !managedSsh) {
     if (target.transport === "sandbox") {
       return "Gemini ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";
     }
-    return "Gemini ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
+    return "Gemini ACP requires an agent-managed SSH account; host authentication is supported by the CLI engine.";
   }
   if (!nodeVersionMeetsGeminiAcpMinimum()) {
-    return `Node ${process.version} does not satisfy Gemini ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
+    return `Node ${process.version} (${process.execPath}) does not satisfy Gemini ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
   }
   const command = resolveGeminiAcpCommand(input.config);
   if (!(await commandIsResolvable(command, resolveConfigPath(input.config), input))) {
@@ -432,7 +434,7 @@ export async function testGeminiAcpEnvironment(
     level: nodeVersionMeetsGeminiAcpMinimum() ? "info" : "error",
     message: nodeVersionMeetsGeminiAcpMinimum()
       ? `Node ${process.version} satisfies ACP runtime requirements.`
-      : `Node ${process.version} does not satisfy ACP runtime requirements.`,
+      : `Node ${process.version} (${process.execPath}) does not satisfy ACP runtime requirements.`,
     hint: nodeVersionMeetsGeminiAcpMinimum()
       ? undefined
       : `Run Gemini ACP with Node >=${MIN_ACP_NODE_VERSION} or switch engine=cli.`,

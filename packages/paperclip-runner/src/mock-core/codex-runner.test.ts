@@ -53,6 +53,33 @@ function completedResult(): PrpStructuredRunResult {
   };
 }
 
+function responseWakeResult(): PrpStructuredRunResult {
+  const result = completedResult();
+  return {
+    ...result,
+    reportedWorkDisposition: "yielded",
+    summary: "Waiting for the next response.",
+    completionClaim: {
+      ...result.completionClaim,
+      objectiveSatisfied: false,
+      criteria: result.completionClaim.criteria.map((criterion) => ({
+        ...criterion,
+        status: "unknown",
+        evidenceRefs: [],
+      })),
+      remainingWork: [{
+        description: "Wait for the next response.",
+        blocksCompletion: true,
+      }],
+    },
+    continuation: {
+      kind: "response_wake",
+      summary: "Resume after the next response.",
+      idempotencyKey: "response-wake-1",
+    },
+  };
+}
+
 class TraceConformanceDriver implements HarnessDriver {
   constructor(
     private readonly result: PrpStructuredRunResult = completedResult(),
@@ -168,6 +195,20 @@ describe("Codex trace conformance", () => {
   it("accepts only results that satisfy the exact controller envelope", () => {
     expect(validateCodexResultProposal(completedResult(), envelope)).toMatchObject({
       status: "accepted",
+    });
+    expect(validateCodexResultProposal(responseWakeResult(), envelope)).toMatchObject({
+      status: "accepted",
+    });
+    expect(validateCodexResultProposal({
+      ...responseWakeResult(),
+      continuation: {
+        kind: "same_agent",
+        summary: "Continue immediately.",
+        idempotencyKey: "same-agent-1",
+      },
+    }, envelope)).toMatchObject({
+      status: "rejected",
+      issues: [{ code: "invalid_disposition" }],
     });
 
     const wrongRevision = completedResult();

@@ -25,7 +25,11 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.cloudflare.com/mcp"
+        "serverUrl": "https://mcp.cloudflare.com/mcp",
+        "scopesHint": [
+          "user:read",
+          "account:read"
+        ]
       },
       "guidanceMd": "Connect Cloudflare in the browser. A Cloudflare account with access to the resources being connected.",
       "riskTier": "S3",
@@ -58,7 +62,8 @@
           "type": "password",
           "required": true,
           "placeholder": "Paste your Cloudflare API token",
-          "secret": true
+          "secret": true,
+          "helperMd": "Cloudflare API actions selected at provider consent or on the API token. Identity scopes alone do not grant account writes. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {

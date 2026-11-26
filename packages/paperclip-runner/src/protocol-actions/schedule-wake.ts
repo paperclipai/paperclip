@@ -27,7 +27,7 @@ export const scheduleWakeAction = {
   },
   "documentation": {
     "title": "Schedule bounded wake",
-    "description": "Schedule a deterministic mock continuation wake.",
+    "description": "Schedule a deterministic continuation wake.",
     "note": "Bounded, deterministic mock wake scheduling; requires the control_plane:wakes claim. Live-only continuation primitive."
   },
   "examples": {
@@ -62,7 +62,7 @@ export const scheduleWakeAction = {
       "operationId": "schedule_wake",
       "version": 1,
       "title": "Schedule bounded wake",
-      "description": "Schedule a deterministic mock continuation wake.",
+      "description": "Schedule a deterministic continuation wake.",
       "exposure": "optional",
       "requiredClaims": [
         "control_plane:wakes"
@@ -113,7 +113,7 @@ export const scheduleWakeAction = {
         "properties": {
           "commandId": {
             "type": "string",
-            "description": "Stable mock command identifier.",
+            "description": "Stable command identifier.",
             "minLength": 1,
             "maxLength": 200
           },
@@ -129,7 +129,7 @@ export const scheduleWakeAction = {
           },
           "entityRefs": {
             "type": "array",
-            "description": "Mock entities affected by the operation.",
+            "description": "Entities affected by the operation.",
             "items": {
               "type": "string",
               "minLength": 1

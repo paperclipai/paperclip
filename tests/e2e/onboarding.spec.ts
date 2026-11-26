@@ -16,8 +16,7 @@ import { test, expect } from "@playwright/test";
  *
  * The tail (CEO chat at step 4, hiring-plan generation at step 5, final
  * landing) depends on a live LLM and is verified separately during manual /
- * LLM-backed QA — see PAP-50. Surface-level rendering of every step is
- * snapshotted by nux-phase4-screenshots.spec.ts.
+ * LLM-backed QA — see PAP-50.
  */
 
 const COMPANY_NAME = `E2E-Test-${Date.now()}`;
@@ -113,11 +112,98 @@ test.describe("Onboarding wizard", () => {
       "onboarding must not invent a mission the customer never gave",
     ).toBeFalsy();
 
+    // Name submission persists an inactive record before the provider question.
+    await page.locator("#onboarding-agent-name").fill("Ada");
+    const firstSetupResponse = page.waitForResponse(response =>
+      response.request().method() === "POST" && response.url().endsWith(`/api/companies/${company.id}/agents`));
+    await page.getByRole("button", { name: "Next", exact: true }).click();
+    const firstSetup = await (await firstSetupResponse).json();
+    expect(firstSetup).toMatchObject({ name: "Ada", pauseReason: "setup", metadata: { setupAdapterPending: true } });
+    await expect(page.getByRole("radio").first()).toBeVisible();
+    await expect(page.locator('[role="radio"][aria-checked="true"]')).toHaveCount(0);
+
+    // The roster path saves on Choose adapter, then configures that same row.
+    await page.goto(`/${company.issuePrefix}/agents/all`);
+    await page.getByRole("toolbar", { name: "Agents controls" }).getByRole("button", { name: "New Agent", exact: true }).click();
+    await page.getByLabel("Agent name", { exact: true }).fill("Atlas");
+    const nextSetupResponse = page.waitForResponse(response =>
+      response.request().method() === "POST" && response.url().endsWith(`/api/companies/${company.id}/agents`));
+    await page.getByRole("button", { name: "Choose adapter", exact: true }).click();
+    const nextSetup = await (await nextSetupResponse).json();
+    expect(nextSetup).toMatchObject({ name: "Atlas", pauseReason: "setup", metadata: { setupAdapterPending: true } });
+    await expect(page.getByRole("heading", { name: "Choose an adapter", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await page.getByRole("main").getByRole("link", { name: /^Atlas / }).click();
+    await expect(page.getByRole("button", { name: "Run now", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Resume", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Finish setup", exact: true })).toHaveCount(1);
+    await page.reload();
+    await expect(page.getByRole("button", { name: "Finish setup", exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Run now", exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "Finish setup", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Choose an adapter", exact: true })).toBeVisible();
+    await page.locator("label").filter({ has: page.locator('input[name="new-agent-adapter"][value="codex_local"]') }).click();
+    await page.getByRole("button", { name: "Configure agent", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Connect a model", exact: true })).toBeVisible();
+    expect(new URL(page.url()).searchParams.get("setupAgentId")).toBe(nextSetup.id);
+    const saved = await (await page.request.get(`/api/agents/${nextSetup.id}?companyId=${company.id}`)).json();
+    expect(saved).toMatchObject({ id: nextSetup.id, name: "Atlas", pauseReason: "setup", metadata: { setupAdapterPending: false } });
+    const records = await (await page.request.get(`/api/companies/${company.id}/agents`)).json();
+    expect(records.map((agent: { id: string }) => agent.id).sort()).toEqual([firstSetup.id, nextSetup.id].sort());
+
     // The expanded wizard must not crash the app (Rules-of-Hooks regression).
     expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
   });
 
-  test("adapter step shows the login panel from the cheap auth signal, and blocks the hire on a failed test", async ({
+  test("the mark and labels keep their size as a single model source collapses", async ({ page }) => {
+    await page.route("**/api/adapters", async (route) => {
+      const response = await route.fetch();
+      const adapters = await response.json();
+      await route.fulfill({ response, json: adapters.map((adapter: { type: string }) =>
+        adapter.type === "codex_local" ? { ...adapter, disabled: true } : adapter,
+      ) });
+    });
+    await page.emulateMedia({ reducedMotion: "no-preference" });
+    await page.clock.install();
+    await page.goto("/onboarding");
+    await page.getByPlaceholder("e.g. Northwind Labs").fill(`E2E-Picker-${Date.now()}`);
+    await page.getByRole("button", { name: /^Continue/ }).click();
+    await page.locator("#onboarding-agent-name").fill("Ada");
+    await page.locator("#onboarding-agent-name").press("Enter");
+    await page.getByRole("button", { name: "Use API key instead" }).click();
+    const group = page.getByRole("radiogroup", { name: "Model source" });
+    await expect(group.getByRole("radio")).toHaveCount(1);
+    const source = group.getByRole("radio", { name: /Claude/ });
+    await source.focus();
+    await page.evaluate(() => document.fonts.ready);
+    await page.clock.pauseAt(new Date(await page.evaluate(() => Date.now() + 1000)));
+
+    const content = [source.locator("img"), source.getByText("Claude", { exact: true }), source.getByText("API key", { exact: true })];
+    const measureContent = () => Promise.all(content.map((locator) => locator.evaluate((element) => {
+      const range = document.createRange();
+      if (element instanceof HTMLImageElement) range.selectNode(element);
+      else range.selectNodeContents(element);
+      const { width, height } = range.getBoundingClientRect();
+      return { width, height };
+    })));
+    const tileWidth = () => source.evaluate((element) => element.getBoundingClientRect().width);
+    const resting = await measureContent();
+    const fullWidth = await tileWidth();
+
+    await source.press("Enter");
+    await page.clock.runFor(80);
+    const movingWidth = await tileWidth();
+    const moving = await measureContent();
+    await page.clock.runFor(512);
+    expect(movingWidth).toBeLessThan(fullWidth);
+    expect(movingWidth).toBeGreaterThan(await tileWidth());
+    for (const [index, bounds] of moving.entries()) {
+      expect(bounds.width).toBeCloseTo(resting[index]!.width, 1);
+      expect(bounds.height).toBeCloseTo(resting[index]!.height, 1);
+    }
+  });
+
+  test("connect step starts the sign-in when the source is chosen, rather than hiring, when the signal reports no credential", async ({
     page,
   }) => {
     const pageErrors: string[] = [];
@@ -135,7 +221,7 @@ test.describe("Onboarding wizard", () => {
     // its provider's login pseudo-terminal capability — this reproduces the
     // gate a real sandbox-backed instance would already pass, without
     // changing any other field the rest of the page depends on.
-    const FAKE_SANDBOX_ENVIRONMENT_ID = "e2e-fake-sandbox-environment";
+    const FAKE_SANDBOX_ENVIRONMENT_ID = "c0e01740-05eb-41ea-bdbe-6358b712e26f";
     const FAKE_SANDBOX_PROVIDER = "e2e-fake-provider";
 
     await page.route("**/environments", async (route) => {
@@ -191,6 +277,61 @@ test.describe("Onboarding wizard", () => {
       }),
     );
 
+    await page.route("**/api/adapters?**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("environmentId") !== FAKE_SANDBOX_ENVIRONMENT_ID) return route.continue();
+      url.searchParams.delete("environmentId");
+      const response = await route.fetch({ url: url.toString() });
+      expect(response.ok()).toBe(true);
+      await route.fulfill({ response });
+    });
+
+    let persistedAgentId = "";
+    let persistedAgentStatus = 0;
+    await page.route("**/api/agents/*", async route => {
+      if (route.request().method() !== "PATCH") return route.continue();
+      const body = route.request().postDataJSON();
+      if (body.defaultEnvironmentId !== FAKE_SANDBOX_ENVIRONMENT_ID) return route.continue();
+      const response = await route.fetch({ postData: JSON.stringify({ ...body, defaultEnvironmentId: null }) });
+      persistedAgentId = new URL(route.request().url()).pathname.split("/").at(-1)!;
+      persistedAgentStatus = response.status();
+      await route.fulfill({ response });
+    });
+
+    // The sign-in Connect now starts. Stubbed so the card is deterministic:
+    // the session start answers, and the guarded prompt read hands back an
+    // authorization URL for the card's link row.
+    let loginStarts = 0;
+    await page.route("**/setup-token-login-sessions", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          sessionId: `e2e-setup-token-session-${++loginStarts}`,
+          status: "pending",
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        }),
+      }),
+    );
+    await page.route("**/setup-token-login-sessions/*/prompt", (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          authorizationUrl: "https://claude.ai/oauth/authorize?code=true&client=e2e",
+          transportAdvisory: null,
+        }),
+      }),
+    );
+    await page.route(/\/setup-token-login-sessions\/e2e-setup-token-session-\d+$/, (route) =>
+      route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          sessionId: route.request().url().split("/").at(-1),
+          status: "pending",
+          expiresAt: new Date(Date.now() + 600_000).toISOString(),
+        }),
+      }),
+    );
+
     // Fail the adapter test the "Connect" button runs, so the hire gate
     // blocks the create and this test can prove no agent is hired.
     await page.route("**/test-environment", (route) =>
@@ -240,40 +381,116 @@ test.describe("Onboarding wizard", () => {
     await page.locator("#onboarding-agent-name").fill("Ada");
     await page.getByRole("button", { name: "Next" }).click();
 
-    // Step 4 (Connect a model): pick a source. The step arrives with nothing
-    // selected — the tile row is a question, not a confirmation — and the login
-    // panel is what the answer opens, so there is nothing to assert until one
-    // is pressed. By role rather than by label, because which adapters the row
-    // offers depends on the registry this environment reports.
+    // Step 4 (Connect a model). By role rather than by label, because which
+    // adapters the row offers depends on the registry this environment reports.
     const source = page.getByRole("radio").first();
     await source.waitFor({ timeout: 30_000 });
+
+    // Nothing before the row is answered: the card is the answer to the tile,
+    // and the button has nothing to do until there is a source to do it with.
+    const cardInstruction = page.getByText("then come back and enter authorization code");
+    await expect(cardInstruction).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
+
+    // Answering the row is what starts the sign-in — this is the ordering the
+    // step exists to enforce, since a hire here would file an agent with no
+    // credential to run on. It is also the whole of the interaction: there is
+    // no second press between choosing a source and being signed in.
     await source.click();
 
-    // The signal above reports no ready credential, so the login panel must now
-    // show, with no button to reuse a saved login.
-    //
-    // The panel names the provider rather than the plumbing it runs on, so this
-    // title is per-adapter. "Sign in to the environment" is now only the fallback
-    // for an adapter with no known provider name, which claude_local is not.
-    await expect(page.getByText("Sign in to Anthropic")).toBeVisible({
-      timeout: 15_000,
-    });
+    await expect(cardInstruction).toBeVisible({ timeout: 30_000 });
+    // One destination, two ways to it: the card's own link for anyone
+    // finishing in another browser, and the step's button for the flow.
+    const cardLink = page.getByRole("link", { name: /^Sign in to / });
+    await expect(cardLink).toBeVisible({ timeout: 15_000 });
+    await expect(cardLink).toHaveAttribute("href", /claude\.ai\/oauth\/authorize/);
+    await expect.poll(() => persistedAgentStatus).toBe(200);
+    const persisted = await page.request.get(`/api/agents/${persistedAgentId}`);
+    expect(persisted.ok()).toBe(true);
+    expect(await persisted.json()).toMatchObject({ id: persistedAgentId, name: "Ada", defaultEnvironmentId: null });
+    await expect(
+      page.getByRole("button", { name: /^Sign in to / }),
+    ).toBeEnabled({ timeout: 15_000 });
+    // No "Use saved login" here: the hire step applies a stored login itself.
     await expect(page.getByRole("button", { name: "Use saved login" })).toHaveCount(0);
+    expect(hireCalled).toBe(false);
 
-    // The CTA reads "Next" on this step as on the one before it. Waited on for
-    // *enabled* rather than for visible: it is already on screen and disabled
-    // until the environment probe settles, and clicking a disabled button
-    // raises nothing and does nothing.
-    const connectNext = page.getByRole("button", { name: "Next", exact: true });
-    await expect(connectNext).toBeEnabled({ timeout: 30_000 });
-    await connectNext.click();
-
-    // The failed test blocks the hire and shows its own checks.
-    await expect(page.getByText("The claude CLI was not found on this host.")).toBeVisible({
-      timeout: 15_000,
+    let cancellations = 0;
+    await page.route("**/setup-token-login-sessions/*/cancel", async route => {
+      cancellations++;
+      await route.fulfill({ status: 204 });
     });
+    const back = page.getByRole("button", { name: "Back", exact: true });
+    await back.click();
+    await expect(source).toHaveAttribute("aria-checked", "false");
+    await expect.poll(() => cancellations).toBe(1);
+    await page.evaluate(() => {
+      const state = window as typeof window & { cancelledLoginPrompts: number };
+      state.cancelledLoginPrompts = 0;
+      const fetch = window.fetch.bind(window);
+      window.fetch = (input, init) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (url.endsWith("/prompt")) init?.signal?.addEventListener("abort", () => { state.cancelledLoginPrompts++; }, { once: true });
+        return fetch(input, init);
+      };
+    });
+    let finishPrompt!: () => void;
+    let promptStarted!: () => void;
+    const pendingPrompt = new Promise<void>(resolve => { finishPrompt = resolve; });
+    const promptRequest = new Promise<void>(resolve => { promptStarted = resolve; });
+    await page.route("**/setup-token-login-sessions/*/prompt", async route => {
+      promptStarted();
+      await pendingPrompt;
+      await route.fulfill({ json: { authorizationUrl: "https://claude.ai/oauth/authorize?late=true", transportAdvisory: null } }).catch(() => {});
+    });
+    await source.click();
+    await promptRequest;
+    await back.click();
+    await expect.poll(() => page.evaluate(() => (window as typeof window & { cancelledLoginPrompts: number }).cancelledLoginPrompts)).toBe(1);
+    finishPrompt();
+    await expect(source).toHaveAttribute("aria-checked", "false");
+    await expect.poll(() => cancellations).toBe(2);
+    await expect(cardInstruction).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Next", exact: true })).toBeDisabled();
     expect(hireCalled).toBe(false);
 
     expect(pageErrors, pageErrors.join("\n")).toHaveLength(0);
+  });
+
+  test("name-only setup saves the Grok Build adapter on the same record without an advanced picker", async ({ page }) => {
+    const previous = await (await page.request.get("/api/instance/settings/experimental")).json();
+    await page.request.patch("/api/instance/settings/experimental", { data: { enableNativeRunner: true } });
+    try {
+      const response = await page.request.post("/api/companies", { data: { name: `${COMPANY_NAME}-grok-setup` } });
+      expect(response.ok()).toBe(true);
+      const company = await response.json();
+      const adaptersResponse = await page.request.get(`/api/adapters?companyId=${company.id}`);
+      expect(adaptersResponse.ok()).toBe(true);
+      const adapters = await adaptersResponse.json() as Array<{ type: string; defaultRunner?: string }>;
+      const grokAdapter = adapters.find(adapter => adapter.type === "grok_local");
+      expect(grokAdapter).toBeDefined();
+      const expectsPaperclipRunner = grokAdapter?.defaultRunner === "paperclip";
+      await page.goto(`/${company.issuePrefix}/agents/all`);
+      await page.getByRole("toolbar", { name: "Agents controls" }).getByRole("button", { name: "New Agent", exact: true }).click();
+      await page.getByLabel("Agent name", { exact: true }).fill("Galen");
+      const setupResponse = page.waitForResponse(result => result.request().method() === "POST"
+        && result.url().endsWith(`/api/companies/${company.id}/agents`));
+      await page.getByRole("button", { name: "Choose adapter", exact: true }).click();
+      const setup = await (await setupResponse).json();
+      await expect(page.getByRole("heading", { name: "Choose an adapter", exact: true })).toBeVisible();
+      await expect(page.getByRole("dialog").locator("summary").filter({ hasText: "Advanced" })).toHaveCount(0);
+      await page.locator("label").filter({ has: page.locator('input[name="new-agent-adapter"][value="grok_local"]') }).click();
+      await page.getByRole("button", { name: "Configure agent", exact: true }).click();
+      await expect(page.getByRole("heading", { name: "Connect a model", exact: true })).toBeVisible();
+      expect(new URL(page.url()).searchParams.get("setupAgentId")).toBe(setup.id);
+      const saved = await (await page.request.get(`/api/agents/${setup.id}?companyId=${company.id}`)).json();
+      expect(saved).toMatchObject(expectsPaperclipRunner
+        ? { id: setup.id, adapterType: "paperclip_runner", pauseReason: "setup",
+            adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" }, metadata: { setupAdapterPending: false } }
+        : { id: setup.id, adapterType: "grok_local", pauseReason: "setup",
+            metadata: { setupAdapterPending: false } });
+    } finally {
+      await page.request.patch("/api/instance/settings/experimental", { data: { enableNativeRunner: previous.enableNativeRunner === true } });
+    }
   });
 });

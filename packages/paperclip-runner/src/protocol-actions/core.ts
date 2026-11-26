@@ -1,3 +1,7 @@
+import { readAgentInstructionsAction } from "./read-agent-instructions.js";
+import { updateAgentInstructionsAction } from "./update-agent-instructions.js";
+import { getAgentInstructionHistoryAction } from "./get-agent-instruction-history.js";
+import { restoreAgentInstructionsAction } from "./restore-agent-instructions.js";
 import { answerStatusQuestionAction } from "./answer-status-question.js";
 import { blockTaskAction } from "./block-task.js";
 import { finishTaskAction } from "./finish-task.js";
@@ -16,6 +20,11 @@ import { deepFreezeProtocolAction } from "./freeze.js";
 
 /** Core actions that are always present in an authorized runner projection. */
 export const PAPERCLIP_CORE_PROTOCOL_ACTIONS = deepFreezeProtocolAction([
+  readAgentInstructionsAction,
+  updateAgentInstructionsAction,
+  getAgentInstructionHistoryAction,
+  restoreAgentInstructionsAction,
+
   answerStatusQuestionAction,
   blockTaskAction,
   finishTaskAction,
