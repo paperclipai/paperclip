@@ -1,6 +1,8 @@
 import { errorCodes, isTransientError } from "@/api/errors";
 import { useQueryView } from "@/components/QueryView";
 import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
+import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
+import { bindAccount } from "@/lib/account-scope";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { topTaskRefs, usePreloadTaskChats } from "../hooks/usePreloadTaskChats";
 import { describeError } from "../api/errors";
@@ -38,6 +40,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { buildMineRevealSources, mineRevealSourcesQueryKey, readMineRevealSources, type MineRevealSources } from "../lib/inbox-mine-reveal-sources";
 import { useDialogActions } from "../context/DialogContext";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
+import { useIssueUpdatedFilterNow } from "../hooks/useIssueUpdatedFilterNow";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
@@ -74,6 +77,7 @@ import {
   clearLocalInboxArchive,
   confirmLocalInboxArchive,
   invalidateInboxIssueQueries,
+  invalidateTaskArchiveQueries,
   getIssuePresenceInActiveInboxCaches,
   removeIssueFromInboxCaches,
   restoreIssueToInboxCaches,
@@ -412,11 +416,12 @@ export function FailedRunInboxRow({
     : interruption?.state === "retry_scheduled" ? `Trying again in ${retrySeconds}s…`
       : interruption?.state === "failed" ? "Couldn’t finish this attempt. Your message is saved."
         : interruption?.state === "waiting_for_user" ? ({
-          approval: "Approval required", reconnect: "Reconnect account", assign_agent: "Assign an agent", choose_model: "Choose a supported model",
+          approval: "Approval required", question: "Respond to the pending question", reconnect: "Reconnect account", provider_billing: "Review provider billing and usage", assign_agent: "Assign an agent", choose_model: "Choose a supported model",
           resume: "Work is paused", budget: "Budget limit reached",
           project_access: "Agent needs project access",
           confirm_owner_stop: "Confirm the previous server stopped",
           confirm_run_stopped: "Confirm the previous run stopped",
+          unblock: "The agent needs your help",
         }[interruption.userAction ?? "resume"]) : runFailureMessage(run);
   const retryAvailable = !interruption || (interruption.canRetry && interruption.retryAction !== "move_forward");
   const showUnreadSlot = unreadState !== null;
@@ -902,6 +907,7 @@ function StreamlinedInbox({
       : "mine";
   const tab: InboxTab = tabOverride ?? pathTab;
   const canArchiveFromTab = isMineInboxTab(tab);
+  const isTasksUnread = surfaceLabel === "Tasks" && tab === "unread";
   const issueLinkState = useMemo(
     () =>
       createIssueDetailLocationState(
@@ -917,6 +923,7 @@ function StreamlinedInbox({
     queryFn: () => authApi.getSession(),
   });
   const currentUserId = session?.user.id ?? session?.session.userId ?? null;
+  const canArchiveTaskFromTab = canArchiveFromTab || (isTasksUnread && !!currentUserId);
   const mineContextQueryKey = [...queryKeys.issues.list(selectedCompanyId!), "mine-context", currentUserId] as const;
   const { data: mineSnapshot } = useQuery<InboxMineSnapshot>({ queryKey: mineContextQueryKey, enabled: false });
   // On a returning visit the saved query cache restores Mine's snapshot and the
@@ -1090,11 +1097,16 @@ function StreamlinedInbox({
   // refresh that array while another tab retained stale parent/failure context.
   // Each tab uses the authenticated aggregate read; the server coalesces it.
 
+  const touchedIssuesQueryKey = [
+    ...(isTasksUnread ? queryKeys.issues.listUnreadTouchedByMe(selectedCompanyId!) : queryKeys.issues.listTouchedByMe(selectedCompanyId!)),
+    "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT, currentUserId,
+  ] as const;
   const touchedIssuesQuery = useQuery({
-    queryKey: [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const,
+    queryKey: touchedIssuesQueryKey,
     queryFn: () =>
       issuesApi.listCompact(selectedCompanyId!, {
         touchedByUserId: "me",
+        inboxArchivedByUserId: isTasksUnread ? "me" : undefined,
         status: INBOX_MINE_ISSUE_STATUS_FILTER,
         projection: "index",
         sortField: "updated",
@@ -1109,10 +1121,9 @@ function StreamlinedInbox({
   });
   const { data: touchedIssuesRaw = NO_ISSUES, isLoading: isTouchedIssuesLoading, error: touchedIssuesError, dataUpdatedAt: touchedIssuesUpdatedAt } = touchedIssuesQuery;
   const touchedIssuesView = useQueryView(touchedIssuesQuery);
-  const touchedIssuesQueryKey = [...queryKeys.issues.listTouchedByMe(selectedCompanyId!), "index", "with-routine-executions", "live-descendant-summary", INBOX_ISSUE_LIST_LIMIT] as const;
   const sharedTouchedIssues = useSharedPollingQuery<Issue[]>({
     companyId: selectedCompanyId,
-    resourceKey: "inbox:touched-issues",
+    resourceKey: isTasksUnread ? "inbox:unread-touched-issues" : "inbox:touched-issues",
     queryKey: touchedIssuesQueryKey,
     enabled: !!selectedCompanyId && (tab !== "mine" && tab !== "blocked" || normalizedSearchQuery.length > 0),
   });
@@ -1352,13 +1363,15 @@ function StreamlinedInbox({
     externalObjectSummaryByIssueId,
     externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
   }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId]);
+  const mineUpdatedNow = useIssueUpdatedFilterNow(mineIssues, issueFilters.updatedWithin);
+  const touchedUpdatedNow = useIssueUpdatedFilterNow(touchedIssues, issueFilters.updatedWithin);
   const visibleMineIssues = useMemo(
-    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
-    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext, mineUpdatedNow),
+    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext, mineUpdatedNow],
   );
   const visibleTouchedIssues = useMemo(
-    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
-    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext, touchedUpdatedNow),
+    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext, touchedUpdatedNow],
   );
   const unreadTouchedIssues = useMemo(
     () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
@@ -2130,7 +2143,7 @@ function StreamlinedInbox({
     invalidateInboxIssueQueries(queryClient, selectedCompanyId);
   };
 
-  const archiveIssueMutation = useMutation({
+  const archiveIssueMutation = useAccountBoundMutation({
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
     onMutate: async (id) => {
       // Keep the sort pinned: archiving is engagement, so defer any idle re-sort.
@@ -2139,48 +2152,72 @@ function StreamlinedInbox({
       setArchivingIssueIds((prev) => new Set(prev).add(id));
 
       if (!selectedCompanyId) return { previousData: [] as InboxIssueCacheSnapshot };
-      beginLocalInboxArchive(selectedCompanyId, id);
+      const account = bindAccount(queryClient);
+      const release = beginLocalInboxArchive(selectedCompanyId, id);
 
-      await cancelInboxIssueQueries(queryClient, selectedCompanyId);
+      try {
+        await cancelInboxIssueQueries(queryClient, selectedCompanyId);
+      } catch (error) {
+        release();
+        throw error;
+      }
+      if (!account.isCurrentScope()) {
+        release();
+        return { previousData: [] as InboxIssueCacheSnapshot };
+      }
       const previousData = snapshotInboxIssueCaches(queryClient, selectedCompanyId);
       removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
 
-      return { companyId: selectedCompanyId, previousData };
+      return { companyId: selectedCompanyId, previousData, account, release };
     },
-    onError: (err, id, context) => {
-      setActionError(describeError(err).body);
-      if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
+    onFinished: (id, context) => {
+      if (context?.account && !context.account.isCurrentScope()) context.release();
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
       });
+    },
+    onError: (err, id, context) => {
+      setActionError(describeError(err).body);
+      context?.release?.();
       // Restore only this failed archive so overlapping archive mutations stay removed.
       if (context?.previousData) {
         restoreIssueToInboxCaches(queryClient, context.previousData, id);
       }
     },
     onSettled: async (_data, error, id, context) => {
-      // Clean up archiving state and refetch to sync with server
-      setArchivingIssueIds((prev) => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
       if (!context?.companyId) return;
       if (!error) boundLocalInboxArchive(context.companyId, id);
-      await invalidateInboxIssueQueries(queryClient, context.companyId);
+      await invalidateTaskArchiveQueries(queryClient, context.companyId);
       if (!error) {
         const presence = getIssuePresenceInActiveInboxCaches(queryClient, context.companyId, id);
         if (presence !== "unknown") confirmLocalInboxArchive(context.companyId, id);
       }
     },
-    onSuccess: (_data, id) => {
+    onSuccess: (_data, id, context) => {
       setUndoableArchiveIssueIds((prev) => [...prev.filter((issueId) => issueId !== id), id]);
+      if (surfaceLabel === "Tasks" && context?.account) {
+        const { account } = context;
+        pushToast({
+          id: `archive:${context.companyId}:${id}`,
+          dedupe: false,
+          title: "Task archived",
+          body: issueById.get(id)?.identifier ?? id,
+          tone: "success",
+          ttlMs: 8000,
+          action: {
+            label: "Undo",
+            onClick: () => {
+              if (account.isCurrentAccount()) unarchiveIssueMutation.mutate(id);
+            },
+          },
+        });
+      }
     },
   });
 
-  const unarchiveIssueMutation = useMutation({
+  const unarchiveIssueMutation = useAccountBoundMutation({
     mutationFn: (id: string) => issuesApi.unarchiveFromInbox(id),
     onMutate: (id) => {
       setActionError(null);
@@ -2201,13 +2238,15 @@ function StreamlinedInbox({
         return next;
       });
     },
-    onSettled: (_data, _error, id) => {
+    onFinished: (id) => {
       setUnarchivingIssueIds((prev) => {
         const next = new Set(prev);
         next.delete(id);
         return next;
       });
-      invalidateInboxIssueQueryCaches();
+    },
+    onSettled: (_data, _error, _id, context) => {
+      if (context?.companyId) return invalidateTaskArchiveQueries(queryClient, context.companyId);
     },
   });
 
@@ -2355,6 +2394,8 @@ function StreamlinedInbox({
     flatNavItems,
     selectedIndex,
     canArchive: canArchiveFromTab,
+    canArchiveTask: canArchiveTaskFromTab,
+    gmailArchiveShortcut: surfaceLabel === "Tasks",
     nonInboxSearchIssueIds,
     archivingIssueIds,
     undoableArchiveIssueIds,
@@ -2368,6 +2409,8 @@ function StreamlinedInbox({
     flatNavItems,
     selectedIndex,
     canArchive: canArchiveFromTab,
+    canArchiveTask: canArchiveTaskFromTab,
+    gmailArchiveShortcut: surfaceLabel === "Tasks",
     nonInboxSearchIssueIds,
     archivingIssueIds,
     undoableArchiveIssueIds,
@@ -2423,9 +2466,7 @@ function StreamlinedInbox({
       const st = kbStateRef.current;
       const act = kbActionsRef.current;
 
-      // Navigation works on every tab; archive/undo (and a/y below) stay
-      // scoped to the "mine" tab, the only place items are archivable.
-      const undoArchiveAction = !st.canArchive ? "none" : resolveInboxUndoArchiveKeyAction({
+      const undoArchiveAction = !st.canArchiveTask ? "none" : resolveInboxUndoArchiveKeyAction({
         hasUndoableArchive: st.undoableArchiveIssueIds.length > 0,
         defaultPrevented: e.defaultPrevented,
         key: e.key,
@@ -2510,8 +2551,9 @@ function StreamlinedInbox({
           break;
         }
         case "a":
-        case "y": {
-          if (!st.canArchive) return;
+        case "y":
+        case "e": {
+          if (!st.canArchiveTask || (e.key === "e" && !st.gmailArchiveShortcut)) return;
           if (effectiveIndex < 0 || effectiveIndex >= navCount) return;
           e.preventDefault();
           const { issue, item } = resolveNavEntry(effectiveIndex);
@@ -2522,7 +2564,7 @@ function StreamlinedInbox({
               if (!st.nonInboxSearchIssueIds.has(item.issue.id) && !st.archivingIssueIds.has(item.issue.id)) {
                 act.archiveIssue(item.issue.id);
               }
-            } else {
+            } else if (st.canArchive) {
               const key = getInboxWorkItemKey(item);
               if (!st.archivingNonIssueIds.has(key)) act.archiveNonIssue(key);
             }
@@ -2708,7 +2750,7 @@ function StreamlinedInbox({
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
+    return <EmptyState placement={surfaceLabel === "Inbox" ? "upper" : "center"} icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
   }
 
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
@@ -3062,7 +3104,7 @@ function StreamlinedInbox({
       )}
 
       {tab !== "blocked" && allLoaded && !listError && !optionalSourceError && visibleSections.length === 0 && (
-        <EmptyState
+        <EmptyState placement={surfaceLabel === "Inbox" ? "upper" : "center"}
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
             searchQuery.trim()
@@ -3097,7 +3139,7 @@ function StreamlinedInbox({
                   isExpanded = false,
                   childCount = 0,
                   collapseParentId = null,
-                  allowArchive = canArchiveFromTab,
+                  allowArchive = canArchiveTaskFromTab,
                 }: {
                   issue: Issue;
                   depth: number;
@@ -3525,7 +3567,7 @@ function StreamlinedInbox({
                     const childIssues = group.childrenByIssueId.get(issue.id) ?? [];
                     const hasChildren = childIssues.length > 0;
                     const isExpanded = hasChildren && !collapsedInboxParents.has(issue.id);
-                    const canArchiveIssue = canArchiveFromTab && group.searchSection === "none";
+                    const canArchiveIssue = canArchiveTaskFromTab && group.searchSection === "none";
                     const renderChildIssueRows = (
                       children: Issue[],
                       depth: number,

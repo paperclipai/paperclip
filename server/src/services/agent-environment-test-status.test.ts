@@ -71,6 +71,14 @@ describe("managed Runner connection test status", () => {
     expect(missing.status).toBe("fail");
     expect(missing.checks).toContainEqual(expect.objectContaining({ code: "ai_connection_validation_incomplete" }));
     expect(claudeProbe).not.toHaveBeenCalled();
+
+    // A Core remote sandbox verifies the image's patched runtime pack without a prompt and returns warn.
+    runtimeProbe.mockResolvedValue({ adapterType: "paperclip_runner", status: "warn", testedAt: checkedAt,
+      checks: [{ code: "antigravity_remote_runtime_ready", level: "warn", message: "Verified remote runtime." }] });
+    const remoteResult = await service.testManagedEnvironment("paperclip_runner", { ...input, executionTarget: context.executionTarget }, binding, managed);
+    expect(remoteResult.status).toBe("warn");
+    expect(remoteResult.checks).toContainEqual(expect.objectContaining({ code: "antigravity_remote_runtime_ready" }));
+    expect(claudeProbe).not.toHaveBeenCalled();
   });
   it("passes a healthy Cloud Claude connection without asking the user to verify launch-time runtime preparation", async () => {
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "managed-fixture");

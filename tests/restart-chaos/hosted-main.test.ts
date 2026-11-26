@@ -38,7 +38,7 @@ describe("hosted run control", () => {
     let stopped = false;
     const graded = await gradeHosted({ api, companyId: "c1", agentIds: ["a1"], releases: [], health: () => continuity([]), apiContinuity: () => continuity([]),
       stopObserver: async () => { stopped = true; record.retryClicks.push({ at: 0, accepted: true, via: "observer" }); },
-      observedClicks: () => observedClicks([record]), lastReleaseAt: Date.now() - 1_000, settleMs: 5, drainMs: 5, dir, cancelled: () => false, record: () => {}, pollMs: 5 });
+      observedClicks: () => observedClicks([record]), lastReleaseAt: Date.now() - 1_000, settleMs: 5, drainMs: 5, dir, cancelled: () => false, record: () => {}, pollMs: 5, tasks: () => [], wantedReleases: 0 });
     expect(stopped).toBe(true);
     expect(graded.headline).toBe("0 / 1 tasks completed hands-off");
   });

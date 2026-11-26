@@ -17,7 +17,7 @@ import {
 import type { GitHubReviewEventContext } from "@paperclipai/shared";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 import {
-  githubBotRepositoryToken,
+  githubBotRepositoryClient,
   githubBotRequest,
 } from "./chat-github-client.js";
 
@@ -132,7 +132,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
                   : state === "running"
                     ? "Agent is reviewing this commit"
                     : "Waiting for the assigned agent";
-          const token = await githubBotRepositoryToken(
+          const github = await githubBotRepositoryClient(
             db,
             action.companyId,
             action.endpointId,
@@ -143,13 +143,7 @@ export function githubReviewCheckService(db: Db, fetchImpl = fetch) {
           const request = <T>(
             path: string,
             options?: Parameters<typeof githubBotRequest>[3],
-          ) =>
-            githubBotRequest<T>(
-              lease.fetch,
-              token,
-              `${prefix}${path}`,
-              options,
-            );
+          ) => github<T>(`${prefix}${path}`, options);
           const current = await request<{ head: { sha: string } }>(
             `/pulls/${event.pullNumber}`,
           );

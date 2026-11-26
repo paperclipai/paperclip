@@ -94,6 +94,8 @@ test-results/
 # Copilot assets are generated from pinned platform packages during installation.
 /packages/paperclip-runner/provider-assets/
 /server/provider-assets/
+/docker/remote-runtimes/*.json
+/docker/remote-runtimes/*.tar.gz
 
 # Local native Runner test/session state
 .paperclip-runner-prp/
@@ -104,3 +106,4 @@ test-results/
 
 # Content-addressed CI task results
 .turbo/
+scripts/scale-ramp/results/

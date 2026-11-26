@@ -17,7 +17,7 @@ import * as storageModule from "../storage/index.js";
 import { createStorageService } from "../storage/service.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { companySkillService } from "../services/company-skills.js";
-import { skillPackageStore, skillPackagePaths, withSkillPackageReadScope } from "../services/skill-package-store.js";
+import { skillPackageStore, skillPackagePaths, skillPackageStorageIoDepth, withSkillPackageReadScope } from "../services/skill-package-store.js";
 import { skillPackageMaintenance } from "../services/skill-package-maintenance.js";
 import { skillPackageManifest, validateSkillPackageManifest, writeSkillPackageArchive, extractSkillPackageArchive,
   verifySkillPackageDirectory } from "../services/skill-package-files.js";
@@ -755,7 +755,6 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     let ready = 0;
     vi.spyOn(dbModule, "withDedicatedDbConnection").mockImplementation((owner, action) => dedicated(owner, connection => {
       connection.$client.options.debug = observe;
-      if (kind === "files") ready++;
       return action(connection);
     }));
     if (kind === "manifest") {
@@ -770,7 +769,8 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     const read = (id: string) => kind === "files" ? store.files(companyId, id, true) : store.manifest(companyId, id);
     const queued = rows.slice(0, 32).map(row => read(row.id));
     try {
-      await vi.waitFor(() => expect(ready).toBe(32));
+      await vi.waitFor(() => expect(kind === "files" ? skillPackageStorageIoDepth().waiting : ready).toBe(32));
+      if (kind === "files") expect(dbModule.dedicatedDbConnectionStats(db)?.inUse).toBe(2);
       // The final reader observes the full queue only after all earlier readers
       // have reached admission. None may preload repository bodies while waiting.
       await expect(read(rows[32]!.id)).rejects.toThrow("busy");
@@ -892,7 +892,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     } finally { clearTimeout(timeout); release(); await Promise.allSettled(pending); }
   });
 
-  it("retries expired upload claims with fresh keys and only deletes the abandoned attempt", async () => {
+  it("retries failed upload claims immediately with fresh keys and only deletes the abandoned attempt", async () => {
     const companyId = await company();
     const store = skillPackageStore(db, storage);
     const put = vi.spyOn(storage, "putFile").mockRejectedValueOnce(new Error("connection lost"));
@@ -900,8 +900,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     put.mockRestore();
     const [pending] = await db.select().from(snapshots).where(eq(snapshots.companyId, companyId));
     expect(pending!.storage).toBeNull();
-    await expect(store.prepare(companyId, files)).rejects.toThrow("being saved");
-    await db.update(snapshots).set({ upload: { ...pending!.upload!, expiresAt: new Date(0).toISOString() } }).where(eq(snapshots.id, pending!.id));
+    expect(new Date(pending!.upload!.expiresAt).getTime()).toBeLessThanOrEqual(Date.now());
     const id = await store.prepare(companyId, files);
     expect(id).toBe(pending!.id);
     const receipt = (await store.descriptor(companyId, id)).storage!;

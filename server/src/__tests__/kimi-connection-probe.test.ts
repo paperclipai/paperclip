@@ -181,7 +181,13 @@ describe("remote Kimi installation fallback and failure admission", () => {
     const target = { ...remote, runner } as AdapterExecutionTarget;
     await expect(probeKimiExecutionTarget(apiKey, target, model)).resolves.toEqual(verified());
     expect(mocks.select).toHaveBeenCalledWith(selected.configuredRoot);
-    expect(mocks.prepare).toHaveBeenCalledWith({ target, runner, configuredProviderPackRoot: selected.configuredRoot, manifest: selected.manifest });
+    expect(mocks.prepare).toHaveBeenCalledWith({
+      target,
+      runner,
+      configuredProviderPackRoot: selected.configuredRoot,
+      manifest: selected.manifest,
+      provider: { kind: "acpx", agent: "kimi" },
+    });
     expect(mocks.command).toHaveBeenCalledOnce();
     expect(mocks.prepare.mock.invocationCallOrder[0]).toBeLessThan(mocks.command.mock.invocationCallOrder[0]!);
     expect(mocks.local).not.toHaveBeenCalled();

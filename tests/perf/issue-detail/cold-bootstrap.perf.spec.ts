@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, test, type APIRequestContext, type Browser } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Browser, type Page } from "@playwright/test";
 
 /**
  * Cold direct load of a task URL with every API response delayed, so serial
@@ -59,28 +59,57 @@ function scrub(url: string, seedData: Seed) {
     .replaceAll(seedData.companyId, ":company");
 }
 
-async function measure(browser: Browser, baseURL: string, seedData: Seed, run: number): Promise<Sample> {
+/**
+ * What the measured load starts with:
+ * - `empty`: no app storage at all.
+ * - `no-saved-reads`: a returning browser whose saved read cache was cleared.
+ * - `saved-reads`: a returning browser with the saved read cache of an earlier
+ *   visit to this task (`paperclip:query-cache:v1:*` in local storage).
+ */
+type StartState = "empty" | "no-saved-reads" | "saved-reads";
+const SAVED_READS_PREFIX = "paperclip:query-cache:v1:";
+
+type MeasureHooks = {
+  /** Runs after the warm-up visit saved its reads, before the measured load. */
+  beforeLoad?: () => Promise<void>;
+  /** Runs after the first frame, before the browser closes. */
+  afterReveal?: (page: Page) => Promise<void>;
+};
+
+async function measure(browser: Browser, baseURL: string, seedData: Seed, run: number, start: StartState = "empty", apiDelayMs = API_DELAY_MS, hooks: MeasureHooks = {}): Promise<Sample> {
   const context = await browser.newContext({ baseURL, viewport: { width: 1440, height: 900 }, serviceWorkers: "block" });
-  if (WARM_HTTP_CACHE) {
+  if (WARM_HTTP_CACHE || start !== "empty") {
     // Load the app's JavaScript into this context's HTTP cache, then clear
-    // every app store so the measured load starts without app data.
+    // the app stores the measured load must start without.
     const warm = await context.newPage();
     await warm.goto(`/${seedData.prefix}/issues/${seedData.identifier}`);
     await warm.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]').waitFor({ timeout: 60_000 });
-    await warm.evaluate(async () => {
-      localStorage.clear();
+    if (start === "saved-reads") {
+      // The read cache saves after a short debounce; wait until it holds this task.
+      await warm.waitForFunction(({ prefix, issueId }) => Object.keys(localStorage).some((key) => key.startsWith(prefix)
+        && (localStorage.getItem(key) ?? "").includes(issueId)), { prefix: SAVED_READS_PREFIX, issueId: seedData.issueId }, { timeout: 30_000 });
+    }
+    // Closing the app saves its read cache, so clear storage afterwards from
+    // a same-origin page that does not run the app.
+    await warm.close();
+    const cleaner = await context.newPage();
+    await cleaner.goto("/api/health");
+    await cleaner.evaluate(async ({ start, prefix }) => {
+      if (start === "empty") localStorage.clear();
+      else if (start === "no-saved-reads") for (const key of Object.keys(localStorage)) if (key.startsWith(prefix)) localStorage.removeItem(key);
       sessionStorage.clear();
       for (const db of (await indexedDB.databases?.()) ?? []) if (db.name) indexedDB.deleteDatabase(db.name);
       for (const key of (await caches?.keys?.()) ?? []) await caches.delete(key);
-    });
-    await warm.close();
+    }, { start, prefix: SAVED_READS_PREFIX });
+    await cleaner.close();
   }
+  await hooks.beforeLoad?.();
   const page = await context.newPage();
   // Delay API requests through CDP request interception. Playwright routing
   // would disable the HTTP cache and download the warmed JavaScript again.
   const cdp = await context.newCDPSession(page);
   cdp.on("Fetch.requestPaused", (event: { requestId: string }) => {
-    setTimeout(() => { void cdp.send("Fetch.continueRequest", { requestId: event.requestId }).catch(() => {}); }, API_DELAY_MS);
+    setTimeout(() => { void cdp.send("Fetch.continueRequest", { requestId: event.requestId }).catch(() => {}); }, apiDelayMs);
   });
   await cdp.send("Fetch.enable", { patterns: [{ urlPattern: "*/api/*", requestStage: "Request" }] });
   const records = new Map<object, RequestRecord>();
@@ -124,6 +153,7 @@ async function measure(browser: Browser, baseURL: string, seedData: Seed, run: n
     revealMs: (window as Window & { __coldReveal?: number }).__coldReveal!,
     navStartEpoch: performance.timeOrigin,
   }));
+  await hooks.afterReveal?.(page);
   await page.waitForTimeout(1_500);
   await context.close();
   // Re-base node-side timestamps on the navigation start.
@@ -176,6 +206,51 @@ test("a cold direct task load reads its first frame from one chat bootstrap", as
   expect(firstFrameReads.map((record) => record.path)).toEqual([]);
 });
 
+test("a returning task load with saved reads revalidates its first frame through one chat bootstrap", async ({ browser, baseURL, request }) => {
+  const seedData = await seed(request);
+  const sample = await measure(browser, baseURL!, seedData, 1, "saved-reads");
+  await test.info().attach("requests.json", { body: JSON.stringify(sample, null, 2), contentType: "application/json" });
+  // The saved task (header, core fields) is restored, but no chat history
+  // is saved: its reads must share the page's bootstrap like a cold load,
+  // including the restored task's own revalidation and its plan projection.
+  const perEndpoint = (record: RequestRecord) => FIRST_FRAME_ENDPOINTS.some((pattern) => pattern.test(record.path))
+    || /^\/api\/issues\/[^/]+\/documents\/plan$/.test(record.path);
+  const startedBefore = sample.requests.filter((record) => record.startMs <= sample.revealMs);
+  const catchUpFrom = sample.socketMs ?? Number.POSITIVE_INFINITY;
+  const firstFrameReads = startedBefore.filter((record) => perEndpoint(record) && record.startMs < catchUpFrom);
+  if (firstFrameReads.length > 0) {
+    console.log(`frame at ${Math.round(sample.revealMs)} ms, socket ${sample.socketMs === null ? "none" : Math.round(sample.socketMs)} ms\n${sample.requests.map((r) => `${Math.round(r.startMs)}-${r.endMs === null ? "pending" : Math.round(r.endMs)} ${r.method} ${r.path}`).join("\n")}`);
+  }
+  expect(startedBefore.filter((record) => record.path.startsWith("/api/issues/:ref/chat-bootstrap"))).toHaveLength(1);
+  expect(firstFrameReads.map((record) => record.path)).toEqual([]);
+});
+
+test("a returning task load shows its saved chat before any API response, then revalidates", async ({ browser, baseURL, request }) => {
+  const seedData = await seed(request);
+  // Every response arrives well after the app has booted, so a frame before
+  // the first response can only come from the saved read cache.
+  const change = `Server-side change after the save ${Date.now()}`;
+  let shownBeforeRevalidation: boolean | null = null;
+  const sample = await measure(browser, baseURL!, seedData, 1, "saved-reads", 2_500, {
+    // A reply posted while the browser was closed: the saved chat lacks it.
+    beforeLoad: async () => {
+      const response = await request.post(`/api/issues/${seedData.issueId}/comments`, { data: { body: change } });
+      expect(response.ok(), await response.text()).toBe(true);
+    },
+    afterReveal: async (page) => {
+      shownBeforeRevalidation = await page.getByText(change).isVisible();
+      // The bootstrap's answer replaces the saved chat.
+      await expect(page.getByText(change)).toBeVisible({ timeout: 20_000 });
+    },
+  });
+  await test.info().attach("requests.json", { body: JSON.stringify(sample, null, 2), contentType: "application/json" });
+  const firstResponse = Math.min(...sample.requests.filter((record) => record.endMs !== null).map((record) => record.endMs!));
+  expect(sample.revealMs).toBeLessThan(firstResponse);
+  expect(shownBeforeRevalidation).toBe(false);
+  // The saved chat is revalidated through the page's one bootstrap.
+  expect(sample.requests.filter((record) => record.path.startsWith("/api/issues/:ref/chat-bootstrap"))).toHaveLength(1);
+});
+
 test("cold direct task load benchmark", async ({ browser, baseURL, request }) => {
   test.skip(RUNS === 0, "Set PAPERCLIP_ISSUE_PERF_COLD_RUNS to run the benchmark.");
   test.setTimeout(15 * 60_000);
@@ -208,3 +283,69 @@ test("cold direct task load benchmark", async ({ browser, baseURL, request }) =>
   console.log(`\n${report}\n`);
 });
 
+
+function summary(samples: Sample[]) {
+  const reveals = samples.map((sample) => sample.revealMs);
+  const counts = samples.map((sample) => sample.apiRequestsBeforeReveal);
+  return {
+    median: Math.round(median(reveals)), min: Math.round(Math.min(...reveals)), max: Math.round(Math.max(...reveals)),
+    requestsMedian: median(counts), requestsMin: Math.min(...counts), requestsMax: Math.max(...counts),
+  };
+}
+
+test("returning task load benchmark: saved read cache present versus cleared", async ({ browser, baseURL, request }) => {
+  test.skip(RUNS === 0, "Set PAPERCLIP_ISSUE_PERF_COLD_RUNS to run the benchmark.");
+  test.setTimeout(20 * 60_000);
+  const seedData = await seed(request);
+  const pairs: Array<{ cleared: Sample; saved: Sample }> = [];
+  // Alternate the order within each pair so drift does not favour one side.
+  for (let run = 1; run <= RUNS; run += 1) {
+    if (run % 2) {
+      const cleared = await measure(browser, baseURL!, seedData, run, "no-saved-reads");
+      pairs.push({ cleared, saved: await measure(browser, baseURL!, seedData, run, "saved-reads") });
+    } else {
+      const saved = await measure(browser, baseURL!, seedData, run, "saved-reads");
+      pairs.push({ cleared: await measure(browser, baseURL!, seedData, run, "no-saved-reads"), saved });
+    }
+  }
+  const cleared = summary(pairs.map((pair) => pair.cleared));
+  const saved = summary(pairs.map((pair) => pair.saved));
+  const deltas = pairs.map((pair) => pair.saved.revealMs - pair.cleared.revealMs);
+  const row = (name: string, value: ReturnType<typeof summary>) =>
+    `| ${name} | ${value.median} | ${value.min}–${value.max} | ${value.requestsMedian} (${value.requestsMin}–${value.requestsMax}) |`;
+  const timeline = (sample: Sample) => sample.requests.map((record) =>
+    `| ${Math.round(record.startMs)} | ${record.endMs === null ? "pending" : Math.round(record.endMs)} | ${record.method} ${record.path}${record.startMs > sample.revealMs ? " (after frame)" : ""} |`);
+  const report = [
+    `# Returning task load (${LABEL})`,
+    "",
+    `API delay ${API_DELAY_MS} ms per request, ${RUNS} alternating pairs, fresh browser context each run, JavaScript in the HTTP cache.`,
+    "",
+    "| saved read cache | median ms | spread ms | requests before frame |",
+    "| --- | ---: | ---: | ---: |",
+    row("cleared", cleared),
+    row("present", saved),
+    "",
+    `Paired delta (present − cleared): median ${Math.round(median(deltas))} ms, ${deltas.map((delta) => Math.round(delta)).join(", ")}.`,
+    `Released by (pair 1): cleared ${pairs[0]!.cleared.releasedBy.join(", ")}; present ${pairs[0]!.saved.releasedBy.join(", ")}.`,
+    "",
+    "## Pair 1, saved read cache present (ms from navigation start)",
+    "",
+    "| start | end | request |",
+    "| ---: | ---: | --- |",
+    ...timeline(pairs[0]!.saved),
+    "",
+    `Frame at ${Math.round(pairs[0]!.saved.revealMs)} ms.`,
+    "",
+    "## Pair 1, saved read cache cleared",
+    "",
+    "| start | end | request |",
+    "| ---: | ---: | --- |",
+    ...timeline(pairs[0]!.cleared),
+    "",
+    `Frame at ${Math.round(pairs[0]!.cleared.revealMs)} ms.`,
+  ].join("\n");
+  await fs.mkdir(OUTPUT_DIR, { recursive: true });
+  await fs.writeFile(path.join(OUTPUT_DIR, `returning-task-${LABEL}.json`), JSON.stringify({ apiDelayMs: API_DELAY_MS, pairs }, null, 2));
+  await fs.writeFile(path.join(OUTPUT_DIR, `returning-task-${LABEL}.md`), report);
+  console.log(`\n${report}\n`);
+});

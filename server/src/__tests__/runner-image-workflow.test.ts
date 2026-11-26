@@ -230,6 +230,65 @@ describe("Runner image workflow", () => {
     }
   });
 
+  it("fails the step when either variant fails inside the parallel unpack or layout check loops", () => {
+    const unpackScript = scripts.find((script) => script.includes("scripts/runner-image-oci.mjs unpack"))!;
+    const layoutScript = scripts.find((script) => script.includes("scripts/runner-image-layout.mjs check"))!;
+    expect(unpackScript).toBeTruthy();
+    expect(layoutScript).toBeTruthy();
+
+    for (const [label, script] of [["unpack", unpackScript], ["layout check", layoutScript]] as const) {
+      for (const failVariant of ["none", "full", "slim"]) {
+        const directory = mkdtempSync(path.join(os.tmpdir(), "runner-image-parallel-"));
+        try {
+          writeFileSync(
+            path.join(directory, "node"),
+            [
+              "#!/bin/sh",
+              'printf "%s\\n" "$*" >> "$RUNNER_TEMP/node.log"',
+              'case "$*" in',
+              '  *"/full"*|*"--variant full"*) variant=full ;;',
+              '  *"/slim"*|*"--variant slim"*) variant=slim ;;',
+              "  *) variant=unknown ;;",
+              "esac",
+              'if [ "$variant" = "$FAIL_VARIANT" ]; then exit 1; fi',
+              "exit 0",
+              "",
+            ].join("\n"),
+            { mode: 0o755 },
+          );
+          const run = spawnSync("bash", ["--noprofile", "--norc", "-eo", "pipefail", "-c", script], {
+            cwd: directory,
+            encoding: "utf8",
+            env: {
+              PATH: `${directory}${path.delimiter}${process.env.PATH}`,
+              RUNNER_TEMP: directory,
+              DIGEST: "1".repeat(64),
+              GITHUB_SHA: "a".repeat(40),
+              ARCH: "amd64",
+              FAIL_VARIANT: failVariant,
+            },
+          });
+          const calls = readFileSync(path.join(directory, "node.log"), "utf8").trim().split("\n");
+          expect(calls, `${label} (${failVariant}) must invoke both variants`).toHaveLength(2);
+          if (failVariant === "none") {
+            expect(run.status, `${label} should pass when both variants succeed: ${run.stderr}`).toBe(0);
+          } else {
+            expect(run.status, `${label} must exit non-zero when ${failVariant} fails`).not.toBe(0);
+          }
+        } finally {
+          rmSync(directory, { recursive: true, force: true });
+        }
+      }
+    }
+  });
+
+  it("builds and caches on the standard GitHub-hosted matrix runners", () => {
+    for (const job of [jobs.build, jobs.cache]) {
+      expect(/^ {4}runs-on: (.+)$/m.exec(job)?.[1]).toBe("${{ matrix.runner }}");
+      expect(job).not.toMatch(/cloud-release-32|CORE_PUBLICATION_RUNNER|runs-on\/fleet=/);
+    }
+  });
+
   it("is registered with the merge-review notifier under its own name", () => {
     const name = /^name: (.+)$/m.exec(workflow)![1];
     const listed = /workflow_run:\n {4}workflows:\n((?: {6}- .+\n)+)/.exec(mergeReview)![1].split("\n").filter(Boolean).map((line) => line.trim().slice(2));
@@ -257,5 +316,8 @@ describe("Runner image smoke matrix", () => {
     const copies = [...smoke.matchAll(/^COPY --from=runner-artifacts (.+)$/gm)].map((match) => match[1]);
     expect(new Set(copies)).toEqual(new Set(["/paperclip-runnerd /usr/local/bin/paperclip-runnerd"]));
     expect(smoke).not.toMatch(/^FROM runner-artifacts/m);
+    // The workflow stages only /paperclip-runnerd into the smoke build context.
+    expect(workflow).toContain('cp -p "$RUNNER_TEMP/runner-image/slim/paperclip-runnerd" "$smoke_context/paperclip-runnerd"');
+    expect(workflow).toContain('--build-context "runner-artifacts=$smoke_context"');
   });
 });

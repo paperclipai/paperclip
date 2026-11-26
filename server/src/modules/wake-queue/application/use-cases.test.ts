@@ -11,7 +11,6 @@ import type {
   RecoveryEscalationPort,
   RunSnapshot,
   RunSummary,
-  TransactionScope,
   WakeAdmissionActiveExecutionRun,
   WakeAdmissionHeartbeatHelpers,
   WakeAdmissionReader,
@@ -100,6 +99,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
   return {
     findInvokableAgent: vi.fn(async () => AGENT),
     isCompletedOnboardingHandoffWake: vi.fn(async () => false),
+    skipAlreadyReportedChatWake: vi.fn(async () => false),
     findNextDeferredWake: vi.fn(async () => null),
     getQueuedCommentLiveness: vi.fn(async () => ({ liveNonSelfCommentIds: [], containedSelfAuthoredComment: false })),
     cancelDeferredWake: vi.fn(async () => true),
@@ -114,7 +114,7 @@ function createFakeTransaction(overrides: Partial<WakeQueueTransaction> = {}): W
       reason: null,
       releasePolicy: null,
     })),
-    getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false })),
+    getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: false, includesPersonComment: false })),
     isWatcherCommentDuringFinishingRun: vi.fn(async () => false),
     owedInteractionAnswer: vi.fn(async (): Promise<"deliver" | "blocked" | null> => null),
     isCompletedDelegationMention: vi.fn(async () => false),
@@ -148,6 +148,25 @@ function createFakeRecovery(): RecoveryEscalationPort {
 }
 
 describe("releaseIssueExecution", () => {
+  it.each([true, false])("settles an already-reported chat wake without a run (%s)", async reported => {
+    const completion = wakeCandidate({ id: "completion-wake", reason: "chat_task_completed", wakeReason: "chat_task_completed" });
+    const queue = [completion];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async () => queue.shift() ?? null),
+      skipAlreadyReportedChatWake: vi.fn(async () => reported),
+    });
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction), recovery: createFakeRecovery(),
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(transaction.skipAlreadyReportedChatWake).toHaveBeenCalledWith(expect.objectContaining({ issueId: ISSUE.id, wake: completion }));
+    if (reported) {
+      expect(result.outcome.kind).not.toBe("promoted");
+      expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+    } else {
+      expect(result.outcome.kind).toBe("promoted");
+    }
+  });
   it.each([false, true])("preserves a paused head without blocking an eligible follower (%s)", async withFollower => {
     const paused = wakeCandidate({ id: "paused-wake", wakeReason: "issue_comment_mentioned", queuedCommentIds: ["paused-comment"] });
     const ready = wakeCandidate({ id: "ready-wake", agentId: "ready-agent", queuedCommentIds: ["ready-comment"] });
@@ -661,7 +680,7 @@ describe("releaseIssueExecution", () => {
         liveNonSelfCommentIds: scenario === "done_missing" || scenario === "done_self" ? [] : commentIds,
         containedSelfAuthoredComment: scenario === "done_self",
       })),
-      getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: scenario === "done_self" })),
+      getCommentSelfAuthorship: vi.fn(async () => ({ allSelfAuthored: scenario === "done_self", includesPersonComment: false })),
       isWatcherCommentDuringFinishingRun: vi.fn(async () => scenario === "done_watcher_during_run"),
       reopenIssue: vi.fn(async () => ({ ...ISSUE, status: "todo" })),
     });
@@ -894,9 +913,6 @@ const ACTIVE_EXECUTION_RUN: WakeAdmissionActiveExecutionRun = {
   contextSnapshot: { taskKey: "issue-1" },
 };
 
-// The scope is opaque to the use case; the fakes below never inspect it.
-const SCOPE = {} as TransactionScope;
-
 function admissionInput(
   overrides: Partial<AdmitWakeBehindIssueExecutionInput> = {},
 ): AdmitWakeBehindIssueExecutionInput {
@@ -991,7 +1007,6 @@ describe("admitWakeBehindIssueExecution", () => {
       };
 
       const result = await admit(
-        SCOPE,
         admissionInput({
           activeExecutionRun: { ...ACTIVE_EXECUTION_RUN, status },
           allowRunCoalescing: false,
@@ -1005,7 +1020,6 @@ describe("admitWakeBehindIssueExecution", () => {
       expect(reader.findExistingDeferredWake).not.toHaveBeenCalled();
       expect(writer.mergeIntoExistingDeferredWake).not.toHaveBeenCalled();
       expect(writer.insertNewDeferredWake).toHaveBeenCalledExactlyOnceWith(
-        SCOPE,
         expect.objectContaining({
           durableReceipt,
           payload: {
@@ -1027,7 +1041,7 @@ describe("admitWakeBehindIssueExecution", () => {
       } : null),
     });
     const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers: createFakeAdmissionHelpers() });
-    await admit(SCOPE, admissionInput({
+    await admit(admissionInput({
       contextSnapshot: location === "incoming" ? { interactionId: "approval" } : {},
       activeExecutionRun: { ...ACTIVE_EXECUTION_RUN, status: "queued",
         contextSnapshot: location === "queued" ? { interactionId: "approval" } : {} },
@@ -1046,7 +1060,7 @@ describe("admitWakeBehindIssueExecution", () => {
     const writer = createFakeAdmissionWriter();
     const reader = createFakeAdmissionReader();
     const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers: createFakeAdmissionHelpers() });
-    await admit(SCOPE, admissionInput({
+    await admit(admissionInput({
       contextSnapshot: incoming ? { chatConversationId: incoming } : {},
       activeExecutionRun: { ...ACTIVE_EXECUTION_RUN, status: "queued",
         contextSnapshot: active ? { chatConversationId: active } : {} },
@@ -1054,7 +1068,7 @@ describe("admitWakeBehindIssueExecution", () => {
     expect(writer.coalesceIntoActiveExecutionRun).toHaveBeenCalledTimes(coalesces ? 1 : 0);
     if (!coalesces) {
       // The separated reply still merges with its own conversation's deferred wake.
-      expect(reader.findExistingDeferredWake).toHaveBeenCalledExactlyOnceWith(SCOPE,
+      expect(reader.findExistingDeferredWake).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ chatConversationId: incoming }));
       expect(writer.insertNewDeferredWake).toHaveBeenCalledOnce();
     }
@@ -1077,7 +1091,6 @@ describe("admitWakeBehindIssueExecution", () => {
     });
 
     const result = await admit(
-      SCOPE,
       admissionInput({
         activeExecutionRun: {
           ...ACTIVE_EXECUTION_RUN,
@@ -1091,7 +1104,6 @@ describe("admitWakeBehindIssueExecution", () => {
 
     expect(result).toEqual({ kind: "deferred" });
     expect(reader.matchesActiveWakeActor).toHaveBeenCalledExactlyOnceWith(
-      SCOPE,
       {
         companyId: "company-1",
         wakeupRequestId: "active-wake",
@@ -1101,7 +1113,6 @@ describe("admitWakeBehindIssueExecution", () => {
     );
     expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
     expect(reader.findExistingDeferredWake).toHaveBeenCalledExactlyOnceWith(
-      SCOPE,
       {
         companyId: "company-1",
         agentId: "wake-agent",
@@ -1111,7 +1122,6 @@ describe("admitWakeBehindIssueExecution", () => {
       },
     );
     expect(writer.insertNewDeferredWake).toHaveBeenCalledExactlyOnceWith(
-      SCOPE,
       expect.objectContaining({ durableReceipt }),
     );
   });
@@ -1131,7 +1141,6 @@ describe("admitWakeBehindIssueExecution", () => {
     });
 
     const result = await admit(
-      SCOPE,
       admissionInput({
         activeExecutionRun: {
           ...ACTIVE_EXECUTION_RUN,
@@ -1143,7 +1152,6 @@ describe("admitWakeBehindIssueExecution", () => {
 
     expect(result).toEqual({ kind: "coalesced", run: { id: "merged-run-1" } });
     expect(reader.matchesActiveWakeActor).toHaveBeenCalledExactlyOnceWith(
-      SCOPE,
       {
         companyId: "company-1",
         wakeupRequestId: "active-wake",
@@ -1154,7 +1162,6 @@ describe("admitWakeBehindIssueExecution", () => {
     expect(
       writer.coalesceIntoActiveExecutionRun,
     ).toHaveBeenCalledExactlyOnceWith(
-      SCOPE,
       expect.objectContaining({ durableReceipt }),
     );
     expect(reader.findExistingDeferredWake).not.toHaveBeenCalled();
@@ -1184,7 +1191,6 @@ describe("admitWakeBehindIssueExecution", () => {
     });
 
     const result = await admit(
-      SCOPE,
       admissionInput({
         durableReceipt,
         reason: "question_response",
@@ -1196,7 +1202,6 @@ describe("admitWakeBehindIssueExecution", () => {
     expect(
       writer.mergeIntoExistingDeferredWake,
     ).toHaveBeenCalledExactlyOnceWith(
-      SCOPE,
       expect.objectContaining({
         existingDeferredWakeId: "existing-deferred-wake",
         nextCoalescedCount: 3,
@@ -1236,10 +1241,10 @@ describe("admitWakeBehindIssueExecution", () => {
     })) });
     const admit = createAdmitWakeBehindIssueExecution({ reader, writer,
       helpers: createFakeAdmissionHelpers({ shouldDeferFollowupWakeForSameIssue: vi.fn(() => true) }) });
-    await expect(admit(SCOPE, admissionInput({ wakeCommentId: "second-comment", requestedByActorId: "second-user",
+    await expect(admit(admissionInput({ wakeCommentId: "second-comment", requestedByActorId: "second-user",
       payload: { commentId: "second-comment", coalescedIntoWakeupRequestId: "forged-target" },
     }))).resolves.toEqual({ kind: "deferred" });
-    const input = vi.mocked(writer.mergeIntoExistingDeferredWake).mock.calls[0][1];
+    const input = vi.mocked(writer.mergeIntoExistingDeferredWake).mock.calls[0][0];
     expect(input.coalescedReceipt).toEqual({ agentId: "wake-agent", source: "on_demand", triggerDetail: null,
       reason: null, payload: { issueId: "issue-1", commentId: "second-comment", coalescedIntoWakeupRequestId: "existing-deferred-wake" },
       requestedByActorType: "user", requestedByActorId: "second-user", idempotencyKey: null, runId: null });
@@ -1255,8 +1260,8 @@ describe("admitWakeBehindIssueExecution", () => {
       reader: createFakeAdmissionReader({ findExistingDeferredWake: vi.fn(async () => ({
         id: "saved-wake", runId: null, payload: { issueId: "issue-1" }, deferredContext: {}, coalescedCount: 0,
       })) }), helpers: createFakeAdmissionHelpers({ shouldDeferFollowupWakeForSameIssue: vi.fn(() => true) }) });
-    await admit(SCOPE, admissionInput({ durableReceipt, payload: { text: "saved input" } }));
-    expect(vi.mocked(writer.mergeIntoExistingDeferredWake).mock.calls[0][1].coalescedReceipt).toEqual(expect.objectContaining({
+    await admit(admissionInput({ durableReceipt, payload: { text: "saved input" } }));
+    expect(vi.mocked(writer.mergeIntoExistingDeferredWake).mock.calls[0][0].coalescedReceipt).toEqual(expect.objectContaining({
       ...durableReceipt, payload: { text: "saved input", issueId: "issue-1", coalescedIntoWakeupRequestId: "saved-wake" },
     }));
   });
@@ -1267,8 +1272,8 @@ describe("admitWakeBehindIssueExecution", () => {
       reader: createFakeAdmissionReader({ findExistingDeferredWake: vi.fn(async () => ({
         id: "existing-deferred-wake", runId: null, payload: { issueId: "issue-1" }, deferredContext: {}, coalescedCount: 1,
       })) }), helpers: createFakeAdmissionHelpers({ shouldDeferFollowupWakeForSameIssue: vi.fn(() => true) }) });
-    await admit(SCOPE, admissionInput({ wakeCommentId: "second-comment", requestedByActorType: actor }));
-    expect(vi.mocked(writer.mergeIntoExistingDeferredWake).mock.calls[0][1]).not.toHaveProperty("coalescedReceipt");
+    await admit(admissionInput({ wakeCommentId: "second-comment", requestedByActorType: actor }));
+    expect(vi.mocked(writer.mergeIntoExistingDeferredWake).mock.calls[0][0]).not.toHaveProperty("coalescedReceipt");
   });
 
   it("gives manual input its own run boundary even when the active receipt has the same requester", async () => {
@@ -1276,7 +1281,7 @@ describe("admitWakeBehindIssueExecution", () => {
     const admit = createAdmitWakeBehindIssueExecution({
       reader: createFakeAdmissionReader(), writer, helpers: createFakeAdmissionHelpers(),
     });
-    expect(await admit(SCOPE, admissionInput({ payload: { issueId: "issue-1", manualUserWake: true } })))
+    expect(await admit(admissionInput({ payload: { issueId: "issue-1", manualUserWake: true } })))
       .toEqual({ kind: "deferred" });
     expect(writer.coalesceIntoActiveExecutionRun).not.toHaveBeenCalled();
     expect(writer.insertNewDeferredWake).toHaveBeenCalledTimes(1);
@@ -1294,7 +1299,7 @@ describe("admitWakeBehindIssueExecution", () => {
       helpers,
     });
 
-    expect(await admit(SCOPE, admissionInput())).toEqual({
+    expect(await admit(admissionInput())).toEqual({
       kind: "coalesced",
       run: { id: "merged-run-1" },
     });
@@ -1308,7 +1313,7 @@ describe("admitWakeBehindIssueExecution", () => {
     const helpers = createFakeAdmissionHelpers();
     const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers });
 
-    const result = await admit(SCOPE, admissionInput());
+    const result = await admit(admissionInput());
 
     expect(result).toEqual({ kind: "coalesced", run: { id: "merged-run-1" } });
     expect(writer.coalesceIntoActiveExecutionRun).toHaveBeenCalledTimes(1);
@@ -1322,7 +1327,7 @@ describe("admitWakeBehindIssueExecution", () => {
     const helpers = createFakeAdmissionHelpers();
     const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers });
 
-    const result = await admit(SCOPE, admissionInput());
+    const result = await admit(admissionInput());
 
     expect(result.kind).toBe("coalesced");
     expect(reader.findExistingDeferredWake).not.toHaveBeenCalled();
@@ -1333,10 +1338,10 @@ describe("admitWakeBehindIssueExecution", () => {
     const reader = createFakeAdmissionReader();
     const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers: createFakeAdmissionHelpers() });
     const durableReceipt = { id: "incoming-source", requestedAt: new Date("2026-11-04T00:00:00Z") };
-    expect(await admit(SCOPE, admissionInput({ durableReceipt, wakeCommentId: "new-comment",
+    expect(await admit(admissionInput({ durableReceipt, wakeCommentId: "new-comment",
       contextSnapshot: { issueId: "issue-1", wakeCommentId: "new-comment" }, payload: { issueId: "issue-1", commentId: "new-comment" },
     }))).toEqual({ kind: "deferred" });
-    expect(writer.insertNewDeferredWake).toHaveBeenCalledWith(SCOPE, expect.objectContaining({
+    expect(writer.insertNewDeferredWake).toHaveBeenCalledWith(expect.objectContaining({
       companyId: "company-1", agentId: "wake-agent", durableReceipt,
       requestedByActorType: "user", requestedByActorId: "user-1",
       payload: expect.objectContaining({ issueId: "issue-1", commentId: "new-comment" }),
@@ -1346,7 +1351,7 @@ describe("admitWakeBehindIssueExecution", () => {
 
   it("merges into the existing deferred wake when the policy returns a merge target", async () => {
     const mergeIntoExistingDeferredWake = vi.fn(
-      async (_scope: TransactionScope, _input: Parameters<WakeAdmissionWriter["mergeIntoExistingDeferredWake"]>[1]) => {},
+      async (_input: Parameters<WakeAdmissionWriter["mergeIntoExistingDeferredWake"]>[0]) => {},
     );
     const writer = createFakeAdmissionWriter({ mergeIntoExistingDeferredWake });
     const reader = createFakeAdmissionReader({
@@ -1361,11 +1366,11 @@ describe("admitWakeBehindIssueExecution", () => {
     const helpers = createFakeAdmissionHelpers();
     const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers });
 
-    const result = await admit(SCOPE, admissionInput());
+    const result = await admit(admissionInput());
 
     expect(result).toEqual({ kind: "deferred" });
     expect(mergeIntoExistingDeferredWake).toHaveBeenCalledTimes(1);
-    const call = mergeIntoExistingDeferredWake.mock.calls[0]![1];
+    const call = mergeIntoExistingDeferredWake.mock.calls[0]![0];
     expect(call.existingDeferredWakeId).toBe("deferred-1");
     expect(call.nextCoalescedCount).toBe(3);
     expect(call.mergedPayload.foo).toBe("bar");
@@ -1379,7 +1384,7 @@ describe("admitWakeBehindIssueExecution", () => {
     const helpers = createFakeAdmissionHelpers();
     const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers });
 
-    const result = await admit(SCOPE, admissionInput());
+    const result = await admit(admissionInput());
 
     expect(result).toEqual({ kind: "deferred" });
     expect(writer.insertNewDeferredWake).toHaveBeenCalledTimes(1);
@@ -1393,7 +1398,7 @@ describe("admitWakeBehindIssueExecution", () => {
     const helpers = createFakeAdmissionHelpers();
     const admit = createAdmitWakeBehindIssueExecution({ reader, writer, helpers });
 
-    const result = await admit(SCOPE, admissionInput({ liveRunExecutions: { has: () => false } }));
+    const result = await admit(admissionInput({ liveRunExecutions: { has: () => false } }));
 
     expect(result).toEqual({ kind: "proceed" });
     expect(reader.findExistingDeferredWake).not.toHaveBeenCalled();

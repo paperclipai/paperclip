@@ -60,6 +60,7 @@ import { heartbeatRuns, nativeRunFinalizations, workspaceOperations } from "@pap
 import { conflict } from "../../errors.js";
 import { getStartupTraceContext } from "../../instrumentation.js";
 import { logger } from "../../middleware/logger.js";
+import { reserveLiveNativeFinalization } from "../native-runtime/live-native-finalization.js";
 import {
   buildNativeProviderEnvironment,
   executePaperclipNativeSession,
@@ -547,6 +548,11 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   const runGoalControlRequestId = readNonEmptyString(
     context.goalControlRequestId,
   );
+  // The runner posts its accepted result before it returns. Keep the recovery
+  // workers off this run until this heartbeat has finished it.
+  const releaseLiveNativeFinalization = nativeRuntimeResolution.kind === "native"
+    ? reserveLiveNativeFinalization(db, { companyId: run.companyId, runId: run.id, issueId: issueRef?.id })
+    : undefined;
   try {
     if (nativeRuntimeResolution.kind === "native") {
       if (!nativeExecution || !nativeRunnerInstanceId)
@@ -654,6 +660,7 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           (markDispatchStarted) => {
             return executePaperclipNativeSession({
               casesEnabled: context.paperclipCasesEnabled === true,
+              responsibilitiesEnabled: context.paperclipResponsibilitiesEnabled === true,
               db,
               execution: nativeExecution,
               observability,
@@ -719,6 +726,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               billingIdentity: managedAiRuntime ? { provider: managedAiRuntime.attribution.provider, biller: managedAiRuntime.attribution.provider === "openai" ? resolveManagedOpenAiBilling(managedAiRuntime.config.managedAiRouting)?.biller ?? managedAiRuntime.attribution.provider : managedAiRuntime.attribution.provider, billingType: managedAiRuntime.attribution.method === "subscription" ? "subscription_included" : "metered_api" } : undefined,
               managedAiCredentialIdentity: managedAiRuntime?.identity,
               managedAiAccountIdentity: managedAiRuntime?.sessionIdentity,
+              ...(managedAiRuntime && "accountEmail" in managedAiRuntime && typeof managedAiRuntime.accountEmail === "string"
+                ? { managedAiAccountEmail: managedAiRuntime.accountEmail } : {}),
               managedAiCredentialWriteback: managedAiRuntime?.credentialWriteback,
               managedAiCredentialHome: managedAiRuntime ? String((managedAiRuntime.config.env as Record<string, unknown>).CODEX_HOME) : undefined,
               outputSecrets: [...identityRedactor.secretSources, ...observabilitySecretValues(observability)],
@@ -1090,7 +1099,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
     };
     if (nativeWorkspaceSync || remoteWorkspaceAuthority) {
       const owned = await measureRunPhase("execution.workspace_ownership", () => withNativeWorkspaceFinalizationOwnership({
-        db, companyId: run.companyId, runId: run.id,
+        db, companyId: run.companyId, runId: run.id, liveHeartbeat: true,
+        ...(remoteWorkspaceAuthority && nativeRuntimeResolution.kind !== "native" && persistedExecutionWorkspace
+          ? { remoteWorkspaceId: persistedExecutionWorkspace.id } : {}),
       }, completeWorkspace));
       if (!owned.acquired) throw new NativeWorkspaceFinalizationBusyError();
     } else {
@@ -1306,24 +1317,28 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
         }
         return { dispatched: true, adapterResult: acceptedResult };
       }
-      try {
-        await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
-          db,
-          runId: run.id,
-          workspaceFinalizeStatus: "failed",
-        }));
-        await dispatchPendingNativeStatusWakeups({
-          companyId: run.companyId,
-        });
-      } catch (finalizeErr) {
-        logger.warn(
-          { err: finalizeErr, runId: run.id },
-          "native result could not be marked workspace_failed; the reconciliation loop will retry persisted results",
-        );
+      if (proposedResult) {
+        try {
+          await measureRunPhase("execution.native_finalize", () => finalizeNativeRun({
+            db,
+            runId: run.id,
+            workspaceFinalizeStatus: "failed",
+          }));
+          await dispatchPendingNativeStatusWakeups({
+            companyId: run.companyId,
+          });
+        } catch (finalizeErr) {
+          logger.warn(
+            { err: finalizeErr, runId: run.id },
+            "native result could not be marked workspace_failed; the reconciliation loop will retry persisted results",
+          );
+        }
       }
     }
     throw adapterErr;
   } finally {
+    // Never throws, so a failed cleanup below cannot keep the workers waiting.
+    await releaseLiveNativeFinalization?.();
     try {
       if (!preserveRunGatewayTokens) await revokeHeartbeatRunGatewayTokens({
         db,

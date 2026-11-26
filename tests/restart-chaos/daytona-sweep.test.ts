@@ -61,6 +61,22 @@ describe("cleanup through Paperclip", () => {
     expect(rows.find(row => row.id === "other-env")!.state).toBe("archived");
   });
 
+  it("waits for a capture the environment delete triggered before it deletes any wave sandbox", async () => {
+    const rows = waveRows(["started"]);
+    const order: string[] = [];
+    const { client, removeSandbox } = deletingDaytona(rows);
+    const sweeper = new DaytonaWaveSweeper({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT,
+      api: { delete: async () => { order.push("environment delete"); } } as never,
+      removeSandbox: async id => { order.push(`delete ${id}`); await removeSandbox(id); } });
+    (sweeper as unknown as { client: unknown }).client = client;
+    const result = await sweeper.cleanUp(0, 1_000, async () => { await new Promise(resolve => setTimeout(resolve, 20)); order.push("capture"); });
+    expect(order).toEqual(["environment delete", "capture", "delete started"]);
+    expect(result.errors).toEqual([]);
+    const failing = new DaytonaWaveSweeper({ apiKey: "unused", companyId: COMPANY, environmentId: ENVIRONMENT, api: { delete: async () => undefined } as never });
+    (failing as unknown as { client: unknown }).client = readOnlyDaytona(listing);
+    expect((await failing.cleanUp(0, 1_000, async () => { throw new Error("probe failed"); })).errors).toEqual(["before sandbox delete: probe failed"]);
+  });
+
   it("fails cleanup when a wave sandbox survives deletion, and never deletes a fleet snapshot even with the wave's labels", async () => {
     const rows = [...waveRows(["archived"]), ...waveRows(["fleet"], { snapshot: "fleet-sbx-9", state: "archived" })];
     const { client, removeSandbox, removed } = deletingDaytona(rows);

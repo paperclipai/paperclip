@@ -10,6 +10,7 @@ import { connectionGrants, companyMemberships, toolApplications, toolConnections
 import type { ConnectionGrantKind, ConnectToolAppResult } from "@paperclipai/shared";
 import { getConnectableAppDefinition, recommendedDefaultsForApp } from "@paperclipai/shared";
 import { badRequest, forbidden, HttpError } from "../../../errors.js";
+import { lockConnectionForSignIn } from "../connections/first-sign-in.js";
 import { deriveVercelConnectSubject, vercelGrantReference, vercelTokenRequest, VercelConnectClientError, type VercelConnectClient } from "../../vercel-connect.js";
 
 import type { OAuthStateStore } from "./state.js";
@@ -163,42 +164,51 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
       revokedByUserId: null,
       updatedAt: now(),
     };
-    if (existingGrant) {
-      await db
-        .update(connectionGrants)
-        .set(grantValues)
-        .where(eq(connectionGrants.id, existingGrant.id));
-    } else {
-      await db.insert(connectionGrants).values({
-        companyId: connection.companyId,
-        connectionId: connection.id,
-        kind: grantKind,
-        subjectUserId: stateRow.subjectUserId,
-        ...grantValues,
-        createdByUserId:
-          connectionActorUserId(input.actor),
-      });
-    }
     const preActivationLifecycle = {
       status: connection.status,
       enabled: connection.enabled,
     };
-    [connection] = await writeToolConnectionHealthChange(db, connection, tx => tx
-      .update(toolConnections)
-      .set({
-        status: "active",
-        enabled: true,
-        credentialRefs: [],
-        credentialSecretRefs: [],
-        updatedAt: now(),
-      })
-      .where(
-        and(
-          eq(toolConnections.id, connection.id),
-          eq(toolConnections.companyId, connection.companyId),
-        ),
-      )
-      .returning());
+    const activating = connection;
+    [connection] = await writeToolConnectionHealthChange(db, connection, async tx => {
+      if (existingGrant) {
+        await tx.select({ id: connectionGrants.id }).from(connectionGrants)
+          .where(eq(connectionGrants.id, existingGrant.id))
+          .for("update");
+      }
+      await lockConnectionForSignIn(tx, activating);
+      if (existingGrant) {
+        await tx
+          .update(connectionGrants)
+          .set(grantValues)
+          .where(eq(connectionGrants.id, existingGrant.id));
+      } else {
+        await tx.insert(connectionGrants).values({
+          companyId: activating.companyId,
+          connectionId: activating.id,
+          kind: grantKind,
+          subjectUserId: stateRow.subjectUserId,
+          ...grantValues,
+          createdByUserId:
+            connectionActorUserId(input.actor),
+        });
+      }
+      return tx
+        .update(toolConnections)
+        .set({
+          status: "active",
+          enabled: true,
+          credentialRefs: [],
+          credentialSecretRefs: [],
+          updatedAt: now(),
+        })
+        .where(
+          and(
+            eq(toolConnections.id, activating.id),
+            eq(toolConnections.companyId, activating.companyId),
+          ),
+        )
+        .returning();
+    });
     emitConnectionUpdated(
       connection,
       preActivationLifecycle,
@@ -220,9 +230,10 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
         "Vercel Connect connection is missing its reviewed app definition",
       );
     const method = connectionMethodForConnection(galleryEntry, connection);
+    const shouldFinalizeDefaults = preActivationLifecycle.status === "draft";
     const refresh = await refreshCatalog(connection.id, input.actor, {
-      enableAllByDefault: true,
-      skipDefaultProfileSync: true,
+      enableAllByDefault: shouldFinalizeDefaults,
+      skipDefaultProfileSync: shouldFinalizeDefaults,
       credentialHeaders: {
         ...projectedConnectionHeaders(connection),
         [credential.headerName]: `${credential.headerPrefix ?? ""}${token.token}`,
@@ -232,13 +243,15 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
       galleryEntry,
       method.key,
     );
-    const finished = await finishOAuthCatalogWithRecommendedDefaults({
-      interactionId: stateRow.interactionId,
-      connection,
-      catalog: refresh.catalog,
-      suggestedDefaults,
-      actor: input.actor,
-    });
+    const finished = shouldFinalizeDefaults
+      ? await finishOAuthCatalogWithRecommendedDefaults({
+          interactionId: stateRow.interactionId,
+          connection,
+          catalog: refresh.catalog,
+          suggestedDefaults,
+          actor: input.actor,
+        })
+      : null;
     const [application] = await db
       .select()
       .from(toolApplications)
@@ -246,7 +259,7 @@ export function createVercelOAuthCallback(db: Db, dependencies: Dependencies) {
     return {
       connectionId: connection.id,
       application: toApplication(application),
-      connection: finished.connection,
+      connection: finished?.connection ?? refresh.connection,
       catalog: refresh.catalog,
       actions: groupedActions(refresh.catalog),
       suggestedDefaults,

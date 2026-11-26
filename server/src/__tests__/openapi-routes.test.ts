@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
+import { LINK_PREVIEW_BATCH_LIMIT, MUSE_ASSET_VERSION, MUSE_PUBLIC_ROUTES } from "@paperclipai/shared";
 import { COMPANY_IMPORT_TRANSFERS_ROUTE_PATH } from "@paperclipai/shared/company-import-transfer";
 import { errorHandler } from "../middleware/index.js";
 import { buildOpenApiSpec, openApiRoutes, applyPluginSettingsVisibility, buildOpenApiDocument } from "../routes/openapi.js";
@@ -48,6 +48,7 @@ const apiPrefixes: Record<string, string> = {
   "slack-tools.ts": "/api",
   "email.ts": "/api",
   "cloud.ts": "/api/cloud",
+  "cloud-inference.ts": "/api",
   "customer-success.ts": "/api/customer-success/v1",
   "companies.ts": "/api/companies",
   "company-skills.ts": "/api",
@@ -76,13 +77,16 @@ const apiPrefixes: Record<string, string> = {
   "inbox-agent-policy.ts": "/api",
   "inbox-dismissals.ts": "/api",
   "instance-database-backups.ts": "/api",
+  "instance-server-metrics.ts": "/api",
   "instance-settings.ts": "/api",
   "issues.ts": "/api",
+  "issue-document-batch.ts": "/api",
   "issue-tree-control.ts": "/api",
   "llms.ts": "/api",
   "link-previews.ts": "/api",
   "managed-agent-profiles.ts": "/api",
   "onboarding-seed.ts": "/api",
+  "onboarding-chat.ts": "/api",
   "openapi.ts": "/api",
   "plugin-ui-static.ts": "/api",
   "plugins.ts": "/api",
@@ -93,18 +97,30 @@ const apiPrefixes: Record<string, string> = {
   "resource-memberships.ts": "/api",
   "remote-agent-profiles.ts": "/api",
   "routines.ts": "/api",
+  "routine-suggestions.ts": "/api",
   "secrets.ts": "/api",
   "sidebar-badges.ts": "/api",
   "sidebar-preferences.ts": "/api",
   "summary-slots.ts": "/api",
   "status-cards.ts": "/api",
   "tailscale-connections.ts": "/api",
+  "responsibilities.ts": "/api",
+  "responsibility-areas.ts": "/api",
+  "responsibility-bars.ts": "/api",
+  "responsibility-dashboard.ts": "/api",
+  "responsibility-summaries.ts": "/api",
+  "responsibility-automation.ts": "/api",
+  "responsibility-status-reports.ts": "/api",
+  "responsibility-metrics.ts": "/api",
+  "responsibility-runs.ts": "/api",
   "teams-catalog.ts": "/api",
   "tool-access.ts": "/api",
   "voice-sessions.ts": "/api",
   "tool-gateway.ts": "/api",
   "user-profiles.ts": "/api",
   "workspace-preferences.ts": "/api",
+  "workload-identity.ts": "/api",
+  "agent-setup-progress.ts": "/api",
 };
 
 const ROUTE_LITERAL_PATTERN =
@@ -127,6 +143,8 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // Exact Cloud-control signed action; ordinary board/agent credentials cannot invoke it.
   "POST /api/instance/connector-events/wake",
   "POST /api/instance/ephemeral-enrollment/prepare",
+  "GET /api/instance/ephemeral-enrollment/eligibility",
+  "POST /api/instance/ephemeral-enrollment/migrate",
   // Muse uses its closed, versioned receiver protocol and dedicated credentials,
   // documented in doc/muse-personal-agent.md and the shared protocol contract.
   // Board connection/qualification management remains in this OpenAPI document.
@@ -136,6 +154,8 @@ const explicitOpenApiOperationCoverageExclusions = new Set([
   // Ordinary board sessions and agent API keys cannot invoke these endpoints.
   "GET /api/customer-success/v1/run-authority",
   "POST /api/customer-success/v1/read",
+  "POST /api/customer-success/v1/read-v2",
+  "POST /api/customer-success/v1/run-liveness",
   // OAuth discovery and protocol endpoints have their own metadata contract;
   // browser connection-management operations remain documented in the board API.
   // Markdown rendering of the separately documented assistant setup page.
@@ -198,6 +218,8 @@ function normalizeExpressPath(routePath: string) {
 
 function resolveMountedPath(file: string, prefix: string, routePath: string) {
   if (file === "connection-event-wake.ts") return routePath;
+  if (file === "workload-identity.ts" && routePath.startsWith("/oidc/")) return routePath;
+  if (file === "agent-setup-progress.ts" && routePath.startsWith("/api/")) return routePath;
   if (file === "public-mcp.ts" && (routePath.startsWith("/mcp/oauth/") || routePath.startsWith("/.well-known/"))) return routePath;
   if (
     (file === "chat-channels.ts" || file === "email.ts") &&
@@ -337,6 +359,15 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("describes cached link results with the lookup shape and shared batch bound", () => {
+    const paths = buildOpenApiSpec().paths;
+    const batch = paths["/api/companies/{companyId}/link-previews/cached"].get;
+    expect(batch.description).toContain(`at most ${LINK_PREVIEW_BATCH_LIMIT} URLs`);
+    const lookupResult = paths["/api/companies/{companyId}/link-preview"].get.responses[200].content["application/json"].schema;
+    expect(batch.responses[200].content["application/json"].schema.properties.results.additionalProperties).toEqual(lookupResult);
+    expect(lookupResult.properties).toHaveProperty("preview");
+    expect(lookupResult.properties).toHaveProperty("maxAgeMs");
+  });
   it("tells agents that unpriced usage in cost reports is unknown cost, not zero", () => {
     const paths = buildOpenApiSpec().paths;
     for (const segment of ["summary", "by-agent", "by-agent-model", "by-project"]) {
@@ -398,6 +429,21 @@ describe("openapi routes", () => {
     expect(operation.requestBody.content).toHaveProperty("application/json");
     expect(spec.paths).not.toHaveProperty("/api/routine-triggers/public/{publicId}/sentry-run-failures");
   });
+  it("documents the agent's setup progress routes as needing the checklist's bearer token", () => {
+    const spec = buildOpenApiSpec() as any;
+    expect(spec.components.securitySchemes.AgentSetupTokenAuth).toMatchObject({ type: "http", scheme: "bearer" });
+    for (const [path, method] of [
+      ["/api/agent-setup-progress/{id}/checklist", "put"],
+      ["/api/agent-setup-progress/{id}/items/{key}", "post"],
+      ["/api/agent-setup-progress/{id}/finish", "post"],
+    ] as const) {
+      const operation = spec.paths[path][method];
+      expect(operation.security, `${method} ${path}`).toEqual([{ AgentSetupTokenAuth: [] }]);
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "setup_token" });
+      expect(operation.responses).toHaveProperty("401");
+    }
+    expect(spec.paths["/api/agent-setup-progress/{id}"].get["x-paperclip-authorization"]).toEqual({ actor: "board" });
+  });
   it("documents connected-app skill review as board only and file reads as agent-run only", () => {
     const spec = buildOpenApiSpec() as any;
     const files = spec.paths["/api/agents/me/mcp-skills/{skillId}/files"].get;
@@ -456,6 +502,18 @@ describe("openapi routes", () => {
       detail: { properties: { kind: { enum: ["questions"] } } },
     } } });
     for (const code of ["200", "400", "401", "403", "404"]) expect(operation.responses[code]).toBeDefined();
+  });
+
+  it.each([
+    ["get", "/api/agents/{id}/runtime-state"],
+    ["post", "/api/agents/{id}/runtime-state/reset-session"],
+    ["get", "/api/agents/{id}/task-sessions"],
+  ])("documents %s %s as board-only", (method, path) => {
+    const spec = buildOpenApiSpec() as any;
+    const operation = spec.paths[path][method];
+    expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(operation.responses["403"]).toBeDefined();
   });
 
   it("documents task-tree controls as board-only and names the human page", () => {
@@ -1294,6 +1352,34 @@ describe("openapi routes", () => {
     const callback = spec.paths["/api/tools/oauth/tailscale/callback"].get;
     expect(callback.responses["303"].headers).toMatchObject({ Location: { schema: { type: "string" } }, "Cache-Control": { schema: { enum: ["no-store"] } } });
     expect(callback.parameters).toContainEqual(expect.objectContaining({ in: "query", name: "state", required: true, schema: expect.objectContaining({ maxLength: 128 }) }));
+  });
+
+  it("documents board-owned onboarding chat and visible welcome operations", () => {
+    const { spec } = loadSpecRoutes();
+    const base = "/api/companies/{companyId}/chats/{agentRef}/onboarding";
+    for (const path of [base, `${base}/greeting`]) {
+      const operation = spec.paths[path]?.post;
+      expect(operation).toBeDefined();
+      expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+      expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+      expect(operation.responses["200"]).toBeDefined();
+      expect(operation.responses["403"]).toBeDefined();
+      expect(operation.responses["404"]).toBeDefined();
+    }
+    expect(spec.paths[`${base}/greeting`].post.responses["200"].content["application/json"].schema)
+      .toMatchObject({ type: "object", required: ["started"], properties: { started: { type: "boolean" } } });
+  });
+
+  it("documents bounded bulk keyed document reads for native discovery", () => {
+    const { spec } = loadSpecRoutes();
+    const operation = spec.paths["/api/companies/{companyId}/issue-documents"].get;
+    expect(operation.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ in: "query", name: "key", required: true }),
+      expect.objectContaining({ in: "query", name: "issueIds", required: true, schema: expect.objectContaining({ type: "string", maxLength: 8000 }) }),
+      expect.objectContaining({ in: "query", name: "includeBody", required: false, schema: expect.objectContaining({ enum: ["true", "false"] }) }),
+    ]));
+    expect(operation.responses["413"]).toBeDefined();
+    expect(operation.description).toContain("save_api_response");
   });
 
   it("covers the mounted server routes exactly", () => {

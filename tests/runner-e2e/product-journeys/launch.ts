@@ -29,6 +29,7 @@ import { companyAccessIsolation } from "./company-access-flow.js";
 import { inboxTriage } from "./inbox-triage-flow.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type JourneyOutcome, type TargetLifecycleInput, type TargetProvider, type TargetSession } from "./types.js";
 import type { RunnerE2EResult } from "../types.js";
+import { ConnectionFailure } from "../connection-config.js";
 import { regenerateRunnerDashboard } from "../dashboard-regenerate.js";
 import { resolveRunnerE2ESource } from "../source.js";
 import { validateRetainedRunnerResult } from "../result-validation.js";
@@ -74,6 +75,12 @@ export function journeyFailure(error: unknown): { outcome: Exclude<JourneyOutcom
   const candidate = error as { outcome?: string; code?: string } | null;
   if (candidate && ["failed", "blocked", "unsupported"].includes(candidate.outcome ?? "") && /^[a-z][a-z0-9_-]{0,100}$/.test(candidate.code ?? "")) {
     return { outcome: candidate.outcome as Exclude<JourneyOutcome, "passed">, code: candidate.code! };
+  }
+  // ConnectionApi failures carry only these fixed codes. Providers may load
+  // their own copy of the class, so match the name as well as the instance.
+  if ((error instanceof ConnectionFailure || error instanceof Error && error.constructor?.name === "ConnectionFailure")
+    && /^(api_status_[1-5][0-9]{2}|(sensitive_)?api_request_failed|invalid_api_route|invalid_api_timeout)$/.test(error.message)) {
+    return { outcome: "failed", code: error.message };
   }
   // Browser errors may contain keys, codes, URLs and form values. Never retain them.
   return { outcome: "failed", code: "journey_operation_failed" };

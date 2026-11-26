@@ -41,7 +41,7 @@ export function GatewaysList() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
+      { label: "Plugins", href: "/apps" },
       { label: "Gateways" },
     ]);
     return () => setBreadcrumbs([]);

@@ -563,6 +563,55 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(runRows).toHaveLength(0);
   });
 
+  it.each([
+    ["empty payload", undefined],
+    ["bare commentId without task", { commentId: randomUUID() }],
+  ])("skips manual taskless on_demand wakes for Paperclip Runner agents (%s) with a task_required receipt instead of failing a run", async (_label, payload) => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    await db
+      .update(agents)
+      .set({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } })
+      .where(eq(agents.id, agentId));
+
+    let observedSkipReason: string | null = null;
+    const run = await heartbeat.wakeup(agentId, {
+      source: "on_demand",
+      triggerDetail: "manual",
+      manualUserWake: true,
+      payload,
+      onSkip: (skipReason) => {
+        observedSkipReason = skipReason;
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    expect(run).toBeNull();
+    expect(observedSkipReason).toBe("heartbeat.task_required");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    const [wakeup] = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    const runRows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
+
+    expect(wakeup).toMatchObject({
+      status: "skipped",
+      reason: "heartbeat.task_required",
+    });
+    expect(wakeup?.payload).toMatchObject({
+      heartbeatSkip: {
+        reason: expect.stringContaining("Paperclip Runner requires a task"),
+      },
+    });
+    expect(runRows).toHaveLength(0);
+  });
+
   it("checks guarded issue status and assignee under the enqueue lock", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const parkedIssueId = randomUUID();
@@ -900,6 +949,34 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       expect(countExecuteCallsForRun(runId)).toBe(0);
     },
   );
+
+  it("cancels an environment-blocker fresh-session retry whose task is reassigned before adapter dispatch", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({ id: replacementAgentId, companyId, name: "ReplacementCoder", role: "engineer", status: "active",
+      adapterType: "codex_local", adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Environment blocker retry reassigned at final dispatch",
+      status: "in_progress", priority: "medium", assigneeAgentId: agentId });
+    const { runId } = await seedQueuedRun({ companyId, agentId, issueId, wakeReason: "native_environment_blocker",
+      invocationSource: "automation", scheduledRetryReason: "native_environment_blocker",
+      contextExtras: { retryReason: "native_environment_blocker", forceFreshSession: true } });
+    let guarded = false;
+    beforeContinuationDispatchCheck = async ({ runId: guardedRunId }) => {
+      if (guardedRunId !== runId) return;
+      guarded = true;
+      await db.update(issues).set({ assigneeAgentId: replacementAgentId, updatedAt: new Date() }).where(eq(issues.id, issueId));
+    };
+
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+
+    const [run] = await db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(guarded).toBe(true);
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "issue_assignee_changed" });
+    expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
 
   it("rejects ownership changes immediately before the final continuation handoff", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();

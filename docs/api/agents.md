@@ -144,13 +144,18 @@ POST /api/agents/{agentId}/keys
 
 Returns a long-lived API key for the agent. Store it securely — the full value is only shown once.
 
-## Invoke Heartbeat
+## Invoke Heartbeat / Wake Agent
 
 ```
+POST /api/agents/{agentId}/wakeup
 POST /api/agents/{agentId}/heartbeat/invoke
 ```
 
-Manually triggers a heartbeat for the agent.
+Manually triggers a wakeup or heartbeat for the agent.
+
+- Both endpoints return `202` with the created run when a run is admitted, or `202` with a skipped response when the wake is skipped.
+- `paperclip_runner` agents require task scope (`issueId`, `taskId`, or `taskKey`). A taskless wake (including a payload containing only `commentId` or an empty body) does not create a run; it records a skipped wakeup receipt with reason `heartbeat.task_required`.
+- When a taskless wake is skipped for that reason, `POST /api/agents/{agentId}/wakeup` returns `202` with `{ status: "skipped", reason: "task_required", message, issueId: null, executionRunId: null, executionAgentId: null, executionAgentName: null }`. The legacy `POST /api/agents/{agentId}/heartbeat/invoke` endpoint returns `202` with `{ status: "skipped" }`.
 
 ## Stop a Run
 
@@ -229,3 +234,26 @@ checks the source hash and destination under the agent write lock, then updates
 the file and the configured root path together. A stale source or occupied
 name returns `409`. External bundles must be migrated to managed storage before
 using this operation. A successful response contains the renamed file detail.
+
+### Instruction history
+
+```
+GET /api/agents/{agentId}/instructions-bundle/history?path=AGENTS.md&cursor={id}
+GET /api/agents/{agentId}/instructions-bundle/revision/{revisionId}?path=AGENTS.md
+GET /api/agents/{agentId}/instructions-bundle/diff?from={id}&to={id}&path=AGENTS.md
+```
+
+History lists the saves of one instruction file, newest first, with the writer
+(agent or user), the run and the time of each save. `cursor` is the last `id`
+of the previous page. Each `id` is one of these:
+
+- a legacy revision ID,
+- a save record ID,
+- the ID of the current content, which `GET .../instructions-bundle/file`
+  returns as the revision. This ID is a version-8 UUID.
+
+The revision and diff routes accept all three kinds of ID (UUID versions 1–8).
+Any other value returns `422`. Only the current content is kept for a save
+record. When a save's content is no longer current, a read of that save returns
+`404` with code `INSTRUCTION_REVISION_CONTENT_NOT_RETAINED`. The save stays in
+the history list.

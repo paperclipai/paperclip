@@ -11,6 +11,8 @@ import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner } from "./plugin-runner-task.js";
 import { resolvePaperclipRunnerProviderProfile } from "./provider-profile.js";
 import { resolveAcpxQualification } from "./acpx-qualification.js";
+import { antigravityConnectionRefusal } from "./antigravity-connection-policy.js";
+import { antigravityReleasePending } from "./antigravity-release.js";
 import { isRunnerRevisionMismatch, runnerRevisionMismatchTestResult } from "../runner-revision-mismatch.js";
 
 /** Core verifies a real Runner; providers only implement their task API. */
@@ -29,10 +31,23 @@ export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTe
   let cleanupConfirmed = false;
   let probeStarted = false;
   try {
+    const environment = (context.config.env ?? {}) as NodeJS.ProcessEnv;
+    const isAntigravityConfig = context.config.provider === "acpx" && context.config.acpxAgent === "antigravity";
+    if (isAntigravityConfig) {
+      const refusal = antigravityConnectionRefusal({
+        apiKey: Boolean(environment.GEMINI_API_KEY?.trim()),
+        remote: true,
+        releasePending: antigravityReleasePending(),
+        remoteCandidateAdmitted: false,
+      });
+      if (refusal) {
+        return { adapterType: "paperclip_runner", status: "fail", testedAt,
+          checks: [{ code: refusal.code, level: "error", message: refusal.message }] };
+      }
+    }
     const profile = resolvePaperclipRunnerProviderProfile(context.config);
     if (profile.provider !== "codex" && profile.provider !== "opencode" && profile.provider !== "acpx") throw new Error("Plugin Runner setup requires a workspace harness");
-    const environment = (context.config.env ?? {}) as NodeJS.ProcessEnv;
-    if (!managed && (context.config.managedAiConnection || Object.values(environment).some(value => Boolean(value)))) {
+    if (!managed && (isAntigravityConfig || context.config.managedAiConnection || Object.values(environment).some(value => Boolean(value)))) {
       return { adapterType: "paperclip_runner", status: "fail", testedAt,
         checks: [{ code: "runner_account_selection_required", level: "error",
           message: "Select a saved AI account, or remove local environment overrides to test the installed account." }] };
@@ -50,9 +65,11 @@ export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTe
       credentialIdentity: managed?.identity });
     probeStarted = true;
     const effort = context.config.modelReasoningEffort ?? context.config.reasoningEffort ?? context.config.effort;
+    const isAntigravity = profile.provider === "acpx" && profile.acpxAgent === "antigravity";
     const result = await probeNativeRunnerEnvironment({ runtimeDirectory: root, provider: profile.provider,
       // Plugin preparation selects the physical workspace; the probe uses its own logical scope.
       model: profile.model, timeoutMs: 45_000,
+      ...(isAntigravity ? { admissionOnly: true } : {}),
       ...(profile.provider === "codex" && typeof effort === "string" && effort ? { reasoningEffort: effort } : {}),
       environment: {},
       transportOptions: {
@@ -68,6 +85,15 @@ export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTe
       },
       onCleanupConfirmed: async () => { rmSync(root, { recursive: true, force: true }); cleanupConfirmed = true; },
     });
+    if (isAntigravity) {
+      if (result.provider !== "acpx" || result.providerDriver !== "acpx_runtime" || result.effectiveModel !== profile.model
+        || result.sessionAdmissionPassed !== true || result.admissionOnly !== true || result.helloProbePassed !== false) {
+        throw new Error("The selected Google runtime returned no matching account and model admission receipt.");
+      }
+      return { adapterType: "paperclip_runner", status: "pass", testedAt,
+        checks: [{ code: "antigravity_metadata_verified", level: "info",
+          message: "Google Antigravity verified the selected connection and exact model. No model prompt was sent." }] };
+    }
     return { adapterType: "paperclip_runner", status: "pass", testedAt,
       checks: [{ code: "runner_hello_probe_passed", level: "info", message: `Runner verified ${result.providerDriver} with model ${result.effectiveModel}.` }] };
   } catch (error) {

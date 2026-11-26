@@ -3,7 +3,7 @@ import { agentWakeupRequests, heartbeatRunEvents, heartbeatRuns, issueComments, 
 
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
-import type { ProviderTurnWaitOptions } from "../../vendor/paperclip-runner/index.js";
+import type { NativeExecutionInput, ProviderTurnWaitOptions } from "../../vendor/paperclip-runner/index.js";
 
 type NativeRunScope = { companyId: string; runId: string; issueId: string; agentId: string };
 
@@ -99,6 +99,10 @@ export function awaitPersonCommentDuringNativeRun(db: Db, scope: NativeRunScope,
     waiters.add(waiter);
     personCommentWakes.get(db)?.();
   });
+}
+
+export function nativeProviderStartedTurns(provider: NativeExecutionInput["provider"]) {
+  return provider.kind === "acpx" && provider.agent === "claude";
 }
 
 export async function nativeProviderTurnWaitOptions(db: Db, scope: NativeRunScope): Promise<ProviderTurnWaitOptions> {

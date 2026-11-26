@@ -1,4 +1,5 @@
 import { notifyExternalConversationSettlement } from "../external-conversation-settlement-notifications.js";
+import { nativeEffectiveRunTerminalStateSql } from "./native-accepted-outcome.js";
 import { promoteDeferredWorkIntents } from "../work-intent-outbox.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
@@ -51,7 +52,7 @@ export async function settleNativeTerminalWake(tx: Db, run: Pick<typeof heartbea
   const [current] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
     .where(claim).for("update").limit(1);
   if (!current) return;
-  await notifyExternalConversationSettlement(tx, { companyId: run.companyId });
+  await notifyExternalConversationSettlement(tx, { companyId: run.companyId, runId: run.id });
   await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
   await tx.update(agentWakeupRequests).set({
     status: run.status === "succeeded" ? "completed" : run.status,
@@ -102,7 +103,7 @@ export function nativeRunProjectionNeedsRepair(projectedStatus: "succeeded" | "f
 
 
 export function pendingNativeRunProjectionCondition(db: Db) {
-  const status = sql<string>`${nativeRunResults.resultJson}->'terminal'->>'runTerminalState'`;
+  const status = nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson);
   return exists(db.select({ id: nativeRunResults.id }).from(nativeRunResults).where(and(
     eq(nativeRunResults.id, nativeRunFinalizations.resultId),
     eq(nativeRunResults.runId, nativeRunFinalizations.runId),
@@ -132,7 +133,7 @@ export async function projectCommittedRun(input: {
 }) {
   if (!input.coordinator.resultId) return;
   const resultRow = await input.db
-    .select({ terminalState: sql<string>`${nativeRunResults.resultJson}->'terminal'->>'runTerminalState'` })
+    .select({ terminalState: nativeEffectiveRunTerminalStateSql(nativeRunResults.resultJson) })
     .from(nativeRunResults)
     .where(
       and(
@@ -174,7 +175,7 @@ export async function projectCommittedRun(input: {
     await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
     await notifyUnsafeWorkspaceExportRunChange(tx, input.run);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
-    await notifyExecutionRunWork(tx, { companyId: input.run.companyId });
+    await notifyExecutionRunWork(tx, { companyId: input.run.companyId, runId: input.run.id });
     await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     const [after] = await tx
       .update(heartbeatRuns)

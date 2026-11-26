@@ -10,8 +10,8 @@ import { verifyQualifiedAcpxInstallation } from "./installation-integrity.js";
 import { verifyAcpxProfileInstallation } from "./profile-installation.js";
 import { assertAcpxProfileReleased, resolveQualifiedAcpxProfile } from "./qualified-profiles.js";
 
-const setup = vi.hoisted(() => ({ spawn: vi.fn(), close: vi.fn(async () => undefined), verify: vi.fn(), uncertainRetirement: false }));
-vi.mock("./antigravity-installation.js", () => ({ antigravityNativeDistributionSpec: () => ({ pinned: true }) }));
+const setup = vi.hoisted(() => ({ spawn: vi.fn(), close: vi.fn(async () => undefined), verify: vi.fn(), uncertainRetirement: false, spec: vi.fn((..._args: unknown[]) => ({ pinned: true })) }));
+vi.mock("./antigravity-installation.js", () => ({ antigravityNativeDistributionSpec: setup.spec }));
 vi.mock("./installation-integrity.js", async original => ({
   ...await original<typeof import("./installation-integrity.js")>(), verifyNativeAcpxInstallation: setup.verify,
 }));
@@ -21,6 +21,7 @@ vi.mock("./antigravity-process.js", async original => {
     ? Promise.reject(new Error("controlled retirement uncertainty")) : actual.retireAntigravityProcess(...args) };
 });
 import { AntigravityModelDiscoveryCleanupError, discoverAntigravityModels } from "./antigravity-models.js";
+import { AntigravityRuntimeUnavailableError } from "./antigravity-runtime-unavailable.js";
 
 const roots: string[] = [], children: ChildProcess[] = [];
 afterEach(async () => {
@@ -46,7 +47,7 @@ const reply=(id,result)=>process.stdout.write(JSON.stringify({jsonrpc:'2.0',id,r
 reader.on('line',line=>{
  const request=JSON.parse(line);requests.push(request);fs.writeFileSync(path.join(home,'requests.json'),JSON.stringify(requests));
  if(request.method==='initialize') {
-  reply(request.id,{protocolVersion:1,agentInfo:{name:'antigravity-acp',version:'1.4.3'},agentCapabilities:{_meta:{antigravity:{paperclipAdmission:1,paperclipModels:mode==='old-patch'?0:1}}},authMethods:[{id:'oauth-personal'}]});
+  reply(request.id,{protocolVersion:1,agentInfo:{name:'antigravity-acp',version:'1.5.2'},agentCapabilities:{_meta:{antigravity:{paperclipAdmission:1,paperclipModels:mode==='old-patch'?0:1}}},authMethods:[{id:'oauth-personal'}]});
  } else if(request.method==='_paperclip/models') {
   if(mode==='blocked'||mode==='stubborn') return;
   if(mode==='error') {process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:request.id,error:{code:-32000,message:'private-token-do-not-expose'}})+'\\n');return;}
@@ -91,6 +92,15 @@ describe("Antigravity session-free account model discovery", () => {
     await expect(discoverAntigravityModels(home)).rejects.toThrow("Could not load models for this Google account");
     expect(children[0]!.exitCode).toBe(0); expect(setup.close).toHaveBeenCalledOnce();
     if (mode === "old-patch") expect(JSON.parse(await readFile(join(home, "requests.json"), "utf8"))).toHaveLength(1);
+  });
+
+  it("reports a missing runtime by its own error without launching", async () => {
+    const home = await fixture();
+    setup.verify.mockRejectedValueOnce(Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" }));
+    const failure = await discoverAntigravityModels(home).catch(error => error);
+    expect(failure).toBeInstanceOf(AntigravityRuntimeUnavailableError);
+    expect(failure.code).toBe("ANTIGRAVITY_RUNTIME_UNAVAILABLE");
+    expect(setup.spawn).not.toHaveBeenCalled();
   });
 
   it("cancellation retires a blocked catalog process and inherited descendant before rejecting", async () => {
@@ -138,46 +148,45 @@ describe("Antigravity session-free account model discovery", () => {
   }, 40_000);
 });
 
-describe("Antigravity pending release boundaries", () => {
-  it("retains release admission for existing providers, including Copilot's separate capability status", () => {
-    for (const agent of ["claude", "codex", "grok", "cursor", "pi", "copilot"] as const) {
+describe("Antigravity qualified release boundaries", () => {
+  it("retains release admission for all qualified providers, including Copilot's separate capability status", () => {
+    for (const agent of ["claude", "codex", "grok", "cursor", "pi", "copilot", "kimi", "antigravity"] as const) {
       expect(() => assertAcpxProfileReleased(agent)).not.toThrow();
     }
     expect(acpxCapabilities("copilot")).toMatchObject({ typedEvents: true, dynamicTools: true });
   });
 
-  it("preserves the caller's exact model separately from release admission", () => {
-    expect(resolveQualifiedAcpxProfile("antigravity", "caller-exact-model")).toMatchObject({
-      agent: "antigravity", qualificationStatus: "pending", qualificationModel: "caller-exact-model", reportedModelId: "caller-exact-model",
+  it("preserves the caller's exact model under the qualified revision 2 profile", () => {
+    const profile = resolveQualifiedAcpxProfile("antigravity", "caller-exact-model");
+    expect(profile).toMatchObject({
+      agent: "antigravity", agentProfileVersion: 2, qualificationModel: "caller-exact-model", reportedModelId: "caller-exact-model",
     });
+    expect(profile.qualificationStatus).toBeUndefined();
     expect(validateAcpxDriverConfig({ agent: "antigravity", model: "caller-exact-model" }))
-      .toMatchObject({ ok: false, issues: [{ path: "agent", code: "qualification_pending" }] });
-    expect(() => assertAcpxProfileReleased("antigravity")).toThrow(expect.objectContaining({ code: "ACPX_PROFILE_QUALIFICATION_PENDING" }));
+      .toEqual({ ok: true, config: { agent: "antigravity", model: "caller-exact-model", permissionMode: "approve-all" }, issues: [] });
+    expect(() => assertAcpxProfileReleased("antigravity")).not.toThrow();
   });
 
-  it("advertises no accepted runtime or context capabilities", () => {
+  it("advertises qualified runtime capabilities while keeping recovery and usage unverified", () => {
     expect(acpxDriverDescriptor("antigravity")).toMatchObject({ displayName: "Google Antigravity via ACPX",
-      runtimeContextCapabilities: { instructions: "unsupported", skills: "unsupported", mcp: "unsupported" } });
-    for (const value of Object.values(acpxCapabilities("antigravity"))) {
-      if (typeof value === "boolean") expect(value).toBe(false);
-    }
+      runtimeContextCapabilities: { instructions: "native", skills: "native", mcp: "native" } });
+    expect(acpxCapabilities("antigravity")).toMatchObject({
+      resume: false, toolRefreshOnResume: false, typedEvents: true, interruption: true,
+      structuredResult: true, read: true, reconciliation: true, usage: false,
+      dynamicTools: true, runtimeRequestResolution: true, runtimeRequestHandoff: true,
+    });
   });
 
-  it("rejects direct construction before opening a runtime host", () => {
+  it("constructs directly without opening a runtime host eagerly", () => {
     const openHost = vi.fn();
     expect(() => new CodexAcpxDriver({ agent: "antigravity", model: "caller-exact-model", runtimeDirectory: "/unused",
-      providerPolicy: { readOnly: false } }, { openHost }))
-      .toThrow(expect.objectContaining({ code: "ACPX_PROFILE_QUALIFICATION_PENDING" }));
+      providerPolicy: { readOnly: false } }, { openHost })).not.toThrow();
     expect(openHost).not.toHaveBeenCalled();
   });
 
-  it("refuses raw installation lookup even after a caller strips the pending marker", async () => {
-    const profile = { ...resolveQualifiedAcpxProfile("antigravity", "caller-exact-model"), qualificationStatus: undefined };
+  it("rejects raw npm installation lookup when the caller omits a resolved package path", async () => {
+    const profile = resolveQualifiedAcpxProfile("antigravity", "caller-exact-model");
     const resolvePackage = vi.fn();
-    await expect(verifyQualifiedAcpxInstallation(profile, resolvePackage))
-      .rejects.toMatchObject({ code: "ACPX_PROFILE_QUALIFICATION_PENDING" });
-    await expect(verifyAcpxProfileInstallation(profile))
-      .rejects.toMatchObject({ code: "ACPX_PROFILE_QUALIFICATION_PENDING" });
-    expect(resolvePackage).not.toHaveBeenCalled();
+    await expect(verifyQualifiedAcpxInstallation(profile, resolvePackage)).rejects.toThrow();
   });
 });

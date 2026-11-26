@@ -2,7 +2,7 @@ import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js"
 import { promoteDeferredWorkIntents } from "./work-intent-outbox.js";
 import { centsToUnits, centsToUsd, usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
-import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
+import { budgetReservations, agents, environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, runUsageReceipts, issues, projects, decisionInvocations, promptInjectionInvocations, responsibilitySummaryInvocations, type Db } from "@paperclipai/db";
 import { withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { withBudgetSpan } from "./budget-tracing.js";
 import { conflict } from "../errors.js";
@@ -13,6 +13,7 @@ import { settleChargedImageReceiptsInTransaction } from "./native-runtime/genera
 import type { BudgetServiceHooks } from "./budgets.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
 import { ensureRuntimeAccountingBaseline } from "./runtime-accounting-totals.js";
+import { OWN_PROCESS_START_EVENT_TYPES } from "./native-process-start-events.js";
 import { logger } from "../middleware/logger.js";
 import { promises as fs } from "node:fs";
 import { priceAnthropicReceipt } from "./anthropic-pricing.js";
@@ -141,7 +142,7 @@ const inheritedProcessIdentityOnly = sql`${heartbeatRuns.runnerProfileJson}->>'i
   and not exists (select 1 from ${heartbeatRunEvents} own_process
     where own_process.company_id = ${heartbeatRuns.companyId} and own_process.run_id = ${heartbeatRuns.id}
       and own_process.source_event_id is null
-      and own_process.event_type in ('native.process_start_requested', 'native.process_identity_recorded'))`;
+      and own_process.event_type in (${sql.join(OWN_PROCESS_START_EVENT_TYPES.map(type => sql`${type}`), sql`, `)}))`;
 
 const nativeProviderWorkNeverStarted = sql`${heartbeatRuns.runtimeMode} = 'native'
   and ${heartbeatRuns.status} in ('failed', 'cancelled', 'timed_out', 'interrupted')
@@ -499,6 +500,9 @@ export async function readCostAccountingWork(db: Db, now = Date.now(), receiptDi
       union all
       select ${promptInjectionInvocations.startedAt} from ${promptInjectionInvocations}
         where ${promptInjectionInvocations.status} = 'running'
+      union all
+      select ${responsibilitySummaryInvocations.startedAt} from ${responsibilitySummaryInvocations}
+        where ${responsibilitySummaryInvocations.status} = 'running'
     ) running_service_invocations`);
   // Wake when a run waiting for closure evidence reaches its bound.
   const [closure] = await db.select({ at: sql<Date | string | null>`min(coalesce(${heartbeatRuns.finishedAt}, ${heartbeatRuns.updatedAt}))` })

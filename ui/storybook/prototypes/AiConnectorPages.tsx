@@ -4,7 +4,7 @@ import { AiConnectionAccountControls } from "@/components/ai-connections/AiConne
 import { useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { Route, Routes, useNavigate, useSearchParams } from "@/lib/router";
-import { APP_DEFINITIONS, getAppStoreDefinition, type AppDefinition, type ToolApplication, type ToolConnection, type ConnectionGrantsResponse } from "@paperclipai/shared";
+import { APP_DEFINITIONS, aiConnectionCatalogSlug, getAppStoreDefinition, type AppDefinition, type ToolApplication, type ToolConnection, type ConnectionGrantsResponse } from "@paperclipai/shared";
 import { Browse } from "@/pages/apps/Browse";
 import { AppDetail } from "@/pages/apps/AppDetail";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
@@ -23,7 +23,7 @@ const capabilities = { canConfigure: true, canCreateOrganizationGrant: true, can
 const members = [{ userId: "dotta", name: "Dotta", email: "dotta@example.test" }, { userId: "sam", name: "Sam", email: "sam@example.test" }];
 
 /** Use the production provider catalog; only accounts and actions are simulated. */
-const gallery: AppDefinition[] = (Object.keys(AI_PROVIDERS) as AiProvider[]).map((provider) => getAppStoreDefinition(provider)!);
+const gallery: AppDefinition[] = (Object.keys(AI_PROVIDERS) as AiProvider[]).map((provider) => getAppStoreDefinition(aiConnectionCatalogSlug(provider))!);
 for (const slug of ["github", "gmail"]) {
   const app = getAppStoreDefinition(slug);
   if (app) gallery.push(app);

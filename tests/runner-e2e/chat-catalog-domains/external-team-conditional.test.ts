@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import { describe, it, expect, vi } from "vitest";
 import {
   gradeTeamConditions,
-  namesTeamSkill,
   observeTeamConditions,
 } from "./external-team-conditional.js";
 import type { ExternalObservation } from "./external-support.js";
@@ -171,26 +170,31 @@ it("requires the selected catalog version for a pinned binding and rechecks bind
   expect(gradeTeamConditions(o).passed).toBe(false);
 });
 
-describe("reply grading reads identities, not outcome wording", () => {
-  // Retained run 42556883697: a truthful partial reply that the old keyword grader rejected.
+describe("reply meaning is left to human review; saved state grades the partial install", () => {
+  // Retained run 42556883697 and cohort 14 (run 43637708886, OpenCode + DeepSeek): truthful partial replies.
+  // Cohort 14 paraphrased the doc-maintenance slug as "document-maintenance", which the old literal check rejected.
   const retained = "Installed the Product Engineering website team under the CEO.\n\n- [CTO 2](/COM/agents/b5796cb8) - reports to CEO\n\nThe catalog doc-maintenance skill was not installed: this company already has its own doc-maintenance skill, so the team uses that one.";
+  const cohort14 = "One required skill is unresolved: the team's document-maintenance skill could not be installed because a different company-owned skill already uses that name (the \"Existing company launch checklist\"). I left it untouched. The other three required skills are attached, but document-maintenance is still missing for CTO 2 and Senior Coder.";
   const target = { slug: "doc-maintenance", name: "doc-maintenance", key: "paperclipai/bundled/docs/doc-maintenance" };
-  it.each([
-    retained,
-    retained.replace("was not installed: this company already has", "slug is already taken by"),
-    "Three of four skills were added; `doc-maintenance` collided with an existing company skill.",
-    "Skipped paperclipai/bundled/docs/doc-maintenance because the slug belongs to a local skill.",
-  ])("accepts any reply that names the unresolved skill: %s", reply => {
-    expect(namesTeamSkill(reply, target)).toBe(true);
+  it.each([retained, cohort14])("accepts a truthful partial reply backed by saved state: %s", reply => {
     const o = valid();
     o.state.blockedSkill = target;
     o.phaseReplies[0]!.body = reply;
     expect(gradeTeamConditions(o, "initial").passed).toBe(true);
   });
-  it("rejects a first reply that omits the unresolved skill or is missing", () => {
+  it("rejects the same reply when saved state shows no genuine blocked skill or installer warning", () => {
     const o = valid();
-    o.phaseReplies[0]!.body = "Installed the team. The CTO was renamed CTO 2.";
+    o.state.blockedSkill = target;
+    o.phaseReplies[0]!.body = cohort14;
+    (o.state.firstConditional as Record<string, unknown>).localSkillStillOccupiesSlug = false;
     expect(gradeTeamConditions(o, "initial").passed).toBe(false);
+    const unwarned = valid();
+    unwarned.phaseReplies[0]!.body = cohort14;
+    (unwarned.activity[0] as { details: Record<string, unknown> }).details.warningCount = 0;
+    expect(gradeTeamConditions(unwarned, "initial").passed).toBe(false);
+  });
+  it("rejects a missing first reply", () => {
+    const o = valid();
     o.phaseReplies = o.phaseReplies.slice(1);
     expect(gradeTeamConditions(o, "initial").passed).toBe(false);
   });

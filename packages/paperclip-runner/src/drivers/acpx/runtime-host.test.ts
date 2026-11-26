@@ -10,6 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ANTIGRAVITY_PAPERCLIP_MCP_SERVER, antigravityPlanModeAllows } from "./antigravity-plan-mode.js";
+import { canonicalRunnerToolName } from "../runner-tool-bridge.js";
 
 import {
   NATIVE_RUNTIME_ASSET_SCHEMA,
@@ -20,7 +22,7 @@ import {
   type NativeRuntimeContextSnapshot,
 } from "../../contracts/runtime-context.js";
 import { releaseMaterializedNativeRuntimeSkills } from "../runtime-context-materializer.js";
-import { openCodexAcpxRuntime } from "./acpx-runtime-adapter.js";
+import { openQualifiedAcpxRuntime } from "./acpx-runtime-adapter.js";
 import { acpxSidecarErrorCode } from "../../cli/acpx-sidecar-input.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 import type {
@@ -255,6 +257,31 @@ describe("ACPX runtime host", () => {
     expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_SKILLS");
     expect(openRuntime).not.toHaveBeenCalled();
     expect(fixture.commandClose).not.toHaveBeenCalled();
+  });
+  it("admits Claude instructions larger than the provider-delivered bound and passes them to the provider", async () => {
+    const fixture = await hostFixture();
+    const systemInstructions = "x".repeat(54_734);
+    const openRuntime = vi.fn(async (_options: { systemInstructions?: string }) => runtimePort({ getStatus: async () => ({ models: { currentModelId: "claude-sonnet-5" } }) }));
+    const host = await AcpxRuntimeHost.open({ ...fixture.options, agent: "claude", model: "claude-sonnet-5", permissionMode: "approve-all",
+      providerPolicy: { readOnly: false }, systemInstructions }, fixture.dependencies({ openRuntime }));
+    try {
+      expect(openRuntime).toHaveBeenCalledOnce();
+      expect(openRuntime.mock.calls[0]![0].systemInstructions).toBe(systemInstructions);
+    } finally { await host.close({ reason: "instructions admitted" }); }
+  });
+  it.each([
+    { agent: "pi" as const, model: "anthropic/claude-sonnet-5", bytes: 32 * 1024 + 1, extra: { piThinkingLevel: "low" as const } },
+    { agent: "copilot" as const, model: "gpt-5.6-sol", bytes: 32 * 1024 + 1, extra: { environment: { COPILOT_GITHUB_TOKEN: "synthetic-test-token" } } },
+    { agent: "claude" as const, model: "claude-sonnet-5", bytes: 256 * 1024 + 1, extra: {} },
+  ])("reports oversized $agent instructions as instructions admission before launch", async ({ agent, model, bytes, extra }) => {
+    const fixture = await hostFixture();
+    const openRuntime = vi.fn(async () => runtimePort());
+    const failure = await AcpxRuntimeHost.open({ ...fixture.options, agent, model, permissionMode: "approve-all",
+      providerPolicy: { readOnly: false }, systemInstructions: "x".repeat(bytes), ...extra }, fixture.dependencies({ openRuntime })).catch(error => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure.message).toMatch(/instructions exceed their bounded size/);
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_INSTRUCTIONS");
+    expect(openRuntime).not.toHaveBeenCalled();
   });
   it.each(["installation", "sandbox", "credential", "runtime"] as const)("retains the failed %s admission stage through the sidecar boundary", async stage => {
     const fixture = await hostFixture();
@@ -924,7 +951,7 @@ describe("ACPX runtime host", () => {
       // staged credential to that pending admission. Abort before entering the
       // adapter so its pre-entry path must publish a completed cleanup proof.
       controller.abort(cancellation);
-      return openCodexAcpxRuntime(options, { createRuntime });
+      return openQualifiedAcpxRuntime(options, { createRuntime });
     });
 
     await expect(
@@ -1084,6 +1111,36 @@ describe("ACPX runtime host", () => {
       expect(listed.result.tools.filter(tool => tool._meta?.["anthropic/alwaysLoad"] === true).map(({ name }) => name))
         .toEqual(agent === "claude" ? ["set_task_title", "paperclip_finish", "paperclip_block"] : []);
     } finally { await host.close({ reason: "tool preload verified" }); }
+  });
+
+  it("gives the Antigravity Plan-mode gate the bridge's served catalog, finish and block included", async () => {
+    const fixture = await hostFixture();
+    let opened: AcpxRuntimePortOpenOptions | undefined;
+    const host = await AcpxRuntimeHost.open({
+      ...fixture.options, agent: "codex", model: "gpt-5.6-sol", permissionMode: "deny-all",
+      environment: { PAPERCLIP_ACPX_CODEX_AUTH_JSON_SECRET: "{}" },
+      semanticTools: { tools: [{ name: "write_document", inputSchema: { type: "object", properties: {} } }],
+        privateTools: [{ name: "report_private_progress", inputSchema: { type: "object", properties: {} } }], handler: async () => ({}) },
+    }, fixture.dependencies({ openRuntime: async options => { opened = options; return runtimePort(); } }));
+    try {
+      const bridge = urlBridge(opened!.mcpServers.find(server => server.runnerOwned)!);
+      const response = await fetch(bridge.url, { method: "POST", headers: { Authorization: `Bearer ${bridge.bearerToken}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }) });
+      const served = ((await response.json()) as { result: { tools: Array<{ name: string }> } }).result.tools.map(tool => tool.name);
+      expect(served).toEqual(expect.arrayContaining(["paperclip_finish", "paperclip_block"]));
+      // Production derives the policy from the bridge's admitted names: the
+      // served catalog plus private tools, finish and block included.
+      expect([...opened!.paperclipTools!].sort()).toEqual([...served, "report_private_progress"].map(canonicalRunnerToolName).sort());
+      const policy = { paperclipServerOwned: bridge.name === ANTIGRAVITY_PAPERCLIP_MCP_SERVER, paperclipTools: new Set(opened!.paperclipTools) };
+      const call = (tool: string, server = bridge.name) => ({ raw: { toolCall: { title: `${server}_${tool}`, kind: "other",
+        _meta: { mcp: { tool, server }, is_mcp_tool_call: true } } } });
+      expect(antigravityPlanModeAllows(call("paperclip_finish"), policy)).toBe(true);
+      expect(antigravityPlanModeAllows(call("paperclip_block"), policy)).toBe(true);
+      expect(antigravityPlanModeAllows(call("write_document"), policy)).toBe(true);
+      expect(antigravityPlanModeAllows(call("report_private_progress"), policy)).toBe(true);
+      expect(antigravityPlanModeAllows(call("delete_company"), policy)).toBe(false);
+      expect(antigravityPlanModeAllows({ raw: { toolCall: { title: "Run write_to_file?", kind: "edit" } } }, policy)).toBe(false);
+    } finally { await host.close({ reason: "plan catalog verified" }); }
   });
 
   it("forwards semantic receipt capture through the real runtime host and authenticated bridge", async () => {

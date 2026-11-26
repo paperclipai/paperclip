@@ -85,6 +85,27 @@ changes the delay. `PAPERCLIP_ISSUE_PERF_COLD_HTTP_CACHE=1` downloads the
 JavaScript on every run. Serve a production build
 (`PAPERCLIP_UI_DEV_MIDDLEWARE=false`).
 
+### Returning direct task load (saved read cache)
+
+A returning browser restores the saved read cache (`paperclip:query-cache:v1:*`)
+before the first render, including the core fields and the first chat frame of
+recently opened tasks (see the read-cache rules in `doc/ui-internals.md`). The
+restored chat shows at once; its reads revalidate through the bootstrap and
+share that one request instead of reading each endpoint. The always-on tests
+check both: with every response held for 2.5 s, the frame appears before the
+first response, and no per-endpoint first-frame read starts before the frame. The opt-in
+benchmark runs alternating pairs with the saved read cache present and
+cleared (other app storage kept) and writes `returning-task-<label>.{json,md}`:
+
+```sh
+PAPERCLIP_ISSUE_PERF_BASE_URL=http://127.0.0.1:3287 \
+PAPERCLIP_ISSUE_PERF_COLD_RUNS=5 PAPERCLIP_ISSUE_PERF_LABEL=candidate \
+  pnpm exec playwright test --config tests/perf/issue-detail/playwright.config.ts cold-bootstrap -g returning
+```
+
+Closing a page saves its read cache, so the harness clears storage from a
+separate same-origin page after the warm-up page closes.
+
 ## Real-instance click harness
 
 Local fixtures cannot reproduce staging's network round trips, server contention

@@ -421,6 +421,32 @@ describe("HarnessDriverBackend", () => {
     });
   });
 
+  it("builds a native snapshot from the driver's boundary snapshot only when asked for that sequence", async () => {
+    const boundarySnapshot = vi.fn((sourceSeq: number): PersistedHarnessSession | null => sourceSeq !== 7 ? null : {
+      driverKind: "fake", driverSessionId: "driver-1", providerSessionId: "provider-1", providerIdentity,
+      activeTurnId: null, semanticResult: null, awaitingProviderTurn: true, lastSourceSequence: 7 });
+    class BoundarySession extends FakeHarnessSession {
+      boundarySnapshot = boundarySnapshot;
+      override async snapshot(): Promise<PersistedHarnessSession> {
+        return { ...(await super.snapshot()), activeTurnId: "provider-1", lastSourceSequence: 9 };
+      }
+    }
+    const backend = new HarnessDriverBackend({ ...driver, async openSession() { return new BoundarySession(); } });
+    const session = await backend.openSession({ identity: {
+      runId: "run-boundary", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1",
+    } });
+    const signal = new AbortController().signal;
+    await expect(session.snapshot({ signal, sourceSeq: 7 })).resolves.toMatchObject({
+      cursor: "7", activeTurnId: null, semanticResult: null, awaitingProviderTurn: true });
+    expect(boundarySnapshot).toHaveBeenCalledExactlyOnceWith(7);
+    const current = await session.snapshot();
+    expect(current).toMatchObject({ cursor: "9", activeTurnId: "provider-1" });
+    expect(current).not.toHaveProperty("awaitingProviderTurn");
+    expect(boundarySnapshot).toHaveBeenCalledOnce();
+    await expect(session.snapshot({ signal, sourceSeq: 8 })).resolves.toMatchObject({ cursor: "9", activeTurnId: "provider-1" });
+    expect(boundarySnapshot).toHaveBeenLastCalledWith(8);
+  });
+
   it("preserves a consumed disposition allowance in native snapshots", async () => {
     class ConsumedRecoverySession extends FakeHarnessSession {
       override async snapshot(): Promise<PersistedHarnessSession> {
@@ -701,6 +727,36 @@ describe("HarnessDriverBackend", () => {
       terminal,
       turnId: "turn-1",
     });
+  });
+
+  async function terminalsAfterEachTurnEnd(turnEnds: Array<Record<string, unknown>>) {
+    class TurnEndsSession extends FakeHarnessSession {
+      override async *events() {
+        for (const [index, payload] of turnEnds.entries()) yield prpEvent(index + 1, "turn.completed", payload);
+      }
+    }
+    const backend = new HarnessDriverBackend({ ...driver, async openSession() { return new TurnEndsSession(); } });
+    const session = await backend.openSession({
+      identity: { runId: "run-1", sessionId: "session-1", companyId: "company-1", issueId: "issue-1", agentId: "agent-1" },
+    });
+    const terminals: Array<PrpTerminalState | null> = [];
+    for await (const _event of session.events()) terminals.push((await session.snapshot()).terminal ?? null);
+    return terminals;
+  }
+
+  it("leaves the run terminal open when a turn ends waiting for the provider's own next turn", async () => {
+    await expect(terminalsAfterEachTurnEnd([{ status: "completed", awaitingProviderTurn: true }])).resolves.toEqual([null]);
+  });
+
+  it("sets the run terminal when a turn ends without waiting for the provider", async () => {
+    const [terminal] = await terminalsAfterEachTurnEnd([{ status: "completed" }]);
+    expect(terminal).toMatchObject({ turnTerminalState: "completed", runTerminalState: "succeeded" });
+  });
+
+  it("sets the run terminal at the first turn end that does not wait for the provider", async () => {
+    const [waiting, settled] = await terminalsAfterEachTurnEnd([{ status: "completed", awaitingProviderTurn: true }, { status: "completed" }]);
+    expect(waiting).toBeNull();
+    expect(settled).toMatchObject({ turnTerminalState: "completed", runTerminalState: "succeeded" });
   });
 
   it("reconstructs a missing top-level terminal from a completed semantic turn", async () => {

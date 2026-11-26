@@ -18,23 +18,13 @@ export async function enterGenericMcpThroughCatalog(
 ) {
   // The Coordinator sidebar keeps Connectors under its More flyout; the
   // classic sidebar lists it directly. Use whichever the person sees.
-  const direct = page.getByRole("link", { name: "Connectors", exact: true });
+  const direct = page.getByRole("link", { name: "Plugins", exact: true });
   if (!(await direct.first().isVisible())) {
     await page.getByRole("button", { name: "More workspace pages", exact: true }).click();
   }
   await direct.first().click();
-  const card = page
-    .getByRole("listitem")
-    .filter({
-      has: page.getByRole("heading", {
-        name: "Connect your own tool",
-        exact: true,
-      }),
-    });
-  await card.getByRole("button", { name: "Connect", exact: true }).click();
-  await card
-    .getByRole("button", { name: "Connect your own MCP server" })
-    .click();
+  await page.getByRole("button", { name: "Add", exact: true }).click();
+  await page.getByRole("menuitem", { name: /MCP server URL/ }).click();
   await page.waitForURL((url) => url.pathname === `/${prefix}/apps/byo`);
 }
 export function gradeUnreachableMcp(value: unknown) {

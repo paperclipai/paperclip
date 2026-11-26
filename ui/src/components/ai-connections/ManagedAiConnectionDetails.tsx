@@ -1,4 +1,6 @@
 import { heartbeatsApi } from "@/api/heartbeats";
+import { useToastActions } from "@/context/ToastContext";
+import { aiSignInRemovalNotice } from "@/features/connections/googleAccessRemoval";
 import { Button } from "@/components/ui/button";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { aiConnectionsApi } from "@/api/ai-connections";
@@ -9,7 +11,7 @@ import { useNavigate } from "@/lib/router";
 import { AiConnectionAccountControls } from "./AiConnectionAccountControls";
 import { AiConnectionUsagePanel } from "./AiConnectionUsagePanel";
 import { AiConnectionAccountDetails } from "./AiConnectionAccountDetails";
-import type { ToolConnection, AiConnectionMetadata } from "@paperclipai/shared";
+import { aiConnectionCatalogSlug, type ToolConnection, type AiConnectionMetadata } from "@paperclipai/shared";
 import { aiMethodLabel } from "./model";
 import { queryKeys } from "@/lib/queryKeys";
 import { retryTransientOnly } from "@/lib/query-client";
@@ -62,10 +64,15 @@ export function ManagedAiConnectionDetails({
   const accountsView = useQueryView(accounts);
   const grantsView = useQueryView(grants);
   const refresh = () => client.invalidateQueries();
+  const { pushToast } = useToastActions();
   const revoke = useMutation({
     mutationFn: (id: string) =>
       toolsApi.revokeConnectionGrant(connection.id, id),
-    onSuccess: refresh,
+    onSuccess: (revoked) => {
+      const notice = aiSignInRemovalNotice(revoked.signInRemoval);
+      if (notice) pushToast({ title: "Account disconnected", body: notice.body, tone: notice.tone, ...(notice.action ? { action: notice.action } : {}) });
+      return refresh();
+    },
   });
   const stop = useMutation({
     mutationFn: (id: string) => heartbeatsApi.cancel(id),
@@ -157,7 +164,7 @@ export function ManagedAiConnectionDetails({
         }
         onReconnect={() =>
           navigate(
-            `/apps/connect?source=${account.provider}&reconnect=${connection.id}&method=ai-${account.method}`,
+            `/apps/connect?source=${aiConnectionCatalogSlug(account.provider)}&reconnect=${connection.id}&method=ai-${account.method}`,
           )
         }
       />

@@ -33,7 +33,7 @@ Use currently visible instance settings for experiments/access and `paperclipai 
 
 ### `runtime-provisioning`
 
-On an owned published server installation, use `paperclipai runtime setup pi`, `paperclipai runtime setup cursor`, `paperclipai runtime setup antigravity`, or `paperclipai runtime import-remote <companion-directory> --sha256 <trusted-companion-json-digest>`. Run as the OS user operating that installation; this is separate from source-checkout dependency installation. Antigravity setup stages a pinned patched macOS ARM64 runtime; it remains unavailable for tasks until native acceptance passes.
+On an owned published server installation, use `paperclipai runtime setup pi`, `paperclipai runtime setup cursor`, `paperclipai runtime setup antigravity`, or `paperclipai runtime import-remote <companion-directory> --sha256 <trusted-companion-json-digest>`. Run as the OS user operating that installation; this is separate from source-checkout dependency installation. Antigravity setup stages a pinned patched macOS ARM64 runtime; the native profile is qualified (revision 2, `recovery: "unverified"`) with paid-key qualification suites deferred to staging.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -57,10 +57,10 @@ The probe reads in-memory state without SQL or session resolution. Local
 [readiness tests](../../server/src/__tests__/liveness.test.ts) establish that
 boundary; hosted overlap and active-run continuity require separate qualification.
 
-Automated: [static UI idle completion](../../server/src/__tests__/static-ui-idle.test.ts)
-covers real aborted file streams, disconnects before file lookup, nested routers,
-and unfinished parent/fallback writes. Mounted Express applications retain their
-conservative hold. It does not qualify provider cleanup or a hosted sleep/wake cycle.
+Automated: [idle sleep safety](../../server/src/__tests__/idle-sleep-safety.test.ts)
+and [idle incoming wake](../../server/src/__tests__/idle-incoming-wake.test.ts)
+cover idle-gate safety.
+It does not qualify provider cleanup or a hosted sleep/wake cycle.
 
 Manual: On an otherwise idle disposable instance, close a static UI download
 served by the admitted application before it finishes. Repeat with a disconnect
@@ -69,7 +69,7 @@ unfinished application write must still prevent sleep after its client leaves.
 
 ### `settings-backup`
 
-Automated: [experimental settings](../../ui/src/pages/InstanceExperimentalSettings.test.tsx) and [database backup routes](../../server/src/__tests__/instance-database-backups-routes.test.ts) cover their UI/API contracts.
+Automated: [database backup routes](../../server/src/__tests__/instance-database-backups-routes.test.ts) covers API backup contracts (mocked `InstanceExperimentalSettings` UI tests were removed; verify settings UI via Storybook/manual checks).
 
 Cloud migration: in one maintenance window, stop legacy file writers and run the
 [configuration/package qualification command](../../doc/cloud-configuration-migration.md).
@@ -78,8 +78,9 @@ second owned application/image root with the first home unavailable. Use an
 explicit package evidence digest for same-package comparison. Confirm stale
 qualification and missing legacy files cannot clear blockers. This recipe covers
 configuration/packages and does not qualify whole-server zero downtime, secret
-bytes, or volume removal. [Local PostgreSQL evidence path](../../server/src/__tests__/cloud-configuration-migration-postgres.test.ts)
-includes a real fixture worker; it does not establish a hosted replacement.
+bytes, or volume removal. [Cloud configuration readers](../../server/src/__tests__/cloud-configuration-readers.test.ts)
+cover reader boundaries;
+this does not establish a hosted replacement.
 
 Manual: Change a harmless experimental setting, reload, and confirm the affected route honors it. Back up a disposable instance, inspect the reported file and metadata, and restore using the documented procedure into a second isolated target. Verify a known record after restoration.
 
@@ -108,9 +109,8 @@ Sources: [Runtime CLI](../../cli/src/commands/runtime.ts), [instance-config bypa
 
 Antigravity: [provisioning](../../packages/paperclip-runner/scripts/provision-antigravity.mjs),
 [closure/integrity regressions](../../packages/paperclip-runner/scripts/materialize-antigravity-distribution.test.mjs),
-and [pending admission tests](../../packages/paperclip-runner/src/drivers/acpx/antigravity-models.test.ts).
-Exercise public-layout setup and verify both native files and cleanup; separately
-verify that configuration/API/driver/sidecar reject the pending provider. These
+and [model/admission tests](../../packages/paperclip-runner/src/drivers/acpx/antigravity-models.test.ts).
+Exercise public-layout setup and verify both native files and cleanup. These
 checks do not establish authenticated task execution.
 
 ## Gotchas
@@ -135,7 +135,7 @@ Capability ID: `instance-operations/backup`.
 Scope: ui
 Storybook: Mount shipped InstanceGeneralSettings in CompanySettings with daily/weekly/monthly retention presets, selected values, saving/error/loading and cloud-hidden controls. Backup creation and restore remain separate CLI/operator checks.
 Production: PATCH /api/instance/settings/general must enforce instance settings authority and managed hidden fields, persist retention and survive reload. Separately inspect a real backup and restore a known record into a second disposable target; a successful write does not prove restoration.
-Sources: Source: [InstanceGeneralSettings.tsx](../../ui/src/pages/InstanceGeneralSettings.tsx), [CompanySettings.tsx](../../ui/src/pages/CompanySettings.tsx), [instance-settings.ts](../../server/src/routes/instance-settings.ts), [db-backup.ts](../../cli/src/commands/db-backup.ts). Tests: [InstanceGeneralSettings.test.tsx](../../ui/src/pages/InstanceGeneralSettings.test.tsx), [instance-settings-routes.test.ts](../../server/src/__tests__/instance-settings-routes.test.ts), [instance-settings-managed-overlay.test.ts](../../server/src/__tests__/instance-settings-managed-overlay.test.ts), [instance-database-backups-routes.test.ts](../../server/src/__tests__/instance-database-backups-routes.test.ts)
+Sources: Source: [InstanceGeneralSettings.tsx](../../ui/src/pages/InstanceGeneralSettings.tsx), [CompanySettings.tsx](../../ui/src/pages/CompanySettings.tsx), [instance-settings.ts](../../server/src/routes/instance-settings.ts), [db-backup.ts](../../cli/src/commands/db-backup.ts). Tests: [instance-settings-routes.test.ts](../../server/src/__tests__/instance-settings-routes.test.ts), [instance-settings-managed-overlay.test.ts](../../server/src/__tests__/instance-settings-managed-overlay.test.ts), [instance-database-backups-routes.test.ts](../../server/src/__tests__/instance-database-backups-routes.test.ts)
 
 #### `install-update`
 
