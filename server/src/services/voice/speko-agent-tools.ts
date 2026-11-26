@@ -8,9 +8,29 @@ import { chatVoiceCallbacks, instanceUserRoles, companyMemberships } from "@pape
 import type { VoiceCaller } from "./voice-session-store.js";
 import { z } from "zod";
 import { instanceSettingsService } from "../instance-settings.js";
-const SPEKO_TOOLS = [{ name: "call_my_phone", description: "Call the responsible person's saved phone number to discuss this task with the assigned Paperclip agent. Requires that person's callback opt-in. Never chooses another recipient, cancels work or grants approvals. Do not redial an uncertain attempt.", inputSchema: { type: "object", properties: {}, additionalProperties: false }, risk: "write", scopes: [] }] as const;
+const SPEKO_TOOLS = [{
+  name: "call_my_phone",
+  description: "Call the responsible person's saved, opted-in phone number to tell them something or discuss this task with the assigned Paperclip agent. Pass message with the concise update or question to speak immediately when they answer. Requires that person's callback opt-in. Never chooses another recipient, cancels work or grants approvals. Do not redial an uncertain attempt.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      message: {
+        type: "string",
+        minLength: 1,
+        maxLength: 2000,
+        description: "Concise update, announcement, or question to tell the responsible person when they answer the phone.",
+      },
+    },
+    additionalProperties: false,
+  },
+  risk: "write",
+  scopes: [],
+}] as const;
+const callMyPhoneParametersSchema = z.object({
+  message: z.string().trim().min(1).max(2000).optional(),
+}).strict();
 type SpekoTaskSession = Pick<ToolGatewaySession, "companyId" | "agentId" | "runId" | "issueId" | "identityContextId">;
-interface Binding { companyId: string; endpointId: string; issueId: string; caller: VoiceCaller }
+interface Binding { companyId: string; endpointId: string; issueId: string; caller: VoiceCaller; openingMessage?: string }
 const runtimes = new WeakMap<Db, (binding: Binding, invocationId: string) => Promise<unknown>>();
 export function registerSpekoVoiceRuntime(db: Db, start: (binding: Binding, invocationId: string) => Promise<unknown>) {
   runtimes.set(db, start);
@@ -34,10 +54,10 @@ async function resolveAuthority(db: Db, session: SpekoTaskSession, endpointId: s
   return { endpoint, caller };
 }
 export async function executeSpekoVoiceTool(db: Db, session: SpekoTaskSession, endpointId: string, parameters: unknown, invocationId?: string) {
-  z.object({}).strict().parse(parameters);
+  const parsed = callMyPhoneParametersSchema.parse(parameters ?? {});
   if (!invocationId || !z.string().uuid().safeParse(invocationId).success) throw forbidden("A durable invocation is required for phone calls");
   const authority = await resolveAuthority(db, session, endpointId);
-  return runtimes.get(db)!({ companyId: session.companyId, endpointId, issueId: session.issueId!, caller: authority.caller }, invocationId);
+  return runtimes.get(db)!({ companyId: session.companyId, endpointId, issueId: session.issueId!, caller: authority.caller, ...(parsed.message ? { openingMessage: parsed.message } : {}) }, invocationId);
 }
 import {
   chatEndpoints,
@@ -222,7 +242,7 @@ async function spekoToolsForEndpoint(db: Db, session: SpekoTaskSession, endpoint
     .innerJoin(toolConnections, eq(toolConnections.id, toolCatalogEntries.connectionId))
     .where(and(eq(toolCatalogEntries.companyId, session.companyId), eq(toolCatalogEntries.connectionId, authority.endpoint.connectionId), eq(toolCatalogEntries.status, "active"), isNull(toolCatalogEntries.quarantinedAt), eq(toolConnections.enabled, true), eq(toolConnections.status, "active")));
   return entries.filter(({entry}) => entry.toolName === "call_my_phone").map(({entry, applicationId}) => ({
-    name: `speko-voice.${endpointId}:call_my_phone`, displayName: "Call my phone", description: entry.description ?? "", parametersSchema: entry.inputSchema,
+    name: `speko-voice.${endpointId}:call_my_phone`, displayName: "Call my phone", description: SPEKO_TOOLS[0].description, parametersSchema: SPEKO_TOOLS[0].inputSchema,
     pluginId: `speko-voice:${endpointId}`, providerType: "paperclip_speko_voice", risk: "write", applicationId, applicationKey: "speko-voice",
     applicationDisplayName: "Speko voice", connectionId: authority.endpoint.connectionId, catalogEntryId: entry.id,
     upstreamToolName: "call_my_phone", providerMetadata: { endpointId },

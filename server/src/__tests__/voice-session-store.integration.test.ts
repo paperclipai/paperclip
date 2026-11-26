@@ -1716,6 +1716,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect(comments.map(c => c.body)).toEqual(["Help draft a public inquiry", "Keep it short"]);
       expect(comments.every(c => !c.authorUserId && c.sourceTrust?.preset === "low_trust_review")).toBe(true);
       const [task] = await db.select().from(issues).where(eq(issues.id, f.call.intakeIssueId!));
+      expect(task.title).toBe("Help draft a public inquiry");
       expect(task.executionWorkspaceSettings).toMatchObject({mode: "isolated_workspace", workspaceStrategy: {type: "cloud_sandbox"}});
       expect(task.executionPolicy?.authorizationPolicy).toMatchObject({trustBoundary: {issueIds: [task.id], allowedToolClasses: [], allowedSecretBindingIds: []}});
       await db.update(chatVoicePhoneLines).set({guestIntake: false}).where(eq(chatVoicePhoneLines.endpointId, f.endpointId));
@@ -2249,17 +2250,44 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const tools = await f.gateway.listToolsForSession(f.gatewaySession.token);
     const tool = tools.find(tool => tool.providerType === "paperclip_speko_voice");
     expect(tool).toMatchObject({ upstreamToolName: "call_my_phone", connectionId: f.connectionId });
-    const call = { sessionToken: f.gatewaySession.token, tool: tool!.name, parameters: {}, idempotencyKey: randomUUID() };
+    const message = "The release build is green. Should I deploy to production?";
+    const call = { sessionToken: f.gatewaySession.token, tool: tool!.name, parameters: { message }, idempotencyKey: randomUUID() };
     const result = await f.gateway.executeTool(call);
     expect(result).toBeDefined();
     expect(f.transport.createPhoneSession).toHaveBeenCalledOnce();
-    expect(f.transport.createPhoneSession.mock.calls[0]![0]).toMatchObject({ to: "+12015551234", bindingId: expect.any(String) });
+    expect(f.transport.createPhoneSession.mock.calls[0]![0]).toMatchObject({
+      to: "+12015551234",
+      bindingId: expect.any(String),
+      firstMessage: message,
+      systemPrompt: expect.stringContaining(message),
+    });
     await f.gateway.executeTool(call);
     expect(f.transport.createPhoneSession).toHaveBeenCalledOnce();
     const sessions = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.endpointId, f.endpointId));
-    expect(sessions.filter(s => s.mode === "outbound_phone")).toHaveLength(1);
+    const outbound = sessions.filter(s => s.mode === "outbound_phone");
+    expect(outbound).toHaveLength(1);
     expect(JSON.stringify(result)).not.toContain("+12015551234");
     expect(JSON.stringify(result)).not.toContain("short-lived-media-token");
+
+    // Verify outbound call transcript is projected onto the bound issue idempotently.
+    const now = new Date().toISOString();
+    await db.update(chatVoiceSessions).set({ state: "ended", endedAt: new Date() }).where(eq(chatVoiceSessions.id, outbound[0]!.id));
+    f.transport.callReport.mockImplementation(((async (sessionId: string) => ({
+      complete: true,
+      transcript: sessionId === outbound[0]!.providerSessionId ? [
+        { id: "agent-0", index: 0, speaker: "agent", text: message, startedAt: now, endedAt: null, interrupted: false },
+        { id: "caller-1", index: 1, speaker: "caller", text: "Yes, go ahead and deploy to prod.", startedAt: now, endedAt: null, interrupted: false },
+      ] : [],
+      costMicroUsd: "80000",
+      durationSeconds: 18,
+      providerUpdatedAt: new Date(),
+    })) as unknown) as never);
+    await f.service.reconcile(1000);
+    const docs = documentService(db);
+    const transcriptDoc = await docs.getIssueDocumentByKey(f.issueId, `voice-transcript-${outbound[0]!.id}`);
+    expect(transcriptDoc?.title).toBe("Outbound phone call transcript");
+    expect(transcriptDoc?.body).toContain(message);
+    expect(transcriptDoc?.body).toContain("Yes, go ahead and deploy to prod.");
   });
   it("does not restore an agent's removed tool binding when callback settings are saved again", async () => {
     const f = await phoneToolFixture();
@@ -2318,6 +2346,23 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect(servers).toHaveLength(1);
       expect(servers[0]).toMatchObject({ url: expect.stringContaining("/mcp/gateways/") });
     } finally { if (previousUrl === undefined) delete process.env.PAPERCLIP_API_URL; else process.env.PAPERCLIP_API_URL = previousUrl; }
+  });
+
+  it("allows finishing verified Speko setup without requiring a browser voice test", async () => {
+    const f = await phoneToolFixture();
+    const testStartedAt = new Date().toISOString();
+    await db.update(chatEndpoints).set({
+      status: "verifying",
+      providerAccountId: `org_${f.companyId}`,
+      botExternalId: "agent_speko_finish_test",
+      setup: { step: "test", runtimeGeneration: 1, testStartedAt },
+    }).where(eq(chatEndpoints.id, f.endpointId));
+    const chat = chatChannelService(db, { deferWebhookProcessing: true });
+    try {
+      const activated = await chat.finishSlackSetup(f.endpointId, f.callerId);
+      expect(activated.status).toBe("active");
+      expect(activated.setup.step).toBe("complete");
+    } finally { await chat.shutdown(); }
   });
 
 });

@@ -70,7 +70,17 @@ export function createSpekoProvider(apiKey: string, transport: typeof fetch = fe
       // Incoming calls inherit realtime mode; browser creation explicitly uses
       // cascade. Browser sessions do not dispatch pre-call hooks, so the persona
       // default must keep idle prompts off. Telephone hooks enable them per call.
-      await request(`/v1/agents/${pathId(agentId)}`, {runMode: "s2s", systemPrompt: PHONE_VOICE_PROMPT, idleRePrompts: {enabled: false}}, "PATCH");
+      try {
+        await request(`/v1/agents/${pathId(agentId)}`, {runMode: "s2s", systemPrompt: PHONE_VOICE_PROMPT, idleRePrompts: {enabled: false}}, "PATCH");
+      } catch (error) {
+        // Personas created with a cascade-only voice reject runMode: "s2s" with 400.
+        // Fall back to a supported S2S voice instead of failing setup.
+        if (error instanceof SpekoProviderError && error.httpStatus === 400) {
+          await request(`/v1/agents/${pathId(agentId)}`, {runMode: "s2s", voice: "marin", systemPrompt: PHONE_VOICE_PROMPT, idleRePrompts: {enabled: false}}, "PATCH");
+          return;
+        }
+        throw error;
+      }
     },
     async createBrowserSession(input: { agentId: string; maxDurationSeconds: number; bindingId: string; toolToken: string; systemPrompt: string }) {
       const maxDurationSeconds = z.number().int().min(30).max(1800).parse(input.maxDurationSeconds);
@@ -85,16 +95,19 @@ export function createSpekoProvider(apiKey: string, transport: typeof fetch = fe
       if (!parsed.success) throw new SpekoProviderError("invalid_response", true);
       return parsed.data;
     },
-    async createPhoneSession(input: { agentId: string; maxDurationSeconds: number; bindingId: string; toolToken: string; systemPrompt: string; to: string }) {
+    async createPhoneSession(input: { agentId: string; maxDurationSeconds: number; bindingId: string; toolToken: string; systemPrompt: string; to: string; firstMessage?: string }) {
       const agentId = providerId.parse(input.agentId);
       const to = z.string().regex(/^\+[1-9]\d{6,14}$/).parse(input.to);
       const maxDurationSeconds = z.number().int().min(30).max(1800).parse(input.maxDurationSeconds);
+      const firstMessage = input.firstMessage !== undefined
+        ? z.string().trim().min(1).max(2000).parse(input.firstMessage)
+        : "Hi, this is your Paperclip agent calling as requested. Is now a good time?";
       // Per-call signed pre-call overrides bind automatic reply delivery. Never mutate
       // the shared persona during dialing: browser sessions use result hints.
       const result = await request("/v1/sessions/phone", {
         runMode: "s2s",
         agentId, to, maxDurationSeconds,
-        systemPrompt: input.systemPrompt, firstMessage: "Hi, this is your Paperclip agent calling as requested. Is now a good time?",
+        systemPrompt: input.systemPrompt, firstMessage,
         metadata: { paperclipVoiceBindingId: input.bindingId },
         toolSecrets: { paperclip_session_token: input.toolToken },
         telephony: { amd: { mode: "disabled" } },

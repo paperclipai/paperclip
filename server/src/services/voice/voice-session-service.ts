@@ -21,7 +21,7 @@ import { createSpekoProvider, SpekoProviderError } from "./speko-provider.js";
 import { serializeVoiceSession, voiceSessionStore, type VoiceCaller, type VoiceSessionRow } from "./voice-session-store.js";
 import { registerSpekoVoiceRuntime } from "./speko-agent-tools.js";
 import { verifySpekoToolRequest } from "./speko-protocol.js";
-import { VOICE_PROMPT, PHONE_VOICE_PROMPT, LOW_TRUST_PHONE_VOICE_PROMPT } from "./voice-prompts.js";
+import { VOICE_PROMPT, PHONE_VOICE_PROMPT, LOW_TRUST_PHONE_VOICE_PROMPT, buildOutboundPhoneVoicePrompt } from "./voice-prompts.js";
 
 const liveStates = ["reserved", "creating", "creation_unknown", "connecting", "active", "ending"] as const;
 const terminalStates = ["ended", "failed", "expired"] as const;
@@ -51,10 +51,10 @@ export function voiceSessionService(db: Db, options: {
       return session;
     });
   }
-  async function start(input: { companyId: string; endpointId: string; issueId?: string; newConversation?: boolean; caller: VoiceCaller; idempotencyKey: string; maxDurationSeconds: number; mode?: "outbound_phone" | "inbound_phone"; phoneNumber?: string; providerSessionId?: string; toolToken?: string }): Promise<{ session: VoiceSession; media?: VoiceSessionMedia }> {
+  async function start(input: { companyId: string; endpointId: string; issueId?: string; newConversation?: boolean; caller: VoiceCaller; idempotencyKey: string; maxDurationSeconds: number; mode?: "outbound_phone" | "inbound_phone"; phoneNumber?: string; openingMessage?: string; providerSessionId?: string; toolToken?: string }): Promise<{ session: VoiceSession; media?: VoiceSessionMedia }> {
     if (input.mode === "outbound_phone" && !(await instanceSettingsService(db).getExperimental()).enableChatConnectors) throw forbidden("Voice connections are disabled");
     const endpoint = await endpointFor(input.companyId, input.endpointId);
-    const requestFingerprint = createHash("sha256").update(JSON.stringify({ endpointId: input.endpointId, issueId: input.issueId ?? null, maxDurationSeconds: input.maxDurationSeconds, ...(input.mode ? { mode: input.mode, phoneNumber: input.phoneNumber, providerSessionId: input.providerSessionId } : {}), ...(input.newConversation ? { newConversation: true } : {}) })).digest("hex");
+    const requestFingerprint = createHash("sha256").update(JSON.stringify({ endpointId: input.endpointId, issueId: input.issueId ?? null, maxDurationSeconds: input.maxDurationSeconds, ...(input.mode ? { mode: input.mode, phoneNumber: input.phoneNumber, providerSessionId: input.providerSessionId } : {}), ...(input.openingMessage ? { openingMessage: input.openingMessage } : {}), ...(input.newConversation ? { newConversation: true } : {}) })).digest("hex");
     const reserved = await store.reserve({ ...input, requestFingerprint, prepareBinding: async (tx) => {
       // One lock per task preserves the existing conversation on concurrent resumes.
       if (input.issueId) await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`voice-binding:${input.companyId}:${input.endpointId}:${input.issueId}`}, 0))`);
@@ -109,7 +109,7 @@ export function voiceSessionService(db: Db, options: {
       client = provider(credentials.apiKey);
       const shared = { agentId: credentials.agentId, bindingId: session.id, toolToken: reserved.token, maxDurationSeconds: input.maxDurationSeconds };
       created = input.mode === "outbound_phone"
-        ? await client.createPhoneSession({ ...shared, to: input.phoneNumber!, systemPrompt: PHONE_VOICE_PROMPT })
+        ? await client.createPhoneSession({ ...shared, to: input.phoneNumber!, systemPrompt: buildOutboundPhoneVoicePrompt(input.openingMessage), ...(input.openingMessage ? { firstMessage: input.openingMessage } : {}) })
         : await client.createBrowserSession({ ...shared, systemPrompt: VOICE_PROMPT });
     } catch (error) {
       const known = error instanceof SpekoProviderError && !error.outcomeUnknown || error instanceof HttpError && [403, 404].includes(error.status);
