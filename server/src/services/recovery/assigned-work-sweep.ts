@@ -42,7 +42,9 @@ import { automaticRunCreationHeldUntil, readAutomaticWorkStatus, reserveAutomati
 import { isReattachPhaseActive, reattachPhaseRecheckAt } from "../heartbeat/run-admission.js";
 import { wakeBecameFreshContinuation } from "./wake-became-fresh-continuation.js";
 import { continueSweepTaskFromSavedWork } from "./sweep-saved-work-continuation.js";
-import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
+import { setupFailureBeforeProviderWorkSql } from "../continuation-cause.js";
+import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, STRANDED_PRE_PROVIDER_SETUP_MAX_AGE_MS, strandedHoldContinuesAutomatically,
+  type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
   continuationActivityMessage,
   continuationAllowance,
@@ -570,7 +572,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         -- except a recent board escalation, which the predicate judges by its failed run's cause
         and not (ra.kind = ${STRANDED_KIND} and ra.owner_type = 'board' and exists (select 1 from heartbeat_runs sr
           where sr.company_id = ra.company_id and sr.id::text = ra.evidence->>'latestRunId'
-            and sr.finished_at > ${new Date(at.getTime() - STRANDED_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz))
+            and (sr.finished_at > ${new Date(at.getTime() - STRANDED_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz
+              or (sr.finished_at > ${new Date(at.getTime() - STRANDED_PRE_PROVIDER_SETUP_MAX_AGE_MS).toISOString()}::timestamptz
+                and ${setupFailureBeforeProviderWorkSql("sr")}))))
         and not (${issues.status} = 'blocked' and ra.cause not in ('configuration_incomplete', 'ownership_owner_unprovable')
           and ${latestRunRefusedAtDispatch(at)}))`,
       // An assignee that cannot take work (paused, being set up, held) is

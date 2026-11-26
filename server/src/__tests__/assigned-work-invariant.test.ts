@@ -232,7 +232,8 @@ describePostgres("assigned-work invariant sweep", () => {
       return { issueId, hold };
     }
     const recent = await escalated({ endedAgoMs: 2 * HOUR, cause: "transport_timeout" });
-    const old = await escalated({ endedAgoMs: 30 * HOUR, cause: "transport_timeout" });
+    // No provider work started, so it stays eligible for the sweep's week, not the 24-hour window.
+    const old = await escalated({ endedAgoMs: 8 * 24 * HOUR, cause: "transport_timeout" });
     const lasting = await escalated({ endedAgoMs: 2 * HOUR, cause: "provider_access_denied" });
     const queue = wakeQueue();
     const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup });
@@ -247,7 +248,57 @@ describePostgres("assigned-work invariant sweep", () => {
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, recent.hold.id)))[0])
       .toMatchObject({ status: "resolved", outcome: "restored", ownerType: "system", resolutionNote: "stranded_transient_continued" });
 
-    for (const left of [old, lasting]) {
+    for (const [left, outcome] of [[old, "stale_reported"], [lasting, "left_to_hold_owner"]] as const) {
+      expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: left.issueId }))
+        .toMatchObject({ outcome });
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, left.hold.id)))[0].status).toBe("active");
+    }
+    expect(queue.calls).toHaveLength(1);
+  }, 60_000);
+
+  it("continues a task blocked by an environment setup failure before any provider work, including one blocked days ago", async () => {
+    const f = await seedCompany();
+    const qualification = 'Failed to acquire lease for environment "Paperclip Sandbox" (sandbox): sandbox_snapshot_qualification_required: '
+      + "The snapshot qualification is missing or stale.";
+    async function escalated(input: { endedAgoMs: number; executionRecovery: Record<string, unknown> | null }) {
+      const blockedAt = new Date(Date.now() - input.endedAgoMs + 1_000);
+      const issueId = await f.issue({ status: "blocked", blockedTransitionAt: blockedAt, updatedAt: blockedAt });
+      const run = await f.run(issueId, { status: "failed", errorCode: "setup_failed", livenessState: "failed", error: qualification,
+        resultJson: { failureCause: "lease_acquire_failed", ...(input.executionRecovery ? { executionRecovery: input.executionRecovery } : {}) },
+        startedAt: new Date(Date.now() - input.endedAgoMs - 60_000), finishedAt: new Date(Date.now() - input.endedAgoMs),
+        createdAt: new Date(Date.now() - input.endedAgoMs - 60_000) });
+      const [hold] = await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: issueId,
+        kind: "stranded_assigned_issue", status: "active", ownerType: "board", cause: "stranded_assigned_issue",
+        fingerprint: `source_scoped_recovery:${f.companyId}:${issueId}:stranded_assigned_issue`,
+        evidence: { previousStatus: "todo", latestRunId: run.id, latestRunErrorCode: "setup_failed",
+          routingPolicy: "board_escalation_no_takeover_v1" },
+        nextAction: "Board operator: inspect the evidence, repair the runtime if appropriate.", attemptCount: 1 }).returning();
+      await db.insert(activityLog).values({ companyId: f.companyId, actorType: "system", actorId: "system", action: "issue.updated",
+        entityType: "issue", entityId: issueId, details: { status: "blocked", previousStatus: "todo",
+          source: "recovery.reconcile_stranded_assigned_issue" }, createdAt: blockedAt });
+      return { issueId, hold };
+    }
+    const beforeWork = { kind: "bootstrap", providerWorkStarted: false };
+    // Blocked about two days before the deploy that carries this repair.
+    const blockedDaysAgo = await escalated({ endedAgoMs: 40 * HOUR, executionRecovery: beforeWork });
+    const workStarted = await escalated({ endedAgoMs: 2 * HOUR, executionRecovery: { kind: "bootstrap", providerWorkStarted: true } });
+    const unproven = await escalated({ endedAgoMs: 2 * HOUR, executionRecovery: null });
+    const tooOld = await escalated({ endedAgoMs: 8 * 24 * HOUR, executionRecovery: beforeWork });
+    const queue = wakeQueue();
+    const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup });
+    const suspects = (await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id);
+    expect(suspects).toContain(blockedDaysAgo.issueId);
+    expect(suspects).not.toContain(tooOld.issueId);
+
+    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: blockedDaysAgo.issueId }))
+      .toMatchObject({ outcome: "repaired", verdict: { reason: "recovery_block" } });
+    expect(queue.calls).toEqual([{ agentId: f.agentId, issueId: blockedDaysAgo.issueId, source: "issue.assigned_work_invariant" }]);
+    expect((await db.select().from(issues).where(eq(issues.id, blockedDaysAgo.issueId)))[0].status).toBe("todo");
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, blockedDaysAgo.hold.id)))[0])
+      .toMatchObject({ status: "resolved", outcome: "restored", ownerType: "system" });
+
+    // Work that may have started, or a run that never recorded it had not, keeps its owner's decision.
+    for (const left of [workStarted, unproven]) {
       expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: left.issueId }))
         .toMatchObject({ outcome: "left_to_hold_owner" });
       expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, left.hold.id)))[0].status).toBe("active");
