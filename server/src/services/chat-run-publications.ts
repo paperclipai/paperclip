@@ -384,11 +384,17 @@ function lifecycleMilestonePages(db: Db, since: Date, scope?: ChatRunMilestoneSc
         and interaction.company_id = delivery.company_id
       inner join agent_wakeup_requests wake on wake.company_id = delivery.company_id
         and wake.run_id = ${heartbeatRuns.id} and wake.agent_id = ${heartbeatRuns.agentId}
-        and wake.idempotency_key = 'connection-intent:' || interaction.id::text || ':' || interaction.status
         and wake.status <> 'skipped'
       where delivery.company_id = ${heartbeatRuns.companyId}
-        and interaction.issue_id::text = ${issueIdFromContext}
         and interaction.id::text = ${heartbeatRuns.contextSnapshot}->>'interactionId'
+        and (
+          (interaction.issue_id::text = ${issueIdFromContext}
+            and wake.idempotency_key = 'connection-intent:' || interaction.id::text || ':' || interaction.status)
+          or (wake.idempotency_key = 'connection-intent:' || interaction.id::text || ':' || interaction.status || ':' || ${issueIdFromContext}
+            and wake.payload->>'issueId' = ${issueIdFromContext}
+            and coalesce(interaction.payload->'linkedIssues', '[]'::jsonb)
+              @> jsonb_build_array(jsonb_build_object('issueId', ${issueIdFromContext}, 'agentId', ${heartbeatRuns.agentId}::text)))
+        )
     )
   )`;
   const hasMonitorContinuation = sql<boolean>`(

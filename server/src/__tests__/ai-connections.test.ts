@@ -33,10 +33,11 @@ import { mkdtemp, realpath, rm, access, readFile, writeFile, stat } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { createDb, type Db, activityLog, issueRelations, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
+import { createDb, type Db, activityLog, issueRelations, companies, agents, agentTaskSessions, heartbeatRuns, companyMemberships, connectionGrants, toolApplications, connectionGrantDelegations, connectionGrantMembers, toolConnections, toolConnectionInstalls, aiConnectionDefaults, aiProviderDefaults, adapterAuthSessions, environments, plugins, issues, issueThreadInteractions, issueRecoveryActions, connectionIntentDeliveries, agentWakeupRequests, chatConversations, chatEndpoints, companySecrets, companySecretVersions, secretAccessEvents, userSecretDefinitions, principalPermissionGrants } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { fetchCompanyQuotaWindows } from "../services/quota-windows.js";
 import { resolveConnectionIntentContinuationSource } from "../services/chat-interaction-continuation.js";
+import { loadChatRunLifecycleMilestoneScopes } from "../services/chat-run-publications.js";
 import { quotaCredentialRecoveryPath, quotaCredentialRecovery, quotaCredentialHash } from "../services/quota-credential-recovery.js";
 import { reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "../services/retained-ai-credential-cleanup.js";
 import { readAiConnectionConfigurationFailure } from "../services/ai-connection-configuration-failure.js";
@@ -2274,6 +2275,35 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
         runId: resumed.get(owner.issueId)!, agentId: owner.agentId })).toBe(owner.runId);
       expect(await resolveConnectionIntentContinuationSource(db, { companyId, issueId: linked.issueId, interactionId: card!.id,
         runId: resumed.get(owner.issueId)!, agentId: owner.agentId })).toBeNull();
+    });
+
+    it("publishes chat milestones for a linked task's resumed run", async () => {
+      const f = await latchedFleet("linked-chat", 2);
+      for (const task of f.tasks) await connectionIntentService(db).requestForRunAuthFailure(task.runId!);
+      const [card] = await f.cardsFor(f.tasks.map(task => task.issueId));
+      const owner = f.tasks.find(task => task.issueId === card!.issueId)!;
+      const linked = f.tasks.find(task => task !== owner)!;
+      const applicationId = randomUUID();
+      await db.insert(toolApplications).values({ id: applicationId, companyId, name: "Slack", type: "chat" });
+      for (const task of [owner, linked]) {
+        const chatConnectionId = randomUUID(), endpointId = randomUUID(), conversationId = randomUUID();
+        await db.insert(toolConnections).values({ id: chatConnectionId, companyId, applicationId, name: "Slack", uid: chatConnectionId, transport: "chat_sdk", connectionPurpose: "channel" });
+        await db.insert(chatEndpoints).values({ id: endpointId, companyId, connectionId: chatConnectionId, provider: "slack", publicId: endpointId, assignedAgentId: task.agentId, publicationMode: "automatic" });
+        await db.insert(chatConversations).values({ id: conversationId, companyId, endpointId, issueId: task.issueId, externalConversationId: conversationId, externalLabel: "Active", state: "active" });
+      }
+      await f.reconnect();
+      await sweepAll();
+      const wakeup = vi.fn(async (agentId: string, opts: { source: string; reason: string; payload: { issueId: string }; idempotencyKey: string; contextSnapshot: Record<string, unknown> }) => {
+        const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "failed", contextSnapshot: opts.contextSnapshot }).returning();
+        await db.insert(agentWakeupRequests).values({ companyId, agentId, source: opts.source, reason: opts.reason, payload: opts.payload,
+          status: "completed", idempotencyKey: opts.idempotencyKey, runId: run!.id });
+        return null;
+      });
+      await connectionIntentDeliveryService(db, { wakeup } as never).deliver(card!.id);
+      expect(wakeup).toHaveBeenCalledTimes(2);
+      for (const task of [owner, linked]) {
+        expect(await loadChatRunLifecycleMilestoneScopes(db, { companyId, issueId: task.issueId })).toEqual([{ companyId, issueId: task.issueId }]);
+      }
     });
 
     it("does not rerun done, dependency-blocked or review-held tasks", async () => {
