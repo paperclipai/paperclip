@@ -1,4 +1,5 @@
 import { continuesAutomatically, isSetupFailureBeforeProviderWork } from "../continuation-cause.js";
+import { STALE_BLOCK_MS } from "./assigned-work-invariant.js";
 
 export const STRANDED_CONTINUATION_MAX_AGE_MS = 24 * 60 * 60_000;
 /**
@@ -7,7 +8,7 @@ export const STRANDED_CONTINUATION_MAX_AGE_MS = 24 * 60 * 60_000;
  * as the sweep continues blocks at all (STALE_BLOCK_MS), so tasks blocked
  * before a release that fixed the cause continue after its deploy.
  */
-export const STRANDED_PRE_PROVIDER_SETUP_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+export const STRANDED_PRE_PROVIDER_SETUP_MAX_AGE_MS = STALE_BLOCK_MS;
 export const STRANDED_KIND = "stranded_assigned_issue";
 
 export type StrandedHoldRun = {
