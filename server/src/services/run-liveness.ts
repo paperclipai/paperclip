@@ -301,8 +301,8 @@ export function classifyRunActionability(input: RunLivenessClassificationInput):
 }
 
 export function classifyRunLiveness(input: RunLivenessClassificationInput): RunLivenessClassification {
-  const planningOnly = looksLikePlanningOnly(input);
-  const evidence = normalizeEvidence(input.issue && planningOnly
+  const currentRunPlanningOnly = input.issue && looksLikePlanningOnly({ ...input, continuationSummaryBody: null });
+  const evidence = normalizeEvidence(currentRunPlanningOnly
     ? { ...input.evidence, toolOrActionEventsCreated: 0 }
     : input.evidence);
   const continuationAttempt = normalizeContinuationAttempt(input.continuationAttempt);
@@ -368,7 +368,7 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
     return output("advanced", "Explicit planning mode or a saved plan revision is exempt from plan-only classification");
   }
 
-  if (planningOnly || nextAction) {
+  if (nextAction || looksLikePlanningOnly(input)) {
     if (actionability === "runnable") {
       return output("plan_only", "Run described runnable future work without concrete action evidence", nextAction);
     }
