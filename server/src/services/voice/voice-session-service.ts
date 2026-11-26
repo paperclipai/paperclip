@@ -16,6 +16,7 @@ import { VOICE_RESULT_NOTIFICATION, VOICE_REPEAT_NOTIFICATION, type VoiceSession
 import { conflict, forbidden, notFound, HttpError } from "../../errors.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { buildChatCommunicationGuidance } from "../chat-communication-guidance.js";
+import { projectSafeChatPublicationText } from "../chat-publication-projection.js";
 import { issueService } from "../issues.js";
 import { createSpekoProvider, SpekoProviderError } from "./speko-provider.js";
 import { serializeVoiceSession, voiceSessionStore, type VoiceCaller, type VoiceSessionRow } from "./voice-session-store.js";
@@ -108,8 +109,9 @@ export function voiceSessionService(db: Db, options: {
       await db.transaction((tx) => store.authorizeSession(tx, input.companyId, session.id, ["creating"]));
       client = provider(credentials.apiKey);
       const shared = { agentId: credentials.agentId, bindingId: session.id, toolToken: reserved.token, maxDurationSeconds: input.maxDurationSeconds };
+      const safeOpeningMessage = input.openingMessage ? projectSafeChatPublicationText(input.openingMessage).trim() || undefined : undefined;
       created = input.mode === "outbound_phone"
-        ? await client.createPhoneSession({ ...shared, to: input.phoneNumber!, systemPrompt: buildOutboundPhoneVoicePrompt(input.openingMessage), ...(input.openingMessage ? { firstMessage: input.openingMessage } : {}) })
+        ? await client.createPhoneSession({ ...shared, to: input.phoneNumber!, systemPrompt: buildOutboundPhoneVoicePrompt(safeOpeningMessage), ...(safeOpeningMessage ? { firstMessage: safeOpeningMessage } : {}) })
         : await client.createBrowserSession({ ...shared, systemPrompt: VOICE_PROMPT });
     } catch (error) {
       const known = error instanceof SpekoProviderError && !error.outcomeUnknown || error instanceof HttpError && [403, 404].includes(error.status);

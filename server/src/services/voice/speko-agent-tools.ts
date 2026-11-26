@@ -54,9 +54,26 @@ async function resolveAuthority(db: Db, session: SpekoTaskSession, endpointId: s
   return { endpoint, caller };
 }
 export async function executeSpekoVoiceTool(db: Db, session: SpekoTaskSession, endpointId: string, parameters: unknown, invocationId?: string) {
-  const parsed = callMyPhoneParametersSchema.parse(parameters ?? {});
   if (!invocationId || !z.string().uuid().safeParse(invocationId).success) throw forbidden("A durable invocation is required for phone calls");
   const authority = await resolveAuthority(db, session, endpointId);
+  const [entry] = await db.select({ inputSchema: toolCatalogEntries.inputSchema })
+    .from(toolCatalogEntries)
+    .where(and(
+      eq(toolCatalogEntries.companyId, session.companyId),
+      eq(toolCatalogEntries.connectionId, authority.endpoint.connectionId),
+      eq(toolCatalogEntries.toolName, "call_my_phone"),
+      eq(toolCatalogEntries.status, "active"),
+      isNull(toolCatalogEntries.quarantinedAt),
+    ))
+    .limit(1);
+  if (!entry) throw forbidden("The call_my_phone tool is not active on this Speko connection");
+  const schemaProperties = entry.inputSchema && typeof entry.inputSchema === "object" && "properties" in entry.inputSchema
+    ? (entry.inputSchema as { properties?: Record<string, unknown> }).properties
+    : undefined;
+  const allowsMessage = Boolean(schemaProperties && typeof schemaProperties === "object" && "message" in schemaProperties);
+  const parsed = allowsMessage
+    ? callMyPhoneParametersSchema.parse(parameters ?? {})
+    : (z.object({}).strict().parse(parameters ?? {}) as { message?: undefined });
   return runtimes.get(db)!({ companyId: session.companyId, endpointId, issueId: session.issueId!, caller: authority.caller, ...(parsed.message ? { openingMessage: parsed.message } : {}) }, invocationId);
 }
 import {
@@ -242,7 +259,7 @@ async function spekoToolsForEndpoint(db: Db, session: SpekoTaskSession, endpoint
     .innerJoin(toolConnections, eq(toolConnections.id, toolCatalogEntries.connectionId))
     .where(and(eq(toolCatalogEntries.companyId, session.companyId), eq(toolCatalogEntries.connectionId, authority.endpoint.connectionId), eq(toolCatalogEntries.status, "active"), isNull(toolCatalogEntries.quarantinedAt), eq(toolConnections.enabled, true), eq(toolConnections.status, "active")));
   return entries.filter(({entry}) => entry.toolName === "call_my_phone").map(({entry, applicationId}) => ({
-    name: `speko-voice.${endpointId}:call_my_phone`, displayName: "Call my phone", description: SPEKO_TOOLS[0].description, parametersSchema: SPEKO_TOOLS[0].inputSchema,
+    name: `speko-voice.${endpointId}:call_my_phone`, displayName: "Call my phone", description: entry.description ?? "", parametersSchema: entry.inputSchema,
     pluginId: `speko-voice:${endpointId}`, providerType: "paperclip_speko_voice", risk: "write", applicationId, applicationKey: "speko-voice",
     applicationDisplayName: "Speko voice", connectionId: authority.endpoint.connectionId, catalogEntryId: entry.id,
     upstreamToolName: "call_my_phone", providerMetadata: { endpointId },

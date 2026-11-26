@@ -93,7 +93,7 @@ describe("Speko hosted provider transport", () => {
     expect(body.systemPrompt).toContain("answer_question with its exact interaction and question IDs");
     expect(body.systemPrompt).toContain("Do not repeatedly poll while pending.");
   });
-  it("falls back to a supported S2S voice when configureVoiceDefaults receives a 400", async () => {
+  it("falls back to a supported S2S voice only for S2S_VOICE_UNSUPPORTED 400s", async () => {
     let calls = 0;
     const transport = vi.fn<typeof fetch>(async () => {
       calls += 1;
@@ -103,6 +103,10 @@ describe("Speko hosted provider transport", () => {
     await createSpekoProvider("key", transport).configureVoiceDefaults(input.agentId);
     expect(transport).toHaveBeenCalledTimes(2);
     expect(JSON.parse(String(transport.mock.calls[1]![1]?.body))).toMatchObject({ runMode: "s2s", voice: "marin", idleRePrompts: { enabled: false } });
+
+    const unrelated = vi.fn<typeof fetch>(async () => Response.json({ code: "VALIDATION_ERROR" }, { status: 400 }));
+    await expect(createSpekoProvider("key", unrelated).configureVoiceDefaults(input.agentId)).rejects.toMatchObject({ httpStatus: 400, providerCode: "VALIDATION_ERROR" });
+    expect(unrelated).toHaveBeenCalledOnce();
   });
   it("uses the hosted phone endpoint with scoped secrets, optional firstMessage, and returns no media or phone number", async () => {
     const transport = vi.fn<typeof fetch>(async () => Response.json({ sessionId: "phone_test", status: "dialing", to: "+12015551234", callControlId: "private-control" }));
