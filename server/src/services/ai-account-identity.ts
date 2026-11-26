@@ -1,5 +1,6 @@
 import type { AiConnectionAccountIdentity, AiConnectionMetadata } from "@paperclipai/shared";
 import { readUsage } from "./ai-connection-usage.js";
+import { readOpenAiAccountIdentity } from "./openai-account-identity.js";
 
 type Observation = Omit<AiConnectionAccountIdentity, "connectionId" | "grantId">;
 type FailureCode = NonNullable<Observation["errorCode"]>;
@@ -23,10 +24,13 @@ export async function probeAiAccountIdentity(
   request: typeof fetch = fetch,
 ): Promise<Observation> {
   const base = { checkedAt: new Date().toISOString(), accountLabel: null, organizationLabel: null };
-  if (metadata.provider !== "anthropic" || metadata.method !== "subscription" || metadata.routing) {
+  if (!["anthropic", "openai"].includes(metadata.provider) || metadata.method !== "subscription" || metadata.routing) {
     return { ...base, status: "unavailable", errorCode: "unsupported", message: messages.unsupported };
   }
   try {
+    if (metadata.provider === "openai") {
+      return { ...base, ...await readOpenAiAccountIdentity(credential, request) };
+    }
     const profile = await readUsage("https://api.anthropic.com/api/oauth/profile", {
       Authorization: `Bearer ${credential}`, "anthropic-beta": "oauth-2025-04-20",
     }, request);
@@ -38,6 +42,11 @@ export async function probeAiAccountIdentity(
   } catch (error) {
     const code = object(error).code;
     const errorCode: FailureCode = typeof code === "string" && Object.hasOwn(messages, code) ? code as FailureCode : "provider_unavailable";
-    return { ...base, status: errorCode === "authentication_required" || errorCode === "permission_denied" ? "unavailable" : "error", errorCode, message: messages[errorCode] };
+    const message = metadata.provider === "openai"
+      ? errorCode === "invalid_response" ? "OpenAI did not return the selected workspace name."
+        : errorCode === "permission_denied" ? "OpenAI did not permit this connection to read the workspace name."
+          : messages[errorCode].replace("Anthropic", "OpenAI")
+      : messages[errorCode];
+    return { ...base, status: errorCode === "authentication_required" || errorCode === "permission_denied" ? "unavailable" : "error", errorCode, message };
   }
 }

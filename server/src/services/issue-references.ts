@@ -184,7 +184,7 @@ export function issueReferenceService(db: Db) {
       })
       .from(issues)
       .where(eq(issues.id, issueId));
-    return (lock ? query.for("update") : query)
+    return (lock ? query.for("no key update") : query)
       .then((rows: Array<{ id: string; companyId: string; title: string; description: string | null }>) => rows[0] ?? null);
   }
 
@@ -343,8 +343,12 @@ export function issueReferenceService(db: Db) {
     }
   }
 
-  async function listIssueReferenceSummary(issueId: string, dbOrTx: any = db): Promise<IssueRelatedWorkSummary> {
-      const issue = await issueById(issueId, dbOrTx);
+  async function listIssueReferenceSummary(
+    issueId: string,
+    dbOrTx: any = db,
+    known?: { companyId: string },
+  ): Promise<IssueRelatedWorkSummary> {
+      const issue = known ? { id: issueId, companyId: known.companyId } : await issueById(issueId, dbOrTx);
       if (!issue) throw notFound("Issue not found");
 
       const [outboundRows, inboundRows] = await Promise.all([

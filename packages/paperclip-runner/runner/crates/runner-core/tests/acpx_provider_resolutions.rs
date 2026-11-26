@@ -239,6 +239,31 @@ fn redacts_failed_tool_payload_without_losing_correlation_or_retry() {
 }
 
 #[test]
+fn tells_the_agent_which_field_failed_validation_without_its_value() {
+    let mut session = started("resolutions-error-detail");
+    // A zod refusal reaches runnerd as its parsed issue list. The issue
+    // message and the agent's own value must not cross the sidecar boundary.
+    let failed = ToolResult {
+        call_id: "call-1".to_owned(),
+        operation_id: "issues.read".to_owned(),
+        result: json!([{
+            "origin":"string",
+            "code":"too_big",
+            "maximum":1000,
+            "inclusive":true,
+            "path":["payload","prompt"],
+            "message":"Too big: violet-prompt-value-4821",
+            "input":"violet-prompt-value-4821",
+        }]),
+        is_error: true,
+    };
+
+    session.deliver_tool_result(&failed).unwrap();
+    assert!(session.state().pending_tool("call-1").is_none());
+    session.shutdown("test complete").unwrap();
+}
+
+#[test]
 fn rejects_permission_requests_that_bypass_the_pinned_codex_policy() {
     let mut session = AcpxProviderSession::start(&config("turns-permission")).unwrap();
     session

@@ -1,3 +1,10 @@
+import { looksLikeCredentialToken } from "@paperclipai/shared";
+import {
+  containsSigV4PresignedUrl,
+  protectSigV4PresignedUrlParameters,
+} from "./sigv4-presigned-url.js";
+
+export { containsSigV4PresignedUrl };
 export const REDACTED_COMMAND_TEXT_VALUE = "***REDACTED***";
 
 // Public Executor helper addresses retained for callers of this predicate.
@@ -32,8 +39,19 @@ const COMMAND_ENV_SECRET_ASSIGNMENT_RE = new RegExp(
 );
 const COMMAND_AUTHORIZATION_BEARER_RE =
   /(\bAuthorization\s*:\s*Bearer\s+)[^\s"'`]+/gi;
-const COMMAND_OPENAI_KEY_RE = /\bsk-[A-Za-z0-9_-]{12,}\b/g;
-const COMMAND_GITHUB_TOKEN_RE = /\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g;
+const COMMAND_OPENAI_KEY_SOURCE = String.raw`\bsk-[A-Za-z0-9_-]{12,}\b`;
+const COMMAND_UNDERSCORE_SECRET_KEY_SOURCE = String.raw`\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b`;
+const COMMAND_GITHUB_TOKEN_SOURCE = String.raw`\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{16,}\b`;
+const COMMAND_OPENAI_KEY_RE = new RegExp(COMMAND_OPENAI_KEY_SOURCE, "g");
+const COMMAND_UNDERSCORE_SECRET_KEY_RE = new RegExp(COMMAND_UNDERSCORE_SECRET_KEY_SOURCE, "g");
+const COMMAND_GITHUB_TOKEN_RE = new RegExp(COMMAND_GITHUB_TOKEN_SOURCE, "g");
+const COMMAND_SLACK_TOKEN_RE = /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g;
+const COMMAND_AWS_KEY_ID_RE = /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g;
+const COMMAND_GOOGLE_API_KEY_RE = /\bAIza[0-9A-Za-z\-_]{20,}\b/g;
+const COMMAND_GITLAB_PAT_RE = /\bglpat-[A-Za-z0-9_-]{16,}\b/g;
+const STANDALONE_SECRET_TOKEN_RE = new RegExp(
+  `${COMMAND_OPENAI_KEY_SOURCE}|${COMMAND_GITHUB_TOKEN_SOURCE}|${COMMAND_UNDERSCORE_SECRET_KEY_SOURCE}`,
+);
 const COMMAND_JWT_RE =
   /\b(?<![A-Za-z0-9_]-*)[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,}){2}(?:\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,})?\b/g;
 /** Recognize encoded JSON headers, without treating dotted identifiers as tokens. */
@@ -68,11 +86,25 @@ const COMMAND_SECRET_HINTS = [
   "cookie",
   "connectionstring",
   "sk-",
+  "sk_live_",
+  "sk_test_",
+  "rk_live_",
+  "rk_test_",
   "ghp_",
   "gho_",
   "ghu_",
   "ghs_",
   "ghr_",
+  "github_pat_",
+  "xoxb-",
+  "xoxp-",
+  "xoxa-",
+  "xoxr-",
+  "xoxs-",
+  "akia",
+  "asia",
+  "aiza",
+  "glpat-",
 ] as const;
 
 function maybeContainsSecretText(command: string) {
@@ -83,11 +115,25 @@ function maybeContainsSecretText(command: string) {
   );
 }
 
+function containsStandaloneSecretToken(value: string): boolean {
+  if (STANDALONE_SECRET_TOKEN_RE.test(value)) return true;
+  const jwtMatches = value.match(COMMAND_JWT_RE);
+  return jwtMatches !== null && jwtMatches.some(looksLikeCredentialJwt);
+}
+
 export function redactCommandText(
   command: string,
   redactedValue = REDACTED_COMMAND_TEXT_VALUE,
 ): string {
   if (!maybeContainsSecretText(command)) return command;
+  const { text, restore } = protectSigV4PresignedUrlParameters(
+    command,
+    containsStandaloneSecretToken,
+  );
+  return restore(redactSetAsideCommandText(text, redactedValue));
+}
+
+function redactSetAsideCommandText(command: string, redactedValue: string): string {
   return command
     .replace(COMMAND_AUTHORIZATION_BEARER_RE, `$1${redactedValue}`)
     .replace(COMMAND_CLI_SECRET_OPTION_RE, `$1${redactedValue}$3`)
@@ -107,7 +153,12 @@ export function redactCommandText(
       },
     )
     .replace(COMMAND_OPENAI_KEY_RE, redactedValue)
+    .replace(COMMAND_UNDERSCORE_SECRET_KEY_RE, redactedValue)
     .replace(COMMAND_GITHUB_TOKEN_RE, redactedValue)
+    .replace(COMMAND_SLACK_TOKEN_RE, redactedValue)
+    .replace(COMMAND_AWS_KEY_ID_RE, redactedValue)
+    .replace(COMMAND_GOOGLE_API_KEY_RE, redactedValue)
+    .replace(COMMAND_GITLAB_PAT_RE, redactedValue)
     .replace(COMMAND_JWT_RE, (match) => looksLikeCredentialJwt(match) ? redactedValue : match);
 }
 
@@ -192,21 +243,71 @@ function isOrdinaryDiagnosticEnvSetting(key: string, value: string): boolean {
     (name === "PAPERCLIP_SENTRY_RUN_FAILURES" && /^(?:off|unexpected|all)$/.test(value));
 }
 
+/** In the host process environment, an undeclared value under an
+ * unrecognized name is redacted as a substring only if it could be a
+ * credential: at least 8 characters, and not a bare number, hex number or
+ * boolean-like word. Shorter values ("vi", "RUN") are redacted only as whole
+ * tokens (`collectHostEnvironmentTokenSecrets`): as substrings they corrupted
+ * unrelated report text ("service" became "ser***REDACTED***ce"). Declared,
+ * secret-named and credential-shaped values are always substring-private. An
+ * agent's configured environment keeps the fail-closed substring rule. */
+function plausibleUndeclaredCredential(key: string, value: string): boolean {
+  if (credentialNameSegments(key)) return true;
+  return value.length >= 8 && !/^(?:\d+|0x[0-9a-f]+|true|false|on|off|yes|no)$/i.test(value);
+}
+
+const CREDENTIAL_SEGMENTS = new Set(["TOKEN", "TOKENS", "SECRET", "SECRETS", "PASSWORD", "PASSWD", "PASSPHRASE",
+  "CREDENTIAL", "CREDENTIALS", "PRIVATE", "BEARER", "AUTHORIZATION", "APIKEY"]);
+
+/** A name with a credential segment (AWS_SECRET_ACCESS_KEY, AWS_BEARER_TOKEN_BEDROCK),
+ * or a KEY segment that is last or followed only by ID (KEY, AWS_ACCESS_KEY_ID).
+ * Such a value stays private whatever its length. */
+function credentialNameSegments(key: string): boolean {
+  const segments = key.toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
+  return segments.some((segment, index) => CREDENTIAL_SEGMENTS.has(segment) ||
+    (segment === "KEY" && (index === segments.length - 1 || (index === segments.length - 2 && segments[index + 1] === "ID"))));
+}
+
+const BOOLEAN_WORD = /^(?:true|false|on|off|yes|no)$/i;
+
+/**
+ * Host process values under unknown names that are too short or too plain to
+ * redact as substrings (see `plausibleUndeclaredCredential`). They are still
+ * private: callers redact them where they appear as a whole token, numbers
+ * included. Only flag values are exempt (boolean words, and `0` or `1`): they
+ * cannot hold a credential, and as tokens they would erase ordinary words
+ * ("on", "no") and exit codes from every report.
+ */
+export function collectHostEnvironmentTokenSecrets(env: unknown): string[] {
+  if (!env || typeof env !== "object") return [];
+  const substringValues = new Set(collectDiagnosticEnvironmentSecrets(env, [], { hostProcess: true }));
+  const values = new Set<string>();
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== "string" || !value.trim() || substringValues.has(value)) continue;
+    if (isOrdinaryDiagnosticEnvSetting(key, value) || BOOLEAN_WORD.test(value) || /^[01]$/.test(value)) continue;
+    values.add(value);
+  }
+  return [...values].sort((a, b) => b.length - a.length);
+}
+
 /** Select private values while preserving explicit ordinary process settings. */
 export function collectDiagnosticEnvironmentSecrets(
   env: unknown,
   secretKeys: Iterable<string> = [],
+  options: { hostProcess?: boolean } = {},
 ): string[] {
   if (!env || typeof env !== "object") return [];
   const declared = new Set(secretKeys);
   const secretName = new RegExp(`^(?:${SECRET_NAME_PATTERN})$`, "i");
   const values = new Set<string>();
   for (const [key, value] of Object.entries(env)) {
+    if (looksLikeCredentialToken(key)) values.add(key);
     if (typeof value !== "string" || !value) continue;
     if (declared.has(key) || secretName.test(key) ||
+      containsSigV4PresignedUrl(value) ||
       redactDiagnosticText(value) !== value || looksLikeCredentialJwt(value) ||
       /-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----/.test(value) ||
-      !isOrdinaryDiagnosticEnvSetting(key, value)) {
+      (!isOrdinaryDiagnosticEnvSetting(key, value) && (!options.hostProcess || plausibleUndeclaredCredential(key, value)))) {
       values.add(value);
     }
     try {

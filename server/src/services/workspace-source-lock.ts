@@ -6,11 +6,53 @@ import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
 import { readWorkspaceGitSourceRoots } from "./workspace-git-source-roots.js";
 import { withWorkspaceLockKeepalive } from "./native-runtime/native-workspace-lock-keepalive.js";
+import { WORKSPACE_SOURCE_KEY_LIMIT } from "./workspace-source-key-limit.js";
 
 type SourceTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type SourceLockScope = { db: Db; companyId: string; keys: Set<string>; transaction: SourceTransaction; active: boolean };
 const sourceLocks = new AsyncLocalStorage<SourceLockScope>();
 export class IsolatedRepositorySourceBusy extends Error {}
+export type WorkspaceSourceLockWait = { waitMs: number; signal?: AbortSignal };
+
+async function acquireQueuedSourceLocks(db: Db, transaction: SourceTransaction, keys: string[], wait: WorkspaceSourceLockWait) {
+  wait.signal?.throwIfAborted();
+  const deadline = performance.now() + wait.waitMs;
+  const [settings] = await transaction.execute(sql`select current_setting('lock_timeout') as lock_timeout,
+    pg_backend_pid() as pid, backend_start::text from pg_stat_activity where pid=pg_backend_pid()`);
+  let cancelling: Promise<unknown> | undefined;
+  const cancel = () => {
+    cancelling ??= withDedicatedDbConnection(db, async control => {
+      const timer = setTimeout(() => { void control.$client.end({ timeout: 0 }); }, 1000);
+      try {
+        await control.execute(sql`select pg_cancel_backend(pid) from pg_stat_activity
+          where pid=${Number(settings.pid)} and backend_start=${String(settings.backend_start)}::timestamptz
+            and datname=current_database() and usename=current_user`);
+      } finally { clearTimeout(timer); }
+    }).catch(() => undefined);
+  };
+  wait.signal?.addEventListener("abort", cancel, { once: true });
+  try {
+    for (const key of keys) {
+      wait.signal?.throwIfAborted();
+      const remaining = Math.ceil(deadline - performance.now());
+      if (remaining <= 0) throw new IsolatedRepositorySourceBusy("workspace_source_busy");
+      await transaction.execute(sql`select set_config('lock_timeout', ${`${remaining}ms`}, true)`);
+      await transaction.execute(sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`);
+    }
+    wait.signal?.throwIfAborted();
+    if (performance.now() >= deadline) throw new IsolatedRepositorySourceBusy("workspace_source_busy");
+    await transaction.execute(sql`select set_config('lock_timeout', ${String(settings.lock_timeout)}, true)`);
+    wait.signal?.throwIfAborted();
+  } catch (error) {
+    wait.signal?.throwIfAborted();
+    if ((error as { cause?: { code?: string }; code?: string }).cause?.code === "55P03"
+      || (error as { code?: string }).code === "55P03") throw new IsolatedRepositorySourceBusy("workspace_source_busy");
+    throw error;
+  } finally {
+    wait.signal?.removeEventListener("abort", cancel);
+    await cancelling;
+  }
+}
 
 // Timers and detached promises keep the async context that created them, so
 // work can see a scope whose transaction has committed and whose dedicated
@@ -26,8 +68,8 @@ function heldScope(): SourceLockScope | undefined {
  * Joining that scope would tie these locks to the other transaction. */
 export function withIndependentWorkspaceSourceLocks<T>(db: Db,
   input: { companyId: string; issueIds?: readonly string[]; projectIds?: readonly string[] },
-  action: (transaction: SourceTransaction) => Promise<T>, tryOnly = false): Promise<T> {
-  return sourceLocks.exit(() => withWorkspaceSourceLocks(db, input, action, tryOnly));
+  action: (transaction: SourceTransaction) => Promise<T>, tryOnly = false, wait?: WorkspaceSourceLockWait): Promise<T> {
+  return sourceLocks.exit(() => withWorkspaceSourceLocks(db, input, action, tryOnly, wait));
 }
 
 export function withIsolatedRepositorySourceLock<T>(db: Db, companyId: string, issueId: string,
@@ -37,13 +79,16 @@ export function withIsolatedRepositorySourceLock<T>(db: Db, companyId: string, i
 
 export async function withWorkspaceSourceLocks<T>(db: Db,
   input: { companyId: string; issueIds?: readonly string[]; projectIds?: readonly string[] },
-  action: (transaction: SourceTransaction) => Promise<T>, tryOnly = false): Promise<T> {
+  action: (transaction: SourceTransaction) => Promise<T>, tryOnly = false, wait?: WorkspaceSourceLockWait): Promise<T> {
+  if (wait && (!Number.isSafeInteger(wait.waitMs) || wait.waitMs < 1 || wait.waitMs > 2_147_483_647))
+    throw new Error("workspace_source_wait_invalid");
   const keys = [...new Set([
     ...(input.issueIds ?? []).map(id => `isolated_repository_source:${input.companyId}:${id}`),
     ...(input.projectIds ?? []).map(id => `managed_project_source:${input.companyId}:${id}`),
   ])].sort();
-  if (keys.length > 128) throw new Error("workspace_source_scope_limit");
+  if (keys.length > WORKSPACE_SOURCE_KEY_LIMIT) throw new Error("workspace_source_scope_limit");
   const held = heldScope();
+  if (wait && held?.db === db) throw new Error("workspace_source_wait_requires_independent_scope");
   const acquire = async (scope: SourceLockScope, nonblocking: boolean) => {
     for (const key of keys) {
       if (scope.keys.has(key)) continue;
@@ -55,7 +100,7 @@ export async function withWorkspaceSourceLocks<T>(db: Db,
     }
   };
   if (held?.db === db) {
-    if (new Set([...held.keys, ...keys]).size > 128) throw new Error("workspace_source_scope_limit");
+    if (new Set([...held.keys, ...keys]).size > WORKSPACE_SOURCE_KEY_LIMIT) throw new Error("workspace_source_scope_limit");
     if (held.companyId !== input.companyId) throw new Error("workspace_source_company_mismatch");
     const onlyProjectKeys = keys.filter(key => !held.keys.has(key)).every(key => key.startsWith("managed_project_source:"));
     const alreadyHasProject = [...held.keys].some(key => key.startsWith("managed_project_source:"));
@@ -65,7 +110,10 @@ export async function withWorkspaceSourceLocks<T>(db: Db,
   return withDedicatedDbConnection(db, connection => connection.transaction(async transaction => {
     const scope: SourceLockScope = { db, companyId: input.companyId, transaction, keys: new Set<string>(), active: true };
     try {
-      await acquire(scope, tryOnly);
+      if (wait) {
+        await acquireQueuedSourceLocks(db, transaction, keys, wait);
+        for (const key of keys) scope.keys.add(key);
+      } else await acquire(scope, tryOnly);
       const rows = await transaction.execute(sql`select setting::bigint as idle_timeout_ms from pg_settings where name = 'idle_in_transaction_session_timeout'`);
       return await withWorkspaceLockKeepalive(transaction, Number(rows[0]?.idle_timeout_ms),
         () => sourceLocks.run(scope, () => action(transaction)));

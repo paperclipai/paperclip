@@ -1,3 +1,4 @@
+import { intentionalAbortReason } from "@/lib/intentional-abort";
 import { getPageVisibility, getVisibilityHeaderValue } from "@/lib/page-visibility";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 import { ApiError, apiErrorFromResponse } from "./api-error";
@@ -208,7 +209,7 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
     // Last caller gone before the fetch settled → abort the shared request.
     if (activeEntry.refs.size === 0) {
       if (inflightGets.get(key) === activeEntry) inflightGets.delete(key);
-      activeEntry.controller.abort();
+      activeEntry.controller.abort(intentionalAbortReason());
     }
   };
 

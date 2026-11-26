@@ -25,7 +25,11 @@ import {
 } from "@paperclipai/db";
 import type { heartbeatService } from "./heartbeat.js";
 import type { RequestConfirmationResult } from "@paperclipai/shared";
-import { githubAccessDeniedInstructions, projectGitHubActionResult } from "./tool-access/github-access-errors.js";
+import {
+  githubAccessErrorInstructions,
+  isGitHubAccessErrorCode,
+  projectGitHubActionResult,
+} from "./tool-access/github-access-errors.js";
 import { toolSourceTemplateKeySql } from "./tool-access/source-template-key.js";
 
 const terminalStatuses: Array<typeof toolActionRequests.$inferSelect.status> = [
@@ -237,16 +241,17 @@ export function toolActionDeliveryService(
               reason?: string;
               toolAction?: { resultSummary?: string; errorMessage?: string; errorCode?: string | null };
             } | null;
+            const effectiveErrorCode = result?.toolAction?.errorCode ?? invocation.errorCode;
             const instructions =
               request.status === "executed"
                 ? "The approved action already ran. Do not call it again; continue with the recorded result. Process the result and answer the user in your own words. Do not paste the raw tool or transport JSON unless the user asks for it."
                 : request.status === "rejected"
-                  ? "The human declined this action. Do not retry the same call. Adjust your approach or explain what is blocked."
+                  ? "The human declined this action. Do not retry the same call on your own. Adjust your approach or explain what is blocked. If the person asks for the same action again in a later message, that is an explicit retry: make the call again so a fresh approval card is posted."
                   : request.status === "expired" ||
                       request.status === "cancelled"
                     ? "The review is no longer available. Do not execute the stored request. Explain the recorded outcome before requesting another review."
-                    : (result?.toolAction?.errorCode ?? invocation.errorCode) === "github_access_denied"
-                      ? githubAccessDeniedInstructions(invocation.toolName, connectionMethodKey)
+                    : isGitHubAccessErrorCode(effectiveErrorCode)
+                      ? githubAccessErrorInstructions(effectiveErrorCode, invocation.toolName, connectionMethodKey)
                       : "The approved action did not complete successfully. Do not automatically replay it; inspect the recorded outcome first.";
             return {
               toolName: invocation.toolName.slice(0, 256),

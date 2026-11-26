@@ -88,7 +88,9 @@ test("real graph retains direct and indirect filesystem, process and opaque depe
   write("ui/src/environment.ts", 'import {readFileSync} from "node:fs"; readFileSync(process.env.INPUT);');
   await assert.rejects(select(["ui/src/leaf.ts"]), /Opaque setup builtin/, "setup filesystem reads can affect every test outside the import graph");
   mkdirSync(path.join(directory, "server/src/__tests__/helpers"), { recursive: true });
-  for (const file of ["server/src/__tests__/setup-supertest.ts", "server/src/__tests__/helpers/isolated-test-home.ts"]) {
+  mkdirSync(path.join(directory, "server/src/services"), { recursive: true });
+  for (const file of ["server/src/__tests__/setup-supertest.ts", "server/src/__tests__/helpers/isolated-test-home.ts",
+    "server/src/services/instance-settings-cache.ts"]) {
     write(file, readFileSync(path.join(root, file), "utf8"));
   }
   write("ui/setup.ts", 'import "../server/src/__tests__/setup-supertest.ts";');
@@ -97,6 +99,8 @@ test("real graph retains direct and indirect filesystem, process and opaque depe
   const helper = "server/src/__tests__/helpers/isolated-test-home.ts";
   const changedSetup = await select([helper]);
   assert.deepEqual(changedSetup.selected, changedSetup.inventory, "reviewed helpers still invalidate all tests when changed");
+  const changedCache = await select(["server/src/services/instance-settings-cache.ts"]);
+  assert.deepEqual(changedCache.selected, changedCache.inventory, "the reviewed settings cache reset still invalidates all tests when changed");
   write(helper, `${readFileSync(path.join(directory, helper), "utf8")}\n// setup edited since review\n`);
   await assert.rejects(select(["ui/src/leaf.ts"]), /Opaque setup/, "a stale review cannot authorize new setup effects");
 });
@@ -227,4 +231,36 @@ test("mixed audited documentation stays graph eligible and large complete source
   assert.equal(selectionEligibility({ ...plan, changed: Array(350).fill(plan.changed[0]) }), null);
   assert.ok(selectionEligibility({ ...plan, changed: ["doc/DEVELOPING.md"] }));
   assert.ok(selectionEligibility({ ...plan, changed: [...plan.changed, "docs/api/issues.md"] }));
+});
+
+test("refineTestPlan applies nightly exclusions before partitioning while keeping full inventory validation", () => {
+  const nightlySuite = "server/src/__tests__/heartbeat-process-recovery-part-1.test.ts";
+  const fastSuite = "server/src/__tests__/issues-service.test.ts";
+  const entries = [0, 1].map((shard_index) => ({
+    group: "general-server-without-chat",
+    group_label: `server (${shard_index + 1}/2)`,
+    shard_index,
+    shard_count: 2,
+    task: "ci:server",
+  }));
+  const plan = {
+    version: 1,
+    mode: "enabled",
+    forceReason: null,
+    changed: ["server/src/services/heartbeat.ts"],
+    jobs: {
+      general_tests: { run: true, matrix: { include: entries }, selected: 2, total: 2 },
+      verify_serialized_server: { run: false, matrix: { include: [{ task: "ci:serialized" }] } },
+    },
+  };
+  const owners = { "general-server-without-chat": { "@paperclipai/server": [nightlySuite, fastSuite] } };
+  const graphs = [{ project: "@paperclipai/server", inventory: [nightlySuite, fastSuite], selected: [nightlySuite, fastSuite] }];
+
+  const prRefined = refineTestPlan({ plan, head, owners, graphs, excludedSuites: new Set([nightlySuite]) });
+  const prFiles = prRefined.manifest.lanes["general-server-without-chat"].shards.flatMap((s) => s["@paperclipai/server"]);
+  assert.deepEqual(prFiles, [fastSuite], "PR selection must exclude nightly-only suites before partitioning");
+
+  const fullRefined = refineTestPlan({ plan, head, owners, graphs });
+  const fullFiles = fullRefined.manifest.lanes["general-server-without-chat"].shards.flatMap((s) => s["@paperclipai/server"]);
+  assert.deepEqual(fullFiles.sort(), [fastSuite, nightlySuite].sort(), "full selection must retain nightly-only suites");
 });

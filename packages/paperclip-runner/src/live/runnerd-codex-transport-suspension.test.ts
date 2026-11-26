@@ -768,3 +768,51 @@ it("persists an active provider as settled before bounded suspension", async () 
     await rm(stateDirectory, { recursive: true, force: true });
   }
 }, 30_000);
+
+it("runs a failed close checkpoint again on the next close instead of returning the old failure", async () => {
+  const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-close-checkpoint-retry-"));
+  const identity = {
+    runnerInstanceId: "runner-close-checkpoint-retry",
+    environmentLeaseId: "lease-close-checkpoint-retry",
+    runId: "run-close-checkpoint-retry",
+    normalizedSessionId: "session-close-checkpoint-retry",
+    turnId: "turn-close-checkpoint-retry",
+    itemId: "item-close-checkpoint-retry",
+  };
+  const checkpoints: string[] = [];
+  const bundle = createCapabilityRunnerdCodexTransport({
+    runnerBinary: defaultCapabilityRunnerdBinary(),
+    codexCommand: fakeCodex,
+    codexArgs: fakeCodexArgs(stateDirectory),
+    stateDirectory,
+    closeGraceMs: 400,
+    lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+    prpIdentity: identity,
+    readRunnerState: async () => ({ schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "suspended" }),
+    controlPlaneRegistration: async (authority) => {
+      await authority.start();
+      return {
+        connectUrl: authority.connectUrl,
+        checkpoint: async (settlement: "settled" | "unsettled") => {
+          checkpoints.push(settlement);
+          if (checkpoints.length === 1) throw new Error("SlowDown: Please reduce your request rate.");
+        },
+        release: async () => {},
+      };
+    },
+  });
+  bundle.transport.setServerRequestHandler(async () => ({ success: true, contentItems: [] }));
+  try {
+    await bundle.transport.request("thread/start", { cwd: tmpdir(), dynamicTools: [] });
+    await expect(bundle.transport.close("native session execution complete")).rejects.toThrow("Please reduce your request rate");
+    const retried = await bundle.transport.close("native session cleanup recovery after close failure (1)").then(() => null, (error: unknown) => error);
+    if (retried !== null) expect(retried).toMatchObject({ code: "native_session_close_unrecoverable" });
+    expect(checkpoints).toHaveLength(2);
+    expect(checkpoints[1]).toBe(checkpoints[0]);
+    expect(await bundle.transport.close("after recovery").then(() => null, (error: unknown) => error)).toBe(retried);
+    expect(checkpoints).toHaveLength(2);
+  } finally {
+    await bundle.transport.close().catch(() => undefined);
+    await rm(stateDirectory, { recursive: true, force: true });
+  }
+}, 30_000);

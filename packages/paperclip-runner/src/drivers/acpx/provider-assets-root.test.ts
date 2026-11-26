@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
+import { antigravityNativeDistributionSpec } from "./antigravity-installation.js";
 import { resolveRunnerProviderAssetsRoot } from "./provider-assets-root.js";
 
 const roots: string[] = [];
@@ -17,6 +18,17 @@ it("uses one fixed provider directory for source, compiled and bundled runner la
     expect(resolveRunnerProviderAssetsRoot(pathToFileURL(join(path, relative)).href, "cursor")).toMatch(/provider-assets\/cursor$/);
   }
   expect(() => resolveRunnerProviderAssetsRoot(pathToFileURL(join(path, "workspace/arbitrary.ts")).href, "cursor")).toThrow("verified package layout");
+});
+
+it("resolves Copilot assets from the bundled metadata probe without widening other providers", async () => {
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", undefined);
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", undefined);
+  const path = await root();
+  for (const relative of ["dist/cli/copilot-metadata-probe.js", "dist/cli/copilot-metadata-probe.cjs"]) {
+    const moduleUrl = pathToFileURL(join(path, relative)).href;
+    expect(resolveRunnerProviderAssetsRoot(moduleUrl, "copilot")).toBe(join(path, "provider-assets/copilot"));
+    expect(() => resolveRunnerProviderAssetsRoot(moduleUrl, "cursor")).toThrow("verified package layout");
+  }
 });
 
 it("resolves descriptor sidecars only through the runner-bound canonical package manifest", async () => {
@@ -119,4 +131,21 @@ it("rejects an unrelated server manifest, escaped vendor sidecar and linked mani
   await writeFile(join(outside, "package.json"), JSON.stringify({ name: "@paperclipai/server" }));
   await symlink(join(outside, "package.json"), join(path, "package.json"));
   expect(() => resolveRunnerProviderAssetsRoot(pathToFileURL(join(path, "dist/vendor/paperclip-runner/drivers/acpx/pi-installation.js")).href, "pi")).toThrow();
+});
+
+it("resolves explicit providerPackageRoot for bundled server runtimes and Antigravity closures without env mutation", async () => {
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", undefined);
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", undefined);
+  const pack = await root();
+  await writeFile(join(pack, "package.json"), JSON.stringify({ name: "@paperclipai/paperclip-runner" }));
+  await mkdir(join(pack, "provider-assets/antigravity/linux-x64"), { recursive: true });
+  expect(resolveRunnerProviderAssetsRoot("file:///app/server/dist-runtime/index.mjs", "antigravity", { providerPackageRoot: pack }))
+    .toBe(join(pack, "provider-assets/antigravity"));
+  vi.stubEnv("PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH", pack);
+  expect(antigravityNativeDistributionSpec("linux", "x64").distributionRoot)
+    .toBe(join(pack, "provider-assets/antigravity/linux-x64"));
+  // Explicit invalid roots fail closed instead of falling back to process.env.
+  vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", pack);
+  expect(() => resolveRunnerProviderAssetsRoot("file:///app/server/dist-runtime/index.mjs", "antigravity", { providerPackageRoot: "relative" }))
+    .toThrow("normalized absolute");
 });

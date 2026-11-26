@@ -40,8 +40,9 @@ const workflowRoot = path.join(repoRoot, ".github", "workflows");
 walk(workflowRoot, (filePath) => {
   if (!/\.ya?ml$/.test(filePath)) return;
   const source = fs.readFileSync(filePath, "utf8");
-  const packProducer = relative(filePath) === ".github/workflows/release-verify.yml"
-    ? /(?:^|\n)  runner_binaries:\n[\s\S]*?(?=\n  [a-z_]+:\n|$)/.exec(source)
+  const packJob = { ".github/workflows/release-verify.yml": "runner_binaries", ".github/workflows/macos-runner-runtime.yml": "build" }[relative(filePath)];
+  const packProducer = packJob
+    ? new RegExp(`(?:^|\\n)  ${packJob}:\\n[\\s\\S]*?(?=\\n  [a-z_]+:\\n|$)`).exec(source)
     : null;
   for (const match of source.matchAll(/node-version:\s*["']?([^\s"'#]+)/g)) {
     if (match[1] === "24.21.0" && packProducer

@@ -3,12 +3,39 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { TaskBrowser } from "@paperclipai/shared";
 import { browserUseApi } from "@/api/browser-use";
 import { retryTransientOnly } from "@/lib/query-client";
-export function useTaskBrowsers(issueId?: string) {
+import { useHasCompanyLiveConnection } from "@/context/LiveUpdatesProvider";
+import { taskBrowsersQueryKey } from "@/lib/task-browsers-refresh";
+export const TASK_BROWSERS_REFETCH_MS = 3000;
+
+/**
+ * Poll while the company live connection is closed, and while any browser can
+ * still change state. With the connection open, every browser lifecycle step
+ * (`browser.started`, `browser.ready`, `browser.run_finished`, `browser.closed`
+ * and controls) logs task activity, and `LiveUpdatesProvider` refreshes the
+ * list on that activity (`refreshTaskBrowsers`).
+ */
+export function taskBrowsersRefetchInterval(
+  connected: boolean,
+  state: { status: "pending" | "error" | "success"; data: TaskBrowser[] | undefined },
+): number | false {
+  if (!connected || state.status !== "success" || !Array.isArray(state.data)) return TASK_BROWSERS_REFETCH_MS;
+  return state.data.some(browser => browser.status !== "closed" && browser.status !== "failed")
+    ? TASK_BROWSERS_REFETCH_MS
+    : false;
+}
+
+export { taskBrowsersQueryKey };
+
+export function useTaskBrowsers(issueId?: string, companyId?: string | null) {
+  // Socket open and reconnect reconcile active queries, including this one.
+  // Browser activity refreshes it through `refreshTaskBrowsers`.
+  const connected = useHasCompanyLiveConnection(companyId);
+  const enabled = Boolean(issueId) && !issueId?.startsWith("chat:");
   return useQuery({
-    queryKey: ["task-browsers", issueId],
+    queryKey: taskBrowsersQueryKey(issueId),
     queryFn: () => browserUseApi.list(issueId!),
-    enabled: Boolean(issueId) && !issueId?.startsWith("chat:"),
-    refetchInterval: 3000,
+    enabled,
+    refetchInterval: (query) => taskBrowsersRefetchInterval(connected, query.state),
     // The 3s poll cadence already retries reads; stacking the shared backoff
     // inside a tick only adds duplicate requests. The next tick refetches anyway.
 

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { spawn, execFile } from "node:child_process";
-import { mkdtemp, mkdir, readFile, rm, writeFile, access } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile, access } from "node:fs/promises";
 import { promisify } from "node:util";
 import type { CommandManagedDuplexChannel, CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { DuplexObservabilityRecorder } from "@paperclipai/adapter-utils/duplex-observability";
@@ -40,11 +40,12 @@ function localDuplexChannel(command: readonly string[], cwd: string): CommandMan
 async function broker(resolveCredentials = vi.fn(async (binding: ReturnType<typeof run>) => ({
   status: "available", env: { GH_TOKEN: `fixture-${binding.runId}` },
 })), remote = false, bridgeUnavailable = false, onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>,
-duplex?: { enabled?: boolean; capability: boolean; unavailable?: boolean; recorder?: DuplexObservabilityRecorder }) {
-  const root = await mkdtemp(path.join(tmpdir(), "native-github-reuse-"));
-  cleanups.push(() => rm(root, { recursive: true, force: true }));
+duplex?: { enabled?: boolean; capability: boolean; unavailable?: boolean; startupFailure?: "lost" | "unreachable"; fallbackUnavailable?: boolean; fileProbeFails?: boolean; recorder?: DuplexObservabilityRecorder },
+placement: { root?: string; launcherKey?: string } = {}) {
+  const root = placement.root ?? await mkdtemp(path.join(tmpdir(), "native-github-reuse-"));
+  if (!placement.root) cleanups.push(() => rm(root, { recursive: true, force: true }));
   const bin = path.join(root, "real-bin");
-  await mkdir(bin);
+  await mkdir(bin, { recursive: true });
   await writeFile(path.join(bin, "gh"), `#!${process.execPath}\nprocess.stdout.write(process.env.GH_TOKEN || 'anonymous');`, { mode: 0o700 });
   const execute = vi.fn<CommandManagedRuntimeRunner["execute"]>(async (input) => {
     const startedAt = new Date().toISOString();
@@ -68,15 +69,34 @@ duplex?: { enabled?: boolean; capability: boolean; unavailable?: boolean; record
       duplexCommandStream: duplex.capability, runnerWebSocketIngress: false,
     } } : {}) } : null;
   const bridgeModes: (string | undefined)[] = [];
+  const bridges: NonNullable<Awaited<ReturnType<typeof startAdapterExecutionTargetPaperclipBridge>>>[] = [];
   const result = await createNativeGitHubAccess({ scope, target, cwd: root,
-    env: { PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, PAPERCLIP_API_KEY: "old-run-api-key" }, resolveCredentials, onLog },
+    env: { PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, PAPERCLIP_API_KEY: "old-run-api-key" }, resolveCredentials, onLog,
+    launcherKey: placement.launcherKey },
     bridgeUnavailable ? async () => { throw new Error("fixture bridge unavailable"); } : async input => {
+      if (duplex?.fallbackUnavailable && input.enableSandboxDuplexBridge === false) throw new Error("fixture fallback unavailable");
       const bridge = await startAdapterExecutionTargetPaperclipBridge(input);
       bridgeModes.push(bridge?.env.PAPERCLIP_API_BRIDGE_MODE);
+      if (bridge) {
+        vi.spyOn(bridge, "stop");
+        bridges.push(bridge);
+        if (duplex?.fileProbeFails && bridge.env.PAPERCLIP_API_BRIDGE_MODE === "queue_v1") {
+          bridge.env.PAPERCLIP_API_KEY = "fixture-invalid-bridge-token";
+        }
+      }
+      if (duplex?.startupFailure && bridge?.env.PAPERCLIP_API_BRIDGE_MODE === "http2_v1") {
+        const channel = await openDuplexChannel.mock.results.at(-1)!.value;
+        channel.stop();
+        await vi.waitFor(() => expect(bridge.readRunDisposition?.().failed).toBe(true));
+        if (duplex.startupFailure === "unreachable") {
+          // A transport can stop serving before its control channel reports a loss.
+          bridge.readRunDisposition = () => ({ failed: false, lossReason: null });
+        }
+      }
       return bridge;
     });
   cleanups.push(result.stop);
-  return Object.assign(result, { root, resolveCredentials, execute, openDuplexChannel, bridgeModes });
+  return Object.assign(result, { root, resolveCredentials, execute, openDuplexChannel, bridgeModes, bridges });
 }
 function request(broker: NativeGitHubAccess, extra: RequestInit = {}, endpoint = "/runtime-tools/github/credentials") {
   return fetch(broker.env.PAPERCLIP_GITHUB_BROKER_URL + endpoint, {
@@ -157,6 +177,51 @@ it("marks a lost HTTP/2 bridge unavailable before the next warm admission", asyn
   channel.stop();
   await vi.waitFor(() => expect(b.ready).toBe(false), { timeout: 2000 });
 });
+it.each(["lost", "unreachable"] as const)("recovers a %s GitHub bridge after its greeting before starting managed commands", async startupFailure => {
+  const b = await broker(undefined, true, false, undefined, { enabled: true, capability: true, startupFailure });
+  expect(b.bridgeModes).toEqual(["http2_v1", "queue_v1"]);
+  expect(b.ready).toBe(true);
+  expect(b.resolveCredentials).not.toHaveBeenCalled();
+  const release = b.activate(run("recovered"));
+  const result = await promisify(execFile)(path.join(b.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"), [], {
+    env: { ...process.env, ...b.env, GH_TOKEN: "ambient-must-not-leak" },
+    timeout: 15_000,
+  });
+  expect(result.stdout).toBe("fixture-recovered");
+  expect(result.stderr).toBe("");
+  expect(b.resolveCredentials.mock.calls.map(([binding]) => binding.runId)).toEqual(["recovered"]);
+  release();
+}, 30_000);
+it("keeps host credentials isolated when neither GitHub startup transport works", async () => {
+  const b = await broker(undefined, true, false, undefined, {
+    enabled: true, capability: true, startupFailure: "lost", fallbackUnavailable: true,
+  });
+  expect(b.ready).toBe(false);
+  expect(b.openDuplexChannel).toHaveBeenCalledOnce();
+  expect(b.env.PAPERCLIP_GITHUB_BROKER_TOKEN).toBe("");
+  b.activate(run("unavailable"));
+  const result = await promisify(execFile)(path.join(b.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"), [], {
+    env: { ...process.env, ...b.env, GH_TOKEN: "ambient-must-not-leak" },
+  });
+  expect(result.stdout).toBe("anonymous");
+  expect(b.resolveCredentials).not.toHaveBeenCalled();
+});
+it.each([false, true])("stops failed file-bridge startup before returning anonymous launchers (HTTP/2 fallback: %s)", async fallback => {
+  const b = await broker(undefined, true, false, undefined, {
+    enabled: fallback, capability: true, ...(fallback ? { startupFailure: "lost" as const } : {}), fileProbeFails: true,
+  });
+  const failedBridge = b.bridges.at(-1)!;
+  expect(b.ready).toBe(false);
+  expect(b.env.PAPERCLIP_GITHUB_BROKER_TOKEN).toBe("");
+  expect(failedBridge.stop).toHaveBeenCalledOnce();
+  await expect(fetch(failedBridge.env.PAPERCLIP_API_URL, { signal: AbortSignal.timeout(1000) })).rejects.toThrow();
+  const commandsAfterStartup = b.execute.mock.calls.length;
+  await new Promise(resolve => setTimeout(resolve, 250));
+  expect(b.execute.mock.calls).toHaveLength(commandsAfterStartup);
+  expect(b.resolveCredentials).not.toHaveBeenCalled();
+  await b.stop();
+  expect(failedBridge.stop).toHaveBeenCalledOnce();
+});
 it("closes a healthy HTTP/2 bridge without reporting a lost active run", async () => {
   const onLog = vi.fn(async (_stream: "stdout" | "stderr", _chunk: string) => undefined);
   const b = await broker(undefined, true, false, onLog, { enabled: true, capability: true });
@@ -210,6 +275,103 @@ it.each([false, true])("keeps one live parent and its original launcher environm
   releaseB(); await b.stop();
   await expect(access(b.env.PAPERCLIP_GITHUB_LAUNCHER_DIR)).rejects.toThrow();
 }, 45_000);
+function liveParent(env: Record<string, string>) {
+  const parent = spawn(process.execPath, ["-e", `
+    const {execFile}=require('node:child_process');
+    require('node:readline').createInterface({input:process.stdin}).on('line', () => {
+      execFile('gh', [], (error, stdout, stderr) => console.log(JSON.stringify({pid:process.pid, value:stdout, error:error?.message, stderr})));
+    });
+  `], { env: { ...process.env, ...env }, stdio: ["pipe", "pipe", "pipe"] });
+  cleanups.push(async () => { const exited = new Promise<void>(resolve => parent.once("exit", () => resolve())); parent.kill(); await exited; });
+  const lines = createInterface({ input: parent.stdout });
+  return () => new Promise<{ pid: number; value: string; stderr: string }>(resolve => {
+    lines.once("line", line => resolve(JSON.parse(line))); parent.stdin.write("run\n");
+  });
+}
+it("re-arms a live sandbox provider's launchers after its controller restarts", async () => {
+  const remote = true;
+  const root = await mkdtemp(path.join(tmpdir(), "native-github-restart-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const before = await broker(undefined, remote, false, undefined, undefined, { root, launcherKey: "session-a" });
+  const operation = liveParent(before.env);
+  const releaseBefore = before.activate(run("run-a"));
+  const first = await operation();
+  expect(first.value).toBe("fixture-run-a");
+  releaseBefore();
+  await before.stop({ preserveLaunchers: true });
+  const launchers = before.env.PAPERCLIP_GITHUB_LAUNCHER_DIR;
+  await access(path.join(launchers, "gh"));
+  const after = await broker(vi.fn(async (binding: ReturnType<typeof run>) => ({
+    status: "available", env: { GH_TOKEN: `adopted-${binding.runId}` },
+  })), remote, false, undefined, undefined, { root, launcherKey: "session-a" });
+  expect(after.env.PAPERCLIP_GITHUB_LAUNCHER_DIR).toBe(launchers);
+  expect(after.env.PAPERCLIP_GITHUB_BROKER_TOKEN).not.toBe(before.env.PAPERCLIP_GITHUB_BROKER_TOKEN);
+  const releaseAfter = after.activate(run("run-a"));
+  const adopted = await operation();
+  expect(adopted).toMatchObject({ pid: first.pid, value: "adopted-run-a", stderr: "" });
+  expect(await readFile(path.join(launchers, "gh"), "utf8")).not.toContain(after.env.PAPERCLIP_GITHUB_BROKER_TOKEN);
+  expect((await stat(path.join(launchers, "broker.json"))).mode & 0o777).toBe(0o600);
+  releaseAfter();
+  await after.stop();
+  await expect(access(launchers)).rejects.toThrow();
+}, 45_000);
+it("keeps launchers a successor re-armed when a superseded access stops", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "native-github-successor-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const superseded = await broker(undefined, true, false, undefined, undefined, { root, launcherKey: "session-a" });
+  const successor = await broker(vi.fn(async () => ({ status: "available", env: { GH_TOKEN: "successor" } })),
+    true, false, undefined, undefined, { root, launcherKey: "session-a" });
+  const operation = liveParent(superseded.env);
+  await superseded.stop();
+  successor.activate(run("run-b"));
+  expect(await operation()).toMatchObject({ value: "successor", stderr: "" });
+  const other = await broker(undefined, true, false, undefined, undefined, { root, launcherKey: "session-b" });
+  expect(other.env.PAPERCLIP_GITHUB_LAUNCHER_DIR).not.toBe(successor.env.PAPERCLIP_GITHUB_LAUNCHER_DIR);
+});
+it("keeps a previous-release provider running without managed GitHub after the cutover restart", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "native-github-cutover-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const previous = await broker(undefined, true, false, undefined, undefined, { root });
+  const operation = liveParent(previous.env);
+  const releasePrevious = previous.activate(run("run-a"));
+  expect((await operation()).value).toBe("fixture-run-a");
+  releasePrevious();
+  await previous.stop();
+  await expect(access(previous.env.PAPERCLIP_GITHUB_LAUNCHER_DIR)).rejects.toThrow();
+  const current = await broker(undefined, true, false, undefined, undefined, { root, launcherKey: "session-a" });
+  expect(current.env.PAPERCLIP_GITHUB_LAUNCHER_DIR).not.toBe(previous.env.PAPERCLIP_GITHUB_LAUNCHER_DIR);
+  current.activate(run("run-a"));
+  expect(await operation()).toMatchObject({ value: "anonymous", stderr: "" });
+  expect(current.resolveCredentials).not.toHaveBeenCalled();
+  await expect(liveParent(current.env)()).resolves.toMatchObject({ value: "fixture-run-a" });
+}, 45_000);
+it("tells a local provider adopted after a restart that managed GitHub is unavailable", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "native-github-local-restart-"));
+  cleanups.push(() => rm(root, { recursive: true, force: true }));
+  const before = await broker(undefined, false, false, undefined, undefined, { root, launcherKey: "session-a" });
+  const operation = liveParent(before.env);
+  const releaseBefore = before.activate(run("run-a"));
+  expect((await operation()).value).toBe("fixture-run-a");
+  releaseBefore();
+  await before.stop({ preserveLaunchers: true });
+  const after = await broker(undefined, false, false, undefined, undefined, { root, launcherKey: "session-a" });
+  after.activate(run("run-a"));
+  const adopted = await operation();
+  expect(adopted.value).toBe("anonymous");
+  expect(adopted.stderr).toMatch(/^Paperclip: GitHub (broker_transport_unavailable|capability_rejected|broker_response_unavailable); continuing without managed credentials\.\n$/);
+  expect(after.resolveCredentials).not.toHaveBeenCalled();
+}, 45_000);
+it("keeps the broker capability out of local launcher files", async () => {
+  const b = await broker(undefined, false, false, undefined, undefined, { launcherKey: "session-a" });
+  const files = await readdir(b.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, { recursive: true });
+  expect(files).not.toContain("broker.json");
+  for (const file of files) {
+    const target = path.join(b.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, file);
+    if ((await stat(target)).isFile()) expect(await readFile(target, "utf8")).not.toContain(b.env.PAPERCLIP_GITHUB_BROKER_TOKEN);
+  }
+  b.activate(run("local"));
+  expect(await liveParent(b.env)()).toMatchObject({ value: "fixture-local", stderr: "" });
+});
 it("rejects other scopes, concurrent bindings, browser requests and forged authority", async () => {
   const b = await broker();
   for (const field of ["companyId", "agentId", "issueId"] as const) {

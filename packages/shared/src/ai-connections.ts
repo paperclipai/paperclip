@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { aiProviderRoutingSchema, aiRoutingHarness, isAiRoutingCompatible, type AiProviderRouting } from "./ai-provider-routing.js";
+import { aiConnectionCatalogSlug, aiProviderRoutingSchema, aiRoutingHarness, isAiRoutingCompatible, type AiProviderRouting } from "./ai-provider-routing.js";
 
 /** Runtime authentication is a separate transport, never a tool or channel. */
 export const connectionPurposeTransportSchema = z.discriminatedUnion(
@@ -7,7 +7,7 @@ export const connectionPurposeTransportSchema = z.discriminatedUnion(
   [
     z.object({
       connectionPurpose: z.literal("tool"),
-      transport: z.enum(["mcp_remote", "rest_api", "local_stdio"]),
+      transport: z.enum(["mcp_remote", "rest_api", "local_stdio", "plugin"]),
     }),
     z.object({
       connectionPurpose: z.literal("channel"),
@@ -69,6 +69,18 @@ export const aiConnectionBindingSchema = z.discriminatedUnion("mode", [
 export type AiConnectionBinding = z.infer<typeof aiConnectionBindingSchema>;
 export const aiConnectionMetadataSchema = z.object({ ...requirement, routing: aiProviderRoutingSchema.optional() }).strict();
 export type AiConnectionMetadata = z.infer<typeof aiConnectionMetadataSchema>;
+
+/**
+ * Catalog source of a saved AI connection. It reads the AI metadata, not the
+ * application, so accounts saved under an earlier catalog entry still resolve.
+ */
+export function aiConnectionSourceSlug(
+  connection: { connectionPurpose?: string | null; config?: Record<string, unknown> | null } | null | undefined,
+): string | null {
+  if (connection?.connectionPurpose !== "ai") return null;
+  const metadata = aiConnectionMetadataSchema.safeParse(connection.config?.ai);
+  return metadata.success ? aiConnectionCatalogSlug(metadata.data.provider, metadata.data.routing) : null;
+}
 
 /** Existing integrations only. This table describes compatibility, never routing. */
 export const AI_CONNECTION_CAPABILITIES: Record<
@@ -186,6 +198,7 @@ export interface AiManagedConnectionSummary {
   ownerUserId?: string;
   ownerName?: string;
   isDefault: boolean;
+  canSetDefault?: boolean;
   status: "connected" | "needs_attention" | "expired" | "revoked";
   unavailableReason?: string;
   usageProbeSupported?: boolean;
@@ -265,6 +278,19 @@ export const localAiConnectionSchema = aiConnectionLoginIntentSchema.extend({
   localSessionId: z.string().uuid().optional(),
 });
 export const localAiLoginStartSchema = aiConnectionLoginIntentSchema.extend({ restart: z.boolean().optional() });
+export const LOCAL_AI_LOGIN_CODE_MAX_LENGTH = 4096;
+const LOCAL_AI_LOGIN_CODE_DISALLOWED_CHAR = /[^\x21-\x7E]/;
+export const localAiLoginCodeSchema = z
+  .string()
+  .min(1, "A browser code or redirect URL is required.")
+  .max(LOCAL_AI_LOGIN_CODE_MAX_LENGTH, "The submitted sign-in input is too long.")
+  .regex(/^[\x21-\x7E]+$/u, "The submitted sign-in input has an invalid character.")
+  .refine((value) => !LOCAL_AI_LOGIN_CODE_DISALLOWED_CHAR.test(value), {
+    message: "The submitted sign-in input has an invalid character.",
+  });
+export const submitLocalAiLoginCodeSchema = z.object({
+  browserCode: localAiLoginCodeSchema,
+}).strict();
 export interface LocalAiLoginStatus {
   status: "ready" | "sign_in_required" | "expired";
   authorizationUrl?: string;

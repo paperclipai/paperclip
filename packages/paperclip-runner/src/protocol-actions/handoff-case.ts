@@ -2,52 +2,41 @@ import { initialDocumentsSchema, workflowDocumentTextSchema } from "./case-data.
 /** Canonical production case handoff; assignment authorization is branch-specific in the server. */
 const description = "Transfer a case's primary task to the next agent and phase, reusing the same task ID, or record intent to finish an existing case with to: 'done'. Save findings first. Supply the observed case handoffVersion and task statusVersion when reusing existing work. A new case starts with a harness-created task unless explicitly bound. Supply either workflowId or workflow_document_text for case.create and when starting the first task of a passive case; it becomes the ordinary task document key workflow, title Workflow. When binding an existing task, inline text requires an absent workflow document; workflowId explicitly adopts into its revision history. Omit workflow_document_text on later handoffs of an existing primary task. Omit workflowId to preserve the current workflow and instructions; supply an ID to adopt its latest prompt, including the current ID to refresh, or null to detach while preserving instructions. Selected prompts are captured on acceptance and applied after outgoing execution settles. Intervening task-document edits hold the handoff with a revision conflict. Recommend workflow Markdown with both a fenced Mermaid stateDiagram-v2 diagram and prose defining each named transition: trigger or condition, required evidence or outputs, destination agent ID, human wait and resume behavior, and bounded correction, retry or escalation. State IDs should match phase names. The diagram is advisory and the server does not parse or enforce transitions. Optional initialDocuments seeds other ordinary task documents only for a newly created task; the workflow key is reserved and the combined seed text limit is 200000 characters. For an agent handoff, after callerMustYield is true, end the turn immediately: the harness starts the recipient after your execution settles. Do not finish the task or create a replacement task for another agent phase. For to: 'done', phase defaults to 'done', both observed versions are required, and no agent, new case, or task binding is accepted. A done receipt does not complete the task or yield execution: call finish_task normally with truthful completion evidence. The case closes only when normal task completion is accepted; review and approval gates still apply.";
 const uuidPattern = "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$";
-const agentInputSchema = {
+// Some model hosts show a root oneOf as an empty argument list, so this
+// advertised schema stays a plain object. The agent-handoff and to: "done"
+// variants, and case id/create, are checked by toolInputVariantError on the
+// server with named errors.
+const inputSchema = {
   type: "object", additionalProperties: false,
-  required: ["idempotencyKey", "case", "toAgentId", "phase", "instructions"],
+  required: ["idempotencyKey", "case", "instructions"],
   properties: {
+    to: { type: "string", enum: ["done"], description: "Send \"done\" only to record intent to finish an existing case; then expectedHandoffVersion and expectedIssueStatusVersion are required and toAgentId, bindIssueId, workflowId, workflow_document_text and initialDocuments are not accepted. Omit for an agent handoff." },
     idempotencyKey: { type: "string", minLength: 1, maxLength: 240 },
-    case: { oneOf: [
-      { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", pattern: uuidPattern } } },
-      { type: "object", additionalProperties: false, required: ["create"], properties: { create: {
-        type: "object", additionalProperties: false, required: ["caseType", "title"], properties: {
-          caseType: { type: "string", minLength: 1, maxLength: 120 }, title: { type: "string", minLength: 1, maxLength: 500 },
-          summary: { type: "string", maxLength: 8000 }, fields: { type: "object", additionalProperties: true },
-          projectId: { type: ["string", "null"], pattern: uuidPattern },
+    case: {
+      type: "object", additionalProperties: false,
+      description: "Send exactly one of id (an existing case) or create (a new case). to: \"done\" requires id.",
+      properties: {
+        id: { type: "string", pattern: uuidPattern },
+        create: {
+          type: "object", additionalProperties: false, required: ["caseType", "title"], properties: {
+            caseType: { type: "string", minLength: 1, maxLength: 120 }, title: { type: "string", minLength: 1, maxLength: 500 },
+            summary: { type: "string", maxLength: 8000 }, fields: { type: "object", additionalProperties: true },
+            projectId: { type: ["string", "null"], pattern: uuidPattern },
+          },
         },
-      } } },
-    ] },
-    toAgentId: { type: "string", pattern: uuidPattern }, phase: { type: "string", minLength: 1, maxLength: 120 },
+      },
+    },
+    toAgentId: { type: "string", pattern: uuidPattern, description: "Required for an agent handoff. Omit with to: \"done\"." },
+    phase: { type: "string", minLength: 1, maxLength: 120, description: "Required for an agent handoff. With to: \"done\", omit it or send \"done\"." },
     instructions: { type: "string", minLength: 1, maxLength: 20000 },
-    expectedHandoffVersion: { type: "integer", minimum: 0 }, expectedIssueStatusVersion: { type: "integer", minimum: 0 },
+    expectedHandoffVersion: { type: "integer", minimum: 0, description: "Observed case handoffVersion. Required with to: \"done\"." },
+    expectedIssueStatusVersion: { type: "integer", minimum: 0, description: "Observed task statusVersion. Required with to: \"done\"." },
     bindIssueId: { type: "string", pattern: uuidPattern },
     workflow_document_text: workflowDocumentTextSchema,
-    workflowId: { type: ["string", "null"], pattern: uuidPattern },
+    workflowId: { type: ["string", "null"], pattern: uuidPattern, description: "Adopt this workflow's latest prompt, or null to detach. A new case needs workflowId or workflow_document_text, not both." },
     initialDocuments: initialDocumentsSchema,
   },
-  allOf: [{
-    if: {
-      properties: { case: { type: "object", properties: { create: {} }, required: ["create"] } },
-      required: ["case"],
-    },
-    then: { oneOf: [{ properties: { workflowId: { type: "string", pattern: uuidPattern } }, required: ["workflowId"] },
-      { properties: { workflow_document_text: {} }, required: ["workflow_document_text"] }] },
-  }, { not: { properties: { workflowId: {}, workflow_document_text: {} }, required: ["workflowId", "workflow_document_text"] } }],
 } as const;
-const doneInputSchema = {
-  type: "object", additionalProperties: false,
-  required: ["to", "idempotencyKey", "case", "instructions", "expectedHandoffVersion", "expectedIssueStatusVersion"],
-  properties: {
-    to: { type: "string", const: "done" },
-    idempotencyKey: { type: "string", minLength: 1, maxLength: 240 },
-    case: { type: "object", additionalProperties: false, required: ["id"], properties: { id: { type: "string", pattern: uuidPattern } } },
-    phase: { type: "string", const: "done", default: "done" },
-    instructions: { type: "string", minLength: 1, maxLength: 20000 },
-    expectedHandoffVersion: { type: "integer", minimum: 0 },
-    expectedIssueStatusVersion: { type: "integer", minimum: 0 },
-  },
-} as const;
-const inputSchema = { type: "object", oneOf: [agentInputSchema, doneInputSchema] } as const;
 export const handoffCaseAction = {
   id: "handoff_case",
   canonical: { operationId: "handoff_case", surfaces: ["live"], placement: "optional_agent_tool", optionalGroup: "cases",

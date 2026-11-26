@@ -6,7 +6,13 @@ import {
   applyIssueFilters,
   countActiveIssueFilters,
   defaultIssueFilterState,
+  issueUpdatedServerBefore,
+  issueUpdatedTimeRange,
+  issueUpdatedWithinPatch,
+  nextIssueUpdatedFilterExpiryMs,
   normalizeIssueFilterState,
+  readIssueUpdatedParams,
+  writeIssueUpdatedParams,
   resolveIssueFilterWorkspaceId,
   searchIssueFilterOptions,
   shouldIncludeIssueFilterWorkspaceOption,
@@ -288,5 +294,124 @@ describe("issue filters", () => {
     );
 
     expect(filtered).toEqual([]);
+  });
+});
+
+describe("Updated filter", () => {
+  const now = new Date("2026-11-12T12:00:00.000Z");
+  const hoursAgo = (hours: number) => new Date(now.getTime() - hours * 60 * 60 * 1000);
+  const updatedIds = (issues: Issue[], patch: Parameters<typeof applyIssueFilters>[1]) =>
+    applyIssueFilters(issues, patch, null, false, undefined, {}, now).map((issue) => issue.id);
+
+  it("keeps only tasks whose row time is inside the last 3 days", () => {
+    const issues = [
+      makeIssue({ id: "fresh", updatedAt: hoursAgo(1) }),
+      makeIssue({ id: "edge", updatedAt: hoursAgo(72) }),
+      makeIssue({ id: "old", updatedAt: hoursAgo(72.01) }),
+    ];
+    expect(updatedIds(issues, { ...defaultIssueFilterState, updatedWithin: "3d" })).toEqual(["fresh", "edge"]);
+    expect(updatedIds(issues, { ...defaultIssueFilterState, updatedWithin: "24h" })).toEqual(["fresh"]);
+    expect(updatedIds(issues, { ...defaultIssueFilterState, updatedWithin: "7d" })).toEqual(["fresh", "edge", "old"]);
+    expect(updatedIds(issues, defaultIssueFilterState)).toEqual(["fresh", "edge", "old"]);
+  });
+
+  it("uses the same time the row shows, not only the stored update time", () => {
+    const issues = [
+      makeIssue({ id: "commented", updatedAt: hoursAgo(24 * 10), lastActivityAt: hoursAgo(2) }),
+      makeIssue({ id: "external", updatedAt: hoursAgo(24 * 10), lastExternalCommentAt: hoursAgo(5) }),
+      makeIssue({ id: "stale-activity", updatedAt: hoursAgo(1), lastActivityAt: hoursAgo(24 * 10) }),
+    ];
+    expect(updatedIds(issues, { ...defaultIssueFilterState, updatedWithin: "3d" })).toEqual(["commented", "external"]);
+  });
+
+  it("runs a custom range from the start of the first day to the end of the last day in local time", () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      const issues = [
+        makeIssue({ id: "before", updatedAt: new Date("2026-11-03T07:59:59.999Z") }),
+        makeIssue({ id: "first-moment", updatedAt: new Date("2026-11-03T08:00:00.000Z") }),
+        makeIssue({ id: "last-moment", updatedAt: new Date("2026-11-05T07:59:59.999Z") }),
+        makeIssue({ id: "after", updatedAt: new Date("2026-11-05T08:00:00.000Z") }),
+      ];
+      const range = { ...defaultIssueFilterState, updatedWithin: "custom" as const, updatedFrom: "2026-11-03", updatedTo: "2026-11-04" };
+      expect(updatedIds(issues, range)).toEqual(["first-moment", "last-moment"]);
+      expect(updatedIds(issues, { ...range, updatedFrom: "2026-11-04", updatedTo: "2026-11-03" })).toEqual(["first-moment", "last-moment"]);
+      expect(updatedIds(issues, { ...range, updatedTo: null })).toEqual(["first-moment", "last-moment", "after"]);
+      expect(updatedIds(issues, { ...range, updatedFrom: null })).toEqual(["before", "first-moment", "last-moment"]);
+      expect(issueUpdatedTimeRange({ updatedWithin: "custom", updatedFrom: null, updatedTo: null }, now)).toBeNull();
+    } finally {
+      if (previousTz === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTz;
+    }
+  });
+
+  it("restores saved choices and drops values it does not know", () => {
+    expect(normalizeIssueFilterState({ updatedWithin: "3d" })).toMatchObject({ updatedWithin: "3d", updatedFrom: null, updatedTo: null });
+    expect(normalizeIssueFilterState({ updatedWithin: "custom", updatedFrom: "2026-11-01", updatedTo: "2026-11-12" }))
+      .toMatchObject({ updatedWithin: "custom", updatedFrom: "2026-11-01", updatedTo: "2026-11-12" });
+    expect(normalizeIssueFilterState({ updatedWithin: "90d", updatedFrom: "Nov 1", updatedTo: 5 }))
+      .toMatchObject({ updatedWithin: null, updatedFrom: null, updatedTo: null });
+    expect(normalizeIssueFilterState({})).toMatchObject({ updatedWithin: null });
+    expect(normalizeIssueFilterState({ updatedWithin: "custom", updatedFrom: "2026-02-31", updatedTo: "2026-13-01" }))
+      .toMatchObject({ updatedWithin: "custom", updatedFrom: null, updatedTo: null });
+    expect(issueUpdatedTimeRange({ updatedWithin: "custom", updatedFrom: "2026-02-31", updatedTo: "2026-02-30" })).toBeNull();
+  });
+
+  it("counts as one active filter and clears with the default state", () => {
+    expect(countActiveIssueFilters({ ...defaultIssueFilterState, updatedWithin: "3d" })).toBe(1);
+    expect(countActiveIssueFilters({ ...defaultIssueFilterState, updatedWithin: "custom", updatedFrom: "2026-11-01", updatedTo: "2026-11-12" })).toBe(1);
+    expect(countActiveIssueFilters(defaultIssueFilterState)).toBe(0);
+    expect(defaultIssueFilterState).toMatchObject({ updatedWithin: null, updatedFrom: null, updatedTo: null });
+  });
+
+  it("sends the server only the end of a custom range", () => {
+    const previousTz = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+      expect(issueUpdatedServerBefore({ updatedWithin: "custom", updatedFrom: "2026-11-03", updatedTo: "2026-11-04" }))
+        .toBe("2026-11-05T08:00:00.000Z");
+      expect(issueUpdatedServerBefore({ updatedWithin: "custom", updatedFrom: "2026-11-03", updatedTo: null })).toBeUndefined();
+      expect(issueUpdatedServerBefore({ updatedWithin: "3d", updatedFrom: null, updatedTo: null })).toBeUndefined();
+      expect(issueUpdatedServerBefore({ updatedWithin: null, updatedFrom: null, updatedTo: "2026-11-04" })).toBeUndefined();
+    } finally {
+      if (previousTz === undefined) delete process.env.TZ;
+      else process.env.TZ = previousTz;
+    }
+  });
+
+  it("keeps custom days only for a custom range", () => {
+    expect(issueUpdatedWithinPatch("3d")).toEqual({ updatedWithin: "3d", updatedFrom: null, updatedTo: null });
+    expect(issueUpdatedWithinPatch(null)).toEqual({ updatedWithin: null, updatedFrom: null, updatedTo: null });
+    expect(issueUpdatedWithinPatch("custom")).toEqual({ updatedWithin: "custom" });
+  });
+
+  it("reads and writes the page address values", () => {
+    const params = new URLSearchParams("view=all&updated=custom&updatedFrom=2026-11-01&updatedTo=bad");
+    expect(readIssueUpdatedParams(params)).toEqual({ updatedWithin: "custom", updatedFrom: "2026-11-01", updatedTo: null });
+    expect(readIssueUpdatedParams(new URLSearchParams("updated=3d&updatedFrom=2026-11-01")))
+      .toEqual({ updatedWithin: "3d", updatedFrom: null, updatedTo: null });
+    expect(readIssueUpdatedParams(new URLSearchParams("updated=90d"))).toEqual({ updatedWithin: null, updatedFrom: null, updatedTo: null });
+
+    writeIssueUpdatedParams(params, { updatedWithin: "custom", updatedFrom: "2026-11-01", updatedTo: "2026-11-12" });
+    expect(params.toString()).toBe("view=all&updated=custom&updatedFrom=2026-11-01&updatedTo=2026-11-12");
+    writeIssueUpdatedParams(params, { updatedWithin: "7d", updatedFrom: "2026-11-01", updatedTo: null });
+    expect(params.toString()).toBe("view=all&updated=7d");
+    writeIssueUpdatedParams(params, { updatedWithin: null, updatedFrom: null, updatedTo: null });
+    expect(params.toString()).toBe("view=all");
+  });
+
+  it("computes the earliest expiry timestamp for relative windows only", () => {
+    const issues = [
+      makeIssue({ id: "already-old", updatedAt: hoursAgo(30) }),
+      makeIssue({ id: "expiring-soon", updatedAt: hoursAgo(23) }),
+      makeIssue({ id: "fresh", updatedAt: hoursAgo(1) }),
+    ];
+    expect(nextIssueUpdatedFilterExpiryMs(issues, "24h", now.getTime())).toBe(
+      hoursAgo(23).getTime() + 24 * 60 * 60 * 1000 + 1,
+    );
+    expect(nextIssueUpdatedFilterExpiryMs(issues, null, now.getTime())).toBeNull();
+    expect(nextIssueUpdatedFilterExpiryMs(issues, "custom", now.getTime())).toBeNull();
+    expect(nextIssueUpdatedFilterExpiryMs([makeIssue({ id: "old", updatedAt: hoursAgo(30) })], "24h", now.getTime())).toBeNull();
   });
 });

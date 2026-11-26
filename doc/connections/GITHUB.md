@@ -10,10 +10,9 @@ only in its existing encrypted secret system.
 **GitHub** connects an account for repository tools, Git, and `gh`, and opens
 Access → Connect directly. **GitHub Code Review Bot** connects one agent to a
 GitHub App for pull-request reviews and mentions, and opens Choose agent directly.
-The bot entry follows **Settings → Experimental → GitHub review bots**
-(`enableGitHubReviewBots`), which defaults to off. It is independent of Chat
-connectors: enabling one does not enable the other. Turning off the GitHub
-setting hides setup and management; existing bots keep running.
+It is available by default in Connectors and does not require turning on
+**Chat connectors** or any experimental setting. The legacy
+`enableGitHubReviewBots` key is kept for compatibility only and is always on.
 
 Both entries reuse the existing GitHub integrations. Bot endpoints retain the
 `github` provider identity and existing setup, reconnect, and management URLs;
@@ -131,10 +130,27 @@ installation-health failure, not as token expiry.
 ## Repository access
 
 GitHub can return `403 Resource not accessible by integration` inside an MCP tool
-error even when the connection itself is healthy. A failed tool approval shows
+error even when the connection itself is healthy. When the target repository belongs
+to an account or organization where the Paperclip GitHub App is installed (or the
+connected user's own personal account), a failed tool approval shows
 **GitHub access needed** and **Manage GitHub access**, which opens that connection's
 Permissions page. Check the connected account and the App's access to the intended
-account and repository there. The original provider error remains in the action's
+account and repository there. When a managed GitHub App write targets an external
+organization or account outside the App's installations, Paperclip blocks approval
+cards before asking the user to approve a doomed write and classifies runtime
+integration `403` denials as `github_repo_outside_app_installations` instead of
+`github_access_denied`. Suspended installations are preserved separately in the
+snapshot (`suspendedInstallationOwnerLogins`) so writes targeting a suspended
+organization classify as `github_app_installation_suspended` with explicit
+unsuspend + Refresh access guidance instead of advising a fresh install. When an
+installation webhook marks the owner snapshot incomplete (`bindingSync`), both
+the pre-check and runtime `403` classification fall back to `github_access_denied`
+until access is refreshed. Failed cards and agent continuation instructions explain
+that refreshing access alone cannot grant write permission before the App is
+installed on that organization, and advise posting directly on GitHub, using a
+personal access token connection, or having an organization administrator install
+the App and refresh access on the Permissions page before retrying.
+The original provider error remains in the action's
 error details and diagnostic record. Paperclip does not replay the write or hide
 other working tools. Saved GitHub approval errors receive the same presentation.
 The agent's continuation wake carries server-written next steps and tells it
@@ -154,7 +170,13 @@ repository owner first. The authenticated GitHub username and the accounts
 where the App is installed are separate. An organization installation does not
 grant access to the user's personal repositories. Personal repository creation
 needs App access to that personal account; organization creation needs App access
-to that organization and the tool's `organization` argument. The agent must
+to that organization and the tool's `organization` argument. When the App is
+installed on exactly one account, and its access snapshot identifies that
+account as an organization, `create_repository` and `fork_repository` calls that omit `organization` use
+that organization, because the personal account is unavailable. Paperclip fills
+it in before policy, approval, and audit, so approval cards and test results
+show the owner. An explicit owner is unchanged, and any other installation set
+keeps GitHub's personal-account default. The agent must
 keep the owner requested by the user. The user can choose the intended account
 from **Add More Repos on GitHub**, then select **Refresh access**. If creation remains
 unavailable, the user can create the repository on GitHub and give the App access,
@@ -380,10 +402,15 @@ exact executor termination proof. Successful results and uncertain delivery do
 not grant a replay. A certified failed-chat Retry retains the exact accepted
 message identity when its predecessor stopped before identity initialization,
 so a published review can expose its authorized passive response wait.
-If an inherited task-resume attempt already recorded a result, ordinary Retry
-explains that exact replay is unavailable and directs the user to send a new
-message to continue from saved work. That new turn still passes normal current
-requester, access and executor-containment checks.
+When the exact failed GitHub request cannot be repeated (for example, the
+attempt already recorded a result, its output was already published, the run
+did not start from a GitHub message, or the requester's GitHub access changed),
+a person's Retry continues the task from its saved work instead, the same way a
+new message on the task would. That continuation runs as the person who clicked
+Retry in a fresh session, never with the GitHub requester's authority, and never
+repeats the original request or its output. It still passes the normal current
+access and executor-containment checks. Automatic Retry on a person's behalf
+does not take this path; it continues only with the exact GitHub request.
 
 If that successor failed at Retry authorization before runtime or provider
 startup, the next normal Retry follows its canonical source receipt. The exact

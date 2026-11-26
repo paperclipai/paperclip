@@ -143,7 +143,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues, context?: {
   if (provider === "acpx" && acpxAgent === "copilot" && (!configuredModel && !schemaModel || ["auto", "default"].includes((configuredModel || schemaModel).toLowerCase()))) {
     throw new Error("Select an available Copilot model before saving.");
   }
-  if (provider === "acpx" && ["cursor", "pi", "kimi"].includes(acpxAgent) && !configuredModel && !schemaModel) {
+  if (provider === "acpx" && ["cursor", "pi", "kimi", "antigravity"].includes(acpxAgent) && !configuredModel && !schemaModel) {
     throw new Error(`${acpxAgent} requires an explicit provider model`);
   }
   const managedProfileId = typeof schemaValues.managedProfileId === "string"
@@ -196,7 +196,8 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues, context?: {
     "AWS AgentCore timeoutSeconds",
   );
   const lifecycleCandidate = v.paperclipRunnerLifecycleMode ?? schemaValues.lifecycleMode;
-  const lifecycleMode = lifecycleCandidate === "warm" ? "warm" : "per_turn";
+  // No choice stores no lifecycleMode; the server applies the product default.
+  const lifecycleMode = lifecycleCandidate === "warm" || lifecycleCandidate === "per_turn" ? lifecycleCandidate : undefined;
   const configuredIdleTimeoutMs =
     v.paperclipRunnerIdleTimeoutMs ?? schemaValues.idleTimeoutMs;
   const idleTimeoutMs = resolvePaperclipRunnerIdleTimeoutMs(
@@ -322,7 +323,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues, context?: {
           timeoutSeconds,
         }
       : {}),
-    lifecycleMode,
+    ...(lifecycleMode ? { lifecycleMode } : {}),
     ...(lifecycleMode === "warm" ? { idleTimeoutMs } : {}),
   };
 }

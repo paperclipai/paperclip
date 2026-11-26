@@ -4,6 +4,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { PassThrough } from "node:stream";
 import {
   assertConfinedSandboxPath,
   parseTarVerboseListingLine,
@@ -39,6 +40,7 @@ function makeRealExec(): { exec: PodStreamExec; calls: RecordedCall[] } {
     return await new Promise((resolve, reject) => {
       const child = spawn(command[0], command.slice(1));
       let err = "";
+      let stdinError: NodeJS.ErrnoException | undefined;
       child.stderr.on("data", (chunk: Buffer) => {
         err += chunk.toString("utf-8");
       });
@@ -49,6 +51,15 @@ function makeRealExec(): { exec: PodStreamExec; calls: RecordedCall[] } {
       } else {
         child.stdout.resume();
       }
+      child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+        if (error.code !== "EPIPE") {
+          reject(error);
+          return;
+        }
+        stdinError = error;
+        io.stdin?.unpipe(child.stdin);
+        io.stdin?.destroy();
+      });
       if (io.stdin) {
         io.stdin.on("error", reject);
         io.stdin.pipe(child.stdin);
@@ -56,6 +67,10 @@ function makeRealExec(): { exec: PodStreamExec; calls: RecordedCall[] } {
         child.stdin.end();
       }
       child.on("close", (code) => {
+        if (code === 0 && stdinError) {
+          reject(stdinError);
+          return;
+        }
         resolve({ exitCode: code ?? 0, stderr: err });
       });
     });
@@ -94,6 +109,38 @@ async function makeTmp(prefix: string): Promise<string> {
 
 afterEach(async () => {
   await Promise.all(tmpDirs.splice(0).map((dir) => fs.rm(dir, { recursive: true, force: true })));
+});
+
+describe("shell exec stream lifecycle", () => {
+  it.each([0, 42])("handles an early stdin close while preserving exit status %i", async (exitCode) => {
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    stdout.once("data", () => stdin.end(Buffer.alloc(512 * 1024)));
+    const { exec } = makeRealExec();
+    try {
+      const result = exec([
+        process.execPath,
+        "-e",
+        `
+          require("node:fs").closeSync(0);
+          process.stdout.write("stdin closed\\n");
+          setTimeout(() => {
+            process.stderr.write("early rejection");
+            process.exit(${exitCode});
+          }, 100);
+        `,
+      ], { stdin, stdout });
+      if (exitCode === 0) {
+        await expect(result).rejects.toMatchObject({ code: "EPIPE" });
+      } else {
+        await expect(result).resolves.toEqual({ exitCode, stderr: "early rejection" });
+      }
+      expect(stdin.destroyed).toBe(true);
+    } finally {
+      stdin.destroy();
+      stdout.destroy();
+    }
+  });
 });
 
 describe("kubernetes file-sync path confinement", () => {

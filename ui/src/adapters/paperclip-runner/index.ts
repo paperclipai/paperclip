@@ -3,6 +3,8 @@ import type { UIAdapterModule } from "../types";
 import { parseCodexStdoutLine, buildPaperclipRunnerConfig } from "@paperclipai/adapter-codex-local/ui";
 import { CodexLocalConfigFields } from "../codex-local/config-fields";
 import { isRunLogOnlyProviderEvent } from "@/components/transcript/run-log-only-events";
+import { createBridgeCallPairing, type BridgeCallPairing } from "@/components/transcript/bridge-call-pairing";
+import { summarizeToolInput } from "@/components/task-chat/transcript-adapter";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -15,6 +17,28 @@ interface PaperclipRunnerParserState {
   structuredFinalItemIds: Set<string>;
   runtimeRequests: Map<string, Extract<TranscriptEntry, { kind: "runtime_request" }>>;
   previousPiRuntimeFailure: string | null;
+  bridgeCalls: BridgeCallPairing;
+  /** The latest row of each Paperclip tool call in flight, for a bridge call that joins it. */
+  paperclipExecutions: Map<string, { ts: string; eventType: string; summary: string; payload: JsonRecord }>;
+}
+
+/**
+ * A bridge call that belongs to an in-flight provider call (bridge-call-pairing.ts)
+ * shows on that call's row: its start adds the subject, its result adds nothing.
+ */
+function pairedBridgeEntries(event: JsonRecord, item: JsonRecord, phase: "started" | "completed", state: PaperclipRunnerParserState): TranscriptEntry[] | null {
+  const type = text(item.type).replaceAll("_", "").toLowerCase();
+  const id = type === "toolresult" ? text(item.tool_use_id, itemId(event, item)) : itemId(event, item);
+  const executionId = phase === "started" && type !== "toolresult"
+    ? state.bridgeCalls.bridgeCall(id, text(item.name, text(item.tool)) || null)
+    : state.bridgeCalls.pairedExecution(id);
+  if (!executionId) return null;
+  const row = state.paperclipExecutions.get(executionId);
+  // The same summary the settled row shows for these arguments ("u1.txt", a search query).
+  const subject = phase === "started" ? summarizeToolInput(item.input ?? item.arguments) : undefined;
+  if (!row || !subject) return [];
+  return [{ kind: "provider_activity", ts: row.ts, family: "tool_execution", eventType: row.eventType, status: "running",
+    title: "Tool execution", summary: row.summary, payload: { ...row.payload, subject } }];
 }
 
 function itemChannel(payload: JsonRecord): "progress" | "final" | "summary" | "detail" | "unknown" {
@@ -254,6 +278,10 @@ function parseItemEvent(
     return entries;
   }
   if (type === "filechange") return fileChangeEntries(event, item, phase, ts);
+  if (type === "dynamictoolcall" || type === "tooluse" || type === "toolresult") {
+    const paired = pairedBridgeEntries(event, item, phase, state);
+    if (paired) return paired;
+  }
   if (type === "dynamictoolcall") return dynamicToolEntries(event, item, phase, ts);
   if (type === "tooluse" || type === "toolresult" || type === "mcptoolcall") {
     return genericToolEntries(event, item, phase, ts);
@@ -719,6 +747,14 @@ function parsePrpEvent(
     const summary = family === "model_identity"
       ? text(payload.summary, text(payload.effectiveModel, text(payload.requestedModel, text(payload.provider, eventType))))
       : text(payload.summary, text(payload.name, text(payload.query, eventType)));
+    if (family === "tool_execution") {
+      state.bridgeCalls.execution(eventType, payload);
+      const executionId = text(payload.executionId);
+      if (executionId && payload.namespace === "paperclip") {
+        if (status === "running") state.paperclipExecutions.set(executionId, { ts, eventType, summary, payload });
+        else state.paperclipExecutions.delete(executionId);
+      }
+    }
     return [{ kind: "provider_activity", ts, family, eventType, status, title, summary, payload }];
   }
   if (eventType === "workspace.change.updated" || eventType === "workspace.diff.recorded") {
@@ -793,6 +829,8 @@ function createParserState(): PaperclipRunnerParserState {
     structuredFinalItemIds: new Set(),
     runtimeRequests: new Map(),
     previousPiRuntimeFailure: null,
+    bridgeCalls: createBridgeCallPairing(),
+    paperclipExecutions: new Map(),
   };
 }
 
