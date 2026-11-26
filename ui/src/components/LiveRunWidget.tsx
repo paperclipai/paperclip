@@ -37,14 +37,14 @@ export function LiveRunWidget({ issueId, companyId }: LiveRunWidgetProps) {
 
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
-    queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.liveRuns(issueId), issueId, (item) => item.liveRuns, () => heartbeatsApi.liveRunsForIssue(issueId)),
+    queryFn: () => readFromIssueChatBootstrap(queryClient, queryKeys.issues.liveRuns(issueId), issueId, (item) => item.liveRuns, () => heartbeatsApi.liveRunsForIssue(issueId, { background: true })),
     enabled: !!issueId,
     refetchInterval: liveRunRefetchInterval,
   });
 
   const { data: activeRun } = useQuery({
     queryKey: queryKeys.issues.activeRun(issueId),
-    queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
+    queryFn: () => heartbeatsApi.activeRunForIssue(issueId, { background: true }),
     enabled: !!issueId,
     refetchInterval: liveRunRefetchInterval,
   });

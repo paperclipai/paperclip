@@ -5908,6 +5908,10 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
   --motion-loading-spin: 750ms;
   --motion-loading-shimmer: 1100ms;
   --motion-click-feedback: 160ms;
+  --spinner-favicon-size: 32px;
+  --spinner-favicon-radius: 11.5px;
+  --spinner-favicon-stroke: 4px;
+  --spinner-favicon-track-opacity: 0.35;
 }
 
 @keyframes paperclip-spin-ring {
@@ -5969,10 +5973,8 @@ html.paperclip-browser-loading body {
 }
 
 [data-paperclip-clicked="true"] {
-  transform: scale(0.965);
   box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 45%, transparent);
-  transition: transform var(--motion-click-feedback) var(--motion-ease-standard),
-    box-shadow var(--motion-click-feedback) var(--motion-ease-standard);
+  transition: box-shadow var(--motion-click-feedback) var(--motion-ease-standard);
 }
 
 :is(button, [role="button"], [data-slot="button"]):is([data-paperclip-busy="true"], [data-loading="true"]) {

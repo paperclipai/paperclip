@@ -49,6 +49,26 @@ describe("shouldTrackFetchRequest", () => {
       }),
     ).toBe(false);
     expect(
+      shouldTrackFetchRequest("/api/issues/issue-1/active-run", undefined, {
+        origin,
+        now: 10_000,
+        lastInteractionAt: 9_950,
+        navigationWindowUntil: 11_000,
+      }),
+    ).toBe(false);
+    expect(
+      shouldTrackFetchRequest(
+        "/api/companies/c1/issues",
+        { headers: { "X-Paperclip-Background": "true" } },
+        {
+          origin,
+          now: 10_000,
+          lastInteractionAt: 9_950,
+          navigationWindowUntil: 11_000,
+        },
+      ),
+    ).toBe(false);
+    expect(
       shouldTrackFetchRequest("https://external.example.com/data", { method: "POST" }, {
         origin,
         now: 10_000,

@@ -16,22 +16,40 @@ interface SavedFaviconEntry {
   sizes: string | null;
 }
 
-let cachedSpinnerFrames: string[] | null = null;
+let cachedSpinnerKey: string | null = null;
+let cachedSpinnerFrames: string[] = [];
 
-function buildFaviconSpinnerFrames(): string[] {
-  if (cachedSpinnerFrames) return cachedSpinnerFrames;
+function readNumberToken(rootStyles: CSSStyleDeclaration, token: string): number {
+  const raw = Number.parseFloat(rootStyles.getPropertyValue(token).trim());
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+}
+
+function resolveFaviconTokens(rootStyles: CSSStyleDeclaration) {
+  const baseFontSize = Number.parseFloat(rootStyles.fontSize) || 16;
+  const size = readNumberToken(rootStyles, "--spinner-favicon-size") || baseFontSize * 2;
+  const strokeWidth = readNumberToken(rootStyles, "--spinner-favicon-stroke") || Math.max(2, Math.round(size / 8));
+  const radius = readNumberToken(rootStyles, "--spinner-favicon-radius") || (size / 2 - strokeWidth);
+  const trackAlpha = readNumberToken(rootStyles, "--spinner-favicon-track-opacity") || 0.35;
+  const trackColor = rootStyles.getPropertyValue("--muted-foreground").trim() || "GrayText";
+  const activeColor = rootStyles.getPropertyValue("--primary").trim() || "Highlight";
+  return { size, radius, strokeWidth, trackAlpha, trackColor, activeColor };
+}
+
+export function buildFaviconSpinnerFrames(): string[] {
   if (typeof document === "undefined") return [];
   try {
-    const size = 32;
+    const rootStyles = window.getComputedStyle(document.documentElement);
+    const { size, radius, strokeWidth, trackAlpha, trackColor, activeColor } = resolveFaviconTokens(rootStyles);
+    const cacheKey = `${trackColor}|${activeColor}|${size}|${radius}|${strokeWidth}|${trackAlpha}`;
+    if (cachedSpinnerKey === cacheKey && cachedSpinnerFrames.length > 0) {
+      return cachedSpinnerFrames;
+    }
+
     const canvas = document.createElement("canvas");
     canvas.width = size;
     canvas.height = size;
     const ctx = canvas.getContext("2d");
     if (!ctx) return [];
-
-    const rootStyles = window.getComputedStyle(document.documentElement);
-    const trackColor = rootStyles.getPropertyValue("--muted-foreground").trim() || "GrayText";
-    const activeColor = rootStyles.getPropertyValue("--primary").trim() || "Highlight";
 
     const frames: string[] = [];
     for (let i = 0; i < SPINNER_FRAME_COUNT; i += 1) {
@@ -39,23 +57,24 @@ function buildFaviconSpinnerFrames(): string[] {
       ctx.clearRect(0, 0, size, size);
 
       ctx.save();
-      ctx.globalAlpha = 0.35;
+      ctx.globalAlpha = trackAlpha;
       ctx.beginPath();
-      ctx.arc(size / 2, size / 2, 11.5, 0, Math.PI * 2);
+      ctx.arc(size / 2, size / 2, radius, 0, Math.PI * 2);
       ctx.strokeStyle = trackColor;
-      ctx.lineWidth = 4;
+      ctx.lineWidth = strokeWidth;
       ctx.stroke();
       ctx.restore();
 
       ctx.beginPath();
-      ctx.arc(size / 2, size / 2, 11.5, startAngle, startAngle + Math.PI * 1.25);
+      ctx.arc(size / 2, size / 2, radius, startAngle, startAngle + Math.PI * 1.25);
       ctx.strokeStyle = activeColor;
-      ctx.lineWidth = 4;
+      ctx.lineWidth = strokeWidth;
       ctx.lineCap = "round";
       ctx.stroke();
 
       frames.push(canvas.toDataURL("image/png"));
     }
+    cachedSpinnerKey = cacheKey;
     cachedSpinnerFrames = frames;
     return frames;
   } catch {
@@ -213,7 +232,7 @@ export function BrowserLoadingIndicator() {
         style={{ opacity: barVisible ? 1 : 0 }}
       >
         <div
-          className="paperclip-browser-progress-fill h-full bg-gradient-to-r from-sky-500 via-primary to-cyan-400 transition-[width] duration-150 ease-out"
+          className="paperclip-browser-progress-fill h-full bg-gradient-to-r from-primary/60 via-primary to-ring transition-[width] duration-150 ease-out"
           style={{ width: `${progress}%` }}
         />
       </div>

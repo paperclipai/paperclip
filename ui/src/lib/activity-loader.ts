@@ -20,6 +20,7 @@ const SILENT_PATH_PATTERNS = [
   /\/events(?:$|[/?])/,
   /\/stream(?:$|[/?])/,
   /\/live-runs(?:$|[/?])/,
+  /\/active-run(?:$|[/?])/,
   /\/attention(?:\/summary|\/history)?(?:$|[/?])/,
   /\/inbox-lite(?:$|[/?])/,
   /\/telemetry(?:$|[/?])/,

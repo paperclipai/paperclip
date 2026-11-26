@@ -5,7 +5,7 @@ import { Slot } from "radix-ui"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all duration-150 active:scale-95 active:brightness-95 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3) aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-colors duration-150 active:brightness-95 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-(length:--rad-3) aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive",
   {
     variants: {
       variant: {
@@ -52,6 +52,7 @@ const Button = React.forwardRef<
   size = "default",
   asChild = false,
   loading = false,
+  disabled = false,
   onClick,
   ...props
 }, ref) {
@@ -68,23 +69,26 @@ const Button = React.forwardRef<
 
   const isBusy = Boolean(loading || asyncPending)
 
-  const handleClick: React.MouseEventHandler<HTMLButtonElement> | undefined = onClick
-    ? (event) => {
-        if (isBusy) return
-        const result: unknown = onClick(event)
-        if (result && typeof (result as PromiseLike<unknown>).then === "function") {
-          setAsyncPending(true)
-          Promise.resolve(result).finally(() => {
-            if (mountedRef.current) setAsyncPending(false)
-          })
-        }
-      }
-    : undefined
+  const handleClick: React.MouseEventHandler<HTMLButtonElement> = (event) => {
+    if (isBusy) {
+      event.preventDefault()
+      event.stopPropagation()
+      return
+    }
+    const result: unknown = onClick?.(event)
+    if (result && typeof (result as PromiseLike<unknown>).then === "function") {
+      setAsyncPending(true)
+      Promise.resolve(result).finally(() => {
+        if (mountedRef.current) setAsyncPending(false)
+      })
+    }
+  }
 
   return (
     <Comp
       ref={ref}
       {...props}
+      disabled={asChild ? disabled : Boolean(disabled || isBusy)}
       data-slot="button"
       data-variant={variant}
       data-size={size}
