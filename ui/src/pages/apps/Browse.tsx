@@ -13,7 +13,7 @@ import {
   isRetiredComposioConnection,
   RETIRED_COMPOSIO_MESSAGE,
 } from "@paperclipai/shared";
-import { AssistantConnectionCard, useAssistantConnections } from "./AssistantConnection";
+import { AssistantConnectionTile, useAssistantConnections } from "./AssistantConnection";
 import { TailscaleConnectorCard } from "./TailscaleConnector";
 import { useTailscaleConnections } from "@/hooks/useTailscaleConnections";
 import type { TailscaleConnection } from "@/api/tailscale";
@@ -1261,13 +1261,6 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
             <p>This plugin isn’t in the catalog anymore.</p>
             <Button variant="outline" size="sm" onClick={() => navigate("/apps")}>Back to Plugins</Button>
           </div>
-        ) : source === "installed" && !categoryId ? (
-          <div className={cn("space-y-3", ANALYTICS_MASK_CLASS)} role="list" aria-label="Connector list">
-            {showAssistantConnection && <AssistantConnectionCard onNavigate={navigate} />}
-            {paginatedRows.map((row) => (
-              row.networkConnections ? <TailscaleConnectorCard key={row.key} onNavigate={navigate} /> : <div key={row.key} role="presentation" className="contents">{renderConnectorCard(row)}</div>
-            ))}
-          </div>
         ) : marketplace ? (
           <div className={cn("flex flex-col gap-10", ANALYTICS_MASK_CLASS)} role="list" aria-label="Connector list">
             {featuredRows.length > 0 ? <PluginShelf id="plugins-most-used" title="Most used">{featuredRows.map(renderTile)}</PluginShelf> : null}
@@ -1280,7 +1273,10 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
           </div>
         ) : (
           <div className={cn("flex flex-col gap-3", ANALYTICS_MASK_CLASS)} role="list" aria-label="Connector list">
-            <div className={PLUGIN_GRID}>{paginatedRows.map(renderTile)}</div>
+            <div className={PLUGIN_GRID}>
+              {showAssistantConnection && !categoryId ? <AssistantConnectionTile onNavigate={navigate} /> : null}
+              {paginatedRows.map(renderTile)}
+            </div>
           </div>
         )
       )}
