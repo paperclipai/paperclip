@@ -6,7 +6,6 @@ export const authUsers = pgTable("user", {
   email: text("email").notNull(),
   emailVerified: boolean("email_verified").notNull().default(false),
   image: text("image"),
-  keyboardShortcuts: boolean("keyboard_shortcuts").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
 });
@@ -22,25 +21,11 @@ export const authSessions = pgTable("session", {
   userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
 });
 
-/**
- * Better Auth's `account` model. Every column here has to exist for the
- * Drizzle adapter to accept the table at all: the adapter validates the
- * model's fields against the schema on each write and throws
- * `The field "<name>" does not exist in the "account" Drizzle schema`
- * when one is missing, which surfaces as a 500 on sign-up.
- *
- * `issuer` is the account namespace Better Auth 1.7 added. It is
- * `local:credential` for email/password accounts and
- * `local:oauth:<providerId>` for social accounts that do not declare an
- * issuer of their own, and it pairs with `account_id` as the stable
- * provider-side key — hence the unique index, which mirrors the
- * `(issuer, accountId)` unique index Better Auth declares on the model.
- */
 export const authAccounts = pgTable(
   "account",
   {
     id: text("id").primaryKey(),
-    issuer: text("issuer").notNull(),
+    issuer: text("issuer"),
     accountId: text("account_id").notNull(),
     providerId: text("provider_id").notNull(),
     userId: text("user_id").notNull().references(() => authUsers.id, { onDelete: "cascade" }),
@@ -55,7 +40,7 @@ export const authAccounts = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull(),
   },
   (table) => ({
-    issuerAccountIdUq: uniqueIndex("account_issuer_account_id_uq").on(table.issuer, table.accountId),
+    providerAccountIdUq: uniqueIndex("account_provider_account_id_uq").on(table.providerId, table.accountId),
   }),
 );
 

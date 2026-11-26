@@ -1,8 +1,11 @@
 import { AgentAvatar } from "./AgentAvatar";
 import { useCallback, useMemo, useRef, useState, useEffect } from "react";
-import type {
-  DocumentAnnotationComment,
-  DocumentAnnotationThreadWithComments,
+import {
+  DOCUMENT_ANNOTATION_COMMENT_REACTIONS,
+  type DocumentAnnotationComment,
+  type DocumentAnnotationCommentReactionName,
+  type DocumentAnnotationCommentReactionSummary,
+  type DocumentAnnotationThreadWithComments,
 } from "@paperclipai/shared";
 import {
   Check,
@@ -114,7 +117,7 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
     return { kind: "issue", issueId: props.issueId, documentKey: props.documentKey };
   }, [props.documentKey, props.issueId, props.target]);
 
-  const { createThread, addReply, updateStatus, mutationError, currentUser } = useDocumentAnnotationMutations({
+  const { createThread, addReply, updateStatus, toggleReaction, mutationError, currentUser } = useDocumentAnnotationMutations({
     target: annotationTarget,
     baseRevisionId: props.baseRevisionId,
     baseRevisionNumber: props.baseRevisionNumber,
@@ -127,19 +130,17 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
     onReplyAdded: (threadId) => setReplyDrafts((current) => ({ ...current, [threadId]: "" })),
   });
 
-  // Show every thread that can be anchored in the document (orphaned threads have
-  // lost their anchor). Filters were removed in favour of a single simple list.
   // Sort in document order (top-to-bottom) — not by recency — so the comment list
   // stays congruent with the highlights as you scroll the document.
   const visibleThreads = useMemo(
     () =>
       props.threads
-        .filter((thread) => thread.anchorState !== "orphaned")
+        .filter((thread) => thread.anchorState !== "orphaned" || thread.id === props.focusedThreadId)
         .sort((a, b) =>
           (a.normalizedStart - b.normalizedStart)
           || (a.markdownStart - b.markdownStart)
           || (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())),
-    [props.threads],
+    [props.threads, props.focusedThreadId],
   );
 
 
@@ -240,6 +241,9 @@ export function AnnotationPanelBody(props: AnnotationPanelProps) {
                 onCopyLink={() => copyAnnotationLink(props.documentKey, thread.id)}
                 pendingReply={addReply.isPending && addReply.variables?.threadId === thread.id}
                 pendingStatus={updateStatus.isPending && updateStatus.variables?.threadId === thread.id}
+                onToggleReaction={(commentId, reaction, present) =>
+                  toggleReaction.mutate({ threadId: thread.id, commentId, reaction, present })
+                }
                 agentMap={props.agentMap}
                 userProfileMap={props.userProfileMap}
               />
@@ -327,6 +331,11 @@ export function ThreadCard(props: {
   onCopyLink: () => void;
   pendingReply: boolean;
   pendingStatus: boolean;
+  onToggleReaction?: (
+    commentId: string,
+    reaction: DocumentAnnotationCommentReactionName,
+    present: boolean,
+  ) => void;
   agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
 }) {
@@ -366,6 +375,7 @@ export function ThreadCard(props: {
                 key={comment.id}
                 comment={comment}
                 focused={props.focusedCommentId === comment.id}
+                onToggleReaction={props.onToggleReaction}
                 agentMap={props.agentMap}
                 userProfileMap={props.userProfileMap}
               />
@@ -457,11 +467,17 @@ export function ThreadCard(props: {
 function CommentRow({
   comment,
   focused,
+  onToggleReaction,
   agentMap,
   userProfileMap,
 }: {
   comment: DocumentAnnotationComment;
   focused: boolean;
+  onToggleReaction?: (
+    commentId: string,
+    reaction: DocumentAnnotationCommentReactionName,
+    present: boolean,
+  ) => void;
   agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
 }) {
@@ -490,8 +506,88 @@ function CommentRow({
         <span className="shrink-0 text-muted-foreground">{relativeTime(comment.createdAt)}</span>
       </div>
       <MarkdownBody className="text-sm leading-6">{comment.body}</MarkdownBody>
+      {onToggleReaction && !comment.id.startsWith("optimistic-") ? (
+        <CommentReactions
+          comment={comment}
+          onToggle={(reaction, present) => onToggleReaction(comment.id, reaction, present)}
+          agentMap={agentMap}
+          userProfileMap={userProfileMap}
+        />
+      ) : null}
     </div>
   );
+}
+
+const REACTION_DISPLAY: Record<DocumentAnnotationCommentReactionName, { emoji: string; label: string }> = {
+  done: { emoji: "✅", label: "Done" },
+  check: { emoji: "✔️", label: "Check" },
+  thumbs_up: { emoji: "👍", label: "Thumbs up" },
+  question: { emoji: "❓", label: "Question" },
+};
+
+function CommentReactions({
+  comment,
+  onToggle,
+  agentMap,
+  userProfileMap,
+}: {
+  comment: DocumentAnnotationComment;
+  onToggle: (reaction: DocumentAnnotationCommentReactionName, present: boolean) => void;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
+  userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
+}) {
+  const byName = new Map((comment.reactions ?? []).map((entry) => [entry.reaction, entry]));
+  return (
+    <div
+      role="group"
+      aria-label="Reactions"
+      data-testid={`document-annotation-reactions-${comment.id}`}
+      className="mt-1 flex flex-wrap items-center gap-1"
+      onClick={(event) => event.stopPropagation()}
+    >
+      {DOCUMENT_ANNOTATION_COMMENT_REACTIONS.map((reaction) => {
+        const summary = byName.get(reaction);
+        const display = REACTION_DISPLAY[reaction];
+        const reacted = summary?.reactedByMe === true;
+        const count = summary?.count ?? 0;
+        const who = summary ? reactionActorNames(summary, { agentMap, userProfileMap }) : [];
+        return (
+          <Button
+            key={reaction}
+            type="button"
+            size="xs"
+            variant={reacted ? "secondary" : "ghost"}
+            aria-pressed={reacted}
+            aria-label={`${display.label}${count > 0 ? `, ${count}` : ""}`}
+            title={who.length > 0 ? `${display.label}: ${who.join(", ")}` : display.label}
+            data-reaction={reaction}
+            className={cn(
+              "px-1.5 tabular-nums",
+              reacted ? "text-foreground" : "text-muted-foreground",
+            )}
+            onClick={() => onToggle(reaction, !reacted)}
+          >
+            <span aria-hidden="true">{display.emoji}</span>
+            {count > 0 ? <span>{count}</span> : null}
+          </Button>
+        );
+      })}
+    </div>
+  );
+}
+
+function reactionActorNames(
+  summary: DocumentAnnotationCommentReactionSummary,
+  maps: {
+    agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
+    userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
+  },
+): string[] {
+  return summary.actors.map((actor) => {
+    if (actor.agentId) return maps.agentMap?.get(actor.agentId)?.name ?? actor.agentId.slice(0, 8);
+    if (actor.userId) return maps.userProfileMap?.get(actor.userId)?.label ?? actor.userId.slice(0, 8);
+    return actor.actorType === "agent" ? "Agent" : "Board";
+  });
 }
 
 /** ⌘/Ctrl + Enter submits the composer or reply. */

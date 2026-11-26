@@ -139,8 +139,8 @@ export async function renderChiefOfStaffPersona(
 }
 
 // The instruction bundle for the onboarding first agent: the chief-of-staff
-// persona as the entry AGENTS.md. The generic execution contract
-// (default/AGENTS.md) is still appended on every run by the runner, unchanged.
+// persona as the entry AGENTS.md. Runtime coordination is supplied separately
+// by the harness.
 export async function buildOnboardingFirstAgentInstructionsBundle(
   placeholders: OnboardingFirstTaskPlaceholders,
 ): Promise<{ files: Record<string, string>; entryFile: string }> {

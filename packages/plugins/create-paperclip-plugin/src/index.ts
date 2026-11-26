@@ -544,12 +544,60 @@ const manifest: PaperclipPluginManifestV1 = {
     "events.subscribe",
     "plugin.state.read",
     "plugin.state.write",
-    "ui.dashboardWidget.register"
+    "ui.dashboardWidget.register"${template === "connector" ? `,
+    "connectors.provide"` : ""}
   ],
   entrypoints: {
     worker: "./dist/worker.js",
     ui: "./dist/ui"
-  },
+  },${template === "connector" ? `
+  // A connector type for the Connectors catalog. It grants no tools by itself:
+  // an operator connects it and chooses which agents (or the whole company)
+  // can use its tools, exactly like a built-in connector.
+  apps: [
+    {
+      schemaVersion: 1,
+      slug: "records",
+      name: ${quote(displayName)},
+      description: "Look up records.",
+      categories: ["data"],
+      branding: { logoUrl: "/brands/apps/api-key-generic.svg" },
+      urlPatterns: [],
+      methods: [
+        {
+          key: "default",
+          label: "Connect",
+          transport: "plugin",
+          auth: "none",
+          ownershipModes: ["customer"],
+          whenToUse: "Look up records from this plugin.",
+          guidanceMd: "No sign-in is needed.",
+          riskTier: "S1",
+          settingsSchema: {
+            type: "object",
+            properties: { region: { type: "string", enum: ["us", "eu"] } },
+            additionalProperties: false
+          },
+          tools: {
+            kind: "static",
+            list: [
+              {
+                name: "lookup_record",
+                displayName: "Look up a record",
+                description: "Return one record by id.",
+                risk: "read",
+                parametersSchema: {
+                  type: "object",
+                  properties: { id: { type: "string" } },
+                  required: ["id"]
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],` : ""}
   ui: {
     slots: [
       {
@@ -585,7 +633,15 @@ const plugin = definePlugin({
     ctx.actions.register("ping", async () => {
       ctx.logger.info("Ping action invoked");
       return { pong: true, at: new Date().toISOString() };
-    });
+    });${template === "connector" ? `
+
+    // Each call runs on one connection. The host passes its settings (and,
+    // for authenticated methods, a credential for this call only).
+    ctx.connectors.register("records", "lookup_record", async (params, runCtx) => {
+      const { id } = params as { id: string };
+      const region = String(runCtx.connection.settings.region ?? "us");
+      return { content: \`Record \${id} (\${region})\`, data: { id, region } };
+    });` : ""}
   },
 
   async onHealth() {
@@ -651,7 +707,16 @@ describe("plugin scaffold", () => {
 
     const action = await harness.performAction<{ pong: boolean }>("ping");
     expect(action.pong).toBe(true);
-  });
+  });${template === "connector" ? `
+
+  it("serves its connector tool on a connection", async () => {
+    const harness = createTestHarness({ manifest });
+    await plugin.definition.setup(harness.ctx);
+    const result = await harness.executeConnectorTool<{ data: { region: string } }>(
+      "records", "lookup_record", { id: "r1" }, { settings: { region: "eu" } },
+    );
+    expect(result.data.region).toBe("eu");
+  });` : ""}
 });
 `,
     );

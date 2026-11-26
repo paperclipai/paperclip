@@ -190,10 +190,9 @@ its commit before writing code. For each accepted connection:
    connect, catalog discovery, an allowed read, an ask-first write, a
    denied/quarantined action, revoke, and audit. Include negative company,
    actor, resource, and changed-schema cases where applicable.
-6. Use a first-class QA child issue only when real credentials, vendor consent,
-   or browser evidence cannot be completed safely by the implementing agent.
-   Link it as a blocker and give QA exact, secret-safe steps and expected
-   evidence.
+6. If real credentials, vendor consent, or browser evidence are unavailable,
+   report the missing input and required evidence on the current task. Preserve
+   any required QA review and permission controls.
 7. Run the standard PR-preparation workflow for this connector PR. Do not hand
    it back for merge until focused verification passes, all required checks are
    green, Greptile is 5/5, and every actionable comment is resolved.

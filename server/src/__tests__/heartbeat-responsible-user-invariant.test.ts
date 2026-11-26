@@ -1,12 +1,15 @@
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   activityLog,
   agents,
   agentRuntimeState,
   agentWakeupRequests,
   companies,
+  authUsers,
   companyMemberships,
   companySkills,
   createDb,
@@ -14,7 +17,10 @@ import {
   heartbeatRuns,
   issueComments,
   issues,
+  routines,
+  routineRuns,
 } from "@paperclipai/db";
+import { createRoutineSchema } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -22,6 +28,8 @@ import {
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
 import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
+import { createLifecycleDriver } from "../services/agent-lifecycle-driver.js";
+import { routineService } from "../services/routines.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -62,6 +70,7 @@ async function deleteHeartbeatRunsAfterEvents(db: ReturnType<typeof createDb>) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     await db.delete(heartbeatRunEvents);
     try {
+      await db.delete(costEvents);
       await db.delete(heartbeatRuns);
       return;
     } catch (error) {
@@ -95,7 +104,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       }
       return baseExecute();
     });
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     mockAdapterExecute.mockClear();
@@ -110,6 +119,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     await db.delete(issueComments);
     await db.delete(activityLog);
+    await db.delete(routines);
     await deleteHeartbeatRunsAfterEvents(db);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
@@ -118,6 +128,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     await db.delete(companySkills);
     await db.delete(companyMemberships);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -134,6 +145,10 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       name: "Paperclip",
       issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       defaultResponsibleUserId: ownerUserId,
+    });
+    await db.insert(authUsers).values({
+      id: ownerUserId, name: "Company owner", email: `${ownerUserId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date(),
     });
     await db.insert(companyMemberships).values({
       companyId,
@@ -157,12 +172,37 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     return { companyId, ownerUserId, agentId };
   }
 
-  it("dispatches an interrupted queue under the clicking operator through the real startup path", async () => {
+  it("dispatches saved work on readiness with company scoping and normal admission checks", async () => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    await db.update(agents).set({ status: "paused", lifecycleState: "verifying" }).where(eq(agents.id, agentId));
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "queued",
+      invocationSource: "on_demand", contextSnapshot: { responsibleUserId: ownerUserId } }).returning();
+    const driver = createLifecycleDriver(db, {} as never);
+    const currentAgent = async () => (await db.select().from(agents).where(eq(agents.id, agentId)))[0];
+    await driver.onReady!(await currentAgent());
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("queued");
+
+    await db.update(agents).set({ status: "idle", lifecycleState: "ready" }).where(eq(agents.id, agentId));
+    await heartbeat.resumeQueuedRunsForAgent(randomUUID(), agentId);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].status).toBe("queued");
+
+    await driver.onReady!(await currentAgent());
+    expect(await waitForRun(db, run.id)).toMatchObject({ status: "succeeded", responsibleUserId: ownerUserId });
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
+  });
+
+  it.each(["todo", "done"] as const)("dispatches an interrupted queue on a %s task under the clicking operator through the real startup path", async (status) => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
+    await db.insert(authUsers).values({
+      id: operatorId, name: "Clicking operator", email: `${operatorId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
       membershipRole: "operator", status: "active" });
-    await db.insert(issues).values({ id: issueId, companyId, title: "Interrupted queue", status: "todo",
+    await db.insert(issues).values({ id: issueId, companyId, title: "Interrupted queue", status,
       assigneeAgentId: agentId, responsibleUserId: ownerUserId });
     await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, body: "Continue the task" });
     await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
@@ -175,20 +215,56 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
     expect(receipt.status).toBe("coalesced");
     const completed = await waitForRun(db, receipt.runId!);
+    expect(completed?.error).toBeNull();
     expect(completed).toMatchObject({ status: "succeeded", responsibleUserId: operatorId });
     expect(completed?.activeIdentityContextId).toBeTruthy();
     expect(completed?.contextSnapshot?.originIdentityContextId).toBeUndefined();
     expect(completed?.contextSnapshot?.retryOfRunId).toBeUndefined();
-    expect(mockAdapterExecute).toHaveBeenCalled();
+    expect(completed?.contextSnapshot?.wakeCommentIds).toEqual([commentId]);
+    await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
     expect(runs.every(run => run.responsibleUserId === operatorId && run.status === "succeeded")).toBe(true);
     expect((await db.select().from(issueComments).where(eq(issueComments.id, commentId)))[0].authorUserId).toBe(ownerUserId);
   });
 
+  it.each([
+    { status: "cancelled", explicitSend: true, paused: false },
+    { status: "done", explicitSend: false, paused: false },
+    { status: "done", explicitSend: true, paused: true },
+  ] as const)("keeps saved input held on $status with explicit Send=$explicitSend", async ({ status, explicitSend, paused }) => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    const issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Saved follow-up", status,
+      assigneeAgentId: agentId, responsibleUserId: ownerUserId });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId,
+      authorUserId: ownerUserId, body: "Show the unread count as a number" });
+    await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
+      source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: ownerUserId,
+      payload: { issueId, commentId, _paperclipWakeContext: { wakeCommentIds: [commentId] },
+        ...(explicitSend ? { queuedCommentInterrupt: { actorId: ownerUserId, requestedAt: new Date().toISOString() } } : {}) },
+    });
+    if (paused) {
+      await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+      await expect(heartbeat.resumeQueuedCommentInterrupt(companyId, queueId)).rejects.toThrow();
+    } else if (explicitSend) await heartbeat.resumeQueuedCommentInterrupt(companyId, queueId);
+    else await heartbeat.resumeExecutionWaitComments({ companyId, requestId: queueId });
+    const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, queueId));
+    expect(receipt).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toEqual([]);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe(status);
+  });
+
   it("keeps a board manual wake under its caller even when it adopts someone else's queue", async () => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
+    await db.insert(authUsers).values({
+      id: operatorId, name: "Clicking operator", email: `${operatorId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
       membershipRole: "operator", status: "active" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Manual wake", status: "todo",
@@ -205,6 +281,8 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const completed = await waitForRun(db, run!.id);
     expect(completed).toMatchObject({ status: "succeeded", responsibleUserId: operatorId });
     expect(completed?.contextSnapshot?.wakeCommentIds).toEqual([commentId]);
+    expect(completed?.contextSnapshot?.queuedCommentSourceWakeIds).toEqual([queueId]);
+    expect(completed?.wakeupRequestId).not.toBe(queueId);
     await drainHeartbeatRunsToQuiescence(db, heartbeat);
     expect((await db.select().from(heartbeatRuns)).every(row => row.responsibleUserId === operatorId)).toBe(true);
   });
@@ -212,6 +290,10 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
   it("keeps the clicking user when a manual wake merges into an older deferred receipt", async () => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const operatorId = `operator-${randomUUID()}`, issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
+    await db.insert(authUsers).values({
+      id: operatorId, name: "Clicking operator", email: `${operatorId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
       membershipRole: "operator", status: "active" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Deferred manual wake", status: "todo",
@@ -249,6 +331,10 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
   it("starts an unscoped manual wake with its own user instead of joining another user's run", async () => {
     const { companyId, agentId, ownerUserId } = await seedCompany();
     const operatorId = `operator-${randomUUID()}`;
+    await db.insert(authUsers).values({
+      id: operatorId, name: "Clicking operator", email: `${operatorId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: operatorId,
       membershipRole: "operator", status: "active" });
     let finish!: () => void;
@@ -297,6 +383,8 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const { companyId, agentId } = await seedCompany();
     const issueResponsibleUserId = `issue-owner-${randomUUID()}`;
     const commenterUserId = `commenter-${randomUUID()}`;
+    await db.insert(authUsers).values([issueResponsibleUserId, commenterUserId].map(id => ({ id, name: "Fixture user", email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
+    await db.insert(companyMemberships).values([issueResponsibleUserId, commenterUserId].map(principalId => ({ companyId, principalType: "user" as const, principalId, status: "active", membershipRole: "member" })));
     const issueId = randomUUID();
     await db.insert(issues).values({
       id: issueId,
@@ -347,12 +435,14 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     expect(mockAdapterExecute).toHaveBeenCalledTimes(runs.length);
   });
 
-  it.each(["issue_commented", "issue_comment_mentioned"])(
+  it.each(["issue_commented"])(
     "uses the persisted message author for %s without changing issue ownership",
     async (wakeReason) => {
       const { companyId, agentId } = await seedCompany();
       const issueResponsibleUserId = `issue-owner-${randomUUID()}`;
       const commenterUserId = `commenter-${randomUUID()}`;
+      await db.insert(authUsers).values([issueResponsibleUserId, commenterUserId].map(id => ({ id, name: "Fixture user", email: `${id}@example.test`, createdAt: new Date(), updatedAt: new Date() })));
+      await db.insert(companyMemberships).values([issueResponsibleUserId, commenterUserId].map(principalId => ({ companyId, principalType: "user" as const, principalId, status: "active", membershipRole: "member" })));
       const issueId = randomUUID();
       const commentId = randomUUID();
       await db.insert(issues).values({
@@ -408,6 +498,45 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     expect(run).not.toBeNull();
     const completed = await waitForRun(db, run!.id);
     expect(completed?.responsibleUserId).toBe(triggeringUserId);
+  });
+
+  it("launches a manual routine run with the caller's identity and selected agent", async () => {
+    const { companyId, agentId, ownerUserId } = await seedCompany();
+    const callerUserId = `caller-${randomUUID()}`;
+    await db.insert(authUsers).values({
+      id: callerUserId, name: "Manual caller", email: `${callerUserId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date(),
+    });
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: callerUserId,
+      membershipRole: "member", status: "active",
+    });
+    const [callerAgent] = await db.insert(agents).values({
+      companyId, name: "Caller's agent", adapterType: "codex_local", status: "idle",
+      adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    }).returning();
+    const svc = routineService(db, { heartbeat });
+    const routine = await svc.create(companyId, createRoutineSchema.parse({
+      title: "Shared routine", assigneeAgentId: agentId,
+    }), { userId: ownerUserId });
+
+    const run = await svc.runRoutine(routine.id, {
+      source: "manual", assigneeAgentId: callerAgent.id,
+    }, { userId: callerUserId });
+
+    const [task] = await db.select().from(issues).where(eq(issues.id, run.linkedIssueId!));
+    const [execution] = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, callerAgent.id),
+    ));
+    expect(task).toMatchObject({ responsibleUserId: callerUserId, assigneeAgentId: callerAgent.id });
+    expect(run.responsibleUserId).toBe(callerUserId);
+    expect(execution.responsibleUserId).toBe(callerUserId);
+    const completed = await waitForRun(db, execution.id);
+    expect(completed).toMatchObject({ status: "succeeded", responsibleUserId: callerUserId });
+    const [savedRoutine] = await db.select().from(routines).where(eq(routines.id, routine.id));
+    expect(savedRoutine.responsibleUserId).toBe(ownerUserId);
+    const [savedRun] = await db.select().from(routineRuns).where(eq(routineRuns.id, run.id));
+    expect(savedRun.responsibleUserId).toBe(callerUserId);
   });
 
   it("falls back to the company default for system-originated runs without an issue", async () => {

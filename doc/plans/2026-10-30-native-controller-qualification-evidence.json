@@ -1,0 +1,3628 @@
+{
+  "schema": "paperclip.native-controller-qualification-evidence/v1",
+  "recordedAtUtc": "2026-10-30T19:08:26.343965+00:00",
+  "qualification": "Passed isolated PostgreSQL steady, aligned-burst and matched two-logical-server ABBA correctness, absolute and relative gates, plus production database recovery-claim/restore capacity. These are component measurements.",
+  "baselineRevision": "59e191c368cb3119ff3206621fefa9c5d4ad3110",
+  "candidateRevision": "a0ef3ce7493c8bb76c4766ff007e8a390118d145",
+  "measurementHarnessRevision": "da8c7f6e1837ddd896dfe83a7524812fee813487",
+  "measurementHarnessSha256": "abaa29d50eb95013836b54b8dacc94c72e080edf24744cc5d291cc5eb1ff2818",
+  "overlapProbeSha256": "fae5f15053eab0eeac15f4689035c7225488e2b8fd9cf1920e3543b71187f25e",
+  "sourceInputs": [
+    {
+      "path": "server/src/services/native-runtime/native-runner-checkpoint.ts",
+      "candidateSha256": "d79f0e3ab44c2cea158571d9f0235aba1f9985e1e3c30ae4b347eb3e15772acf",
+      "baselineSha256": "d798cd0859ca363ae3be33c607f10b4755420d77d796824d1ee9570d0f7a253c"
+    },
+    {
+      "path": "server/src/services/native-runtime/paperclip-control-plane-port.ts",
+      "candidateSha256": "b9143eea07733b67eab80e7e000cf1018202b047c755c47533a6679b67d57c51",
+      "baselineSha256": "a1f807c5d8fbdcb30e966ebf8a4789974f6a8a7086a0056d9351da6e9817e5f2"
+    },
+    {
+      "path": "packages/paperclip-runner/src/control-plane/durable-prp-control-plane.ts",
+      "candidateSha256": "a8a8bed373cdd18397a762b9f67b04c789d9e5d63208f06c5ebe000faff090ac",
+      "baselineSha256": "a8a8bed373cdd18397a762b9f67b04c789d9e5d63208f06c5ebe000faff090ac"
+    },
+    {
+      "path": "server/src/services/native-runtime/native-execution-lease.ts",
+      "candidateSha256": "03e70c33342ce505011ff883f8f67892e3ac5f53c58eb758316b67b4b0b2b386",
+      "baselineSha256": "03e70c33342ce505011ff883f8f67892e3ac5f53c58eb758316b67b4b0b2b386"
+    }
+  ],
+  "environment": {
+    "host": "One isolated disposable AWS m7i.2xlarge Linux x86_64 VM",
+    "hostVcpus": 8,
+    "hostMemoryGiB": 32,
+    "hostSwapMiB": 0,
+    "nodeVersion": "v24.22.2",
+    "postgresMajor": 17,
+    "pnpmVersion": "9.15.4",
+    "postgresCpuLimit": 2,
+    "postgresMemoryLimitMiB": 1536,
+    "nodeCpuLimit": 2,
+    "nodeMemoryLimitMiB": 1536,
+    "perServerPoolLimits": {
+      "request": 10,
+      "liveness": 2,
+      "checkpoint": 2
+    },
+    "observerConnectionLimit": 1,
+    "leaseDurationMs": 60000,
+    "remoteReconnectGraceMs": 420000
+  },
+  "fixture": {
+    "historicalTasks": 10000,
+    "controllers": 300,
+    "phaseDurationSeconds": 65,
+    "controlIntervalSeconds": 5,
+    "controlPayloadBytes": 4096,
+    "snapshotsPerControl": 1,
+    "mainProfileOrder": [
+      "baseline",
+      "candidate",
+      "candidate",
+      "baseline"
+    ],
+    "baselineAndCandidateUseIdenticalDependencyBytes": true,
+    "normalRequestAndLeaseRenewalImplementationsAreCommonControls": true
+  },
+  "profiles": {
+    "steady": {
+      "schema": "paperclip.normal-recovery-load/v1",
+      "scope": "Paired baseline/candidate, including real PaperclipControlPlanePort snapshot persistence on every control checkpoint. Database/control-plane component stress; real production checkpoint writer and natural remote lease timers. Same synthetic DB request load. Not full HTTP, harness or hosted capacity qualification.",
+      "hardware": {
+        "postgresCpuLimit": 2,
+        "postgresMemoryLimitMiB": 1536,
+        "mainPool": 10,
+        "livenessPool": 2,
+        "candidateCheckpointPool": 2
+      },
+      "workload": {
+        "mode": "steady",
+        "normalReadsPerSecond": 500,
+        "normalWritesPerSecond": 100,
+        "databaseAdmissionEverySeconds": 5,
+        "checkpointControlEverySeconds": 5,
+        "controlPayloadBytes": 4096,
+        "phaseSeconds": 65,
+        "snapshotTransactionsPerControl": 1,
+        "baselineCheckpointPool": 2,
+        "baselineRenewalIntervalSeconds": 20,
+        "candidateRenewalIntervalSeconds": 20,
+        "historicalIssues": 10000
+      },
+      "passed": true,
+      "comparable": true,
+      "measurementLimits": [
+        "Database request latency is not HTTP latency",
+        "Pool queue includes client encoding; BEGIN response includes network time",
+        "pg_stat_statements execution includes lock waits; lock episodes report sampled duration bounds, with short waits potentially missed",
+        "Peak memory is sampled once a second",
+        "Use an otherwise idle cluster and host; WAL and cgroup CPU are cluster-wide"
+      ],
+      "sourceReport": "/tmp/native-controller-load-qualification-20261030/remote/evidence/steady/report.json",
+      "relative": {
+        "postgresCpuUsec": {
+          "baseline": 656.5912310954723,
+          "candidate": 664.3645165800573,
+          "increasePercent": 1.183885059143397,
+          "passed": true
+        },
+        "walBytes": {
+          "baseline": 1532.2154125789389,
+          "candidate": 1559.9179735744415,
+          "increasePercent": 1.8080069400212562,
+          "passed": true
+        },
+        "requestP99": {
+          "baseline": 91.71616899999935,
+          "candidate": 93.46717100001115,
+          "increasePercent": 1.9091530087915087,
+          "passed": true
+        }
+      },
+      "results": [
+        {
+          "label": "01_baseline_300",
+          "variant": "baseline",
+          "n": 300,
+          "durationMs": 65000,
+          "startedAt": "2026-10-30T18:43:31.121Z",
+          "endedAt": "2026-10-30T18:44:36.144Z",
+          "normalOffered": 32500,
+          "normalCompleted": 32500,
+          "normalWritesOffered": 6500,
+          "normalWritesCompleted": 6500,
+          "admissionsOffered": 13,
+          "admissionsCompleted": 13,
+          "controls": 3900,
+          "checkpointTransactions": 3900,
+          "snapshotTransactions": 3900,
+          "changedRows": 7800,
+          "changedBytes": 17371500,
+          "sqlCount": 54687,
+          "livenessSqlCount": 4502,
+          "checkpointSqlCount": 15601,
+          "walBytes": 67048632,
+          "postgresCpuUsec": 28159533,
+          "postgresPeakSampledMemoryBytes": 917352448,
+          "renewalLosses": 0,
+          "dropped": 0,
+          "errors": [],
+          "drainMs": 19.461555999994744,
+          "correctnessPassed": true,
+          "absoluteGates": {
+            "requestP99": true,
+            "drain": true,
+            "throughput": true,
+            "postgresCpu": true,
+            "postgresMemory": true
+          },
+          "passed": true,
+          "normalReadSummary": {
+            "n": 32500,
+            "p50": 23.630726999996114,
+            "p95": 104.30216500000097,
+            "p99": 107.72847300001013,
+            "max": 111.46659400001226
+          },
+          "normalWriteSummary": {
+            "n": 6500,
+            "p50": 28.412395999999717,
+            "p95": 109.15322800001013,
+            "p99": 112.54311900000903,
+            "max": 117.06165799999872
+          },
+          "controlLatencySummary": {
+            "n": 3900,
+            "p50": 14.350610333334771,
+            "p95": 21.62447166666243,
+            "p99": 42.645023666656925,
+            "max": 92.58285566666018
+          },
+          "checkpointLatencySummary": {
+            "n": 3900,
+            "p50": 4.567198000004282,
+            "p95": 6.6246809999938705,
+            "p99": 11.499447000001965,
+            "max": 34.80159999999887
+          },
+          "snapshotLatencySummary": {
+            "n": 3900,
+            "p50": 4.406659000000218,
+            "p95": 8.00715200000559,
+            "p99": 12.106628999998065,
+            "max": 81.07146300000022
+          },
+          "poolQueueByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 0.031578000001900364,
+              "p95": 3.2165359999999055,
+              "p99": 6.9602370000066,
+              "max": 65.06650499999887
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 222.9600139999966,
+              "p95": 408.67597899999964,
+              "p99": 436.3592290000015,
+              "max": 446.41857600000367
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 0.03176600000006147,
+              "p95": 0.044882999995024875,
+              "p99": 0.18860399999903166,
+              "max": 17.319057000000612
+            }
+          },
+          "transactionLatencyByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 4.37169300000096,
+              "p95": 8.198765000001004,
+              "p99": 12.514188999994076,
+              "max": 81.02461400000175
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 226.25227900000027,
+              "p95": 412.00253099999827,
+              "p99": 440.3486919999996,
+              "max": 448.6205390000032
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 4.4467920000024606,
+              "p95": 6.499621000002662,
+              "p99": 11.388421999999991,
+              "max": 34.62909299999956
+            }
+          },
+          "sqlAllApplicationPools": 74790,
+          "sampledPeakDatabaseActivityRows": 15,
+          "postgresThrottledUsec": 0,
+          "lockWait": {
+            "intervalMs": 25,
+            "samples": 2563,
+            "gapsMs": {
+              "n": 2563,
+              "p50": 25.121846000001824,
+              "p95": 26.47124900000199,
+              "p99": 28.41609900000185,
+              "max": 86.58039899999858
+            },
+            "byPool": {
+              "benchmark-application": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-controller-lease": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-runner-checkpoint": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              }
+            },
+            "errors": [],
+            "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+          },
+          "lockObserverSql": [
+            {
+              "calls": 2563,
+              "total_exec_time": 222.99437100000054,
+              "rows": 0
+            }
+          ],
+          "nodeCpu": {
+            "user": 20498304,
+            "system": 1761522
+          },
+          "nodeCpuAverageOneCorePercent": 34.23372797056988,
+          "eventLoopDelay": {
+            "p95Ms": 11.337727,
+            "p99Ms": 12.173311,
+            "maxMs": 70.975487
+          },
+          "peakSampledNodeRssBytes": 829227008,
+          "peakSampledNodeHeapBytes": 579761248,
+          "postgresStatementExecutionMs": 7781.774002,
+          "lockObserverExecutionMs": 222.99437100000054
+        },
+        {
+          "label": "02_candidate_300",
+          "variant": "candidate",
+          "n": 300,
+          "durationMs": 65000,
+          "startedAt": "2026-10-30T18:44:42.986Z",
+          "endedAt": "2026-10-30T18:45:48.008Z",
+          "normalOffered": 32500,
+          "normalCompleted": 32500,
+          "normalWritesOffered": 6500,
+          "normalWritesCompleted": 6500,
+          "admissionsOffered": 13,
+          "admissionsCompleted": 13,
+          "controls": 3900,
+          "checkpointTransactions": 3900,
+          "snapshotTransactions": 3900,
+          "changedRows": 7800,
+          "changedBytes": 17371500,
+          "sqlCount": 54687,
+          "livenessSqlCount": 4502,
+          "checkpointSqlCount": 15601,
+          "walBytes": 67046184,
+          "postgresCpuUsec": 28544913,
+          "postgresPeakSampledMemoryBytes": 901398528,
+          "renewalLosses": 0,
+          "dropped": 0,
+          "errors": [],
+          "drainMs": 18.60484000001452,
+          "correctnessPassed": true,
+          "absoluteGates": {
+            "requestP99": true,
+            "drain": true,
+            "throughput": true,
+            "postgresCpu": true,
+            "postgresMemory": true
+          },
+          "passed": true,
+          "normalReadSummary": {
+            "n": 32500,
+            "p50": 52.137395999990986,
+            "p95": 73.59120199998142,
+            "p99": 80.18543700000737,
+            "max": 160.65012499998556
+          },
+          "normalWriteSummary": {
+            "n": 6500,
+            "p50": 56.79107799999474,
+            "p95": 79.06722500000615,
+            "p99": 124.89146799998707,
+            "max": 164.84574299998349
+          },
+          "controlLatencySummary": {
+            "n": 3900,
+            "p50": 14.875081999998656,
+            "p95": 22.424880666658282,
+            "p99": 59.884479666667175,
+            "max": 174.85218533332227
+          },
+          "checkpointLatencySummary": {
+            "n": 3900,
+            "p50": 4.532260000007227,
+            "p95": 6.7100529999879654,
+            "p99": 14.624643999995897,
+            "max": 70.33155800000532
+          },
+          "snapshotLatencySummary": {
+            "n": 3900,
+            "p50": 4.792860999994446,
+            "p95": 8.380057000002125,
+            "p99": 14.55555699999968,
+            "max": 96.5399219999963
+          },
+          "poolQueueByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 0.03197399998316541,
+              "p95": 3.4958060000208206,
+              "p99": 8.42655800000648,
+              "max": 86.68744899999001
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 226.07839499998954,
+              "p95": 631.9207260000112,
+              "p99": 687.6313799999916,
+              "max": 700.4564780000073
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 0.03252500000235159,
+              "p95": 0.04554400000779424,
+              "p99": 1.5021660000056727,
+              "max": 30.859597000002395
+            }
+          },
+          "transactionLatencyByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 4.757719000001089,
+              "p95": 8.515767000004416,
+              "p99": 14.811911999990116,
+              "max": 96.50402399999439
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 228.28790900000604,
+              "p95": 634.5756129999936,
+              "p99": 689.5229259999905,
+              "max": 703.2544249999919
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 4.425221999990754,
+              "p95": 6.599863999988884,
+              "p99": 14.496323999992455,
+              "max": 70.18957200000295
+            }
+          },
+          "sqlAllApplicationPools": 74790,
+          "sampledPeakDatabaseActivityRows": 14,
+          "postgresThrottledUsec": 0,
+          "lockWait": {
+            "intervalMs": 25,
+            "samples": 2564,
+            "gapsMs": {
+              "n": 2564,
+              "p50": 25.082806999998866,
+              "p95": 26.16317899999558,
+              "p99": 28.29036499999347,
+              "max": 96.75551200000336
+            },
+            "byPool": {
+              "benchmark-application": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-controller-lease": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-runner-checkpoint": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              }
+            },
+            "errors": [],
+            "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+          },
+          "lockObserverSql": [
+            {
+              "calls": 2564,
+              "total_exec_time": 222.22588199999979,
+              "rows": 0
+            }
+          ],
+          "nodeCpu": {
+            "user": 21447274,
+            "system": 1827953
+          },
+          "nodeCpuAverageOneCorePercent": 35.79597645613477,
+          "eventLoopDelay": {
+            "p95Ms": 10.903551,
+            "p99Ms": 12.877823,
+            "maxMs": 70.778879
+          },
+          "peakSampledNodeRssBytes": 861179904,
+          "peakSampledNodeHeapBytes": 612108352,
+          "postgresStatementExecutionMs": 7869.057230000005,
+          "lockObserverExecutionMs": 222.22588199999979
+        },
+        {
+          "label": "03_candidate_300",
+          "variant": "candidate",
+          "n": 300,
+          "durationMs": 65000,
+          "startedAt": "2026-10-30T18:45:55.253Z",
+          "endedAt": "2026-10-30T18:47:00.271Z",
+          "normalOffered": 32500,
+          "normalCompleted": 32500,
+          "normalWritesOffered": 6500,
+          "normalWritesCompleted": 6500,
+          "admissionsOffered": 13,
+          "admissionsCompleted": 13,
+          "controls": 3900,
+          "checkpointTransactions": 3900,
+          "snapshotTransactions": 3900,
+          "changedRows": 7800,
+          "changedBytes": 17371500,
+          "sqlCount": 54687,
+          "livenessSqlCount": 4502,
+          "checkpointSqlCount": 15601,
+          "walBytes": 66835336,
+          "postgresCpuUsec": 28474836,
+          "postgresPeakSampledMemoryBytes": 890142720,
+          "renewalLosses": 0,
+          "dropped": 0,
+          "errors": [],
+          "drainMs": 14.864391999988584,
+          "correctnessPassed": true,
+          "absoluteGates": {
+            "requestP99": true,
+            "drain": true,
+            "throughput": true,
+            "postgresCpu": true,
+            "postgresMemory": true
+          },
+          "passed": true,
+          "normalReadSummary": {
+            "n": 32500,
+            "p50": 70.75364599999739,
+            "p95": 101.21604299999308,
+            "p99": 106.74890500001493,
+            "max": 184.49763100000564
+          },
+          "normalWriteSummary": {
+            "n": 6500,
+            "p50": 75.31148000000394,
+            "p95": 106.2007309999899,
+            "p99": 112.02943600001163,
+            "max": 189.8124850000022
+          },
+          "controlLatencySummary": {
+            "n": 3900,
+            "p50": 14.700123333343072,
+            "p95": 22.93642300000647,
+            "p99": 74.96976966666989,
+            "max": 167.43050899999798
+          },
+          "checkpointLatencySummary": {
+            "n": 3900,
+            "p50": 4.546646000002511,
+            "p95": 6.599335000006249,
+            "p99": 16.56861200000276,
+            "max": 66.67637499998091
+          },
+          "snapshotLatencySummary": {
+            "n": 3900,
+            "p50": 4.787251000001561,
+            "p95": 9.346571000001859,
+            "p99": 17.659020999999484,
+            "max": 89.22574900000473
+          },
+          "poolQueueByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 0.032805000024382025,
+              "p95": 3.5023479999799747,
+              "p99": 7.330482000019401,
+              "max": 22.141313000000082
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 229.3470420000085,
+              "p95": 658.2537230000016,
+              "p99": 692.6467640000046,
+              "max": 699.1289490000054
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 0.034085999999661,
+              "p95": 0.048119000013684854,
+              "p99": 4.801466999982949,
+              "max": 22.820584999979474
+            }
+          },
+          "transactionLatencyByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 4.7497089999960735,
+              "p95": 9.576310999982525,
+              "p99": 17.61802799999714,
+              "max": 89.19793199998094
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 232.34173700000974,
+              "p95": 665.4881870000099,
+              "p99": 694.4492489999975,
+              "max": 701.2261050000088
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 4.438666999980342,
+              "p95": 6.487386000022525,
+              "p99": 16.5198870000022,
+              "max": 66.55283199998667
+            }
+          },
+          "sqlAllApplicationPools": 74790,
+          "sampledPeakDatabaseActivityRows": 14,
+          "postgresThrottledUsec": 0,
+          "lockWait": {
+            "intervalMs": 25,
+            "samples": 2560,
+            "gapsMs": {
+              "n": 2560,
+              "p50": 25.087980000011157,
+              "p95": 26.18886699998984,
+              "p99": 29.31080700000166,
+              "max": 87.73278699998627
+            },
+            "byPool": {
+              "benchmark-application": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-controller-lease": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-runner-checkpoint": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              }
+            },
+            "errors": [],
+            "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+          },
+          "lockObserverSql": [
+            {
+              "calls": 2560,
+              "total_exec_time": 228.186316,
+              "rows": 0
+            }
+          ],
+          "nodeCpu": {
+            "user": 21036535,
+            "system": 1821778
+          },
+          "nodeCpuAverageOneCorePercent": 35.15690455164375,
+          "eventLoopDelay": {
+            "p95Ms": 11.026431,
+            "p99Ms": 13.180927,
+            "maxMs": 74.579967
+          },
+          "peakSampledNodeRssBytes": 867966976,
+          "peakSampledNodeHeapBytes": 609559232,
+          "postgresStatementExecutionMs": 7841.367742000012,
+          "lockObserverExecutionMs": 228.186316
+        },
+        {
+          "label": "04_baseline_300",
+          "variant": "baseline",
+          "n": 300,
+          "durationMs": 65000,
+          "startedAt": "2026-10-30T18:47:06.695Z",
+          "endedAt": "2026-10-30T18:48:11.712Z",
+          "normalOffered": 32500,
+          "normalCompleted": 32500,
+          "normalWritesOffered": 6500,
+          "normalWritesCompleted": 6500,
+          "admissionsOffered": 13,
+          "admissionsCompleted": 13,
+          "controls": 3900,
+          "checkpointTransactions": 3900,
+          "snapshotTransactions": 3900,
+          "changedRows": 7800,
+          "changedBytes": 17371500,
+          "sqlCount": 54687,
+          "livenessSqlCount": 4502,
+          "checkpointSqlCount": 15601,
+          "walBytes": 64455288,
+          "postgresCpuUsec": 28193066,
+          "postgresPeakSampledMemoryBytes": 876048384,
+          "renewalLosses": 0,
+          "dropped": 0,
+          "errors": [],
+          "drainMs": 14.899754000012763,
+          "correctnessPassed": true,
+          "absoluteGates": {
+            "requestP99": true,
+            "drain": true,
+            "throughput": true,
+            "postgresCpu": true,
+            "postgresMemory": true
+          },
+          "passed": true,
+          "normalReadSummary": {
+            "n": 32500,
+            "p50": 44.329154999984894,
+            "p95": 69.53714800003218,
+            "p99": 75.70386499998858,
+            "max": 144.0518920000177
+          },
+          "normalWriteSummary": {
+            "n": 6500,
+            "p50": 49.25532100000419,
+            "p95": 75.08631300000707,
+            "p99": 122.02264599999762,
+            "max": 148.6692589999875
+          },
+          "controlLatencySummary": {
+            "n": 3900,
+            "p50": 14.625869666662766,
+            "p95": 21.669017333333613,
+            "p99": 61.56695066665998,
+            "max": 185.71976100001484
+          },
+          "checkpointLatencySummary": {
+            "n": 3900,
+            "p50": 4.66447999997763,
+            "p95": 6.80966199998511,
+            "p99": 16.252097999997204,
+            "max": 80.11221200000728
+          },
+          "snapshotLatencySummary": {
+            "n": 3900,
+            "p50": 4.480548000021372,
+            "p95": 8.228377999999793,
+            "p99": 14.50026900001103,
+            "max": 103.96219200000633
+          },
+          "poolQueueByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 0.032313000003341585,
+              "p95": 3.0398300000233576,
+              "p99": 7.722563000017544,
+              "max": 90.98564000002807
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 225.77165700000478,
+              "p95": 577.020279999997,
+              "p99": 636.1102529999916,
+              "max": 644.8716770000174
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 0.033404999994672835,
+              "p95": 0.04764499998418614,
+              "p99": 3.443251999997301,
+              "max": 24.120947999996133
+            }
+          },
+          "transactionLatencyByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 4.446676999999909,
+              "p95": 8.55906799994409,
+              "p99": 14.462981000018772,
+              "max": 103.91490999999223
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 228.31017700000666,
+              "p95": 580.3901179999812,
+              "p99": 639.0160339999711,
+              "max": 646.8926890000002
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 4.548077000014018,
+              "p95": 6.678080999990925,
+              "p99": 15.536747000005562,
+              "max": 79.98216100002173
+            }
+          },
+          "sqlAllApplicationPools": 74790,
+          "sampledPeakDatabaseActivityRows": 14,
+          "postgresThrottledUsec": 0,
+          "lockWait": {
+            "intervalMs": 25,
+            "samples": 2555,
+            "gapsMs": {
+              "n": 2555,
+              "p50": 25.13867300003767,
+              "p95": 26.488039000018034,
+              "p99": 28.65206400002353,
+              "max": 90.49584500002675
+            },
+            "byPool": {
+              "benchmark-application": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-controller-lease": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-runner-checkpoint": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              }
+            },
+            "errors": [],
+            "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+          },
+          "lockObserverSql": [
+            {
+              "calls": 2555,
+              "total_exec_time": 226.8500740000005,
+              "rows": 0
+            }
+          ],
+          "nodeCpu": {
+            "user": 21150924,
+            "system": 1781032
+          },
+          "nodeCpuAverageOneCorePercent": 35.27067846892734,
+          "eventLoopDelay": {
+            "p95Ms": 11.354111,
+            "p99Ms": 12.230655,
+            "maxMs": 70.909951
+          },
+          "peakSampledNodeRssBytes": 869142528,
+          "peakSampledNodeHeapBytes": 618486624,
+          "postgresStatementExecutionMs": 7824.61821599999,
+          "lockObserverExecutionMs": 226.8500740000005
+        }
+      ]
+    },
+    "burst": {
+      "schema": "paperclip.normal-recovery-load/v1",
+      "scope": "Paired baseline/candidate, including real PaperclipControlPlanePort snapshot persistence on every control checkpoint. Database/control-plane component stress; real production checkpoint writer and natural remote lease timers. Same synthetic DB request load. Not full HTTP, harness or hosted capacity qualification.",
+      "hardware": {
+        "postgresCpuLimit": 2,
+        "postgresMemoryLimitMiB": 1536,
+        "mainPool": 10,
+        "livenessPool": 2,
+        "candidateCheckpointPool": 2
+      },
+      "workload": {
+        "mode": "burst",
+        "normalReadsPerSecond": 100,
+        "normalWritesPerSecond": 20,
+        "databaseAdmissionEverySeconds": 5,
+        "checkpointControlEverySeconds": 5,
+        "controlPayloadBytes": 4096,
+        "phaseSeconds": 65,
+        "snapshotTransactionsPerControl": 1,
+        "baselineCheckpointPool": 2,
+        "baselineRenewalIntervalSeconds": 20,
+        "candidateRenewalIntervalSeconds": 20,
+        "historicalIssues": 10000
+      },
+      "passed": true,
+      "comparable": true,
+      "measurementLimits": [
+        "Database request latency is not HTTP latency",
+        "Pool queue includes client encoding; BEGIN response includes network time",
+        "pg_stat_statements execution includes lock waits; lock episodes report sampled duration bounds, with short waits potentially missed",
+        "Peak memory is sampled once a second",
+        "Use an otherwise idle cluster and host; WAL and cgroup CPU are cluster-wide"
+      ],
+      "sourceReport": "/tmp/native-controller-load-qualification-20261030/remote/evidence/burst/report.json",
+      "relative": {
+        "postgresCpuUsec": {
+          "baseline": 1212.0604029710578,
+          "candidate": 1253.290446512422,
+          "increasePercent": 3.4016492445672952,
+          "passed": true
+        },
+        "walBytes": {
+          "baseline": 4214.911636643046,
+          "candidate": 4322.979253820542,
+          "increasePercent": 2.563935533973982,
+          "passed": true
+        },
+        "requestP99": {
+          "baseline": 99.50419749999128,
+          "candidate": 103.2992319999903,
+          "increasePercent": 3.813944130346214,
+          "passed": true
+        }
+      },
+      "results": [
+        {
+          "label": "01_baseline_300",
+          "variant": "baseline",
+          "n": 300,
+          "durationMs": 65000,
+          "startedAt": "2026-10-30T18:48:31.444Z",
+          "endedAt": "2026-10-30T18:49:37.203Z",
+          "normalOffered": 6500,
+          "normalCompleted": 6500,
+          "normalWritesOffered": 1300,
+          "normalWritesCompleted": 1300,
+          "admissionsOffered": 13,
+          "admissionsCompleted": 13,
+          "controls": 3900,
+          "checkpointTransactions": 3900,
+          "snapshotTransactions": 3900,
+          "changedRows": 7800,
+          "changedBytes": 17371500,
+          "sqlCount": 23487,
+          "livenessSqlCount": 4502,
+          "checkpointSqlCount": 15601,
+          "walBytes": 50551328,
+          "postgresCpuUsec": 14274208,
+          "postgresPeakSampledMemoryBytes": 987574272,
+          "renewalLosses": 0,
+          "dropped": 0,
+          "errors": [],
+          "drainMs": 754.7449020000058,
+          "correctnessPassed": true,
+          "absoluteGates": {
+            "requestP99": true,
+            "drain": true,
+            "throughput": true,
+            "postgresCpu": true,
+            "postgresMemory": true
+          },
+          "passed": true,
+          "normalReadSummary": {
+            "n": 6500,
+            "p50": 74.4481569999989,
+            "p95": 98.20989800000098,
+            "p99": 101.2616299999936,
+            "max": 169.48861500000203
+          },
+          "normalWriteSummary": {
+            "n": 1300,
+            "p50": 76.8531340000045,
+            "p95": 100.53923999999824,
+            "p99": 103.82765900000231,
+            "max": 171.57443800000328
+          },
+          "controlLatencySummary": {
+            "n": 3900,
+            "p50": 504.43135499999335,
+            "p95": 904.9732890000014,
+            "p99": 987.5739109999995,
+            "max": 1058.7055260000052
+          },
+          "checkpointLatencySummary": {
+            "n": 3900,
+            "p50": 464.0462219999972,
+            "p95": 860.9761490000092,
+            "p99": 942.788827999997,
+            "max": 998.9880149999954
+          },
+          "snapshotLatencySummary": {
+            "n": 3900,
+            "p50": 5.402625000002445,
+            "p95": 9.567354999999225,
+            "p99": 32.887894999999844,
+            "max": 80.82659199999762
+          },
+          "poolQueueByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 0.01833500000066124,
+              "p95": 0.03541399999812711,
+              "p99": 1.1884140000038315,
+              "max": 35.858127999992575
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 577.4616719999976,
+              "p95": 935.9824230000013,
+              "p99": 967.3116440000013,
+              "max": 986.1326500000141
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 458.1738780000014,
+              "p95": 856.6399959999981,
+              "p99": 936.7588849999993,
+              "max": 995.3760920000059
+            }
+          },
+          "transactionLatencyByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 5.375102999998489,
+              "p95": 9.639744000000064,
+              "p99": 39.09893100000045,
+              "max": 90.62846400000126
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 582.0743040000016,
+              "p95": 940.3565129999988,
+              "p99": 971.0303759999952,
+              "max": 991.3499540000048
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 463.99203199999465,
+              "p95": 860.9391810000088,
+              "p99": 942.7536680000012,
+              "max": 998.9510200000077
+            }
+          },
+          "sqlAllApplicationPools": 43590,
+          "sampledPeakDatabaseActivityRows": 14,
+          "postgresThrottledUsec": 0,
+          "lockWait": {
+            "intervalMs": 25,
+            "samples": 2555,
+            "gapsMs": {
+              "n": 2555,
+              "p50": 25.1262850000021,
+              "p95": 26.189194999999017,
+              "p99": 62.625012000000424,
+              "max": 86.79922200000146
+            },
+            "byPool": {
+              "benchmark-application": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-controller-lease": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-runner-checkpoint": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              }
+            },
+            "errors": [],
+            "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+          },
+          "lockObserverSql": [
+            {
+              "calls": 2555,
+              "total_exec_time": 216.60417100000035,
+              "rows": 0
+            }
+          ],
+          "nodeCpu": {
+            "user": 18625390,
+            "system": 871929
+          },
+          "nodeCpuAverageOneCorePercent": 29.649551657605677,
+          "eventLoopDelay": {
+            "p95Ms": 10.977279,
+            "p99Ms": 12.943359,
+            "maxMs": 70.647807
+          },
+          "peakSampledNodeRssBytes": 809156608,
+          "peakSampledNodeHeapBytes": 509942048,
+          "postgresStatementExecutionMs": 3523.919157,
+          "lockObserverExecutionMs": 216.60417100000035
+        },
+        {
+          "label": "02_candidate_300",
+          "variant": "candidate",
+          "n": 300,
+          "durationMs": 65000,
+          "startedAt": "2026-10-30T18:49:43.659Z",
+          "endedAt": "2026-10-30T18:50:49.402Z",
+          "normalOffered": 6500,
+          "normalCompleted": 6500,
+          "normalWritesOffered": 1300,
+          "normalWritesCompleted": 1300,
+          "admissionsOffered": 13,
+          "admissionsCompleted": 13,
+          "controls": 3900,
+          "checkpointTransactions": 3900,
+          "snapshotTransactions": 3900,
+          "changedRows": 7800,
+          "changedBytes": 17371500,
+          "sqlCount": 23487,
+          "livenessSqlCount": 4502,
+          "checkpointSqlCount": 15601,
+          "walBytes": 50596552,
+          "postgresCpuUsec": 14685071,
+          "postgresPeakSampledMemoryBytes": 990670848,
+          "renewalLosses": 0,
+          "dropped": 0,
+          "errors": [],
+          "drainMs": 739.15390200002,
+          "correctnessPassed": true,
+          "absoluteGates": {
+            "requestP99": true,
+            "drain": true,
+            "throughput": true,
+            "postgresCpu": true,
+            "postgresMemory": true
+          },
+          "passed": true,
+          "normalReadSummary": {
+            "n": 6500,
+            "p50": 66.31109799999103,
+            "p95": 99.20572600000014,
+            "p99": 102.6184629999916,
+            "max": 152.73279199999524
+          },
+          "normalWriteSummary": {
+            "n": 1300,
+            "p50": 69.19254099999671,
+            "p95": 101.30469299998367,
+            "p99": 151.40168099998846,
+            "max": 156.07804199999373
+          },
+          "controlLatencySummary": {
+            "n": 3900,
+            "p50": 545.065419999999,
+            "p95": 943.5618349999859,
+            "p99": 1053.6890769999882,
+            "max": 1114.0595559999929
+          },
+          "checkpointLatencySummary": {
+            "n": 3900,
+            "p50": 503.06268100001034,
+            "p95": 899.0765079999983,
+            "p99": 1003.1476519999997,
+            "max": 1050.1976159999904
+          },
+          "snapshotLatencySummary": {
+            "n": 3900,
+            "p50": 5.609040000010282,
+            "p95": 10.175828000006732,
+            "p99": 66.40549299999839,
+            "max": 77.22545900000841
+          },
+          "poolQueueByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 0.018979999993462116,
+              "p95": 0.03818100001080893,
+              "p99": 1.3919429999950808,
+              "max": 60.06078600001638
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 618.575686000011,
+              "p95": 1052.3832659999898,
+              "p99": 1074.6600569999719,
+              "max": 1082.593469000014
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 498.0827250000002,
+              "p95": 893.5146509999904,
+              "p99": 996.6987400000071,
+              "max": 1045.0579469999939
+            }
+          },
+          "transactionLatencyByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 5.584780999997747,
+              "p95": 10.301430999999866,
+              "p99": 66.71016699999745,
+              "max": 79.74655799999891
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 625.6686590000027,
+              "p95": 1054.6769740000018,
+              "p99": 1076.872750999988,
+              "max": 1084.9572240000125
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 503.0248439999996,
+              "p95": 899.0387380000029,
+              "p99": 1003.1150250000064,
+              "max": 1050.135020000016
+            }
+          },
+          "sqlAllApplicationPools": 43590,
+          "sampledPeakDatabaseActivityRows": 14,
+          "postgresThrottledUsec": 0,
+          "lockWait": {
+            "intervalMs": 25,
+            "samples": 2542,
+            "gapsMs": {
+              "n": 2542,
+              "p50": 25.161112000001594,
+              "p95": 26.290963999999803,
+              "p99": 69.67558000001009,
+              "max": 85.49304400000256
+            },
+            "byPool": {
+              "benchmark-application": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-controller-lease": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-runner-checkpoint": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              }
+            },
+            "errors": [],
+            "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+          },
+          "lockObserverSql": [
+            {
+              "calls": 2542,
+              "total_exec_time": 216.69468099999958,
+              "rows": 0
+            }
+          ],
+          "nodeCpu": {
+            "user": 17900804,
+            "system": 947711
+          },
+          "nodeCpuAverageOneCorePercent": 28.670043958722392,
+          "eventLoopDelay": {
+            "p95Ms": 11.100159,
+            "p99Ms": 12.918783,
+            "maxMs": 71.368703
+          },
+          "peakSampledNodeRssBytes": 870387712,
+          "peakSampledNodeHeapBytes": 576073168,
+          "postgresStatementExecutionMs": 3486.1393980000007,
+          "lockObserverExecutionMs": 216.69468099999958
+        },
+        {
+          "label": "03_candidate_300",
+          "variant": "candidate",
+          "n": 300,
+          "durationMs": 65000,
+          "startedAt": "2026-10-30T18:50:56.635Z",
+          "endedAt": "2026-10-30T18:52:02.382Z",
+          "normalOffered": 6500,
+          "normalCompleted": 6500,
+          "normalWritesOffered": 1300,
+          "normalWritesCompleted": 1300,
+          "admissionsOffered": 13,
+          "admissionsCompleted": 13,
+          "controls": 3900,
+          "checkpointTransactions": 3900,
+          "snapshotTransactions": 3900,
+          "changedRows": 7800,
+          "changedBytes": 17371500,
+          "sqlCount": 23487,
+          "livenessSqlCount": 4502,
+          "checkpointSqlCount": 15601,
+          "walBytes": 50673560,
+          "postgresCpuUsec": 14674511,
+          "postgresPeakSampledMemoryBytes": 973410304,
+          "renewalLosses": 0,
+          "dropped": 0,
+          "errors": [],
+          "drainMs": 744.6864390000119,
+          "correctnessPassed": true,
+          "absoluteGates": {
+            "requestP99": true,
+            "drain": true,
+            "throughput": true,
+            "postgresCpu": true,
+            "postgresMemory": true
+          },
+          "passed": true,
+          "normalReadSummary": {
+            "n": 6500,
+            "p50": 65.08340400000452,
+            "p95": 101.02233700000215,
+            "p99": 103.98000099998899,
+            "max": 108.83414200000698
+          },
+          "normalWriteSummary": {
+            "n": 1300,
+            "p50": 75.7316179999907,
+            "p95": 103.83602499999688,
+            "p99": 107.78453299999819,
+            "max": 111.01445499999681
+          },
+          "controlLatencySummary": {
+            "n": 3900,
+            "p50": 496.9523610000033,
+            "p95": 920.7745010000071,
+            "p99": 1049.187115000008,
+            "max": 1091.9349159999983
+          },
+          "checkpointLatencySummary": {
+            "n": 3900,
+            "p50": 457.1240420000104,
+            "p95": 873.8922820000153,
+            "p99": 995.4707909999997,
+            "max": 1029.6669490000058
+          },
+          "snapshotLatencySummary": {
+            "n": 3900,
+            "p50": 5.59725800002343,
+            "p95": 9.960343999991892,
+            "p99": 63.98731100000441,
+            "max": 81.85869700001786
+          },
+          "poolQueueByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 0.019010999996680766,
+              "p95": 0.034908000001451,
+              "p99": 1.545111999992514,
+              "max": 38.025777999981074
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 624.3187389999803,
+              "p95": 1033.8756909999938,
+              "p99": 1092.2892289999872,
+              "max": 1099.7822960000194
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 451.83978900001966,
+              "p95": 868.8492180000176,
+              "p99": 990.5199409999768,
+              "max": 1025.1646750000073
+            }
+          },
+          "transactionLatencyByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 5.570027000008849,
+              "p95": 10.061665000015637,
+              "p99": 64.13720699999249,
+              "max": 81.82990699997754
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 630.1176869999908,
+              "p95": 1036.091023999994,
+              "p99": 1094.1707950000127,
+              "max": 1101.9002290000208
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 457.09078199998476,
+              "p95": 873.8558170000033,
+              "p99": 995.4385109999857,
+              "max": 1029.6382080000185
+            }
+          },
+          "sqlAllApplicationPools": 43590,
+          "sampledPeakDatabaseActivityRows": 14,
+          "postgresThrottledUsec": 0,
+          "lockWait": {
+            "intervalMs": 25,
+            "samples": 2544,
+            "gapsMs": {
+              "n": 2544,
+              "p50": 25.161667999986093,
+              "p95": 26.483623999985866,
+              "p99": 65.51908900000853,
+              "max": 86.48127200000454
+            },
+            "byPool": {
+              "benchmark-application": {
+                "observedEpisodes": 1,
+                "observedLowerMs": {
+                  "n": 1,
+                  "p50": 0.694,
+                  "p95": 0.694,
+                  "p99": 0.694,
+                  "max": 0.694
+                },
+                "estimatedUpperMs": {
+                  "n": 1,
+                  "p50": 26.656120999978157,
+                  "p95": 26.656120999978157,
+                  "p99": 26.656120999978157,
+                  "max": 26.656120999978157
+                }
+              },
+              "paperclip-controller-lease": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-runner-checkpoint": {
+                "observedEpisodes": 2,
+                "observedLowerMs": {
+                  "n": 2,
+                  "p50": 3.427,
+                  "p95": 3.427,
+                  "p99": 3.427,
+                  "max": 3.427
+                },
+                "estimatedUpperMs": {
+                  "n": 2,
+                  "p50": 81.2373620000144,
+                  "p95": 81.2373620000144,
+                  "p99": 81.2373620000144,
+                  "max": 81.2373620000144
+                }
+              }
+            },
+            "errors": [],
+            "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+          },
+          "lockObserverSql": [
+            {
+              "calls": 2544,
+              "total_exec_time": 218.81579299999981,
+              "rows": 3
+            }
+          ],
+          "nodeCpu": {
+            "user": 18483524,
+            "system": 895970
+          },
+          "nodeCpuAverageOneCorePercent": 29.475632426669986,
+          "eventLoopDelay": {
+            "p95Ms": 11.198463,
+            "p99Ms": 12.804095,
+            "maxMs": 74.317823
+          },
+          "peakSampledNodeRssBytes": 871841792,
+          "peakSampledNodeHeapBytes": 566295128,
+          "postgresStatementExecutionMs": 3610.8802799999994,
+          "lockObserverExecutionMs": 218.81579299999981
+        },
+        {
+          "label": "04_baseline_300",
+          "variant": "baseline",
+          "n": 300,
+          "durationMs": 65000,
+          "startedAt": "2026-10-30T18:52:08.252Z",
+          "endedAt": "2026-10-30T18:53:14.009Z",
+          "normalOffered": 6500,
+          "normalCompleted": 6500,
+          "normalWritesOffered": 1300,
+          "normalWritesCompleted": 1300,
+          "admissionsOffered": 13,
+          "admissionsCompleted": 13,
+          "controls": 3900,
+          "checkpointTransactions": 3900,
+          "snapshotTransactions": 3900,
+          "changedRows": 7800,
+          "changedBytes": 17371500,
+          "sqlCount": 23487,
+          "livenessSqlCount": 4502,
+          "checkpointSqlCount": 15601,
+          "walBytes": 48187192,
+          "postgresCpuUsec": 14119519,
+          "postgresPeakSampledMemoryBytes": 961527808,
+          "renewalLosses": 0,
+          "dropped": 0,
+          "errors": [],
+          "drainMs": 753.365232000011,
+          "correctnessPassed": true,
+          "absoluteGates": {
+            "requestP99": true,
+            "drain": true,
+            "throughput": true,
+            "postgresCpu": true,
+            "postgresMemory": true
+          },
+          "passed": true,
+          "normalReadSummary": {
+            "n": 6500,
+            "p50": 70.38637200000812,
+            "p95": 94.09619499999098,
+            "p99": 97.74676499998895,
+            "max": 185.41928999999072
+          },
+          "normalWriteSummary": {
+            "n": 1300,
+            "p50": 72.84908000001451,
+            "p95": 96.762837999966,
+            "p99": 105.79805099999066,
+            "max": 190.5021940000006
+          },
+          "controlLatencySummary": {
+            "n": 3900,
+            "p50": 472.87740499997744,
+            "p95": 851.2413069999893,
+            "p99": 927.7114349999465,
+            "max": 1017.7665159999742
+          },
+          "checkpointLatencySummary": {
+            "n": 3900,
+            "p50": 425.16228799999226,
+            "p95": 785.2056810000213,
+            "p99": 846.040737000003,
+            "max": 879.5945269999793
+          },
+          "snapshotLatencySummary": {
+            "n": 3900,
+            "p50": 5.294340000022203,
+            "p95": 9.09644999995362,
+            "p99": 13.077560000005178,
+            "max": 79.4648959999904
+          },
+          "poolQueueByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 0.01867399999173358,
+              "p95": 0.03246000001672655,
+              "p99": 1.0189679999893997,
+              "max": 38.69638399995165
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 450.48504699999467,
+              "p95": 818.5160719999694,
+              "p99": 846.6014129999967,
+              "max": 852.2024820000515
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 420.15820399997756,
+              "p95": 780.1903570000432,
+              "p99": 842.1725940000033,
+              "max": 876.1292810000014
+            }
+          },
+          "transactionLatencyByPool": {
+            "request": {
+              "n": 3913,
+              "p50": 5.267995000001974,
+              "p95": 9.177220999990823,
+              "p99": 13.902025000017602,
+              "max": 80.02995799999917
+            },
+            "liveness": {
+              "n": 900,
+              "p50": 455.3887499999837,
+              "p95": 824.6480000000156,
+              "p99": 848.961249999993,
+              "max": 854.1895970000187
+            },
+            "checkpoint": {
+              "n": 3900,
+              "p50": 425.0832320000045,
+              "p95": 785.1541730000172,
+              "p99": 845.993524999998,
+              "max": 879.5596040000091
+            }
+          },
+          "sqlAllApplicationPools": 43590,
+          "sampledPeakDatabaseActivityRows": 14,
+          "postgresThrottledUsec": 0,
+          "lockWait": {
+            "intervalMs": 25,
+            "samples": 2567,
+            "gapsMs": {
+              "n": 2567,
+              "p50": 25.124033000000054,
+              "p95": 26.08253999997396,
+              "p99": 50.32741100003477,
+              "max": 183.68320700002369
+            },
+            "byPool": {
+              "benchmark-application": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-controller-lease": {
+                "observedEpisodes": 1,
+                "observedLowerMs": {
+                  "n": 1,
+                  "p50": 0.264,
+                  "p95": 0.264,
+                  "p99": 0.264,
+                  "max": 0.264
+                },
+                "estimatedUpperMs": {
+                  "n": 1,
+                  "p50": 25.689116000023205,
+                  "p95": 25.689116000023205,
+                  "p99": 25.689116000023205,
+                  "max": 25.689116000023205
+                }
+              },
+              "paperclip-runner-checkpoint": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              }
+            },
+            "errors": [],
+            "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+          },
+          "lockObserverSql": [
+            {
+              "calls": 2567,
+              "total_exec_time": 212.36981699999987,
+              "rows": 1
+            }
+          ],
+          "nodeCpu": {
+            "user": 17769478,
+            "system": 879767
+          },
+          "nodeCpuAverageOneCorePercent": 28.36105586844359,
+          "eventLoopDelay": {
+            "p95Ms": 10.936319,
+            "p99Ms": 12.083199,
+            "maxMs": 177.602559
+          },
+          "peakSampledNodeRssBytes": 872235008,
+          "peakSampledNodeHeapBytes": 588085240,
+          "postgresStatementExecutionMs": 3513.288256999997,
+          "lockObserverExecutionMs": 212.36981699999987
+        }
+      ]
+    },
+    "overlap-burst": {
+      "schema": "paperclip.normal-recovery-load/v1",
+      "scope": "Two logical servers in one client process, 150 controllers each, separate request/liveness/checkpoint pools at unchanged caps; same aggregate aligned-burst workload. Component overlap capacity only; no takeover latency or provider reattachment claim. Includes real PaperclipControlPlanePort snapshot persistence on every control checkpoint. Database/control-plane component stress; real production checkpoint writer and natural remote lease timers. Same synthetic DB request load. Not full HTTP, harness or hosted capacity qualification.",
+      "hardware": {
+        "logicalServers": 2,
+        "postgresCpuLimit": 2,
+        "postgresMemoryLimitMiB": 1536,
+        "mainPool": 10,
+        "livenessPool": 2,
+        "candidateCheckpointPool": 2
+      },
+      "workload": {
+        "mode": "burst",
+        "normalReadsPerSecond": 100,
+        "normalWritesPerSecond": 20,
+        "databaseAdmissionEverySeconds": 5,
+        "checkpointControlEverySeconds": 5,
+        "controlPayloadBytes": 4096,
+        "phaseSeconds": 65,
+        "snapshotTransactionsPerControl": 1,
+        "baselineCheckpointPool": 2,
+        "baselineRenewalIntervalSeconds": 20,
+        "candidateRenewalIntervalSeconds": 20,
+        "historicalIssues": 10000
+      },
+      "passed": true,
+      "comparable": false,
+      "measurementLimits": [
+        "Two logical server clients share one two-CPU Node process; this is a bounded component pool-overlap probe",
+        "Each logical server retains its own 10 request, 2 liveness, and 2 checkpoint connection limits",
+        "Same aggregate workload as the one-server aligned burst; no actual takeover or provider reattachment latency",
+        "Lock wait uses sampled PostgreSQL waitstart ages; waits shorter than polling gaps may be missed",
+        "Observer nominally adds 40 queries/second, included in database CPU",
+        "Database request latency is not HTTP latency; PostgreSQL CPU/WAL are cluster-wide"
+      ],
+      "sourceReport": "/tmp/native-controller-load-qualification-20261030/remote/evidence/overlap-burst/report.json",
+      "relative": null,
+      "results": [
+        {
+          "label": "01_candidate_300",
+          "variant": "candidate",
+          "n": 300,
+          "durationMs": 65000,
+          "startedAt": "2026-10-30T18:54:12.653Z",
+          "endedAt": "2026-10-30T18:55:18.280Z",
+          "normalOffered": 6500,
+          "normalCompleted": 6500,
+          "normalWritesOffered": 1300,
+          "normalWritesCompleted": 1300,
+          "admissionsOffered": 13,
+          "admissionsCompleted": 13,
+          "controls": 3900,
+          "checkpointTransactions": 3900,
+          "snapshotTransactions": 3900,
+          "changedRows": 7800,
+          "changedBytes": 17371500,
+          "sqlCount": 23494,
+          "livenessSqlCount": 4504,
+          "checkpointSqlCount": 15602,
+          "walBytes": 58953856,
+          "postgresCpuUsec": 16207490,
+          "postgresPeakSampledMemoryBytes": 1184854016,
+          "renewalLosses": 0,
+          "dropped": 0,
+          "errors": [],
+          "drainMs": 622.7349329999997,
+          "correctnessPassed": true,
+          "absoluteGates": {
+            "requestP99": true,
+            "drain": true,
+            "throughput": true,
+            "postgresCpu": true,
+            "postgresMemory": true
+          },
+          "passed": true,
+          "normalReadSummary": {
+            "n": 6500,
+            "p50": 71.72571099999186,
+            "p95": 99.64835199999652,
+            "p99": 103.41825999999128,
+            "max": 167.0082839999959
+          },
+          "normalWriteSummary": {
+            "n": 1300,
+            "p50": 73.87743999999657,
+            "p95": 101.96136399998795,
+            "p99": 106.03463099998771,
+            "max": 167.02244699999574
+          },
+          "controlLatencySummary": {
+            "n": 3900,
+            "p50": 510.7785539999895,
+            "p95": 847.7751439999993,
+            "p99": 955.7120819999982,
+            "max": 1019.8632959999959
+          },
+          "checkpointLatencySummary": {
+            "n": 3900,
+            "p50": 464.80313800000295,
+            "p95": 799.8753710000019,
+            "p99": 903.230091999998,
+            "max": 973.0980429999981
+          },
+          "snapshotLatencySummary": {
+            "n": 3900,
+            "p50": 8.885602000002109,
+            "p95": 18.187949999999546,
+            "p99": 75.0605080000023,
+            "max": 103.59090300000025
+          },
+          "poolQueueByPool": {
+            "request": {
+              "n": 1956,
+              "p50": 0.01652999999350868,
+              "p95": 0.032654000009642914,
+              "p99": 0.5533529999956954,
+              "max": 32.65080599999783
+            },
+            "liveness": {
+              "n": 450,
+              "p50": 679.932338999999,
+              "p95": 983.9729049999951,
+              "p99": 1005.0673800000004,
+              "max": 1008.1818359999961
+            },
+            "checkpoint": {
+              "n": 1950,
+              "p50": 455.7207139999955,
+              "p95": 789.6575360000061,
+              "p99": 879.0804459999927,
+              "max": 927.088631999999
+            },
+            "replacement_request": {
+              "n": 1957,
+              "p50": 0.016338000001269393,
+              "p95": 0.030588000001444016,
+              "p99": 0.04346399999485584,
+              "max": 34.07667899999069
+            },
+            "replacement_liveness": {
+              "n": 450,
+              "p50": 680.664604000005,
+              "p95": 985.0139530000015,
+              "p99": 1007.0503020000033,
+              "max": 1013.1946360000002
+            },
+            "replacement_checkpoint": {
+              "n": 1950,
+              "p50": 451.09980499999074,
+              "p95": 795.8284449999992,
+              "p99": 905.3483259999994,
+              "max": 968.1059260000038
+            }
+          },
+          "transactionLatencyByPool": {
+            "request": {
+              "n": 1956,
+              "p50": 8.849019000001135,
+              "p95": 18.71429999999964,
+              "p99": 79.22411199999988,
+              "max": 103.53132499999992
+            },
+            "liveness": {
+              "n": 450,
+              "p50": 690.4811160000027,
+              "p95": 989.9459690000003,
+              "p99": 1008.2045910000015,
+              "max": 1011.9318149999963
+            },
+            "checkpoint": {
+              "n": 1950,
+              "p50": 465.5724979999941,
+              "p95": 798.1944409999996,
+              "p99": 891.0923289999992,
+              "max": 935.9049690000029
+            },
+            "replacement_request": {
+              "n": 1957,
+              "p50": 8.899836000011419,
+              "p95": 20.206529000002774,
+              "p99": 72.87767399999575,
+              "max": 96.72780800001055
+            },
+            "replacement_liveness": {
+              "n": 450,
+              "p50": 690.242895000003,
+              "p95": 991.1967210000003,
+              "p99": 1010.9223639999982,
+              "max": 1015.3685380000024
+            },
+            "replacement_checkpoint": {
+              "n": 1950,
+              "p50": 461.74945899999875,
+              "p95": 805.4827579999983,
+              "p99": 914.226066999996,
+              "max": 973.0625819999987
+            }
+          },
+          "sqlAllApplicationPools": 43600,
+          "sampledPeakDatabaseActivityRows": 26,
+          "postgresThrottledUsec": 0,
+          "lockWait": {
+            "intervalMs": 25,
+            "samples": 2532,
+            "gapsMs": {
+              "n": 2532,
+              "p50": 25.151506999998674,
+              "p95": 26.541017999999895,
+              "p99": 66.61091300000408,
+              "max": 87.0732219999918
+            },
+            "byPool": {
+              "benchmark-application": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "benchmark-replacement-application": {
+                "observedEpisodes": 2,
+                "observedLowerMs": {
+                  "n": 2,
+                  "p50": 1.992,
+                  "p95": 1.992,
+                  "p99": 1.992,
+                  "max": 1.992
+                },
+                "estimatedUpperMs": {
+                  "n": 2,
+                  "p50": 77.9257440000074,
+                  "p95": 77.9257440000074,
+                  "p99": 77.9257440000074,
+                  "max": 77.9257440000074
+                }
+              },
+              "paperclip-controller-lease": {
+                "observedEpisodes": 4,
+                "observedLowerMs": {
+                  "n": 4,
+                  "p50": 2.681,
+                  "p95": 3.012,
+                  "p99": 3.012,
+                  "max": 3.012
+                },
+                "estimatedUpperMs": {
+                  "n": 4,
+                  "p50": 89.75422199998866,
+                  "p95": 90.08522199999425,
+                  "p99": 90.08522199999425,
+                  "max": 90.08522199999425
+                }
+              },
+              "paperclip-runner-checkpoint": {
+                "observedEpisodes": 6,
+                "observedLowerMs": {
+                  "n": 6,
+                  "p50": 1.226,
+                  "p95": 3.516,
+                  "p99": 3.516,
+                  "max": 3.516
+                },
+                "estimatedUpperMs": {
+                  "n": 6,
+                  "p50": 28.208660000003874,
+                  "p95": 64.30090599999676,
+                  "p99": 64.30090599999676,
+                  "max": 64.30090599999676
+                }
+              }
+            },
+            "errors": [],
+            "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+          },
+          "lockObserverSql": [
+            {
+              "calls": 2532,
+              "total_exec_time": 228.71010199999986,
+              "rows": 12
+            }
+          ],
+          "nodeCpu": {
+            "user": 18403801,
+            "system": 860810
+          },
+          "nodeCpuAverageOneCorePercent": 29.35486475249997,
+          "eventLoopDelay": {
+            "p95Ms": 11.182079,
+            "p99Ms": 13.328383,
+            "maxMs": 72.482815
+          },
+          "peakSampledNodeRssBytes": 835289088,
+          "peakSampledNodeHeapBytes": 527752512,
+          "postgresStatementExecutionMs": 4084.128306999997,
+          "lockObserverExecutionMs": 228.71010199999986
+        }
+      ]
+    },
+    "overlap-abba": {
+      "schema": "paperclip.normal-recovery-load/v1",
+      "scope": "Two logical servers in one client process, 150 controllers each, separate request/liveness/checkpoint pools at unchanged caps; same aggregate aligned-burst workload. Matched baseline/candidate ABBA pool-overlap component qualification; no takeover latency or provider reattachment claim. Includes real PaperclipControlPlanePort snapshot persistence on every control checkpoint. Database/control-plane component stress; real production checkpoint writer and natural remote lease timers. Same synthetic DB request load. Not full HTTP, harness or hosted capacity qualification.",
+      "hardware": {
+        "logicalServers": 2,
+        "postgresCpuLimit": 2,
+        "postgresMemoryLimitMiB": 1536,
+        "mainPool": 10,
+        "livenessPool": 2,
+        "candidateCheckpointPool": 2
+      },
+      "workload": {
+        "mode": "burst",
+        "normalReadsPerSecond": 100,
+        "normalWritesPerSecond": 20,
+        "databaseAdmissionEverySeconds": 5,
+        "checkpointControlEverySeconds": 5,
+        "controlPayloadBytes": 4096,
+        "phaseSeconds": 65,
+        "snapshotTransactionsPerControl": 1,
+        "baselineCheckpointPool": 2,
+        "baselineRenewalIntervalSeconds": 20,
+        "candidateRenewalIntervalSeconds": 20,
+        "historicalIssues": 10000
+      },
+      "passed": true,
+      "comparable": true,
+      "relative": {
+        "postgresCpuUsec": {
+          "baseline": 1334.8748826090668,
+          "candidate": 1376.3816699393838,
+          "increasePercent": 3.109414063525584,
+          "passed": true
+        },
+        "walBytes": {
+          "baseline": 4209.21437718774,
+          "candidate": 4317.105779902672,
+          "increasePercent": 2.5632194762913674,
+          "passed": true
+        },
+        "requestP99": {
+          "baseline": 106.66748450000887,
+          "candidate": 116.98804850000306,
+          "increasePercent": 9.675454566469433,
+          "passed": true
+        }
+      },
+      "measurementLimits": [
+        "Database request latency is not HTTP latency",
+        "Pool queue includes client encoding; BEGIN response includes network time",
+        "pg_stat_statements execution includes lock waits; lock episodes report sampled duration bounds, with short waits potentially missed",
+        "Peak memory is sampled once a second",
+        "Use an otherwise idle cluster and host; WAL and cgroup CPU are cluster-wide"
+      ],
+      "results": [
+        {
+          "label": "01_baseline_300",
+          "variant": "baseline",
+          "n": 300,
+          "durationMs": 65000,
+          "startedAt": "2026-10-30T18:59:52.122Z",
+          "endedAt": "2026-10-30T19:00:57.905Z",
+          "normalOffered": 6500,
+          "normalCompleted": 6500,
+          "normalWritesOffered": 1300,
+          "normalWritesCompleted": 1300,
+          "admissionsOffered": 13,
+          "admissionsCompleted": 13,
+          "controls": 3900,
+          "checkpointTransactions": 3900,
+          "snapshotTransactions": 3900,
+          "changedRows": 7800,
+          "changedBytes": 17371500,
+          "sqlCount": 23496,
+          "livenessSqlCount": 4504,
+          "checkpointSqlCount": 15602,
+          "walBytes": 50462184,
+          "postgresCpuUsec": 15645449,
+          "postgresPeakSampledMemoryBytes": 1343967232,
+          "renewalLosses": 0,
+          "dropped": 0,
+          "errors": [],
+          "drainMs": 721.3357259999902,
+          "correctnessPassed": true,
+          "absoluteGates": {
+            "requestP99": true,
+            "drain": true,
+            "throughput": true,
+            "postgresCpu": true,
+            "postgresMemory": true
+          },
+          "passed": true,
+          "normalReadSummary": {
+            "n": 6500,
+            "p50": 18.673452000002726,
+            "p95": 101.14544200000091,
+            "p99": 105.69386800000211,
+            "max": 219.4722890000121
+          },
+          "normalWriteSummary": {
+            "n": 1300,
+            "p50": 22.73070000000007,
+            "p95": 103.43886099999872,
+            "p99": 116.90596599999844,
+            "max": 224.30324400000973
+          },
+          "controlLatencySummary": {
+            "n": 3900,
+            "p50": 487.1431490000032,
+            "p95": 804.2522070000123,
+            "p99": 901.6204700000017,
+            "max": 941.495895
+          },
+          "checkpointLatencySummary": {
+            "n": 3900,
+            "p50": 436.6414150000055,
+            "p95": 746.4600769999961,
+            "p99": 826.2692409999945,
+            "max": 891.541333000001
+          },
+          "snapshotLatencySummary": {
+            "n": 3900,
+            "p50": 8.546736999996938,
+            "p95": 15.356733000000531,
+            "p99": 75.99347599998873,
+            "max": 98.56840399999783
+          },
+          "poolQueueByPool": {
+            "request": {
+              "n": 1956,
+              "p50": 0.016741999999794643,
+              "p95": 0.03154400000494206,
+              "p99": 0.6992969999992056,
+              "max": 5.09585099999822
+            },
+            "liveness": {
+              "n": 450,
+              "p50": 501.6249909999897,
+              "p95": 876.1304410000012,
+              "p99": 913.067286999998,
+              "max": 919.2936289999998
+            },
+            "checkpoint": {
+              "n": 1950,
+              "p50": 427.4311180000004,
+              "p95": 738.933901999997,
+              "p99": 813.4696679999979,
+              "max": 886.4332880000002
+            },
+            "replacement_request": {
+              "n": 1957,
+              "p50": 0.0168159999884665,
+              "p95": 0.02985600000829436,
+              "p99": 0.04265299999678973,
+              "max": 10.915440000000672
+            },
+            "replacement_liveness": {
+              "n": 450,
+              "p50": 503.20186999999714,
+              "p95": 886.2206920000026,
+              "p99": 913.0074840000016,
+              "max": 918.3099900000016
+            },
+            "replacement_checkpoint": {
+              "n": 1950,
+              "p50": 426.9944880000112,
+              "p95": 739.3993829999963,
+              "p99": 821.3317409999981,
+              "max": 878.8103770000016
+            }
+          },
+          "transactionLatencyByPool": {
+            "request": {
+              "n": 1956,
+              "p50": 8.524627999999211,
+              "p95": 15.395046999998158,
+              "p99": 76.11285200000202,
+              "max": 97.21485499999835
+            },
+            "liveness": {
+              "n": 450,
+              "p50": 510.662817000004,
+              "p95": 886.2594030000037,
+              "p99": 916.8632429999998,
+              "max": 921.3872209999972
+            },
+            "checkpoint": {
+              "n": 1950,
+              "p50": 436.56327500000043,
+              "p95": 745.776893000002,
+              "p99": 822.4703049999989,
+              "max": 891.5069800000056
+            },
+            "replacement_request": {
+              "n": 1957,
+              "p50": 8.534450999999535,
+              "p95": 15.9994200000001,
+              "p99": 75.55317300000024,
+              "max": 98.5201530000013
+            },
+            "replacement_liveness": {
+              "n": 450,
+              "p50": 513.2629840000009,
+              "p95": 890.6694930000012,
+              "p99": 915.7612549999976,
+              "max": 920.3067900000024
+            },
+            "replacement_checkpoint": {
+              "n": 1950,
+              "p50": 436.6130089999933,
+              "p95": 746.4048050000129,
+              "p99": 830.9584389999982,
+              "max": 887.7181599999967
+            }
+          },
+          "nodeCpu": {
+            "user": 17806507,
+            "system": 879516
+          },
+          "nodeCpuAverageOneCorePercent": 28.40549223176189,
+          "eventLoopDelay": {
+            "p95Ms": 11.010047,
+            "p99Ms": 12.697599,
+            "maxMs": 183.107583
+          },
+          "sqlAllApplicationPools": 43602,
+          "sampledPeakDatabaseActivityRows": 29,
+          "postgresThrottledUsec": 0,
+          "lockWait": {
+            "intervalMs": 25,
+            "samples": 2551,
+            "gapsMs": {
+              "n": 2551,
+              "p50": 25.145184999997582,
+              "p95": 26.409488999997848,
+              "p99": 59.03993599999376,
+              "max": 229.8140570000105
+            },
+            "byPool": {
+              "benchmark-application": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "benchmark-replacement-application": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-controller-lease": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-runner-checkpoint": {
+                "observedEpisodes": 10,
+                "observedLowerMs": {
+                  "n": 10,
+                  "p50": 2.481,
+                  "p95": 11.224,
+                  "p99": 11.224,
+                  "max": 11.224
+                },
+                "estimatedUpperMs": {
+                  "n": 10,
+                  "p50": 27.13945600000443,
+                  "p95": 36.74406199999794,
+                  "p99": 36.74406199999794,
+                  "max": 36.74406199999794
+                }
+              }
+            },
+            "errors": [],
+            "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+          },
+          "lockObserverSql": [
+            {
+              "calls": 2551,
+              "total_exec_time": 230.25003400000065,
+              "rows": 10
+            }
+          ],
+          "peakSampledNodeRssBytes": 815190016,
+          "peakSampledNodeHeapBytes": 503697472,
+          "postgresStatementExecutionMs": 4126.207232999998,
+          "lockObserverExecutionMs": 230.25003400000065
+        },
+        {
+          "label": "02_candidate_300",
+          "variant": "candidate",
+          "n": 300,
+          "durationMs": 65000,
+          "startedAt": "2026-10-30T19:01:04.413Z",
+          "endedAt": "2026-10-30T19:02:10.241Z",
+          "normalOffered": 6500,
+          "normalCompleted": 6500,
+          "normalWritesOffered": 1300,
+          "normalWritesCompleted": 1300,
+          "admissionsOffered": 13,
+          "admissionsCompleted": 13,
+          "controls": 3900,
+          "checkpointTransactions": 3900,
+          "snapshotTransactions": 3900,
+          "changedRows": 7800,
+          "changedBytes": 17371500,
+          "sqlCount": 23496,
+          "livenessSqlCount": 4504,
+          "checkpointSqlCount": 15602,
+          "walBytes": 50562024,
+          "postgresCpuUsec": 16161232,
+          "postgresPeakSampledMemoryBytes": 1324052480,
+          "renewalLosses": 0,
+          "dropped": 0,
+          "errors": [],
+          "drainMs": 825.5109480000101,
+          "correctnessPassed": true,
+          "absoluteGates": {
+            "requestP99": true,
+            "drain": true,
+            "throughput": true,
+            "postgresCpu": true,
+            "postgresMemory": true
+          },
+          "passed": true,
+          "normalReadSummary": {
+            "n": 6500,
+            "p50": 14.214422999997623,
+            "p95": 103.00589499998023,
+            "p99": 109.18438099999912,
+            "max": 124.26887600000191
+          },
+          "normalWriteSummary": {
+            "n": 1300,
+            "p50": 16.232166000001598,
+            "p95": 104.91053900000406,
+            "p99": 111.67462099998374,
+            "max": 124.31452200000058
+          },
+          "controlLatencySummary": {
+            "n": 3900,
+            "p50": 497.3481239999819,
+            "p95": 844.0066550000047,
+            "p99": 960.1377219999995,
+            "max": 998.2879429999884
+          },
+          "checkpointLatencySummary": {
+            "n": 3900,
+            "p50": 452.44012500000827,
+            "p95": 791.6675080000132,
+            "p99": 904.2310109999962,
+            "max": 948.914775000012
+          },
+          "snapshotLatencySummary": {
+            "n": 3900,
+            "p50": 8.975842999992892,
+            "p95": 16.999474000011105,
+            "p99": 80.54993900000409,
+            "max": 92.77781900000991
+          },
+          "poolQueueByPool": {
+            "request": {
+              "n": 1956,
+              "p50": 0.01796499999181833,
+              "p95": 0.03485300000465941,
+              "p99": 0.5488950000144541,
+              "max": 16.1574099999998
+            },
+            "liveness": {
+              "n": 450,
+              "p50": 634.4087819999986,
+              "p95": 971.200656999994,
+              "p99": 989.703067999988,
+              "max": 996.0718149999884
+            },
+            "checkpoint": {
+              "n": 1950,
+              "p50": 443.02296800000477,
+              "p95": 778.6681580000004,
+              "p99": 884.4173180000071,
+              "max": 918.9185089999955
+            },
+            "replacement_request": {
+              "n": 1957,
+              "p50": 0.017980999997234903,
+              "p95": 0.03247500001452863,
+              "p99": 0.04606999998213723,
+              "max": 39.24437300002319
+            },
+            "replacement_liveness": {
+              "n": 450,
+              "p50": 634.364161000005,
+              "p95": 969.9561950000061,
+              "p99": 989.6641479999962,
+              "max": 995.097293999992
+            },
+            "replacement_checkpoint": {
+              "n": 1950,
+              "p50": 440.39501599999494,
+              "p95": 786.2747190000082,
+              "p99": 904.2403229999909,
+              "max": 943.5718220000126
+            }
+          },
+          "transactionLatencyByPool": {
+            "request": {
+              "n": 1956,
+              "p50": 8.969991000019945,
+              "p95": 17.73811299999943,
+              "p99": 80.50918799999636,
+              "max": 92.72936200001277
+            },
+            "liveness": {
+              "n": 450,
+              "p50": 645.302377,
+              "p95": 976.2641570000123,
+              "p99": 993.3791540000093,
+              "max": 1001.4772759999905
+            },
+            "checkpoint": {
+              "n": 1950,
+              "p50": 453.5094059999974,
+              "p95": 786.6211449999828,
+              "p99": 893.5732319999952,
+              "max": 926.4708950000058
+            },
+            "replacement_request": {
+              "n": 1957,
+              "p50": 8.951632000011159,
+              "p95": 17.27179700000852,
+              "p99": 79.54755400000431,
+              "max": 92.341597000006
+            },
+            "replacement_liveness": {
+              "n": 450,
+              "p50": 645.1912089999969,
+              "p95": 975.069325000004,
+              "p99": 992.4281219999975,
+              "max": 997.0403169999918
+            },
+            "replacement_checkpoint": {
+              "n": 1950,
+              "p50": 451.6021180000098,
+              "p95": 793.450920000003,
+              "p99": 914.5407790000027,
+              "max": 948.8798110000062
+            }
+          },
+          "nodeCpu": {
+            "user": 18799633,
+            "system": 889825
+          },
+          "nodeCpuAverageOneCorePercent": 29.910693792544862,
+          "eventLoopDelay": {
+            "p95Ms": 11.124735,
+            "p99Ms": 12.779519,
+            "maxMs": 80.478207
+          },
+          "sqlAllApplicationPools": 43602,
+          "sampledPeakDatabaseActivityRows": 28,
+          "postgresThrottledUsec": 117766,
+          "lockWait": {
+            "intervalMs": 25,
+            "samples": 2548,
+            "gapsMs": {
+              "n": 2548,
+              "p50": 25.149598000003607,
+              "p95": 26.418762000001152,
+              "p99": 73.46682900001178,
+              "max": 90.0133790000109
+            },
+            "byPool": {
+              "benchmark-application": {
+                "observedEpisodes": 2,
+                "observedLowerMs": {
+                  "n": 2,
+                  "p50": 57.415,
+                  "p95": 57.415,
+                  "p99": 57.415,
+                  "max": 57.415
+                },
+                "estimatedUpperMs": {
+                  "n": 2,
+                  "p50": 78.82680399998208,
+                  "p95": 78.82680399998208,
+                  "p99": 78.82680399998208,
+                  "max": 78.82680399998208
+                }
+              },
+              "benchmark-replacement-application": {
+                "observedEpisodes": 1,
+                "observedLowerMs": {
+                  "n": 1,
+                  "p50": 0.817,
+                  "p95": 0.817,
+                  "p99": 0.817,
+                  "max": 0.817
+                },
+                "estimatedUpperMs": {
+                  "n": 1,
+                  "p50": 25.092009999993024,
+                  "p95": 25.092009999993024,
+                  "p99": 25.092009999993024,
+                  "max": 25.092009999993024
+                }
+              },
+              "paperclip-controller-lease": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-runner-checkpoint": {
+                "observedEpisodes": 11,
+                "observedLowerMs": {
+                  "n": 11,
+                  "p50": 3.97,
+                  "p95": 58.82,
+                  "p99": 58.82,
+                  "max": 58.82
+                },
+                "estimatedUpperMs": {
+                  "n": 11,
+                  "p50": 30.69183900000644,
+                  "p95": 83.27365099999588,
+                  "p99": 83.27365099999588,
+                  "max": 83.27365099999588
+                }
+              }
+            },
+            "errors": [],
+            "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+          },
+          "lockObserverSql": [
+            {
+              "calls": 2548,
+              "total_exec_time": 234.671226,
+              "rows": 14
+            }
+          ],
+          "peakSampledNodeRssBytes": 870621184,
+          "peakSampledNodeHeapBytes": 593590232,
+          "postgresStatementExecutionMs": 4403.789213000001,
+          "lockObserverExecutionMs": 234.671226
+        },
+        {
+          "label": "03_candidate_300",
+          "variant": "candidate",
+          "n": 300,
+          "durationMs": 65000,
+          "startedAt": "2026-10-30T19:02:16.491Z",
+          "endedAt": "2026-10-30T19:03:22.313Z",
+          "normalOffered": 6500,
+          "normalCompleted": 6500,
+          "normalWritesOffered": 1300,
+          "normalWritesCompleted": 1300,
+          "admissionsOffered": 13,
+          "admissionsCompleted": 13,
+          "controls": 3900,
+          "checkpointTransactions": 3900,
+          "snapshotTransactions": 3900,
+          "changedRows": 7800,
+          "changedBytes": 17371500,
+          "sqlCount": 23496,
+          "livenessSqlCount": 4504,
+          "checkpointSqlCount": 15602,
+          "walBytes": 50570496,
+          "postgresCpuUsec": 16081885,
+          "postgresPeakSampledMemoryBytes": 1332752384,
+          "renewalLosses": 0,
+          "dropped": 0,
+          "errors": [],
+          "drainMs": 818.6222430000198,
+          "correctnessPassed": true,
+          "absoluteGates": {
+            "requestP99": true,
+            "drain": true,
+            "throughput": true,
+            "postgresCpu": true,
+            "postgresMemory": true
+          },
+          "passed": true,
+          "normalReadSummary": {
+            "n": 6500,
+            "p50": 39.5862119999947,
+            "p95": 74.14522999999463,
+            "p99": 124.791716000007,
+            "max": 129.85977700000512
+          },
+          "normalWriteSummary": {
+            "n": 1300,
+            "p50": 41.993144000007305,
+            "p95": 77.44222500000615,
+            "p99": 125.49473299999954,
+            "max": 132.81708999999682
+          },
+          "controlLatencySummary": {
+            "n": 3900,
+            "p50": 487.02540600000066,
+            "p95": 836.5916340000113,
+            "p99": 955.1296190000139,
+            "max": 1000.8564950000145
+          },
+          "checkpointLatencySummary": {
+            "n": 3900,
+            "p50": 444.6453029999975,
+            "p95": 790.974338,
+            "p99": 903.6869510000106,
+            "max": 944.6195900000166
+          },
+          "snapshotLatencySummary": {
+            "n": 3900,
+            "p50": 8.99197100001038,
+            "p95": 17.247062000009464,
+            "p99": 77.24802900000941,
+            "max": 89.03845799999544
+          },
+          "poolQueueByPool": {
+            "request": {
+              "n": 1956,
+              "p50": 0.01789499999722466,
+              "p95": 0.03461500001139939,
+              "p99": 1.2706449999823235,
+              "max": 7.25288700000965
+            },
+            "liveness": {
+              "n": 450,
+              "p50": 668.1329050000058,
+              "p95": 943.7231139999931,
+              "p99": 964.8324849999917,
+              "max": 971.0895420000015
+            },
+            "checkpoint": {
+              "n": 1950,
+              "p50": 436.23111700001755,
+              "p95": 776.24320300002,
+              "p99": 884.2146380000049,
+              "max": 935.5753669999831
+            },
+            "replacement_request": {
+              "n": 1957,
+              "p50": 0.017906000022776425,
+              "p95": 0.03174499998567626,
+              "p99": 0.04958200000692159,
+              "max": 37.47016100000474
+            },
+            "replacement_liveness": {
+              "n": 450,
+              "p50": 660.5174439999973,
+              "p95": 939.0108659999969,
+              "p99": 963.677406999981,
+              "max": 968.687052000023
+            },
+            "replacement_checkpoint": {
+              "n": 1950,
+              "p50": 436.32736499997554,
+              "p95": 788.8090800000064,
+              "p99": 902.0589020000189,
+              "max": 938.6039999999921
+            }
+          },
+          "transactionLatencyByPool": {
+            "request": {
+              "n": 1956,
+              "p50": 8.946074000006774,
+              "p95": 17.429038000002038,
+              "p99": 76.37251200000173,
+              "max": 89.003899000003
+            },
+            "liveness": {
+              "n": 450,
+              "p50": 678.8731129999796,
+              "p95": 945.945057999983,
+              "p99": 967.5097349999996,
+              "max": 973.1065839999937
+            },
+            "checkpoint": {
+              "n": 1950,
+              "p50": 444.8119090000109,
+              "p95": 784.2202169999946,
+              "p99": 893.1187290000089,
+              "max": 943.4892260000051
+            },
+            "replacement_request": {
+              "n": 1957,
+              "p50": 9.007467999996152,
+              "p95": 18.345773000008194,
+              "p99": 78.94358199997805,
+              "max": 89.00447099999292
+            },
+            "replacement_liveness": {
+              "n": 450,
+              "p50": 668.120407999988,
+              "p95": 941.9229499999783,
+              "p99": 966.5471529999922,
+              "max": 971.1461609999824
+            },
+            "replacement_checkpoint": {
+              "n": 1950,
+              "p50": 444.2886780000117,
+              "p95": 798.4288989999914,
+              "p99": 912.1802920000046,
+              "max": 944.5919719999947
+            }
+          },
+          "nodeCpu": {
+            "user": 18563401,
+            "system": 892958
+          },
+          "nodeCpuAverageOneCorePercent": 29.559203827490894,
+          "eventLoopDelay": {
+            "p95Ms": 11.214847,
+            "p99Ms": 13.647871,
+            "maxMs": 80.478207
+          },
+          "sqlAllApplicationPools": 43602,
+          "sampledPeakDatabaseActivityRows": 28,
+          "postgresThrottledUsec": 0,
+          "lockWait": {
+            "intervalMs": 25,
+            "samples": 2541,
+            "gapsMs": {
+              "n": 2541,
+              "p50": 25.158021000010194,
+              "p95": 26.61356500000693,
+              "p99": 70.55964399999357,
+              "max": 90.20055800001137
+            },
+            "byPool": {
+              "benchmark-application": {
+                "observedEpisodes": 3,
+                "observedLowerMs": {
+                  "n": 3,
+                  "p50": 2.624,
+                  "p95": 42.948,
+                  "p99": 42.948,
+                  "max": 42.948
+                },
+                "estimatedUpperMs": {
+                  "n": 3,
+                  "p50": 68.97033699997701,
+                  "p95": 72.40636000002269,
+                  "p99": 72.40636000002269,
+                  "max": 72.40636000002269
+                }
+              },
+              "benchmark-replacement-application": {
+                "observedEpisodes": 2,
+                "observedLowerMs": {
+                  "n": 2,
+                  "p50": 2.623,
+                  "p95": 2.623,
+                  "p99": 2.623,
+                  "max": 2.623
+                },
+                "estimatedUpperMs": {
+                  "n": 2,
+                  "p50": 59.07080300000962,
+                  "p95": 59.07080300000962,
+                  "p99": 59.07080300000962,
+                  "max": 59.07080300000962
+                }
+              },
+              "paperclip-controller-lease": {
+                "observedEpisodes": 4,
+                "observedLowerMs": {
+                  "n": 4,
+                  "p50": 1.948,
+                  "p95": 4.972,
+                  "p99": 4.972,
+                  "max": 4.972
+                },
+                "estimatedUpperMs": {
+                  "n": 4,
+                  "p50": 56.89580300002126,
+                  "p95": 76.26736000002711,
+                  "p99": 76.26736000002711,
+                  "max": 76.26736000002711
+                }
+              },
+              "paperclip-runner-checkpoint": {
+                "observedEpisodes": 8,
+                "observedLowerMs": {
+                  "n": 8,
+                  "p50": 2.616,
+                  "p95": 62.06,
+                  "p99": 62.06,
+                  "max": 62.06
+                },
+                "estimatedUpperMs": {
+                  "n": 8,
+                  "p50": 28.899388999998337,
+                  "p95": 87.05610200000228,
+                  "p99": 87.05610200000228,
+                  "max": 87.05610200000228
+                }
+              }
+            },
+            "errors": [],
+            "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+          },
+          "lockObserverSql": [
+            {
+              "calls": 2541,
+              "total_exec_time": 230.91749600000003,
+              "rows": 17
+            }
+          ],
+          "peakSampledNodeRssBytes": 887791616,
+          "peakSampledNodeHeapBytes": 633808520,
+          "postgresStatementExecutionMs": 4428.595989999998,
+          "lockObserverExecutionMs": 230.91749600000003
+        },
+        {
+          "label": "04_baseline_300",
+          "variant": "baseline",
+          "n": 300,
+          "durationMs": 65000,
+          "startedAt": "2026-10-30T19:03:29.319Z",
+          "endedAt": "2026-10-30T19:04:35.119Z",
+          "normalOffered": 6500,
+          "normalCompleted": 6500,
+          "normalWritesOffered": 1300,
+          "normalWritesCompleted": 1300,
+          "admissionsOffered": 13,
+          "admissionsCompleted": 13,
+          "controls": 3900,
+          "checkpointTransactions": 3900,
+          "snapshotTransactions": 3900,
+          "changedRows": 7800,
+          "changedBytes": 17371500,
+          "sqlCount": 23496,
+          "livenessSqlCount": 4504,
+          "checkpointSqlCount": 15602,
+          "walBytes": 48142872,
+          "postgresCpuUsec": 15625330,
+          "postgresPeakSampledMemoryBytes": 1307955200,
+          "renewalLosses": 0,
+          "dropped": 0,
+          "errors": [],
+          "drainMs": 796.7394680000143,
+          "correctnessPassed": true,
+          "absoluteGates": {
+            "requestP99": true,
+            "drain": true,
+            "throughput": true,
+            "postgresCpu": true,
+            "postgresMemory": true
+          },
+          "passed": true,
+          "normalReadSummary": {
+            "n": 6500,
+            "p50": 14.284052000002703,
+            "p95": 102.27245000004768,
+            "p99": 107.64110100001562,
+            "max": 141.18229500000598
+          },
+          "normalWriteSummary": {
+            "n": 1300,
+            "p50": 16.601036000007298,
+            "p95": 104.65098200005013,
+            "p99": 110.24340700003086,
+            "max": 141.02557800000068
+          },
+          "controlLatencySummary": {
+            "n": 3900,
+            "p50": 511.11750200000824,
+            "p95": 835.1623750000144,
+            "p99": 932.1108870000462,
+            "max": 966.9618110000156
+          },
+          "checkpointLatencySummary": {
+            "n": 3900,
+            "p50": 466.6611930000363,
+            "p95": 785.0629789999803,
+            "p99": 882.4489049999975,
+            "max": 911.663005999988
+          },
+          "snapshotLatencySummary": {
+            "n": 3900,
+            "p50": 8.741485000005923,
+            "p95": 21.27701399999205,
+            "p99": 79.73378300003242,
+            "max": 98.61222199999611
+          },
+          "poolQueueByPool": {
+            "request": {
+              "n": 1956,
+              "p50": 0.017884999979287386,
+              "p95": 0.035715999954845756,
+              "p99": 0.7316219999920577,
+              "max": 6.9568530000397
+            },
+            "liveness": {
+              "n": 450,
+              "p50": 612.479364000028,
+              "p95": 931.2895360000257,
+              "p99": 968.4246090000088,
+              "max": 974.2110239999893
+            },
+            "checkpoint": {
+              "n": 1950,
+              "p50": 457.2952529999893,
+              "p95": 777.7845369999995,
+              "p99": 872.6880790000141,
+              "max": 904.4663130000117
+            },
+            "replacement_request": {
+              "n": 1957,
+              "p50": 0.017825999995693564,
+              "p95": 0.032011000032071024,
+              "p99": 0.05147999996552244,
+              "max": 58.91463199999998
+            },
+            "replacement_liveness": {
+              "n": 450,
+              "p50": 611.0748399999866,
+              "p95": 924.6075030000065,
+              "p99": 966.4776800000109,
+              "max": 972.2507760000008
+            },
+            "replacement_checkpoint": {
+              "n": 1950,
+              "p50": 458.15926700001,
+              "p95": 773.1846900000237,
+              "p99": 871.5540899999905,
+              "max": 906.4964309999486
+            }
+          },
+          "transactionLatencyByPool": {
+            "request": {
+              "n": 1956,
+              "p50": 8.748108999978285,
+              "p95": 21.241075000027195,
+              "p99": 79.69776200002525,
+              "max": 96.44556800002465
+            },
+            "liveness": {
+              "n": 450,
+              "p50": 623.5618810000014,
+              "p95": 938.7270220000064,
+              "p99": 971.3052120000066,
+              "max": 976.3884749999852
+            },
+            "checkpoint": {
+              "n": 1950,
+              "p50": 466.64239300001645,
+              "p95": 786.580037000007,
+              "p99": 882.414477000013,
+              "max": 910.3289480000385
+            },
+            "replacement_request": {
+              "n": 1957,
+              "p50": 8.698626999976113,
+              "p95": 22.4105860000127,
+              "p99": 80.60295999998925,
+              "max": 98.5777620000008
+            },
+            "replacement_liveness": {
+              "n": 450,
+              "p50": 620.2892739999807,
+              "p95": 935.5929790000082,
+              "p99": 969.3374020000047,
+              "max": 975.1367830000236
+            },
+            "replacement_checkpoint": {
+              "n": 1950,
+              "p50": 466.62874600000214,
+              "p95": 782.9779160000035,
+              "p99": 880.8073159999913,
+              "max": 911.626213999989
+            }
+          },
+          "nodeCpu": {
+            "user": 19222778,
+            "system": 829326
+          },
+          "nodeCpuAverageOneCorePercent": 30.474186242549273,
+          "eventLoopDelay": {
+            "p95Ms": 10.977279,
+            "p99Ms": 14.262271,
+            "maxMs": 82.444287
+          },
+          "sqlAllApplicationPools": 43602,
+          "sampledPeakDatabaseActivityRows": 28,
+          "postgresThrottledUsec": 86175,
+          "lockWait": {
+            "intervalMs": 25,
+            "samples": 2544,
+            "gapsMs": {
+              "n": 2544,
+              "p50": 25.112813999992795,
+              "p95": 26.291275000025053,
+              "p99": 71.21967900000163,
+              "max": 94.01448299997719
+            },
+            "byPool": {
+              "benchmark-application": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "benchmark-replacement-application": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-controller-lease": {
+                "observedEpisodes": 0,
+                "observedLowerMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                },
+                "estimatedUpperMs": {
+                  "n": 0,
+                  "p50": 0,
+                  "p95": 0,
+                  "p99": 0,
+                  "max": 0
+                }
+              },
+              "paperclip-runner-checkpoint": {
+                "observedEpisodes": 7,
+                "observedLowerMs": {
+                  "n": 7,
+                  "p50": 3.134,
+                  "p95": 62.973,
+                  "p99": 62.973,
+                  "max": 62.973
+                },
+                "estimatedUpperMs": {
+                  "n": 7,
+                  "p50": 29.69778799993219,
+                  "p95": 91.62701000005472,
+                  "p99": 91.62701000005472,
+                  "max": 91.62701000005472
+                }
+              }
+            },
+            "errors": [],
+            "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+          },
+          "lockObserverSql": [
+            {
+              "calls": 2544,
+              "total_exec_time": 225.15488799999974,
+              "rows": 7
+            }
+          ],
+          "peakSampledNodeRssBytes": 900505600,
+          "peakSampledNodeHeapBytes": 621405448,
+          "postgresStatementExecutionMs": 4218.09364,
+          "lockObserverExecutionMs": 225.15488799999974
+        }
+      ],
+      "sourceReport": "/tmp/native-controller-load-qualification-20261030/remote/evidence/overlap-abba/report.json"
+    }
+  },
+  "lockObserverCalibration": {
+    "intentionalHoldMs": 250,
+    "releasedAtMs": 249.4750299999996,
+    "transactionElapsedMs": 304.0121600000002,
+    "observed": {
+      "intervalMs": 25,
+      "samples": 12,
+      "gapsMs": {
+        "n": 12,
+        "p50": 25.226912000000084,
+        "p95": 35.78078900000037,
+        "p99": 35.78078900000037,
+        "max": 35.78078900000037
+      },
+      "errors": [],
+      "byPool": {
+        "benchmark-application": {
+          "observedEpisodes": 0,
+          "observedLowerMs": {
+            "n": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "estimatedUpperMs": {
+            "n": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          }
+        },
+        "paperclip-controller-lease": {
+          "observedEpisodes": 0,
+          "observedLowerMs": {
+            "n": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "estimatedUpperMs": {
+            "n": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          }
+        },
+        "paperclip-runner-checkpoint": {
+          "observedEpisodes": 1,
+          "observedLowerMs": {
+            "n": 1,
+            "p50": 229.153,
+            "p95": 229.153,
+            "p99": 229.153,
+            "max": 229.153
+          },
+          "estimatedUpperMs": {
+            "n": 1,
+            "p50": 254.2638969999989,
+            "p95": 254.2638969999989,
+            "p99": 254.2638969999989,
+            "max": 254.2638969999989
+          }
+        }
+      },
+      "episodes": [
+        {
+          "pid": 88,
+          "application_name": "paperclip-runner-checkpoint",
+          "query_start": "2026-10-30 18:42:31.6856+00",
+          "wait_event": "transactionid",
+          "wait_start": "2026-10-30 18:42:31.685612+00",
+          "wait_age_ms": 229.153,
+          "firstMs": 12704.136085,
+          "lastMs": 12899.644581,
+          "precedingGapMs": 35.78078900000037,
+          "observedLowerMs": 229.153,
+          "estimatedUpperMs": 254.2638969999989,
+          "rightCensored": false
+        }
+      ],
+      "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+    }
+  },
+  "overlapInterpretation": {
+    "scope": "Two logical server clients share one two-CPU Node process; each has its own bounded request/liveness/checkpoint pools. Same aggregate workload as one-server aligned burst.",
+    "postgresCpuSeconds": 16.20749,
+    "oneServerCandidateBurstMeanPostgresCpuSeconds": 14.679791,
+    "increasePercent": 10.406817099780241,
+    "interpretation": "Capacity passed. This additional CPU cost comes from a different topology and one sample; it is not an improvement claim or a repeatable baseline/candidate regression finding."
+  },
+  "retainedFailures": {
+    "earlierReport": "doc/plans/2026-10-30-native-controller-load-evidence.json",
+    "earlierReportUnchanged": true,
+    "freshAttemptLedger": "/tmp/native-controller-load-qualification-20261030/failure-ledger.json",
+    "localFailedPilot": {
+      "requestP99Ms": 1211.193594999997,
+      "droppedOperations": 33,
+      "postgresThrottledUsec": 12294711,
+      "outcome": "Ineligible for acceptance; local scheduling pressure and unmatched work. A subsequent identical local pilot passed, demonstrating temporal host variability."
+    },
+    "remoteSetupFailures": [
+      "Abbreviated Git revision fetch rejected; exact full revision fetched.",
+      "Missing built plugin SDK export; compiled from locked installed dependencies.",
+      "Observer database missing pg_stat_statements; harness now creates the extension in the owned observer database."
+    ],
+    "allFailedAttemptsAccountedFor": true
+  },
+  "limits": [
+    "Database authentication/read latency is not HTTP latency or full application latency.",
+    "The baseline supplies writer, snapshot port and PRP controller; normal request and lease-renewal paths are common controls.",
+    "PostgreSQL CPU and WAL are cluster-wide and include observer overhead and PostgreSQL background work.",
+    "Lock observer nominally adds 40 queries/second; actual calls and SQL execution time are included in each result.",
+    "Lock episodes use PostgreSQL waitstart identities and server-reported ages. Short waits between polls can be missed, and client scheduling/network delay widens estimated upper bounds.",
+    "Pool admission includes client encoding; SQL execution statistics include lock waits.",
+    "Memory and database activity are sampled once per second. Activity-row counts include non-client database backends, so they are not exact client-connection counts.",
+    "The two-server overlap probe uses two logical clients in one Node process and does not measure real process replacement or authenticated provider reattachment.",
+    "The separate claim-capacity probe uses synthetic prepared-workspace references. Provider authentication and external sandbox existence are outside its scope."
+  ],
+  "rawEvidence": {
+    "root": "/tmp/native-controller-load-qualification-20261030",
+    "initialArchive": "/tmp/native-controller-load-qualification-20261030/remote-evidence-initial.tar.gz",
+    "initialArchiveSha256": "d1f2da9429e2ae1944df35d40da77c0333c506336fed4f78dcfd1d13447403f8",
+    "cloudInstanceCleanup": "Owned benchmark containers stopped and owned disposable VM confirmed terminated with no attached root volumes.",
+    "finalDeltaArchive": "/tmp/native-controller-load-qualification-20261030/remote-evidence-final-delta.tar.gz",
+    "finalDeltaArchiveSha256": "1e77edbfd3ee9e05bd5de6a9ecefb82fdb12c89e52e575f9e8b48ea0c94d26ed",
+    "cleanupReceipt": "/tmp/native-controller-load-qualification-20261030/ec2-final-state.json"
+  },
+  "claimCapacity": {
+    "schema": "paperclip.native-controller-claim-capacity/v1",
+    "scope": "Production DB claim function against synthetic prepared-workspace references and real persisted snapshots/PRP records. Natural lease expiry; two server database clients. No provider attachment or external sandbox existence claim.",
+    "passed": true,
+    "harnessSha256": "b083e2e34eccf21a1921e3b32a434ac7d5b1dec24c903b0b3b5052f9f48adf2e",
+    "candidateRevision": "a0ef3ce7493c8bb76c4766ff007e8a390118d145",
+    "baselineRevision": "59e191c368cb3119ff3206621fefa9c5d4ad3110",
+    "errors": [],
+    "naturalExpiryWaitMs": 54026.14,
+    "claimDrainMs": 2838.7143720000167,
+    "claimAndRestoreDrainMs": 8742.97213000001,
+    "restoredCheckpoints": 300,
+    "renewedOwnerLosses": 0,
+    "postRenewalOwners": {
+      "owners": 300,
+      "min_generation": 2,
+      "max_generation": 2,
+      "minimum_remaining_ms": 56198.788
+    },
+    "elapsedMs": 77971.21296299998,
+    "requestsOffered": 15400,
+    "requestsCompleted": 15400,
+    "requestLatency": {
+      "n": 15400,
+      "p50": 2.684827999997651,
+      "p95": 5.376435999991372,
+      "p99": 9.759766000002855,
+      "max": 64.86076799999864
+    },
+    "postgresCpuUsec": 11280308,
+    "sqlByClient": {
+      "old_request": 7703,
+      "old_liveness": 0,
+      "old_checkpoint": 0,
+      "new_request": 12512,
+      "new_liveness": 1502,
+      "new_checkpoint": 1502
+    },
+    "settledIdleSql": 0,
+    "retainedOldControllerLeaseMs": 60000,
+    "remoteReconnectGraceMs": 420000,
+    "checkpointPoolPerServer": 2,
+    "claimsByKind": {
+      "reattach_remote_runner": 300
+    },
+    "distinctClaimedRuns": 300,
+    "claimGenerations": [
+      2
+    ],
+    "fixtureDatabaseRequestsPerSecond": 200,
+    "sourceCode": "/tmp/native-controller-load-qualification-20261030/benchmark-native-controller-claim-capacity.ts",
+    "sourceReport": "/tmp/native-controller-load-qualification-20261030/remote/evidence/claim-capacity/claim-capacity.json",
+    "sourceReportSha256": "cd9fc360f1cc1df0b6e82ca50694f6b2ad4c3ff3f638381637dcc99dd3385bc2",
+    "peakSampledDatabaseActivityRows": 25,
+    "lockWait": {
+      "samples": 2987,
+      "gapsMs": {
+        "n": 2987,
+        "p50": 25.607273999994504,
+        "p95": 29.01517500000773,
+        "p99": 43.6128069999977,
+        "max": 85.42577500001062
+      },
+      "byPool": {
+        "benchmark-application": {
+          "observedEpisodes": 0,
+          "observedLowerMs": {
+            "n": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "estimatedUpperMs": {
+            "n": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          }
+        },
+        "paperclip-controller-lease": {
+          "observedEpisodes": 0,
+          "observedLowerMs": {
+            "n": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "estimatedUpperMs": {
+            "n": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          }
+        },
+        "paperclip-runner-checkpoint": {
+          "observedEpisodes": 0,
+          "observedLowerMs": {
+            "n": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          },
+          "estimatedUpperMs": {
+            "n": 0,
+            "p50": 0,
+            "p95": 0,
+            "p99": 0,
+            "max": 0
+          }
+        }
+      },
+      "errors": [],
+      "limits": "Episodes use PostgreSQL pg_locks.waitstart identity. Lower bounds are server-reported wait age at the last observation; estimated upper bounds add the next client polling gap. Waits shorter than polling gaps can be missed; network/event-loop delay widens upper bounds. Observer nominally adds 40 queries/second, included in database CPU. SQL execution statistics include lock time and are not lock-exclusive."
+    }
+  },
+  "matchedOverlapAbba": {
+    "status": "passed",
+    "sourceCode": "/tmp/native-controller-load-qualification-20261030/benchmark-native-controller-overlap-abba.ts",
+    "sourceSha256": "2cc52afee21c34efab7f65af88bbd911e6efdd424094f7020bfccd4a16b4d441",
+    "requestP99IncreasePercent": 9.675454566469433,
+    "interpretation": "All relative gates passed; request p99 increase is close to the 10 percent threshold."
+  },
+  "reproduction": {
+    "baseHarnessSha256": "abaa29d50eb95013836b54b8dacc94c72e080edf24744cc5d291cc5eb1ff2818",
+    "patches": {
+      "overlap": {
+        "path": "doc/plans/2026-10-30-native-controller-overlap.patch",
+        "patchSha256": "e8e14ddbdbed289f47e57fa0fe8ae2be337e77f2919c755d7003afd73150faf4",
+        "reconstructedSourceSha256": "2cc52afee21c34efab7f65af88bbd911e6efdd424094f7020bfccd4a16b4d441",
+        "verifiedPatchReconstruction": true
+      },
+      "claim": {
+        "path": "doc/plans/2026-10-30-native-controller-claim.patch",
+        "patchSha256": "1fcbf028654499562c5f6b789f36e7c4681ec5d28c3dec6d13e2a51650496e2e",
+        "reconstructedSourceSha256": "b083e2e34eccf21a1921e3b32a434ac7d5b1dec24c903b0b3b5052f9f48adf2e",
+        "verifiedPatchReconstruction": true
+      }
+    },
+    "instructions": [
+      "Copy scripts/benchmark-native-controller-recovery.ts to a new probe source file.",
+      "Apply the corresponding dated patch with: patch /absolute/path/to/probe.ts /absolute/path/to/patch.",
+      "Set existing benchmark inputs plus BENCH_CANDIDATE_ROOT to the repository root; use the pinned baseline and identical installed dependencies.",
+      "Run Node 24 with the repository tsx loader and the patched probe file followed by burst. Each report directory must be fresh."
+    ],
+    "requiredInputs": [
+      "BENCH_DISPOSABLE_POSTGRES=1",
+      "BENCH_DATABASE_URL",
+      "BENCH_BASELINE_ROOT",
+      "BENCH_REPORT_ROOT",
+      "BENCH_POSTGRES_CGROUP",
+      "BENCH_CANDIDATE_ROOT"
+    ]
+  },
+  "streamingSqlIndependence": {
+    "status": "passed",
+    "sourceRevision": "da8c7f6e1837ddd896dfe83a7524812fee813487",
+    "sourceReport": "/tmp/native-controller-release-qualification-20261030/stream-cost-current.json",
+    "sourceLog": "/tmp/native-controller-release-qualification-20261030/stream-cost-current.log",
+    "samples": [
+      {
+        "chunks": 8,
+        "streamSql": 0,
+        "streamTransactions": 0,
+        "streamChangedRows": 0,
+        "idleSql": 0,
+        "checkpointWrites": 8,
+        "checkpointTransactions": 7,
+        "changedRows": 12
+      },
+      {
+        "chunks": 512,
+        "streamSql": 0,
+        "streamTransactions": 0,
+        "streamChangedRows": 0,
+        "idleSql": 0,
+        "checkpointWrites": 8,
+        "checkpointTransactions": 7,
+        "changedRows": 12
+      },
+      {
+        "chunks": 8192,
+        "streamSql": 0,
+        "streamTransactions": 0,
+        "streamChangedRows": 0,
+        "idleSql": 0,
+        "checkpointWrites": 8,
+        "checkpointTransactions": 7,
+        "changedRows": 12
+      }
+    ],
+    "positiveCalibrationPassed": true,
+    "existingRenewalSqlFor8192ChunkCase": 66,
+    "limits": [
+      "Separate real Runner fixture executed by the release qualification agent.",
+      "Concurrent owned fixtures may affect its cluster-wide WAL and elapsed diagnostics; those values are excluded from performance claims."
+    ]
+  }
+}
