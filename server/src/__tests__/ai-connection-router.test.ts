@@ -232,7 +232,8 @@ describe("durable, authorized connection routing", () => {
         ],
       } }, "alice");
       const taskKey = randomUUID();
-      const selected = await resolve(pool.id, taskKey, { environmentId: environment.id, skipUsageProbe: true });
+      const sourceAdapterConfig = { provider: "acpx", acpxAgent: "claude" };
+      const selected = await resolve(pool.id, taskKey, { environmentId: environment.id, skipUsageProbe: true, sourceAdapterConfig });
       const nativeWindows = platform === "win32" && driver === "local";
       expect(selected.memberId).toBe(nativeWindows ? codex.id : claude.id);
       expect(selected.runtimeConfig.provider).toBe(nativeWindows ? "codex" : "acpx");
@@ -245,7 +246,7 @@ describe("durable, authorized connection routing", () => {
       }
       if (platform === "linux" && driver === "local") {
         target.mockReturnValue({ driver: "local", platform: "win32", architecture: "x64" });
-        await expect(resolve(pool.id, taskKey, { environmentId: local.id, skipUsageProbe: true }))
+        await expect(resolve(pool.id, taskKey, { environmentId: local.id, skipUsageProbe: true, sourceAdapterConfig }))
           .rejects.toMatchObject({ details: { code: "pool_execution_platform_incompatible" } });
         const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, taskKey)));
         expect(pin?.member.id).toBe(claude.id);
@@ -452,7 +453,7 @@ describe("durable, authorized connection routing", () => {
     const { harnessPoolService } = await import("../services/harness-pools.js");
     const pool = await harnessPoolService(db).save(companyId, { config: { schemaVersion: 2, kind: "harness_pool", name: "Fresh Retry pool", enabled: true, mode: "failover",
       members: [members[1]!, members[0]!].map(member => ({ id: member.id, connection: member.binding, harness: { type: member === members[0] ? "codex" as const : "claude_code" as const }, model: member.profile.model })) } }, "alice");
-    const [agent] = await db.insert(agents).values({ companyId, name: "Fresh Retry agent", adapterType: "paperclip_runner", adapterConfig: { cwd: home }, runtimeConfig: { harnessPool: { poolId: pool.id } } }).returning();
+    const [agent] = await db.insert(agents).values({ companyId, name: "Fresh Retry agent", adapterType: "paperclip_runner", adapterConfig: { cwd: home, provider: "acpx", acpxAgent: "claude" }, runtimeConfig: { harnessPool: { poolId: pool.id } } }).returning();
     const [issue] = await db.insert(issues).values({ companyId, title: "Fresh Retry issue", status: "in_progress", assigneeAgentId: agent.id }).returning();
     const [initial] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, issueId: issue.id, scopeKind: "issue", status: "queued" }).returning();
     const initialClaim = await preparePoolAdapterClaim(db, initial, agent, "alice");
@@ -560,7 +561,7 @@ describe("durable, authorized connection routing", () => {
   it("keeps native execution confinement when selecting the first pool member", async () => {
     const claude = members[1]!;
     const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
-      schemaVersion: 2, kind: "harness_pool", name: randomUUID(), enabled: true, mode: "failover", members: [
+      schemaVersion: 2, kind: "harness_pool", name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: [
         { ...claude, id: randomUUID(), runner: "legacy", adapterConfig: { engine: "cli" } },
       ],
     } }, "alice");
@@ -571,6 +572,17 @@ describe("durable, authorized connection routing", () => {
     expect(await db.select().from(aiConnectionTaskPins).where(and(
       eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, taskKey),
     ))).toHaveLength(0);
+  });
+
+  it.each([{ provider: "codex" }, {}])("preserves the Codex sandbox when initially admitting a native pool member (%j)", async sourceAdapterConfig => {
+    const claude = members[1]!;
+    const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: {
+      schemaVersion: 2, kind: "harness_pool", name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90,
+      members: [{ ...claude, id: randomUUID(), runner: "paperclip" }],
+    } }, "alice");
+    await expect(resolve(pool.id, randomUUID(), {
+      environmentId: null, sourceAdapterConfig, skipUsageProbe: true,
+    })).rejects.toMatchObject({ details: { code: "pool_execution_policy_incompatible" } });
   });
 
   it("refuses cross-provider execution when source CLI policy cannot be preserved", () => {
@@ -830,9 +842,9 @@ describe("durable, authorized connection routing", () => {
     } }, "alice");
     const workdir = path.join(home, `continuation-${randomUUID()}`);
     await mkdir(workdir, { recursive: true });
-    const [agent] = await db.insert(agents).values({ companyId, name: "Claude to Codex lifecycle", adapterType: versioned ? "paperclip_runner" : "claude_local",
-      adapterConfig: { cwd: workdir, ...(versioned ? { provider: "acpx", acpxAgent: "claude" } : { engine: "cli", model: "claude-sonnet-5" }) },
-      runtimeConfig: { ...(versioned ? { harnessPool: { poolId: pool.id } } : { aiConnection: { mode: "router", connectionId: pool.id } }), heartbeat: { enabled: false } } }).returning();
+    const [agent] = await db.insert(agents).values({ companyId, name: "Claude to Codex lifecycle", adapterType: "claude_local",
+      adapterConfig: { cwd: workdir, engine: "cli", model: "claude-sonnet-5" },
+      runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id }, heartbeat: { enabled: false } } }).returning();
     const [issue] = await db.insert(issues).values({ companyId, title: "Keep completed file and continue remaining work", description: "Keep the completed marker; finish the remaining work.", status: "todo", assigneeAgentId: agent!.id, responsibleUserId: "alice", createdByUserId: "alice" }).returning();
     let sourceRunId: string | undefined;
     let sourceCwd: string | undefined;
@@ -903,9 +915,9 @@ describe("durable, authorized connection routing", () => {
       expect(primary).toHaveBeenCalledOnce(); expect(backup).toHaveBeenCalledOnce();
       expect((await db.select().from(issues).where(eq(issues.id, issue!.id)))[0]?.status).toBe("done");
       expect((await heartbeat.getRun(source!.id))?.resultJson?.executionSettlement).toMatchObject({ providerStopped: true, workspaceSettled: true });
-      expect((await db.select().from(agents).where(eq(agents.id, agent!.id)))[0]?.adapterType).toBe(versioned ? "paperclip_runner" : "claude_local");
+      expect((await db.select().from(agents).where(eq(agents.id, agent!.id)))[0]?.adapterType).toBe("claude_local");
       if (versioned) {
-        expect((await heartbeat.getRun(source!.id))?.runnerProfileJson?.adapterDispatch).toMatchObject({ adapterType: "claude_local", configuredAdapterType: "paperclip_runner" });
+        expect((await heartbeat.getRun(source!.id))?.runnerProfileJson?.adapterDispatch).toMatchObject({ adapterType: "claude_local", configuredAdapterType: "claude_local" });
         expect((await heartbeat.getRun(successor!.id))?.contextSnapshot?.aiRouterSelection).toMatchObject({ adapterType: "codex_local", runtimeConfig: { engine: "cli" } });
       }
     } finally {
@@ -916,17 +928,18 @@ describe("durable, authorized connection routing", () => {
   }, 60_000);
   it.each([false, true])("retains an independent native auth backup deadline when the source is already attempted (revoked=%s)", async revoked => {
     await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
-    const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members } }, "alice");
+    const [source, backup] = [members[1]!, members[0]!];
+    const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: [source, backup] } }, "alice");
     const taskKey = randomUUID(); const selected = await resolve(pool.id, taskKey);
     const sourceDeadline = new Date(Date.now() + 2 * 60 * 60_000), backupDeadline = new Date(Date.now() + 3 * 60 * 60_000);
-    await service().recordQuotaCooldown(companyId, members[0]!.binding.connectionId, await identityFor(members[0]!.binding.grantId), sourceDeadline);
-    await service().recordQuotaCooldown(companyId, members[1]!.binding.connectionId, await identityFor(members[1]!.binding.grantId), backupDeadline);
-    if (revoked) await db.update(connectionGrants).set({ status: "needs_reauthorization" }).where(eq(connectionGrants.id, members[0]!.binding.grantId));
+    await service().recordQuotaCooldown(companyId, source.binding.connectionId, await identityFor(source.binding.grantId), sourceDeadline);
+    await service().recordQuotaCooldown(companyId, backup.binding.connectionId, await identityFor(backup.binding.grantId), backupDeadline);
+    if (revoked) await db.update(connectionGrants).set({ status: "needs_reauthorization" }).where(eq(connectionGrants.id, source.binding.grantId));
     try {
       const result = await db.transaction(tx => aiConnectionRouterService(tx as unknown as typeof db).transitionQuotaPin({ companyId, poolId: pool.id, agentId, taskKey, expectedSelection: selected, userId: "alice", adapterType: "paperclip_runner", attemptedMemberIds: [selected.memberId], failureKind: "auth" }));
       expect(result).toEqual({ kind: "cooldown", retryAt: backupDeadline });
     } finally {
-      await db.update(connectionGrants).set({ status: "active" }).where(eq(connectionGrants.id, members[0]!.binding.grantId));
+      await db.update(connectionGrants).set({ status: "active" }).where(eq(connectionGrants.id, source.binding.grantId));
       await db.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, companyId));
     }
   });
@@ -938,7 +951,7 @@ describe("durable, authorized connection routing", () => {
     expect(quotaIdentityFromSessionSnapshot(grant, `${grant}:alice:${secret}:invalid`)).toBeNull();
   });
   it("atomically moves only the expected builtin pin to the next eligible account", async () => {
-    const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members } }, "alice");
+    const pool = await service().save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: randomUUID(), enabled: true, mode: "failover", thresholdPercent: 90, members: [members[1]!, members[0]!] } }, "alice");
     const taskKey = randomUUID();
     const first = await resolve(pool.id, taskKey);
     await expect(resolve(pool.id, taskKey, { adapterType: "claude_local", persisted: first })).rejects.toThrow("Persisted pool adapter is inconsistent");
@@ -946,9 +959,9 @@ describe("durable, authorized connection routing", () => {
     await service().recordQuotaCooldown(companyId, first.binding.connectionId, await identityFor(first.binding.grantId), new Date(Date.now() + 60_000));
     const input = { companyId, poolId: pool.id, agentId, taskKey, expectedSelection: first, userId: "alice", adapterType: "paperclip_runner", attemptedMemberIds: [first.memberId] };
     const result = await db.transaction(tx => aiConnectionRouterService(tx as unknown as typeof db, worker).transitionQuotaPin(input));
-    expect(result).toMatchObject({ kind: "selected", selection: { memberId: members[1]!.id } });
+    expect(result).toMatchObject({ kind: "selected", selection: { memberId: members[0]!.id } });
     const [pin] = await db.select().from(aiConnectionTaskPins).where(and(eq(aiConnectionTaskPins.poolId, pool.id), eq(aiConnectionTaskPins.taskKey, taskKey)));
-    expect(pin?.selection.memberId).toBe(members[1]!.id);
+    expect(pin?.selection.memberId).toBe(members[0]!.id);
     expect(await db.transaction(tx => aiConnectionRouterService(tx as unknown as typeof db, worker).transitionQuotaPin(input))).toMatchObject({ kind: "unavailable" });
   });
   it("rechecks and fails over the same pinned account after task model and effort overrides change", async () => {

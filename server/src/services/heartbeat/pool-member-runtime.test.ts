@@ -59,6 +59,8 @@ describe("pool member runtime settings", () => {
       .toThrow("Cannot preserve");
     expect(() => assertPoolAdapterPolicyCompatible({}, "paperclip_runner", "paperclip_runner", legacy, admitted))
       .not.toThrow();
+    expect(() => assertPoolAdapterPolicyCompatible({}, "paperclip_runner", "paperclip_runner", claude.profile, admitted))
+      .toThrow("Cannot preserve the native Codex execution sandbox");
     expect(() => assertPoolAdapterPolicyCompatible({}, "paperclip_runner", "codex_local", legacy, { ...admitted, runtimeConfig: {} }))
       .toThrow("Cannot preserve");
     expect(() => assertPoolAdapterPolicyCompatible({}, "paperclip_runner", "codex_local", legacy, { ...admitted, adapterType: undefined }))

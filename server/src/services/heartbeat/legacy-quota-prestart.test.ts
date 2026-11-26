@@ -62,7 +62,9 @@ describe("legacy quota prestart retry", () => {
     const pool = await router.save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId, config: { name: "Pool", enabled: true, mode: "failover", thresholdPercent: 90, members,
       ...(historicalAdapters && { schemaVersion: 2 as const, kind: "harness_pool" as const }) } }, userId);
     if (historicalAdapters) await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true });
-    const [updatedAgent] = await db.update(agents).set({ runtimeConfig: historicalAdapters
+    const [updatedAgent] = await db.update(agents).set({
+      ...(historicalAdapters?.firstNative && provider === "anthropic" ? { adapterConfig: { provider: "acpx", acpxAgent: "claude" } } : {}),
+      runtimeConfig: historicalAdapters
       ? { harnessPool: { poolId: pool.id } } : { aiConnection: { mode: "router", connectionId: pool.id } } }).where(eq(agents.id, agent.id)).returning();
     const [issue] = await db.insert(issues).values({ companyId, title: "Task", identifier: `Q${companyId.slice(0, 8)}-1`, status: "in_progress", assigneeAgentId: agent.id }).returning();
     const startedAt = new Date(Date.now() - 10_000);
@@ -639,7 +641,7 @@ describe("legacy quota prestart retry", () => {
     expect(reopened!.scheduledRetryAt!.getTime()).toBeLessThan(Date.now() + 1_000);
   }, 30_000);
   async function historicalWait(runtimeMode: "legacy" | "native" = "legacy") {
-    const f = await fixture(false, false, "anthropic", { firstNative: runtimeMode === "native", backupCodex: true });
+    const f = await fixture(false, false, "anthropic", { firstNative: runtimeMode === "native", backupCodex: true, backupNative: runtimeMode === "native" });
     const priorAdapter = runtimeMode === "native" ? "paperclip_runner" : "claude_local";
     const [contract] = runtimeMode === "native" ? await db.insert(completionContracts).values({
       companyId: f.companyId, issueId: f.issue.id, revision: 1, schemaVersion: "v1", policyVersion: "v1",
@@ -693,7 +695,7 @@ describe("legacy quota prestart retry", () => {
     const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.source.id));
     expect(successor).toMatchObject({ companyId: f.companyId, issueId: f.issue.id, agentId: f.agent.id,
       responsibleUserId: f.userId, sessionIdBefore: null, contextSnapshot: {
-        aiRouterSelection: { memberId: f.members[1].id, adapterType: "codex_local" }, forceFreshSession: true, previousRunId: f.predecessor.id,
+        aiRouterSelection: { memberId: f.members[1].id, adapterType: runtimeMode === "native" ? "paperclip_runner" : "codex_local" }, forceFreshSession: true, previousRunId: f.predecessor.id,
       },
     });
     expect(successor.scheduledRetryAt!.getTime()).toBeLessThan(Date.now() + 1000);

@@ -74,6 +74,10 @@ export function assertPoolAdapterPolicyCompatible(config: Record<string, unknown
   if (targetAdapterType !== "paperclip_runner" && sourceAdapterType === "paperclip_runner" &&
       config.provider != null && config.provider !== "codex")
     throw unprocessable("Cannot preserve the native execution sandbox with this pool member. Choose a compatible native member.", { code: "pool_execution_policy_incompatible" });
+  const sourceUsesNativeCodex = (sourceAdapterType === "paperclip_runner" && config.provider === "codex") ||
+    (sourceSelection?.adapterType === "paperclip_runner" && (sourceSelection.runtimeConfig.provider ?? "codex") === "codex");
+  if (sourceUsesNativeCodex && targetAdapterType === "paperclip_runner" && (targetRuntimeConfig.provider ?? "codex") !== "codex")
+    throw unprocessable("Cannot preserve the native Codex execution sandbox with this pool member. Choose a compatible member.", { code: "pool_execution_policy_incompatible" });
   if (sourceSelection?.adapterType === "paperclip_runner") {
     const frozen = sourceSelection.runtimeConfig;
     for (const [provider, key, unrestricted] of [["acpx", "acpxPermissionMode", "approve-all"], ["opencode", "opencodePermissionMode", "allow"]]) {
@@ -121,6 +125,12 @@ export function assertPoolAdapterPolicyCompatible(config: Record<string, unknown
   if (config.opencodePermissionMode != null && config.opencodePermissionMode !== "allow") refuse();
   if (config.codexPermissionMode != null && config.codexPermissionMode !== "never") refuse();
 }
+function configuredPoolPolicy(config: Record<string, unknown>, adapterType: string | undefined, selection: AiConnectionRouterSelection) {
+  return adapterType === "paperclip_runner" && selection.runnerScope && config.provider == null
+    ? { ...config, provider: "codex" }
+    : config;
+}
+
 function usesNativeCodexPoolSandbox(sourceAdapterType: string | undefined, source: Record<string, unknown>, selection: AiConnectionRouterSelection) {
   return selection.runnerScope !== undefined && sourceAdapterType === "paperclip_runner" &&
     (source.provider == null || source.provider === "codex") && (selection.adapterType ?? sourceAdapterType) !== "paperclip_runner";
@@ -143,7 +153,9 @@ export function applyAiConnectionRouterTaskSettings(config: Record<string, unkno
       poolExecutionAdapterType(selection.binding, configuredAdapterType) !== configuredAdapterType)
     throw unprocessable("Cannot preserve an older pool execution policy across providers; start a new task turn");
   const switchingHarness = configuredAdapterType && targetAdapter && poolHarnessChanges(sourcePolicyConfig, configuredAdapterType, targetAdapter, selection.runtimeConfig);
-  if (switchingHarness) assertPoolAdapterPolicyCompatible(sourcePolicyConfig, configuredAdapterType, targetAdapter!, selection.runtimeConfig);
+  if (switchingHarness) assertPoolAdapterPolicyCompatible(
+    configuredPoolPolicy(sourcePolicyConfig, configuredAdapterType, selection), configuredAdapterType, targetAdapter!, selection.runtimeConfig,
+  );
   const sourceEngine = typeof sourcePolicyConfig.engine === "string" ? sourcePolicyConfig.engine.trim().toLowerCase() : "";
   const retainedEngine = switchingHarness && ["claude_local", "codex_local"].includes(configuredAdapterType ?? "") &&
     ["claude_local", "codex_local"].includes(targetAdapter ?? "") && ["cli", "acp"].includes(sourceEngine) ? { engine: sourceEngine } : {};
@@ -462,7 +474,10 @@ export function aiConnectionRouterService(db: Db, workerManager?: PluginWorkerMa
       const effectiveAdapter = selection.adapterType ?? input.adapterType;
       if (input.taskless && effectiveAdapter === "paperclip_runner") throw unprocessable("This pool member requires a task; select a Legacy runner for agent runs without a task", { code: "pool_task_required" });
       assertPoolExecutionPlatform(platform, effectiveAdapter, selection.runtimeConfig);
-      assertPoolAdapterPolicyCompatible(input.sourceAdapterConfig ?? {}, input.adapterType, effectiveAdapter, selection.runtimeConfig);
+      assertPoolAdapterPolicyCompatible(
+        configuredPoolPolicy(input.sourceAdapterConfig ?? {}, input.adapterType, selection),
+        input.adapterType, effectiveAdapter, selection.runtimeConfig,
+      );
       if (!input.taskless && usesNativeCodexPoolSandbox(input.adapterType, input.sourceAdapterConfig ?? {}, selection)) {
         nativeCodexPoolSandbox(input.sourceAdapterConfig ?? {}, selection);
         assertPoolLocalProcessSandbox(platform);
