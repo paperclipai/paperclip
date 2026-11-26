@@ -7,6 +7,8 @@ import {
   chatPublicationStateSchema,
   updateChatEndpointSchema,
 } from "./chat-channels.js";
+import { githubChatConfigurationSchema } from "./chat-github.js";
+import { defaultGitHubReviewPolicy } from "../types/chat-github.js";
 
 describe("Microsoft Teams chat credential validation", () => {
   it("normalizes canonical Entra application and tenant UUIDs", () => {
@@ -121,5 +123,24 @@ describe("chat endpoint communicationInstructions validation", () => {
     expect(updateChatEndpointSchema.safeParse({ communicationInstructions: "a".repeat(4001) }).success).toBe(false);
     expect(updateChatEndpointSchema.safeParse({ replyDetail: "brief" }).success).toBe(false);
     expect(updateChatEndpointSchema.safeParse({ progressUpdates: false }).success).toBe(false);
+  });
+});
+
+describe("GitHub bot automatic responsibility", () => {
+  const configuration = {
+    version: 1,
+    toolsEnabled: true,
+    responsibleUserId: "owner",
+    memberAccess: "all_linked",
+    people: [],
+    defaults: defaultGitHubReviewPolicy(),
+    repositories: {},
+  };
+
+  it("accepts both modes, keeps an absent mode absent, and rejects unknown modes", () => {
+    expect(githubChatConfigurationSchema.parse(configuration).automaticResponsibleUser).toBeUndefined();
+    expect(githubChatConfigurationSchema.parse({ ...configuration, automaticResponsibleUser: "configured" }).automaticResponsibleUser).toBe("configured");
+    expect(githubChatConfigurationSchema.parse({ ...configuration, automaticResponsibleUser: "pull_request_author" }).automaticResponsibleUser).toBe("pull_request_author");
+    expect(githubChatConfigurationSchema.safeParse({ ...configuration, automaticResponsibleUser: "sender" }).success).toBe(false);
   });
 });

@@ -137,6 +137,16 @@ test drive is still the responsible user, not a separate GitHub actor. The PR au
 webhook sender are recorded independently. Follow-ups preserve task ownership
 while checking the current requester's authority.
 
+**Make the pull request author responsible** is off by default. When you turn it
+on, a linked, allowed author is responsible for automatic tasks on their own pull
+requests and issues, in place of the configured member. Guests and authors who
+have not linked GitHub to Paperclip stay with the configured member. The setting
+applies from the next automatic event, also on pull requests that already have a
+task. When the agent uses the responsible person's AI account, the automatic run
+then uses the author's account, as a mention by that author already does. A usage
+limit on one author's account holds only the runs that use that account. The
+author needs the same task access that their own mention needs.
+
 ## Mentions and pushes
 
 Use **mentions only** for reviews initiated by an authorized `@your-bot` request.
