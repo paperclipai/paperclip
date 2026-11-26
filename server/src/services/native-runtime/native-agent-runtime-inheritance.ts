@@ -7,11 +7,14 @@
  */
 export const INHERITABLE_NATIVE_RUNNER_CONFIG_KEYS = [
   "provider",
+  "allowUnmeteredProvider",
   "acpxAgent",
   "model",
   "codexPermissionMode",
   "opencodePermissionMode",
   "acpxPermissionMode",
+  "acpxSessionMode",
+  "piThinkingLevel",
   "lifecycleMode",
   "modelReasoningEffort",
   "maxIterations",

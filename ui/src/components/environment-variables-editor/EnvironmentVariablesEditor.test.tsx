@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 
-import { useState } from "react";
+import { createRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
-import { EnvironmentVariablesEditor } from "./index";
+import { EnvironmentVariablesEditor, type EnvironmentVariablesEditorHandle } from "./index";
 import { SecretPicker } from "./SecretPicker";
+import { SecretPopoverForm } from "./CreateSecretPopover";
+import { Popover, PopoverContent } from "@/components/ui/popover";
 
 // Radix (DropdownMenu/Popover) relies on Pointer Capture APIs that jsdom omits.
 const OriginalPointerEvent = globalThis.PointerEvent;
@@ -662,36 +664,6 @@ describe("EnvironmentVariablesEditor", () => {
     expect(secretValueField?.value).toBe("supersecretvalue");
   });
 
-  it("opens the create-secret popover from the picker's + Create item (§6.4, PAP-12476)", async () => {
-    // Regression: selecting the picker's `+ Create secret` item closes the
-    // combobox popover and (in the same tick) opens the anchored create-secret
-    // popover. The two Radix popovers must not race — the create popover has to
-    // survive the combobox's focus-return instead of being dismissed instantly.
-    render(
-      <EnvironmentVariablesEditor
-        value={{ GH: { type: "secret_ref", secretId: "s1", version: 2 } }}
-        secrets={secrets}
-        onChange={() => {}}
-        onCreateSecret={async () => secrets[0]}
-      />,
-    );
-    const combobox = container.querySelector<HTMLElement>('[role="combobox"]')!;
-    combobox.focus();
-    await flush();
-    const createItem = [...document.querySelectorAll<HTMLElement>("[cmdk-item]")].find((el) =>
-      el.textContent?.includes("Create"),
-    );
-    expect(createItem, "create item should be present in the open picker").toBeTruthy();
-    createItem!.click();
-    await flush();
-    // The create-secret popover is open (heading rendered) and stays open.
-    expect(document.body.textContent, "create-secret popover should open").toContain("Create secret");
-    expect(
-      document.querySelector('input[aria-label="Secret name"]'),
-      "create-secret name field should render",
-    ).toBeTruthy();
-  });
-
   it("keeps the create-secret popover open when focus returns to a control inside the value cell (§6.4, PAP-12492)", async () => {
     // Regression for the *fragile* part of the picker → create transition.
     // The picker's combobox and the anchored create popover share the value
@@ -723,6 +695,11 @@ describe("EnvironmentVariablesEditor", () => {
     createItem!.click();
     await flush();
     expect(document.body.textContent, "create-secret popover should open").toContain("Create secret");
+
+    expect(
+      document.querySelector('input[aria-label="Secret name"]'),
+      "create-secret name field should render",
+    ).toBeTruthy();
 
     // Simulate the picker's animation-delayed focus-return landing on a control
     // that lives inside the value cell (the source-switch trigger is a stable
@@ -947,5 +924,366 @@ describe("EnvironmentVariablesEditor", () => {
       el.textContent?.includes(cloudMigrationKey),
     );
     expect(match?.querySelector<HTMLElement>("[title]")?.getAttribute("title")).toBe(cloudMigrationKey);
+  });
+
+  it("lets plain-to-secret conversion reuse an existing secret on name collision", async () => {
+    const existing = makeSecret("s-gh", { name: "gh_token", key: "gh_token", latestVersion: 2 });
+    const onChange = vi.fn();
+    const onRotateSecret = vi.fn(async (secretId: string, _value: string) => ({
+      ...existing,
+      id: secretId,
+      latestVersion: 3,
+    }));
+
+    render(
+      <EnvironmentVariablesEditor
+        value={{ GH_TOKEN: { type: "plain", value: ["ghp", "0123456789abcdef0123456789abcdef"].join("_") } }}
+        secrets={[existing]}
+        onChange={onChange}
+        onCreateSecret={async () => existing}
+        onRotateSecret={onRotateSecret}
+      />,
+    );
+    const storeButton = container.querySelector<HTMLButtonElement>('button[title^="This value looks sensitive"]')!;
+    storeButton.click();
+    await flush();
+
+    const useExistingBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Use existing secret"),
+    );
+    const saveNewVersionBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Save as new version"),
+    );
+    expect(useExistingBtn, "Use existing secret action should render on collision").toBeTruthy();
+    expect(saveNewVersionBtn, "Save as new version action should render on collision").toBeTruthy();
+
+    useExistingBtn!.click();
+    await flush();
+    saveButton().click();
+    await flush();
+    expect(onChange).toHaveBeenLastCalledWith({
+      GH_TOKEN: { type: "secret_ref", secretId: "s-gh", version: "latest" },
+    });
+    expect(onRotateSecret).not.toHaveBeenCalled();
+  });
+
+  it("lets plain-to-secret conversion rotate an existing secret as a new version on name collision", async () => {
+    const existing = makeSecret("s-gh", { name: "gh_token", key: "gh_token", latestVersion: 2 });
+    const onChange = vi.fn();
+    const onRotateSecret = vi.fn(async (secretId: string, _value: string) => ({
+      ...existing,
+      id: secretId,
+      latestVersion: 3,
+    }));
+
+    const nextValue = ["ghp", "fedcba9876543210fedcba9876543210"].join("_");
+    render(
+      <EnvironmentVariablesEditor
+        value={{ GH_TOKEN: { type: "plain", value: nextValue } }}
+        secrets={[existing]}
+        onChange={onChange}
+        onCreateSecret={async () => existing}
+        onRotateSecret={onRotateSecret}
+      />,
+    );
+    const storeButton = container.querySelector<HTMLButtonElement>('button[title^="This value looks sensitive"]')!;
+    storeButton.click();
+    await flush();
+
+    const rotateBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Save as new version"),
+    )!;
+    rotateBtn.click();
+    await flush();
+    expect(onRotateSecret).toHaveBeenCalledWith("s-gh", nextValue);
+    saveButton().click();
+    await flush();
+    expect(onChange).toHaveBeenLastCalledWith({
+      GH_TOKEN: { type: "secret_ref", secretId: "s-gh", version: "latest" },
+    });
+  });
+
+  it("disables reusing inactive (disabled or archived) secrets on name collision and explains why", async () => {
+    for (const status of ["disabled", "archived"] as const) {
+      const inactive = makeSecret(`s-gh-${status}`, { name: "gh_token", key: "gh_token", status, latestVersion: 2 });
+      const onChange = vi.fn();
+      const onRotateSecret = vi.fn(async () => inactive);
+
+      render(
+        <EnvironmentVariablesEditor
+          value={{ GH_TOKEN: { type: "plain", value: ["ghp", "0123456789abcdef0123456789abcdef"].join("_") } }}
+          secrets={[inactive]}
+          onChange={onChange}
+          onCreateSecret={async () => inactive}
+          onRotateSecret={onRotateSecret}
+        />,
+      );
+      const storeButton = container.querySelector<HTMLButtonElement>('button[title^="This value looks sensitive"]')!;
+      storeButton.click();
+      await flush();
+
+      const useExistingBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+        b.textContent?.includes("Use existing secret"),
+      );
+      const saveNewVersionBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+        b.textContent?.includes("Save as new version"),
+      );
+      expect(useExistingBtn?.disabled, `Use existing secret must be disabled for ${status}`).toBe(true);
+      expect(saveNewVersionBtn, `Save as new version must not render for ${status}`).toBeUndefined();
+      expect(document.body.textContent).toContain(`it is ${status}`);
+      expect(document.body.textContent?.toLowerCase()).toContain("re-enable");
+
+      // Unmount before next iteration.
+      root?.unmount();
+      root = null;
+    }
+  });
+
+  it("warns immediately, masks input, and blocks save when a secret token is pasted into Variable name", async () => {
+    const onChange = vi.fn();
+    const token = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+    render(
+      <EnvironmentVariablesEditor
+        value={{}}
+        secrets={secrets}
+        onChange={onChange}
+        onCreateSecret={async () => secrets[0]}
+      />,
+    );
+    const addButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Add variable"))!;
+    addButton.click();
+    await flush();
+
+    const nameInput = nameInputs()[0]!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(nameInput, token);
+    nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+
+    // Immediately surfaced without blur, masked, and raw token absent from unsaved banner.
+    expect(container.textContent?.toLowerCase()).toMatch(/looks like a secret/);
+    expect(nameInput.type).toBe("password");
+    expect(container.textContent).not.toContain(token);
+    expect(container.querySelector('button[aria-label="Remove variable"]')).toBeTruthy();
+    expect(container.querySelector(`[aria-label*="${token}"], [title*="${token}"]`)).toBeNull();
+    expect(saveButton().disabled).toBe(true);
+  });
+
+  it("returns a distinct blocked flush result and stops outer form submission when a secret-shaped token is pasted into Variable name", async () => {
+    const onChange = vi.fn();
+    const onFormSubmit = vi.fn((event: React.FormEvent) => event.preventDefault());
+    const editorRef = createRef<EnvironmentVariablesEditorHandle>();
+    const token = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+    render(
+      <form onSubmit={onFormSubmit}>
+        <EnvironmentVariablesEditor
+          ref={editorRef}
+          value={{ EXISTING_OK: { type: "plain", value: "keep" } }}
+          secrets={secrets}
+          onChange={onChange}
+          onCreateSecret={async () => secrets[0]}
+        />
+      </form>,
+    );
+
+    // Clean editor returns { status: "clean" } rather than "blocked".
+    expect(editorRef.current?.flushPendingDraft()).toEqual({ status: "clean" });
+
+    const addButton = [...container.querySelectorAll("button")].find((b) => b.textContent?.includes("Add variable"))!;
+    addButton.click();
+    await flush();
+
+    const nameInput = nameInputs().at(-1)!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(nameInput, token);
+    nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+
+    const result = editorRef.current?.flushPendingDraft();
+    expect(result?.status).toBe("blocked");
+    expect(onChange).not.toHaveBeenCalled();
+
+    // Native form submission must also be blocked so outer saves do not discard pending edits.
+    const form = container.querySelector("form")!;
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    await flush();
+    expect(onFormSubmit).not.toHaveBeenCalled();
+  });
+
+  it("prefers an exact-case secret match over an earlier case-insensitive secret on collision", async () => {
+    const upper = makeSecret("s-upper", { name: "GH_TOKEN", key: "gh_token_upper", latestVersion: 4 });
+    const exact = makeSecret("s-exact", { name: "gh_token", key: "gh_token_exact", latestVersion: 1 });
+    const onChange = vi.fn();
+    const onRotateSecret = vi.fn(async (secretId: string, _value: string) => ({
+      ...exact,
+      id: secretId,
+      latestVersion: 2,
+    }));
+    const tokenValue = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+
+    render(
+      <EnvironmentVariablesEditor
+        value={{ GH_TOKEN: { type: "plain", value: tokenValue } }}
+        secrets={[upper, exact]}
+        onChange={onChange}
+        onCreateSecret={async () => exact}
+        onRotateSecret={onRotateSecret}
+      />,
+    );
+    const storeButton = container.querySelector<HTMLButtonElement>('button[title^="This value looks sensitive"]')!;
+    storeButton.click();
+    await flush();
+
+    const rotateBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Save as new version"),
+    )!;
+    rotateBtn.click();
+    await flush();
+    expect(onRotateSecret).toHaveBeenCalledWith("s-exact", tokenValue);
+    saveButton().click();
+    await flush();
+    expect(onChange).toHaveBeenLastCalledWith({
+      GH_TOKEN: { type: "secret_ref", secretId: "s-exact", version: "latest" },
+    });
+  });
+
+  it("asks the user to choose when multiple case-insensitive secrets match with no exact match", async () => {
+    const upper = makeSecret("s-upper", { name: "GH_TOKEN", key: "gh_token_upper", latestVersion: 4 });
+    const mixed = makeSecret("s-mixed", { name: "Gh_Token", key: "gh_token_mixed", latestVersion: 2 });
+    const onChange = vi.fn();
+    const onRotateSecret = vi.fn(async (secretId: string, _value: string) => ({
+      ...mixed,
+      id: secretId,
+      latestVersion: 3,
+    }));
+    const tokenValue = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+
+    render(
+      <EnvironmentVariablesEditor
+        value={{ GH_TOKEN: { type: "plain", value: tokenValue } }}
+        secrets={[upper, mixed]}
+        onChange={onChange}
+        onCreateSecret={async () => mixed}
+        onRotateSecret={onRotateSecret}
+      />,
+    );
+    const storeButton = container.querySelector<HTMLButtonElement>('button[title^="This value looks sensitive"]')!;
+    storeButton.click();
+    await flush();
+
+    // Before selecting one, neither action should target a secret blindly and Create/Store must be disabled.
+    expect(document.body.textContent).toContain("Multiple secrets match");
+    expect(
+      [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+        b.textContent?.includes("Use existing secret"),
+      ),
+    ).toBeUndefined();
+    const storeSubmitBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Store & bind"),
+    )!;
+    expect(storeSubmitBtn.disabled).toBe(true);
+
+    const mixedChoice = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Gh_Token"),
+    )!;
+    mixedChoice.click();
+    await flush();
+
+    const useExistingBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Use existing secret"),
+    )!;
+    useExistingBtn.click();
+    await flush();
+    saveButton().click();
+    await flush();
+    expect(onChange).toHaveBeenLastCalledWith({
+      GH_TOKEN: { type: "secret_ref", secretId: "s-mixed", version: "latest" },
+    });
+  });
+
+  it("keeps SecretPopoverForm collision indexing linear across 300 secrets during typing and ambiguous choice selection", async () => {
+    const SECRET_COUNT = 300;
+    const MAX_NAME_READS = SECRET_COUNT * 2;
+    let nameReads = 0;
+
+    function makeCountedSecret(id: string, secretName: string, latestVersion = 1): CompanySecret {
+      const base = makeSecret(id, { name: secretName, key: id, latestVersion });
+      Object.defineProperty(base, "name", {
+        enumerable: true,
+        get() {
+          nameReads += 1;
+          if (nameReads > MAX_NAME_READS) {
+            throw new Error(`Runaway SecretPopoverForm secret scan: ${nameReads} > ${MAX_NAME_READS}`);
+          }
+          return secretName;
+        },
+      });
+      return base;
+    }
+
+    const largeSecrets: CompanySecret[] = [];
+    for (let i = 0; i < SECRET_COUNT - 4; i += 1) {
+      largeSecrets.push(makeCountedSecret(`s-bulk-${i}`, `service_secret_${i}`));
+    }
+    largeSecrets.push(
+      makeCountedSecret("s-exact-upper", "EXACT_KEY", 3),
+      makeCountedSecret("s-exact-lower", "exact_key", 1),
+      makeCountedSecret("s-ambig-1", "AMBIG_KEY", 2),
+      makeCountedSecret("s-ambig-2", "Ambig_Key", 4),
+    );
+
+    const onSelectExisting = vi.fn();
+    const onRotateExisting = vi.fn(async () => {});
+    const tokenValue = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+
+    render(
+      <Popover open>
+        <PopoverContent>
+          <SecretPopoverForm
+            mode="store"
+            initialName="exact_key"
+            initialValue={tokenValue}
+            existingSecrets={largeSecrets}
+            onCancel={() => {}}
+            onSubmit={async () => {}}
+            onSelectExisting={onSelectExisting}
+            onRotateExisting={onRotateExisting}
+          />
+        </PopoverContent>
+      </Popover>,
+    );
+    await flush();
+
+    // Exact match selected linearly without scanning multiple times.
+    expect(document.body.textContent).toContain("exact_key already exists (v1)");
+    const readsAfterInitialIndex = nameReads;
+    expect(readsAfterInitialIndex).toBeLessThanOrEqual(SECRET_COUNT + 10);
+
+    // Typing keystrokes into the Name field must hit the memoized Maps in O(1) without re-indexing all 300 secrets.
+    const nameInput = document.querySelector<HTMLInputElement>('input[aria-label="Secret name"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    for (const nextName of ["a", "am", "amb", "ambig_key"]) {
+      setter.call(nameInput, nextName);
+      nameInput.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    }
+
+    expect(document.body.textContent).toContain("Multiple secrets match");
+    const ambigChoice = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Ambig_Key"),
+    )!;
+    ambigChoice.click();
+    await flush();
+
+    const useExistingBtn = [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) =>
+      b.textContent?.includes("Use existing secret"),
+    )!;
+    useExistingBtn.click();
+    await flush();
+
+    expect(onSelectExisting).toHaveBeenCalledTimes(1);
+    expect(onSelectExisting.mock.calls[0]?.[0]?.id).toBe("s-ambig-2");
+    // Extra reads across 4 keystrokes + choice selection must be O(1), not O(SECRET_COUNT).
+    expect(nameReads - readsAfterInitialIndex).toBeLessThan(20);
   });
 });

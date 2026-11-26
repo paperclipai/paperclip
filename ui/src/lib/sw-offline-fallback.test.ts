@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
+import { embedServiceWorkerOfflineStyles } from "./vite-sw-build-id";
 
 const uiRoot = resolve(fileURLToPath(new URL("../..", import.meta.url)));
 
@@ -29,7 +30,13 @@ function loadServiceWorkerFetchListener(overrides: {
     keys: vi.fn(async () => []),
     delete: vi.fn(async () => true),
   };
-  const code = readFileSync(resolve(uiRoot, "public/sw.js"), "utf8");
+  // Offline fallback belongs to a stamped production build. Development
+  // leaves Vite requests to the browser instead of intercepting them.
+  const code = embedServiceWorkerOfflineStyles(
+    readFileSync(resolve(uiRoot, "public/sw.js"), "utf8"),
+    readFileSync(resolve(uiRoot, "src/index.css"), "utf8"),
+  )
+    .replace("__PAPERCLIP_BUILD_ID__", "fixture-production");
   new Function("self", "caches", "fetch", "Response", "URL", code)(
     swSelf,
     caches,
@@ -78,6 +85,10 @@ describe("sw.js offline fallback", () => {
     const body = await response!.text();
     expect(body).toContain("Paperclip is offline");
     expect(body).toContain("Reload page");
+    expect(body).toContain("<style>");
+    expect(body).toContain(".paperclip-offline");
+    expect(body).toContain("<svg");
+    expect(body).not.toMatch(/__PAPERCLIP_|<link|\bsrc=/);
     expect(body).not.toContain("<html>app shell</html>");
   });
 

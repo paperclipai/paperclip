@@ -8,10 +8,11 @@ export function cancellableSandboxStartup(ctx: AdapterExecutionContext) {
   const signal = ctx.signal;
   const stop = ctx.stopRemoteStartup;
   if (!signal || !stop || target?.kind !== "remote" || target.transport !== "sandbox" || !target.runner) {
-    return { context: ctx, finish: async () => {} };
+    return { context: ctx, stopAcknowledged: () => false, finish: async () => {} };
   }
   let armed = true;
   let stopping: Promise<void> | undefined;
+  let stopAcknowledged = false;
   const inFlight = new Set<Promise<unknown>>();
   let rejectStopped!: (error: unknown) => void;
   const stopped = new Promise<never>((_, reject) => { rejectStopped = reject; });
@@ -21,7 +22,10 @@ export function cancellableSandboxStartup(ctx: AdapterExecutionContext) {
     if (stopping) return;
     stopping = Promise.resolve().then(stop);
     void stopping.then(
-      () => rejectStopped(signal.reason ?? new Error("Stopped during sandbox startup")),
+      () => {
+        stopAcknowledged = true;
+        rejectStopped(signal.reason ?? new Error("Sandbox execution stopped"));
+      },
       // Without proof, the original operation still owns its resources. Do
       // not abandon it or release credentials while it could be running.
       () => {},
@@ -78,6 +82,7 @@ export function cancellableSandboxStartup(ctx: AdapterExecutionContext) {
   };
   return {
     context: { ...ctx, executionTarget: { ...target, runner } },
+    stopAcknowledged: () => stopAcknowledged,
     async finish() {
       signal.removeEventListener("abort", onAbort);
       armed = false;

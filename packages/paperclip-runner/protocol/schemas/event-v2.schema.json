@@ -13,6 +13,7 @@
     "sourceSeq": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
     "sourceInstanceId": { "type": "string", "minLength": 1, "maxLength": 160 },
     "sourceKind": { "enum": ["runner", "control_plane"] },
+    "generation": { "type": "integer", "minimum": 0, "maximum": 9007199254740991, "description": "The runner process generation that emitted the event. A consumer records an event from an earlier generation for a turn that is not active as history; it never fails the current turn." },
     "runId": { "type": "string", "minLength": 1, "maxLength": 160 },
     "normalizedSessionId": { "type": "string", "minLength": 1, "maxLength": 160 },
     "turnId": { "type": "string", "minLength": 1, "maxLength": 160 },
@@ -21,7 +22,9 @@
       "enum": [
         "runner.connected", "runner.reconnected", "runner.reconciled", "runner.disconnected", "runner.draining", "runner.suspending", "runner.suspended", "runner.stopped", "runner.diagnostic",
         "runtime.phase.changed", "sandbox.metric", "workspace.ready", "workspace.change.updated", "workspace.diff.recorded", "workspace.file.referenced",
-        "harness.starting", "harness.ready", "harness.exited", "harness.diagnostic", "plan.updated",
+        "auth.credentials.updated",
+        "runtime.activity.recorded",
+        "harness.starting", "harness.ready", "harness.exited", "harness.diagnostic", "plan.updated", "plan.proposed",
         "tool.execution.started", "tool.execution.progressed", "tool.execution.completed", "research.started", "research.progressed", "research.completed",
         "delegation.started", "delegation.updated", "delegation.completed", "model.route.changed", "model.verification.updated", "context.compacted",
         "artifact.viewed", "artifact.generated", "review.mode.changed", "hook.started", "hook.completed", "memory.citation.referenced",
@@ -46,6 +49,7 @@
     "debug": { "type": "object", "additionalProperties": true }
   },
   "allOf": [
+    { "if": { "properties": { "eventType": { "const": "auth.credentials.updated" } } }, "then": { "properties": { "sourceKind": { "const": "runner" }, "priority": { "const": 0 }, "payload": { "$ref": "https://paperclip.dev/schemas/prp/v1/auth-credentials.schema.json" } } } },
     {
       "if": { "properties": { "eventType": { "enum": ["session.goal.snapshot", "session.goal.updated"] } } },
       "then": {
@@ -74,9 +78,51 @@
             "type": "object",
             "required": ["sessionGoals"],
             "properties": {
-              "sessionGoals": { "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/capability" }
+              "sessionGoals": { "$ref": "https://paperclip.dev/schemas/prp/v2/session-goal.schema.json#/$defs/capability" },
+              "turnControls": { "$ref": "https://paperclip.dev/schemas/prp/v1/provider-descriptor.schema.json#/$defs/turnControls" }
             },
             "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "runtime.activity.recorded"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sourceKind": {
+            "const": "runner"
+          },
+          "priority": {
+            "const": 1
+          },
+          "payload": {
+            "type": "object",
+            "required": [
+              "namespace",
+              "activityKey"
+            ],
+            "properties": {
+              "namespace": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              },
+              "activityKey": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160,
+                "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+              }
+            },
+            "additionalProperties": false
           }
         }
       }

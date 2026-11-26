@@ -40,12 +40,22 @@ export interface TenantSessionRecoveryCoordinator {
 
 export function createTenantSessionRecoveryCoordinator(
   reloadTopLevelPage: () => void,
+  getDocumentPathname: () => string = () => "",
 ): TenantSessionRecoveryCoordinator {
   let recoveryPromise: Promise<never> | null = null;
 
   return {
     recoverIfNeeded(status, body) {
       if (!isTenantDocumentRecoveryError(status, body)) return null;
+      // Dot consent is intentionally public. Global settings/session probes can
+      // receive an expected 401 here; reloading would repeat that probe forever
+      // and prevent the public connection request from finishing. Leave those
+      // failures to their consumers while preserving recovery on board routes
+      // and for archived stacks.
+      if (
+        isTenantSessionRecoveryError(status, body)
+        && /^\/dot-connect\/pcmcp_request_[A-Za-z0-9_-]{43}$/.test(getDocumentPathname())
+      ) return null;
       if (recoveryPromise) return recoveryPromise;
 
       // Keep every affected consumer pending while the browser leaves this
@@ -70,4 +80,4 @@ export const tenantSessionRecovery = createTenantSessionRecoveryCoordinator(() =
   // stack is redirected to the portfolio.
   const topLevelWindow = window.top ?? window;
   topLevelWindow.location.reload();
-});
+}, () => typeof window === "undefined" ? "" : window.location.pathname);

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
+import { spawnSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { test } from "node:test";
 
 import {
@@ -70,4 +73,27 @@ test("the fixture itself is tracked so the package-wide check stays green", asyn
   for (const name of ["consumer.ts", "module.ts"]) {
     assert.ok(tracked.has(resolve(defaultPackageRoot, fixtureRoot, name)), name);
   }
+});
+
+
+test("embedded fixture imports are ignored while real missing imports still fail", async (t) => {
+  const root = await mkdtemp(resolve(tmpdir(), "runner-tracked-imports-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const initialized = spawnSync("git", ["init", "--quiet", root], { encoding: "utf8" });
+  assert.equal(initialized.status, 0, initialized.stderr);
+  await mkdir(resolve(root, "src"));
+  const consumer = resolve(root, "src/consumer.mts");
+  await writeFile(consumer, [
+    'const fixture = `import "./fixture-only.js"; require("./other-fixture.js")`;',
+    'const actual = import("./missing.js", { with: { type: "json" } });',
+    'export { tracked } from "./tracked.js";',
+  ].join("\n"));
+  const tracked = resolve(root, "src/tracked.ts");
+  await writeFile(tracked, "export const tracked = true;");
+  const violations = await checkTrackedImports({
+    packageRoot: root, scanRoots: ["src"], trackedFiles: [consumer, tracked],
+  });
+  assert.deepEqual(violations.map(({ specifier, line, reason }) => ({ specifier, line, reason })), [{
+    specifier: "./missing.js", line: 2, reason: "does not resolve to any tracked file",
+  }]);
 });

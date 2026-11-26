@@ -1,10 +1,16 @@
 # Observability
 
-This document is the Observability contract. It covers the OpenTelemetry
-trace path, the opt-in Sentry error-monitoring path, and two local
-instrumentation contracts; see the
+This document covers how an operator turns on the two opt-in observability
+paths, OpenTelemetry traces and Sentry error monitoring, and what Sentry events
+may contain. See the
 [Telemetry Data Contract](../packages/shared/src/telemetry/README.md) for the
-separate first-party event system.
+separate first-party event system, and `rules/data-paths.mdc` for how the paths
+differ.
+
+It does not list span names or attributes. Those are defined next to the code
+that opens each span; search for the span name, or for `getTracer(` and
+`startActiveSpan(` under `server/src` and `packages`. Add a new span in code
+without adding it here.
 
 Paperclip ships with **opt-in** OpenTelemetry auto-instrumentation for the
 server process. When activated it produces **traces only** — no metrics and no
@@ -22,7 +28,8 @@ alternative peer dependencies — install exactly **one**, matching
 `OTEL_EXPORTER_OTLP_PROTOCOL`.
 
 When `OTEL_EXPORTER_OTLP_ENDPOINT` is unset, none of the `@opentelemetry/*` SDK
-packages are imported and there is zero runtime overhead.
+packages are imported and there is no SDK or exporter overhead. Local request
+timings still use the performance clock.
 
 `server/package.json` declares each optional package at the exact version the
 server tests against; install that exact version. Our Dependabot cannot bump
@@ -33,6 +40,13 @@ decision. `@opentelemetry/api` is the one OpenTelemetry package Paperclip
 maintains as a dependency; once you install the packages below, they become
 normal dependencies of **your own** project, and your own Dependabot updates
 them.
+
+An initialized SDK does not confirm ingestion. Verify a fresh trace from the
+deployed revision at the configured destination. A rejected export can leave
+the application healthy. For Honeycomb, configure the ingest key in the
+`x-honeycomb-team` entry of `OTEL_EXPORTER_OTLP_HEADERS`; see
+[Honeycomb authentication](https://docs.honeycomb.io/api/query-annotations/authorization).
+Keep credential values out of logs and diagnostic reports.
 
 ## Enabling tracing
 
@@ -86,6 +100,12 @@ export OTEL_SERVICE_NAME="paperclip"
 export OTEL_SERVICE_VERSION="2026.5.0"
 ```
 
+When `PAPERCLIP_TRACING_INSTANCE_HOST=true`, server and browser traces include
+`paperclip.instance.host` from the hostname in the configured `PAPERCLIP_PUBLIC_URL`.
+Server spans read the current URL at span start. Browser sessions receive the
+hostname with their tracing configuration. Paths, query strings, ports, and
+credentials are excluded. The setting is off by default.
+
 ### `service.version` resolution order
 
 The `service.version` span attribute reports the commit the running server was
@@ -123,115 +143,26 @@ diagnostic line on boot and continues without tracing — your server stays up.
 ## Scope
 
 The OpenTelemetry export carries **traces only**. Metrics and log exporters
-are out of scope and intentionally not configured here. Auto-instrumentations
+are out of scope. The SDK receives explicit empty metric-reader and log-processor
+lists so its default OTLP exporters cannot emit unrequested metrics or logs. Auto-instrumentations
 for `fs`, `dns`, and `net` are disabled by default because they are too chatty
 for this workload; everything else from
 `@opentelemetry/auto-instrumentations-node` is on (HTTP, Express, PG, etc.).
 
-This document also holds three local instrumentation contracts: native runner
-traces, sandbox startup traces, and sandbox duplex transport instrumentation.
-Those sections follow below.
+## Other diagnostic switches
 
-## Native Runner Trace Spans
-
-Paperclip Runner task runs emit a single foldable OpenTelemetry trace. This is
-the native-run trace schema version `2`. `task.run` is the only full-run root;
-every other native span carries a real OpenTelemetry parent context rather than
-only a descriptive `parentName` field.
-
-The canonical lifecycle is:
-
-```text
-task.run
-├── heartbeat.queue
-├── task.prepare
-│   ├── environment.startup
-│   │   ├── environment.acquire
-│   │   └── environment.workspace.realize
-│   ├── skills.prepare
-│   ├── heartbeat.prepare_before_environment
-│   ├── heartbeat.prepare_after_environment
-│   └── native.coordinator.claim
-├── native.session.execute
-│   ├── runner.session.startup
-│   │   ├── runner.transport.connect
-│   │   │   └── runner.artifact.prepare
-│   │   ├── runner.transport.activation
-│   │   ├── runner.transport.ready
-│   │   ├── runner.runtime.stage
-│   │   │   └── stage.sync
-│   │   │       ├── stage.asset.home
-│   │   │       │   └── session.checkpoint.restore
-│   │   │       ├── stage.asset.runtime_context
-│   │   │       └── stage.asset.ca_bundle
-│   │   ├── runner.session.bootstrap | runner.session.resume
-│   │   └── runner.turn.submit
-│   └── agent.turn
-│       ├── provider.turn.queue
-│       ├── provider.time_to_first_agent_event
-│       ├── tool.request.input_stream
-│       └── tool.execute
-└── task.settle
-    ├── native.result.finalize
-    └── session.checkpoint.persist
-```
-
-The tree shows stable semantic groups, not an exhaustive leaf list. Existing
-artifact discovery and verification, process launch, PRP/websocket, ingress,
-sandbox lease, harness-state, provider, duplex, and `sandbox.exec` spans remain
-under the closest group. This keeps detailed diagnosis available while letting
-a trace UI collapse the run into preparation, runner startup, agent work, and
-settlement. A repeated operation creates another span with the same semantic
-name; attempts are not encoded into span names.
-
-`runner.session.startup` ends at the first durable `turn.submitted` event. A
-fresh provider session records `runner.session.bootstrap`; an exact recovered
-session records `runner.session.resume`. `agent.turn` begins at
-`turn.submitted` and ends at the provider terminal event. `task.settle` begins
-at that terminal event and remains open through finalization and checkpoint
-persistence, so settlement work does not appear to outlive its parent.
-
-`provider.time_to_first_agent_event` ends at the first meaningful provider
-activity: a nonempty assistant/reasoning delta, a tool announcement with an
-execution identity, or an existing assistant/reasoning/tool item start or
-completion. Usage updates and empty deltas do not count. This is a first
-activity metric, not time to a finished answer.
-
-`tool.request.input_stream` measures the observed request-input window: from
-an ACP tool announcement to its last input update before the provider reports
-the tool complete. It can include provider buffering and transport. It is not
-a claim about the exact end of model generation or the start of API execution.
-The span is omitted when no subsequent input update is observed.
-
-For native control-plane tools, `tool.execute` measures authorization and
-execution inside the server authority, including time spent in HTTP requests.
-Provider tool IDs and MCP request IDs are separate namespaces; the trace does
-not guess a pairing by tool name or arrival order. Both spans belong to the
-current run's `agent.turn`, including when a warm provider session is reused.
-Their `operation` attribute is a known semantic tool name or `other`. Only a
-boolean input-update marker crosses the provider-event boundary; no arguments,
-argument hashes, or raw call IDs are exported by these spans. Concurrent tools
-have separate durations; overlapping spans must not be summed as wall time.
-
-The active native scope is also published through the existing asynchronous
-runtime-parent seam. Provider execution, plugin, websocket/duplex, daemon, and
-sandbox spans therefore inherit the correct branch even when their callbacks
-run in another service layer. With no active native scope, those existing seams
-retain their documented fallback behavior.
-
-The root carries only a hashed run id, runtime label, schema version, wall time,
-and outcome. Native child attributes use the bounded
-`paperclip.native.span.` prefix and a closed key allowlist; values are limited
-to finite numbers, booleans, or short strings. Commands, arguments, environment
-values, paths, output, credentials, and raw identifiers are discarded by the
-trace helper. `task.run.measured` remains in the local run log for compatibility
-but is not exported as a second full-width OTel span.
-Persisted `run.performance.span` events retain the v1 run-log schema and include
-`traceSchemaVersion: 2` so local tooling can distinguish the hierarchy.
-
-Like every span in this document, native-run spans are opt-in. When
-`OTEL_EXPORTER_OTLP_ENDPOINT` is unset, the tracer remains a no-op; the local
-run-log copy is unaffected.
+- **OpenCode performance diagnostics.** Set
+  `PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS=1` as an agent or environment
+  variable. It defaults off, and setting the OTLP endpoint alone does not turn it
+  on. The Runner then records closed OpenCode phase timings through a local,
+  authenticated sink. No operator OTLP endpoint or ingestion credential is
+  passed to OpenCode.
+- **Browser page-load tracing** on hosted instances needs
+  `PAPERCLIP_BROWSER_TRACES_ENDPOINT`. See
+  [browser performance tracing](browser-performance-tracing.md).
+- **Browser product analytics** (PostHog) on Paperclip Cloud needs
+  `PAPERCLIP_POSTHOG_PROJECT_TOKEN` and `PAPERCLIP_POSTHOG_BROWSER_ENABLED=1`.
+  See [Cloud browser product analytics](cloud-browser-analytics.md).
 
 ## Sentry Error Monitoring
 
@@ -241,9 +172,10 @@ environment variables: `SENTRY_DSN_FRONTEND` for the browser and
 `SENTRY_DSN_BACKEND` for the server. Each variable is optional. A
 specific variable always wins for its own component; a legacy variable,
 `SENTRY_DSN`, supplies a component that has no specific value set. An
-empty string counts as absent for all three variables. The feature uses
-built-in Sentry options only. It adds no `beforeSend` hook and no custom
-filter code.
+empty string counts as absent for all three variables. The server's `beforeSend`
+hook adds normal task and run navigation links to events with saved run context.
+The run-failure reporter selects reportable outcomes before calling the SDK,
+as described below.
 
 The server is inactive when the backend DSN resolves to `null`; then it
 imports no Sentry package. The browser is inactive when the front-end DSN
@@ -359,12 +291,18 @@ loaded bundle, even if the server has since deployed another version.
 
 ### Privacy settings
 
-The feature uses built-in Sentry options only.
+Both runtimes use Sentry's privacy options. The server also adds saved-run
+navigation links through a bounded `beforeSend` hook.
 
 - `sendDefaultPii` is `false`, on both runtimes.
 - `tracesSampleRate` is `0`, on both runtimes. Paperclip sends no
   performance trace and no profile.
-- There is no `beforeSend` hook and no custom filter, on either runtime.
+- The server hook reads only saved run and company metadata for navigation.
+  It copies no request data and preserves the event if the lookup fails.
+  The browser `beforeSend` hook only adds the diagnostics listed in
+  "Browser data" and never drops an event. The browser drops one class of
+  browser-injected errors with the built-in `ignoreErrors` option (see
+  "Browser data"). The server adds no filter.
 
 ### Server request data
 
@@ -399,12 +337,123 @@ below.
 
 ### Run failure context
 
-Terminal run failures also carry the run and task IDs, adapter, error code,
-run status, and redacted error message. Their fingerprint is the error code
-and adapter. These fields are passed directly to that event's capture call.
+Run failure reporting requires a separate operator choice in addition to the
+backend Sentry DSN and the audited SDK. Set `PAPERCLIP_SENTRY_RUN_FAILURES` to:
+
+| Value | Reports |
+| --- | --- |
+| `off` (default) | No run failure events. Ordinary server exception reporting still uses the backend DSN. |
+| `unexpected` | Failed and timed-out runs, plus unexpected started cancellations, with the configuration, quota, and external connection filters described below. |
+| `all` | Every failed or timed-out run, including the known configuration, quota, and external connection failures. Unexpected started cancellations also report. |
+
+Missing, blank, or unrecognized values keep run reporting off. Expected operator
+stops, shutdown interruptions, successful runs, and queued work do not report
+terminal run failures in either enabled mode. A native run that is `failed` while it waits for a same-run
+retry (`nativePhase` `retryable_failure`) does not report either. It reports once
+if a later write ends the retry as a terminal failure. The mode does not change run status, retries, recovery,
+Telemetry, or OpenTelemetry export. It is process-wide, so an operator can enable
+it on one staging instance without enabling it on other deployments. Restart the
+server after changing deployment environment variables.
+
+**Upgrade:** A backend DSN alone previously enabled run failure reports. Set
+`PAPERCLIP_SENTRY_RUN_FAILURES=unexpected` to preserve that reporting policy.
+Use `all` to investigate every failed run in a selected deployment.
+
+Terminal run failures carry the company, agent, run and optional task IDs,
+adapter, error code, run status, and redacted error message. Company-scoped runs
+without a task also report. The `event_kind=run_failure` tag identifies these
+events. Their fingerprint contains the error code and adapter, followed by the
+setup/execute phase and original failure code when available. IDs, release,
+model, and error text do not split groups. These fields are passed directly to
+that event's capture call.
 They do not change the ambient Sentry scope, whose isolation is unavailable
 without an OpenTelemetry context manager. Later, unrelated exceptions must
 not inherit a previous run's identity or fingerprint.
+
+When a task read produces the system-owned failed state displayed as
+“Couldn’t finish this attempt. Your message is saved.”, either enabled mode also
+reports a `task_attempt_failed` error with `event_kind=run_failure` and
+`failure_source=task_interruption`. This catches saved-message failures without
+a new terminal run transition. The event keeps the actual observed run status,
+the adapter and the company, agent, task and run references. It uses fixed error
+text and includes no message bodies, prompts or raw run diagnostics. Working,
+scheduled-retry, resolved and user-action states do not produce this event.
+Repeated reads of the same company/task/run/intent are suppressed after the SDK
+receives a successful HTTP delivery response. The process retains the latest
+1,000 confirmed reports. An SDK capture ID alone does not confirm delivery:
+processing backpressure, network errors and rate limits can discard the event.
+Unconfirmed captures wait 60 seconds before a later task read can try again;
+this pending cache also holds at most 1,000 entries and starts no background
+timer. Because these caches are process-local, a read reports only a state
+change from the last hour: the run's finish time, a saved recovery transition,
+a native resume's due or failure time, a scheduled retry time, a saved-message
+or Retry request, or a Retry preparation's deadline or terminal update. Failed
+or cancelled Retry preparations use their saved update time, so a new failure
+is still reported after a long wait. Reading a task does not refresh these times.
+A server restart, another replica or cache eviction therefore does not resend
+every retained failure that a task list shows. A failed state that no task read observes within that hour is not
+reported by this path. A valid run error code is added as the `run_error_code`
+tag; it does not change the fingerprint.
+This task-state event can accompany a separate terminal run-failure report;
+the `failure_source` tag distinguishes them.
+
+The versioned `paperclip` context supplies company and agent IDs and relative
+API paths for the saved run, events, log, and optional task. A valid HTTP(S)
+origin in `PAPERCLIP_PUBLIC_URL` also supplies absolute run, events, and log URLs.
+Values with credentials, query parameters, fragments, or a path are omitted.
+The event never includes an API key or an access token. These references grant
+no access. A bot must authenticate to the correct instance and pass its existing
+company, run-output, and private-task access checks.
+
+Server events associated with a saved run also include `task_url` and `run_url`
+tags for the normal company-prefixed board pages, plus `task_identifier` when
+available. The `paperclip` context contains the same navigation links as
+`taskUrl` and `runPageUrl`; the existing `runUrl` remains an API reference.
+This enrichment applies to run failures, adapter Stop timeouts, and server errors
+with authenticated run context. It resolves the saved company, agent, and task
+instead of copying request URLs, queries, or bodies. Taskless runs receive only a
+run link. Missing or unsafe `PAPERCLIP_PUBLIC_URL` values omit these links.
+The optional indexed metadata lookup has a one-second reporting deadline and a
+limit of eight unfinished reads. A failed or slow lookup preserves the original
+event without navigation links.
+URLs longer than Sentry's 200-character tag limit remain in context only.
+Links require the viewer's normal Paperclip access and apply to newly captured
+events; existing Sentry events are not rewritten.
+
+The bot should use the exact run ID to read `GET /api/heartbeat-runs/{runId}`,
+`GET /api/heartbeat-runs/{runId}/events`, and
+`GET /api/heartbeat-runs/{runId}/log`. These retain the saved result, run context,
+and available output. Prefer the saved provider configuration over the agent's
+current settings. The Sentry execution context includes the saved native
+provider kind and model, start/finish timestamps, and original failure code when
+available. Tool-name collision errors identify the conflicting tool names and
+connection bindings without serializing tool schemas or provider metadata.
+Gateway reason codes survive exception projection. All diagnostic text still
+passes through the existing secret redaction and size limits.
+
+Use the Sentry group to combine repeated investigations, and the instance and
+run ID to identify each occurrence. Automated retries or proposed code fixes
+must use normal Paperclip authority and approval checks. Receiving an event
+does not authorize a bot to replay a run. This change provides the reporting
+contract; it does not install a bot or configure Sentry alerts.
+
+Reporting remains asynchronous and best effort. Shutdown drains pending report
+work before the SDK flushes. There is no durable delivery queue or receipt from
+Sentry, so a crash or network outage can lose events. `all` selects failures; it
+does not promise delivery or export complete transcripts. Detailed output stays
+in the instance behind the existing authenticated APIs, with its normal retention.
+
+In `unexpected` mode, some failures that the task already shows to its owner
+stay in the run log and the task's blocked state instead of reporting. Examples
+include known missing-secret configuration blockers, some provider quota and
+rate-limit failures, recognized external connection failures, and a scheduled
+Codex capacity retry. Most exclusions have conditions, so read
+`server/src/services/run-failure-report.ts` for the full policy. `all` mode
+reports these failures.
+Other run failures attach bounded diagnostic contexts. Their fields are defined
+in `server/src/sentry.ts` and pass through the existing secret redaction and size
+limits. They can include selected provider error titles and details, but not raw
+request or response objects, prompts, message bodies, or credentials.
 
 ### Browser data
 
@@ -418,17 +467,34 @@ Application and route error-boundary reports also include:
   URLs, arguments, and unrecognized lines are omitted. Parsing examines at
   most 16 KiB of input. Production builds preserve function names so this
   trace remains useful after minification; this adds some bundle size.
+
+All browser error reports, including global promise rejections, include:
+
+- `browser_build_mode`: `development` or `production`, from the loaded bundle.
+- `browser_rejection_kind`: the primitive type of an unhandled rejected value
+  (or `null`). The diagnostic does not read object properties or copy the value.
 - `browser_state`: document readiness, visibility, and a boolean indicating
   the `translated-ltr` or `translated-rtl` root class used by browser translation.
   The marker is evidence of DOM translation, not proof of the error's cause;
   its absence does not exclude other translators or DOM-changing extensions.
 
-These fields are captured at the failure, before asynchronous reporting, and
-attached only to that event. They include no component props, DOM text, HTML,
+Boundary state is captured at the failure, before asynchronous reporting.
+Global reports without that snapshot read document state before sending.
+All fields are attached only to that event. They include no component props,
+DOM text, HTML,
 element identifiers, arbitrary CSS classes, route, or query string. Failed
 diagnostic reads do not prevent the original exception from being reported.
 The monitoring gate and sign-out behavior still apply. This context does not
 suppress errors, change DOM operations, or disable browser translation.
+
+The browser does not send an error whose message contains `__firefox__`.
+Firefox for iOS injects Reader-mode and helper scripts into each page, and
+these scripts read a `__firefox__` global. When such a script runs before its
+setup is complete, the page reports "Can't find variable: __firefox__" or
+"undefined is not an object (evaluating 'window.__firefox__.reader')". No
+Paperclip code defines or reads `__firefox__`, so these errors do not come
+from Paperclip. The built-in `ignoreErrors` option drops them. All other
+errors from the same browser are still sent.
 
 ### Fail-open behavior
 
@@ -439,7 +505,9 @@ log line and keep running with no error monitoring.
 ### Default capture set
 
 The lists below name every event and every context field this feature
-sends, so an operator can read what the feature does before turning it on.
+sends, so an operator can read what the feature does before turning it on. The
+diagnostic contexts on run failure events are the exception: they are defined in
+`server/src/sentry.ts`, as described under "Run failure context".
 Each Sentry integration name below is verified against the default
 integration list of `@sentry/node@10.71.0` and `@sentry/browser@10.71.0`.
 
@@ -477,6 +545,31 @@ These fields contain build identifiers; they add no tenant or user identity.
   event carries five context fields: `taskId`, `runId`, `errorMessage`,
   `errorCode`, and `agentAdapter`. The server redacts the error message and
   the error code before it sends the event.
+
+A server event whose original error has the code
+`ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING` gets bounded provenance. The tag
+`dynamic_import_inspector` holds `open`, `closed`, or `unavailable`. The
+`dynamic_import_provenance` context holds the same state, the process id, the
+parent process id, the main-thread flag, the uptime in seconds, and the names
+of inspector-related Node flags from `execArgv` and `NODE_OPTIONS`. The event
+never holds the inspector URL, because that URL contains a session secret. It
+also never holds a flag value or any other flag. This error has reached
+Sentry with no first-party frame. The state shows whether an inspector
+session was open when the server reported the event. It does not prove which
+code caused the error: code compiled without a filename fails the same way
+while a debugger is attached. A `closed` state rules out an expression that a
+still-open session evaluated. Other events do not change.
+
+Native runner identity and harness failures retain their existing error prefixes.
+Their terminal messages now include a bounded guard reason, such as
+`session_scope_mismatch`, `durable_identity_unreadable`, or
+`backup_without_reusable_lease`. Provider-pack read failures distinguish a missing
+file, invalid JSON, permission denial, invalid path type, and other I/O errors.
+These reasons contain no session identifiers, provider output, or filesystem
+paths. They help diagnose recurrence; they do not authorize a retry, quarantine,
+replacement, or a weaker identity check. Existing chat recovery recognizes the
+same failure category with or without a reason suffix; it still requires the
+exact cleanup receipt, checkpoint, and absence of provider work.
 
 **Server events the default integrations add**
 
@@ -559,397 +652,3 @@ Two controls belong to the operator. This feature ships neither one.
    events from the operator's network, not from the server's network, so
    an internal-only host name fails silently for the browser even when it
    works for the server.
-
-## Sandbox Startup Trace Spans
-
-Paperclip opens OpenTelemetry spans on the sandbox start path. These spans are
-an Observability surface. They are not Paperclip Telemetry events. The
-generated telemetry contract does not cover them, so this section is their
-canonical contract.
-
-The spans are opt-in. Paperclip exports them only when an OTLP endpoint is
-configured. With no endpoint the whole span path is a no-op. Paperclip opens the
-spans only for a run that targets a remote sandbox. A local run and an SSH run
-stay out of these spans.
-
-Every span attribute uses the closed `paperclip.sandbox.startup.` prefix and
-rides a fixed allowlist. A command line, an argument, an environment value, a
-file path, program output, or a raw identifier never rides a span. It rides
-neither as an attribute nor as an event. The producer bounds each free-form
-value:
-
-- A command basename maps to a small known set. Any other value maps to `other`.
-- A region maps to a small known set. Any other value maps to `unknown`.
-- An image id, a sandbox id, and a lease id ride only as a non-reversible short
-  hash.
-
-Each numeric attribute is finite. Paperclip omits an attribute when its value is
-absent, never a misleading `0`.
-
-### Spans
-
-| Span                                  | Scope                                                                                                                                                      | Parent                          |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `sandbox.startup`                     | The one root span for a sandbox bring-up.                                                                                                                  | none (root)                     |
-| `workspace.resolve`                   | Workspace resolution step.                                                                                                                                 | `sandbox.startup`               |
-| `codex-home.seed`                     | Managed-home seed step.                                                                                                                                    | `sandbox.startup`               |
-| `skills.reconcile`                    | Skills reconcile step.                                                                                                                                     | `sandbox.startup`               |
-| `stage.sync`                          | Workspace stage-sync step.                                                                                                                                 | `sandbox.startup`               |
-| `snapshot.git`                        | Host-side git workspace enumeration inside `stage.sync` (`git status --ignored`, the HEAD diffs, `ls-files`).                                              | `stage.sync`                    |
-| `snapshot.baseline`                   | Host-side baseline workspace content-hash walk inside `stage.sync`, kept for restore.                                                                      | `stage.sync`                    |
-| `stage.workspace`                     | One inbound workspace stage task inside `stage.sync`. It packs and uploads the workspace.                                                                  | `stage.sync`                    |
-| `stage.asset.<key>`                   | One inbound asset stage task inside `stage.sync`. It packs and uploads one managed-home asset. The `<key>` segment is the asset key.                       | `stage.sync`                    |
-| `stage.project.<id>`                  | One inbound referenced-project stage task inside `stage.sync`. It uploads one referenced project. The `<id>` segment is the project id.                    | `stage.sync`                    |
-| `pack`                                | Host-side workspace tarball build inside the `stage.workspace` task.                                                                                       | `stage.workspace`               |
-| `bridge.paperclip`                    | Paperclip bridge start step.                                                                                                                               | `sandbox.startup`               |
-| `bridge.process-session`              | Process-session bridge start step.                                                                                                                         | `sandbox.startup`               |
-| `acp.handshake`                       | ACP session handshake step.                                                                                                                                | `sandbox.startup`               |
-| `sandbox.syncBack`                    | The settlement sync-back that restores the managed home at teardown.                                                                                       | the active run span             |
-| `restore.workspace`                   | One outbound workspace restore task at teardown. It reads the sandbox workspace back and merges it into the host workspace.                                | `sandbox.syncBack`              |
-| `restore.asset.<key>`                 | One outbound asset restore task at teardown. It reads one asset back to its host store. The `<key>` segment is the asset key.                              | `sandbox.syncBack`              |
-| `sandbox.agentSession.sendInput`      | One outbound ACP message to the agent — the socket handler's one `writeTextFile` exec.                                                                     | the active run span             |
-| `sandbox.agentSession.pollOutput`     | One 100 ms poll tick — `list`, then `read`+`remove` per file found (`1 + 2n` execs).                                                                       | the active run span             |
-| `sandbox.callbackBridge.relayRequest` | One Paperclip-API callback request — read the request, write the response, remove it.                                                                      | the active run span             |
-| `sandbox.agentProcess`                | The persistent streamed agent process the process-session bridge launches; open until the process settles or the bridge tears down, whichever comes first. | the active run span             |
-| `sandbox.exec`                        | One host-to-sandbox execution.                                                                                                                             | the active step or wrapper span |
-
-A step span name is the step name. The `sandbox.exec` span parents to the step
-span that runs the execution, so each execution nests under its step. Within
-`stage.sync`, the host-side sub-steps `snapshot.git` and `snapshot.baseline` open
-as child spans of the step, so the host work at the head of the step is
-attributed rather than showing as a gap. Each inbound sync operation also opens
-its own task span under `stage.sync`: `stage.workspace`, one `stage.asset.<key>`
-per asset, and one `stage.project.<id>` per referenced project. The `pack` span
-nests under `stage.workspace`, because the host builds the tarball inside that
-task. Two concurrent tasks produce overlapping spans.
-
-The settlement `sandbox.syncBack` span runs at teardown and parents to the run
-span. It wraps the managed-home restore. Each outbound restore operation opens
-its own task span under `sandbox.syncBack`: `restore.workspace` and one
-`restore.asset.<key>` per asset. Two concurrent restore tasks produce overlapping
-spans. A run-time
-`sandbox.exec` span parents instead to the run-time wrapper span that runs it
-(`sandbox.agentSession.sendInput`, `sandbox.agentSession.pollOutput`,
-`sandbox.callbackBridge.relayRequest`, or `sandbox.agentProcess`). Each run-time
-wrapper span parents to the live run span (`agent.turn` during the turn,
-`task.run` otherwise). With no active trace context the exec span opens
-unparented.
-
-`sandbox.agentProcess` wraps the persistent streamed agent process. The
-process-session bridge launches it during `bridge.process-session`, so it opens
-under `task.run` — no turn has started yet. It therefore overlaps the sibling
-`agent.turn` rather than nesting under it or dangling off the short-lived bring-up
-step. The span ends when the process settles or when the bridge tears down,
-whichever comes first. The bridge tears down before the run root span ends, so
-the span never outlives `task.run` even when the process lingers past teardown
-(the sandbox `execute` has no cancel, so a lingering process cannot be forced to
-resolve).
-
-The root span sets the error status when the bring-up fails. Each step span sets
-the error status when its step fails. The `sandbox.exec` span sets the error
-status when the exit code is non-zero or the execution throws.
-
-### Outcome values
-
-The `paperclip.sandbox.startup.outcome` attribute uses a closed value set:
-
-- `ok` — the step or the execution settled with a success result.
-- `skipped` — a warm cache skipped the step; the step ran no work.
-- `failed` — the step or the execution threw, or the exit code was non-zero.
-
-### Root span attributes
-
-The `sandbox.startup` root span uses this closed attribute allowlist.
-
-| Attribute                                | Type    | Optional | Meaning                                                    |
-| ---------------------------------------- | ------- | -------- | ---------------------------------------------------------- |
-| `paperclip.sandbox.startup.root.wall_ms` | number  | no       | The root-span wall time of the whole bring-up.             |
-| `paperclip.sandbox.startup.root.work_ms` | number  | no       | The sum of the step wall times.                            |
-| `paperclip.sandbox.startup.root.diff_ms` | number  | no       | `work_ms − wall_ms`; the overlap the parallel steps saved. |
-| `paperclip.sandbox.startup.provider`     | string  | yes      | The normalized provider family.                            |
-| `paperclip.sandbox.startup.cold_start`   | boolean | yes      | Whether the bring-up is a cold start.                      |
-| `paperclip.sandbox.startup.region`       | string  | yes      | The clamped region label.                                  |
-| `paperclip.sandbox.startup.image_id`     | string  | yes      | The hashed image id.                                       |
-| `paperclip.sandbox.startup.sandbox_id`   | string  | yes      | The hashed sandbox id.                                     |
-| `paperclip.sandbox.startup.lease_id`     | string  | yes      | The hashed lease id.                                       |
-
-### Step span attributes
-
-Each bring-up step span uses this closed attribute allowlist. The step name
-rides the span name, so no `step` attribute repeats it.
-
-| Attribute                                                    | Type   | Optional | Meaning                                                  |
-| ------------------------------------------------------------ | ------ | -------- | -------------------------------------------------------- |
-| `paperclip.sandbox.startup.step.wall_ms`                     | number | no       | The wall time of the step.                               |
-| `paperclip.sandbox.startup.outcome`                          | string | no       | The step outcome (`ok`, `skipped`, or `failed`).         |
-| `paperclip.sandbox.startup.provider`                         | string | yes      | The normalized provider family.                          |
-| `paperclip.sandbox.startup.batch`                            | string | yes      | A shared tag that marks two parallel steps as one batch. |
-| `paperclip.sandbox.startup.handshake.create_runtime.wall_ms` | number | yes      | The create-runtime sub-time of the `acp.handshake` step. |
-| `paperclip.sandbox.startup.handshake.ensure_session.wall_ms` | number | yes      | The ensure-session sub-time of the `acp.handshake` step. |
-
-The round-trip count and the provider durations no longer ride a step span. The
-per-execution `sandbox.exec` child spans carry that detail.
-
-### `sandbox.exec` span attributes
-
-The `sandbox.exec` span uses this closed attribute allowlist. Paperclip omits a
-numeric attribute when the provider does not report the value.
-
-| Attribute                                       | Type    | Optional | Meaning                                                                    |
-| ----------------------------------------------- | ------- | -------- | -------------------------------------------------------------------------- |
-| `paperclip.sandbox.startup.provider`            | string  | no       | The normalized provider family.                                            |
-| `paperclip.sandbox.startup.exec.command`        | string  | no       | The clamped `argv[0]` command label.                                       |
-| `paperclip.sandbox.startup.exec.exit_code`      | number  | yes      | The numeric process exit code.                                             |
-| `paperclip.sandbox.startup.exec.wall_ms`        | number  | no       | The host-measured wall time of the execution.                              |
-| `paperclip.sandbox.startup.exec.wait_before_ms` | number  | yes      | The provider handle-fetch wait before the execution ran.                   |
-| `paperclip.sandbox.startup.exec.sandbox_ms`     | number  | yes      | The in-sandbox run time of the execution.                                  |
-| `paperclip.sandbox.startup.exec.network_ms`     | number  | yes      | The transport time the host adds; `wall_ms − wait_before_ms − sandbox_ms`. |
-| `paperclip.sandbox.startup.exec.critical_path`  | boolean | no       | Whether the execution sits on the startup critical path.                   |
-| `paperclip.sandbox.startup.exec.cache_hit`      | boolean | yes      | Whether the provider served the sandbox handle from its warm cache.        |
-| `paperclip.sandbox.startup.outcome`             | string  | no       | The execution outcome (`ok` or `failed`).                                  |
-
-The plugin decides the cache hit at the sandbox-handle lookup. The span no
-longer infers a cache hit from `wait_before_ms == 0`. Paperclip omits the
-`cache_hit` attribute when the provider does not report the value.
-
-To add a span attribute, extend the `SANDBOX_STARTUP_SPAN_ATTRS` allowlist in
-the code first. Keep the attribute low-cardinality and free of user content.
-
-### Provider spans
-
-A sandbox provider plugin also opens spans for its own sync steps. These spans
-use the `sandbox.daytona.` name prefix. They share the
-`paperclip.sandbox.startup.` attribute prefix and obey the same opt-in and
-no-user-content rules as the startup spans above.
-
-The plugin worker runs in a separate process from the host. So the host treats
-every field of a worker-sent span as untrusted input. The host re-clamps the
-span name and every attribute at one boundary, the `span.record` host handler,
-before it records the span.
-
-| Span                                 | Scope                                                                                                                                                                                | Parent                                                                                       |
-| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| `sandbox.daytona.pack`               | The host-local pack step that builds the upload tarball. It makes no sandbox round trip.                                                                                             | the active startup step span                                                                 |
-| `sandbox.daytona.transfer`           | The transfer step: an upload to the sandbox (inbound) or a download from the sandbox (outbound). The `paperclip.sandbox.startup.transfer.direction` attribute records the direction. | the active sync task span (`stage.*` inbound, `restore.*` under `sandbox.syncBack` outbound) |
-| `sandbox.daytona.ensureDirectory`    | The `mkdir -p` step that ensures a directory exists before a write.                                                                                                                  | the active startup step span                                                                 |
-| `sandbox.daytona.checkSymlinkEscape` | The re-check step that a path resolves inside the workspace root before use.                                                                                                         | the active startup step span                                                                 |
-| `sandbox.daytona.promote`            | The atomic move of a staged temp onto its target via a pinned dir handle.                                                                                                            | the active startup step span                                                                 |
-| `sandbox.daytona.extractTarball`     | The one round trip that re-checks the path, runs `tar -xf`, and removes the scratch tarball.                                                                                         | the active startup step span                                                                 |
-| `sandbox.daytona.postUploadCommand`  | One caller-supplied post-upload command.                                                                                                                                             | the active startup step span                                                                 |
-| `sandbox.daytona.session.open`       | The create of the one persistent session for a lease, on the first in-run command.                                                                                                   | the active run span                                                                          |
-| `sandbox.daytona.session.close`      | The delete of that persistent session on lease release.                                                                                                                              | the active run span                                                                          |
-| `sandbox.daytona.other`              | Any span name outside the known set.                                                                                                                                                 | the active startup step span                                                                 |
-
-The host clamps the span name to the closed set of leaf names above (`pack`,
-`transfer`, `ensureDirectory`, `checkSymlinkEscape`, `promote`, `extractTarball`,
-`postUploadCommand`, `session.open`, and `session.close`). The host maps a known
-name to `sandbox.daytona.<name>`. The host maps any other value to
-`sandbox.daytona.other`, so a span name never carries free-form data. Only the
-daytona provider emits these spans today, so the segment is the literal
-`daytona`.
-
-The `sandbox.daytona.*` spans use this closed attribute allowlist. The host
-drops every other key, so a command, an argument, a path, an id, a standard
-output, or a standard error never rides a provider span. The host records only
-the attributes that the producer sends for one span.
-
-| Attribute                                        | Type   | Optional | Meaning                                                                                                   |
-| ------------------------------------------------ | ------ | -------- | --------------------------------------------------------------------------------------------------------- |
-| `paperclip.sandbox.startup.provider`             | string | no       | The normalized provider family.                                                                           |
-| `paperclip.sandbox.startup.outcome`              | string | yes      | The step outcome (`ok`, `skipped`, or `failed`).                                                          |
-| `paperclip.sandbox.startup.pack.wall_ms`         | number | yes      | The host-local wall time of the pack step. It rides the `sandbox.daytona.pack` span.                      |
-| `paperclip.sandbox.startup.transfer.wall_ms`     | number | yes      | The wall time of the transfer step. It rides the `sandbox.daytona.transfer` span.                         |
-| `paperclip.sandbox.startup.transfer.guard.count` | number | yes      | The number of serial guard round trips before one transfer. It rides the `sandbox.daytona.transfer` span. |
-| `paperclip.sandbox.startup.transfer.direction`   | string | yes      | The transfer direction (`inbound` or `outbound`). It rides the `sandbox.daytona.transfer` span.           |
-
-The `span.record` host handler enforces the allowlist. It re-maps `provider`
-through the provider-family normalizer. It keeps `outcome` only when the value
-is `ok`, `skipped`, or `failed`. It keeps `transfer.direction` only when the
-value is `inbound` or `outbound`. It keeps a numeric attribute only when the
-value is a finite number. It drops a status message and keeps only the numeric
-status code. The handler never throws, because observability must not change the
-sync control flow.
-
-The `span.record` host method needs the `environment.drivers.register`
-capability. So only a plugin that registers an environment driver may emit a
-provider span. The capability gate rejects a provider span from any other
-plugin.
-
-The host parents each provider span to the active sync task span. An inbound
-transfer runs inside a `stage.*` task span, so its provider spans parent there.
-An outbound transfer runs inside a `restore.*` task span under `sandbox.syncBack`
-at teardown, so its provider spans parent there. The host mints a W3C
-`traceparent` from the active task span and passes it to the plugin worker on the
-per-call invocation channel. The teardown restore runs inside the run-parented
-`sandbox.syncBack` span, so the host mints a `traceparent` for an outbound
-provider span the same way it does for an inbound one. The worker tags its span with the
-`traceparent` and treats the value as opaque. The worker never derives the
-parent from it. The host recovers the `traceparent` from its own invocation
-record, so a worker can never forge a parent. The host validates the
-`traceparent` and rejects a missing or malformed value. With no active host
-trace context the worker sends no span, so the whole provider-span path is a
-no-op.
-
-## Sandbox Duplex Transport Instrumentation
-
-This section documents one duplex transport with three sinks: an
-OpenTelemetry span, a counter in the `tool_runtime_metric_counters` table, and
-one run-log event.
-
-Paperclip opens a fixed observability surface for the sandbox duplex transport.
-This instrumentation is separate from Paperclip Telemetry events and from the
-sandbox startup trace spans above. The generated telemetry contract does not
-cover it, so this section is its canonical contract. The code owner is
-`packages/adapter-utils/src/duplex-observability.ts`. That module holds each name and
-each enum value as a literal constant, so the surface never drifts.
-
-The surface is opt-in. The host injects a recorder that binds the span to the
-OTel tracer, the counter to the guarded counter store in
-`server/src/services/tool-runtime-metrics.ts`, and the event to the run-events
-bridge. The default recorder is a no-op, so the whole surface stays inert until
-the host binds a real recorder. Every recorder call sits inside an error swallow,
-so a telemetry failure never breaks the request path.
-
-The surface carries no user content. No route, no query, no request body, no
-token, and no raw identifier rides a span, a counter, or an event. Each record
-carries only the closed dimension keys below and, for the request span, a
-latency. The `provider` dimension carries only the allowlisted public value
-`daytona`. Any other plugin key maps to `other` before the record reaches a sink,
-so a raw plugin key never reaches a span attribute, a counter label, or an event
-field.
-
-### Spans
-
-| Span                          | Scope                                                                                                                                                        | Latency                              |
-| ----------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------ |
-| `sandbox.duplex.channel_open` | One duplex channel-open attempt. The `outcome` dimension is `ok` when the channel opened and readiness passed, or `error` when the open or readiness failed. | none                                 |
-| `sandbox.duplex.request`      | One duplex request the broker forwarded to the host.                                                                                                         | The request latency in milliseconds. |
-
-### Event
-
-| Event                      | Scope                                                                                                                                                                 |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `sandbox.duplex.transport` | The host emits it at each transport boundary: a ready duplex channel, a fallback to the file bridge, and a terminal channel loss. Its dimensions record the boundary. |
-
-### Counters
-
-| Counter                             | Scope                                                                               |
-| ----------------------------------- | ----------------------------------------------------------------------------------- |
-| `sandbox_duplex_channel_open_total` | One successful duplex channel open.                                                 |
-| `sandbox_duplex_fallback_total`     | One fallback to the file bridge. The `fallback_reason` dimension records the cause. |
-| `sandbox_duplex_loss_total`         | One terminal duplex channel loss. The `loss_class` dimension records the phase.     |
-| `sandbox_duplex_session_leak_total` | One leaked provider session at teardown.                                            |
-
-### Dimension keys
-
-Counters carry no dimension labels. The guarded counter store keys each counter
-on `(companyId, metric)` with no label column, so the `fallback_reason` and
-`loss_class` values fold into the counter metric name instead. The full closed
-dimension set below rides only the spans and the `sandbox.duplex.transport`
-event, which use only these closed keys. A test asserts the exact set, so a new
-key never reaches a sink by accident.
-
-| Key | Type | Optional | Value set |
-| --- | --- | --- | --- |
-| `provider` | string | no | `daytona`, or `other` for any other plugin key. |
-| `transport` | string | no | `duplex`, `http2`, or `file`. `duplex` names the retired bespoke frame protocol; `http2` names the Node HTTP/2 session over the sandbox channel; a fallback record uses `file`. |
-| `outcome` | string | yes | `ok` or `error`. |
-| `fallback_reason` | string | yes | `gate_off`, `capability_absent`, `route_busy`, `entrypoint_sync_failed`, `broker_construction_failed`, `channel_open_failed`, `ready_invalid`, `ready_nonce_mismatch`, `ready_timeout`, `contaminated`, or `preface_missing`. It rides only a fallback record. `route_busy` marks the process-scoped route ceiling full. `entrypoint_sync_failed` and `broker_construction_failed` mark the named build step. `channel_open_failed` marks a failed channel open. `preface_missing` marks a missing or an invalid HTTP/2 client connection preface inside the bounded readiness buffer: the host found no valid preface after the accepted READY line, aborted the `http2` open, and moved the run to the file bridge (`queue_v1`) one time. |
-| `loss_class` | string | yes | `pre_dispatch` or `post_dispatch`, relative to the first request dispatch. It rides only a loss record. |
-| `loss_reason` | string | yes | `stdin_eof`, `provider_exit`, `heartbeat_timeout`, `rpc_failure`, `write_error`, `transport_closed`, or `other`. The host maps every loss cause to one of these values, so no raw provider text reaches a sink. `write_error` marks a rejected host-to-sandbox write. `transport_closed` marks a reason-less provider transport close with no exit data. It rides only a loss record. |
-
-To add a name or an enum value, extend the literal constant in
-`duplex-observability.ts` first, then update the test that asserts the closed set.
-
-### Known behavior: aggregate retained body bytes
-
-Each HTTP/2 bridge route holds up to 168,820,736 bytes (161 MiB) at its own
-peak (see `HTTP2_BRIDGE_MAX_CONCURRENT_STREAMS` in `http2-bridge-server.ts`).
-The host process admits up to 128 concurrent routes (see
-`DEFAULT_MAX_CONCURRENT_DUPLEX_ROUTES` in `plugin-worker-manager.ts`). Those
-two figures alone would let the process retain up to 21,609,054,208 bytes
-(about 20.1 GiB) of body data across every route at the same time.
-
-The process does not reach that figure, on two levels.
-`HTTP2_BRIDGE_MAX_PROCESS_BODY_BYTES` (`http2-bridge-server.ts`) enforces a
-real, live ledger: 1,073,741,824 bytes (1 GiB) across every route, not merely
-an accepted paper ceiling. Every HTTP/2 stream creates one `BridgeBodyReservation` owner over
-its lifetime, and every source-level full-body buffer that stream retains —
-its request-body chunk array, the concatenated request body, the
-response-body chunk array, and the concatenated response body — reserves
-against that one owner before it allocates. A reservation that would pass the
-process total is denied before it copies anything, and the host answers 503
-instead of accepting the body. The reservation stays live for the response
-body until the HTTP/2 write actually finishes flowing to the peer or the
-stream closes, not merely until the write call returns, so a slow or
-backpressured peer cannot hold response bytes in memory the ledger no longer
-counts.
-
-`HTTP2_BRIDGE_MAX_ROUTE_BODY_BYTES` adds a second, per-route ledger on top of
-that process-wide one: each route's own reservations also check a ceiling
-scoped to that one route (its own 168,820,736-byte peak from above), so one
-busy or malicious route can pass its own ceiling and get denied with a 503,
-but it can never spend the whole process-wide total and deny every sibling
-route admission. This accounting covers source-level full-body buffers only:
-internal Node.js and Undici copies (socket buffers, HTTP/2 frame buffers,
-decompression buffers) stay outside it.
-
-The generated gateway process inside the sandbox (`getSandboxCallbackBridgeServerSource`
-in `sandbox-callback-bridge.ts`) enforces its own separate ledger, independent
-of the two host-side ledgers above: each side bounds only the memory in its
-own process. `readBodyBytes` reserves a request body's chunk bytes as they
-arrive, then reserves the concatenated buffer's own byte count before
-`Buffer.concat` allocates it, against a ceiling of `maxBodyBytes * 8` (4
-concurrent bodies, each counted twice for its two live copies). A denied
-reservation answers 503 with no forward call. Each request handler releases
-its own reservation once the whole request settles: a completed response, a
-thrown error, a client abort, or a deadline timeout all reach the same
-release call.
-
-Keep every dimension low-cardinality and free of user content.
-
-### Shared skill preparation
-
-`skills.prepare` measures the shared inventory listing and runtime materialization
-inside `task.prepare`. It is also contained in the broader
-`heartbeat.prepare_before_environment` interval; do not add those two durations.
-Preparation failures emit a failed span even when no native session starts.
-It carries no skill contents, identifiers, locations, or credentials. It uses the
-existing run performance events and operator-configured OpenTelemetry endpoint;
-no first-party Telemetry event is added.
-
-Runtime preparation refreshes the company inventory once per listing. Local and
-catalog directories remain direct sources, so edits are visible on the next
-preparation. Explicit version selections still use their stored snapshots.
-
-Reconstructed skills use `__runtime_cache_v1__/<skill-id>/<fingerprint>/files`
-beneath company skill storage, with a sibling manifest of paths, sizes, and SHA-256
-content digests. Every warm hit validates the manifest and exact file contents;
-it does not fetch upstream, rewrite files, or remove directories. The fingerprint
-includes installed source identity, revision, file inventory, and stored Markdown,
-and excludes display names, stars, and general update timestamps. Manifests stay
-outside the directory delivered to agents.
-
-GitHub and skills.sh imports are cached only when pinned to a full commit SHA.
-Remote freshness is explicit: update or reimport selects a new revision, including
-supporting-file-only changes. A branch advancing upstream does not change an
-installed revision. Legacy mutable refs retain uncached behavior until updated.
-URL-only skills use stored Markdown. An unavailable new revision reports missing;
-it never silently reuses an older revision. Stored `SKILL.md` remains a fallback,
-but missing supporting files prevent publication of a reusable partial cache.
-
-Builds publish read-only files and directories from unique staging directories.
-A skill-scoped lock serializes builds and cleanup across processes. Cold builders
-recheck that the skill still exists under its original key before reading files
-and before atomic publication. Existing valid
-revisions stay readable during updates. Invalid entries are quarantined in the
-same skill cache root for inspection; rename/removal cleans up that skill's cache.
-Read-only listings validate caches without downloading or repairing them. A
-publication lock left by an abruptly terminated process is reported for operator
-cleanup; remove it only after confirming its recorded PID is no longer running.
-
-Run `pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-skill-preparation.ts` for an isolated embedded
-PostgreSQL benchmark with 114 mixed skills and at least 400 remote files. It
-reports one cold sample and ten warm samples (one in a new process), refresh and
-fetch counts, rebuilds, missing entries, and content checks. Upstream responses are
-deterministic fixtures; use real deployed run spans for user-facing latency.

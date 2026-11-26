@@ -24,7 +24,6 @@ export const backupRetentionPolicySchema = z.object({
 
 export const instanceGeneralSettingsSchema = z.object({
   censorUsernameInLogs: z.boolean().default(false),
-  keyboardShortcuts: z.boolean().default(false),
   feedbackDataSharingPreference: feedbackDataSharingPreferenceSchema.default(
     DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
   ),
@@ -42,8 +41,10 @@ export const patchInstanceGeneralSettingsSchema = z
 export const instanceExperimentalSettingsSchema = z.object({
   enableEnvironments: z.boolean().default(false),
   enableNativeRunner: z.boolean().default(true),
+  enableAiConnectionRouters: z.boolean().default(false),
   enableManagedSandboxOnly: z.boolean().default(false),
   enableIsolatedWorkspaces: z.boolean().default(false),
+  remoteWorkspaceStorageEnabled: z.boolean().default(true),
   enableIsolatedWorkspacesByDefault: z.boolean().default(false),
   enableStreamlinedLeftNavigation: z.boolean().default(true),
   enableStreamlinedUi: z.boolean().default(true),
@@ -51,15 +52,31 @@ export const instanceExperimentalSettingsSchema = z.object({
   // always enabled; this remains accepted so older stored rows and managed
   // configs continue to load during upgrades.
   enableApps: z.boolean().default(true),
+  // Deprecated compatibility key. Assistant connections (MCP) graduated from
+  // Experimental and are always enabled; older stored rows, managed configs
+  // and clients may still send it.
+  enablePublicMcp: z.boolean().default(true),
+  enableOpenAiDot: z.boolean().default(false),
+  enableGrokBot: z.boolean().default(false),
+  enableMuse: z.boolean().default(false),
   enableChatConnectors: z.boolean().default(false),
+  // Deprecated compatibility key. GitHub review bots graduated from
+  // Experimental and are always enabled; older stored rows, managed configs
+  // and clients may still send it.
+  enableGitHubReviewBots: z.boolean().default(true),
   // Compatibility only: old stored and managed values must still parse.
   enableMcpAggregators: z.boolean().default(true),
   enableMemoryConnectors: z.boolean().default(false),
-  enablePipelines: z.boolean().default(false),
+  enablePaperclipNotebook: z.boolean().default(false),
+  enableGoogleWorkspaceConnector: z.boolean().default(false),
+  enableAwsConnector: z.boolean().default(true),
   enableCases: z.boolean().default(false),
-  enableAgentChat: z.boolean().default(false),
+  enableAgentChat: z.boolean().default(true),
+  enableCombinedInboxTasks: z.boolean().default(false),
+  enableArtifactsV1: z.boolean().default(true),
   enableConferenceRoomChat: z.boolean().default(false),
   enableClassicTaskInterface: z.boolean().default(false),
+  enableLegacyComposerSubmit: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
   enableExternalObjects: z.boolean().default(false),
@@ -68,12 +85,15 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableBetaSkills: z.boolean().default(false),
   enableSummaries: z.boolean().default(false),
   enableStatusCards: z.boolean().default(false),
+  enableResponsibilities: z.boolean().default(false),
   enableDecisions: z.boolean().default(false),
+  enableFastResponses: z.boolean().default(false),
   enableGoalsSidebarLink: z.boolean().default(false),
   enableServerInfoDebugView: z.boolean().default(false),
   enablePaperclipDeveloperMode: z.boolean().default(false),
   enableSimplifiedEnglishInteractions: z.boolean().default(false),
   enableFirstTaskPlanProposal: z.boolean().default(false),
+  enableCloudTrialInference: z.boolean().default(false),
   autoRestartDevServerWhenIdle: z.boolean().default(false),
   enableWorkspaceBranchReconcileForward: z.boolean().default(true),
   enableWorkspaceDirtyQuarantineRepair: z.boolean().default(true),
@@ -82,6 +102,11 @@ export const instanceExperimentalSettingsSchema = z.object({
   // off the host keeps the file bridge for every run with no manifest change and
   // no redeploy. The host reads this per run before it selects the transport.
   enableSandboxDuplexBridge: z.boolean().default(false),
+  // MCP Tasks (io.modelcontextprotocol/tasks): durable long provider calls.
+  // Off: Paperclip never declares the extension, so servers never return tasks.
+  enableMcpTasks: z.boolean().default(false),
+  // Trusted /swarm for Google Antigravity agents (Antigravity CLI route). Default off.
+  enableAntigravitySwarm: z.boolean().default(false),
   // Deprecated compatibility key. Runner ingress follows enableNativeRunner;
   // this remains accepted so older stored rows and managed configs keep loading.
   enableRunnerPreviewIngress: z.boolean().default(false),
@@ -126,8 +151,11 @@ export const patchInstanceSettingsSchema = z.object({
 export const MAX_TASK_DRAIN_TTL_MS = 24 * 60 * 60 * 1000;
 
 export const startTaskDrainRequestSchema = z.object({
+  purpose: z.literal("idle").optional(),
   ttlMs: z.number().int().positive().max(MAX_TASK_DRAIN_TTL_MS).nullable().optional(),
-}).strict();
+}).strict().refine(value => value.purpose !== "idle" ||
+  (typeof value.ttlMs === "number" && value.ttlMs >= 5_000 && value.ttlMs <= 300_000),
+  { message: "Idle holds require ttlMs between 5000 and 300000", path: ["ttlMs"] });
 
 export type InstanceGeneralSettings = z.infer<typeof instanceGeneralSettingsSchema>;
 // The patch schema removes each default so an absent key stays absent. Declare

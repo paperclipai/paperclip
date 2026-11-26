@@ -1,0 +1,917 @@
+{
+  "provenance": {
+    "date": "2026-10-08",
+    "revision": "7cfc23a3184c03bd33f45a09ef1dcdc83b618c48",
+    "dirtyCheckout": true,
+    "model": "gpt-5.6-sol",
+    "adapter": "codex_local",
+    "runtime": "legacy",
+    "origin": "https://image-specifies-intense-hoped.trycloudflare.com",
+    "workspaceId": "T0B1YJH3M8X",
+    "botUserId": "U0C7CRB1ANR",
+    "endpointId": "fadea757-6645-4bec-a255-fbeb6c0b470d",
+    "fixture": "full Slack backup restored to dedicated database",
+    "fingerprints": {
+      "server/src/services/connectors/slack/evals/cases.json": "8d5b87a4b671e21bccddbbf1b631b35966266cdccd22421e0d12840fb635d411",
+      "server/src/services/connectors/slack/agent-guidance.ts": "cd06376fb1b7c03720081f2a2c0f680736837ba81aeb246bd9283c16fe2b3853",
+      "packages/shared/src/slack-tools.ts": "ea8a21fd862ce8737d479332212a9f2eef2098742e258a6d5072272fb797e810"
+    }
+  },
+  "grades": {
+    "question-form": "pass",
+    "file-reply": "pass",
+    "thread-followup": "pass",
+    "search-coverage": "partial",
+    "private-source": "partial",
+    "explicit-post-and-reaction": "pass",
+    "uncertain-write": "fail",
+    "approval-decline": "pass",
+    "canvas-list-availability": "fail",
+    "task-link": "partial"
+  },
+  "conversations": [
+    {
+      "id": "4879cb63-603c-4535-b90d-ce4d1acc0925",
+      "issue_id": "a985c71f-de7b-4c99-953c-71d064781cc7",
+      "external_conversation_id": "slack:C0C7SGC3VPT",
+      "external_thread_id": "slack:C0C7SGC3VPT:1791454994.687059",
+      "state": "active"
+    },
+    {
+      "id": "160a3a83-21b0-4614-8627-e52dbaaf9c54",
+      "issue_id": "c273900c-8b03-4563-b28f-6957b07ddaa6",
+      "external_conversation_id": "slack:C0C7SGC3VPT",
+      "external_thread_id": "slack:C0C7SGC3VPT:1791454864.592699",
+      "state": "waiting"
+    },
+    {
+      "id": "53d1615b-7c46-44e3-9d70-ffa878f98082",
+      "issue_id": "12566deb-bd4b-44ac-a903-d402484ef2a0",
+      "external_conversation_id": "slack:D0C7CRB6153",
+      "external_thread_id": "slack:D0C7CRB6153:",
+      "state": "active"
+    },
+    {
+      "id": "0be02979-37a1-403c-bdcd-c2ecb638775c",
+      "issue_id": "57808078-e537-4c86-9b6c-a7ea532f8fc9",
+      "external_conversation_id": "slack:C0C7SGC3VPT",
+      "external_thread_id": "slack:C0C7SGC3VPT:1791455210.036159",
+      "state": "waiting"
+    },
+    {
+      "id": "daae59cd-624a-46d6-99c8-78fd0c3e0a29",
+      "issue_id": "b8004598-a35d-414e-95ab-72417b255ebc",
+      "external_conversation_id": "slack:C0C7SGC3VPT",
+      "external_thread_id": "slack:C0C7SGC3VPT:1791455218.228569",
+      "state": "waiting"
+    },
+    {
+      "id": "e3cd46f0-834c-42d7-90b0-3c4915810907",
+      "issue_id": "9f865577-3173-45a6-80e4-ade111f63333",
+      "external_conversation_id": "slack:C0C7SGC3VPT",
+      "external_thread_id": "slack:C0C7SGC3VPT:1791455221.342359",
+      "state": "waiting"
+    },
+    {
+      "id": "9af1b845-b070-489a-9199-66a12b126a46",
+      "issue_id": "1bd85f1b-0364-4fcd-9ce3-ffbf60b64093",
+      "external_conversation_id": "slack:C0C7SGC3VPT",
+      "external_thread_id": "slack:C0C7SGC3VPT:1791455312.810579",
+      "state": "active"
+    },
+    {
+      "id": "4c4a8ed0-72db-4fcd-8603-76b5421a918b",
+      "issue_id": "7c9ddbf5-88d6-4b55-bdff-a547f8fa7217",
+      "external_conversation_id": "slack:C0C7SGC3VPT",
+      "external_thread_id": "slack:C0C7SGC3VPT:1791455322.707239",
+      "state": "waiting"
+    },
+    {
+      "id": "e1a816f3-ef29-42e0-b935-b32b6d3a1147",
+      "issue_id": "27c6ca85-317c-4a2b-9732-f778c1702cfb",
+      "external_conversation_id": "slack:C0C7SGC3VPT",
+      "external_thread_id": "slack:C0C7SGC3VPT:1791455846.085119",
+      "state": "waiting"
+    },
+    {
+      "id": "ebf5f84a-b84a-4506-911e-8f082d3afcd3",
+      "issue_id": "0f71ef6f-b26f-40d7-a290-0112c35fa79b",
+      "external_conversation_id": "slack:C0C7SGC3VPT",
+      "external_thread_id": "slack:C0C7SGC3VPT:1791455948.059459",
+      "state": "waiting"
+    },
+    {
+      "id": "e1457997-29d7-4462-89cd-98f05546988e",
+      "issue_id": "4faf6d7a-c1a5-47e3-a8a8-51e6fe215e55",
+      "external_conversation_id": "slack:C0C7SGC3VPT",
+      "external_thread_id": "slack:C0C7SGC3VPT:1791455354.193039",
+      "state": "waiting"
+    },
+    {
+      "id": "fe9ceadb-6961-4510-b3b0-b6a1687181b7",
+      "issue_id": "cee97962-335d-456a-99b9-9dbc9ff2651b",
+      "external_conversation_id": "slack:C0C7SGC3VPT",
+      "external_thread_id": "slack:C0C7SGC3VPT:1791455843.725339",
+      "state": "waiting"
+    },
+    {
+      "id": "761cdb2f-70c0-4e0f-a35f-301abc807d3b",
+      "issue_id": "09980146-9655-495e-b638-0bcc44f6fdf2",
+      "external_conversation_id": "slack:C0C7SGC3VPT",
+      "external_thread_id": "slack:C0C7SGC3VPT:1791456076.758399",
+      "state": "waiting"
+    },
+    {
+      "id": "41e88bc5-a6cb-4523-a847-97f05e8807f5",
+      "issue_id": "b5a908dd-fb93-4616-886c-ecca646d0cf9",
+      "external_conversation_id": "slack:C0C7SGC3VPT",
+      "external_thread_id": "slack:C0C7SGC3VPT:1791456079.900099",
+      "state": "waiting"
+    },
+    {
+      "id": "f0d17cd4-8d6b-4965-86bc-28c6044cf582",
+      "issue_id": "4b254905-5aca-4505-8755-f5ab12f5e73e",
+      "external_conversation_id": "slack:C0C7SGC3VPT",
+      "external_thread_id": "slack:C0C7SGC3VPT:1791456218.933539",
+      "state": "waiting"
+    }
+  ],
+  "invocations": [
+    {
+      "id": "89748c96-f30d-493c-950a-ca2f0a8534ba",
+      "issue_id": "57808078-e537-4c86-9b6c-a7ea532f8fc9",
+      "run_id": "591cbca5-512a-4730-965b-d64d7636e2b0",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_search",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "succeeded",
+      "error_code": null,
+      "arguments": {
+        "channels": [
+          "C0C7SGC3VPT"
+        ],
+        "limit": 20,
+        "query": "zoo opening time"
+      }
+    },
+    {
+      "id": "08fdd9de-1fd8-4254-bad7-a58a9b619e56",
+      "issue_id": "57808078-e537-4c86-9b6c-a7ea532f8fc9",
+      "run_id": "591cbca5-512a-4730-965b-d64d7636e2b0",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_history",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "succeeded",
+      "error_code": null,
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "limit": 100
+      }
+    },
+    {
+      "id": "e92886e3-55ae-40f8-a529-afa330d8679e",
+      "issue_id": "b8004598-a35d-414e-95ab-72417b255ebc",
+      "run_id": "ec586ed7-ffe2-45fd-9f3e-5e9eaf531f7e",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_history",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "succeeded",
+      "error_code": null,
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "limit": 100
+      }
+    },
+    {
+      "id": "d8f5dc57-68d2-4c34-903c-d474db5b8361",
+      "issue_id": "b8004598-a35d-414e-95ab-72417b255ebc",
+      "run_id": "ec586ed7-ffe2-45fd-9f3e-5e9eaf531f7e",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_thread",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "succeeded",
+      "error_code": null,
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "limit": 100,
+        "ts": "1791455218.228569"
+      }
+    },
+    {
+      "id": "b3b2a254-a3ea-426c-aea9-31a685c989dd",
+      "issue_id": "b8004598-a35d-414e-95ab-72417b255ebc",
+      "run_id": "ec586ed7-ffe2-45fd-9f3e-5e9eaf531f7e",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_reactions",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "succeeded",
+      "error_code": null,
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "ts": "1791455218.228569"
+      },
+      "coverage": {}
+    },
+    {
+      "id": "97381bba-d5d9-439a-81e3-85905b9a7411",
+      "issue_id": "b8004598-a35d-414e-95ab-72417b255ebc",
+      "run_id": "ec586ed7-ffe2-45fd-9f3e-5e9eaf531f7e",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_add_reaction",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "succeeded",
+      "error_code": null,
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "idempotencyKey": "cf4d141e-2aab-4ee9-83b0-d96b0fb6ffdf",
+        "name": "+1",
+        "ts": "1791455218.228569"
+      }
+    },
+    {
+      "id": "14848bf5-5095-4325-84f1-2e7fcf9d4d4e",
+      "issue_id": "b8004598-a35d-414e-95ab-72417b255ebc",
+      "run_id": "ec586ed7-ffe2-45fd-9f3e-5e9eaf531f7e",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_post_message",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "succeeded",
+      "error_code": null,
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "idempotencyKey": "9d88c8fd-2768-4fd9-bc17-938138a63f55",
+        "text": "Zoo plan confirmed",
+        "thread_ts": "1791455218.228569"
+      }
+    },
+    {
+      "id": "cbb3f326-95f6-48e6-ac85-f9db724ee68c",
+      "issue_id": "9f865577-3173-45a6-80e4-ade111f63333",
+      "run_id": "806314a2-4277-4a5d-a1c3-001eb64403d1",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_create_canvas",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "succeeded",
+      "error_code": null,
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "idempotencyKey": "2c466171-11cb-43d0-8d14-56f49ae709de",
+        "markdown": "## Before you go\n\n- [ ] Check zoo hours, admission, parking, and any timed-entry requirements\n- [ ] Review the weather and zoo map\n- [ ] Choose must-see animals, exhibits, shows, and keeper talks\n- [ ] Buy tickets or confirm membership/reservations\n- [ ] Plan transportation and arrival time\n- [ ] Charge phones/cameras and download tickets\n\n## Pack\n\n- [ ] Comfortable walking shoes\n- [ ] Weather-appropriate layers\n- [ ] Refillable water bottles\n- [ ] Sunscreen, hats, and sunglasses\n- [ ] Snacks, i...[truncated]",
+        "title": "Zoo Visit Checklist"
+      }
+    },
+    {
+      "id": "6e684316-b0ed-401b-adcf-8c311434886a",
+      "issue_id": "1bd85f1b-0364-4fcd-9ce3-ffbf60b64093",
+      "run_id": "bcf9dd26-ba6e-452c-8ec7-8a8fbfb56d1e",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_delete_message",
+      "policy_decision": "require_approval",
+      "approval_state": "rejected",
+      "status": "denied",
+      "error_code": "action_declined",
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "idempotencyKey": "de9826a0-bc33-4bb4-ab12-82646fac6ccb",
+        "ts": "1791455265.054449"
+      }
+    },
+    {
+      "id": "7f6eed78-8d15-4df3-bb8c-7d2545e924cf",
+      "issue_id": "cee97962-335d-456a-99b9-9dbc9ff2651b",
+      "run_id": "4ce2f319-192b-4fc1-b26b-603eb543208e",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_post_message",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "succeeded",
+      "error_code": null,
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "idempotencyKey": "8b3e4719-73be-4c3a-86db-b56eefcb9075",
+        "text": "Zoo meeting at noon [ZOO-UNCERTAIN-20261008-Q7]"
+      }
+    },
+    {
+      "id": "5ff1d86f-a838-4f6f-960e-ebe536c4b064",
+      "issue_id": "27c6ca85-317c-4a2b-9732-f778c1702cfb",
+      "run_id": "ec8efc5f-dc68-4b96-a488-4f34e091d8e3",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_create_canvas",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "succeeded",
+      "error_code": null,
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "idempotencyKey": "2565ef5f-a79a-4e31-b791-f0c61220e8ba",
+        "markdown": "## Before you go\n\n- [ ] Check zoo hours, ticket requirements, and any timed-entry rules\n- [ ] Review the weather and zoo map\n- [ ] Buy or reserve tickets\n- [ ] Plan transportation, parking, and arrival time\n- [ ] Choose must-see animals, exhibits, and keeper talks\n- [ ] Confirm accessibility, stroller, or mobility needs\n- [ ] Pack water bottles, snacks (if permitted), sunscreen, hats, and rain gear\n- [ ] Charge phones/cameras and pack a portable battery\n- [ ] Bring ID, membership card, tickets, ...[truncated]",
+        "title": "Zoo Visit Checklist ZOO-CAPABILITY-20261008-Q7"
+      }
+    },
+    {
+      "id": "65dc979f-628d-4770-ab59-79dcb24a6233",
+      "issue_id": "0f71ef6f-b26f-40d7-a290-0112c35fa79b",
+      "run_id": "22ba8bee-71a3-46a0-aa82-092e2246e4e1",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_history",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "succeeded",
+      "error_code": null,
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "limit": 100
+      }
+    },
+    {
+      "id": "88be9b23-6e5a-4f80-9e84-e4f3d32f1522",
+      "issue_id": "09980146-9655-495e-b638-0bcc44f6fdf2",
+      "run_id": "758207ae-b874-4114-9f90-ec8887d1683a",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_post_message",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "failed",
+      "error_code": "slack_transport_uncertain",
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "idempotencyKey": "cf2259e4-b970-45a7-807b-f809ff8bc7f7",
+        "text": "Zoo meeting at noon [ZOO-UNCERTAIN-20261008-Q8]"
+      }
+    },
+    {
+      "id": "9f3d6764-0b12-41d2-a3c1-d6f50145cb41",
+      "issue_id": "b5a908dd-fb93-4616-886c-ecca646d0cf9",
+      "run_id": "64481a92-473e-4882-859e-9afc9c86aefb",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_create_canvas",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "succeeded",
+      "error_code": null,
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "idempotencyKey": "7e1cc789-342c-4d6b-b194-3dd1e955f094",
+        "markdown": "## Before you go\n\n- [ ] Check the zoo\u2019s opening hours and ticket requirements\n- [ ] Review the weather forecast\n- [ ] Buy or reserve tickets\n- [ ] Plan transportation and parking\n- [ ] Download the zoo map and note must-see animals\n- [ ] Check feeding times, talks, and special exhibits\n\n## Pack\n\n- [ ] Comfortable walking shoes\n- [ ] Weather-appropriate clothing\n- [ ] Refillable water bottles\n- [ ] Snacks, if permitted\n- [ ] Sunscreen, hats, and sunglasses\n- [ ] Phone or camera and portable charg...[truncated]",
+        "title": "Zoo Visit Checklist ZOO-CAPABILITY-20261008-Q8"
+      }
+    },
+    {
+      "id": "b26ea852-4075-4d73-98d3-c7d228b718da",
+      "issue_id": "09980146-9655-495e-b638-0bcc44f6fdf2",
+      "run_id": "758207ae-b874-4114-9f90-ec8887d1683a",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_delivery",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "failed",
+      "error_code": "slack_operation_rejected",
+      "arguments": {
+        "actionId": "88be9b23-6e5a-4f80-9e84-e4f3d32f1522"
+      }
+    },
+    {
+      "id": "34265e70-acae-4b3d-be5c-780a87931551",
+      "issue_id": "09980146-9655-495e-b638-0bcc44f6fdf2",
+      "run_id": "758207ae-b874-4114-9f90-ec8887d1683a",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_delivery",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "failed",
+      "error_code": "slack_operation_rejected",
+      "arguments": {
+        "actionId": "cf2259e4-b970-45a7-807b-f809ff8bc7f7"
+      }
+    },
+    {
+      "id": "1f216b96-fc84-40e9-9972-bd5e8fcc2753",
+      "issue_id": "09980146-9655-495e-b638-0bcc44f6fdf2",
+      "run_id": "758207ae-b874-4114-9f90-ec8887d1683a",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_history",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "succeeded",
+      "error_code": null,
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "limit": 20
+      }
+    },
+    {
+      "id": "07519b83-639a-4774-9c14-c020e038340f",
+      "issue_id": "09980146-9655-495e-b638-0bcc44f6fdf2",
+      "run_id": "758207ae-b874-4114-9f90-ec8887d1683a",
+      "tool_name": "slack-bot.fadea757-6645-4bec-a255-fbeb6c0b470d:slack_thread",
+      "policy_decision": "allow",
+      "approval_state": "not_required",
+      "status": "succeeded",
+      "error_code": null,
+      "arguments": {
+        "channel": "C0C7SGC3VPT",
+        "limit": 20,
+        "ts": "1791456076.758399"
+      }
+    }
+  ],
+  "actions": [
+    {
+      "id": "a9d0f799-97b9-479b-ba00-4cd7515ae380",
+      "status": "processed",
+      "name": "slack_add_reaction",
+      "args": {
+        "ts": "1791455218.228569",
+        "name": "+1",
+        "channel": "C0C7SGC3VPT",
+        "idempotencyKey": "cf4d141e-2aab-4ee9-83b0-d96b0fb6ffdf"
+      },
+      "result": {
+        "fileIds": []
+      }
+    },
+    {
+      "id": "b5fc91b4-be5d-4a2e-8708-fdbe492eb08f",
+      "status": "processed",
+      "name": "slack_post_message",
+      "args": {
+        "text": "Zoo plan confirmed",
+        "channel": "C0C7SGC3VPT",
+        "thread_ts": "1791455218.228569",
+        "idempotencyKey": "9d88c8fd-2768-4fd9-bc17-938138a63f55"
+      },
+      "result": {
+        "ts": "1791455265.054449",
+        "channel": "C0C7SGC3VPT",
+        "fileIds": []
+      }
+    },
+    {
+      "id": "d032a1b3-baf4-4d59-9db6-f015d72350c9",
+      "status": "processed",
+      "name": "slack_create_canvas",
+      "args": {
+        "title": "Zoo Visit Checklist",
+        "channel": "C0C7SGC3VPT",
+        "markdown": "## Before you go\n\n- [ ] Check zoo hours, admission, parking, and any timed-entry requirements\n- [ ] Review the weather and zoo map\n- [ ] Choose must-see animals, exhibits, shows, and keeper talks\n- [ ] Buy tickets or confirm membership/reservations\n- [ ] Plan transportation and arrival time\n- [ ] Charge phones/cameras and download tickets\n\n## Pack\n\n- [ ] Comfortable walking shoes\n- [ ] Weather-appropriate layers\n- [ ] Refillable water bottles\n- [ ] Sunscreen, hats, and sunglasses\n- [ ] Snacks, if permitted\n- [ ] Stroller or mobility aids, if needed\n- [ ] Small first-aid kit and any medications\n- [ ] Portable charger\n- [ ] Hand sanitizer or wipes\n\n## At the zoo\n\n- [ ] Pick up or open the zoo map\n- [ ] Note show, feeding, and talk times\n- [ ] Set a meeting point in case the group separates\n- [ ] Take breaks and refill water\n- [ ] Follow animal-safety rules and stay behind barriers\n- [ ] Leave time for restrooms, meals, and the gift shop\n\n## Before leaving\n\n- [ ] Check that everyone has phones, bags, and souvenirs\n- [ ] Recycle or dispose of trash\n- [ ] Save favorite photos and note exhibits to revisit",
+        "idempotencyKey": "2c466171-11cb-43d0-8d14-56f49ae709de"
+      },
+      "result": {
+        "fileIds": [],
+        "canvasId": "F0C7JD31RS7"
+      }
+    },
+    {
+      "id": "e723d09c-1d74-4eeb-96c6-1602ee221350",
+      "status": "processed",
+      "name": "slack_post_message",
+      "args": {
+        "text": "Zoo meeting at noon [ZOO-UNCERTAIN-20261008-Q7]",
+        "channel": "C0C7SGC3VPT",
+        "idempotencyKey": "8b3e4719-73be-4c3a-86db-b56eefcb9075"
+      },
+      "result": {
+        "ts": "1791455872.251549",
+        "channel": "C0C7SGC3VPT",
+        "fileIds": []
+      }
+    },
+    {
+      "id": "4e92be80-3480-4016-84fe-bfe4fdd7b5f9",
+      "status": "processed",
+      "name": "slack_create_canvas",
+      "args": {
+        "title": "Zoo Visit Checklist ZOO-CAPABILITY-20261008-Q7",
+        "channel": "C0C7SGC3VPT",
+        "markdown": "## Before you go\n\n- [ ] Check zoo hours, ticket requirements, and any timed-entry rules\n- [ ] Review the weather and zoo map\n- [ ] Buy or reserve tickets\n- [ ] Plan transportation, parking, and arrival time\n- [ ] Choose must-see animals, exhibits, and keeper talks\n- [ ] Confirm accessibility, stroller, or mobility needs\n- [ ] Pack water bottles, snacks (if permitted), sunscreen, hats, and rain gear\n- [ ] Charge phones/cameras and pack a portable battery\n- [ ] Bring ID, membership card, tickets, and payment method\n\n## At the zoo\n\n- [ ] Pick up a map or open the zoo app\n- [ ] Note restroom, water refill, first-aid, and meeting-point locations\n- [ ] Follow animal-area rules and staff guidance\n- [ ] Take breaks, hydrate, and reapply sunscreen\n- [ ] Check the schedule for feedings, talks, and closures\n- [ ] Keep children and belongings accounted for\n\n## Before leaving\n\n- [ ] Check that everyone has their belongings\n- [ ] Dispose of or recycle trash\n- [ ] Visit any final must-see exhibit\n- [ ] Confirm the route home and parking location\n- [ ] Save favorite photos and notes from the day",
+        "idempotencyKey": "2565ef5f-a79a-4e31-b791-f0c61220e8ba"
+      },
+      "result": {
+        "fileIds": [],
+        "canvasId": "F0C8K3NJJG0"
+      }
+    },
+    {
+      "id": "ad9038ce-0c5d-49d2-89e8-8ef409ac44f5",
+      "status": "uncertain",
+      "name": "slack_post_message",
+      "args": {
+        "text": "Zoo meeting at noon [ZOO-UNCERTAIN-20261008-Q8]",
+        "channel": "C0C7SGC3VPT",
+        "idempotencyKey": "cf2259e4-b970-45a7-807b-f809ff8bc7f7"
+      },
+      "result": {
+        "code": "slack_transport_uncertain"
+      }
+    },
+    {
+      "id": "61b7dc15-90bc-4bee-bbee-bf9bc3d51417",
+      "status": "processed",
+      "name": "slack_create_canvas",
+      "args": {
+        "title": "Zoo Visit Checklist ZOO-CAPABILITY-20261008-Q8",
+        "channel": "C0C7SGC3VPT",
+        "markdown": "## Before you go\n\n- [ ] Check the zoo\u2019s opening hours and ticket requirements\n- [ ] Review the weather forecast\n- [ ] Buy or reserve tickets\n- [ ] Plan transportation and parking\n- [ ] Download the zoo map and note must-see animals\n- [ ] Check feeding times, talks, and special exhibits\n\n## Pack\n\n- [ ] Comfortable walking shoes\n- [ ] Weather-appropriate clothing\n- [ ] Refillable water bottles\n- [ ] Snacks, if permitted\n- [ ] Sunscreen, hats, and sunglasses\n- [ ] Phone or camera and portable charger\n- [ ] Any needed medications or accessibility supplies\n\n## At the zoo\n\n- [ ] Pick up or open the zoo map\n- [ ] Confirm show and feeding schedules\n- [ ] Follow animal-area and safety rules\n- [ ] Take hydration and rest breaks\n- [ ] Keep children with the group\n- [ ] Leave time for the gift shop or final exhibit\n\n## Before leaving\n\n- [ ] Check that everyone has their belongings\n- [ ] Dispose of trash and recycling\n- [ ] Confirm the route home",
+        "idempotencyKey": "7e1cc789-342c-4d6b-b194-3dd1e955f094"
+      },
+      "result": {
+        "fileIds": [],
+        "canvasId": "F0C7JFZRFDZ"
+      }
+    }
+  ],
+  "requests": [
+    {
+      "id": "055b42be-700d-40d6-bcfd-33b88fa767c2",
+      "issue_id": "1bd85f1b-0364-4fcd-9ce3-ffbf60b64093",
+      "invocation_id": "6e684316-b0ed-401b-adcf-8c311434886a",
+      "interaction_id": "49844c83-21ca-4d9b-87dc-8dbe07b3b91f",
+      "approval_id": null,
+      "status": "rejected"
+    }
+  ],
+  "attachment": [
+    {
+      "id": "48c44f6c-42fa-4afd-9e9a-3f0e4a5901fe",
+      "byte_size": "262",
+      "sha256": "c94b42ad8b6867a0e35e11df4ca60fa249925960731f1937a48bafdcfa92e307",
+      "original_filename": "zoo-packing-checklist.txt",
+      "attachment_id": "41dde5e8-83f8-4fa6-862a-0009875642dc"
+    }
+  ],
+  "publications": [
+    {
+      "id": "27fcec72-c7f7-475c-91c4-62aed7a8e683",
+      "issue_id": "12566deb-bd4b-44ac-a903-d402484ef2a0",
+      "comment_id": "2d0de922-79b1-4532-aa19-2569065ff845",
+      "state": "published",
+      "provider_message_id": "1791454913.437949",
+      "attachmentIds": []
+    },
+    {
+      "id": "89e235fb-61a8-49dd-9a22-51a3d68c37d6",
+      "issue_id": "12566deb-bd4b-44ac-a903-d402484ef2a0",
+      "comment_id": null,
+      "state": "published",
+      "provider_message_id": "1791454750.274529",
+      "attachmentIds": []
+    },
+    {
+      "id": "fdeffba4-0819-4815-996d-203ee33d356e",
+      "issue_id": "12566deb-bd4b-44ac-a903-d402484ef2a0",
+      "comment_id": null,
+      "state": "published",
+      "provider_message_id": "1791454750.274529",
+      "attachmentIds": []
+    },
+    {
+      "id": "c3925e6f-5b83-4cf2-bcaa-f8e0a53a0580",
+      "issue_id": "12566deb-bd4b-44ac-a903-d402484ef2a0",
+      "comment_id": null,
+      "state": "published",
+      "provider_message_id": "1791454913.437949",
+      "attachmentIds": []
+    },
+    {
+      "id": "0caae0d5-48d4-4987-a981-a4d62308e13e",
+      "issue_id": "12566deb-bd4b-44ac-a903-d402484ef2a0",
+      "comment_id": "7375dc84-f2d4-429d-a8c7-9a53a166ffad",
+      "state": "published",
+      "provider_message_id": "1791454925.856499",
+      "attachmentIds": [
+        "41dde5e8-83f8-4fa6-862a-0009875642dc"
+      ]
+    },
+    {
+      "id": "9f268128-4a7b-4472-9e36-dfb8e9663ae9",
+      "issue_id": "12566deb-bd4b-44ac-a903-d402484ef2a0",
+      "comment_id": null,
+      "state": "published",
+      "provider_message_id": "1791455259.894899",
+      "attachmentIds": []
+    },
+    {
+      "id": "bfa2504f-16a4-4ddb-8635-c366c8a10d57",
+      "issue_id": "12566deb-bd4b-44ac-a903-d402484ef2a0",
+      "comment_id": "22ebdede-f4bf-4294-be7b-46da66dc5c0a",
+      "state": "published",
+      "provider_message_id": "1791455259.894899",
+      "attachmentIds": []
+    }
+  ],
+  "runs": [
+    {
+      "id": "bcf9dd26-ba6e-452c-8ec7-8a8fbfb56d1e",
+      "issue_id": "1bd85f1b-0364-4fcd-9ce3-ffbf60b64093",
+      "status": "succeeded"
+    },
+    {
+      "id": "18a57709-44e6-43c4-9988-b23729373e87",
+      "issue_id": "c273900c-8b03-4563-b28f-6957b07ddaa6",
+      "status": "succeeded"
+    },
+    {
+      "id": "98ec5212-3bb7-41c5-b12e-4c85d2b06ff3",
+      "issue_id": "4faf6d7a-c1a5-47e3-a8a8-51e6fe215e55",
+      "status": "succeeded"
+    },
+    {
+      "id": "84253a0a-7b95-4e0f-88b9-dc8bf74d61f8",
+      "issue_id": "7c9ddbf5-88d6-4b55-bdff-a547f8fa7217",
+      "status": "succeeded"
+    },
+    {
+      "id": "ef95ad53-0243-41a8-86e6-73d4c2f1ae91",
+      "issue_id": "12566deb-bd4b-44ac-a903-d402484ef2a0",
+      "status": "succeeded"
+    },
+    {
+      "id": "7b5e7971-d10b-4eda-9f90-339a25021317",
+      "issue_id": "a985c71f-de7b-4c99-953c-71d064781cc7",
+      "status": "succeeded"
+    },
+    {
+      "id": "af26f2fb-90f9-4a2f-bb14-a8c47b30f1bb",
+      "issue_id": "a985c71f-de7b-4c99-953c-71d064781cc7",
+      "status": "succeeded"
+    },
+    {
+      "id": "5bd1e65c-0976-469a-af62-639a746f25d3",
+      "issue_id": "12566deb-bd4b-44ac-a903-d402484ef2a0",
+      "status": "succeeded"
+    },
+    {
+      "id": "9daf04a1-b4a4-46bd-ab72-c2a0659c4b79",
+      "issue_id": "c273900c-8b03-4563-b28f-6957b07ddaa6",
+      "status": "succeeded"
+    },
+    {
+      "id": "6dad01d8-6505-4a38-880d-7246b72d1381",
+      "issue_id": "12566deb-bd4b-44ac-a903-d402484ef2a0",
+      "status": "succeeded"
+    },
+    {
+      "id": "920c0871-0791-42fd-9e69-7a3b19a3e2ad",
+      "issue_id": "4b254905-5aca-4505-8755-f5ab12f5e73e",
+      "status": "succeeded"
+    },
+    {
+      "id": "c209a214-8449-4c05-9e3e-27f6176c209b",
+      "issue_id": "4faf6d7a-c1a5-47e3-a8a8-51e6fe215e55",
+      "status": "succeeded"
+    },
+    {
+      "id": "ec586ed7-ffe2-45fd-9f3e-5e9eaf531f7e",
+      "issue_id": "b8004598-a35d-414e-95ab-72417b255ebc",
+      "status": "succeeded"
+    },
+    {
+      "id": "806314a2-4277-4a5d-a1c3-001eb64403d1",
+      "issue_id": "9f865577-3173-45a6-80e4-ade111f63333",
+      "status": "succeeded"
+    },
+    {
+      "id": "591cbca5-512a-4730-965b-d64d7636e2b0",
+      "issue_id": "57808078-e537-4c86-9b6c-a7ea532f8fc9",
+      "status": "succeeded"
+    },
+    {
+      "id": "22ba8bee-71a3-46a0-aa82-092e2246e4e1",
+      "issue_id": "0f71ef6f-b26f-40d7-a290-0112c35fa79b",
+      "status": "succeeded"
+    },
+    {
+      "id": "78f51de6-53d2-4289-a67c-7d56bb18b44d",
+      "issue_id": "a985c71f-de7b-4c99-953c-71d064781cc7",
+      "status": "succeeded"
+    },
+    {
+      "id": "9fde40e9-9eac-4b2e-a2e1-950a9d114a16",
+      "issue_id": "1bd85f1b-0364-4fcd-9ce3-ffbf60b64093",
+      "status": "succeeded"
+    },
+    {
+      "id": "758207ae-b874-4114-9f90-ec8887d1683a",
+      "issue_id": "09980146-9655-495e-b638-0bcc44f6fdf2",
+      "status": "succeeded"
+    },
+    {
+      "id": "4ce2f319-192b-4fc1-b26b-603eb543208e",
+      "issue_id": "cee97962-335d-456a-99b9-9dbc9ff2651b",
+      "status": "succeeded"
+    },
+    {
+      "id": "ec8efc5f-dc68-4b96-a488-4f34e091d8e3",
+      "issue_id": "27c6ca85-317c-4a2b-9732-f778c1702cfb",
+      "status": "succeeded"
+    },
+    {
+      "id": "64481a92-473e-4882-859e-9afc9c86aefb",
+      "issue_id": "b5a908dd-fb93-4616-886c-ecca646d0cf9",
+      "status": "succeeded"
+    }
+  ],
+  "usage": [
+    {
+      "inputTokens": 228,
+      "cachedInputTokens": 29637,
+      "outputTokens": 33,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 17773,
+      "cachedInputTokens": 0,
+      "outputTokens": 62,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 19446,
+      "cachedInputTokens": 0,
+      "outputTokens": 26,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 17839,
+      "cachedInputTokens": 0,
+      "outputTokens": 100,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 988,
+      "cachedInputTokens": 27316,
+      "outputTokens": 76,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 1110,
+      "cachedInputTokens": 33262,
+      "outputTokens": 4,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 20779,
+      "cachedInputTokens": 0,
+      "outputTokens": 71,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 20518,
+      "cachedInputTokens": 0,
+      "outputTokens": 38,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 19393,
+      "cachedInputTokens": 0,
+      "outputTokens": 23,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 628,
+      "cachedInputTokens": 25091,
+      "outputTokens": 21,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 596,
+      "cachedInputTokens": 24267,
+      "outputTokens": 205,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 17759,
+      "cachedInputTokens": 0,
+      "outputTokens": 11,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 913,
+      "cachedInputTokens": 43230,
+      "outputTokens": 19,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 853,
+      "cachedInputTokens": 31748,
+      "outputTokens": 16,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 2519,
+      "cachedInputTokens": 24632,
+      "outputTokens": 67,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 9928,
+      "cachedInputTokens": 37462,
+      "outputTokens": 1450,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 1547,
+      "cachedInputTokens": 25727,
+      "outputTokens": 18,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 476,
+      "cachedInputTokens": 25406,
+      "outputTokens": 26,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 928,
+      "cachedInputTokens": 36203,
+      "outputTokens": 91,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 553,
+      "cachedInputTokens": 36514,
+      "outputTokens": 10,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 876,
+      "cachedInputTokens": 41158,
+      "outputTokens": 28,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    },
+    {
+      "inputTokens": 831,
+      "cachedInputTokens": 47432,
+      "outputTokens": 28,
+      "costStatus": "unpriced",
+      "model": "gpt-5.6-sol",
+      "provider": "openai",
+      "billingType": "metered_api"
+    }
+  ],
+  "faultBoundaries": [
+    {
+      "boundary": "mock_accept_then_transport_loss",
+      "operationKey": "cf2259e4-b970-45a7-807b-f809ff8bc7f7",
+      "channel": "C0C7SGC3VPT",
+      "text": "Zoo meeting at noon [ZOO-UNCERTAIN-20261008-Q8]",
+      "realSlackWrite": false,
+      "at": "2026-10-08T10:41:42.468Z"
+    }
+  ],
+  "faultFixtureSha256": "1c16e1619a55d6215ba7af1624608ae5c8ae787d76e8972736436e61857a4a84"
+}
