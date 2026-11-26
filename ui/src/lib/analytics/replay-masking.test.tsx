@@ -65,7 +65,7 @@ const MASKED_SURFACES: Array<{ file: string; content: string }> = [
   { file: "pages/apps/Browse.tsx", content: "“{connection.name}”" },
   { file: "pages/apps/Connections.tsx", content: ">{row.displayName}</span>" },
   { file: "pages/apps/AppDetail.tsx", content: "<h1 className={cn(\"text-xl font-semibold\", ANALYTICS_MASK_CLASS)}>{appName}" },
-  { file: "pages/apps/AppDetail.tsx", content: "<h1 className={cn(\"truncate text-xl font-bold\", ANALYTICS_MASK_CLASS)}>{appName}" },
+  { file: "pages/apps/AppDetail.tsx", content: "<h1 className={cn(\"truncate text-2xl leading-8 font-semibold tracking-tight text-foreground\", ANALYTICS_MASK_CLASS)}>{appName}" },
   { file: "components/AppConnectionSidebar.tsx", content: "{appName}</span>" },
   { file: "features/connections/ConnectionChoiceList.tsx", content: ">{choice.name}</span>" },
   { file: "features/connections/ConnectionIntentInteractionBody.tsx", content: "${accessRequest.connectionName}" },
