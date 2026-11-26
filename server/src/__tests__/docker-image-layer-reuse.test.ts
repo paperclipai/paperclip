@@ -55,16 +55,38 @@ it("copies the large provider-pack files as a linked layer with fixed timestamps
   expect(rest).toBeGreaterThan(large);
 });
 
+function linkedCopyOwners(text: string): string[] {
+  return [...text.matchAll(/^COPY\b.*$/gm)]
+    .map((m) => m[0])
+    .filter((line) => /\s--link\b/.test(line))
+    .flatMap((line) => [...line.matchAll(/\s--chown=(\S+)/g)].map((m) => m[1]));
+}
+
+function argDefault(stageName: string, name: string): string | undefined {
+  return stageBody(stageName).match(new RegExp(`^ARG ${name}=(\\S+)$`, "m"))?.[1];
+}
+
+it("finds linked copy owners whatever the flag order", () => {
+  const fixture = [
+    "COPY --chown=node:node --link --from=deps /a /a",
+    "COPY --link --chown=0:0 --from=pack /b /b",
+    "COPY --chown=node:node --from=build /c /c",
+  ].join("\n");
+  expect(linkedCopyOwners(fixture)).toEqual(["node:node", "0:0"]);
+});
+
 it("gives every linked copy numeric owner ids, because a linked layer cannot look up user names", () => {
-  const linkedChowns = [...dockerfile.matchAll(/^COPY\b.*--link\b.*--chown=(\S+).*$/gm)].map((m) => m[1]);
-  expect(linkedChowns.length).toBeGreaterThan(0);
-  for (const owner of linkedChowns) {
+  const owners = linkedCopyOwners(dockerfile);
+  expect(owners.length).toBeGreaterThan(0);
+  for (const owner of owners) {
     expect(owner, `COPY --link --chown=${owner} must use numeric ids`).toMatch(/^(\d+|\$\{USER_UID\}):(\d+|\$\{USER_GID\})$/);
   }
 });
 
-it("declares the owner id build args in the production stage", () => {
-  const production = stageBody("production");
-  expect(production).toMatch(/^ARG USER_UID=1000$/m);
-  expect(production).toMatch(/^ARG USER_GID=1000$/m);
+it("uses the same owner id defaults in the production stage as the base stage gives the node user", () => {
+  for (const name of ["USER_UID", "USER_GID"]) {
+    const base = argDefault("base", name);
+    expect(base, `the base stage must declare ${name}`).toBeDefined();
+    expect(argDefault("production", name), `${name} defaults must match`).toBe(base);
+  }
 });
