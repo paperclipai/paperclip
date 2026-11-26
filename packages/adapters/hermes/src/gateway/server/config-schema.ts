@@ -21,6 +21,12 @@ export function getConfigSchema(): AdapterConfigSchema {
         meta: { secret: true },
       },
       {
+        key: "expectedProfile",
+        label: "Expected Hermes profile",
+        type: "text",
+        hint: "Optional canonical profile name. Requires a matching /p/<profile> API base URL and enables authenticated readiness.",
+      },
+      {
         key: INSECURE_REMOTE_HTTP_ESCAPE_HATCH,
         label: "Dangerously allow remote HTTP",
         type: "toggle",
