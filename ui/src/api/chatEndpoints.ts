@@ -1,3 +1,4 @@
+import type { SlackSetupOptions, SlackManagedProvisionInput, SlackManagedResult } from "@paperclipai/shared";
 import { api } from "./client";
 import type {
   SlackAppConfiguration,
@@ -35,6 +36,7 @@ export type ChatEndpointSetupAction =
   "configure" | "verify" | "pause" | "resume" | "reconnect" | "remove";
 
 export interface ChatEndpointResource {
+  executionDefaults?: import("@paperclipai/shared").ChatExecutionDefaults | null;
   metadata?: Record<string, unknown>;
   id: string;
   type: string;
@@ -57,6 +59,7 @@ export interface ChatIdentityLink {
   externalDetail?: string | null;
   paperclipUserId?: string | null;
   paperclipUserLabel?: string | null;
+  paperclipUserImage?: string | null;
   status: "linked" | "pending" | "revoked";
 }
 
@@ -100,6 +103,7 @@ export interface ChatIdentityLinkPreview {
 }
 
 export interface ChatEndpoint {
+  executionDefaults?: import("@paperclipai/shared").ChatExecutionDefaults | null;
   communicationInstructions?: string;
   publicationMode?: "automatic" | "explicit";
   externalExecutionPolicy?: "restricted" | "agent";
@@ -140,7 +144,8 @@ export interface ChatEndpoint {
     messagingEndpoint?: string | null;
     command?: string | null;
     slackApp?: SlackAppConfiguration;
-    slackSetupMethod?: "automatic" | "manual" | "existing";
+    slackSetupMethod?: "managed" | "automatic" | "manual" | "existing";
+    slackManagerError?: string;
     slackRegistration?: SlackRegistrationState;
     slackAvatar?: SlackAvatarState;
     slackAccount?: SlackAccountState;
@@ -202,7 +207,7 @@ export const chatEndpointsApi = {
     api.get<ChatEndpoint>(`/chat-endpoints/${endpointId}`),
   create: (
     companyId: string,
-    input: { provider: ChatProvider; assignedAgentId: string; slackApp?: SlackAppConfiguration },
+    input: { provider: ChatProvider; assignedAgentId: string; slackApp?: SlackAppConfiguration; slackSetupMethod?: "managed" | "automatic" | "manual" | "existing" },
   ) => api.post<ChatEndpoint>(`/companies/${companyId}/chat-endpoints`, input),
   update: (
     endpointId: string,
@@ -216,6 +221,11 @@ export const chatEndpointsApi = {
       photon?: PhotonChannelConfiguration;
     },
   ) => api.post<ChatEndpoint>(`/chat-endpoints/${endpointId}/setup`, input),
+  sendSlackTestMessage: (endpointId: string, input: import("@paperclipai/shared").SlackTestMessageInput) =>
+    api.post<import("@paperclipai/shared").SlackTestMessageResult>(`/chat-endpoints/${endpointId}/slack/test-message`, input),
+  slackSetupOptions: (companyId: string) => api.get<SlackSetupOptions>(`/companies/${companyId}/chat-slack/setup-options`),
+  authorizeSlackManager: (endpointId: string) => api.post<import("@paperclipai/shared").SlackManagerAuthorization>(`/chat-endpoints/${endpointId}/slack/managed/authorize`, {}),
+  provisionManagedSlack: (endpointId: string, input: SlackManagedProvisionInput) => api.post<SlackManagedResult>(`/chat-endpoints/${endpointId}/slack/managed/provision`, input),
   createSlackApp: (endpointId: string, input: SlackRegistrationInput) =>
     api.post<ChatEndpoint>(`/chat-endpoints/${endpointId}/slack/registration`, input),
   installSlackApp: (endpointId: string) =>
@@ -242,7 +252,7 @@ export const chatEndpointsApi = {
     ),
   updateResources: (
     endpointId: string,
-    resources: Array<{ id: string; enabled: boolean }>,
+    resources: Array<{ id: string; enabled?: boolean; executionDefaults?: import("@paperclipai/shared").ChatExecutionDefaults | null }>,
   ) =>
     api.put<ChatEndpointResource[]>(`/chat-endpoints/${endpointId}/resources`, {
       resources,

@@ -5,7 +5,7 @@ import { createWorkspaceGitInspectionCache } from "../services/workspace-git-ins
 const workspace = { id: "workspace", companyId: "company", cwd: "/repo", baseRef: "master" } as ExecutionWorkspace;
 afterEach(() => vi.useRealTimers());
 
-it("coalesces concurrent display reads and expires after five seconds", async () => {
+it("coalesces concurrent display reads and expires after thirty seconds", async () => {
   vi.useFakeTimers();
   const inspect = vi.fn(async () => ({ dirty: false }));
   const read = createWorkspaceGitInspectionCache(inspect);
@@ -13,7 +13,10 @@ it("coalesces concurrent display reads and expires after five seconds", async ()
   expect(inspect).toHaveBeenCalledTimes(1);
   await read(workspace);
   expect(inspect).toHaveBeenCalledTimes(1);
-  vi.advanceTimersByTime(5_000);
+  vi.advanceTimersByTime(29_999);
+  await read(workspace);
+  expect(inspect).toHaveBeenCalledTimes(1);
+  vi.advanceTimersByTime(1);
   await read(workspace);
   expect(inspect).toHaveBeenCalledTimes(2);
   // Callers that authorize cleanup retain the uncached inspector.

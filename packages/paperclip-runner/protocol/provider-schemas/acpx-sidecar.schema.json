@@ -59,7 +59,7 @@
         },
         {
           "if": { "properties": { "command": { "const": "session.open" } } },
-          "then": { "properties": { "params": { "$ref": "#/$defs/sessionOpenThinkingLevel" } } }
+          "then": { "properties": { "params": { "allOf": [{ "$ref": "#/$defs/sessionOpenThinkingLevel" }, { "$ref": "#/$defs/sessionOpenClaudeEffort" }] } } }
         }
       ]
     },
@@ -88,6 +88,19 @@
           "expectedIdentity": { "type": ["object", "null"], "properties": { "piThinkingLevel": false } }
         }
       }
+    },
+    "claudeEffort": { "enum": ["low", "medium", "high", "xhigh", "max"] },
+    "sessionOpenClaudeEffort": {
+      "type": "object",
+      "properties": { "claudeEffort": { "$ref": "#/$defs/claudeEffort" } },
+      "if": { "properties": { "agent": { "const": "claude" } }, "required": ["agent"] },
+      "then": { "properties": { "expectedIdentity": {
+        "type": ["object", "null"], "properties": { "claudeEffort": { "$ref": "#/$defs/claudeEffort" } }
+      } } },
+      "else": { "properties": {
+        "claudeEffort": false,
+        "expectedIdentity": { "type": ["object", "null"], "properties": { "claudeEffort": false } }
+      } }
     },
     "response": {
       "type": "object",

@@ -328,12 +328,17 @@ describe("TaskChatProtocolCard", () => {
     });
   });
 
-  it("shows an unhealthy active runtime as unhealthy", () => {
+  it.each([
+    ["active", "unhealthy", ["Unhealthy"], ["Running"]],
+    ["active", "unknown", [], ["Running", "Unhealthy"]],
+    ["open", "unhealthy", ["Unhealthy"], ["Running"]],
+    ["closed", "unhealthy", ["Stopped"], ["Unhealthy"]],
+  ] as const)("renders %s runtime with %s health", (status, healthStatus, visible, absent) => {
     const product = workProduct({
       type: "runtime_service",
       provider: "paperclip",
-      status: "active",
-      healthStatus: "unhealthy",
+      status,
+      healthStatus,
       title: "Storybook",
       metadata: { service: "storybook", port: 6006 },
     });
@@ -343,85 +348,13 @@ describe("TaskChatProtocolCard", () => {
       surface: "resource",
       resourceKind: "deliverable",
       title: product.title,
-      subtitle: "runtime service · active",
+      subtitle: `runtime service · ${status}`,
       href: product.url,
       workProduct: product,
     });
 
-    expect(container.textContent).toContain("Unhealthy");
-    expect(container.textContent).not.toContain("Running");
-  });
-
-  it("does not show running for an active runtime with unknown health", () => {
-    const product = workProduct({
-      type: "runtime_service",
-      provider: "paperclip",
-      status: "active",
-      healthStatus: "unknown",
-      title: "Storybook",
-      metadata: { service: "storybook", port: 6006 },
-    });
-    renderCard(root, {
-      id: "resource:deliverable:work-product-1",
-      kind: "protocol",
-      surface: "resource",
-      resourceKind: "deliverable",
-      title: product.title,
-      subtitle: "runtime service · active",
-      href: product.url,
-      workProduct: product,
-    });
-
-    expect(container.textContent).not.toContain("Running");
-    expect(container.textContent).not.toContain("Unhealthy");
-  });
-
-  it("shows an unhealthy runtime with a non-standard open status as unhealthy", () => {
-    const product = workProduct({
-      type: "runtime_service",
-      provider: "paperclip",
-      status: "open",
-      healthStatus: "unhealthy",
-      title: "Storybook",
-      metadata: { service: "storybook", port: 6006 },
-    });
-    renderCard(root, {
-      id: "resource:deliverable:work-product-1",
-      kind: "protocol",
-      surface: "resource",
-      resourceKind: "deliverable",
-      title: product.title,
-      subtitle: "runtime service · open",
-      href: product.url,
-      workProduct: product,
-    });
-
-    expect(container.textContent).toContain("Unhealthy");
-    expect(container.textContent).not.toContain("Running");
-  });
-
-  it("shows a closed runtime as stopped even when its last health check failed", () => {
-    const product = workProduct({
-      type: "runtime_service",
-      provider: "paperclip",
-      status: "closed",
-      healthStatus: "unhealthy",
-      title: "Storybook",
-      metadata: { service: "storybook", port: 6006 },
-    });
-    renderCard(root, {
-      id: "resource:deliverable:work-product-1",
-      kind: "protocol",
-      surface: "resource",
-      resourceKind: "deliverable",
-      title: product.title,
-      subtitle: "runtime service · closed",
-      href: product.url,
-      workProduct: product,
-    });
-
-    expect(container.textContent).toContain("Stopped");
-    expect(container.textContent).not.toContain("Unhealthy");
+    for (const label of visible) expect(container.textContent).toContain(label);
+    for (const label of absent) expect(container.textContent).not.toContain(label);
   });
 
   it("renders provider plan steps and status", () => {

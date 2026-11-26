@@ -106,7 +106,7 @@ export type CloudConnectorEnrollmentStatus = {
   status: "not_configured" | "unenrolled" | "pending" | "active" | "suspended" | "unverified";
   brokerBaseUrl: string;
   instanceId: string | null;
-  environment: "development" | "staging" | "production";
+  environment: "development" | "test" | "staging" | "production";
   origins: string[];
   verificationUrl?: string;
   expiresAt?: string;
@@ -309,6 +309,7 @@ export const toolsApi = {
       asCurrentUser?: boolean;
       asAgentId?: string;
       interactionId?: string;
+      workspaceServices?: import("@paperclipai/shared").GoogleWorkspaceServiceSelection;
     } = {},
   ) =>
     api.post<ToolOAuthStartResult>(`/tools/oauth/${connectionId}/start`, input),

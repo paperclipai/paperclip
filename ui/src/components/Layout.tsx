@@ -1,3 +1,6 @@
+import { useDesignSandbox } from "@/context/DesignSandboxContext";
+import { DesignSandboxSidebar } from "./DesignSandboxSidebar";
+import { BoardDialogs } from "./BoardDialogs";
 import { SetupWizardSidebarOutlet } from "./SetupWizard";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
@@ -14,10 +17,6 @@ import { SkillsContextualSidebar } from "./SkillsContextualSidebar";
 import { BreadcrumbBar } from "./BreadcrumbBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { CommandPalette } from "./CommandPalette";
-import { NewIssueDialog } from "./NewIssueDialog";
-import { NewProjectDialog } from "./NewProjectDialog";
-import { NewGoalDialog } from "./NewGoalDialog";
-import { NewAgentDialog } from "./NewAgentDialog";
 import { KeyboardShortcutsCheatsheet } from "./KeyboardShortcutsCheatsheet";
 import { ToastViewport } from "./ToastViewport";
 import { AnnouncementWell } from "./AnnouncementWell";
@@ -82,6 +81,7 @@ const RESERVED_APP_SUBPATHS = new Set([
 ]);
 
 export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
+  const designSandbox = useDesignSandbox();
   const {
     sidebarOpen,
     setSidebarOpen,
@@ -174,7 +174,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     [routeSidebarCompanyId, routeSidebarCompanyPrefix],
   );
   // Most contextual routes replace the global navigation inside the same
-  // sidebar shell. Skills, Apps, Agent details, and Routine details are the
+  // sidebar shell. Apps, Agent details, and Routine details are the
   // exceptions in Streamlined UI: their local navigation is a second rail
   // beside the persistent company nav.
   const sharedSecondarySidebar = isCompanySettingsRoute ? (
@@ -213,13 +213,10 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     <AgentContextualSidebar agentRef={agentId} />
   ) : streamlinedUiEnabled && shellRoute.builtInContextualSurface === "routine" && routineId ? (
     <SetupWizardSidebarOutlet><RoutineContextualSidebar routineId={routineId} /></SetupWizardSidebarOutlet>
-  ) : streamlinedUiEnabled && shellRoute.builtInContextualSurface === "skills" ? (
-    <SkillsContextualSidebar />
   ) : sharedSecondarySidebar;
   const hasSecondarySidebar = secondarySidebar != null;
   const keepsPrimarySidebar = streamlinedUiEnabled && hasSecondarySidebar && (
     isAgentChatRoute
-    || shellRoute.builtInContextualSurface === "skills"
     || shellRoute.builtInContextualSurface === "agent"
     || shellRoute.builtInContextualSurface === "routine"
     || isAppsRoute
@@ -628,29 +625,32 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
         ) : (
           <SidebarShell
             open={sidebarOpen}
-            collapsed={replacesPrimarySidebar ? false : collapsed}
-            peeking={replacesPrimarySidebar ? false : peeking}
+            collapsed={designSandbox || replacesPrimarySidebar ? false : collapsed}
+            peeking={designSandbox || replacesPrimarySidebar ? false : peeking}
             resizable
+            storageKey={designSandbox ? "paperclip.design-proposals.sandbox.sidebar-width" : undefined}
             onPanelMouseEnter={replacesPrimarySidebar ? undefined : handlePanelPointerEnter}
             onPanelMouseLeave={replacesPrimarySidebar ? undefined : handlePanelPointerLeave}
             onPanelFocusCapture={!replacesPrimarySidebar && collapsed ? handlePanelFocus : undefined}
             onPanelBlurCapture={!replacesPrimarySidebar && collapsed ? handlePanelBlur : undefined}
           >
-            <div className="flex flex-1 min-h-0">
-              {replacesPrimarySidebar ? (
-                <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
-              ) : (
-                <Sidebar>{sidebarSections}</Sidebar>
-              )}
-            </div>
-            <SidebarAccountMenu
-              deploymentMode={health?.deploymentMode}
-              forceExpanded={replacesPrimarySidebar}
-            />
+            {designSandbox ? <DesignSandboxSidebar /> : <>
+              <div className="flex flex-1 min-h-0">
+                {replacesPrimarySidebar ? (
+                  <SecondarySidebar>{secondarySidebar}</SecondarySidebar>
+                ) : (
+                  <Sidebar>{sidebarSections}</Sidebar>
+                )}
+              </div>
+              <SidebarAccountMenu
+                deploymentMode={health?.deploymentMode}
+                forceExpanded={replacesPrimarySidebar}
+              />
+            </>}
           </SidebarShell>
         )}
 
-        {!isMobile && showsAdjacentSecondarySidebar && !keepsPrimarySidebar ? (
+        {!isMobile && ((showsAdjacentSecondarySidebar && !keepsPrimarySidebar) || (designSandbox && replacesPrimarySidebar)) ? (
           <SecondarySidebar className="w-60 shrink-0">
             {secondarySidebar}
           </SecondarySidebar>
@@ -745,10 +745,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       </div>
       {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
       <CommandPalette />
-      <NewIssueDialog />
-      <NewProjectDialog />
-      <NewGoalDialog />
-      <NewAgentDialog />
+      <BoardDialogs />
       <KeyboardShortcutsCheatsheet open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       <ToastViewport />
       <AnnouncementWell health={health} />

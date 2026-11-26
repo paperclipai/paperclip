@@ -48,6 +48,7 @@ test("project creation and repository configuration persist on a short mobile vi
   await section.getByRole("button", { name: "Edit", exact: true }).click();
   await section.getByRole("textbox", { name: "Existing repo URL" }).fill("https://git.example/org/updated");
   await section.getByRole("button", { name: "Save URL" }).click();
+  await expect(section.getByText("https://git.example/org/updated", { exact: true })).toBeVisible();
   await page.reload();
   await expect(section.getByText("https://git.example/org/updated", { exact: true })).toBeVisible();
   await expect(page.getByText("Set the KEY to the env var name", { exact: false })).toHaveCount(0);

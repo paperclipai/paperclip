@@ -67,6 +67,31 @@ Tasks have parentage. Every task exists in service of a parent task, all the way
 
 The current issue model includes stable issue identifiers, parent/sub-issues, blockers, a single assignee, comments, issue documents, attachments and work products, and review/approval handoffs. That structure keeps work inspectable by both the board and agents while still allowing agents to decompose work into smaller tasks.
 
+When a task is assigned to the current human, the message composer defaults to
+the latest agent that assigned it to them. If no assignment is available, it uses
+the latest other commenter, or leaves the recipient empty. A manual recipient
+choice stays selected while task data refreshes.
+
+### Task collection creation filters
+
+Tasks and project lists hide agent-created and system-created tasks by default.
+The Filters menu's **show agent-created tasks** checkbox includes routine runs,
+recovery/watchdog tasks, chat-channel tasks, and other automation. Channel tasks
+remain bot-created for this filter even when a human starts the conversation. The choice is saved per company
+and collection; Clear filters restores the hidden default. Nested lists preserve
+ancestors and expandable subtasks as context without promoting unrelated automated
+work to independent results. Agent profiles, routine histories, and task-detail
+subtasks retain their full history.
+
+Inbox membership continues to follow human creation, assignment, comments, and
+existing qualifying participation actions, including manually running a routine.
+Routine ownership or responsibility alone does not subscribe a person to scheduled
+runs; opening or reading a task is not participation. Inbox discovery searches and
+Blocked hide unrelated automated tasks unless the checkbox is checked, while
+preserving tasks admitted by the existing participation rules. Checking it does
+not subscribe the user to all automation. Approvals and other non-task items keep
+their existing rules.
+
 ### Company Skills and Policy
 
 Company skills are shared operating capabilities, not privileged objects by default. Every authenticated agent in a company can create, import, install, edit, update, test, reset, and remove that company's skills unless the company has configured an explicit restriction.
@@ -75,12 +100,44 @@ The governing rule is: **skill permissions are opt-in restrictions, not opt-in c
 
 Core Paperclip owns the skill runtime, company-boundary enforcement, policy evaluation contract, API denials, validation, path containment, secret redaction, and activity logging. Those safety invariants cannot be disabled by policy. Open-by-default skill work never authorizes arbitrary host-path reads, unsafe executable content, or policy edits: local imports and scans must stay within Paperclip-known workspace or managed-skill roots, remote sources must resolve to validated immutable content, and platform safety denials must stay distinct from optional administrative restrictions. Paperclip EE may provide detailed administration for per-agent, per-role, per-action, per-source, and protected-skill rules, but EE is not required to use skills and is not an enforcement boundary. Without EE, companies remain open by default and any already-configured restrictions continue to be enforced by core.
 
-GitHub repositories are first-class sources within Skills. People import selected
-skills through their existing GitHub connection and manually refresh installed
-snapshots. The source records repository, branch, path, and installed commit;
-the connection supplies caller-authorized access. Originals remain viewable and
-testable, with independent editable copies. New upstream skills require selection,
-and deselection, source disconnection, or upstream removal retains installed content.
+GitHub repositories attached to new projects automatically become skill sources.
+Paperclip imports their skills and checks the configured branch every five minutes,
+using the setup person's authorized GitHub connection. New skills import automatically
+unless excluded. Existing projects can adopt their repositories from Skills → Sources;
+existing manually imported sources preserve their selections and gain automatic updates.
+Refresh remains available, and operators can pause automatic updates.
+Independent skill sources have a searchable branch picker with the repository's
+default branch marked. People can also enter a branch name that is not listed.
+Saving checks GitHub access and the selected ref before changing tracking; failed
+saves keep the selection and installed content. Project refs remain owned by project
+configuration so changing a source cannot redirect another project's tracking.
+If a repository exceeds the supported package size, Paperclip first packages its
+skill folders and referenced repository files, preserving their original paths.
+Missing references are advisory: a valid selected skill can still be imported.
+Unavailable files are listed, and existing installed dependencies are retained
+when a bounded refresh cannot preserve them. File limits and content validation
+still apply; importing never executes repository code.
+
+Project-derived skills inherit current project access. Access through any originating
+project is sufficient, including the responsible-user restrictions on agent execution.
+Existing explicit company imports retain their visibility. Editable copies inherit
+project restrictions; private content cannot be published or exported implicitly.
+Detachment retains installed content and access provenance. Deleting its last project
+never makes a skill company-visible.
+
+Task and routine skill mentions remain stable references to the latest installed version.
+Each execution records the immutable versions it uses; resuming keeps those versions,
+while a new execution resolves latest again. Upstream failures and removals preserve
+installed snapshots. GitHub refresh does not delay task execution.
+
+Old, unused skill-version disk caches expire automatically while current and in-use
+versions remain. Saved database snapshots rebuild an expired copy on demand, including
+when its upstream repository is unavailable. Recovery data has separate retention.
+
+Disconnecting removes a repository from Sources after an explicit choice: keep
+independent editable copies in My Skills, or delete its imported skills. Kept
+copies and derived forks retain their project access restrictions. Copies preserve
+agent assignments; skills used by agents must be detached before deletion.
 
 An explicit restricted policy may deny selected operations or switch to a default-deny preset with explicit allow rules. Core exposes a stable versioned policy API so EE and other administrative clients configure and simulate the same evaluator used by skill mutation routes. Core Skill Studio only needs to perform normal skill work, explain an explicit denial, and point administrators to EE when its richer policy UI is available; it must not recreate a partial enterprise permission editor.
 

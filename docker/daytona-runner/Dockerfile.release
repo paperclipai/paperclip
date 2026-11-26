@@ -1,0 +1,16 @@
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ARG SOURCE_REVISION
+USER root
+RUN rm -rf /opt/paperclip-runner/provider-pack
+ADD provider-pack.tar.gz /opt/paperclip-runner/provider-pack/
+COPY --chmod=0755 paperclip-runnerd /usr/local/bin/paperclip-runnerd
+RUN chmod -R a+rX /opt/paperclip-runner/provider-pack
+USER daytona
+RUN test -r /opt/paperclip-runner/provider-pack/provider-pack.json \
+    && test "$(claude --version)" = "2.1.286 (Claude Code)" \
+    && test "$(codex --version)" = "codex-cli 0.160.0" \
+    && test "$(acpx --version)" = "0.13.1"
+LABEL io.paperclip.runner.content-id="release-${SOURCE_REVISION}" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}"

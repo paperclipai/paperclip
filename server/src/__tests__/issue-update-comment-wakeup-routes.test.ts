@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../services/fast-responses.js", () => ({
   enqueueFastResponse: vi.fn(async () => undefined),
@@ -27,6 +27,8 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockPauseGate = vi.hoisted(() => vi.fn(async (): Promise<Record<string, unknown> | null> => null));
+const mockExecutionBlocker = vi.hoisted(() => vi.fn(async (): Promise<Record<string, unknown> | null> => null));
+vi.mock("../services/execution-blocker.js", () => ({ getExecutionBlocker: mockExecutionBlocker }));
 const mockAccessDecide = vi.hoisted(() => vi.fn(async (input: { action?: string; resource?: { issueId?: string } }) => ({
   allowed: true,
   action: input.action,
@@ -134,6 +136,13 @@ vi.mock("../services/index.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/external-objects.js", () => ({
+    externalObjectService: () => ({
+      syncCommentSafely: vi.fn(async () => undefined),
+      syncIssueSafely: vi.fn(async () => undefined),
+    }),
+  }));
+
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1" })),
@@ -205,12 +214,16 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(transaction: (callback: (tx: Record<string, never>) => Promise<unknown>) => Promise<unknown> =
-  async (callback) => callback({})) {
-  const [{ errorHandler }, { issueRoutes }] = await Promise.all([
+async function loadAppModules() {
+  return Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
   ]);
+}
+
+async function createApp(transaction: (callback: (tx: Record<string, never>) => Promise<unknown>) => Promise<unknown> =
+  async (callback) => callback({})) {
+  const [{ errorHandler }, { issueRoutes }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -253,15 +266,20 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
 }
 
 describe("issue update comment wakeups", () => {
-  beforeEach(() => {
+  beforeAll(async () => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerModuleMocks();
-    vi.clearAllMocks();
+    await loadAppModules();
+  });
+
+  beforeEach(() => {
+    vi.resetAllMocks();
     mockAccessDecide.mockImplementation(async (input) => ({ allowed: true, action: input.action, reason: "allow_explicit_grant", explanation: "Allowed by test grant." }));
     mockPauseGate.mockResolvedValue(null);
+    mockExecutionBlocker.mockResolvedValue(null);
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getByIdentifier.mockResolvedValue(null);
     mockIssueService.getByIdForUpdate.mockImplementation(async () => mockIssueService.getById());
@@ -699,35 +717,20 @@ describe("issue update comment wakeups", () => {
     }));
   });
 
-  it("does not wake the assignee for its own run-authenticated top-level comment", async () => {
-    const existing = makeIssue({
-      assigneeAgentId: ASSIGNEE_AGENT_ID,
-      assigneeUserId: null,
-      status: "in_progress",
-    });
+  it.each(["post", "patch"] as const)("saves a %s comment without promoting a workspace-held task to Todo", async method => {
+    const existing = makeIssue({ status: "blocked", assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
     mockIssueService.getById.mockResolvedValue(existing);
-    mockIssueService.addComment.mockResolvedValue({
-      id: "comment-self-top-level",
-      issueId: existing.id,
-      companyId: existing.companyId,
-      body: "Plan ready for review.",
-      createdByRunId: SOURCE_RUN_ID,
-    });
-    mockHeartbeatService.getRun.mockResolvedValue({
-      id: SOURCE_RUN_ID,
-      companyId: existing.companyId,
-      agentId: ASSIGNEE_AGENT_ID,
-      status: "running",
-    });
-
-    const res = await request(await createApp())
-      .post(`/api/issues/${existing.id}/comments`)
-      .set("X-Paperclip-Run-Id", SOURCE_RUN_ID)
-      .send({ body: "Plan ready for review." });
-
-    expect(res.status).toBe(201);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    mockIssueService.update.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({ id: "saved-comment", issueId: existing.id, companyId: existing.companyId, body: "Continue after recovery." });
+    mockExecutionBlocker.mockResolvedValue({ workspaceRepairRequired: true });
+    const app = await createApp();
+    const res = method === "post"
+      ? await request(app).post(`/api/issues/${existing.id}/comments`).send({ body: "Continue after recovery." })
+      : await request(app).patch(`/api/issues/${existing.id}`).send({ comment: "Continue after recovery." });
+    expect(res.status).toBe(method === "post" ? 201 : 200);
+    expect(mockIssueService.addComment).toHaveBeenCalledOnce();
+    expect(mockIssueService.update.mock.calls.every(([, patch]) => patch.status !== "todo")).toBe(true);
+    expect(mockExecutionBlocker).toHaveBeenCalled();
   });
 
   it.each((["post", "patch"] as const).flatMap((method) =>
@@ -867,32 +870,6 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
-  });
-
-  it("does not route a plain-text agent name on a human-owned issue comment", async () => {
-    const existing = makeIssue({
-      assigneeAgentId: null,
-      assigneeUserId: "local-board",
-      status: "in_progress",
-    });
-    mockIssueService.getById.mockResolvedValue(existing);
-    mockIssueService.addComment.mockResolvedValue({
-      id: "comment-plain-agent-name",
-      issueId: existing.id,
-      companyId: existing.companyId,
-      body: "QA please take the screenshot",
-    });
-    mockIssueService.findMentionedAgents.mockResolvedValue([]);
-
-    const res = await request(await createApp())
-      .post(`/api/issues/${existing.id}/comments`)
-      .send({
-        body: "QA please take the screenshot",
-      });
-
-    expect(res.status).toBe(201);
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
 });

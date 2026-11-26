@@ -32,6 +32,14 @@ changes.
 
 ## GitHub authorization
 
+The Everyday remote Codex restart oracle reads only the existing public run,
+event, environment-lease, workspace-operation and recovery APIs. It does not
+execute commands in a provider sandbox or signal a provider process. Its new
+evidence projects closed receipt metadata and hashes the provider sandbox ID
+and full native event content. Provider text, tool arguments and command output
+do not enter these snapshots. Existing image admission, credentials, billing,
+retention and cleanup rules continue to apply.
+
 Set `RUNNER_E2E_ALLOWED_ACTOR_IDS` to a non-empty JSON array of numeric GitHub
 user IDs. Keep the list equal to the owners of `.github/**` in
 `.github/CODEOWNERS`. For example, use `[123456,789012]`. Resolve each ID from
@@ -125,6 +133,16 @@ force for every suite.
 The Paperclip server process also receives none; the browser posts each value
 once to the encrypted company secret API and agents/environments retain only
 secret references.
+
+The explicit managed first-task cell observes the wizard's two owned setup
+responses only to correlate their exact lease IDs with same-company environment
+records. Raw probe/setup responses, account references, opaque provider lease
+identities and setup screenshots remain private. Public first-task evidence
+continues through the existing projection. Missing or foreign lease identities
+cannot acquire attribution or a zero-cost estimate; incomplete setup coverage
+stays unavailable even if later task-run billing succeeds. Platform qualification
+uses the existing permission-gated environment probe, without granting new
+permissions or accepting fixture-authored qualification metadata.
 
 The context-integrity catalog lists six pending Kimi/Grok cells for discovery:
 two cases each across `legacy-kimi-cli`, `legacy-kimi-acp`, and `legacy-grok`.
@@ -342,3 +360,14 @@ descriptor launches with synthetic owned processes and no provider credentials;
 it does not qualify paid Pi behavior or change previous failed grades.
 
 The private resource-admission marker and raw cleanup results control recovery-state retention independently of evidence packaging. A worker crash after admission keeps the owner-only recovery database; a confirmed pre-allocation bootstrap failure does not. Neither the marker nor the database enters published evidence.
+
+## Task workspace fixture source
+
+The explicit task-workspaces cells fetch the existing public octocat/Hello-World
+repository through normal anonymous repository preparation. They do not clone the
+Paperclip checkout, copy its Git credentials, create remote repositories or push.
+The agent's synthetic commit remains in the disposable task workspace. Independent
+Git reads validate that workspace's canonical path is inside the isolated instance
+before examining history. The existing credential redactor, private evidence
+packager and task-only screenshot allowlist remain authoritative. Each cell has a
+single attempt, three requested turns and company/agent budget hard stops.

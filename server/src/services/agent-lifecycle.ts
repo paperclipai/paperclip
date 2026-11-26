@@ -16,11 +16,7 @@ export type { LifecycleDriver, LifecycleAgent } from "../modules/agent-lifecycle
 export function createAgentLifecycleEffects(hooks: BudgetServiceHooks = {}): lifecycle.LifecycleEffects {
   return {
     reportFailure(context, error) {
-      // Only known codes are safe; provider errors can contain credentials or private data.
-      const allowedCodes = new Set(["required_plugin_unavailable", "invalid_lifecycle_result", "harness_test_failed",
-        "test_environment_unavailable", "ECONNREFUSED", "ECONNRESET", "ETIMEDOUT", "40001", "40P01", "53300", "57P01"]);
-      const candidate = error as { code?: unknown; cause?: { code?: unknown } } | null;
-      const code = [candidate?.code, candidate?.cause?.code].find(value => typeof value === "string" && allowedCodes.has(value));
+      const code = lifecycle.lifecycleFailureCode(error);
       logger.warn({ ...context, failureCode: code ?? "unclassified" }, "Agent lifecycle operation failed");
     },
     transaction: withAccountingTransaction,

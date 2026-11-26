@@ -4,21 +4,204 @@
 // explicit and separate from npm installation, and is removed in finally.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
+import { stripTypeScriptTypes } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { packConcurrency, packStagedPackages, packTimings } from './pack-staged-packages.mjs';
 import { materializePublishManifest } from './prepare-bundled-package.mjs';
-import { GROK_PUBLIC_INSTALL_IMAGE, GROK_PUBLIC_INSTALL_LIFECYCLE, assertNoBundledCodexPayloads, grokConsumerDockerArgs, installedCodexProbeSource } from './grok-public-install-sandbox.mjs';
+import { publicInstallClosure } from './public-install-closure.mjs';
+import { GROK_PUBLIC_INSTALL_IMAGE, GROK_PUBLIC_INSTALL_LIFECYCLE, assertInstalledNativeConsumerContinuity, assertNoBundledCodexPayloads, grokConsumerDockerArgs, installedClaudeProbeSource, installedCodexProbeSource, installedDaemonProbeSource, macNodeHeadersDirectory, macPublicInstallLifecycleProfile, macInstalledStartupProbeSource, runMacInitialInstallWithDiagnostics } from './grok-public-install-sandbox.mjs';
 import { startPrefetch, stopPrefetches } from './prefetch-child.mjs';
 import { retainRunnerQualificationPackages } from './retain-runner-qualification-packages.mjs';
 import { bundledInstallTimings, startBundledInstalls } from './stage-bundled-packages.mjs';
+import { writePackedRegistryCatalog } from './public-install-registry.mjs';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+async function verifyMacConsumer(packageDirectory, sourceRevision, receiptPath) {
+  assert.equal(process.env.GITHUB_ACTIONS, 'true', 'Mac clean consumers run only on disposable hosted CI');
+  assert.equal(process.platform, 'darwin');
+  assert.ok(['arm64', 'x64'].includes(process.arch));
+  assert.match(sourceRevision, /^[a-f0-9]{40}$/);
+  const packages = realpathSync(packageDirectory);
+  const manifest = JSON.parse(readFileSync(join(packages, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.schema, 'paperclip.runner.public-packages/v1');
+  assert.equal(manifest.sourceRevision, sourceRevision);
+  assert.ok(manifest.archives.some(entry => entry.name === '@paperclipai/server'));
+  assert.ok(manifest.archives.some(entry => entry.name === 'paperclipai'));
+  assert.equal(new Set(manifest.archives.map(entry => entry.name)).size, manifest.archives.length);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'paperclip-mac-public-install-')));
+  try {
+    const consumer = join(root, 'consumer'), home = join(root, 'home'), tools = join(root, 'tools');
+    for (const directory of [consumer, home, tools, join(root, 'tmp'), join(root, 'cache')]) mkdirSync(directory);
+    const npmCli = realpathSync(execFileSync('/usr/bin/which', ['npm'], { encoding: 'utf8' }).trim());
+    symlinkSync(process.execPath, join(tools, 'node'));
+    const env = { PATH: `${tools}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: home, TMPDIR: join(root, 'tmp'),
+      npm_config_cache: join(root, 'cache'), npm_config_audit: 'false', npm_config_fund: 'false' };
+    const run = (command, args, cwd = consumer, runEnv = env) => execFileSync(command, args, { cwd, env: runEnv,
+      timeout: 10 * 60_000, maxBuffer: 32 * 1024 * 1024, encoding: 'utf8' });
+    const tarballs = manifest.archives.map(entry => {
+      assert.match(entry.file, /^[A-Za-z0-9._-]+\.tgz$/); assert.match(entry.sha256, /^[a-f0-9]{64}$/);
+      const path = join(packages, entry.file);
+      assert.equal(realpathSync(path), path);
+      assert.equal(createHash('sha256').update(readFileSync(path)).digest('hex'), entry.sha256);
+      assertNoBundledCodexPayloads(run('/usr/bin/tar', ['-tzf', path]).trim().split('\n'));
+      return path;
+    });
+    writeFileSync(join(consumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+    const sentinelSource = join(root, 'lifecycle-sentinel'); mkdirSync(sentinelSource);
+    writeFileSync(join(sentinelSource, 'package.json'), JSON.stringify({ name: 'paperclip-verification-lifecycle-sentinel', version: '1.0.0',
+      scripts: { postinstall: 'node -e "require(\'node:fs\').writeFileSync(\'lifecycle-ran\', \'ok\')"' } }));
+    run(process.execPath, [npmCli, 'pack', '--ignore-scripts', '--pack-destination', root], sentinelSource);
+    const sentinelTar = join(root, readdirSync(root).find(name => name.endsWith('.tgz')));
+    runMacInitialInstallWithDiagnostics(() => run(process.execPath, [npmCli, 'install', '--ignore-scripts', '--omit=dev', '--timing', ...tarballs, sentinelTar]),
+      { sourceRevision, platform: process.platform, architecture: process.arch, cacheDirectory: join(root, 'cache'), receiptPath });
+    const sentinel = join(consumer, 'node_modules/paperclip-verification-lifecycle-sentinel/lifecycle-ran');
+    assert.equal(existsSync(sentinel), false);
+    const lock = readFileSync(join(consumer, 'package-lock.json'), 'utf8');
+    const profile = join(root, 'lifecycle.sb'); writeFileSync(profile, macPublicInstallLifecycleProfile(root));
+    const listener = createServer(socket => socket.end());
+    await new Promise((resolve, reject) => { listener.once('error', reject); listener.listen(0, '127.0.0.1', resolve); });
+    try {
+      const port = listener.address().port;
+      const networkProbe = `import assert from 'node:assert/strict'; import net from 'node:net';
+        const socket = net.connect({host:'127.0.0.1',port:${port}}); socket.setTimeout(3000,()=>process.exit(2));
+        socket.once('connect',()=>{socket.destroy(); ${"process.argv[1] === 'denied' ? process.exit(3) : process.exit(0)"};});
+        socket.once('error',error=>{assert.equal(process.argv[1],'denied'); assert.equal(error.code,'EPERM');});`;
+      run(process.execPath, ['--input-type=module', '-e', networkProbe, 'allowed']);
+      run('/usr/bin/sandbox-exec', ['-f', profile, process.execPath, '--input-type=module', '-e', networkProbe, 'denied']);
+    } finally { await new Promise(resolve => listener.close(resolve)); }
+    const nodeHeaders = macNodeHeadersDirectory(process.execPath, process.versions.node);
+    run('/usr/bin/sandbox-exec', ['-f', profile, process.execPath, npmCli, 'rebuild', '--offline', '--ignore-scripts=false', '--dangerously-allow-all-scripts', '--foreground-scripts'],
+      consumer, { ...env, npm_config_nodedir: nodeHeaders });
+    assert.equal(readFileSync(sentinel, 'utf8'), 'ok');
+    assert.equal(readFileSync(join(consumer, 'package-lock.json'), 'utf8'), lock);
+    for (const entry of manifest.archives) {
+      assert.equal(JSON.parse(readFileSync(join(consumer, 'node_modules', entry.name, 'package.json'))).version, manifest.releaseVersion);
+    }
+    const server = join(consumer, 'node_modules/@paperclipai/server'), installed = join(server, 'dist/vendor/paperclip-runner');
+    const probe = (name, source) => { const file = join(root, name); writeFileSync(file, source); return JSON.parse(run(process.execPath, [file]).trim()); };
+    const daemon = probe('daemon-probe.mjs', installedDaemonProbeSource(installed, consumer, sourceRevision));
+    const codex = probe('codex-probe.mjs', installedCodexProbeSource(join(installed, 'index.js'), consumer, undefined, { nativeCodex: true }));
+    const claude = probe('claude-probe.mjs', installedClaudeProbeSource(join(installed, 'index.js')));
+    const startupScript = macInstalledStartupProbeSource(consumer, server, daemon.sha256, join(repo, 'tests/runner-e2e/installed-cli.ts'));
+    const startupFile = join(root, 'startup-probe.mts'); writeFileSync(startupFile, startupScript);
+    const startup = JSON.parse(run(process.execPath, ['--import', 'tsx', startupFile], join(repo, 'server')).trim());
+    const receipt = { schema: 'paperclip.runner.mac-public-install.v1', sourceRevision, platform: process.platform, architecture: process.arch,
+      cleanNpmInstall: true, packageCount: manifest.archives.length, codexPackedPayloadsOmitted: true,
+      consumerLockPreserved: true, lifecycleSentinelVerified: true, lifecycleNodeHeadersVerified: true, lifecycleNodeVersion: process.versions.node,
+      lifecycleNetwork: 'sandbox-exec denied (loopback negative control)',
+      ...daemon, ...codex, claude, startup, providerCalls: 0 };
+    writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + '\n');
+    console.log(JSON.stringify(receipt));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+async function verifyLinuxArmConsumer(packageDirectory, sourceRevision, receiptPath) {
+  assert.equal(process.env.GITHUB_ACTIONS, 'true', 'Native clean consumers run only on disposable hosted CI');
+  assert.equal(process.platform + '-' + process.arch, 'linux-arm64', 'ARM qualification requires a native ARM host');
+  assert.equal(process.versions.node.split('.')[0], '24', 'ARM host startup requires the qualified Node24 runtime');
+  assert.match(sourceRevision, /^[a-f0-9]{40}$/);
+  const packages = realpathSync(packageDirectory);
+  const manifest = JSON.parse(readFileSync(join(packages, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.schema, 'paperclip.runner.public-packages/v1');
+  assert.equal(manifest.sourceRevision, sourceRevision);
+  assert.ok(manifest.archives.some(entry => entry.name === '@paperclipai/server'));
+  assert.ok(manifest.archives.some(entry => entry.name === 'paperclipai'));
+  assert.equal(new Set(manifest.archives.map(entry => entry.name)).size, manifest.archives.length);
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'paperclip-arm-public-install-')));
+  try {
+    const assets = join(root, 'assets'), consumer = join(root, 'consumer'), cache = join(root, 'cache');
+    for (const directory of [assets, consumer, cache]) mkdirSync(directory);
+    const run = (command, args, cwd = root) => execFileSync(command, args, { cwd,
+      env: { PATH: process.env.PATH, HOME: root, TMPDIR: root }, timeout: 10 * 60_000,
+      maxBuffer: 32 * 1024 * 1024, encoding: 'utf8' });
+    const platform = 'linux/arm64';
+    run('docker', ['pull', '--platform', platform, GROK_PUBLIC_INSTALL_IMAGE]);
+    const isolated = (command, options = {}) => run('docker', grokConsumerDockerArgs({ assets, consumer, cache,
+      uid: process.getuid(), gid: process.getgid(), platform, command, ...options }));
+    for (const entry of manifest.archives) {
+      assert.match(entry.file, /^[A-Za-z0-9._-]+\.tgz$/); assert.match(entry.sha256, /^[a-f0-9]{64}$/);
+      const tarball = join(packages, entry.file);
+      assert.equal(realpathSync(tarball), tarball);
+      assert.equal(createHash('sha256').update(readFileSync(tarball)).digest('hex'), entry.sha256);
+      assertNoBundledCodexPayloads(run('tar', ['-tzf', tarball]).trim().split('\n'));
+      cpSync(tarball, join(assets, entry.file)); chmodSync(join(assets, entry.file), 0o644);
+    }
+    writeFileSync(join(consumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
+    const sentinelSource = join(root, 'lifecycle-sentinel'); mkdirSync(sentinelSource);
+    writeFileSync(join(sentinelSource, 'package.json'), JSON.stringify({ name: 'paperclip-verification-lifecycle-sentinel', version: '1.0.0',
+      scripts: { postinstall: 'node -e "require(\'node:fs\').writeFileSync(\'lifecycle-ran\', \'ok\')"' } }));
+    run('npm', ['pack', '--ignore-scripts', '--pack-destination', assets], sentinelSource);
+    isolated(['npm', 'install', '--ignore-scripts', '--omit=dev', ...readdirSync(assets).filter(file => file.endsWith('.tgz')).map(file => `/packages/${file}`)], { download: true });
+    const sentinel = join(consumer, 'node_modules/paperclip-verification-lifecycle-sentinel/lifecycle-ran');
+    assert.equal(existsSync(sentinel), false);
+    const lock = readFileSync(join(consumer, 'package-lock.json'), 'utf8');
+    isolated(GROK_PUBLIC_INSTALL_LIFECYCLE);
+    assert.equal(readFileSync(sentinel, 'utf8'), 'ok');
+    assert.equal(readFileSync(join(consumer, 'package-lock.json'), 'utf8'), lock);
+    for (const entry of manifest.archives) {
+      assert.equal(JSON.parse(readFileSync(join(consumer, 'node_modules', entry.name, 'package.json'))).version, manifest.releaseVersion);
+    }
+    const server = '/consumer/node_modules/@paperclipai/server', installed = server + '/dist/vendor/paperclip-runner';
+    const probe = (name, source, options = {}) => { writeFileSync(join(assets, name), source); return JSON.parse(isolated(['node', '/packages/' + name], options).trim()); };
+    const daemon = probe('daemon-probe.mjs', installedDaemonProbeSource(installed, '/consumer', sourceRevision));
+    assert.equal(daemon.target, 'linux-arm64');
+    const codex = probe('codex-probe.mjs', installedCodexProbeSource(installed + '/index.js', '/consumer', undefined, { nativeCodex: true }));
+    cpSync(join(repo, 'tests/runner-e2e/installed-cli.ts'), join(assets, 'installed-cli.ts'));
+    writeFileSync(join(assets, 'types.js'), stripTypeScriptTypes(readFileSync(join(repo, 'tests/runner-e2e/types.ts'), 'utf8')));
+    const home = join(root, 'host-home'), hostTmp = join(root, 'host-tmp');
+    for (const directory of [home, hostTmp]) mkdirSync(directory, { mode: 0o700 });
+    const hostEnv = { PATH: `${dirname(process.execPath)}:/usr/bin:/bin:/usr/sbin:/sbin`, HOME: home, TMPDIR: hostTmp, LC_ALL: 'C', TZ: 'UTC' };
+    const hostProbe = (name, source) => {
+      const file = join(assets, name); writeFileSync(file, source);
+      return JSON.parse(execFileSync(process.execPath, [file], { cwd: consumer, env: hostEnv,
+        timeout: 120_000, maxBuffer: 1024 * 1024, encoding: 'utf8' }).trim());
+    };
+    const hostServer = join(consumer, 'node_modules/@paperclipai/server'), hostInstalled = join(hostServer, 'dist/vendor/paperclip-runner');
+    const hostDaemon = () => hostProbe('host-daemon-probe.mjs', installedDaemonProbeSource(hostInstalled, consumer, sourceRevision));
+    const hostCodex = () => hostProbe('host-codex-probe.mjs', installedCodexProbeSource(join(hostInstalled, 'index.js'), consumer, undefined, { nativeCodex: true }));
+    const claude = hostProbe('host-claude-probe.mjs', installedClaudeProbeSource(join(hostInstalled, 'index.js')));
+    const digest = value => createHash('sha256').update(value).digest('hex');
+    const beforeCodex = hostCodex();
+    const before = { lockSha256: digest(lock), runnerSha256: hostDaemon().sha256.slice(7), codexCommandSha256: beforeCodex.codexCommandSha256, codexNativeExecutableSha256: beforeCodex.codexNativeExecutableSha256 };
+    assert.equal(before.runnerSha256, daemon.sha256.slice(7), 'Docker and host must select the same packaged daemon bytes');
+    assert.equal(before.codexCommandSha256, codex.codexCommandSha256, 'Docker and host must select the same official Codex command bytes');
+    assert.equal(before.codexNativeExecutableSha256, codex.codexNativeExecutableSha256, 'Docker and host must select the same official native Codex payload bytes');
+    const hostHeader = process.report.getReport().header;
+    assert.match(hostHeader.glibcVersionRuntime || '', /^\d+\.\d+$/, 'Native host startup must report its actual GNU libc ABI');
+    const startup = hostProbe('host-startup-probe.mjs', macInstalledStartupProbeSource(consumer, hostServer, daemon.sha256, join(assets, 'installed-cli.ts')));
+    const afterCodex = hostCodex();
+    const after = { lockSha256: digest(readFileSync(join(consumer, 'package-lock.json'))), runnerSha256: hostDaemon().sha256.slice(7), codexCommandSha256: afterCodex.codexCommandSha256, codexNativeExecutableSha256: afterCodex.codexNativeExecutableSha256 };
+    assertInstalledNativeConsumerContinuity(before, after);
+    assert.equal(startup.runnerSha256, before.runnerSha256);
+    assert.equal(startup.codexSha256, before.codexCommandSha256);
+    const receipt = { schema: 'paperclip.runner.linux-arm64-public-install.v1', sourceRevision, platform: process.platform, architecture: process.arch,
+      cleanNpmInstall: true, packageCount: manifest.archives.length, codexPackedPayloadsOmitted: true,
+      consumerImage: GROK_PUBLIC_INSTALL_IMAGE, consumerImagePlatform: platform,
+      consumerLockPreserved: true, lifecycleSentinelVerified: true, lifecycleNetwork: 'none',
+      startupEnvironment: 'native host, same installed graph, isolated empty homes',
+      startupHost: { nodeVersion: process.versions.node, nodeModulesAbi: process.versions.modules, glibcVersionRuntime: hostHeader.glibcVersionRuntime, kernelRelease: hostHeader.osRelease },
+      installedIdentityBefore: before, installedIdentityAfter: after,
+      ...daemon, ...codex, claude, startup, providerCalls: 0 };
+    writeFileSync(receiptPath, JSON.stringify(receipt, null, 2) + '\n');
+    console.log(JSON.stringify(receipt));
+  } finally { rmSync(root, { recursive: true, force: true }); }
+}
+if (process.argv[2] === '--linux-arm64-consumer') {
+  assert.equal(process.argv.length, 6, 'Usage: --linux-arm64-consumer PACKAGE_DIRECTORY SOURCE_SHA RECEIPT_PATH');
+  await verifyLinuxArmConsumer(process.argv[3], process.argv[4], process.argv[5]);
+} else if (process.argv[2] === '--mac-consumer') {
+  assert.equal(process.argv.length, 6, 'Usage: --mac-consumer PACKAGE_DIRECTORY SOURCE_SHA RECEIPT_PATH');
+  await verifyMacConsumer(process.argv[3], process.argv[4], process.argv[5]);
+} else {
 assert.equal(process.platform, 'linux', 'Run this verification on disposable EC2 Linux, not a developer host');
 const root = mkdtempSync(join(tmpdir(), 'paperclip-grok-public-install-'));
 const prerequisite = join(root, 'native/grok');
-const env = { ...process.env, NODE_PATH: '', PAPERCLIP_RELEASE_REUSE_UI_DIST: '1', npm_config_ignore_scripts: 'false', npm_config_audit: 'false', npm_config_fund: 'false' };
+const cache = process.env.PAPERCLIP_PUBLIC_INSTALL_NPM_CACHE ? resolve(process.env.PAPERCLIP_PUBLIC_INSTALL_NPM_CACHE) : join(root, 'cache');
+mkdirSync(cache, { recursive: true });
+const env = { ...process.env, NODE_PATH: '', ...(process.env.PAPERCLIP_PUBLIC_INSTALL_NPM_CACHE ? { npm_config_cache: cache } : {}), PAPERCLIP_RELEASE_REUSE_UI_DIST: '1', npm_config_ignore_scripts: 'false', npm_config_audit: 'false', npm_config_fund: 'false' };
 const run = (cmd, args, cwd = root) => execFileSync(cmd, args, { cwd, env, stdio: 'pipe', maxBuffer: 32 * 1024 * 1024 });
 const sourceRevision = run('git', ['rev-parse', 'HEAD'], repo).toString().trim();
 const releaseVersion = `0.0.0-grok-verify.${sourceRevision.slice(0, 12)}`;
@@ -36,6 +219,8 @@ const stagedGrok = join(prefetched, 'grok');
 const prefetches = [];
 const downloads = [];
 const timing = {};
+const piSetupContainer = `paperclip-pi-setup-${basename(root)}`;
+let piSetupStarted = false;
 // A prefetch failure surfaces where its result is awaited, never as an
 // unhandled rejection that would mask an earlier staging error.
 const prefetch = (name, cmd, args) => {
@@ -52,18 +237,10 @@ try {
   // Provision as the unprivileged verification user, never into the host's /opt.
   // Only the positive probe sees this file at the canonical sandbox path.
   const grokReady = prefetch('grok', process.execPath, [join(repo, 'packages/paperclip-runner/scripts/provision-grok.mjs'), stagedGrok]);
-  const listing = run(process.execPath, [join(repo, 'scripts/release-package-map.mjs'), 'list'], repo).toString().trim().split('\n').map(line => line.split('\t'));
-  const packages = new Map(listing.map(([dir, name]) => [name, { dir, manifest: JSON.parse(readFileSync(join(repo, dir, 'package.json'), 'utf8')) }]));
-  const needed = new Set();
-  function visit(name) {
-    if (needed.has(name)) return;
-    const entry = packages.get(name); assert.ok(entry, `Missing public workspace dependency ${name}`); needed.add(name);
-    for (const [dep, spec] of Object.entries({ ...entry.manifest.dependencies, ...entry.manifest.optionalDependencies })) {
-      if (spec.startsWith('workspace:')) visit(dep);
-    }
-  }
-  visit('@paperclipai/server');
-  visit('paperclipai');
+  // The server, the CLI and every public workspace package they reach through
+  // `workspace:` specs. The npm cache warm-up reads the same closure, so both
+  // take it from one module.
+  const { packages, needed } = publicInstallClosure(repo);
   // release.sh also builds the standalone public packages (the sandbox-provider
   // plugins outside the pnpm workspace) before it stages anything, because it
   // publishes them. Nothing staged here reaches them: `needed` is closed under
@@ -120,7 +297,7 @@ try {
   const sourcesStarted = performance.now();
   for (const entry of entries.filter(entry => entry.bundled)) stageSource(entry);
   const installsStarted = performance.now();
-  const installs = startBundledInstalls(entries.filter(entry => entry.bundled), { logDir: prefetched, cwd: repo });
+  const installs = startBundledInstalls(entries.filter(entry => entry.bundled), { logDir: prefetched, cwd: repo, env });
   prefetches.push(...installs.map(({ handle }) => handle));
   for (const entry of entries.filter(entry => !entry.bundled)) {
     const releaseManifest = stageSource(entry);
@@ -146,9 +323,28 @@ try {
   timing.stage_pack_check_ms = Math.round(performance.now() - checksStarted);
   timing.stage_pack_ms = Math.round(performance.now() - packStarted);
   Object.assign(timing, packTimings(packs, concurrency));
+
+  if (process.env.PAPERCLIP_RUNNER_PUBLIC_PACKS_DIR) {
+    const output = resolve(process.env.PAPERCLIP_RUNNER_PUBLIC_PACKS_DIR);
+    assert.equal(JSON.parse(readFileSync(join(repo, 'server/dist/build-info.json'))).commit, sourceRevision);
+    assert.ok(!existsSync(output), 'Never replace retained public packages');
+    mkdirSync(output, { recursive: true });
+    const archives = [...needed].map((name, index) => {
+      const file = basename(tarballs[index]); cpSync(tarballs[index], join(output, file));
+      return { name, file, sha256: createHash('sha256').update(readFileSync(tarballs[index])).digest('hex') };
+    });
+    writeFileSync(join(output, 'manifest.json'), JSON.stringify({
+      schema: 'paperclip.runner.public-packages/v1', sourceRevision, releaseVersion,
+      publicInstallationVerified: false, providerCalls: 0, archives,
+    }, null, 2) + '\n');
+  }
   const assets = join(root, 'assets'); mkdirSync(assets, { mode: 0o755 });
   const consumer = join(root, 'consumer'); mkdirSync(consumer);
-  const cache = join(root, 'cache'); mkdirSync(cache);
+  // CI can point this at a cache that scripts/warm-public-install-npm-cache.mjs
+  // filled with the same public registry graph while `pnpm build` ran. npm
+  // checks every cached tarball against the integrity its own resolution
+  // records, so a warm cache changes where bytes come from, never what is
+  // installed; the consumer directory and its lock still start empty.
   writeFileSync(join(consumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }));
   for (const tarball of tarballs) {
     const destination = join(assets, basename(tarball)); cpSync(tarball, destination); chmodSync(destination, 0o644);
@@ -167,7 +363,11 @@ try {
   await awaited('image', imageReady);
   // npm resolution is intentionally the public consumer graph, not the pnpm
   // workspace graph. Freeze that result before any lifecycle script can run.
-  isolated(['npm', 'install', '--ignore-scripts', '--omit=dev', ...readdirSync(assets).filter(file => file.endsWith('.tgz')).map(file => `/packages/${file}`)], { download: true });
+  const metadataStarted = performance.now();
+  await writePackedRegistryCatalog(assets);
+  cpSync(join(repo, 'scripts/public-install-registry.mjs'), join(assets, 'public-install-registry.mjs'));
+  timing.registry_metadata_ms = Math.round(performance.now() - metadataStarted);
+  isolated(['node', '/packages/public-install-registry.mjs', '/packages'], { download: true });
   phase('consumer_install');
   assert.equal(existsSync(sentinel), false, 'Dependency download must not run lifecycle scripts');
   const consumerLock = readFileSync(join(consumer, 'package-lock.json'), 'utf8');
@@ -178,6 +378,13 @@ try {
   assert.equal(readFileSync(sentinel, 'utf8'), 'ok', 'Offline lifecycle scripts must actually execute');
   assert.equal(readFileSync(join(consumer, 'package-lock.json'), 'utf8'), consumerLock, 'Lifecycle execution must preserve the resolved consumer lock');
   phase('lifecycle_rebuild');
+  const piSetupReceipt = join(consumer, '.paperclip-pi-setup.json');
+  const piSetupArgs = grokConsumerDockerArgs({ assets, consumer, cache, uid: consumerUid, gid: process.getgid(),
+    command: ['sh', '-c', 'exec node /consumer/node_modules/paperclipai/dist/index.js runtime setup pi > /consumer/.paperclip-pi-setup.json'],
+    download: true, temporarySizeMiB: 2048 });
+  piSetupArgs.splice(1, 0, '--name', piSetupContainer);
+  const piSetupReady = prefetch('pi_setup', 'docker', piSetupArgs);
+  piSetupStarted = true;
   for (const name of needed) {
     const installedManifest = JSON.parse(readFileSync(join(consumer, 'node_modules', name, 'package.json'), 'utf8'));
     assert.equal(installedManifest.version, releaseVersion, `Installed release version for ${name}`);
@@ -217,7 +424,7 @@ try {
   renameSync(stagedGrok, prerequisite);
   isolated(['node', '/packages/probe.mjs', 'present'], { prerequisite });
   phase('grok_probes');
-  console.log(JSON.stringify({ schema: 'paperclip.grok.public-npm-install.v1', sourceRevision, releaseVersion, lifecycleScriptsEnabled: true, lifecycleSentinelVerified: true, lifecycleNetwork: 'none', consumerImage: GROK_PUBLIC_INSTALL_IMAGE, consumerUid, consumerLockPreserved: true, cleanNpmInstall: true, packageCount: needed.size, codexPackedPayloadsOmitted: true, codexPackedPackagesChecked: tarballs.length, ...codex, builtinLauncherPresent: true, separateGrokPackage: false, npmProvisionedBinary: false, missingPrerequisiteRejected: true, provisionedBinaryVerified: true, commandLeaseVerified: true, providerCalls: 0 }));
+  console.log(JSON.stringify({ schema: 'paperclip.grok.public-npm-install.v1', artifactTransport: 'loopback-registry', sourceRevision, releaseVersion, lifecycleScriptsEnabled: true, lifecycleSentinelVerified: true, lifecycleNetwork: 'none', consumerImage: GROK_PUBLIC_INSTALL_IMAGE, consumerUid, consumerLockPreserved: true, cleanNpmInstall: true, packageCount: needed.size, codexPackedPayloadsOmitted: true, codexPackedPackagesChecked: tarballs.length, ...codex, builtinLauncherPresent: true, separateGrokPackage: false, npmProvisionedBinary: false, missingPrerequisiteRejected: true, provisionedBinaryVerified: true, commandLeaseVerified: true, providerCalls: 0 }));
   // Exercise Pi's public CLI and installed server, never a private workspace
   // package or binary override. Public dependency downloads are explicit and
   // isolated; the actual admission probe runs without a network or credentials.
@@ -226,8 +433,9 @@ try {
   // Pi assembles a bundled runtime in scratch space before atomic publication.
   // Keep the existing sandbox and memory bound; only this download needs more
   // temporary capacity than the smaller offline lifecycle probes.
-  const setup = isolated(['node', '/consumer/node_modules/paperclipai/dist/index.js', 'runtime', 'setup', 'pi'], { download: true, temporarySizeMiB: 2048 }).toString();
-  const receipt = JSON.parse(setup.trim());
+  await awaited('pi_setup', piSetupReady);
+  const receipt = JSON.parse(readFileSync(piSetupReceipt, 'utf8'));
+  rmSync(piSetupReceipt);
   phase('pi_setup');
   assert.equal(receipt.status, 'installed_verified');
   assert.equal(receipt.target, 'linux-x64');
@@ -257,5 +465,9 @@ try {
   // An earlier failure must not leave a prefetch running, and scratch is
   // removed only once both children have stopped writing into it.
   await stopPrefetches(prefetches);
+  if (piSetupStarted) {
+    try { execFileSync('docker', ['rm', '--force', piSetupContainer], { timeout: 10_000, stdio: 'ignore' }); } catch {}
+  }
   rmSync(root, { recursive: true, force: true });
+}
 }

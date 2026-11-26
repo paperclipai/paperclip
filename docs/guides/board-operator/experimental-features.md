@@ -22,6 +22,13 @@ Controls are listed alphabetically within each section. Hosting operators can hi
 controls they manage; empty developer and legacy sections are omitted. Hidden
 controls retain their configured values.
 
+On Paperclip Cloud staging (`*.staging.paperclip.app`), instance admins can
+view and change experimental settings. Cloud-managed feature values act as
+defaults until changed, and saved choices survive reloads. Production Cloud
+keeps its managed values and hosting restrictions. Staging only permits changes
+to an explicit list of feature controls. Cloud access and execution policies,
+including managed-sandbox-only execution, remain managed on staging.
+
 The CLI exposes the same surface:
 
 ```sh

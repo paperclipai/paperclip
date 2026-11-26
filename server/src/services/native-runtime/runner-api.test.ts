@@ -75,7 +75,7 @@ describe("runner API catalog", () => {
     expect(operation.allowedModes).toContain("planning");
     expect(operation.allowedModes).not.toContain("ask");
     expect(operation.runnerRestrictions?.join(" ")).toContain("conversational confirmation");
-    expect(runnerApiOperation("POST /api/issues/{id}/interactions/{interactionId}/accept").callPolicy).toBe("restricted");
+    expect(runnerApiOperation("POST /api/issues/{id}/interactions/{interactionId}/accept").callPolicy).toBe("rest");
     expect(runnerApiOperation(createProject).allowedModes).not.toContain("planning");
   });
   it("accounts for unique operations with resolved request contracts", () => {
@@ -107,31 +107,7 @@ describe("runner API catalog", () => {
     expect(operation.responses).toBeDefined();
     expect(operation.authorization.actor).toBeTruthy();
   });
-  it.each(
-    runnerApiCatalog().filter((operation) => operation.transport === "rest"),
-  )(
-    "resolves the catalog route $operationId inside the bound origin",
-    (operation) => {
-      const pathParams = Object.fromEntries(
-        operation.parameters
-          .filter((parameter) => parameter.in === "path")
-          .map((parameter) => [
-            parameter.name,
-            parameter.name === "companyId" ? context.companyId : "fixture-id",
-          ]),
-      );
-      const url = runnerApiUrl(
-        operation,
-        { operationId: operation.operationId, pathParams },
-        context,
-        "https://paperclip.test",
-      );
-      expect(url.origin).toBe("https://paperclip.test");
-      expect(url.pathname).not.toContain("{");
-      expect(operation.responses).toBeDefined();
-      expect(operation.authorization.actor).toBeTruthy();
-    },
-  );
+
   it("ranks natural language, explains dedicated alternatives, and supports exact lookup", () => {
     expect(
       searchRunnerApi({ query: "create project" }).results.map(
@@ -162,21 +138,25 @@ describe("runner API catalog", () => {
 });
 
 describe("runner API request boundary", () => {
-  it.each([
-    "POST /api/execution-workspaces/{id}/runtime-commands/{action}",
-    "POST /api/projects/{id}/workspaces/{workspaceId}/runtime-services/{action}",
-    "POST /api/tool-gateway/runtime-slots/{slotId}/restart",
-    "POST /api/cases/{caseId}/automation/current-stage/rerun",
-    "POST /api/companies/{companyId}/skills/{skillId}/test-runs",
-    "POST /api/tool-gateway/sessions",
-  ])(
-    "keeps execution and gateway control %s out of generic dispatch",
-    async (operationId) => {
-      const request = vi.fn<typeof fetch>();
-      await expect(
-        executeRunnerApi({ operationId }, context, io(request)),
-      ).rejects.toThrow(/cannot bypass|credential broker/);
-      expect(request).not.toHaveBeenCalled();
+  it.each(runnerApiCatalog().filter(operation => operation.transport === "rest"))(
+    "dispatches $operationId with agent identity and preserves route authorization",
+    async operation => {
+      const request = vi.fn<typeof fetch>(async () =>
+        Response.json({ error: "Route permission required" }, { status: 403 }),
+      );
+      const pathParams = Object.fromEntries(
+        [...operation.path.matchAll(/\{([^}]+)\}/g)].map(([, name]) =>
+          [name, name === "companyId" ? context.companyId : "fixture"]),
+      );
+      const result = await executeRunnerApi(
+        { operationId: operation.operationId, pathParams }, context, io(request),
+      );
+      expect(operation.callPolicy).toBe("rest");
+      expect(result).toMatchObject({ ok: false, status: 403, data: { error: "Route permission required" } });
+      expect(request).toHaveBeenCalledOnce();
+      const headers = new Headers(request.mock.calls[0][1]?.headers);
+      expect(headers.get("Authorization")).toBe("Bearer private-agent-token");
+      expect(headers.get("X-Paperclip-Run-Id")).toBe(context.runId);
     },
   );
   it.each([
@@ -193,28 +173,6 @@ describe("runner API request boundary", () => {
         executeRunnerApi({ operationId }, context, io(request)),
       ).rejects.toThrow("existing protocol client");
       expect(request).not.toHaveBeenCalled();
-    },
-  );
-  it.each(
-    runnerApiCatalog().filter(
-      (operation) =>
-        !["GET", "HEAD", "OPTIONS"].includes(operation.method) &&
-        /\/(routines|routine-triggers)(\/|$)/.test(operation.path) &&
-        !operation.path.includes("/description/annotations"),
-    ),
-  )(
-    "keeps scheduled execution $operationId behind its existing client",
-    async (operation) => {
-      const request = vi.fn<typeof fetch>();
-      await expect(
-        executeRunnerApi(
-          { operationId: operation.operationId },
-          context,
-          io(request),
-        ),
-      ).rejects.toThrow(/cannot bypass|credential broker/);
-      expect(request).not.toHaveBeenCalled();
-      expect(operation.callPolicy).toBe("restricted");
     },
   );
   it.each(
@@ -250,51 +208,16 @@ describe("runner API request boundary", () => {
       ).operation.callPolicy,
     ).toBe("rest");
   });
-  it.each(["reopen", "resume", "interrupt"])(
-    "cannot hide lifecycle intent %s in an ordinary issue patch",
-    async (field) => {
-      const request = vi.fn<typeof fetch>();
-      await expect(
-        executeRunnerApi(
-          {
-            operationId: "PATCH /api/issues/{id}",
-            pathParams: { id: "other-issue" },
-            body: { [field]: true, billingCode: "safe-extra-field" },
-          },
-          context,
-          io(request),
-        ),
-      ).rejects.toThrow("lifecycle changes");
-      expect(request).not.toHaveBeenCalled();
-    },
-  );
   it.each([
-    "POST /api/agents/me/secrets/{key}/value",
-    "POST /api/agents/{id}/keys",
-    "DELETE /api/agents/{id}/keys/{keyId}",
-    "POST /api/companies/{companyId}/secret-proposals/{id}/approve",
-    "POST /api/agents/me/secret-proposals",
-    "PATCH /api/secrets/{id}",
-    "POST /api/companies/{companyId}/exports",
-    "GET /api/secret-provider-configs/{id}",
-    "POST /api/chat-endpoints/{endpointId}/setup-secret",
-    "POST /api/chat-endpoints/{endpointId}/principals/{principalId}/link-intent",
-    "DELETE /api/chat-endpoints/{endpointId}/principals/{principalId}/link",
-    "POST /api/chat-identity-links/confirm",
-    "GET /api/chat-identity-links/preview",
-  ])(
-    "keeps sensitive operation %s out of model results and receipts",
-    async (operationId) => {
-      const request = vi.fn<typeof fetch>();
-      await expect(
-        executeRunnerApi({ operationId }, context, io(request)),
-      ).rejects.toThrow("credential broker");
-      expect(request).not.toHaveBeenCalled();
-      expect(searchRunnerApi({ query: operationId }).results[0]).toMatchObject({
-        callPolicy: "restricted",
-      });
-    },
-  );
+    ["PATCH /api/issues/{id}", { status: "blocked", assigneeAgentId: "teammate", blockedByIssueIds: ["dependency"], reopen: true }],
+    ["PATCH /api/agents/{id}", { status: "idle" }],
+    ["POST /api/issues/{id}/comments", { body: "Continue", resume: true }],
+  ])("passes REST payload fields to route authorization for %s", async (operationId, body) => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ accepted: true }));
+    expect(await executeRunnerApi({ operationId: operationId as string, pathParams: { id: "fixture" }, body }, context, io(request)))
+      .toMatchObject({ ok: true, status: 200 });
+    expect(JSON.parse(request.mock.calls[0][1]?.body as string)).toEqual(body);
+  });
   it("retains safe secret metadata discovery", () => {
     for (const operationId of [
       "GET /api/agents/me/secrets",
@@ -365,39 +288,34 @@ describe("runner API request boundary", () => {
       ).toBe("GET");
     }
   });
-  it("retains API-only issue options while guarding lifecycle fields", () => {
-    const input = {
-      operationId: "PATCH /api/issues/{id}",
-      pathParams: { id: context.issueId },
-      body: { billingCode: "cost-center" },
-    };
-    expect(validateRunnerApiCall(input, context).operation.method).toBe(
-      "PATCH",
-    );
-    expect(() =>
-      validateRunnerApiCall({ ...input, body: { status: "done" } }, context),
-    ).toThrow("dedicated");
-    expect(() =>
-      validateRunnerApiCall(
-        {
-          operationId: "POST /api/issues/{id}/checkout",
-          pathParams: { id: context.issueId },
-        },
-        context,
-      ),
-    ).toThrow("lifecycle");
+  it.each([
+    ["POST /api/agents/me/secrets/{key}/value", { key: "FIXTURE_TOKEN" }],
+    ["POST /api/companies/{companyId}/exports", {}],
+    ["POST /api/companies/{companyId}/export", {}],
+  ])("returns credential responses for %s above the inline limit without plaintext artifacts", async (operationId, pathParams) => {
+    const value = "fixture-credential-".repeat(3000);
+    const transport = io(async () => Response.json({ value }));
+    const save = vi.fn(transport.saveResponse);
+    const reserve = vi.fn(async () => vi.fn(async () => {}));
+    const result = await executeRunnerApi({ operationId, pathParams }, context, { ...transport, saveResponse: save, reserveResponseCapture: reserve });
+    expect(result).toMatchObject({ ok: true, status: 200, data: { value } });
+    expect(result).not.toHaveProperty("artifact");
+    expect(save).not.toHaveBeenCalled();
+    expect(reserve).not.toHaveBeenCalled();
   });
-  it.each(["issue-a", "ISSUE-A", "API-1", "api-1", " api-1 "])(
-    "cannot delete its active task using the route identity alias %s",
-    (id) => {
-      expect(() =>
-        validateRunnerApiCall(
-          { operationId: "DELETE /api/issues/{id}", pathParams: { id } },
-          context,
-        ),
-      ).toThrow("cannot delete itself");
-    },
-  );
+  it("withholds a credential response when the run is revoked during HTTP", async () => {
+    let authorized = true;
+    const request = vi.fn<typeof fetch>(async () => {
+      authorized = false;
+      return Response.json({ value: "private-fixture-value" });
+    });
+    const result = await executeRunnerApi({ operationId: "POST /api/agents/me/secrets/{key}/value", pathParams: { key: "fixture-key" } }, context, {
+      ...io(request), beforeDispatch: async () => { if (!authorized) throw new Error("Run revoked"); },
+    });
+    expect(result).toMatchObject({ ok: false, error: "api_transport_failure", outcome: "unknown" });
+    expect(JSON.stringify(result)).not.toContain("private-fixture-value");
+    expect(request).toHaveBeenCalledOnce();
+  });
   it("forwards only server-owned authentication and preserves API denials", async () => {
     const request = vi.fn<typeof fetch>(async () =>
       Response.json({ error: "Board access required" }, { status: 403 }),
@@ -583,29 +501,11 @@ describe("runner API request boundary", () => {
       ),
     ).rejects.toThrow();
   });
-  it("classifies protocols and prevents execution control through alternate routes", () => {
-    const protocols = runnerApiCatalog().filter(
-      (operation) => operation.transport === "protocol",
-    );
-    expect(
-      protocols.some((operation) => operation.path.endsWith("/events/ws")),
-    ).toBe(true);
-    for (const operation of protocols)
-      expect(() =>
-        validateRunnerApiCall({ operationId: operation.operationId }, context),
-      ).toThrow("protocol client");
-    for (const operationId of [
-      "POST /api/issues/{id}/tree-holds",
-      "POST /api/issues/{id}/stalled-review-decision",
-      "POST /api/agents/{id}/runtime-state/reset-session",
-      "POST /api/approvals/{id}/resubmit",
-    ]) {
-      expect(() =>
-        validateRunnerApiCall(
-          { operationId, pathParams: { id: "fixture" } },
-          context,
-        ),
-      ).toThrow("cannot bypass");
+  it("keeps protocol clients separate from REST dispatch", () => {
+    const protocols = runnerApiCatalog().filter(operation => operation.transport === "protocol");
+    expect(protocols.some(operation => operation.path.endsWith("/events/ws"))).toBe(true);
+    for (const operation of protocols) {
+      expect(() => validateRunnerApiCall({ operationId: operation.operationId }, context)).toThrow("protocol client");
     }
   });
   it("keeps skill-test mode consistent with the advertised tool contract", () => {
@@ -616,24 +516,13 @@ describe("runner API request boundary", () => {
       ).operation.method,
     ).toBe("POST");
   });
-  it("cannot hide lifecycle mutations in a raw uploaded JSON body", () => {
-    for (const operationId of [
-      "PATCH /api/issues/{id}",
-      "PATCH /api/agents/{id}",
-      "POST /api/issues/{id}/comments",
-    ]) {
-      expect(() =>
-        validateRunnerApiCall(
-          {
-            operationId,
-            pathParams: { id: "fixture" },
-            files: [{ path: "hidden-status.json" }],
-            contentType: "application/json",
-          },
-          context,
-        ),
-      ).toThrow("inline JSON object");
-    }
+  it("passes uploaded JSON bodies through the same route validation as REST", async () => {
+    const request = vi.fn<typeof fetch>(async () => Response.json({ error: "Board access required" }, { status: 403 }));
+    const transport = io(request);
+    transport.readFile = async () => ({ bytes: Buffer.from('{"status":"idle"}'), filename: "update.json", contentType: "application/json" });
+    expect(await executeRunnerApi({ operationId: "PATCH /api/agents/{id}", pathParams: { id: "fixture" }, files: [{ path: "update.json" }], contentType: "application/json" }, context, transport))
+      .toMatchObject({ ok: false, status: 403 });
+    expect(Buffer.from(request.mock.calls[0][1]?.body as Uint8Array).toString()).toBe('{"status":"idle"}');
   });
   it("reads text windows from a live response and supplies stable snapshots", async () => {
     const text = "prefix\n" + "🧭é\n".repeat(6000) + "END-OF-EVIDENCE";

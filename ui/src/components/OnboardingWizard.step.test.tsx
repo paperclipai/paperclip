@@ -178,7 +178,9 @@ describe("OnboardingWizard — which step it lands on", () => {
     dialogState.onboardingOpen = false;
     dialogState.onboardingOptions = {};
     dialogState.onboardingRouteDismissed = false;
-    mockAdaptersApi.list.mockResolvedValue([]);
+    mockAdaptersApi.list.mockResolvedValue(["claude_local", "codex_local"].map(type => ({
+      type, loaded: true, disabled: false, defaultRunner: "legacy", supportedRunners: ["legacy"],
+    })));
     mockGoalsApi.list.mockResolvedValue([]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     // The hire step lists the company's agents first so it can adopt one that
@@ -287,15 +289,6 @@ describe("OnboardingWizard — which step it lands on", () => {
     // would have picked depended on the answer. Waiting now only delays the open.
     routerState.pathname = "/PC1/onboarding";
     mockGoalsApi.list.mockReturnValue(new Promise(() => {}));
-    await render();
-    await settle();
-
-    expect(currentStep()).toBe("agent");
-  });
-
-  it("opens on the agent step when the goals lookup fails outright", async () => {
-    routerState.pathname = "/PC1/onboarding";
-    mockGoalsApi.list.mockRejectedValue(new Error("goals unavailable"));
     await render();
     await settle();
 

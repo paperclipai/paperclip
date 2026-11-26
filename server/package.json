@@ -39,11 +39,13 @@
     "prepack": "pnpm run prepare:ui-dist && pnpm run build",
     "postpack": "rm -rf ui-dist",
     "clean": "rm -rf dist",
+    "build:runtime": "node scripts/bundle-runtime.mjs",
     "start": "node dist/index.js",
-    "prepare:runner-vendor": "pnpm --filter @paperclipai/paperclip-runner build",
+    "prepare:runner-vendor": "node scripts/prepare-runner-vendor.mjs",
     "typecheck": "pnpm run prepare:runner-vendor && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && tsc --noEmit"
   },
   "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.73.0",
     "@agentclientprotocol/codex-acp": "1.6.2",
     "@ai-sdk/amazon-bedrock": "5.0.113",
     "@ai-sdk/anthropic": "4.0.78",
@@ -61,6 +63,7 @@
     "@modelcontextprotocol/sdk": "^1.31.0",
     "@openrouter/ai-sdk-provider": "3.1.0",
     "@opentelemetry/api": "^1.9.0",
+    "@opentelemetry/otlp-transformer": "0.221.0",
     "@paperclipai/adapter-claude-local": "workspace:*",
     "@paperclipai/adapter-codex-local": "workspace:*",
     "@paperclipai/adapter-cursor-cloud": "workspace:*",
@@ -68,6 +71,7 @@
     "@paperclipai/adapter-gemini-local": "workspace:*",
     "@paperclipai/adapter-grok-local": "workspace:*",
     "@paperclipai/adapter-kimi-local": "workspace:*",
+    "@paperclipai/adapter-kimchi-local": "workspace:*",
     "@paperclipai/adapter-openclaw-gateway": "workspace:*",
     "@paperclipai/adapter-opencode-local": "workspace:*",
     "@paperclipai/adapter-pi-local": "workspace:*",
@@ -106,13 +110,15 @@
     "pino-http": "^11.0.0",
     "pino-pretty": "^13.1.3",
     "sharp": "^0.35.4",
-    "smol-toml": "^1.4.2",
+    "smol-toml": "^1.9.1",
     "ssh2": "^1.17.0",
     "svix": "1.76.1",
     "ws": "^8.22.0",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@opentelemetry/resources": "2.10.0"
   },
   "bundleDependencies": [
+    "@agentclientprotocol/claude-agent-acp",
     "@agentclientprotocol/codex-acp",
     "@chat-adapter/discord",
     "@chat-adapter/github",
@@ -123,6 +129,8 @@
     "acpx"
   ],
   "devDependencies": {
+    "@opentelemetry/context-async-hooks": "2.10.0",
+    "@opentelemetry/sdk-trace": "2.10.0",
     "@paperclipai/paperclip-runner": "workspace:*",
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.0",
@@ -138,7 +146,8 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vite": "^8.2.2",
-    "vitest": "^5.0.3"
+    "vitest": "^5.0.3",
+    "protobufjs": "7.6.6"
   },
   "peerDependencies": {
     "@opentelemetry/auto-instrumentations-node": "0.79.0",

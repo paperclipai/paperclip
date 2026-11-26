@@ -3198,6 +3198,9 @@ export function buildInvocationEnvForLogs(
       redactCommandTextForLogs(resolvedCommand);
   }
 
+  for (const key of ["OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS", "OTEL_EXPORTER_OTLP_METRICS_HEADERS", "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG"]) {
+    if (key in merged) merged[key] = "[REDACTED]";
+  }
   return redactEnvForLogs(merged);
 }
 
@@ -4269,7 +4272,7 @@ export function normalizePaperclipRunnerAdapterConfig(
 ): Record<string, unknown> {
   if (adapterType !== "paperclip_runner") return config;
   config = normalizeLegacyRunnerProvider(config);
-  if (config.provider === "openai_dot") {
+  if (config.provider === "openai_dot" || config.provider === "muse") {
     return normalizePaperclipOperationalSkillPreference(adapterType, { lifecycleMode: "per_turn", ...config });
   }
   const next: Record<string, unknown> = {

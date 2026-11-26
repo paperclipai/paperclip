@@ -130,3 +130,44 @@ it.each(["Usage limit reached", "Usage limit exceeded", "You’ve hit your usage
       .toEqual({ errorCode: "provider_quota", errorFamily: "provider_quota" });
   },
 );
+
+it.each([
+  "Selected model is at capacity. Please try a different model.",
+  "This model is at capacity right now",
+  "We're at capacity for this model. Try again soon.",
+  "codexErrorInfo: serverOverloaded",
+])("retries a typed Codex model capacity failure as transient upstream: %s", (title) => {
+  expect(classifyCodexTerminalSessionFailure({ category: "service", title }, now))
+    .toEqual({ errorCode: "codex_transient_upstream", errorFamily: "transient_upstream" });
+  expect(classifyCodexTerminalSessionFailure({ category: "service", title: "Codex turn failed", details: title }, now))
+    .toEqual({ errorCode: "codex_transient_upstream", errorFamily: "transient_upstream" });
+});
+
+it.each([
+  ["HTTP 500 internal server error", "service"],
+  ["Workspace storage capacity limit reached", "service"],
+  ["Selected model is at capacity. Please try a different model.", "limit"],
+  ["Selected model is at capacity. Please try a different model.", "request"],
+  ["Selected model is at capacity. Please try a different model.", "connection"],
+])("keeps other typed failures out of capacity retry: %s (%s)", (title, category) => {
+  expect(classifyCodexTerminalSessionFailure({ category, title }, now)).toBeNull();
+});
+
+it("keeps the historical generic terminal-service error unclassified", () => {
+  expect(classifyCodexTerminalSessionFailure({
+    category: "service",
+    title: "ACP agent reported a terminal service failure.",
+  }, now)).toBeNull();
+});
+
+it("arms the bounded transient retry for a typed Codex model capacity failure", async () => {
+  const title = "Selected model is at capacity. Please try a different model.";
+  const { result } = await executeFailure(title, "service");
+  expect(result).toMatchObject({
+    exitCode: 1,
+    errorCode: "codex_transient_upstream",
+    errorFamily: "transient_upstream",
+    resultJson: { errorFamily: "transient_upstream", terminalSessionFailure: { category: "service" } },
+  });
+  expect(result.retryNotBefore).toBeUndefined();
+});

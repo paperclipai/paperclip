@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations, runUsageReceipts, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { trace } from "@opentelemetry/api";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
+import { createRunPreparationTiming, measureRunPhase, measureWorkspaceSyncPhase, withRunExecutionTiming } from "../execution-preparation-timing.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import * as legacyRecovery from "../legacy-execution-recovery.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
@@ -56,9 +59,9 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     vi.mocked(executePaperclipNativeSession).mockResolvedValue({ exitCode: 0, signal: null, timedOut: false });
   });
 
-  async function fixture(native = false) {
+  async function fixture(native = false, provider: "codex" | "grok_bot" | "openai_dot" = "codex") {
     const [company] = await db.insert(companies).values({ name: "Runtime execution", issuePrefix: "EXE" }).returning();
-    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Executing agent", status: "running", adapterType: native ? "paperclip_runner" : "process", adapterConfig: { provider: "codex" } }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Executing agent", status: "running", adapterType: native ? "paperclip_runner" : "process", adapterConfig: provider === "codex" ? { provider } : { provider, lifecycleMode: "per_turn", allowUnmeteredProvider: true, [provider === "grok_bot" ? "externalBindingId" : "dotBindingId"]: randomUUID() } }).returning();
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Complete this task", assigneeAgentId: agent.id }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, issueId: issue.id, scopeKind: "issue", status: "running", runtimeMode: native ? "native" : "legacy" }).returning();
     const state = createHeartbeatRunState(db);
@@ -68,14 +71,15 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     const nativeExecution = native ? buildNativeExecutionInput({
       companyId: company.id, agentId: agent.id, runId: run.id, issue,
       taskPrompt: issue.title, workspace: { id: run.id, cwd: home, repoUrl: null, repoRef: null, branchName: null },
-      normalizedSessionId: null, provider: "codex", runtimeContext: nativeRuntimeContextFixture(),
+      normalizedSessionId: null, provider, runtimeContext: nativeRuntimeContextFixture(),
+      dotBinding: { bindingId: randomUUID(), bindingGeneration: 1, companyId: company.id, agentId: agent.id, acceptByUnixMs: Date.now() + 60_000, expiresAtUnixMs: Date.now() + 120_000 },
       completionContract: { id: randomUUID(), sha256: `sha256:${"a".repeat(64)}`, schemaVersion: "paperclip.run-result.v1", contract: { revision: "1", objective: issue.title, criteria: [{ id: "output", requirement: issue.title }] } },
     }) : null;
     const input: HeartbeatRuntimeExecutionInput = {
       run, agent, options: {},
       task: { issueRef: issue, issueContext: null, context: {}, issueId: issue.id, taskKey: issue.id, executionContinuation: null },
       runtime: { nativeExecution, nativeRunnerInstanceId: native ? randomUUID() : null, getNativeFreshSessionHandoff: undefined,
-        nativeRuntimeResolution: resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: native, runtimeConfig: {}, adapterConfig: agent.adapterConfig, agent, issue, target: null, workspaceId: null }),
+        nativeRuntimeResolution: resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: native, grokEnabled: true, dotEnabled: true, runtimeConfig: {}, adapterConfig: agent.adapterConfig, agent, issue, target: null, workspaceId: null }),
         adapter, runtimeForAdapter: { taskKey: issue.id, sessionId: null, sessionParams: null, sessionDisplayId: null }, getFreshSessionHandoff: undefined, runOptions: {},
       },
       workspace: { persistedExecutionWorkspace: null, executionWorkspace: { baseCwd: home, cwd: home, source: "agent_home", projectId: null, workspaceId: null, repoUrl: null, repoRef: null, strategy: "project_primary", branchName: null, worktreePath: null, warnings: [], created: false, branchCreatedByRuntime: false },
@@ -176,7 +180,10 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(input.effects.onNativeDispatchStarted).toHaveBeenCalledOnce();
     expect(input.effects.onLegacyAdapterEntered).not.toHaveBeenCalled();
     expect(await finalizations()).toHaveLength(0);
-    expectCleanup(input);
+    if (error instanceof NativeControllerDetachedForRestartError) {
+      expect(revokeHeartbeatRunGatewayTokens).not.toHaveBeenCalled();
+      expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
+    } else expectCleanup(input);
   });
 
   it("dispatches native execution with the selected session and persists its usage", async () => {
@@ -206,6 +213,118 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     });
     expect(input.effects.onNativeSessionResumeScheduled).toHaveBeenCalledOnce();
     expect(await finalizations()).toHaveLength(0);
+    expectCleanup(input);
+  });
+
+  it("records native restoration inside the workspace finalization operation", async () => {
+    const { input, run } = await fixture(true);
+    const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
+    const exporter = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+    expect(trace.setGlobalTracerProvider(provider)).toBe(true);
+    const restore = vi.fn(async () => {
+      expect(await finalizations()).toMatchObject([{
+        status: "running", metadata: { owningService: "native_workspace_finalizer" },
+      }]);
+      await measureWorkspaceSyncPhase("workspace.restore", async () => {});
+      await measureRunPhase("execution.workspace_commit", async () => {});
+    });
+    input.workspace.nativeWorkspaceSync = {
+      mode: "host_current",
+      reference: { schema: "paperclip.native-workspace-sync/v3", state: "prepared",
+        descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+        workspaceId: run.id, leaseId: randomUUID(), providerLeaseId: "sandbox", remoteCwd: "/workspace", resourceDisposition: null },
+      restoreWorkspace: restore,
+      cleanup: vi.fn(async () => {}),
+    };
+    try {
+      expect(await withRunExecutionTiming(run.id, () => executeHeartbeatRuntime(db, input))).toMatchObject({ dispatched: true });
+      expect(restore).toHaveBeenCalledOnce();
+      expect(await finalizations()).toMatchObject([{
+        status: "succeeded", metadata: { owningService: "native_workspace_finalizer" },
+      }]);
+      await provider.forceFlush();
+      const spans = exporter.getFinishedSpans();
+      const attempt = spans.find(span => span.name === "task.execution_attempt")!;
+      expect(attempt).toBeDefined();
+      for (const name of ["execution.usage_startup", "execution.mcp_handoff", "execution.dispatch_admission"]) {
+        const startup = spans.filter(span => span.name === name);
+        expect(startup).toHaveLength(1);
+        expect(startup[0].parentSpanContext?.spanId).toBe(attempt.spanContext().spanId);
+      }
+      const copyback = spans.filter(span => span.name === "execution.workspace_restore");
+      const commit = spans.filter(span => span.name === "execution.workspace_commit");
+      expect(copyback).toHaveLength(1);
+      expect(commit).toHaveLength(1);
+      const finalization = spans.find(span => span.name === "execution.workspace_finalize")!;
+      expect(finalization).toBeDefined();
+      for (const child of [...copyback, ...commit]) expect(child.parentSpanContext?.spanId).toBe(finalization.spanContext().spanId);
+    } finally {
+      vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint);
+      trace.disable();
+      await provider.shutdown();
+    }
+  });
+
+  it.each([false, true])("ends admission timing without losing later provider spans (native: %s)", async native => {
+    const { input, adapter, run } = await fixture(native);
+    const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+    vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
+    const exporter = new InMemorySpanExporter();
+    const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+    expect(trace.setGlobalTracerProvider(provider)).toBe(true);
+    let release!: (result: Awaited<ReturnType<typeof executePaperclipNativeSession>>) => void;
+    const providerResult = new Promise<Awaited<ReturnType<typeof executePaperclipNativeSession>>>(resolve => { release = resolve; });
+    const providerWork = async () => {
+      const result = await providerResult;
+      await createRunPreparationTiming(run.id, "native.controller")("coordinator_release", async () => {});
+      return result;
+    };
+    if (native) vi.mocked(executePaperclipNativeSession).mockImplementationOnce(providerWork);
+    else adapter.execute.mockImplementationOnce(providerWork);
+    const running = withRunExecutionTiming(run.id, () => executeHeartbeatRuntime(db, input));
+    try {
+      await vi.waitFor(() => {
+        expect(exporter.getFinishedSpans().filter(span => span.name === "execution.dispatch_admission")).toHaveLength(1);
+      }, { timeout: 5_000 });
+      expect(native ? executePaperclipNativeSession : adapter.execute).toHaveBeenCalledOnce();
+      expect(exporter.getFinishedSpans().find(span => span.name === "task.execution_attempt")).toBeUndefined();
+      expect(await finalizations()).toHaveLength(0);
+      release({ exitCode: 0, signal: null, timedOut: false });
+      await running;
+      const spans = exporter.getFinishedSpans();
+      const attempt = spans.find(span => span.name === "task.execution_attempt")!;
+      const later = spans.filter(span => span.name === "native.controller.coordinator_release");
+      expect(later).toHaveLength(1);
+      expect(later[0].spanContext().traceId).toBe(attempt.spanContext().traceId);
+      expect(later[0].parentSpanContext?.spanId).toBe(attempt.spanContext().spanId);
+    } finally {
+      release({ exitCode: 0, signal: null, timedOut: false });
+      await running;
+      vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", endpoint);
+      trace.disable();
+      await provider.shutdown();
+    }
+  });
+
+  it.each(["codex", "grok_bot", "openai_dot"] as const)("retains user files only when %s can access the workspace after a dispatch failure", async provider => {
+    const { input, run } = await fixture(true, provider);
+    input.workspace.nativeWorkspaceSync = {
+      mode: "host_current",
+      reference: { schema: "paperclip.native-workspace-sync/v3", state: "prepared",
+        descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
+        workspaceId: run.id, leaseId: randomUUID(), providerLeaseId: "sandbox", remoteCwd: "/workspace", resourceDisposition: "destroy" },
+      restoreWorkspace: vi.fn(), cleanup: vi.fn(),
+    };
+    const error = new Error("runner_remote_process_identity_unavailable");
+    vi.mocked(executePaperclipNativeSession).mockRejectedValueOnce(error);
+    input.instructions.releaseInstructionCopy = vi.fn(async () => {
+      if (provider === "codex") expect(input.effects.onProviderResourceDisposition).toHaveBeenCalledWith("stop_and_retain");
+      else expect(input.effects.onProviderResourceDisposition).not.toHaveBeenCalledWith("stop_and_retain");
+    });
+    await expect(executeHeartbeatRuntime(db, input)).rejects.toBe(error);
+    expect(input.workspace.nativeWorkspaceSync.restoreWorkspace).not.toHaveBeenCalled();
     expectCleanup(input);
   });
 

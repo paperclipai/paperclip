@@ -160,19 +160,6 @@ async function assertCaseAccess(db: Db, req: Request, idOrIdentifier: string) {
   return row;
 }
 
-// The pipelines feature registers its own /cases/:caseId routes after this
-// router. On paths both features share, return null (caller falls through via
-// next()) when the id is not a new-Cases row so pipeline case requests still
-// reach their handler regardless of the enableCases flag.
-async function resolveSharedPathCase(db: Db, req: Request, idOrIdentifier: string) {
-  const companyIds = caseLookupCompanyIds(req);
-  const row = await loadCaseByIdOrIdentifier(db, idOrIdentifier, companyIds);
-  if (!row || !hasCompanyAccess(req, row.companyId)) return null;
-  await assertCasesEnabled(db);
-  assertCompanyAccess(req, row.companyId);
-  return row;
-}
-
 async function assertProjectBelongsToCompany(db: CaseRouteDb, input: { companyId: string; projectId: string | null }) {
   if (!input.projectId) return;
   const row = await db
@@ -731,18 +718,18 @@ export function caseRoutes(db: Db, storage: StorageService) {
     res.json(parseBooleanQuery(query.includeAncestors) ? await includeCaseAncestors(db, companyId, rows) : rows);
   });
 
-  router.get("/cases/:id/documents/:key", async (req, res, next) => {
-    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
-    if (!caseRow) return next();
+  router.get("/cases/:id/documents/:key", async (req, res) => {
+    await assertCasesEnabled(db);
+    const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const key = parseDocumentKey(req.params.key as string);
     const link = await loadCaseDocumentLink(db, { companyId: caseRow.companyId, caseId: caseRow.id, key });
     if (!link) throw notFound("Case document not found");
     res.json(caseDocumentResponse({ key, document: link.document }));
   });
 
-  router.get("/cases/:id/documents/:key/annotations", async (req, res, next) => {
-    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
-    if (!caseRow) return next();
+  router.get("/cases/:id/documents/:key/annotations", async (req, res) => {
+    await assertCasesEnabled(db);
+    const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const key = parseDocumentKey(req.params.key as string);
     const status = req.query.status === "resolved" || req.query.status === "all" ? req.query.status : "open";
     const threads = await documentAnnotationsSvc.listThreadsForCaseDocument(caseRow.id, key, {
@@ -752,9 +739,9 @@ export function caseRoutes(db: Db, storage: StorageService) {
     res.json(threads);
   });
 
-  router.get("/cases/:id/documents/:key/annotations/:threadId", async (req, res, next) => {
-    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
-    if (!caseRow) return next();
+  router.get("/cases/:id/documents/:key/annotations/:threadId", async (req, res) => {
+    await assertCasesEnabled(db);
+    const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const key = parseDocumentKey(req.params.key as string);
     const thread = await documentAnnotationsSvc.getThreadForCaseDocument(
       caseRow.id,
@@ -768,9 +755,9 @@ export function caseRoutes(db: Db, storage: StorageService) {
   router.post(
     "/cases/:id/documents/:key/annotations",
     validate(createDocumentAnnotationThreadSchema),
-    async (req, res, next) => {
-      const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
-      if (!caseRow) return next();
+    async (req, res) => {
+      await assertCasesEnabled(db);
+      const caseRow = await assertCaseAccess(db, req, req.params.id as string);
       const key = parseDocumentKey(req.params.key as string);
       const { actor, annotationActor } = annotationActorInput(req);
       const thread = await documentAnnotationsSvc.createCaseThread(
@@ -807,9 +794,9 @@ export function caseRoutes(db: Db, storage: StorageService) {
   router.post(
     "/cases/:id/documents/:key/annotations/:threadId/comments",
     validate(createDocumentAnnotationCommentSchema),
-    async (req, res, next) => {
-      const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
-      if (!caseRow) return next();
+    async (req, res) => {
+      await assertCasesEnabled(db);
+      const caseRow = await assertCaseAccess(db, req, req.params.id as string);
       const key = parseDocumentKey(req.params.key as string);
       const { actor, annotationActor } = annotationActorInput(req);
       const comment = await documentAnnotationsSvc.addCaseComment(
@@ -844,9 +831,9 @@ export function caseRoutes(db: Db, storage: StorageService) {
   router.patch(
     "/cases/:id/documents/:key/annotations/:threadId",
     validate(updateDocumentAnnotationThreadSchema),
-    async (req, res, next) => {
-      const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
-      if (!caseRow) return next();
+    async (req, res) => {
+      await assertCasesEnabled(db);
+      const caseRow = await assertCaseAccess(db, req, req.params.id as string);
       const key = parseDocumentKey(req.params.key as string);
       const { actor, annotationActor } = annotationActorInput(req);
       const thread = await documentAnnotationsSvc.updateCaseThread(
@@ -880,9 +867,9 @@ export function caseRoutes(db: Db, storage: StorageService) {
     },
   );
 
-  router.put("/cases/:id/documents/:key", async (req, res, next) => {
-    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
-    if (!caseRow) return next();
+  router.put("/cases/:id/documents/:key", async (req, res) => {
+    await assertCasesEnabled(db);
+    const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const key = parseDocumentKey(req.params.key as string);
     const actor = getActorInfo(req);
     const body = upsertCaseDocumentSchema.parse(req.body);
@@ -1021,9 +1008,9 @@ export function caseRoutes(db: Db, storage: StorageService) {
     res.json(result);
   });
 
-  router.post("/cases/:id/documents/:key/lock", async (req, res, next) => {
-    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
-    if (!caseRow) return next();
+  router.post("/cases/:id/documents/:key/lock", async (req, res) => {
+    await assertCasesEnabled(db);
+    const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const key = parseDocumentKey(req.params.key as string);
     const actor = getActorInfo(req);
     const result = await db.transaction(async (tx) => {
@@ -1044,9 +1031,9 @@ export function caseRoutes(db: Db, storage: StorageService) {
     res.json(result);
   });
 
-  router.post("/cases/:id/documents/:key/unlock", async (req, res, next) => {
-    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
-    if (!caseRow) return next();
+  router.post("/cases/:id/documents/:key/unlock", async (req, res) => {
+    await assertCasesEnabled(db);
+    const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const key = parseDocumentKey(req.params.key as string);
     const result = await db.transaction(async (tx) => {
       await lockCaseDocumentKey(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
@@ -1066,9 +1053,9 @@ export function caseRoutes(db: Db, storage: StorageService) {
     res.json(result);
   });
 
-  router.post("/cases/:id/documents/:key/revisions/:revisionId/restore", async (req, res, next) => {
-    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
-    if (!caseRow) return next();
+  router.post("/cases/:id/documents/:key/revisions/:revisionId/restore", async (req, res) => {
+    await assertCasesEnabled(db);
+    const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const key = parseDocumentKey(req.params.key as string);
     const revisionId = req.params.revisionId as string;
     const actor = getActorInfo(req);
@@ -1155,9 +1142,9 @@ export function caseRoutes(db: Db, storage: StorageService) {
     res.json(result);
   });
 
-  router.delete("/cases/:id/documents/:key", async (req, res, next) => {
-    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
-    if (!caseRow) return next();
+  router.delete("/cases/:id/documents/:key", async (req, res) => {
+    await assertCasesEnabled(db);
+    const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const key = parseDocumentKey(req.params.key as string);
     await db.transaction(async (tx) => {
       await lockCaseDocumentKey(tx, { companyId: caseRow.companyId, caseId: caseRow.id, key });
@@ -1285,9 +1272,9 @@ export function caseRoutes(db: Db, storage: StorageService) {
     res.status(201).json(result);
   });
 
-  router.get("/cases/:id/events", async (req, res, next) => {
-    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
-    if (!caseRow) return next();
+  router.get("/cases/:id/events", async (req, res) => {
+    await assertCasesEnabled(db);
+    const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const parsed = listEventsQuerySchema.safeParse(req.query);
     if (!parsed.success) throw badRequest("Invalid case events query", parsed.error.issues);
     const rows = await db
@@ -1312,9 +1299,9 @@ export function caseRoutes(db: Db, storage: StorageService) {
     })));
   });
 
-  router.get("/cases/:id/documents/:key/revisions", async (req, res, next) => {
-    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
-    if (!caseRow) return next();
+  router.get("/cases/:id/documents/:key/revisions", async (req, res) => {
+    await assertCasesEnabled(db);
+    const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const key = parseDocumentKey(req.params.key as string);
     const link = await db
       .select({ documentId: caseDocuments.documentId, document: documents })
@@ -1392,15 +1379,15 @@ export function caseRoutes(db: Db, storage: StorageService) {
     })));
   });
 
-  router.get("/cases/:id", async (req, res, next) => {
-    const row = await resolveSharedPathCase(db, req, req.params.id as string);
-    if (!row) return next();
+  router.get("/cases/:id", async (req, res) => {
+    await assertCasesEnabled(db);
+    const row = await assertCaseAccess(db, req, req.params.id as string);
     res.json(await loadCaseDetail(db, row));
   });
 
-  router.patch("/cases/:id", async (req, res, next) => {
-    const caseRow = await resolveSharedPathCase(db, req, req.params.id as string);
-    if (!caseRow) return next();
+  router.patch("/cases/:id", async (req, res) => {
+    await assertCasesEnabled(db);
+    const caseRow = await assertCaseAccess(db, req, req.params.id as string);
     const actor = getActorInfo(req);
     const body = patchCaseSchema.parse(req.body);
     const nextLabelIds = body.labelIds ?? body.labels;

@@ -16,6 +16,17 @@ import { __liveUpdatesTestUtils } from "./LiveUpdatesProvider";
 import { queryKeys } from "../lib/queryKeys";
 
 describe("LiveUpdatesProvider issue invalidation", () => {
+  it('refreshes sources, legacy repositories and installed skills after a background import', () => {
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, 'invalidateQueries');
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, 'company-1', {
+      entityType: 'company_skill_source', entityId: 'source-1', action: 'company.skill_source_refreshed',
+    }, { userId: 'user-1', agentId: null });
+    for (const queryKey of [queryKeys.skillSources.all('company-1'), queryKeys.skillSources.projects('company-1'), queryKeys.companySkills.list('company-1')]) {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey });
+    }
+    client.clear();
+  });
   it("refreshes personal membership state when a primary changes on another device", () => {
     const client = new QueryClient();
     const invalidate = vi.spyOn(client, "invalidateQueries");
@@ -865,6 +876,25 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       queryKey: queryKeys.issues.comments("issue-1"),
       refetchType: "inactive",
     });
+  });
+
+  it("refetches visible comments when an authenticated event omits hydration details", () => {
+    const client = new QueryClient();
+    client.setQueryData(queryKeys.issues.detail("PAP-759"), {
+      id: "issue-1", companyId: "company-1", identifier: "PAP-759",
+    });
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+      entityType: "issue", entityId: "issue-1", action: "issue.comment_added",
+      actorType: "user", actorId: "another-user",
+    }, { userId: "viewer", agentId: null }, {
+      pathname: "/PAP/issues/PAP-759", isForegrounded: true,
+    });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.issues.comments("PAP-759") });
+    expect(invalidate).not.toHaveBeenCalledWith({
+      queryKey: queryKeys.issues.comments("PAP-759"), refetchType: "inactive",
+    });
+    client.clear();
   });
 
   it("refreshes visible issue run queries when the displayed run changes status", () => {

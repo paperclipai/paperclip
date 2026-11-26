@@ -244,6 +244,18 @@ describe("Codex security configuration", () => {
       maxBuffer: 32 * 1024 })).toBe("PINNED_CODEX_ISOLATION_VERIFIED");
   });
 
+  it("uses the execution account's HOME without credential deny roots in preconfigured mode", () => {
+    const source = { HOME: "/users/executor", CODEX_HOME: "/users/executor/.codex", PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" };
+    const args = createIsolatedCodexAppServerArgs(source).join("\n");
+    expect(args).not.toContain('"/users/executor"="none"');
+    expect(args).not.toContain('"/users/executor/.codex"="none"');
+    expect(args).toContain('HOME="/users/executor"');
+    expect(args).toContain('"/users/executor"="write"');
+    expect(createSecuredCodexThreadParams("/workspace", "default", true, true, source).config).toEqual({
+      "skills.include_instructions": true, include_collaboration_mode_instructions: true,
+    });
+  });
+
   it("allows only the registered private instruction directory while keeping shared context read-only", () => {
     const args = createIsolatedCodexAppServerArgs({ HOME: "/host/home" }, ["/runtime/immutable-context"], "/runtime/instruction-edits/run-1").join("\n");
     expect(args).toContain('"/runtime/instruction-edits/run-1"="write"');

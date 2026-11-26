@@ -1,7 +1,9 @@
+import { enqueueProjectSkillSource, detachProjectSkillSource } from "./project-skill-source-bindings.js";
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
+  executionWorkspaces,
   projectAccessMembers,
   projectGoals,
   goals,
@@ -30,12 +32,22 @@ import {
   type PluginManagedProjectDeclaration,
   type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
-import { unprocessable } from "../errors.js";
+import { conflict, unprocessable } from "../errors.js";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { recordProjectLifecycleEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
+import { lockExecutionWorkspaceRootProvenance, preserveConfiguredProjectWorkspaceRootProvenance } from "./execution-workspace-repositories.js";
+
+type ProjectTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+export async function lockProjectRootMutation(tx: ProjectTransaction, projectId: string) {
+  const [identity] = await tx.select({ companyId: projects.companyId }).from(projects).where(eq(projects.id, projectId));
+  if (!identity) return null;
+  await lockExecutionWorkspaceRootProvenance(tx, identity.companyId);
+  return tx.select().from(projects).where(eq(projects.id, projectId)).for("update").then(rows => rows[0] ?? null);
+}
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -913,7 +925,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
 
     replaceRepositories: async (projectId: string, repositories: import("@paperclipai/shared").ProjectRepository[]): Promise<ProjectWithGoals | null> => {
       return db.transaction(async (tx) => {
-        const [project] = await tx.select().from(projects).where(eq(projects.id, projectId)).for("update");
+        const project = await lockProjectRootMutation(tx, projectId);
         if (!project) return null;
         const service = projectService(tx as unknown as Db, { captureWorkspaceUpdates: false });
         const existing = await service.listWorkspaces(projectId);
@@ -1054,16 +1066,18 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       return cleared;
     },
 
-    remove: (id: string) =>
-      db
-        .delete(projects)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => {
-          const row = rows[0] ?? null;
-          if (!row) return null;
-          return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
-        }),
+    remove: async (id: string) => db.transaction(async tx => {
+      const project = await lockProjectRootMutation(tx, id);
+      if (!project) return null;
+      const [retained] = await tx.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+        .where(eq(executionWorkspaces.projectId, id)).limit(1);
+      if (retained) throw conflict("This project still supplies access policy for retained task workspaces. Archive the project or explicitly clean up its workspaces before deleting it.");
+      const workspaces = await tx.select().from(projectWorkspaces).where(eq(projectWorkspaces.projectId, id)).for("update");
+      for (const workspace of workspaces) await preserveConfiguredProjectWorkspaceRootProvenance(tx, workspace);
+      await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, id, "delete");
+      const [row] = await tx.delete(projects).where(eq(projects.id, id)).returning();
+      return row ? { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) } : null;
+    }),
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {
       const rows = await db
@@ -1161,6 +1175,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
           })
           .returning()
           .then((rows) => rows[0] ?? null);
+        if (row) await enqueueProjectSkillSource(tx as unknown as Db, row);
         return row;
       });
 
@@ -1176,7 +1191,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       data: UpdateWorkspaceInput,
     ): Promise<ProjectWorkspace | null> => db.transaction(async tx => {
       const db = tx as unknown as Db;
-      await db.select({ id: projects.id }).from(projects).where(eq(projects.id, projectId)).for("update");
+      if (!await lockProjectRootMutation(tx, projectId)) return null;
       const existing = await db
         .select()
         .from(projectWorkspaces)
@@ -1186,6 +1201,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
             eq(projectWorkspaces.projectId, projectId),
           ),
         )
+        .for("update")
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
 
@@ -1243,6 +1259,11 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
             : data.metadata;
       }
 
+      if ((["cwd", "sourceType", "repoUrl", "remoteProvider", "remoteWorkspaceRef", "sharedWorkspaceKey"] as const)
+        .some(key => patch[key] !== undefined && patch[key] !== existing[key])) {
+        await preserveConfiguredProjectWorkspaceRootProvenance(tx, existing);
+      }
+
       const updated = await db.transaction(async (tx) => {
         if (data.isPrimary === true) {
           await tx
@@ -1266,6 +1287,9 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
           .returning()
           .then((rows) => rows[0] ?? null);
         if (!row) return null;
+        if (row.repoUrl !== existing.repoUrl || row.defaultRef !== existing.defaultRef || row.repoRef !== existing.repoRef) {
+          await enqueueProjectSkillSource(tx as unknown as Db, row);
+        }
 
         if (row.isPrimary) return row;
 
@@ -1329,7 +1353,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
 
     removeWorkspace: async (projectId: string, workspaceId: string): Promise<ProjectWorkspace | null> => db.transaction(async tx => {
       const db = tx as unknown as Db;
-      await db.select({ id: projects.id }).from(projects).where(eq(projects.id, projectId)).for("update");
+      if (!await lockProjectRootMutation(tx, projectId)) return null;
       const existing = await db
         .select()
         .from(projectWorkspaces)
@@ -1339,10 +1363,13 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
             eq(projectWorkspaces.projectId, projectId),
           ),
         )
+        .for("update")
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
 
+      await preserveConfiguredProjectWorkspaceRootProvenance(tx, existing);
       const removed = await db.transaction(async (tx) => {
+        await detachProjectSkillSource(tx as unknown as Db, existing.companyId, workspaceId);
         const row = await tx
           .delete(projectWorkspaces)
           .where(eq(projectWorkspaces.id, workspaceId))

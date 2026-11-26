@@ -72,7 +72,7 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
   });
   router.get(agentConnection ? ["/.well-known/oauth-protected-resource" + endpoint] : ["/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource" + endpoint], (_req, res) => res.json({
     resource, authorization_servers: [issuer], scopes_supported: agentConnection ? DOT_RUNNER_MCP_SCOPES : ["paperclip:read", "paperclip:write", "paperclip:configure"], bearer_methods_supported: ["header"],
-    resource_name: agentConnection ? "Paperclip Dot agent" : "Paperclip",
+    resource_name: agentConnection ? "Paperclip agent" : "Paperclip",
   }));
   router.get(metadataPath, (_req, res) => res.json({
     issuer, authorization_endpoint: (oauth.config.authorizationOrigin ?? origin) + oauthPath + "/authorize", token_endpoint: prefix + "/token",

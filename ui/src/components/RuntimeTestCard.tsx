@@ -61,7 +61,12 @@ export function RuntimeTestCard({
   disabled?: boolean;
   variant?: "connection" | "prerequisites";
 }) {
-  const content = (variant === "prerequisites" ? prerequisiteCopy : copy)[state];
+  const missingRuntime = state === "fail"
+    ? result?.checks.find(check => check.code === "acpx_runtime_package_missing")
+    : undefined;
+  const content = missingRuntime
+    ? { ...copy.fail, title: "Runtime missing", description: missingRuntime.message }
+    : (variant === "prerequisites" ? prerequisiteCopy : copy)[state];
   const Icon =
     state === "running"
       ? Loader2

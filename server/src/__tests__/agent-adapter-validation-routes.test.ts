@@ -361,6 +361,7 @@ describe("agent routes adapter validation", () => {
   it("creates agents for dynamically registered external adapter types", async () => {
     const { registerServerAdapter } = await import("../adapters/index.js");
     registerServerAdapter(externalAdapter);
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["some_other_adapter"]);
 
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
@@ -657,33 +658,115 @@ describe("agent routes adapter validation", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(200);
   });
 
-  it("still creates an agent on an adapter that is registered and enabled", async () => {
+  it.each(["pass", "fail"] as const)("tests saved legacy Codex on a disabled adapter and retains its %s runtime verdict", async (status) => {
+    const adapterConfig = { model: "gpt-5.4", extraArgs: ["--legacy-setting"], env: { CODEX_HOME: "/saved-codex-home" } };
+    mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), adapterConfig });
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["codex_local"]);
+    const probe = vi.fn(async () => ({ adapterType: "codex_local", status, testedAt: new Date(0).toISOString(),
+      checks: status === "fail" ? [{ code: "adapter_auth_missing", level: "error" as const, message: "Sign in to the saved Codex account." }] : [] }));
     const { registerServerAdapter } = await import("../adapters/index.js");
-    registerServerAdapter(externalAdapter);
-    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["some_other_adapter"]);
-
-    const app = await createApp();
-    const res = await requestApp(app, (baseUrl) =>
-      request(baseUrl)
-        .post("/api/companies/company-1/agents")
-        .send({ name: "Enabled Harness", adapterType: "external_test" }),
-    );
-
-    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    registerServerAdapter({ ...externalAdapter, type: "codex_local", testEnvironment: probe });
+    try {
+      const app = await createApp();
+      const res = await requestApp(app, baseUrl => request(baseUrl)
+        .post("/api/companies/company-1/adapters/codex_local/test-environment")
+        .send({ agentId: "11111111-1111-4111-8111-111111111111", adapterConfig: {
+          ...adapterConfig, env: { CODEX_HOME: { type: "plain", value: "***REDACTED***" } },
+        } }));
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toMatchObject({ adapterType: "codex_local", status });
+      expect(probe).toHaveBeenCalledOnce();
+      expect(probe).toHaveBeenCalledWith(expect.objectContaining({ adapterType: "codex_local", config: adapterConfig }));
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).toHaveBeenCalledWith("company-1", adapterConfig, expect.objectContaining({ adapterType: "codex_local" }));
+      expect(mockAgentService.create).not.toHaveBeenCalled();
+      expect(mockAgentService.update).not.toHaveBeenCalled();
+    } finally { await unregisterTestAdapter("codex_local"); }
   });
 
-  it("rejects a new paperclip_runner selection while the rollout flag is off", async () => {
+  it.each(["draft", "explicit legacy", "explicit auto", "explicit native", "changed harness"] as const)("rejects a disabled Codex setup selection for %s", async (mode) => {
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["codex_local"]);
+    if (mode === "changed harness") mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), adapterType: "external_test" });
+    const probe = vi.fn();
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter({ ...externalAdapter, type: "codex_local", testEnvironment: probe });
+    try {
+      const runner = mode === "explicit legacy" ? "legacy" : mode === "explicit auto" ? "auto" : mode === "explicit native" ? "paperclip" : undefined;
+      const app = await createApp();
+      const res = await requestApp(app, baseUrl => request(baseUrl)
+        .post("/api/companies/company-1/adapters/codex_local/test-environment")
+        .send({ adapterConfig: {}, ...(mode === "draft" ? {} : { agentId: "11111111-1111-4111-8111-111111111111" }), ...(runner ? { runner } : {}) }));
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details).toMatchObject({ code: "agent_runner_unavailable" });
+      expect(probe).not.toHaveBeenCalled();
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+    } finally { await unregisterTestAdapter("codex_local"); }
+  });
+
+  it("still rejects new Codex creation when its adapter is disabled", async () => {
+    mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue(["codex_local"]);
+    const app = await createApp();
+    const res = await requestApp(app, baseUrl => request(baseUrl)
+      .post("/api/companies/company-1/agents").send({ name: "New Codex", adapterType: "codex_local" }));
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "agent_runner_unavailable" });
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("rechecks selection policy when a saved native adapter switches to an experimentally gated harness", async () => {
+    mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } });
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    const probe = vi.fn();
+    const { registerServerAdapter } = await import("../adapters/index.js");
+    registerServerAdapter({ ...externalAdapter, type: "paperclip_runner", testEnvironment: probe });
+    try {
+      const app = await createApp();
+      const res = await requestApp(app, baseUrl => request(baseUrl)
+        .post("/api/companies/company-1/adapters/paperclip_runner/test-environment")
+        .send({ agentId: "11111111-1111-4111-8111-111111111111", adapterConfig: { provider: "acpx", acpxAgent: "pi" } }));
+      expect(res.status, JSON.stringify(res.body)).toBe(422);
+      expect(res.body.details).toMatchObject({ code: "paperclip_runner_rollout_disabled" });
+      expect(probe).not.toHaveBeenCalled();
+      expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+    } finally { await unregisterTestAdapter("paperclip_runner"); }
+  });
+
+  it("defaults new Codex on a qualified Linux target while the experimental flag is off", async () => {
+    const selection = await import("../services/agent-runner-selection.js");
+    vi.spyOn(selection, "resolveNewAgentRunnerForCompany").mockImplementation(async (_db, _companyId, input) =>
+      selection.resolveNewAgentRunner({ ...input, target: { driver: "local", platform: "linux", architecture: "x64" } }));
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: false, enableOpenAiDot: true });
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) =>
       request(baseUrl)
         .post("/api/companies/company-1/agents")
-        .send({ name: "Native Codex", adapterType: "paperclip_runner" }),
+        .send({ name: "Native Codex", adapterType: "codex_local" }),
     );
 
-    expect(res.status, JSON.stringify(res.body)).toBe(422);
-    expect(res.body.details).toMatchObject({ code: "paperclip_runner_rollout_disabled" });
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAgentService.create.mock.calls.at(-1)?.[1]).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex" } });
+    expect(mockAgentService.create.mock.calls.at(-1)?.[2]).toMatchObject({ runnerResolved: true });
+  });
+
+  it("retains explicit legacy Codex and rejects incompatible automatic settings before persistence", async () => {
+    const selection = await import("../services/agent-runner-selection.js");
+    vi.spyOn(selection, "resolveNewAgentRunnerForCompany").mockImplementation(async (_db, _companyId, input) =>
+      selection.resolveNewAgentRunner({ ...input, target: { driver: "local", platform: "linux", architecture: "x64" } }));
+    const app = await createApp();
+    const legacy = await requestApp(app, baseUrl => request(baseUrl).post("/api/companies/company-1/agents").send({ name: "Legacy", adapterType: "codex_local", runner: "legacy", adapterConfig: { extraArgs: ["--search"] } }));
+    expect(legacy.status, JSON.stringify(legacy.body)).toBe(201);
+    expect(mockAgentService.create.mock.calls.at(-1)?.[1]).toMatchObject({ adapterType: "codex_local", adapterConfig: { extraArgs: ["--search"] } });
+    mockAgentService.create.mockClear();
+    const incompatible = await requestApp(app, baseUrl => request(baseUrl).post("/api/companies/company-1/agents").send({ name: "Custom", adapterType: "codex_local", adapterConfig: { extraArgs: ["--search"] } }));
+    expect(incompatible.status).toBe(422);
+    expect(incompatible.body.details).toMatchObject({ code: "agent_runner_config_incompatible", fields: ["extraArgs"] });
     expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it("keeps other native provider selection behind its existing flag", async () => {
+    const app = await createApp();
+    const response = await requestApp(app, baseUrl => request(baseUrl).post("/api/companies/company-1/agents").send({ name: "Native OpenCode", adapterType: "paperclip_runner", adapterConfig: { provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731" } }));
+    expect(response.status).toBe(422);
+    expect(response.body.details).toMatchObject({ code: "paperclip_runner_rollout_disabled" });
   });
 
   it("allows a new paperclip_runner selection while the rollout flag is on", async () => {
@@ -725,11 +808,60 @@ describe("agent routes adapter validation", () => {
     );
   });
 
-  it.each(["dotAttachmentAccess", "dotWorkspaceAccess", "dotBindingId"])("refuses an agent granting itself the operator-owned Dot setting %s", async key => {
+  it.each(["dotAttachmentAccess", "dotWorkspaceAccess", "dotBindingId", "homeMode"])("refuses an agent granting itself the operator-owned setting %s", async key => {
     const app = await createApp({ type: "agent", agentId: "11111111-1111-4111-8111-111111111111", companyId: "company-1", source: "agent_jwt" });
-    const response = await requestApp(app, baseUrl => request(baseUrl).patch("/api/agents/11111111-1111-4111-8111-111111111111").send({ adapterConfig: { [key]: key === "dotBindingId" ? "another-binding" : true } }));
+    const response = await requestApp(app, baseUrl => request(baseUrl).patch("/api/agents/11111111-1111-4111-8111-111111111111").send({ adapterConfig: { [key]: key === "homeMode" ? "preconfigured" : key === "dotBindingId" ? "another-binding" : true } }));
     expect(response.status, JSON.stringify(response.body)).toBe(403);
     expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+  it.each(["create", "hire"])("refuses agent-authenticated homeMode on %s even with agent-management permission", async mode => {
+    mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), permissions: { canCreateAgents: true } });
+    const app = await createApp({ type: "agent", agentId: "11111111-1111-4111-8111-111111111111", companyId: "company-1", source: "agent_jwt" });
+    const response = await requestApp(app, baseUrl => request(baseUrl).post(mode === "create" ? "/api/companies/company-1/agents" : "/api/companies/company-1/agent-hires")
+      .send({ name: "Runner", role: "engineer", adapterType: "paperclip_runner", adapterConfig: { homeMode: "preconfigured" } }));
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.body.error).toContain("Only an operator can configure Runner homeMode");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+  it.each(["replace", "adapter change", "rollback"])("refuses agent removal of operator homeMode through %s", async mode => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex", model: "gpt-6.1-sol", homeMode: "preconfigured" }, permissions: { canCreateAgents: true } });
+    mockAgentService.getConfigRevision.mockResolvedValue({ afterConfig: {
+      adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol" },
+    } });
+    const app = await createApp({ type: "agent", agentId: "11111111-1111-4111-8111-111111111111", companyId: "company-1", source: "agent_jwt" });
+    const response = await requestApp(app, baseUrl => mode === "rollback"
+      ? request(baseUrl).post("/api/agents/11111111-1111-4111-8111-111111111111/config-revisions/33333333-3333-4333-8333-333333333333/rollback").send({})
+      : request(baseUrl).patch("/api/agents/11111111-1111-4111-8111-111111111111").send(mode === "replace"
+        ? { replaceAdapterConfig: true, adapterConfig: { provider: "codex", model: "gpt-6.1-sol" } }
+        : { adapterType: "claude_local" }));
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.body.error).toContain("Only an operator can configure Runner homeMode");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockAgentService.rollbackConfigRevision).not.toHaveBeenCalled();
+  });
+  it.each(["agent", "board"] as const)("allows %s ordinary config updates while keeping homeMode operator-owned", async actor => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex", model: "gpt-6.1-sol", homeMode: "preconfigured" }, permissions: { canCreateAgents: true } });
+    const app = actor === "agent"
+      ? await createApp({ type: "agent", agentId: "11111111-1111-4111-8111-111111111111", companyId: "company-1", source: "agent_jwt" })
+      : await createApp();
+    const response = await requestApp(app, baseUrl => request(baseUrl).patch("/api/agents/11111111-1111-4111-8111-111111111111")
+      .send({ adapterConfig: { provider: "codex", model: "gpt-6.1-sol" }, replaceAdapterConfig: actor === "board" }));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    const saved = mockAgentService.update.mock.calls.at(-1)?.[1].adapterConfig;
+    expect(saved.homeMode).toBe(actor === "agent" ? "preconfigured" : undefined);
+  });
+  it("allows an operator to configure Runner homeMode", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol" } });
+    const app = await createApp();
+    const response = await requestApp(app, baseUrl => request(baseUrl).patch("/api/agents/11111111-1111-4111-8111-111111111111")
+      .send({ adapterConfig: { homeMode: "preconfigured" } }));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ adapterConfig: expect.objectContaining({ homeMode: "preconfigured" }) }), expect.anything());
   });
   it("allows an operator to configure Dot attachment access separately", async () => {
     const app = await createApp();
@@ -768,15 +900,14 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.update).not.toHaveBeenCalled();
   });
 
-  it("requires the general Runner rollout when changing an existing Dot to Codex", async () => {
+  it("allows an explicit Dot to Codex change without enabling other native providers", async () => {
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: false, enableOpenAiDot: true });
     mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), adapterType: "paperclip_runner", adapterConfig: { provider: "openai_dot", allowUnmeteredProvider: true } });
     const app = await createApp();
     const response = await requestApp(app, baseUrl => request(baseUrl).patch("/api/agents/11111111-1111-4111-8111-111111111111")
       .send({ adapterConfig: { provider: "codex" }, replaceAdapterConfig: true }));
-    expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(response.body.details).toMatchObject({ code: "paperclip_runner_rollout_disabled" });
-    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(mockAgentService.update.mock.calls.at(-1)?.[1]).toMatchObject({ adapterConfig: { provider: "codex" } });
   });
 
   it("normalizes legacy skills and permissions when switching to paperclip_runner", async () => {

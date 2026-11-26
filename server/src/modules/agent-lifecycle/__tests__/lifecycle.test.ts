@@ -62,6 +62,36 @@ const support = await getEmbeddedPostgresTestSupport();
     }
   });
 
+  it("records the human creator from options and ignores a creator in the insert data", async () => {
+    const lifecycle = createAgentLifecycle(db);
+    const created = await lifecycle.requestHire(companyId, { name: "Created by member", createdByUserId: "spoofed-user" }, { createdByUserId: "member-1" });
+    expect(created.createdByUserId).toBe("member-1");
+    expect((await current(created.id)).createdByUserId).toBe("member-1");
+    const system = await lifecycle.requestHire(companyId, { name: "System hire", createdByUserId: "spoofed-user" });
+    expect((await current(system.id)).createdByUserId).toBeNull();
+  });
+
+  it("backfills the creator from the earliest user creation activity in the same company", async () => {
+    const [byUser, byAgent, foreign] = await db.insert(agents).values(["By user", "By agent", "Foreign log"].map(name => ({ companyId, name }))).returning();
+    const otherCompanyId = randomUUID();
+    await db.insert(companies).values({ id: otherCompanyId, name: "Other", issuePrefix: `O${otherCompanyId.slice(0, 7)}` });
+    await db.insert(activityLog).values([
+      { companyId, actorType: "user", actorId: "first-user", action: "agent.hire_created", entityType: "agent", entityId: byUser.id, createdAt: new Date("2026-01-01T00:00:00Z") },
+      { companyId, actorType: "user", actorId: "later-user", action: "agent.created", entityType: "agent", entityId: byUser.id, createdAt: new Date("2026-01-02T00:00:00Z") },
+      { companyId, actorType: "agent", actorId: randomUUID(), action: "agent.hire_created", entityType: "agent", entityId: byAgent.id },
+      { companyId: otherCompanyId, actorType: "user", actorId: "foreign-user", action: "agent.created", entityType: "agent", entityId: foreign.id },
+    ]);
+    const migration = readFileSync(new URL("../../../../../packages/db/src/migrations/0343_new_mentor.sql", import.meta.url), "utf8");
+    for (let pass = 0; pass < 2; pass++) {
+      for (const statement of migration.split("--> statement-breakpoint")) {
+        await db.execute(sql.raw(statement));
+      }
+    }
+    expect((await current(byUser.id)).createdByUserId).toBe("first-user");
+    expect((await current(byAgent.id)).createdByUserId).toBeNull();
+    expect((await current(foreign.id)).createdByUserId).toBeNull();
+  });
+
   it("commits the record before preparation and verifies before admission", async () => {
     const observed: string[] = [];
     const work = worker(async agent => {
@@ -106,11 +136,11 @@ const support = await getEmbeddedPostgresTestSupport();
     const probe = vi.spyOn(adapter, "testEnvironment").mockResolvedValue({ adapterType, status: "warn",
       testedAt: new Date().toISOString(), checks: [{ code: `${adapterType.split("_")[0]}_hello_probe_auth_required`, level: "warn", message: "Login required" }] });
     try {
-      const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "Login test", adapterType });
+      const agent = await createAgentLifecycle(db).requestHire(companyId, { name: "Login test", adapterType, runner: "legacy" });
       const work = worker(createLifecycleDriver(db, {} as never).runHost);
       await work.process(agent.id);
       expect(probe).toHaveBeenCalled();
-      expect(await current(agent.id)).toMatchObject({ lifecycleState: "verifying", lifecycleError: "The lifecycle step failed. Retry the operation." });
+      expect(await current(agent.id)).toMatchObject({ lifecycleState: "verifying", lifecycleError: expect.stringContaining("Execution configuration check failed. Authentication failed.") });
     } finally { probe.mockRestore(); }
   });
 
@@ -481,7 +511,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.update(pluginCompanySettings).set({ enabled: true }).where(eq(pluginCompanySettings.pluginId, pluginId));
     expect(await driver.runPlugin(snapshot, pluginId)).toBe("complete");
     expect(call).toHaveBeenCalledWith(pluginId, "agentLifecycle", { companyId, agentId: agent.id,
-      operationId: snapshot.lifecycleOperation!.id, version: snapshot.lifecycleVersion, phase: "paused" }, 30_000);
+      operationId: snapshot.lifecycleOperation!.id, version: snapshot.lifecycleVersion, phase: "paused", instanceSecrets: {} }, 30_000);
     call.mockResolvedValueOnce({ operationId: "stale", version: snapshot.lifecycleVersion, status: "complete" });
     await expect(driver.runPlugin(snapshot, pluginId)).rejects.toThrow("Invalid lifecycle result");
   });

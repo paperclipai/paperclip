@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { STARTUP_REUSE_LAYERS, STARTUP_REUSE_SCHEMA, summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
 import type { RunnerE2EResult } from "./types.js";
 
 const execFileAsync = promisify(execFile);
@@ -18,6 +19,46 @@ afterEach(async () => {
 });
 
 describe("runner E2E report aggregation", () => {
+  it("retains full reuse and a workspace-only invalidation in the generated report", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "runner-reuse-report-"));
+    cleanupDirectories.push(root);
+    const executionId = "core-compatibility.runner-codex.local.message-marker";
+    const directory = path.join(root, "attempt-1");
+    await mkdir(directory);
+    const startupReuse = [false, true].map(invalidate => ({
+      runId: invalidate ? "workspace-invalidated" : "fully-reused",
+      ...summarizeStartupReuse(STARTUP_REUSE_LAYERS.map(layer => ({
+        eventType: "run.startup.reuse",
+        payload: { schema: STARTUP_REUSE_SCHEMA, layer,
+          state: invalidate && layer === "workspace" ? "fresh" : "reused",
+          reason: invalidate && layer === "workspace" ? "workspace_changed" : "verified_reuse",
+          ...(layer === "provider_process" ? { providerLaunchCount: 0 } : {}) },
+      }))),
+    }));
+    const result: RunnerE2EResult = {
+      schema: "paperclip.runner-e2e.result/v2", executionId, suiteId: "core-compatibility",
+      attempt: 1, status: "passed", profileId: "runner-codex", environmentId: "local",
+      caseId: "message-marker", provider: "codex", model: "fixture-model", runtimeMode: "native",
+      startedAt: "2026-09-23T00:00:00Z", finishedAt: "2026-09-23T00:00:01Z", durationMs: 1000,
+      cleanup: "passed", runIds: startupReuse.map(reuse => reuse.runId), startupReuse,
+    };
+    await writeFile(path.join(directory, "result.json"), JSON.stringify(result));
+    await writeFile(path.join(directory, "final-state.png"), "fake-png");
+    await writeFile(path.join(directory, "evidence-manifest.json"), JSON.stringify({ files: ["final-state.png"], leaks: [], missing: [] }));
+    const output = path.join(root, "merged");
+    await execFileAsync(process.execPath, [path.join(repositoryRoot, "cli/node_modules/tsx/dist/cli.mjs"), path.join(repositoryRoot, "tests/runner-e2e/report.ts")], {
+      cwd: repositoryRoot,
+      env: { ...process.env, PAPERCLIP_RUNNER_E2E_REPORT_ROOT: root, PAPERCLIP_RUNNER_E2E_REPORT_OUT: output, PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: JSON.stringify([executionId]) },
+    });
+    const normalized = JSON.parse(await readFile(path.join(output, "normalized-results.json"), "utf8"));
+    expect(normalized.results[0].startupReuse).toEqual(startupReuse);
+    expect(startupReuse.map(reuse => reuse.warmth)).toEqual(["warm", "partial_reuse"]);
+    const dashboard = await readFile(path.join(output, "index.html"), "utf8");
+    expect(dashboard).toContain("<td>warm</td>");
+    expect(dashboard).toContain("<td>partial_reuse</td>");
+    expect(dashboard).toContain("fresh (workspace_changed)");
+  });
+
   it.each([
     { name: "missing", usage: null, runIds: ["run-1"], tokens: "Unavailable", cost: "Unavailable", htmlTokens: "Unavailable" },
     { name: "partial", usage: { runs: [{ usage: { inputTokens: 1250, outputTokens: 75, cachedInputTokens: 500, costUsd: 0.0125 } }, { usage: null }] }, runIds: ["run-1", "run-2"], tokens: "1250 input / 75 output / 500 cached (partial: 1/2 runs)", cost: "$0.012500 (partial: 1/2 runs)", htmlTokens: "1,250 (partial: 1/2 runs)" },
@@ -59,6 +100,10 @@ describe("runner E2E report aggregation", () => {
     const normalized = JSON.parse(await readFile(path.join(output, "normalized-results.json"), "utf8"));
     expect(normalized.passed).toBe(1);
     expect(normalized.results[0].usage).toEqual(usage);
+    expect(normalized.results[0].startupReuse).toHaveLength(runIds.length);
+    expect(normalized.results[0].startupReuse.every((reuse: { warmth: string; providerLaunchCount: number | null }) =>
+      reuse.warmth === "unknown" && reuse.providerLaunchCount === null)).toBe(true);
+    expect(dashboard).toContain("Startup reuse evidence");
   });
 
   it("keeps interrupted journeys incomplete unless their evidence is invalid", async () => {

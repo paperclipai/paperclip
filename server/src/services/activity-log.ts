@@ -1,3 +1,4 @@
+import { beginRunPhase } from "./execution-preparation-timing.js";
 import type { ActivityPublication } from "../types/activity-publication.js";
 export type { ActivityPublication } from "../types/activity-publication.js";
 import { randomUUID } from "node:crypto";
@@ -146,12 +147,18 @@ export async function resolveResponsibleUserIdForActivity(db: Db, input: LogActi
 }
 
 export function publishActivity(publication: ActivityPublication) {
+  const finish = beginRunPhase("execution.realtime");
+  try {
   publishLiveEvent({
     companyId: publication.companyId,
     type: "activity.logged",
     payload: publication.payload,
   });
   if (publication.pluginEvent) publishPluginDomainEvent(publication.pluginEvent);
+  } catch (error) {
+    finish(true);
+    throw error;
+  } finally { finish(); }
 }
 
 export async function persistActivity(db: Db, input: LogActivityInput) {

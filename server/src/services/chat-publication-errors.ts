@@ -1,3 +1,5 @@
+import { HttpError } from "../errors.js";
+
 export type ChatPublicationErrorDisposition =
   | {
       kind: "retry";
@@ -274,11 +276,6 @@ export function classifyChatPublicationError(
   }
 
   if (
-    // Discord distinguishes a destination the bot cannot access (50001) or
-    // cannot write to (50013) from invalid credentials and app-wide failures.
-    // The pinned adapter preserves the bounded numeric API code on its nested
-    // DiscordApiError. Quarantine only the affected channel/conversation;
-    // generic Discord 403s and every 401 remain endpoint-scoped below.
     adapters.includes("discord") &&
     status === 403 &&
     (discordProviderCode === 50001 || discordProviderCode === 50013)
@@ -318,22 +315,35 @@ export function classifyChatPublicationError(
   }
 
   if (
+    error instanceof HttpError &&
+    (error.status === 401 || error.status === 403) &&
+    typeof (error.details as { providerStatus?: unknown } | undefined)
+      ?.providerStatus !== "number"
+  ) {
+    return { kind: "failed", reason };
+  }
+
+  if (
     names.includes("AuthenticationError") ||
-    names.includes("PermissionError") ||
     codes.includes("AUTH_FAILED") ||
-    codes.includes("PERMISSION_DENIED") ||
     status === 401 ||
-    status === 403 ||
     [
       "account_inactive",
       "invalid_auth",
-      "missing_scope",
       "not_authed",
-      "no_permission",
       "token_revoked",
     ].some((platformCode) => platformCodes.includes(platformCode))
   ) {
     return { kind: "endpoint_attention", reason };
+  }
+
+  if (
+    names.includes("PermissionError") ||
+    codes.includes("PERMISSION_DENIED") ||
+    status === 403 ||
+    ["missing_scope", "no_permission"].some((platformCode) => platformCodes.includes(platformCode))
+  ) {
+    return { kind: "failed", reason };
   }
 
   if (

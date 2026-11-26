@@ -31,6 +31,7 @@ import {
   appendStderrExcerpt,
   createDuplexRouteSlotController,
   createPluginWorkerHandle,
+  createPluginWorkerManager,
   formatWorkerFailureMessage,
   resolveRpcCallTimeoutMs,
 } from "../services/plugin-worker-manager.js";
@@ -55,6 +56,28 @@ const TEST_MANIFEST: PaperclipPluginManifestV1 = {
   capabilities: [],
   entrypoints: { worker: "dist/worker.js" },
 };
+
+describe("worker configuration completion", () => {
+  it("notifies only after a successful config callback and releases subscriptions", async () => {
+    const manager = createPluginWorkerManager();
+    const applied = vi.fn(), unsubscribe = manager.onConfigApplied(applied);
+    try {
+      await manager.startWorker("test.plugin", {
+        entrypointPath: DELAYED_WORKER_ENTRYPOINT, manifest: TEST_MANIFEST, config: {},
+        instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1, hostHandlers: {},
+      });
+      expect(applied).not.toHaveBeenCalled();
+      const updating = manager.call("test.plugin", "configChanged", { companyId: "company-1", config: { delayMs: 20 } });
+      expect(applied).not.toHaveBeenCalled();
+      await updating; expect(applied).toHaveBeenCalledTimes(1);
+      await expect(manager.call("test.plugin", "configChanged", { companyId: "company-1", config: { fail: true } })).rejects.toThrow("configuration rejected");
+      expect(applied).toHaveBeenCalledTimes(1);
+      unsubscribe();
+      await manager.call("test.plugin", "configChanged", { companyId: "company-1", config: {} });
+      expect(applied).toHaveBeenCalledTimes(1);
+    } finally { unsubscribe(); await manager.stopAll(); }
+  });
+});
 
 describe("resolveRpcCallTimeoutMs", () => {
   const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;

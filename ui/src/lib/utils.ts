@@ -213,6 +213,17 @@ export function visibleRunTokenTotal(usage: Record<string, unknown> | null | und
   return input + output + (inputExcludesCached ? cached : 0);
 }
 
+/** Muse exposes Paperclip bridge events, not raw private provider traffic. */
+export function supportsRawProviderTrace(adapterType: string, adapterConfig: Record<string, unknown> | null | undefined): boolean {
+  return adapterType !== "paperclip_runner" || adapterConfig?.provider !== "muse";
+}
+
+/** Persisted accounting facts belong to this run, even after its agent changes provider. */
+export function hasUnavailableProviderAccounting(result: Record<string, unknown> | null | undefined): boolean {
+  const accounting = asObject(result?.providerAccounting);
+  return accounting.externallyBilled === true && accounting.usage === null && accounting.cost === null;
+}
+
 export function visibleRunCostUsd(
   usage: Record<string, unknown> | null,
   result: Record<string, unknown> | null = null,

@@ -1,9 +1,12 @@
+import { skillAccessService } from "../skill-access.js";
+import type { AuthorizationActor } from "../authorization.js";
 import { spekoToolsForSession } from "../voice/speko-agent-tools.js";
 import { githubConfiguredInstructionSources } from "../chat-github-review-policy.js";
 import { CONFIGURED_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
 import { ASSIGNED_MCP_SERVER_NAME } from "../mcp-tool-names.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { githubBotConnectionIdsForRun } from "../chat-github-tools.js";
+import { boundRunIssueIdSql } from "../run-task-binding.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
 import { explicitOperatorRunIdentity } from "../run-identity.js";
 import {
@@ -727,6 +730,7 @@ export async function resolveRunScopedMentionedSkillKeys(input: {
   companyId: string;
   issueId: string | null;
   commentIds?: string[];
+  actor?: AuthorizationActor;
 }): Promise<string[]> {
   if (!input.issueId) return [];
 
@@ -801,6 +805,14 @@ export async function resolveRunScopedMentionedSkillKeys(input: {
         inArray(companySkillsTable.id, mentionedSkillIds),
       ),
     );
+  for (const skillId of mentionedSkillIds) {
+    try { await skillAccessService(input.db, input.actor).assertSkill(input.companyId, skillId); }
+    catch {
+      throw new ConfigurationIncompleteFailure("A referenced skill is unavailable or you do not have project access. Update the task's skill reference or project access.", {
+        configurationIncomplete: { reason: "skill_unavailable", companyId: input.companyId, actionUrl: "/skills" },
+      });
+    }
+  }
   const skillKeyById = new Map(skillRows.map((row) => [row.id, row.key]));
   return mentionedSkillIds
     .map((skillId) => skillKeyById.get(skillId) ?? null)
@@ -828,6 +840,12 @@ export interface WakeupOptions {
     idempotencyKey: string;
     requestedAt: Date;
   };
+  /** Server-owned Muse admission receipt; never accepted from API payloads. */
+  durableMuseRequest?: NonNullable<WakeupOptions["durableDotRequest"]> & {
+    bindingId: string;
+    bindingGeneration: number;
+    requestDigest: string;
+  };
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
   reason?: string | null;
@@ -842,6 +860,8 @@ export interface WakeupOptions {
     statusVersion?: number;
     monitorNextCheckAt?: string;
     monitorWakeRequestedAt?: string;
+    /** Internal diagnostic only; the callback cannot grant admission. */
+    onExecutionDeferred?: (blockerCause: string) => void;
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
@@ -918,7 +938,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   );
   const [runIdentity] = await input.db
     .select({
-      contextSnapshot: heartbeatRuns.contextSnapshot,
+      issueId: boundRunIssueIdSql(),
       responsibleUserId: heartbeatRuns.responsibleUserId,
       activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
     })
@@ -981,7 +1001,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         companyId: input.agent.companyId,
         agentId: input.agent.id,
         runId: input.runId,
-        issueId: readNonEmptyString(runIdentity?.contextSnapshot?.issueId ?? runIdentity?.contextSnapshot?.taskId),
+        issueId: runIdentity?.issueId ?? null,
         identityContextId: runIdentity?.activeIdentityContextId,
       })).map(tool => tool.connectionId))
     : new Set<string>();

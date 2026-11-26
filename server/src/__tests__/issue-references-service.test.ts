@@ -175,6 +175,49 @@ describeEmbeddedPostgres("issueReferenceService", () => {
     expect(pap3?.sources.map((source) => source.label)).toEqual(["description"]);
   });
 
+  it("serializes concurrent syncs for a description with repeated references", async () => {
+    const companyId = randomUUID();
+    const sourceIssueId = randomUUID();
+    const targetIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip Concurrent References",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId,
+        title: "Source issue",
+        description: "Coordinate COM-2 and confirm COM-2 again.",
+        status: "todo",
+        priority: "medium",
+        identifier: "COM-1",
+      },
+      {
+        id: targetIssueId,
+        companyId,
+        title: "Target issue",
+        status: "todo",
+        priority: "medium",
+        identifier: "COM-2",
+      },
+    ]);
+
+    await expect(Promise.all(
+      Array.from({ length: 20 }, () => refs.syncIssue(sourceIssueId)),
+    )).resolves.toHaveLength(20);
+
+    const mentions = await db
+      .select()
+      .from(issueReferenceMentions);
+    expect(mentions).toHaveLength(1);
+    expect(mentions[0]?.targetIssueId).toBe(targetIssueId);
+  });
+
   it("backfills existing references for a company without requiring write-time sync", async () => {
     const companyId = randomUUID();
     const sourceIssueId = randomUUID();

@@ -146,6 +146,28 @@ function createFakeRecovery(): RecoveryEscalationPort {
 }
 
 describe("releaseIssueExecution", () => {
+  it.each([false, true])("preserves a paused head without blocking an eligible follower (%s)", async withFollower => {
+    const paused = wakeCandidate({ id: "paused-wake", wakeReason: "issue_comment_mentioned", queuedCommentIds: ["paused-comment"] });
+    const ready = wakeCandidate({ id: "ready-wake", agentId: "ready-agent", queuedCommentIds: ["ready-comment"] });
+    const pending = withFollower ? [paused, ready] : [paused];
+    const transaction = createFakeTransaction({
+      findNextDeferredWake: vi.fn(async input => pending.find(wake => !input.excludedWakeIds?.includes(wake.id)) ?? null),
+      findInvokableAgent: vi.fn(async input => input.agentId === paused.agentId
+        ? { ...AGENT, invokable: false, paused: true } : { ...AGENT, id: ready.agentId }),
+      getQueuedCommentLiveness: vi.fn(async input => ({ liveNonSelfCommentIds: input.queuedCommentIds, containedSelfAuthoredComment: false })),
+    });
+    const release = createReleaseIssueExecution({ issueLock: createFakeIssueLock(createFakeHost(), transaction,
+      { ...ISSUE, status: "blocked", assigneeAgentId: ready.agentId }, { ...RUN, status: "succeeded" }), recovery: createFakeRecovery() });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date(), resumeStrandedQueue: true });
+    expect(result.outcome.kind).toBe(withFollower ? "promoted" : "released");
+    expect(transaction.failDeferredWake).not.toHaveBeenCalled();
+    expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
+    expect(transaction.normalizeDeferredWakeCommentIds).not.toHaveBeenCalled();
+    expect(transaction.findNextDeferredWake).toHaveBeenNthCalledWith(2, expect.objectContaining({ excludedWakeIds: [paused.id] }));
+    if (withFollower) expect(transaction.finalizePromotedWake).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ wakeId: ready.id }));
+    else expect(transaction.finalizePromotedWake).not.toHaveBeenCalled();
+  });
+
   it.each(["closing", "mixed_comments", "explicit_resume", "interaction", "other_source_task", "parent_open"])(
     "checks late completed-delegation mentions without dropping independent input (%s)", async (scenario) => {
       const originalCommentIds = ["closing-comment", "second-comment"];
@@ -696,6 +718,37 @@ describe("releaseIssueExecution", () => {
     expect(queueCall.reason).toBe("issue_continuation_needed");
     expect(queueCall.responsibleUserId).toBe("resolved-user");
     expect(queueCall.contextSnapshot).toBe(resolveCall.contextSnapshot);
+  });
+
+  it.each([
+    ["board cancel", { errorCode: "cancelled", operatorStopped: true }],
+    ["agent pause", { errorCode: "agent_paused", operatorStopped: true }],
+  ] as const)("does not re-queue or escalate a run a person stopped (%s)", async (_label, stop) => {
+    // Regression: a board cancel of a queued wake re-created it as
+    // issue_continuation_needed / issue_assignment_recovery within a second.
+    for (const status of ["in_progress", "todo"]) {
+      const transaction = createFakeTransaction();
+      const recovery = createFakeRecovery();
+      const release = createReleaseIssueExecution({
+        issueLock: createFakeIssueLock(createFakeHost(), transaction, { ...ISSUE, status }, { ...RUN, status: "cancelled", ...stop }),
+        recovery,
+      });
+      const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+      expect(result.outcome.kind).toBe("released");
+      expect(transaction.queueImmediateRecoveryRun).not.toHaveBeenCalled();
+      expect(recovery.escalateStrandedAssignedIssue).not.toHaveBeenCalled();
+    }
+  });
+
+  it("still recovers a control-plane cancelled run that no person stopped", async () => {
+    const transaction = createFakeTransaction();
+    const release = createReleaseIssueExecution({
+      issueLock: createFakeIssueLock(createFakeHost(), transaction, ISSUE, { ...RUN, status: "cancelled", errorCode: "cancelled", operatorStopped: false }),
+      recovery: createFakeRecovery(),
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe("queued_recovery");
+    expect(transaction.queueImmediateRecoveryRun).toHaveBeenCalledTimes(1);
   });
 
   it("throws WakeQueueApplicationError with code responsible_user_unresolved for a recovery run, without queuing it", async () => {

@@ -208,6 +208,13 @@ describe("native controller takeover fencing", () => {
     });
   });
 
+  it.each([true, false])("requires a stopped idle controller even after its run lease was released: alive=%s", async alive => {
+    await expect(evaluateNativeControllerTakeover({
+      owner: owner({ leaseOwner: null, leaseExpiresAt: null }), now, requireStoppedController: true,
+      isProcessAlive: () => alive, readProcessStartedAt: async () => recordedStart,
+    })).resolves.toEqual({ allowed: !alive, reason: alive ? "controller_still_alive" : "controller_process_dead" });
+  });
+
   it("takes over a recycled controller PID", async () => {
     await expect(
       evaluateNativeControllerTakeover({

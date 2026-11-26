@@ -322,6 +322,8 @@ export async function slackMentionAllowsRunStart(
         sql`${agentWakeupRequests.payload}->>'coalescedIntoWakeupRequestId' = ${run.wakeupRequestId}`,
       ),
     ));
-  return inputs.every(({ event }) => event.trigger === "mention" ||
+  return inputs.every(({ event }) =>
+    (event.conversation as { isDirectMessage?: boolean } | undefined)?.isDirectMessage === true ||
+    event.trigger === "mention" ||
     (event.message as { mentionedBot?: boolean } | undefined)?.mentionedBot === true);
 }

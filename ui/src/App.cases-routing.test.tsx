@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 // Regression guard for PAP-13002: the experimental Cases UI emits *unprefixed*
-// links (`/cases`, `/cases/:id`) — the same global-unprefixed pattern Pipelines
+// links (`/cases`, `/cases/:id`) — the same global-unprefixed pattern Routines
 // uses. Those only resolve if `cases` and `cases/:caseIdentifier` are registered
 // as reserved unprefixed redirect routes in <App>; otherwise the first path
 // segment is parsed as a company prefix ("CASES") and the page 404s with

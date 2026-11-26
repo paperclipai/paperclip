@@ -1,8 +1,12 @@
+import { ExternalAgentInviteDialog } from "./ExternalAgentInviteDialog";
 import { useConnectionModels } from "../ai-connections/useConnectionModels";
 import { AgentCharacter } from "../AgentCharacter";
 import { useAgentAppearanceDraft } from "../../hooks/useAgentAppearanceDraft";
 import { AiConnectionField, aiProviderForAdapter } from "../ai-connections/AiConnectionField";
 import type { AiConnectionBinding } from "@paperclipai/shared";
+import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
+import { AgentRunnerSelect } from "../AgentRunnerSelect";
+import { SelectPopover } from "../ui/select";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
 import {
   SETUP_CREDENTIAL_KEYS,
@@ -11,6 +15,7 @@ import {
   setupProviderKeys,
 } from "@/lib/agent-setup-fields";
 import { testAgentSetup } from "@/lib/test-agent-setup";
+import { needsClaudeSetupQualification, qualifyClaudeSetup } from "@/lib/qualify-claude-setup";
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { isNewAgentAdapterAllowed } from "@/lib/new-agent-adapters";
 import { useEffect, useRef, useState } from "react";
@@ -76,18 +81,22 @@ const blocking = (result: AdapterEnvironmentTestResult) =>
 export function NewAgentSetup() {
   const { selectedCompanyId } = useCompany();
   const [params] = useSearchParams();
+  const navigate = useNavigate();
   if (!selectedCompanyId)
     return (
       <p className="text-sm text-muted-foreground">
         Select an organization to create an agent.
       </p>
     );
+  if (params.get("adapterType") === "muse" || params.get("runnerProvider") === "muse") return <ExternalAgentInviteDialog companyId={selectedCompanyId} initialPreset="muse" initialMuseName={params.get("name") ?? ""} onClose={() => navigate("/agents/all")} onBack={() => navigate("/agents/all")} />;
   return (
     <Setup
-      key={`${selectedCompanyId}:${params.get("name")}:${params.get("adapterType")}:${params.get("runnerProvider")}`}
+      key={`${selectedCompanyId}:${params.get("name")}:${params.get("adapterType")}:${params.get("runnerProvider")}:${params.get("runner")}`}
       companyId={selectedCompanyId}
       name={params.get("name") ?? ""}
-      adapterType={params.get("adapterType") ?? ""}
+      adapterType={params.get("adapterType") === "paperclip_runner" && ["codex", "claude"].includes(params.get("runnerProvider") ?? "codex") ? params.get("runnerProvider") === "claude" ? "claude_local" : "codex_local" : params.get("adapterType") ?? ""}
+      initialRunner={params.get("runner") ?? (params.get("adapterType") === "paperclip_runner" && ["codex", "claude"].includes(params.get("runnerProvider") ?? "codex") ? "paperclip" : "auto")}
+      preserveNativeHarness={params.get("adapterType") === "paperclip_runner" && ["codex", "claude"].includes(params.get("runnerProvider") ?? "codex")}
       runnerProvider={params.get("runnerProvider") ?? "codex"}
       createdAgentId={params.get("createdAgentId")}
     />
@@ -99,18 +108,24 @@ function Setup({
   name,
   adapterType,
   runnerProvider,
+  initialRunner,
+  preserveNativeHarness,
   createdAgentId,
 }: {
   companyId: string;
   name: string;
   adapterType: string;
   runnerProvider: string;
+  initialRunner: string;
+  preserveNativeHarness: boolean;
   createdAgentId: string | null;
 }) {
   const navigate = useNavigate();
   const cache = useQueryClient();
   const { openNewIssue } = useDialogActions();
   const appearanceDraft = useAgentAppearanceDraft(`${companyId}:new-agent`);
+  const [runner, setRunner] = useState<AgentRunnerChoice>(initialRunner === "legacy" || initialRunner === "paperclip" ? initialRunner : "auto");
+  const requestAdapterType = preserveNativeHarness && runner === "paperclip" ? "paperclip_runner" : adapterType;
   const isRunner = adapterType === "paperclip_runner";
   const isDot = isRunner && runnerProvider === "openai_dot";
   const brandType = isDot ? "openai_dot" : isRunner
@@ -120,7 +135,7 @@ function Setup({
       ? "claude_local"
       : runnerProvider === "opencode"
         ? "opencode_local"
-        : "codex_local"
+        : runnerProvider === "codex" ? "codex_local" : runnerProvider
     : adapterType;
   const connectionAdapter =
     brandType === "claude_local" || brandType === "codex_local" || brandType === "grok_local"
@@ -178,6 +193,7 @@ function Setup({
   );
   const [error, setError] = useState<string | null>(null);
   const generation = useRef(0);
+  const qualificationTransition = useRef<{ run: number; companyId: string; environmentId: string | null; runner: AgentRunner } | null>(null);
   const savingRef = useRef(false);
   useEffect(
     () => () => {
@@ -186,6 +202,7 @@ function Setup({
     [],
   );
   const resetTest = () => {
+    qualificationTransition.current = null;
     generation.current++;
     setResult(null);
     setTestState("idle");
@@ -197,9 +214,9 @@ function Setup({
     resetTest();
     setScreen("connect");
   };
-  const adapters = useQuery({
+  const adapterInventory = useQuery({
     queryKey: queryKeys.adapters.all,
-    queryFn: adaptersApi.list,
+    queryFn: () => adaptersApi.list(),
   });
   const agents = useQuery({
     queryKey: queryKeys.agents.list(companyId),
@@ -272,6 +289,21 @@ function Setup({
         : "Could not resolve the environment.";
   }
   const environment = envs.data?.find((env) => env.id === environmentId);
+  const setupEnvironmentKey = JSON.stringify([companyId, environmentId, environment?.config]);
+  const setupEnvironmentRef = useRef("");
+  setupEnvironmentRef.current = setupEnvironmentKey;
+  useEffect(() => { resetTest(); }, [setupEnvironmentKey]);
+  const adapters = useQuery({
+    queryKey: queryKeys.adapters.availability(companyId, environmentId),
+    queryFn: () => adaptersApi.list({ companyId, environmentId }),
+  });
+  const defaultRunner = adapters.data?.find(adapter => adapter.type === adapterType)?.defaultRunner;
+  useEffect(() => {
+    const transition = qualificationTransition.current;
+    if (transition?.run === generation.current && transition.companyId === companyId
+      && transition.environmentId === environmentId && transition.runner === defaultRunner) return;
+    resetTest();
+  }, [companyId, environmentId, runner === "auto" ? defaultRunner : undefined]);
   const sandboxProvider =
     typeof environment?.config?.provider === "string"
       ? environment.config.provider
@@ -314,15 +346,16 @@ function Setup({
       openAiDotEnabled: experimental.data?.enableOpenAiDot === true,
       runnerProvider,
     }) &&
-    adapters.data?.some(
+    adapterInventory.data?.some(
       (adapter) =>
         adapter.type === adapterType &&
         adapter.loaded &&
         !adapter.disabled &&
         !getAdapterDisplay(adapterType).comingSoon,
-    );
-  const ready = Boolean(
+    ) && (requestAdapterType !== "paperclip_runner" || adapterType === "paperclip_runner" || adapterInventory.data?.some(adapter => adapter.type === "paperclip_runner" && adapter.loaded && !adapter.disabled));
+  const connectionSettingsReady = Boolean(
     available &&
+    (!["codex_local", "claude_local"].includes(adapterType) || runner !== "auto" || Boolean(adapters.data)) &&
     !environmentError &&
     !envs.isPending &&
     !settings.isPending &&
@@ -338,19 +371,30 @@ function Setup({
     !caps.error &&
     (!(managedOnly || forced.forced) || environmentId),
   );
+  const needsCurrentSetup = ["codex_local", "claude_local"].includes(adapterType);
+  const ready = connectionSettingsReady && (!needsCurrentSetup || (
+    envs.isSuccess && !envs.isFetching
+    && settings.isSuccess && !settings.isFetching
+    && experimental.isSuccess && !experimental.isFetching
+    && general.isSuccess && !general.isFetching
+    && (runner !== "auto" || (adapters.isSuccess && !adapters.isFetching))
+  ));
   const busy = testState === "running" || saving;
 
   function buildConfig(
     nextConnection = connection,
     binding = selectedBinding,
+    setupRunner?: AgentRunner,
   ): Record<string, unknown> {
     const values = {
       ...defaultCreateValues,
       adapterType,
+      runner,
+      resolvedRunner: runner === "auto" ? setupRunner ?? defaultRunner : runner,
       model:
         model || (brandType === "codex_local" ? DEFAULT_CODEX_LOCAL_MODEL : ""),
       thinkingEffort: effort,
-      dangerouslyBypassSandbox: adapterType === "codex_local",
+      dangerouslyBypassSandbox: adapterType === "codex_local" && runner === "legacy",
       envBindings: nextConnection?.env ?? {},
       ...(isRunner
         ? {
@@ -362,7 +406,10 @@ function Setup({
           }
         : {}),
     };
-    const config = getUIAdapter(adapterType).buildAdapterConfig(values);
+    const config = getUIAdapter(preserveNativeHarness && runner === "paperclip" ? "paperclip_runner" : adapterType).buildAdapterConfig(preserveNativeHarness && runner === "paperclip" ? { ...values, adapterSchemaValues: runnerProvider === "claude" ? { provider: "acpx", acpxAgent: "claude", acpxPermissionMode: "approve-all" } : { provider: "codex" } } : values);
+    if (preserveNativeHarness && runner === "paperclip") {
+      Object.assign(config, runnerProvider === "claude" ? { provider: "acpx", acpxAgent: "claude", acpxPermissionMode: "approve-all", lifecycleMode: "per_turn" } : { provider: "codex", codexPermissionMode: "never", lifecycleMode: "per_turn" });
+    }
     if (isRunner)
       Object.assign(config, {
         provider: (runnerProvider === "claude" || runnerProvider === "grok") ? "acpx" : runnerProvider,
@@ -396,7 +443,7 @@ function Setup({
     }
     return config;
   }
-  function preparedConfig(nextConnection = connection) {
+  function preparedConfig(nextConnection = connection, setupRunner?: AgentRunner) {
     if (isDot && !allowUnmeteredProvider) throw new Error("Acknowledge external provider billing before creating your Dot agent.");
     if (multiProvider && (!model.trim() || !model.includes("/")))
       throw new Error("Choose or enter a model in provider/model format.");
@@ -425,7 +472,7 @@ function Setup({
     }
     if (usingKimiApi && !kimiModel.trim())
       throw new Error("Enter the Kimi API model name.");
-    return buildConfig(nextConnection);
+    return buildConfig(nextConnection, selectedBinding, setupRunner);
   }
   function pendingCredentials(nextConnection = connection) {
     if (aiBinding || nextConnection?.aiConnection) return {};
@@ -437,33 +484,48 @@ function Setup({
     };
   }
 
-  async function runTest(nextConnection = connection): Promise<boolean> {
-    if (!ready) return false;
+  async function runTest(nextConnection = connection): Promise<Record<string, unknown> | null> {
+    if (!ready) return null;
     const run = ++generation.current;
+    const setupEnvironment = setupEnvironmentRef.current;
     setTestState("running");
     setResult(null);
     setError(null);
     try {
-      const config = await preparedConfig(nextConnection);
+      preparedConfig(nextConnection);
+      const selection = { adapterType, runner, savedAgentId: createdAgentId, environment };
+      const qualified = await qualifyClaudeSetup({ ...selection,
+        readAdapters: () => adaptersApi.list({ companyId, environmentId }),
+        probeEnvironment: () => environmentsApi.probe(environmentId!, companyId),
+        isCurrent: () => run === generation.current && setupEnvironmentRef.current === setupEnvironment,
+      });
+      if (run !== generation.current || setupEnvironmentRef.current !== setupEnvironment
+        || (needsClaudeSetupQualification(selection) && !qualified)) return null;
+      if (qualified) {
+        qualificationTransition.current = { run, companyId, environmentId, runner: qualified.runner };
+        cache.setQueryData(queryKeys.adapters.availability(companyId, environmentId), qualified.adapters);
+      }
+      const config = preparedConfig(nextConnection, qualified?.runner);
       const tested = await testAgentSetup({
         companyId,
-        adapterType,
+        adapterType: requestAdapterType,
         providerAdapter: brandType,
+        ...(["codex_local", "claude_local"].includes(adapterType) && runner !== "auto" ? { runner } : {}),
         adapterConfig: config,
         testCredentials: pendingCredentials(nextConnection),
         aiConnection: runtimeAiBinding ?? nextConnection?.aiConnection,
         environmentId,
       });
-      if (run !== generation.current) return false;
+      if (run !== generation.current) return null;
       setResult(tested);
       setTestState(blocking(tested) ? "fail" : tested.status);
       return (
         !blocking(tested) &&
         (!connectionAdapter ||
           tested.checks.some((check) =>
-            check.code.endsWith("hello_probe_passed"),
+            check.code.endsWith("hello_probe_passed") || check.code === "ai_connection_api_key_reverified",
           ))
-      );
+      ) ? config : null;
     } catch (cause) {
       if (run === generation.current) {
         setError(
@@ -471,7 +533,7 @@ function Setup({
         );
         setTestState("fail");
       }
-      return false;
+      return null;
     }
   }
   async function finish() {
@@ -492,10 +554,11 @@ function Setup({
     const staged: Array<{ remove: () => Promise<unknown> }> = [];
     let hired = false;
     try {
-      const config = preparedConfig();
       const credentials = pendingCredentials();
-      // Untested entered keys must pass a probe before they can be stored.
-      if (Object.keys(credentials).length && !(await runTest())) return;
+      const config = (connectionAdapter && testState === "idle") || Object.keys(credentials).length
+        ? await runTest()
+        : preparedConfig();
+      if (!config) return;
       for (const [key, value] of Object.entries(credentials)) {
         const store = connectionAdapter
           ? storeProviderApiKey
@@ -519,7 +582,8 @@ function Setup({
         appearance: appearanceDraft.appearance,
         role: existing.length ? "general" : "ceo",
         ...(leader ? { reportsTo: leader.id } : {}),
-        adapterType,
+        adapterType: requestAdapterType,
+        ...(["codex_local", "claude_local"].includes(adapterType) && runner !== "auto" ? { runner } : {}),
         adapterConfig: config,
         defaultEnvironmentId:
           environmentOverride ||
@@ -540,7 +604,7 @@ function Setup({
       appearanceDraft.clear();
       setScreen("saved");
       navigate(
-        `/agents/new?${new URLSearchParams({ name: response.agent.name, adapterType, runnerProvider, createdAgentId: response.agent.id })}`,
+        `/agents/new?${new URLSearchParams({ name: response.agent.name, adapterType, runnerProvider, ...(runner !== "auto" ? { runner } : {}), createdAgentId: response.agent.id })}`,
         { replace: true },
       );
       cache.setQueryData(
@@ -635,6 +699,7 @@ function Setup({
           : "Local machine";
   const setupError =
     adapters.error ??
+    adapterInventory.error ??
     envs.error ??
     settings.error ??
     experimental.error ??
@@ -674,7 +739,7 @@ function Setup({
             {setupError.message}
           </p>
         )}
-        {adapters.data && !available && (
+        {adapterInventory.data && !available && (
           <p role="alert" className="text-sm text-destructive">
             This adapter is unavailable. Choose an enabled adapter.
           </p>
@@ -733,7 +798,7 @@ function Setup({
                         center
                       />
                     </div>
-                    {ready ? <AgentProviderConnection
+                    {connectionSettingsReady ? <fieldset disabled={!ready} className="contents"><AgentProviderConnection
                       key={environmentId ?? "local"}
                       companyId={companyId}
                       adapterType={connectionAdapter}
@@ -766,7 +831,7 @@ function Setup({
                         setRuntimeAiBinding(undefined);
                         resetTest();
                       }}
-                      testConnection={runTest}
+                      testConnection={async next => (await runTest(next)) !== null}
                       testError={
                         error ??
                         (
@@ -783,10 +848,17 @@ function Setup({
                       onConnected={(next) => {
                         setConnection(next);
                         setRuntimeAiBinding(undefined);
-                        resetTest();
                         setScreen("runtime");
                       }}
-                    /> : <p role="status" className="text-sm text-muted-foreground">Loading connection settings…</p>}
+                    /></fieldset> : <p role="status" className="text-sm text-muted-foreground">Loading connection settings…</p>}
+                    {["codex_local", "claude_local"].includes(adapterType) && <details className="mt-5 space-y-3">
+                      <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+                      <AgentRunnerSelect value={runner} disabled={busy}
+                        pending={adapters.isFetching} error={adapters.error?.message} onRetry={() => { void adapters.refetch(); }}
+                        defaultRunner={adapters.data?.find(item => item.type === adapterType)?.defaultRunner}
+                        supportedRunners={adapters.data?.find(item => item.type === adapterType)?.supportedRunners}
+                        onChange={value => { setRunner(value); resetTest(); }} />
+                    </details>}
                   </OnboardingCard>
                 ) : screen === "saved" && created ? (
                   <div className="space-y-6">
@@ -866,7 +938,7 @@ function Setup({
                           <div className="grid items-start gap-5 sm:grid-cols-2">
                             {showModel && !usingKimiApi && (
                               <ModelDropdown
-                                presentation="native"
+                                presentation={brandType === "codex_local" ? "searchable" : "native"}
                                 models={connectionModels?.models ?? models.data ?? []}
                                 loadingModels={connectionModels?.isLoading ?? models.isLoading}
                                 onRefreshModels={connectionModels?.refreshModels}
@@ -904,7 +976,9 @@ function Setup({
                             )}
                             {efforts.length > 0 && (
                               <Field label="Thinking effort">
-                                <NativeSelect
+                                {brandType === "codex_local" ? <SelectPopover aria-label="Thinking effort" value={effort}
+                                  onValueChange={value => { setEffort(value); resetTest(); }}
+                                  options={[{ value: "", label: "Auto" }, ...efforts.map(value => ({ value, label: value }))]} /> : <NativeSelect
                                   aria-label="Thinking effort"
                                   value={effort}
                                   onChange={(event) => {
@@ -918,7 +992,7 @@ function Setup({
                                       {value}
                                     </option>
                                   ))}
-                                </NativeSelect>
+                                </NativeSelect>}
                               </Field>
                             )}
                           </div>
@@ -1128,6 +1202,14 @@ function Setup({
                             </Field>
                           </div>
                         )}
+                        {["codex_local", "claude_local"].includes(adapterType) && <details className="space-y-3">
+                          <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+                          <AgentRunnerSelect value={runner} disabled={busy}
+                            pending={adapters.isFetching} error={adapters.error?.message} onRetry={() => { void adapters.refetch(); }}
+                            defaultRunner={adapters.data?.find(item => item.type === adapterType)?.defaultRunner}
+                            supportedRunners={adapters.data?.find(item => item.type === adapterType)?.supportedRunners}
+                            onChange={value => { setRunner(value); resetTest(); }} />
+                        </details>}
                       </section>
                       {!["cursor_cloud", "hermes_gateway"].includes(
                         adapterType,

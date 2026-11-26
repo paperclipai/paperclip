@@ -51,10 +51,12 @@ import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paper
  * ```
  */
 
-import type { PluginContext } from "./types.js";
+import type { PluginContext, ResourceLifecycleEvent, ResourceLifecycleResult } from "./types.js";
 import type {
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentInspectLeaseParams,
+  PluginEnvironmentLeaseObservation,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
   PluginEnvironmentRunnerIngressEndpointParams,
@@ -360,6 +362,14 @@ export interface PluginDefinition {
    */
   onAgentLifecycle?(params: AgentLifecycleRequest): Promise<AgentLifecycleResult>;
 
+  /**
+   * Reconcile a committed resource event. Requires manifest resourceLifecycle and events.subscribe.
+   * The host acknowledges successful results and replays interrupted/unfinished work.
+   * Calls are at least once, in order per resource. Re-read current state and use
+   * idempotent external operations; deletion events remain available after the row is gone.
+   */
+  onResourceLifecycle?(event: ResourceLifecycleEvent): Promise<ResourceLifecycleResult>;
+
   /** Propose a member from host-authorized candidates. Requires ai.connections.route. */
   onRouteAiConnection?(params: AiConnectionRouterRequest): Promise<AiConnectionRouterResult>;
 
@@ -422,6 +432,11 @@ export interface PluginDefinition {
   onEnvironmentDestroyLease?(
     params: PluginEnvironmentDestroyLeaseParams,
   ): Promise<PluginEnvironmentTerminationReceipt | void>;
+
+  /** Read provider state only. This must not start or reconnect a sandbox. */
+  onEnvironmentInspectLease?(
+    params: PluginEnvironmentInspectLeaseParams,
+  ): Promise<PluginEnvironmentLeaseObservation>;
 
   /** Called to materialize the run workspace inside the provider lease. */
   onEnvironmentRealizeWorkspace?(

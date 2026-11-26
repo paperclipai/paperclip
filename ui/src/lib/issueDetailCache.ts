@@ -118,6 +118,10 @@ export async function fetchIssueDetail(
   options?: { signal?: AbortSignal },
 ): Promise<Issue> {
   const issue = options ? await issuesApi.get(issueRef, options) : await issuesApi.get(issueRef);
+  const planKey = [...queryKeys.issues.documents(issue.id), "plan"];
+  if (issue.planDocument !== undefined && !queryClient.getQueryState(planKey)) {
+    queryClient.setQueryData(planKey, issue.planDocument);
+  }
   return seedIssueDetailCache(queryClient, issue, { issueRef });
 }
 

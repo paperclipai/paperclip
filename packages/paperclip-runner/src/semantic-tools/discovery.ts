@@ -34,7 +34,7 @@ const NAMESPACE: Readonly<Record<CapabilitySemanticOperationId, string>> = Objec
   update_agent_instructions: "agent_instructions",
   get_agent_instruction_history: "agent_instructions",
   restore_agent_instructions: "agent_instructions",
- create_skill: "skills", update_skill: "skills", create_task: "delegation", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
+ create_skill: "skills", update_skill: "skills", create_task: "delegation", get_workspace: "workspace", list_workspaces: "workspace", select_workspace: "workspace", prepare_repository: "workspace", create_project: "projects", list_project_repositories: "projects", list_projects: "projects",
   set_dependencies: "delegation", reassign_task: "delegation", list_approvals: "governance", get_approval: "governance",
   get_approval_context: "governance", request_approval: "governance",
   decide_approval: "governance", comment_on_approval: "governance",
@@ -48,7 +48,7 @@ export const CAPABILITY_DISCOVERY_NAMESPACES = Object.freeze([
   { name: "discovery", description: "Find company tasks and agents." },
   { name: "delegation", description: "Create bounded child work and task dependencies." },
   { name: "governance", description: "Read, request, discuss, and decide approvals." },
-  { name: "workspace", description: "Inspect and control active-task workspace services." },
+  { name: "workspace", description: "Inspect task files, prepare repositories, select workspaces, and control workspace services." },
   { name: "continuation", description: "Schedule a bounded continuation wake." },
   { name: "feedback", description: "Submit internal complaints and improvement suggestions." },
 ]);

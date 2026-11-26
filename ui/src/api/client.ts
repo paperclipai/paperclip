@@ -165,11 +165,6 @@ export function detachInflightGet(path: string): void {
   inflightGets.delete(path);
 }
 
-/** Test-only: number of in-flight coalesced GET keys. */
-export function __inflightGetCount(): number {
-  return inflightGets.size;
-}
-
 function isRequestOptions(value: unknown): value is RequestOptions {
   return typeof value === "object" && value !== null && "signal" in value;
 }

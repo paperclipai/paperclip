@@ -48,6 +48,24 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await db.execute(sql`select * from work_signal_test where id = 'rollback'`)).toHaveLength(0);
   });
 
+  it("coalesces scoped hints and publishes them only when the outer transaction settles", async () => {
+    const settled: string[][] = [];
+    const unsubscribe = subscribeDatabaseWork(db, "scoped", (event, hints) => {
+      if (event === "settled") settled.push([...(hints ?? [])]);
+    });
+    try {
+      await db.transaction(async tx => {
+        await signalDatabaseWork(tx, "scoped", "connection-a");
+        await tx.transaction(async nested => {
+          await signalDatabaseWork(nested, "scoped", "connection-b");
+          await signalDatabaseWork(nested, "scoped", "connection-a");
+        });
+        expect(settled).toEqual([]);
+      });
+      expect(settled).toEqual([["connection-a", "connection-b"]]);
+    } finally { unsubscribe(); }
+  });
+
   it("keeps outer ownership after a caught savepoint rollback", async () => {
     const events: string[] = [];
     const unsubscribe = subscribeDatabaseWork(db, "savepoint", event => events.push(event));
@@ -92,19 +110,25 @@ const support = await getEmbeddedPostgresTestSupport();
     }) as typeof raw.transaction;
     const owner = installDatabaseWorkSignals(raw);
     const topic = `late-${outcome}`;
+    const settled: string[][] = [];
+    const unsubscribe = subscribeDatabaseWork(owner, topic, (event, hints) => {
+      if (event === "settled") settled.push([...(hints ?? [])]);
+    });
     try {
       await expect(owner.transaction(async tx => {
-        await signalDatabaseWork(tx, topic);
+        await signalDatabaseWork(tx, topic, "connection-late");
         await tx.execute(sql`insert into work_signal_test values (${topic})`);
       })).rejects.toThrow("lost transaction response");
       await reconcileDatabaseWork(owner, topic);
       expect(databaseWorkPending(owner, topic)).toBe(true);
       expect(await db.execute(sql`select * from work_signal_test where id = ${topic}`)).toHaveLength(0);
+      settled.length = 0;
       release(); await serverDone.catch(() => {});
       await reconcileDatabaseWork(owner, topic);
+      expect(settled).toEqual([["connection-late"]]);
       expect(databaseWorkPending(owner, topic)).toBe(false);
       expect(await db.execute(sql`select * from work_signal_test where id = ${topic}`)).toHaveLength(outcome === "commit" ? 1 : 0);
-    } finally { release(); await serverDone?.catch(() => {}); }
+    } finally { release(); await serverDone?.catch(() => {}); unsubscribe(); }
   });
 
   it("recovers after a real backend disconnect without replaying the queue write", async () => {

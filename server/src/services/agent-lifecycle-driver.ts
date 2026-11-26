@@ -5,6 +5,7 @@ import { listInvalidOrgChainDescendantIds } from "./agent-invokability.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { LifecycleDriver } from "../modules/agent-lifecycle/index.js";
 import { agentHarnessVerificationService } from "./agent-harness-verification.js";
+import { agentInstanceSecretService } from "./agent-instance-secrets.js";
 
 export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): LifecycleDriver {
   const { verify } = agentHarnessVerificationService(db, manager);
@@ -29,11 +30,16 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
         throw Object.assign(new Error("A required lifecycle plugin is unavailable"), { code: "required_plugin_unavailable" });
       }
       const operationId = agent.lifecycleOperation!.id;
-      const result = await manager.call(plugin.id, "agentLifecycle", { companyId: agent.companyId,
-        agentId: agent.id, operationId, version: agent.lifecycleVersion, phase: agent.lifecycleState }, 30_000);
+      const secrets = agentInstanceSecretService(db);
+      const instanceSecrets = ["preparing", "resuming"].includes(agent.lifecycleState)
+        ? await secrets.read({ companyId: agent.companyId, agentId: agent.id, pluginId }) : {};
+      const request = { companyId: agent.companyId, agentId: agent.id, operationId, version: agent.lifecycleVersion, phase: agent.lifecycleState,
+        instanceSecrets };
+      const result = await manager.call(plugin.id, "agentLifecycle", request, 30_000);
       if (!result || result.operationId !== operationId || result.version !== agent.lifecycleVersion || !["complete", "pending"].includes(result.status)) {
         throw Object.assign(new Error("Invalid lifecycle result"), { code: "invalid_lifecycle_result" });
       }
+      if (result.instanceSecrets !== undefined) await secrets.apply(request, pluginId, result.instanceSecrets, agent.lifecycleOperation?.leaseOwner);
       return result.status;
     },
     async runHost(agent) {

@@ -71,7 +71,7 @@ export function agentDirectoryWorkingCopyService(db: Db, get: (companyId: string
       // while plugin capability discovery is cold after controller restart.
       runtimeRootDir: sandboxTransferRoot(row, target.remoteCwd),
       syncWorkspace: true, workspaceInboundMode: recovering ? "adopt_remote" : undefined,
-      workspaceBaseline: baseline(row), workspaceGitSnapshot: null, workspaceFileMode: "all",
+      workspaceBaseline: baseline(row), workspaceGitSnapshot: null, workspaceRepositories: [], workspaceFileMode: "all",
       workspaceExclude: [".paperclip-runtime", ".paperclip-runtime/**"] });
   }
   async function observe(row: Copy, target?: AdapterExecutionTarget | null) {

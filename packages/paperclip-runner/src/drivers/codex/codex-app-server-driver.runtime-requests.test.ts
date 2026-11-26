@@ -44,6 +44,35 @@ import {
 } from "./codex-app-server-driver.test-support.js";
 
 describe("Codex app-server Codex driver", () => {
+  it("keeps a prompted MCP tool answerable after rejecting a session-wide decision", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-mcp-retry",
+      normalizedSessionId: "normalized-mcp-retry",
+      workingDirectory: WORKSPACE,
+    });
+    const { turnId } = await session.startTurn({ message: { role: "user", text: "Inspect the desktop." } });
+    const response = transport.invoke({
+      id: "desktop-approval", method: "mcpServer/elicitation/request",
+      params: {
+        threadId: "thread-1", turnId, itemId: "desktop-item", serverName: "assigned",
+        mode: "form", message: "Allow the tool?", _meta: { codex_approval_kind: "mcp_tool_call" },
+        requestedSchema: { type: "object", properties: {} },
+      },
+    });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    await expect(session.resolveRuntimeRequest?.({
+      requestId: "desktop-approval", turnId, resolution: { action: "accept_for_session" },
+    })).rejects.toThrow(/one-time/);
+    expect(session.pendingRuntimeRequests?.()).toHaveLength(1);
+    await session.resolveRuntimeRequest?.({
+      requestId: "desktop-approval", turnId, resolution: { action: "accept" },
+    });
+    expect(await response).toEqual({ action: "accept", content: null, _meta: null });
+    expect(session.pendingRuntimeRequests?.()).toHaveLength(0);
+    await session.close();
+  });
+
   it("validates runtime request resolutions against the kind of request they answer", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

@@ -926,6 +926,9 @@ describe("AppDetail", () => {
 
     await renderAppDetail();
 
+    expect(container.textContent).toContain("Which agents can use this connection?");
+    expect(container.textContent).not.toContain("Always installed");
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Read (1)");
     expect(container.textContent).toContain("Write (1)");
     expect(container.textContent).toContain("Read repo");
@@ -1028,16 +1031,6 @@ describe("AppDetail", () => {
       askFirstCatalogEntryIds: [],
       access: "all_agents",
     });
-  });
-
-  it("removes the separate always-installed controls from Permissions", async () => {
-    mockParams.tab = "permissions";
-
-    await renderAppDetail();
-
-    expect(container.textContent).toContain("Which agents can use this connection?");
-    expect(container.textContent).not.toContain("Always installed");
-    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
   });
 
   it("shows and removes task-granted access without changing the connection's default permissions", async () => {

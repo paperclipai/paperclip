@@ -487,12 +487,14 @@ async function startFakeRemoteMcpServer(handler: (request: FakeMcpRequest) => Pr
   body?: unknown;
   rawBody?: string;
   delayMs?: number;
+  bodyDelayMs?: number;
 }> | {
   status?: number;
   headers?: Record<string, string>;
   body?: unknown;
   rawBody?: string;
   delayMs?: number;
+  bodyDelayMs?: number;
 }) {
   const requests: FakeMcpRequest[] = [];
   const server = createServer(async (req, res) => {
@@ -516,10 +518,15 @@ async function startFakeRemoteMcpServer(handler: (request: FakeMcpRequest) => Pr
       for (const [key, value] of Object.entries(response.headers ?? {})) {
         res.setHeader(key, value);
       }
+      if (response.bodyDelayMs) {
+        res.setHeader("content-type", "application/json");
+        res.flushHeaders();
+        await new Promise((resolve) => setTimeout(resolve, response.bodyDelayMs));
+      }
       if (response.rawBody !== undefined) {
         res.end(response.rawBody);
       } else {
-        res.setHeader("content-type", "application/json");
+        if (!res.headersSent) res.setHeader("content-type", "application/json");
         res.end(JSON.stringify(response.body ?? {
           jsonrpc: "2.0",
           id: body?.id ?? "test",
@@ -3640,6 +3647,11 @@ rl.on("line", (line) => {
         .from(toolInvocations)
         .where(eq(toolInvocations.id, approvalRequest.invocationId));
       expect(approvalInvocation).toMatchObject({
+        companyId: company.id,
+        actorType: "agent",
+        agentId: agent.id,
+        runId: run.id,
+        issueId: issue.id,
         status: "awaiting_approval",
         policyDecision: "require_approval",
         connectionId: approvalTool.connection.id,
@@ -3647,6 +3659,14 @@ rl.on("line", (line) => {
         applicationKey: "shopify",
         upstreamToolName: "kv_set",
       });
+
+      // Matching persisted company/connection rows must still be hidden from
+      // the Test tab when a real agent run owns the approval.
+      await expect(gateway.getTestCallStatus({
+        companyId: company.id,
+        connectionId: approvalTool.connection.id,
+        actionRequestId: approvalRequest.id,
+      })).rejects.toMatchObject({ status: 404, reasonCode: "action_request_not_found" });
 
       await db
         .update(issueThreadInteractions)
@@ -4426,6 +4446,20 @@ rl.on("line", (line) => {
 
   const perCallResponseFailures = [
     {
+      name: "a tool call timeout",
+      reasonCode: "tool_timeout",
+      status: 504,
+      timeoutMs: 300,
+      response: () => ({ delayMs: 1_000, body: {} }),
+    },
+    {
+      name: "a response body timeout",
+      reasonCode: "tool_timeout",
+      status: 504,
+      timeoutMs: 300,
+      response: () => ({ bodyDelayMs: 1_000, body: {} }),
+    },
+    {
       name: "an oversized response",
       reasonCode: "mcp_remote_response_too_large",
       response: () => ({ headers: { "content-type": "application/json" }, rawBody: "x".repeat(1_200_000) }),
@@ -4481,12 +4515,13 @@ rl.on("line", (line) => {
           sessionToken: session.token,
           tool: connectedTool!.name,
           parameters: { key: "everything" },
+          timeoutMs: scenario.timeoutMs,
         }).then(
           () => {
             throw new Error("Expected the remote MCP call to fail");
           },
           (error) => {
-            expectGatewayError(error, 502, scenario.reasonCode);
+            expectGatewayError(error, scenario.status ?? 502, scenario.reasonCode);
             scenario.check?.(error as ToolGatewayHttpError);
           },
         );
@@ -4494,6 +4529,13 @@ rl.on("line", (line) => {
         await expect(db.select({ healthStatus: toolConnections.healthStatus }).from(toolConnections).where(
           eq(toolConnections.id, connection.id),
         )).resolves.toEqual([{ healthStatus: "ok" }]);
+
+        expect(toolCallCount).toBe(1);
+        const [failedInvocation] = await db.select().from(toolInvocations);
+        expect(failedInvocation).toMatchObject({
+          status: scenario.status === 504 ? "timed_out" : "failed",
+          errorCode: scenario.reasonCode,
+        });
 
         const nextSession = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
         await expect(gateway.listToolsForSession(nextSession.token)).resolves.toEqual(
@@ -5843,7 +5885,7 @@ rl.on("line", (line) => {
     });
   });
 
-  it("wraps plugin tool discovery and execution behind the same gateway policy", async () => {
+  it.each([1, 2])("wraps plugin tool discovery and execution behind the same gateway policy (%i copies)", async copies => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { run, project } = await createIssueAndRun(db, company.id, agent.id);
@@ -5851,15 +5893,13 @@ rl.on("line", (line) => {
     const dispatcher: PluginToolDispatcher = {
       initialize: async () => {},
       teardown: () => {},
-      listToolsForAgent: () => [
-        {
+      listToolsForAgent: () => Array.from({ length: copies }, () => ({
           name: "demo-plugin:read_status",
           displayName: "Read status",
           description: "Read status through a plugin tool.",
           parametersSchema: { type: "object" },
           pluginId: "demo-plugin",
-        },
-      ],
+        })),
       getTool: () => null,
       executeTool: async (tool, parameters, runContext) => {
         calls.push({ tool, parameters, runContext });
@@ -5892,6 +5932,10 @@ rl.on("line", (line) => {
     );
 
     await allowToolsForAgent(db, company.id, agent.id, ["demo-plugin:read_status"]);
+
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id, projectId: project.id });
+    expect((await gateway.listToolsForSession(session.token)).filter(tool => tool.pluginId === "demo-plugin"))
+      .toEqual([expect.objectContaining({ name: "demo-plugin:read_status" })]);
 
     await expect(gateway.listPluginToolsForAgent({ companyId: company.id, agentId: agent.id })).resolves.toEqual([
       expect.objectContaining({ name: "demo-plugin:read_status" }),

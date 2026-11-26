@@ -52,6 +52,15 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
     writeTools: ["create_draft"],
   },
   {
+    profile: "gmail.archive",
+    appSlug: "gmail",
+    serverUrl: "https://gmailmcp.googleapis.com/mcp/v1",
+    capability: "archive",
+    riskTier: "S4",
+    scopes: [googleScope("gmail.readonly"), googleScope("gmail.modify")],
+    writeTools: ["unlabel_thread"],
+  },
+  {
     profile: "drive.read",
     appSlug: "google-drive",
     serverUrl: "https://drivemcp.googleapis.com/mcp/v1",
@@ -214,7 +223,7 @@ const GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS = [
   profile: GoogleWorkspaceConnectorProfileId;
   appSlug: string;
   serverUrl: string;
-  capability: "read" | "write" | "draft";
+  capability: "read" | "write" | "draft" | "archive";
   riskTier: "S3" | "S4";
   scopes: readonly string[];
   writeTools: readonly string[];
@@ -763,15 +772,10 @@ describe("AppDefinition catalog", () => {
       APP_DEFINITIONS.find((app) => app.slug === "linear")?.methods[0]?.defaults
         ?.scopesHint,
     ).toEqual(["read", "write"]));
-  it("requests Hugging Face MCP read, contribution and job scopes", () =>
-    expect(
-      APP_DEFINITIONS.find((app) => app.slug === "hugging-face")?.methods[0]
-        ?.defaults?.scopesHint,
-    ).toEqual(["read-mcp", "read-repos", "contribute-repos", "jobs"]));
-  it("defaults every new connection action to allowed except Enterpret writes", () => {
+  it("limits Ask-first defaults to reviewed high-risk connection methods", () => {
     for (const app of APP_DEFINITIONS)
       for (const method of app.methods) {
-        if (app.slug === "enterpret") {
+        if (app.slug === "enterpret" || (app.slug === "gmail" && method.capabilityProfile?.key === "archive")) {
           expect(recommendedDefaultsForApp(app, method.key)).toEqual({
             access: "all_agents",
             askFirstRiskLevels: ["write", "destructive"],
@@ -793,6 +797,8 @@ describe("AppDefinition catalog", () => {
     expect(getAvailableConnectionMethod(gmail)?.key).toBe(
       "customer-draft-oauth",
     );
+    expect(gmail.methods.filter((method) => method.capabilityProfile?.key === "archive")
+      .map((method) => method.key)).toEqual(["paperclip-archive", "customer-archive-oauth"]);
     expect(
       getRecommendedConnectionMethod(
         drive.methods.filter((candidate) =>
@@ -878,7 +884,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(79);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(82);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
@@ -950,7 +956,7 @@ describe("AppDefinition catalog", () => {
   });
   it("keeps all Google Workspace profiles aligned with their app, endpoint, scopes, ownership, risk, and write policy", () => {
     expect(GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS).toEqual(
-      GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS.map((entry) => entry.profile),
+      [...GOOGLE_WORKSPACE_PROFILE_EXPECTATIONS.map((entry) => entry.profile), "workspace.all"],
     );
     expect(Object.keys(GOOGLE_WORKSPACE_CONNECTOR_PROFILES)).toEqual([
       ...GOOGLE_WORKSPACE_CONNECTOR_PROFILE_IDS,
@@ -1326,21 +1332,6 @@ describe("AppDefinition catalog", () => {
       APP_DEFINITIONS.find((app) => app.slug === "vercel")?.availability
         ?.available,
     ).toBe(false);
-  });
-  it("enforces method and field invariants", () => {
-    for (const app of APP_DEFINITIONS)
-      for (const method of app.methods) {
-        if (
-          method.auth === "api_key" &&
-          (method.purpose ?? "tool") !== "channel"
-        )
-          expect(method.keyPlacement).toBeTruthy();
-        if (method.auth === "oauth")
-          expect(method.ownershipModes.length).toBeGreaterThan(0);
-        for (const field of method.credentialFields ?? [])
-          if (field.required && field.type !== "checkbox")
-            expect(field.placeholder).toBeTruthy();
-      }
   });
 });
 

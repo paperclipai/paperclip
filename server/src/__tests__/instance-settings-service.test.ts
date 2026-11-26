@@ -46,6 +46,7 @@ describe("instance settings service", () => {
       enableWorkspaceBranchReconcileForward: true,
       enableWorkspaceDirtyQuarantineRepair: false,
       enableNewestFirstIssueThread: true,
+      enablePipelines: true,
     })).toEqual({
       enableEnvironments: true,
       enableNativeRunner: false,
@@ -60,6 +61,8 @@ describe("instance settings service", () => {
       enableAgentChat: false,
       enablePublicMcp: false,
       enableOpenAiDot: false,
+      enableMuse: false,
+      enableGrokBot: false,
       enableCombinedInboxTasks: false,
       enableChatConnectors: false,
       enableGitHubReviewBots: false,
@@ -68,7 +71,6 @@ describe("instance settings service", () => {
       enableClassicTaskInterface: false,
       enableExternalObjects: false,
       enableSmokeLab: false,
-      enablePipelines: false,
       enableCases: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
@@ -107,7 +109,7 @@ describe("instance settings service", () => {
   it("keeps Apps on for empty, legacy, and explicitly disabled stored settings", () => {
     expect(normalizeExperimentalSettings(undefined).enableApps).toBe(true);
     expect(normalizeExperimentalSettings({}).enableApps).toBe(true);
-    expect(normalizeExperimentalSettings({ enablePipelines: true }).enableApps).toBe(true);
+    expect(normalizeExperimentalSettings({ enableCases: true }).enableApps).toBe(true);
     expect(normalizeExperimentalSettings({ enableApps: false }).enableApps).toBe(true);
   });
 

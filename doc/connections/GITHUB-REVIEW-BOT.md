@@ -188,6 +188,9 @@ old runs cannot publish over the latest head. One current summary is updated in
 place, with history and task/run links retained. Stable finding keys prevent
 duplicate inline comments on repeated reviews.
 
+See [Publication recovery](#publication-recovery) for deadlines, retries, and
+lost-response receipt recovery.
+
 The check's **Details** link opens its Paperclip task on the current instance
 hostname, or the connector's Reviews page when no task has been created yet.
 
@@ -205,6 +208,48 @@ ruleset to require **Paperclip Review**, selecting this bot App as the source
 where supported. Paperclip does not change repository rules. GitHub account and
 repository plan restrictions may limit required-check enforcement. If automatic
 execution is disallowed, a gated head requests an authorized manual review.
+
+## Publication recovery
+
+GitHub bot tools have a sixty-second default deadline. A caller can request a
+shorter deadline. The assessment and publication intent are saved before provider
+writes, so a caller timeout does not prove that publication failed.
+
+Temporary network errors, HTTP 408/429, and GitHub server errors use bounded
+backoff with jitter. Reads and installation-token issuance can retry within the
+call. Publication writes retry through the durable outbox, where App-owned
+comment markers and check identities recover lost responses. An unknown write
+is never repeated without checking its existing provider receipt.
+
+The caller waits for up to three publication attempts within a forty-five-second
+retry window. Longer delays remain queued. A dedicated worker restores received
+actions and future retry deadlines after restart without another inbound event.
+The durable limit is eight failed attempts. Authorization, configuration, and
+the current PR head are checked again before dispatch. Permanent permission or
+validation failures, changed authority, and superseded reviews stop retries.
+
+Rate-limit retries respect GitHub's `Retry-After` and primary reset headers;
+secondary limits without a deadline wait at least one minute. See
+[GitHub's retry guidance](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api#handle-rate-limit-errors-appropriately).
+
+Repeat the exact `submit_review`, `comment`, or `update_comment` call to receive
+the current durable receipt after a timeout. Preserve the assessment and
+idempotency key; do not start another review to recover publication. A result
+with `status: failed` and `receipt.retryable: true`, or `status: received`, is
+still pending. Claim publication only after `status: processed`. Receipt recovery
+does not itself mark a task Done; the agent must finish its task after confirming
+the receipt.
+
+Receipt recovery compares the complete saved publication request, including long
+text and nested coverage entries. Shortened audit previews do not establish
+request identity. Changed content or a missing durable publication returns a
+conflict without dispatching another write. Exact retries read the current
+receipt; the durable worker owns pending publication retries.
+
+For a call that required human approval, the durable publication keeps that
+verified approval for its exact operation. An exact caller retry only reads the
+current receipt; the worker owns provider retries. A new policy denial or revoked
+authority still stops recovery, and new content still requires its own approval.
 
 ## Hosted ingress
 

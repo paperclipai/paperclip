@@ -164,6 +164,33 @@ describe("TaskChatRunnerTurn", () => {
     },
   );
 
+  it.each(["Muse", "Dot"])("shows Waiting for %s until native acceptance, without a Thinking claim", provider => {
+    const waiting = { phase: "waiting_for_provider", label: `Waiting for ${provider}` } as ExecutionProjection;
+    render([], "running", "run-1", undefined, false, false, waiting);
+    expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent)
+      .toContain(`Waiting for ${provider}`);
+    const tail = container.querySelector('[data-testid="task-chat-current-activity-label"]');
+    expect(tail?.textContent).toBe(`Waiting for ${provider}`);
+    expect(tail?.classList.contains("shimmer-text")).toBe(false);
+    expect(container.textContent).not.toContain("Working");
+    expect(container.textContent).not.toContain("Thinking");
+
+    // Re-render the same live turn after the native acceptance projection changes.
+    render([], "running", "run-1", undefined, false, false,
+      { phase: "working", label: "Working" } as ExecutionProjection);
+    expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent)
+      .toContain("Working for");
+    expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent)
+      .toBe("Thinking");
+
+    // A stale waiting projection must never override a terminal run outcome.
+    render([], "failed", "run-1", undefined, false, false, waiting);
+    expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent)
+      .toContain("Stopped");
+    expect(container.querySelector('[data-testid="task-chat-current-activity"]')).toBeNull();
+    expect(container.textContent).not.toContain(`Waiting for ${provider}`);
+  });
+
   it("labels the streaming tail as a continuation after steering", () => {
     render([], "running", "run-1", undefined, false, true);
 

@@ -1,3 +1,4 @@
+import type { TaskWorkspaceIntent, TaskWorkspacePendingSelection } from "./task-workspace.js";
 import type { ExecutionProjection, ExecutionBlocker } from "./execution-projection.js";
 import type {
   IssueCommentAuthorType,
@@ -830,7 +831,15 @@ export interface IssueChangeReceiptEntry {
 
 export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
+export type IssueSummary = Pick<
+  Issue,
+  "id" | "companyId" | "title" | "identifier" | "status" | "updatedAt"
+> & {
+  externalConversationState: "active" | "waiting" | null;
+};
+
 export interface Issue {
+  statusVersion?: number;
   /** True only while the title is the provisional slice of the initial prompt. */
   titleNeedsGeneration?: boolean;
   conversationAgentId?: string | null;
@@ -891,6 +900,9 @@ export interface Issue {
   monitorAttemptCount?: number;
   monitorNotes?: string | null;
   monitorScheduledBy?: IssueMonitorScheduledBy | null;
+  workspaceBindingRevision?: number;
+  workspaceSelection?: TaskWorkspaceIntent | null;
+  workspacePendingSelection?: TaskWorkspacePendingSelection | null;
   executionWorkspaceId: string | null;
   executionWorkspacePreference: string | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;

@@ -78,6 +78,11 @@ export const composerAgents: ComposerAgent[] = [
     { id: "kimi-code/k3", label: "K3" },
     { id: "kimi-code/kimi-for-coding", label: "K2.8 Preview" },
   ], manualPattern: "kimi-code/model" },
+  { id: "kimchi", name: "Kobe", role: "Planning", harness: "Kimchi", adapterType: "kimchi_local", provider: "ACP engine", engine: "acp", defaultModel: "kimi-k2.7", models: [
+    { id: "kimi-k2.7", label: "Kimi K2.7" },
+    { id: "glm-5.3", label: "GLM 5.3" },
+    { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
+  ], manualPattern: "kimchi-model" },
   { id: "grok-default", name: "Grok Default", role: "Investigation", harness: "Grok CLI", adapterType: "grok_local", models: [
     { id: "grok-build", label: "Grok Build" },
     { id: "grok-4.7", label: "Grok 4.7" },

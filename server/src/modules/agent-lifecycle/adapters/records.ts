@@ -19,6 +19,7 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
           .insert(agents)
           .values({
             ...prepared,
+            createdByUserId: options?.createdByUserId ?? null,
             lifecycleState: data.status === "pending_approval" ? "pending_approval" : data.status === "terminated" ? "terminated" : data.status === "paused" ? "paused" : "preparing",
             lifecycleVersion: 1,
             lifecycleHolds: data.status === "paused" ? [data.pauseReason ?? "manual"] : [],

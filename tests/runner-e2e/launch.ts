@@ -842,7 +842,7 @@ async function runAttempt(input: {
       await chmod(temporaryRoot, 0o700);
       console.warn(`Retained private failed-case diagnostics: ${temporaryRoot}`);
     } else if (
-      temporaryRoot.startsWith(`${os.tmpdir()}${path.sep}paperclip-runner-e2e-`)
+      temporaryRoot.startsWith(`${temporaryParent}${path.sep}paperclip-runner-e2e-`)
     ) {
       for (let cleanupAttempt = 1; cleanupAttempt <= 3; cleanupAttempt += 1) {
         try {

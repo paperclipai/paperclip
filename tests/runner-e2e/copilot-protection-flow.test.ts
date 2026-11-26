@@ -1,5 +1,5 @@
 import { matchCopilotFixtureCommand } from "./copilot-protection-evidence.js";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, unlinkSync, utimesSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { readFile, mkdtemp, rm, writeFile, unlink, rename, mkdir, symlink } from "node:fs/promises";
 import { join } from "node:path";
@@ -92,6 +92,7 @@ describe("Copilot Product protection integration", () => {
     const fixture = await createDeniedTargetFixture(root, "denied");
     try {
       writeFileSync(fixture.targetPath, "x"); unlinkSync(fixture.targetPath);
+      utimesSync(fixture.directory, 0, 0);
       const receipt = fixture.watcher.finish();
       expect(receipt).toMatchObject({ complete: false, targetMutationCount: 0 });
       expect(receipt.reasons).toContain("coverage-gap-parent-version-changed");

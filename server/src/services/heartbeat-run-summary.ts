@@ -575,13 +575,14 @@ export function buildHeartbeatRunIssueComment(
   return resolveHeartbeatRunResponse({ resultJson }).text;
 }
 
-export function findHeartbeatRunCompletionComment<T extends { id: string }>(
+export function findHeartbeatRunCompletionComment<T extends { id: string; presentation?: unknown }>(
   comments: T[],
   resultJson: Record<string, unknown> | null | undefined,
 ): T | null {
+  const completionComments = comments.filter(comment => record(comment.presentation).kind !== "system_notice");
   const receipts = resultJson?.semanticToolReceipts;
   if (!receipts || typeof receipts !== "object" || Array.isArray(receipts)) {
-    return comments[0] ?? null;
+    return completionComments[0] ?? null;
   }
 
   const generatedCommentIds = new Set<string>();
@@ -616,6 +617,6 @@ export function findHeartbeatRunCompletionComment<T extends { id: string }>(
   }
 
   return (
-    comments.find((comment) => !generatedCommentIds.has(comment.id)) ?? null
+    completionComments.find((comment) => !generatedCommentIds.has(comment.id)) ?? null
   );
 }

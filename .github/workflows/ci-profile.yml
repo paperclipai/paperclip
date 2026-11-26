@@ -1,0 +1,41 @@
+name: CI profile
+
+on:
+  workflow_run:
+    workflows: [PR]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  pull-requests: read
+
+jobs:
+  export:
+    if: >-
+      github.repository == 'paperclipai/paperclip' &&
+      github.event.workflow_run.event == 'pull_request' &&
+      startsWith(github.event.workflow_run.display_title, 'CI profile · PR #')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # This environment permits only the master branch. Do not use a repository
+    # secret: an in-repository PR must not be able to request this credential.
+    environment: ci-profiling
+    steps:
+      # workflow_run is privileged. Never check out its head SHA or run code
+      # from downloaded artifacts. This checkout is the trusted default branch.
+      - name: Checkout trusted exporter
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci-profile
+
+      - name: Export selected complete CI attempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HONEYCOMB_CI_API_KEY: ${{ secrets.HONEYCOMB_CI_API_KEY }}
+          HONEYCOMB_CI_DATASET: paperclip-ci
+          HONEYCOMB_TEAM: paperclip
+          HONEYCOMB_ENVIRONMENT: test
+        run: node scripts/ci-profile/export.mjs

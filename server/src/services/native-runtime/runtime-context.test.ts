@@ -37,6 +37,10 @@ vi.mock("../tool-access.js", () => ({
 }));
 
 import { createHash } from "node:crypto";
+import { context as otelContext, trace } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
+import { withRunExecutionTiming } from "../execution-preparation-timing.js";
 import { buildNativeRuntimeContext, resolveNativeRuntimeMcpSnapshot } from "./runtime-context.js";
 
 const temporaryRoots: string[] = [];
@@ -320,6 +324,18 @@ describe("buildNativeRuntimeContext", () => {
     expect(repeated.skills[0]!.bundle.rootPath).toBe(context.skills[0]!.bundle.rootPath);
   });
 
+  it("does not materialize assigned skills or external MCP in preconfigured mode", async () => {
+    serviceMocks.exportFiles.mockResolvedValue({ entryFile: "AGENTS.md", files: { "AGENTS.md": "Test\n" } });
+    const context = await buildNativeRuntimeContext({ db: {} as Db,
+      agent: { id: "agent-1", companyId: "company-1", name: "Reviewer", adapterType: "paperclip_runner", adapterConfig: {} },
+      runId: "run-1", runtimeConfig: { homeMode: "preconfigured", paperclipSkillSync: { desiredSkills: ["missing"] } },
+      runtimeSkillEntries: [{ key: "missing", runtimeName: "missing", source: "/does/not/exist", sourceStatus: "missing" }],
+    });
+    expect(context.skills).toEqual([]);
+    expect(context.mcp.bindingId).toBeNull();
+    expect(serviceMocks.getEffectiveProfilesForAgent).not.toHaveBeenCalled();
+  });
+
   it("fails closed for a missing assigned skill and omits a stale legacy operational skill", async () => {
     serviceMocks.exportFiles.mockResolvedValue({ entryFile: "AGENTS.md", files: { "AGENTS.md": "Test\n" } });
     const base = {
@@ -412,11 +428,61 @@ it("pins channel tools only when the current task run is bound to that bot", asy
 
 it("pins a voice tool only when the current requester can call through that assigned endpoint", async () => {
   serviceMocks.getEffectiveProfilesForAgent.mockResolvedValue({ entries: [{ effect: "include", connectionId: "voice-connection" }], installedConnections: [{ id: "voice-connection", status: "active", enabled: true, healthStatus: "healthy", transport: "voice", config: { provider: "speko" }, transportConfig: {} }], allowedTools: [{ id: "phone-tool", connectionId: "voice-connection" }] });
-  const limit = vi.fn().mockResolvedValue([{ contextSnapshot: { issueId: "task-1" }, activeIdentityContextId: "identity-1" }]);
+  const limit = vi.fn().mockResolvedValue([{ issueId: "task-1", activeIdentityContextId: "identity-1" }]);
   const db = { select: () => ({ from: () => ({ where: () => ({ limit }) }) }) } as unknown as Db;
   const input = { db, agent: { id: "agent-1", companyId: "company-1" }, runId: "run-1" };
   expect((await resolveNativeRuntimeMcpSnapshot(input)).bindingId).toBeNull();
   serviceMocks.spekoToolsForSession.mockResolvedValue([{ connectionId: "voice-connection" }]);
   expect((await resolveNativeRuntimeMcpSnapshot(input)).bindingId).toBe("native-mcp:run-1");
   expect(serviceMocks.spekoToolsForSession).toHaveBeenLastCalledWith(db, { companyId: "company-1", agentId: "agent-1", runId: "run-1", issueId: "task-1", identityContextId: "identity-1" });
+});
+
+it("keeps instructions, selected skills, and MCP concurrent and distinguishes cold materialization from warm verification", async () => {
+  vi.stubEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.test");
+  const exporter = new InMemorySpanExporter();
+  const provider = new TracerProvider({ spanProcessors: [new SimpleSpanProcessor({ exporter })] });
+  const manager = new AsyncLocalStorageContextManager().enable();
+  expect(otelContext.setGlobalContextManager(manager)).toBe(true);
+  expect(trace.setGlobalTracerProvider(provider)).toBe(true);
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  serviceMocks.exportFiles.mockImplementation(async () => {
+    await gate;
+    return { entryFile: "AGENTS.md", files: { "AGENTS.md": "Private fixture instructions" } };
+  });
+  const source = path.join(temporaryRoots.at(-1)!, "selected-skill");
+  await mkdir(source);
+  await writeFile(path.join(source, "SKILL.md"), "Private skill fixture");
+  const input = {
+    db: {} as Db, agent: { id: "agent-1", companyId: "company-1", name: "Reviewer", adapterConfig: {} },
+    runId: "concurrent-context", runtimeConfig: { paperclipSkillSync: { desiredSkills: ["selected"] } },
+    runtimeSkillEntries: [{ key: "selected", runtimeName: "selected", source }],
+  };
+  const pending = withRunExecutionTiming(input.runId, () => buildNativeRuntimeContext(input));
+  try {
+    await vi.waitFor(() => {
+      expect(exporter.getFinishedSpans().map(span => span.name)).toEqual(expect.arrayContaining(["runtime_context.skills", "runtime_context.mcp"]));
+    });
+    expect(exporter.getFinishedSpans().some(span => span.name === "runtime_context.instructions")).toBe(false);
+    release();
+    const cold = await pending;
+    expect(cold.skills).toHaveLength(1);
+    expect(exporter.getFinishedSpans().some(span => span.name === "runtime_context.asset_materialize")).toBe(true);
+    exporter.reset();
+    const warm = await withRunExecutionTiming(input.runId, () => buildNativeRuntimeContext(input));
+    expect(warm.aggregateDigest).toBe(cold.aggregateDigest);
+    const spans = exporter.getFinishedSpans();
+    expect(spans.some(span => span.name === "runtime_context.asset_verify")).toBe(true);
+    expect(spans.some(span => span.name === "runtime_context.asset_materialize")).toBe(false);
+    expect(JSON.stringify(spans.map(span => span.attributes))).not.toContain("Private");
+    const siblings = spans.filter(span => ["runtime_context.instructions", "runtime_context.skills", "runtime_context.mcp"].includes(span.name));
+    expect(siblings).toHaveLength(3);
+    expect(new Set(siblings.map(span => span.parentSpanContext?.spanId)).size).toBe(1);
+  } finally {
+    release();
+    await pending.catch(() => undefined);
+    trace.disable(); otelContext.disable(); manager.disable();
+    await provider.shutdown();
+    vi.unstubAllEnvs();
+  }
 });

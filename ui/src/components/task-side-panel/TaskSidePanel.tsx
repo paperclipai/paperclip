@@ -37,6 +37,9 @@ import { WorkspaceFileBrowser } from "@/components/WorkspaceFileBrowser";
 import { AgentArtifactsPanel, AgentTasksPanel } from "@/components/chat/AgentWorkPanels";
 import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
 import { IssuePropertiesArtifactsTab } from "@/components/issue-properties/IssuePropertiesArtifactsTab";
+import { ArtifactDropzone } from "@/components/artifacts/ArtifactDropzone";
+import { ArtifactUploadButton } from "@/components/artifacts/ArtifactUploadControls";
+import { useIssueArtifactUploads } from "@/hooks/useIssueArtifactUploads";
 import { IssuePropertiesPlansTab } from "@/components/issue-properties/IssuePropertiesPlansTab";
 import { TaskDetailSubtasksPanel } from "@/components/task-detail/TaskDetailRelationsPanel";
 import {
@@ -274,6 +277,7 @@ export function TaskSidePanel({
   const conversationAgentId = agentChatEnabled ? issue.conversationAgentId ?? null : null;
   const showRelatedTasks = showSubtasksTab && !conversationAgentId;
   const viewer = useTaskSidePanelFileRouting();
+  const artifactUploads = useIssueArtifactUploads(issue);
   const { data: documentsData } = useIssueDocuments(issue.id);
   const documents = documentsData ?? EMPTY_ISSUE_DOCUMENTS;
   const { data: planDocument } = useIssuePlanDocument(issue.id);
@@ -353,6 +357,7 @@ export function TaskSidePanel({
     }
   }, [openBrowserId, controller.activeTabId, onBrowserOpened, accountScope, issue.companyId, issue.id, fileTabsEnabled]);
   const activeTab = controller.tabs.find((tab) => tab.id === controller.activeTabId) ?? null;
+  const canUploadArtifacts = activeTab?.payload.kind === "artifacts" && !conversationAgentId && !issue.id.startsWith("chat:");
   const subtasksAvailable = showRelatedTasks && (taskCount > 0 || tasksTab?.hasError === true);
   const hasSubtasksTab = controller.tabs.some((tab) => tab.id === "subtasks");
 
@@ -760,7 +765,7 @@ export function TaskSidePanel({
       markInteracted();
       controller.openTab(taskPanelAttachmentTab(id, title));
       if (viewer.state || viewer.browse) viewer.close();
-    }}><IssuePropertiesArtifactsTab issue={issue} onOpenDocument={openDocument} /></TextAttachmentContext.Provider>;
+    }}><IssuePropertiesArtifactsTab issue={issue} onOpenDocument={openDocument} uploadState={artifactUploads} /></TextAttachmentContext.Provider>;
   } else if (activeTab.payload.kind === "issue-document") {
     content = activeTab.payload.documentKey === "plan" ? (
       <IssuePropertiesPlansTab issue={issue} inline={inline} />
@@ -815,11 +820,14 @@ export function TaskSidePanel({
   }
 
   const contentMode = activeTab?.contentMode ?? "full-bleed";
+  const header = <>{tabStrip}{canUploadArtifacts ? <ArtifactUploadButton onUpload={artifactUploads.upload} /> : null}</>;
   return (
+    <ArtifactDropzone enabled={canUploadArtifacts} target={paneHeaderSlot?.closest<HTMLElement>("[data-presentation]")} onUpload={artifactUploads.upload}>
     <div className="flex h-full min-h-0 flex-col">
-      {paneHeaderSlot ? createPortal(tabStrip, paneHeaderSlot) : (
+      <span className="sr-only" role="status" aria-live="polite">{artifactUploads.announcement}</span>
+      {paneHeaderSlot ? createPortal(header, paneHeaderSlot) : (
         <div className="flex h-(--side-panel-header-height) shrink-0 items-center gap-1 px-2">
-          {tabStrip}
+          {header}
           {onRequestClose ? (
             mobile ? (
               <Button variant="ghost" size="icon" className="size-(--sz-44px) shrink-0" aria-label="Close side panel" onClick={onRequestClose}>
@@ -855,5 +863,6 @@ export function TaskSidePanel({
         ) : content}
       </div>
     </div>
+    </ArtifactDropzone>
   );
 }

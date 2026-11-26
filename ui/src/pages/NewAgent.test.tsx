@@ -1,205 +1,322 @@
 // @vitest-environment jsdom
 import { act } from "react";
-import { createRoot, type Root } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TooltipProvider } from "@/components/ui/tooltip";
+import { describe, expect, it, vi } from "vitest";
 import { queryKeys } from "@/lib/queryKeys";
-import { NewAgent } from "./NewAgent";
-import { ApiError } from "@/api/client";
+import {
+  api, envApi, settings, secrets, state, managedApi, adapterApi,
+  root, container, cache, settle, click, fill, render, connect, pass,
+  renderCurrentParams,
+} from "./NewAgent.test-support";
 
-const api = vi.hoisted(() => ({
-  get: vi.fn(),
-  adapterModels: vi.fn(),
-  list: vi.fn(),
-  hire: vi.fn(),
-  testEnvironment: vi.fn(),
-  getAdapterAuthSignal: vi.fn(),
-  getClaudeOAuthTokenStatus: vi.fn(),
-}));
-const envApi = vi.hoisted(() => ({ list: vi.fn(), capabilities: vi.fn() }));
-const settings = vi.hoisted(() => ({
-  get: vi.fn(),
-  getExperimental: vi.fn(),
-  getGeneral: vi.fn(),
-}));
-const secrets = vi.hoisted(() => ({
-  create: vi.fn(),
-  remove: vi.fn(),
-  list: vi.fn(),
-  listMyUserSecrets: vi.fn(),
-  createUserSecretDefinition: vi.fn(),
-  createMyUserSecret: vi.fn(),
-  rotateMyUserSecret: vi.fn(),
-  removeUserSecretDefinition: vi.fn(),
-}));
-const state = vi.hoisted(() => ({
-  params: new URLSearchParams(),
-  adapters: [] as object[],
-  navigate: vi.fn(),
-  openNewIssue: vi.fn(),
-}));
-const managedApi = vi.hoisted(() => ({
-  list: vi.fn(async () => ({ currentUserId: "user-1", canManageConnections: true, connections: [] })),
-  create: vi.fn(async () => ({ connectionId: "managed-connection", grantId: "managed-grant" })),
-  setDefault: vi.fn(async () => ({})),
-}));
-vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: managedApi }));
-vi.mock("@/api/agents", () => ({ agentsApi: api }));
-vi.mock("@/api/environments", () => ({ environmentsApi: envApi }));
-vi.mock("@/api/instanceSettings", () => ({ instanceSettingsApi: settings }));
-vi.mock("@/api/secrets", () => ({ secretsApi: secrets }));
-vi.mock("@/api/adapters", () => ({
-  adaptersApi: { list: async () => state.adapters },
-}));
-vi.mock("@/context/CompanyContext", () => ({
-  useCompany: () => ({ selectedCompanyId: "company-1" }),
-}));
-vi.mock("../context/BreadcrumbContext", () => ({
-  useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
-}));
-vi.mock("@/context/DialogContext", () => ({
-  useDialogActions: () => ({ openNewIssue: state.openNewIssue }),
-}));
-vi.mock("@/lib/router", () => ({
-  useNavigate: () => state.navigate,
-  useSearchParams: () => [state.params],
-}));
-// Exercise API/persistence contracts with deterministic presentation primitives.
-// The actual searchable dropdown and login panel are covered by their tests and browser verification.
-vi.mock("@/components/AgentConfigForm", () => ({
-  ModelDropdown: ({
-    value,
-    onChange,
-  }: {
-    value: string;
-    onChange: (value: string) => void;
-  }) => (
-    <input
-      aria-label="Model"
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-    />
-  ),
-  AdapterLoginPanel: ({ onConnected }: { onConnected: (id: string) => void }) => (
-    <button onClick={() => onConnected("login-session")}>
-      Complete subscription login
-    </button>
-  ),
-}));
-vi.mock("@/components/onboarding/PillGuy", () => ({ PillGuy: () => null }));
-vi.mock("motion/react", () => ({
-  AnimatePresence: ({ children }: any) => children,
-  MotionConfig: ({ children }: any) => children,
-  motion: {
-    span: ({ children }: any) => <span>{children}</span>,
-    div: ({ children, initial, animate, exit, transition, ...rest }: any) => (
-      <div {...rest}>{children}</div>
-    ),
-  },
-}));
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-let root: Root;
-let container: HTMLDivElement;
-let cache: QueryClient;
-async function settle() {
-  await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  });
-}
-async function click(text: string) {
-  const button = [...container.querySelectorAll("button")].find(
-    (b) => b.textContent?.trim() === text,
-  );
-  expect(button, `Missing button ${text}`).toBeTruthy();
-  await act(async () => button!.click());
-  await settle();
-}
-async function fill(label: string, value: string) {
-  const input = container.querySelector(
-    `[aria-label="${label}"]`,
-  ) as HTMLInputElement;
-  expect(input).toBeTruthy();
-  await act(async () => {
-    Object.getOwnPropertyDescriptor(
-      HTMLInputElement.prototype,
-      "value",
-    )!.set!.call(input, value);
-    input.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-}
-async function render(adapter = "pi_local", runnerProvider = "codex") {
-  state.params = new URLSearchParams({
-    name: "Atlas",
-    adapterType: adapter,
-    runnerProvider,
-  });
-  await act(async () =>
-    root.render(
-      <QueryClientProvider client={cache}>
-        <TooltipProvider><NewAgent /></TooltipProvider>
-      </QueryClientProvider>,
-    ),
-  );
-  await settle();
-}
-async function connect(provider: string) {
-  await click(provider + "Subscription");
-  await click("Connect");
-}
-const pass = {
-  adapterType: "pi_local",
-  status: "pass",
-  checks: [
-    { code: "hello_probe_passed", level: "info", message: "Model replied" },
-  ],
-  testedAt: "2026-09-07T00:00:00Z",
-};
-beforeEach(() => {
-  vi.clearAllMocks();
-  managedApi.list.mockResolvedValue({ currentUserId: "user-1", canManageConnections: true, connections: [] });
-  container = document.createElement("div");
-  document.body.append(container);
-  root = createRoot(container);
-  cache = new QueryClient({
-    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-  });
-  state.adapters = [
-    "claude_local",
-    "codex_local",
-    "opencode_local",
-    "pi_local",
-    "paperclip_runner", "cursor_cloud", "cursor", "gemini_local", "kimi_local", "grok_local", "hermes_local", "hermes_gateway",
-  ].map((type) => ({ type, loaded: true, disabled: false }));
-  api.adapterModels.mockResolvedValue([]);
-  api.list.mockResolvedValue([{ id: "ceo", role: "ceo", status: "idle" }]);
-  api.getAdapterAuthSignal.mockResolvedValue({ status: "present" });
-  api.getClaudeOAuthTokenStatus.mockRejectedValue(new ApiError("Not found", 404, null));
-  api.testEnvironment.mockResolvedValue(pass);
-  api.hire.mockImplementation(async (_company, input) => ({
-    agent: { ...input, id: "new-agent", status: "idle", urlKey: "atlas" },
-  }));
-  envApi.list.mockResolvedValue([
-    { id: "local-1", name: "Local", driver: "local", config: {} },
-  ]);
-  envApi.capabilities.mockResolvedValue({ sandboxProviders: {} });
-  settings.get.mockResolvedValue({ defaultEnvironmentId: "local-1" });
-  settings.getExperimental.mockResolvedValue({ enableNativeRunner: true });
-  settings.getGeneral.mockResolvedValue({ executionMode: "any" });
-  secrets.list.mockResolvedValue([]);
-  secrets.create.mockResolvedValue({ id: "org-secret-1" });
-  secrets.remove.mockResolvedValue({ ok: true });
-  secrets.listMyUserSecrets.mockResolvedValue([]);
-  secrets.createUserSecretDefinition.mockResolvedValue({ id: "definition-1" });
-  secrets.createMyUserSecret.mockResolvedValue({ id: "secret-1" });
-  secrets.removeUserSecretDefinition.mockResolvedValue({ ok: true });
-});
-afterEach(async () => {
-  await act(async () => root.unmount());
-  cache.clear();
-  container.remove();
-});
 describe("New agent setup", () => {
+  it.each([
+    ["paperclip", "Connect", "image"], ["legacy", "Connect", "image"],
+    ["paperclip", "Finish setup", "image"], ["legacy", "Finish setup", "image"],
+    ["paperclip", "Connect", "snapshot"], ["paperclip", "Finish setup", "snapshot"],
+  ] as const)("qualifies new managed Claude and saves measured %s defaults through %s from %s", async (measured, step, source) => {
+    const image = `registry.example.test/runtime@sha256:${"a".repeat(64)}`;
+    envApi.list.mockResolvedValue([{ id: "sandbox-1", driver: "sandbox", config: { provider: "daytona", ...(source === "snapshot" ? { snapshot: "managed-snapshot" } : { image }) } }]);
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "sandbox-1" });
+    settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true, enableNativeRunner: false });
+    api.getClaudeOAuthTokenStatus.mockResolvedValue({ secretId: "saved-oauth", latestVersion: 1 });
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "claude_local"
+      ? { ...adapter, defaultRunner: "legacy", supportedRunners: ["legacy"] } : adapter);
+    let qualified = false;
+    const calls: string[] = [];
+    adapterApi.list.mockImplementation(async context => {
+      if (context?.companyId) calls.push(qualified ? "discovery-after" : "discovery-before");
+      return state.adapters;
+    });
+    envApi.probe.mockImplementation(async () => {
+      calls.push("platform"); qualified = true;
+      state.adapters = state.adapters.map((adapter: any) => adapter.type === "claude_local"
+        ? { ...adapter, defaultRunner: measured, supportedRunners: [measured] } : adapter);
+      return { ok: true, driver: "sandbox", summary: "Measured image", details: { platformQualificationRecorded: true, leaseId: "owned-platform-lease" } };
+    });
+    api.testEnvironment.mockImplementation(async () => { calls.push("adapter"); return pass; });
+    await render("claude_local");
+    expect(envApi.probe).not.toHaveBeenCalled();
+    if (step === "Connect") {
+      await click("ClaudeSubscription");
+      calls.length = 0;
+      await click("Use saved subscription");
+    } else {
+      managedApi.list.mockResolvedValue({ currentUserId: "user-1", connections: [{
+        id: "00000000-0000-4000-8000-000000000021", grantId: "00000000-0000-4000-8000-000000000022", companyId: "company-1",
+        provider: "openrouter", method: "api_key", name: "Company OpenRouter", ownership: "shared", isDefault: false, status: "connected",
+        routing: { kind: "openrouter", protocol: "messages", auth: "bearer", models: [] },
+      }] } as any);
+      await click("AdvancedCustom Gateway");
+      const picker = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+      await act(async () => picker.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+      await settle();
+      const option = [...document.querySelectorAll('[role="option"]')].find(node => node.textContent?.includes("Company OpenRouter")) as HTMLElement;
+      await act(async () => option.click());
+      await settle();
+      await click("Use connection");
+      expect(api.testEnvironment).not.toHaveBeenCalled();
+      calls.length = 0;
+    }
+    await click("Finish setup");
+    expect(calls).toEqual(["discovery-before", "platform", "discovery-after", "adapter"]);
+    expect(envApi.probe).toHaveBeenCalledExactlyOnceWith("sandbox-1", "company-1");
+    expect(api.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    const tested = api.testEnvironment.mock.calls[0][2].adapterConfig;
+    const saved = api.hire.mock.calls[0][1];
+    expect(saved).not.toHaveProperty("runner");
+    expect(saved.adapterConfig).toEqual(tested);
+    if (measured === "paperclip") expect(tested).not.toHaveProperty("maxTurnsPerRun");
+    else expect(tested.maxTurnsPerRun).toBe(1000);
+  });
+
+  it("drops a held managed Claude probe when the same environment changes configuration", async () => {
+    const config = { provider: "daytona", image: `registry.example.test/runtime@sha256:${"a".repeat(64)}` };
+    envApi.list.mockResolvedValue([{ id: "sandbox-1", driver: "sandbox", config }]);
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "sandbox-1" });
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "claude_local"
+      ? { ...adapter, defaultRunner: "legacy", supportedRunners: ["legacy"] } : adapter);
+    api.getClaudeOAuthTokenStatus.mockResolvedValue({ secretId: "saved-oauth", latestVersion: 1 });
+    let finish!: (value: object) => void;
+    envApi.probe.mockReturnValue(new Promise(resolve => { finish = resolve; }));
+    await render("claude_local");
+    await click("ClaudeSubscription");
+    await click("Use saved subscription");
+    expect(envApi.probe).toHaveBeenCalledTimes(1);
+    await act(async () => cache.setQueryData(queryKeys.environments.list("company-1"), [{ id: "sandbox-1", driver: "sandbox", config: {
+      ...config, image: `registry.example.test/runtime@sha256:${"b".repeat(64)}`,
+    } }]));
+    await settle();
+    await act(async () => finish({ ok: true, driver: "sandbox", summary: "Measured image", details: { platformQualificationRecorded: true, leaseId: "owned-lease" } }));
+    await settle();
+    expect(envApi.probe).toHaveBeenCalledTimes(1);
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+
+  it("retains the existing managed Claude platform-probe permission gate", async () => {
+    envApi.list.mockResolvedValue([{ id: "sandbox-1", driver: "sandbox", config: {
+      provider: "daytona", image: `registry.example.test/runtime@sha256:${"a".repeat(64)}`,
+    } }]);
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "sandbox-1" });
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "claude_local"
+      ? { ...adapter, defaultRunner: "legacy", supportedRunners: ["legacy"] } : adapter);
+    api.getClaudeOAuthTokenStatus.mockResolvedValue({ secretId: "saved-oauth", latestVersion: 1 });
+    envApi.probe.mockRejectedValue(new Error("Instance admin access required"));
+    await render("claude_local");
+    await click("ClaudeSubscription");
+    await click("Use saved subscription");
+    expect(container.textContent).toContain("Instance admin access required");
+    expect(envApi.probe).toHaveBeenCalledTimes(1);
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+
+  it("waits for the current instance default instead of testing cached SSH discovery", async () => {
+    let finish!: (value: object) => void;
+    settings.get.mockReturnValue(new Promise<object>(resolve => { finish = resolve; }));
+    const environments = [
+      { id: "local-1", name: "Local", driver: "local", config: {} },
+      { id: "linux-ssh", name: "SSH", driver: "ssh", config: {} },
+    ];
+    envApi.list.mockResolvedValue(environments);
+    cache.setQueryData(queryKeys.environments.list("company-1"), environments);
+    cache.setQueryData(queryKeys.instance.settings, { defaultEnvironmentId: "linux-ssh" });
+    adapterApi.list.mockImplementation(async (context?: { environmentId?: string | null }) => state.adapters.map((adapter: any) => adapter.type === "claude_local"
+      ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: context?.environmentId === "local-1" ? "paperclip" : "legacy" } : adapter));
+    await render("claude_local");
+    await connect("Claude");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    expect(api.hire).not.toHaveBeenCalled();
+    await act(async () => finish({ defaultEnvironmentId: "local-1" }));
+    await settle();
+    await connect("Claude");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(api.testEnvironment.mock.calls[0][2].environmentId).toBe("local-1");
+    expect(api.hire.mock.calls[0][1].adapterConfig).not.toHaveProperty("maxTurnsPerRun");
+  });
+
+  it("keeps the API key draft while waiting for refreshed discovery", async () => {
+    state.adapters = state.adapters.map((adapter: any) => adapter.type === "claude_local"
+      ? { ...adapter, defaultRunner: "paperclip", supportedRunners: ["paperclip", "legacy"] } : adapter);
+    await render("claude_local");
+    await click("ClaudeAPI key");
+    await fill("API key", "example-test-secret");
+    const draft = container.querySelector('[aria-label="API key"]') as HTMLInputElement;
+    let finish!: (value: object[]) => void;
+    adapterApi.list.mockReturnValue(new Promise<object[]>(resolve => { finish = resolve; }));
+    let refresh!: Promise<void>;
+    await act(async () => {
+      refresh = cache.invalidateQueries({ queryKey: queryKeys.adapters.availability("company-1", "local-1") });
+    });
+    await settle();
+    expect(container.querySelector('[aria-label="API key"]')).toBe(draft);
+    expect(draft.value).toBe("example-test-secret");
+    await click("Connect");
+    expect(managedApi.create).not.toHaveBeenCalled();
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    await act(async () => { finish(state.adapters); await refresh; });
+    await settle();
+    expect(container.querySelector('[aria-label="API key"]')).toBe(draft);
+    expect(draft.value).toBe("example-test-secret");
+    await click("Connect");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    expect(api.hire.mock.calls[0][1].adapterConfig).not.toHaveProperty("maxTurnsPerRun");
+  });
+
+  it.each(["paperclip", "legacy", undefined] as const)("uses Claude's discovered %s default for Auto setup and hire", async (defaultRunner) => {
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    state.adapters = (state.adapters as any[]).map(adapter => adapter.type === "claude_local"
+      ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner } : adapter);
+    await render("claude_local");
+    await connect("Claude");
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    for (const config of [api.testEnvironment.mock.calls[0][2].adapterConfig, api.hire.mock.calls[0][1].adapterConfig]) {
+      if (defaultRunner === "paperclip") expect(config).not.toHaveProperty("maxTurnsPerRun");
+      else expect(config.maxTurnsPerRun).toBe(1000);
+      expect(config).not.toHaveProperty("resolvedRunner");
+    }
+    expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
+  });
+
+  it("finishes ordinary native Claude API setup when the key is verified without a CLI hello", async () => {
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    state.adapters = (state.adapters as any[]).map(adapter => adapter.type === "claude_local"
+      ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter);
+    api.testEnvironment.mockResolvedValue({ ...pass, adapterType: "paperclip_runner", checks: [
+      { code: "acpx_runtime_ready", level: "info", message: "Runtime verified" },
+      { code: "ai_connection_api_key_reverified", level: "info", message: "Key verified" },
+    ] });
+    await render("claude_local");
+    await connect("Claude");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(api.hire).toHaveBeenCalledTimes(1);
+    expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
+  });
+
+  it("records an explicit legacy choice when it matches the Windows default, then preserves it on Linux", async () => {
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "local-1" });
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Windows", driver: "local", status: "active", config: {} },
+      { id: "linux-ssh", name: "Linux", driver: "ssh", status: "active", config: {} },
+    ]);
+    adapterApi.list.mockImplementation(async (context?: { environmentId?: string | null }) => state.adapters.map((adapter: any) =>
+      adapter.type === "codex_local" ? { ...adapter, supportedRunners: context?.environmentId === "linux-ssh" ? ["paperclip", "legacy"] : ["legacy"], defaultRunner: context?.environmentId === "linux-ssh" ? "paperclip" : "legacy" } : adapter));
+    await render("codex_local");
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    const runner = container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!;
+    expect(runner.textContent).toBe("Legacy runner (default)");
+    await act(async () => runner.click());
+    await act(async () => document.querySelector<HTMLButtonElement>('[role="option"][data-value="legacy"]')!.click());
+    await connect("OpenAI");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ runner: "legacy" }));
+    const environment = container.querySelector<HTMLSelectElement>('select[aria-label="Environment"]')!;
+    await act(async () => { environment.value = "linux-ssh"; environment.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    await connect("OpenAI");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ environmentId: "linux-ssh", runner: "legacy" }));
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ adapterType: "codex_local", runner: "legacy" });
+  });
+
+  it("preserves an old native Codex setup link on an unqualified target with the experiment off", async () => {
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    adapterApi.list.mockImplementation(async () => state.adapters.map((adapter: any) => adapter.type === "codex_local" ? { ...adapter, supportedRunners: ["legacy"], defaultRunner: "legacy" } : adapter));
+    api.testEnvironment.mockImplementation(async (_company, adapterType, payload) => {
+      if (adapterType === "codex_local" && payload.runner === "paperclip") throw new Error("This target is not qualified for a new native default.");
+      return { ...pass, adapterType, checks: [{ code: "paperclip_runner_codex_hello_probe_passed", level: "info", message: "Native runtime replied" }] };
+    });
+    await render("paperclip_runner", "codex");
+    await connect("OpenAI");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ runner: "paperclip", adapterConfig: expect.objectContaining({ provider: "codex" }) }));
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { provider: "codex" } });
+  });
+
+  it("discovers the runner for the selected target and rechecks after changing environments", async () => {
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "linux-ssh" });
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Windows", driver: "local", status: "active", config: {} },
+      { id: "linux-ssh", name: "Linux", driver: "ssh", status: "active", config: {} },
+    ]);
+    adapterApi.list.mockImplementation(async (context?: { companyId: string; environmentId?: string | null }) => state.adapters.map((adapter: any) =>
+      adapter.type === "codex_local" ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: context?.environmentId === "linux-ssh" ? "paperclip" : "legacy" } : adapter));
+    await render("codex_local");
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    expect(container.querySelector('[aria-label="Runner"]')?.textContent).toBe("Paperclip Runner (default)");
+    expect(adapterApi.list).toHaveBeenCalledWith({ companyId: "company-1", environmentId: "linux-ssh" });
+    await connect("OpenAI");
+    expect(api.testEnvironment.mock.calls[0][2].environmentId).toBe("linux-ssh");
+    const environment = container.querySelector<HTMLSelectElement>('select[aria-label="Environment"]')!;
+    await act(async () => {
+      environment.value = "local-1";
+      environment.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await settle();
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    expect(container.querySelector('[aria-label="Runner"]')?.textContent).toBe("Legacy runner (default)");
+    expect(adapterApi.list).toHaveBeenCalledWith({ companyId: "company-1", environmentId: "local-1" });
+    await connect("OpenAI");
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenCalledTimes(2);
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ environmentId: "local-1" }));
+    expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
+  });
+  it("surfaces failed target discovery without guessing a default and permits explicit legacy recovery", async () => {
+    adapterApi.list.mockImplementation(async (context?: object) => {
+      if (context) throw new Error("SSH target is unavailable. Check its connection.");
+      return state.adapters;
+    });
+    await render("codex_local");
+    await settle();
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    expect(container.querySelector('[aria-label="Runner"]')?.textContent).toBe("Automatic selection unavailable");
+    expect(container.textContent).toContain("SSH target is unavailable. Check its connection.");
+    expect(container.textContent).not.toContain("Legacy runner (default)");
+    expect(container.textContent).toContain("Retry runner discovery");
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!.click());
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent === "Legacy runner")!.click());
+    await connect("OpenAI");
+    await click("Finish setup");
+    expect(api.testEnvironment.mock.calls[0][2]).toMatchObject({ runner: "legacy" });
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ runner: "legacy" });
+  });
+  it.each(["Linux x64", "Mac arm64", "Mac x64"])("uses automatic Codex resolution through setup and hire without the experimental gate (%s)", async name => {
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    envApi.list.mockResolvedValue([{ id: "local-1", name, driver: "local", status: "active", config: {} }]);
+    state.adapters = (state.adapters as any[]).map(adapter => adapter.type === "codex_local" ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter);
+    await render("codex_local");
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    expect(container.querySelector('[aria-label="Runner"]')?.textContent).toBe("Paperclip Runner (default)");
+    await connect("OpenAI");
+    await click("Finish setup");
+    expect(api.hire.mock.calls[0][1].adapterType).toBe("codex_local");
+    expect(api.hire.mock.calls[0][1]).not.toHaveProperty("runner");
+    expect(api.testEnvironment.mock.calls[0][1]).toBe("codex_local");
+    expect(api.testEnvironment.mock.calls[0][2]).not.toHaveProperty("runner");
+    expect(api.hire.mock.calls[0][1].adapterConfig.dangerouslyBypassApprovalsAndSandbox).not.toBe(true);
+  });
+
+  it("allows the explicit legacy override before authentication and rechecks it after a runner change", async () => {
+    state.adapters = (state.adapters as any[]).map(adapter => adapter.type === "codex_local" ? { ...adapter, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" } : adapter);
+    await render("codex_local");
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!.click());
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent === "Legacy runner")!.click());
+    await connect("OpenAI");
+    expect(api.testEnvironment.mock.calls[0][2].runner).toBe("legacy");
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Runner"]')!.click());
+    await act(async () => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(option => option.textContent === "Paperclip Runner (default)")!.click());
+    await click("Finish setup");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ runner: "paperclip" }));
+    expect(api.hire.mock.calls[0][1]).toMatchObject({ adapterType: "codex_local", runner: "paperclip" });
+  });
   it("creates Dot through its independent choice without CLI or model setup, then routes to pairing", async () => {
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false, enableOpenAiDot: true, enablePublicMcp: true });
     await render("paperclip_runner", "openai_dot");
@@ -294,11 +411,21 @@ describe("New agent setup", () => {
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1].defaultEnvironmentId).toBe("grok-sandbox");
   });
-  it.each([false, true])("blocks direct runner setup links when the experiment is disabled (cloud=%s)", async (cloud) => {
+  it.each([false, true])("keeps other native setup links gated when the experiment is disabled (cloud=%s)", async (cloud) => {
     cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: cloud } });
     settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
-    await render("paperclip_runner");
+    await render("paperclip_runner", "grok");
     expect(container.textContent).toContain("This adapter is unavailable");
+    expect(api.hire).not.toHaveBeenCalled();
+  });
+  it.each([false, true])("restores native Claude setup intent and its connection flow with experiment=false (cloud=%s)", async cloud => {
+    cache.setQueryData(queryKeys.health, { status: "ok", cloud: { managed: cloud } });
+    settings.getExperimental.mockResolvedValue({ enableNativeRunner: false });
+    await render("paperclip_runner", "claude");
+    expect(container.textContent).not.toContain("This adapter is unavailable");
+    expect(container.textContent).toContain("Claude Code");
+    expect(container.textContent).toContain("Paperclip Runner");
+    expect(container.textContent).toContain("Connect a model");
     expect(api.hire).not.toHaveBeenCalled();
   });
   it("blocks direct setup links for unsupported Cloud adapters", async () => {
@@ -464,14 +591,7 @@ describe("New agent setup", () => {
       adapterType: "pi_local",
       createdAgentId: "saved-agent",
     });
-    await act(async () =>
-      root.render(
-        <QueryClientProvider client={cache}>
-          <TooltipProvider><NewAgent /></TooltipProvider>
-        </QueryClientProvider>,
-      ),
-    );
-    await settle();
+    await renderCurrentParams();
     expect(container.textContent).toContain("Your agent is ready");
     expect(container.textContent).not.toContain("Finish setup");
     expect(api.hire).not.toHaveBeenCalled();
@@ -725,7 +845,10 @@ describe("New agent setup", () => {
       else await fill("Model", "openrouter/anthropic/claude-sonnet-4.6");
       await click("Finish setup");
       const config = api.hire.mock.calls[0][1].adapterConfig;
-      expect(config.provider).toBe(runner === "claude" ? "acpx" : runner);
+      if (runner === "codex") {
+        expect(api.hire.mock.calls[0][1]).toMatchObject({ adapterType: "paperclip_runner", runner: "paperclip" });
+        expect(api.testEnvironment).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ runner: "paperclip" }));
+      } else expect(config.provider).toBe(runner === "claude" ? "acpx" : runner);
       if (runner === "claude") {
         expect(config.acpxAgent).toBe("claude");
         expect(config.model).toMatch(/^claude-/);
@@ -793,6 +916,7 @@ describe("New agent setup", () => {
   });
   it("blocks a disabled runner even when opened through a URL", async () => {
     state.adapters = [
+      { type: "codex_local", loaded: true, disabled: false },
       { type: "paperclip_runner", loaded: true, disabled: true },
     ];
     await render("paperclip_runner");

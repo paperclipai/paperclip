@@ -219,6 +219,7 @@ function TaskChatBubbleContent({
       : Math.max(0, mediaRefs.findIndex((ref) => ref.url === lightboxSrc));
   return (
     <div
+      data-conversation-message={isHuman ? "human" : "agent"}
       className={cn(
         "flex w-full flex-col gap-1",
         animateEntry && "tc-enter-bubble",
@@ -240,6 +241,7 @@ function TaskChatBubbleContent({
       ) : null}
       {bodyText.length > 0 ? (
         <div
+          data-conversation-text={isHuman ? (isOwnMessage ? "human" : "progress") : item.channel === "progress" ? "progress" : "final"}
           // Stable hook so the TaskChatLab bubble-treatment explorations
           // (PAP-501) can scope background/border overrides to the agent
           // bubble body without touching the live thread.

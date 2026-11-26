@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
+import { deduplicateToolDescriptors, ToolGatewayHttpError, type ToolGatewayDescriptor, type ToolGatewayService } from "../tool-gateway.js";
 
 type WorkMode = "standard" | "planning" | "ask";
 type ToolDefinition = Record<string, unknown>;
@@ -14,7 +14,7 @@ const SCHEMA_CHUNK_CHARACTERS = 64 * 1024;
 const ON_DEMAND_TOOLS: ToolDefinition[] = [
   {
     name: SEARCH_TOOL,
-    description: "Search your assigned app tools by name or description and read their input schemas. Use an empty query to browse. Pass nextOffset to fetch the next page. A large definition returns inputSchemaRef: set schemaTool to that name with an empty query, then pass nextSchemaOffset until null. Concatenate schemaJson chunks and parse JSON. Use paperclip_call_assigned_tool with a returned name and arguments matching its inputSchema.",
+    description: "Search your assigned app tools by name or description and read their input schemas. Pass {\"query\":\"search terms\"}, or an empty query to browse. Omit unused optional fields instead of sending null. To fetch the next page, pass the returned nextOffset as offset. A large definition returns inputSchemaRef: set schemaTool to that name with an empty query, then pass the returned nextSchemaOffset as schemaOffset until null. Concatenate schemaJson chunks and parse JSON. Use paperclip_call_assigned_tool with a returned name and arguments matching its inputSchema.",
     inputSchema: {
       type: "object", additionalProperties: false,
       properties: {
@@ -92,9 +92,14 @@ export async function createAssignedMcpTools(input: {
     bearerToken: input.bearerToken,
   });
   const tools = new Map<string, ToolGatewayDescriptor>();
-  for (const descriptor of listed) {
+  for (const descriptor of deduplicateToolDescriptors(listed)) {
     const name = assignedToolName(descriptor.name);
-    if (tools.has(name)) throw new Error("assigned_mcp_tool_name_collision");
+    const previous = tools.get(name);
+    if (previous) {
+      throw new ToolGatewayHttpError(409,
+        `Assigned MCP tool name collision for ${JSON.stringify([previous.name, descriptor.name])}.`,
+        "assigned_mcp_tool_name_collision");
+    }
     tools.set(name, descriptor);
   }
   const permits = (tool: ToolGatewayDescriptor, mode: WorkMode = input.workMode ?? "standard") => mode === "standard" || tool.risk === "read";
@@ -114,7 +119,7 @@ export async function createAssignedMcpTools(input: {
     }
     // Intersect fresh grants with this session's pinned catalog. Revocations
     // take effect immediately; newly assigned tools require a new session.
-    const current = new Map((await input.gateway.listToolsForNamedGateway({
+    const current = new Map(deduplicateToolDescriptors(await input.gateway.listToolsForNamedGateway({
       gatewayPublicId: input.gatewayPublicId, bearerToken: input.bearerToken,
     })).map(tool => [tool.name, tool]));
     const terms = args.query.toLowerCase().trim().split(/\s+/).filter(Boolean);

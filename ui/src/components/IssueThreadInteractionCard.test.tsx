@@ -214,6 +214,10 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.querySelector('[data-testid="connection-intent-actions"]')).toBeTruthy();
     expect(host.textContent).toContain("Connect");
     expect(host.textContent).toContain("Not now");
+    const labels = Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim());
+    expect(labels).toContain("Connect");
+    expect(labels).toContain("Not now");
+    expect(host.textContent).toContain("Access is added only for this agent");
     const loadButton = Array.from(host.querySelectorAll("button")).find((button) =>
       button.textContent?.trim() === "Connect",
     );
@@ -241,22 +245,15 @@ describe("IssueThreadInteractionCard", () => {
     expect(dialog?.textContent).toContain("Complete connection setup without leaving this task.");
   });
 
-  it("keeps connection resolution controls exclusive to the addressed user", () => {
-    const host = renderCard({
-      interaction: pendingConnectionIntentInteraction,
-      currentUserId: "another-user",
-    });
-
-    expect(host.querySelector('[data-testid="connection-intent-waiting"]')).toBeTruthy();
-    expect(Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim())).not.toContain("Connect");
-    expect(host.textContent).not.toContain("Not now");
-  });
+  ;
 
   it("exposes pending question options as selectable radio and checkbox controls", () => {
     const host = renderCard({
       interaction: pendingAskUserQuestionsInteraction,
       onSubmitInteractionAnswers: vi.fn(),
     });
+
+    expect(host.childElementCount).toBeGreaterThan(0);
 
     const singleGroup = host.querySelector('[role="radiogroup"]');
     expect(singleGroup?.getAttribute("aria-labelledby")).toBe(
@@ -433,15 +430,7 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).toBe("");
   });
 
-  it("still renders a legitimate ask_user_questions card", () => {
-    const host = renderCard({
-      interaction: pendingAskUserQuestionsInteraction,
-      onSubmitInteractionAnswers: vi.fn(),
-    });
-
-    expect(host.childElementCount).toBeGreaterThan(0);
-    expect(host.querySelectorAll('[role="radio"]').length).toBeGreaterThan(0);
-  });
+  ;
 
   it("keeps a closed native select set closed while preserving direct-question defaults", () => {
     const closed = {
@@ -1589,17 +1578,7 @@ describe("IssueThreadInteractionCard connection-authorization card", () => {
 describe("IssueThreadInteractionCard connection-intent card", () => {
   const USER_LABELS = new Map([[issueThreadInteractionFixtureMeta.currentUserId, "Carol"]]);
 
-  it("offers the addressed user the shared setup entry point and Not now", () => {
-    const host = renderCard({
-      interaction: pendingConnectionIntentInteraction,
-      currentUserId: issueThreadInteractionFixtureMeta.currentUserId,
-    });
-    expect(host.querySelector('[data-testid="connection-intent-actions"]')).not.toBeNull();
-    const labels = Array.from(host.querySelectorAll("button")).map((button) => button.textContent?.trim());
-    expect(labels).toContain("Connect");
-    expect(labels).toContain("Not now");
-    expect(host.textContent).toContain("Access is added only for this agent");
-  });
+  ;
 
   it("shows another viewer only who it is waiting for", () => {
     const host = renderCard({
@@ -1612,6 +1591,7 @@ describe("IssueThreadInteractionCard connection-intent card", () => {
     expect(host.querySelector('[data-testid="connection-intent-actions"]')).toBeNull();
     expect(host.querySelectorAll("button")).toHaveLength(0);
     expect(host.innerHTML).not.toContain("authorizationUrl");
+    expect(host.textContent).not.toContain("Not now");
   });
 
   it("renders retry and connected terminal states without generic confirmation actions", () => {

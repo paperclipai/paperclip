@@ -2,7 +2,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { inspectIdleSpool, inspectIdleQuotaRecovery, idleQuotaRecoveryPath, readIdleLocalWork, markIdleIngressTracked, markIdleStartupComplete, registerIdleSpoolDirectory } from "../services/idle-local-work.js";
+import { inspectIdleSpool, inspectIdleQuotaRecovery, idleQuotaRecoveryPath, readIdleLocalWork, markIdleIngressTracked, markIdleStartupComplete, registerIdleSpoolDirectory, registerIdleLocalWorkProbe } from "../services/idle-local-work.js";
 
 let root: string;
 beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), "idle-spool-")); });
@@ -31,6 +31,22 @@ describe("idle cleanup inspection", () => {
     vi.spyOn(fs, "opendir").mockRejectedValue(Object.assign(new Error("private path"), { code: "EACCES" }));
     expect(await inspectIdleSpool(root)).toBe("unknown");
   });
+  it("retains failed local recovery and fails closed on probe errors", async () => {
+    vi.stubEnv("PAPERCLIP_HOME", root);
+    markIdleIngressTracked(); markIdleStartupComplete({ scheduledBackups: false });
+    let pending = true;
+    const unregister = registerIdleLocalWorkProbe(() => pending ? "present" : "none");
+    try {
+      expect(await readIdleLocalWork()).toBe("present");
+      pending = false;
+      expect(await readIdleLocalWork()).toBe("none");
+    } finally { unregister(); }
+    const removeBroken = registerIdleLocalWorkProbe(() => { throw new Error("unknown deadline"); });
+    try { expect(await readIdleLocalWork()).toBe("unknown"); }
+    finally { removeBroken(); }
+    expect(await readIdleLocalWork()).toBe("none");
+  });
+
   it("checks custom spool directories as well as the default paths", async () => {
     vi.stubEnv("PAPERCLIP_HOME", root);
     vi.stubEnv("SANDBOX_ORPHAN_CLEANUP_SPOOL_DIR", path.join(root, "orphans"));

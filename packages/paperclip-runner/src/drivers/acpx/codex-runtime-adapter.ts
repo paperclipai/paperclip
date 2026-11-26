@@ -1,4 +1,6 @@
+import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
+import { usesPreconfiguredHome } from "../preconfigured-home.js";
 import type { ChildProcess } from "node:child_process";
 
 import {
@@ -187,6 +189,8 @@ export async function openQualifiedAcpxRuntime(
     );
   }
 
+  const preconfigured = usesPreconfiguredHome(options.launchEnvironment);
+  if (preconfigured && options.profile.agent === "codex") throw new Error("preconfigured ACPX Codex cannot protect Runner state; use native Codex or isolated mode");
   const createRegistry = dependencies.createRegistry ?? createAgentRegistry;
   const createStore = dependencies.createStore ?? createRuntimeStore;
   const createRuntime = dependencies.createRuntime ?? createAcpRuntime;
@@ -305,6 +309,8 @@ export async function openQualifiedAcpxRuntime(
   const modeBinding = createAcpxModeBinding(options.profile.agent, options.mode);
   const selectedPiThinkingLevel = resolvePiThinkingLevel(options.profile.agent, options.piThinkingLevel);
   const piThinking = selectedPiThinkingLevel ? createPiThinkingAdmission(selectedPiThinkingLevel, { restoring: options.restoringSession }) : undefined;
+  const selectedClaudeEffort = resolveClaudeEffort(options.profile.agent, options.claudeEffort);
+  const claudeEffort = selectedClaudeEffort ? createClaudeEffortAdmission(selectedClaudeEffort) : undefined;
   const cursorInstructions = options.profile.agent === "cursor"
     ? createCursorInstructionAdmission(options.systemInstructions)
     : null;
@@ -316,6 +322,7 @@ export async function openQualifiedAcpxRuntime(
       return (direction: "inbound" | "outbound", message: unknown) => { instructions?.(direction, message); mode?.(direction, message); };
     } } : {}),
     ...(piThinking ? { protocolGuardFactory: () => piThinking.createGuard() } : {}),
+    ...(claudeEffort ? { protocolGuardFactory: () => claudeEffort.createGuard() } : {}),
     sessionStore,
     agentRegistry: createRegistry({
       // Preserve Claude's ACP capability identity. This is metadata only: the
@@ -354,17 +361,21 @@ export async function openQualifiedAcpxRuntime(
       if (!extensionNotifications.has(method) || !active?.onNotification || !ownsExtensionTurn(active, params)) return;
       active.onNotification(method, params.sessionId === undefined ? { ...params, sessionId: active.sessionId } : params);
     },
-    nonInteractivePermissions: "fail",
+    nonInteractivePermissions: preconfigured ? "deny" : "fail",
     permissionPolicy: {
       ...options.permissionPolicy,
-      autoApprove: options.permissionPolicy.autoApprove
+      ...(preconfigured ? { defaultAction: "deny" as const } : {}),
+      autoApprove: !preconfigured && options.permissionPolicy.autoApprove
         ? [...options.permissionPolicy.autoApprove]
         : undefined,
-      escalate: options.permissionPolicy.escalate
+      escalate: !preconfigured && options.permissionPolicy.escalate
         ? [...options.permissionPolicy.escalate]
         : undefined,
     },
-    mcpServers: options.mcpServers.map((server) => ({
+    mcpServers: options.mcpServers.map((server) => "command" in server ? {
+      name: server.name, command: server.command, args: server.args,
+      env: Object.entries(server.env).map(([name, value]) => ({ name, value })),
+    } : ({
       type: "http" as const,
       name: server.name,
       url: server.url,
@@ -373,6 +384,7 @@ export async function openQualifiedAcpxRuntime(
       ],
     })),
     onPermissionRequest: async (request, context) => {
+      if (preconfigured) return { outcome: "reject_once" };
       const rawSessionId = objectRecord(request.raw).sessionId;
       if (!extensionBoundary.sessionIds.has(request.sessionId)
         || (rawSessionId !== undefined && rawSessionId !== request.sessionId)) {
@@ -430,11 +442,15 @@ export async function openQualifiedAcpxRuntime(
       ...definedEnvironment(options.launchEnvironment),
       ...(options.profile.agent === "claude"
         ? {
-            PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1",
+            ...(preconfigured ? {
+              // Advertise the requested exact ID without rewriting user settings.
+              ANTHROPIC_MODEL: options.profile.reportedModelId,
+              ANTHROPIC_CUSTOM_MODEL_OPTION: options.profile.reportedModelId,
+            } : { PAPERCLIP_ACPX_ISOLATED_CONTEXT: "1" }),
             // This URL comes from the runner-owned authenticated tool bridge,
             // never provider-supplied permission-request metadata.
             PAPERCLIP_ACPX_TASK_TOOL_BRIDGE_URL: options.mcpServers.find(
-              (server) => server.runnerOwned && server.name === "paperclip",
+              (server): server is Extract<typeof server, { url: string }> => "url" in server && server.runnerOwned && server.name === "paperclip",
             )?.url ?? "",
           }
         : {}),
@@ -474,6 +490,11 @@ export async function openQualifiedAcpxRuntime(
           // Forward the requested model unchanged; verify the provider's
           // reported selection before admitting a billable prompt.
           model: options.profile.reportedModelId,
+          ...(preconfigured && options.profile.agent === "claude" ? {
+            allowedTools: options.mcpServers
+              .filter(server => server.runnerOwned && server.name.startsWith("paperclip_runner_"))
+              .map(server => `mcp__${server.name}__*`),
+          } : {}),
           ...(options.systemInstructions
             ? { systemPrompt: { append: options.systemInstructions } }
             : {}),
@@ -527,6 +548,23 @@ export async function openQualifiedAcpxRuntime(
           await commandLaunches.refreshConsumedCommand?.();
         }
         return ensuredHandle;
+      }) : claudeEffort ? ensuredSession.then(async (ensuredHandle) => {
+        handle = ensuredHandle;
+        options.signal?.throwIfAborted();
+        if (!claudeEffort.isReady()) {
+          if (!runtime.setConfigOption) throw new Error("Claude effort admission requires native configuration");
+          const spawnsBeforeControl = commandLaunches.count;
+          await runtime.setConfigOption({ handle: ensuredHandle, key: "effort", value: selectedClaudeEffort! });
+          claudeEffort.assertReady();
+          await children.verifyLifetimeOwnership();
+          options.signal?.throwIfAborted();
+          // Fresh sessions retain their initialized provider. Only a cold
+          // control connection consumes another single-use launch snapshot.
+          if (commandLaunches.count > spawnsBeforeControl) {
+            await commandLaunches.refreshConsumedCommand?.();
+          }
+        }
+        return ensuredHandle;
       }) : ensuredSession)
     .catch((error: unknown) => {
       throw classifySessionEnsureFailure(error);
@@ -543,6 +581,7 @@ export async function openQualifiedAcpxRuntime(
     cursorInstructions?.assertReady();
     modeBinding?.assertReady();
     piThinking?.assertReady();
+    claudeEffort?.assertReady();
     // A provider can answer only after the verified sentinel is armed, but do
     // not admit the session until the owner has observed that exact handoff.
     await children.verifyLifetimeOwnership();
@@ -597,7 +636,7 @@ export async function openQualifiedAcpxRuntime(
     return runtimePort(
       runtime,
       handle,
-      { ...requireIdentity(handle), ...(modeBinding ? { mode: modeBinding.selectedMode } : {}), ...(selectedPiThinkingLevel ? { piThinkingLevel: selectedPiThinkingLevel } : {}) },
+      { ...requireIdentity(handle), ...(modeBinding ? { mode: modeBinding.selectedMode } : {}), ...(selectedPiThinkingLevel ? { piThinkingLevel: selectedPiThinkingLevel } : {}), ...(selectedClaudeEffort ? { claudeEffort: selectedClaudeEffort } : {}) },
       baseStore,
       children,
       runtimeCloseTimeoutMs,

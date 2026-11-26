@@ -3,6 +3,66 @@
   "evidenceLevel": "Official documentation and public MCP metadata; no account-bound read/write proof. Runtime discovery never expands this allowlist.",
   "methods": [
     {
+      "app": "google-workspace",
+      "method": "paperclip-workspace",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/documents.readonly",
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/presentations.readonly",
+        "https://www.googleapis.com/auth/presentations",
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events.freebusy",
+        "https://www.googleapis.com/auth/calendar.events.readonly",
+        "https://www.googleapis.com/auth/calendar.events"
+      ],
+      "capability": "write",
+      "supportedActions": "One grant for selected Gmail, Drive (Docs, Sheets, Slides), and Calendar services. The list is the read/write selection allowlist, not the default request; default write selections request nine scopes. Chat, People, and Search are excluded. Gmail sending remains unsupported.",
+      "evidence": [
+        "https://developers.google.com/workspace/guides/configure-mcp-servers",
+        "https://developers.google.com/identity/protocols/oauth2/resources/granular-permissions"
+      ],
+      "reviewedAt": "2026-10-19",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "google-workspace",
+      "method": "customer-workspace-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/drive.readonly",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/documents.readonly",
+        "https://www.googleapis.com/auth/documents",
+        "https://www.googleapis.com/auth/spreadsheets.readonly",
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/presentations.readonly",
+        "https://www.googleapis.com/auth/presentations",
+        "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
+        "https://www.googleapis.com/auth/calendar.events.freebusy",
+        "https://www.googleapis.com/auth/calendar.events.readonly",
+        "https://www.googleapis.com/auth/calendar.events"
+      ],
+      "capability": "write",
+      "supportedActions": "One grant for selected Gmail, Drive (Docs, Sheets, Slides), and Calendar services. The list is the read/write selection allowlist, not the default request; default write selections request nine scopes. Chat, People, and Search are excluded. Gmail sending remains unsupported.",
+      "evidence": [
+        "https://developers.google.com/workspace/guides/configure-mcp-servers",
+        "https://developers.google.com/identity/protocols/oauth2/resources/granular-permissions"
+      ],
+      "reviewedAt": "2026-10-19",
+      "liveProof": "not-run"
+    },
+    {
       "app": "airtable",
       "method": "mcp-oauth",
       "auth": "oauth",
@@ -649,6 +709,42 @@
         "https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
       ],
       "reviewedAt": "2026-09-30",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "gmail",
+      "method": "paperclip-archive",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.modify"
+      ],
+      "capability": "write",
+      "supportedActions": "Read Gmail and archive a thread by removing only the INBOX label.",
+      "evidence": [
+        "https://developers.google.com/workspace/gmail/api/reference/mcp/tools_list/unlabel_thread",
+        "https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-10-14",
+      "liveProof": "not-run"
+    },
+    {
+      "app": "gmail",
+      "method": "customer-archive-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.modify"
+      ],
+      "capability": "write",
+      "supportedActions": "Read Gmail and archive a thread by removing only the INBOX label.",
+      "evidence": [
+        "https://developers.google.com/workspace/gmail/api/reference/mcp/tools_list/unlabel_thread",
+        "https://gmailmcp.googleapis.com/.well-known/oauth-protected-resource/mcp/v1"
+      ],
+      "reviewedAt": "2026-10-14",
       "liveProof": "not-run"
     },
     {
@@ -2632,6 +2728,24 @@
       "reviewedAt": "2026-10-09",
       "liveProof": "Paperclip Apps qualification passed: connected the public-mcp method from the natural Connectors catalog; initialization/discovery showed exactly 4 Read actions and 0 Write actions. Restricted agent access to Just agents I pick with 0 selected; the public method requires no identity. A bounded hf_fs search of hf://docs for MCP with limit 3 succeeded (3 public doc entries; UI preview reported one successful result row) in 0.7s. After reload, the page still showed Connected, 4 actions, Read 4, Write 0, and no agents can use this connection; the same query succeeded again in 0.8s. The Test dialog reported the direct call ran as Connector Tester; no heartbeat/agent execution or other provider tool call occurred.",
       "evidenceLimit": "Qualification used only public documentation and did not use a Hugging Face account, OAuth, API key, private repo, write, inference, Space execution, or job. Anonymous endpoint was directly probed separately and returned 4 read tools, matching Paperclip discovery. The setup flow says no identity required; a one-member human audience was saved before reload, but human identity controls were not shown after reload. A root browser inspection confirmed four read actions and zero agents selected; a privacy-safe permissions screenshot was saved. Rate limits and later provider catalog changes remain outside this proof."
+    },
+    {
+      "app": "daytona",
+      "method": "workspace-diagnostics",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "All published Daytona HTTP API and Toolbox operations: account and organization resources, sandbox lifecycle, files, Git, commands, sessions, snapshots, volumes, computer use, and telemetry reads. Provider permissions still apply.",
+      "evidence": [
+        "https://www.daytona.io/docs/en/api-keys/",
+        "https://www.daytona.io/docs/openapi.json",
+        "https://www.daytona.io/docs/toolbox-openapi.json",
+        "https://github.com/daytona/clients/tree/main/cli/mcp"
+      ],
+      "reviewedAt": "2026-10-15",
+      "liveProof": "not-run",
+      "keyPermissions": "Create an organization key with the read, write, and delete permissions for the resources you intend to manage. Daytona toolbox access is available to every valid organization key, even without selected scopes. Some user or administration endpoints require provider user authentication and will reject an API key."
     }
   ]
 }

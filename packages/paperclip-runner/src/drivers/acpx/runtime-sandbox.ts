@@ -1,6 +1,8 @@
+import { AGENT_OBSERVABILITY_ENV_KEYS, codexObservabilityToml } from "../agent-observability.js";
 import { piProviderConfiguration } from "./pi-provider-config.js";
 import { configuredEnvironmentKeys } from "../../configured-environment.js";
 import { COPILOT_SYSTEM_INSTRUCTIONS_FILE } from "./copilot-profile.js";
+import { preconfiguredHomeEnvironment, usesPreconfiguredHome } from "../preconfigured-home.js";
 import { randomBytes } from "node:crypto";
 import {
   constants,
@@ -53,6 +55,7 @@ export interface AcpxRuntimeSandbox {
   cacheDirectory: string;
   agentHomeDirectory: string;
   workspaceRecordPath: string;
+  initializeOwnedConfiguration?: () => Promise<void>;
   launchEnvironment: Readonly<NodeJS.ProcessEnv>;
   persistedEnvironment: Readonly<NodeJS.ProcessEnv>;
   /** The host sandbox must protect these runtime/config paths from tools. */
@@ -370,6 +373,32 @@ export async function prepareAcpxRuntimeSandbox(input: {
     join(root, "acpx-state"),
     root,
   );
+  if (usesPreconfiguredHome(input.environment)) {
+    if (input.agent !== "claude" && input.agent !== "codex") throw new Error("preconfigured_home_unsupported_provider");
+    const homes = preconfiguredHomeEnvironment(input.environment);
+    const workspaceRecordPath = join(root, "workspace");
+    await writePrivateFile(workspaceRecordPath, `${input.binding.workspacePath}\n`);
+    const launchEnvironment = {
+      ...createSanitizedAcpxSpawnInput(input.environment, input.agent).env,
+      ...homes,
+      PAPERCLIP_ACPX_PROFILE: input.agent,
+      PAPERCLIP_RUNNER_HOME_MODE: "preconfigured",
+      ...(input.agent === "claude" ? { ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "1" } : {}),
+    };
+    return {
+      root, stateDirectory, workspaceRecordPath,
+      homeDirectory: homes.HOME,
+      configDirectory: homes.XDG_CONFIG_HOME ?? join(homes.HOME, ".config"),
+      dataDirectory: homes.XDG_DATA_HOME ?? join(homes.HOME, ".local/share"),
+      cacheDirectory: homes.XDG_CACHE_HOME ?? join(homes.HOME, ".cache"),
+      agentHomeDirectory: input.agent === "claude"
+        ? homes.CLAUDE_CONFIG_DIR ?? join(homes.HOME, ".claude")
+        : homes.CODEX_HOME ?? join(homes.HOME, ".codex"),
+      protectedPaths: Object.freeze([physicalRuntimeDirectory, ...policy.protectedPaths]),
+      launchEnvironment: Object.freeze(launchEnvironment),
+      persistedEnvironment: Object.freeze({ ...homes, PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" }),
+    };
+  }
   const homeDirectory = await ensurePrivateDirectory(join(root, "home"), root);
   const configDirectory = await ensurePrivateDirectory(
     join(root, "config"),
@@ -394,7 +423,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
     const configuration = piProviderConfiguration(input.environment);
     if (configuration) await writePrivateFile(join(agentHomeDirectory, "models.json"), configuration.json);
   }
-  if (input.agent === "claude") {
+  const initializeOwnedConfiguration = input.agent === "claude" ? async () => {
     // ACP otherwise rewrites exact IDs (including user-entered model IDs) to
     // picker aliases such as "sonnet". Its supported availableModels setting
     // preserves our requested ID through selection and model verification.
@@ -403,12 +432,13 @@ export async function prepareAcpxRuntimeSandbox(input: {
       `${JSON.stringify({
         model: input.binding.requestedModel,
         availableModels: [input.binding.requestedModel],
+        ...(input.binding.claudeEffort ? { effortLevel: input.binding.claudeEffort } : {}),
         ...((input.binding.permissionMode === "approve-reads" || input.binding.permissionMode === "approve-paperclip")
           ? { permissions: { allow: claudePaperclipPermissionRules(input.tools ?? [], input.binding.permissionMode) } }
           : {}),
       })}\n`,
     );
-  }
+  } : undefined;
   if (input.agent === "grok") {
     // Native project rules merge with global rules. Ask rules win over project
     // allows, keeping operation approval at the runner's authenticated boundary.
@@ -460,6 +490,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
         // durable runtime state. Keep this identical to the proven native
         // Codex isolation policy: broader shell-environment filtering can
         // also affect provider startup and belongs at the launch boundary.
+        ...(input.environment?.PAPERCLIP_OBSERVABILITY_CODEX_CONFIG ? [codexObservabilityToml(JSON.parse(input.environment.PAPERCLIP_OBSERVABILITY_CODEX_CONFIG))] : []),
         "[features]",
         "shell_snapshot = false",
         ...(input.environment?.PAPERCLIP_AGENT_KEY_ID || taskEnvironmentKeys.length > 0 ? [
@@ -470,7 +501,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
             ...taskEnvironmentKeys,
             // Unselected provider/config secrets keep Codex's default shell exclusions;
             // only Paperclip's scoped API token is required by Bash/curl skills.
-            ...Object.keys(input.environment ?? {}).filter(key => key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key)),
+            ...Object.keys(input.environment ?? {}).filter(key => !(AGENT_OBSERVABILITY_ENV_KEYS as readonly string[]).includes(key) && (key === "PAPERCLIP_API_KEY" || !/key|secret|token/i.test(key))),
           ])])}`,
         ] : []),
         "",
@@ -559,6 +590,7 @@ export async function prepareAcpxRuntimeSandbox(input: {
     cacheDirectory,
     agentHomeDirectory,
     workspaceRecordPath,
+    ...(initializeOwnedConfiguration ? { initializeOwnedConfiguration } : {}),
     protectedPaths,
     launchEnvironment: Object.freeze({ ...launchEnvironment }),
     persistedEnvironment: Object.freeze(persistedEnvironment),

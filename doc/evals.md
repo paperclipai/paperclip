@@ -10,6 +10,13 @@ The explicit-only [live provider connection suite](../tests/runner-e2e/PROVIDER-
 is a Product E2E workflow for fresh subscription/API-key/gateway connections,
 with attended login and independent artifact checks against local or staging targets.
 
+The bounded [personal Muse receiver probe](muse-personal-agent.md#bounded-24-hour-probe)
+uses ordinary task APIs and retained native receipts to measure unattended
+receiver behavior. It is a separate manual qualification probe, not a registered
+Product E2E campaign. Synthetic receiver tests cannot qualify personal Muse;
+real setup, clarification and fresh-conversation collaboration remain separate
+release gates.
+
 Paperclip has two live eval families with different questions, owners, and
 evidence. Choose the family before selecting a model, profile, or case.
 
@@ -156,6 +163,11 @@ checks the legacy coordination skill against human authority, missing hiring
 permission, and requester scope decisions through saved browser interactions.
 
 ## Validation ladder
+
+The native Codex Daytona `recover-controller` cell in Everyday Workflows
+requires active process and lease continuity, native receipt continuity and
+workspace finalization. See the [restart evidence contract](../tests/runner-e2e/EVERYDAY-WORKFLOWS.md).
+Catalog discovery and deterministic calibration do not establish live recovery.
 
 The explicit-only [public MCP suite](../tests/runner-e2e/PUBLIC-MCP.md) evaluates
 paid assistant delegation, later retrieval, feedback, review, uncertain retries
@@ -399,8 +411,9 @@ Remaining native chat boundaries are in the explicit-only
 `agent-chat-qualification` suite: active task reassignment, user Retry after
 verified worker process loss, and multi-turn answers grounded in actual task
 records. See the [workflow and qualification limits](../tests/runner-e2e/README.md#remaining-native-agent-chat-qualification).
-The 26 native `first-task` cells exercise onboarding before native selection
-becomes the UI default. Live results and semantic answer reviews must accompany
+The 26 native `first-task` cells inspect the production wizard's saved native
+default on qualified targets, without an API runner switch. The 26 Legacy cells
+select Legacy explicitly in Advanced. Live results and semantic answer reviews must accompany
 any qualification claim; catalog presence alone is not a pass.
 
 The explicit-only [native question/resume qualification](../tests/runner-e2e/README.md#task-continuation)
@@ -452,3 +465,9 @@ See the [suite contract](../tests/runner-e2e/README.md#conversational-confirmati
 Hiring notification accounting now also requires exact completed action attribution. Missing native/provider ID mapping is uncomparable evidence; it must not be reported as a model task regression or waived through name/order matching. The fixture waits for both known completion callbacks and settled bracketed observations, including the gap before pending outbox work becomes a wake. Strict action replay and original machine verdicts are retained separately.
 
 The explicit-only [planning guidance utility comparison](../tests/runner-e2e/PLAN-TASK-GUIDANCE.md) measures task decomposition and handoffs with current, short, and disabled skills.
+
+The explicit-only [task-workspaces Product E2E suite](../tests/runner-e2e/README.md#projectless-task-workspaces-explicit-only)
+covers projectless task files, deferred repository acquisition, controller restart
+and nested Git/dirty-file persistence on legacy local, native local and native
+Daytona OpenCode. Its three configured cells use independent filesystem, public
+API and download oracles; no live qualification is implied by fixture registration.

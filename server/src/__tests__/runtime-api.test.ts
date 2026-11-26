@@ -155,4 +155,27 @@ describe("runtime API discovery", () => {
       "fd7a:115c:a1e0::8a3a:a11d",
     ]);
   });
+
+  it("ignores a public base URL that has no scheme instead of returning the string \"null\"", () => {
+    expect(
+      choosePrimaryRuntimeApiUrl({
+        authPublicBaseUrl: "runtime-host.example.test:3100",
+        allowedHostnames: ["runtime-host.example.test"],
+        bindHost: "0.0.0.0",
+        port: 3102,
+      }),
+    ).toBe("http://runtime-host.example.test:3102");
+  });
+
+  it("builds candidates without throwing when the public base URL has no scheme", () => {
+    expect(
+      buildRuntimeApiCandidateUrls({
+        authPublicBaseUrl: "runtime-host.example.test:3100",
+        allowedHostnames: ["runtime-host.example.test"],
+        bindHost: "0.0.0.0",
+        port: 3102,
+        networkInterfacesMap: {},
+      }),
+    ).toEqual(["http://runtime-host.example.test:3102"]);
+  });
 });

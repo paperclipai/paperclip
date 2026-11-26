@@ -1,10 +1,10 @@
 import { pluginCompanySettings, pluginLifecycleAcknowledgments, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import type { ResourceLifecycleEvent } from "@paperclipai/plugin-sdk";
 import { z } from "zod";
-import { and, asc, eq, gt, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, sql } from "drizzle-orm";
 import { badRequest, conflict, forbidden, notFound } from "../errors.js";
 
-/** Durable pull delivery. Provider work stays outside tenant transactions. */
+/** Durable delivery inbox. Provider work stays outside tenant transactions. */
 export function pluginLifecycleInbox(db: Db, pluginId: string) {
   const unacknowledged = sql`NOT EXISTS (
     SELECT 1 FROM plugin_lifecycle_acknowledgments ack
@@ -31,12 +31,12 @@ export function pluginLifecycleInbox(db: Db, pluginId: string) {
   }
 
   return {
-    async list(companyId: string, limit = 50, afterId?: string): Promise<ResourceLifecycleEvent[]> {
+    async list(companyId: string, limit = 50, afterId?: string, resourceTypes?: ResourceLifecycleEvent["resourceType"][]): Promise<ResourceLifecycleEvent[]> {
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw badRequest("limit must be an integer from 1 to 100");
       if (afterId !== undefined && (typeof afterId !== "string" || !/^[1-9]\d*$/.test(afterId) || !Number.isSafeInteger(Number(afterId)))) throw badRequest("Invalid lifecycle page id");
       await assertAvailable(db, companyId);
       const rows = await db.select().from(resourceLifecycleEvents)
-        .where(and(eq(resourceLifecycleEvents.companyId, companyId), unacknowledged, firstForResource, afterId === undefined ? undefined : gt(resourceLifecycleEvents.id, Number(afterId))))
+        .where(and(eq(resourceLifecycleEvents.companyId, companyId), unacknowledged, firstForResource, inArray(resourceLifecycleEvents.resourceType, resourceTypes ?? ["agent", "project"]), afterId === undefined ? undefined : gt(resourceLifecycleEvents.id, Number(afterId))))
         .orderBy(asc(resourceLifecycleEvents.id)).limit(limit);
       return rows.map(row => ({ ...row, id: String(row.id), createdAt: row.createdAt.toISOString() })) as ResourceLifecycleEvent[];
     },

@@ -1,5 +1,10 @@
-import type { ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import type {
   AcpAgentRegistry,
@@ -29,6 +34,99 @@ const HANDLE: AcpRuntimeHandle = {
 };
 
 describe("Codex ACPX runtime adapter", () => {
+  it.each([false, true])("acknowledges configured Claude effort before admission (restoring=%s)", async restoring => {
+    const runtime = fakeRuntime();
+    const child = fakeChild();
+    const options = openOptions({ spawn: () => child, close: async () => undefined });
+    options.profile = { ...options.profile, agent: "claude" };
+    options.claudeEffort = "high";
+    options.restoringSession = restoring;
+    options.refreshConsumedCommand = vi.fn(async () => undefined);
+    let created!: AcpRuntimeOptions;
+    const spawnProvider = () => created.spawnAgent!({ command: "ignored", args: [], options: {} });
+    vi.mocked(runtime.ensureSession).mockImplementation(async () => {
+      if (!restoring) spawnProvider();
+      return HANDLE;
+    });
+    vi.mocked(runtime.setConfigOption).mockImplementation(async input => {
+      if (restoring) spawnProvider();
+      const guard = created.protocolGuardFactory!();
+      guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
+      guard("inbound", { id: 0, result: { configOptions: [{ id: "effort", currentValue: "default" }] } });
+      guard("outbound", { id: 1, method: "session/set_config_option", params: { sessionId: "backend-1", configId: input.key, value: input.value } });
+      guard("inbound", { id: 1, result: { configOptions: [{ id: "effort", currentValue: input.value }] } });
+    });
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
+      awaitProviderOwnership: providerOwnershipEstablished,
+      awaitProviderExit: providerOwnershipEstablished,
+    });
+    expect(runtime.setConfigOption).toHaveBeenCalledExactlyOnceWith({ handle: HANDLE, key: "effort", value: "high" });
+    expect(await port.identity()).toMatchObject({ claudeEffort: "high" });
+    if (restoring) expect(options.refreshConsumedCommand).toHaveBeenCalledOnce();
+    else expect(options.refreshConsumedCommand).not.toHaveBeenCalled();
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    await port.close({ reason: "test complete" });
+  });
+
+  it("admits an exact Claude model through the real ACP without a user model allowlist", async () => {
+    const root = await mkdtemp(join(tmpdir(), "preconfigured-claude-model-"));
+    const home = join(root, "home"), cwd = join(root, "workspace"), config = join(home, ".claude");
+    await Promise.all([mkdir(config, { recursive: true }), mkdir(cwd)]);
+    const settings = JSON.stringify({ model: "claude-sonnet-5-5", permissions: { deny: ["Bash"] } });
+    await writeFile(join(config, "settings.json"), settings);
+    // Model validation can reach only this local fixture, never a provider.
+    const api = createServer(async (request, response) => {
+      for await (const _chunk of request) { /* drain validation input */ }
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(JSON.stringify({ id: "msg_fixture", type: "message", role: "assistant", model: "claude-sonnet-5-5",
+        content: [{ type: "text", text: "OK" }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } }));
+    });
+    await new Promise<void>(resolve => api.listen(0, "127.0.0.1", resolve));
+    const address = api.address() as { port: number };
+    const entry = createRequire(import.meta.url).resolve("@agentclientprotocol/claude-agent-acp/dist/index.js");
+    const command: VerifiedAcpxCommandLease = {
+      spawn: (args, input) => spawn(process.execPath, [entry, ...(args ?? [])], { ...input, detached: true, stdio: ["pipe", "pipe", "pipe"] }),
+      close: async () => undefined,
+    };
+    const options = { ...openOptions(command), profile: resolveQualifiedAcpxProfile("claude", "claude-sonnet-5-5"),
+      cwd, stateDirectory: join(root, "state"), permissionMode: "approve-all" as const,
+      launchEnvironment: { HOME: home, CLAUDE_CONFIG_DIR: config, PATH: "/usr/bin:/bin", TMPDIR: root,
+        PAPERCLIP_RUNNER_HOME_MODE: "preconfigured", ANTHROPIC_API_KEY: "local-fixture-only",
+        ANTHROPIC_BASE_URL: `http://127.0.0.1:${address.port}`, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" },
+    };
+    let port: Awaited<ReturnType<typeof openCodexAcpxRuntime>> | undefined;
+    const priorSettingsFlag = process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS;
+    process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS = "1";
+    try {
+      port = await openCodexAcpxRuntime(options, {
+        // This test exercises ACP/model admission; lifetime-fence tests are separate.
+        awaitProviderOwnership: async () => undefined,
+        awaitProviderExit: child => new Promise<void>(resolve => child.once("exit", () => resolve())),
+      });
+      expect(await port.getStatus()).toMatchObject({ models: { currentModelId: "claude-sonnet-5-5" } });
+      expect(await readFile(join(config, "settings.json"), "utf8")).toBe(settings);
+    } finally {
+      try { await port?.close({ reason: "exact model verified" }); }
+      finally {
+        if (priorSettingsFlag === undefined) delete process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS;
+        else process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS = priorSettingsFlag;
+        api.closeAllConnections();
+        await new Promise<void>(resolve => api.close(() => resolve()));
+        // Provider shutdown can flush metadata just after the ACP process exits.
+        await rm(root, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+      }
+    }
+  }, 30_000);
+
+  it("rejects preconfigured Codex before creating a provider runtime", async () => {
+    const createRuntime = vi.fn();
+    const options = openOptions(fakeCommand());
+    options.launchEnvironment = { HOME: "/users/executor", PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" };
+    await expect(openCodexAcpxRuntime(options, { createRuntime })).rejects.toThrow("cannot protect Runner state");
+    expect(createRuntime).not.toHaveBeenCalled();
+  });
+
   it("installs per-connection policy authority only for Copilot and rejects native commands before a turn starts", async () => {
     for (const agent of ["copilot", "codex", "claude", "grok"] as const) {
       const runtime = fakeRuntime();
@@ -47,6 +145,37 @@ describe("Codex ACPX runtime adapter", () => {
       await port.close({ reason: "test complete" });
     }
   });
+  it.each(["claude"] as const)("rejects approvals without a workflow in preconfigured %s sessions", async (agent) => {
+    const runtime = fakeRuntime();
+    runtime.setMode = vi.fn().mockResolvedValue(undefined);
+    let created!: AcpRuntimeOptions;
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent };
+    options.permissionMode = "approve-all";
+    options.launchEnvironment = { HOME: "/users/executor", PAPERCLIP_RUNNER_HOME_MODE: "preconfigured" };
+    options.mcpServers = [
+      { name: "paperclip_runner_fixture", url: "http://127.0.0.1:3211/mcp", bearerToken: "runner-fixture", runnerOwned: true },
+      { name: "paperclip", url: "http://127.0.0.1:3212/mcp", bearerToken: "external-fixture", runnerOwned: false },
+    ];
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
+    });
+    const sessionOptions = vi.mocked(runtime.ensureSession).mock.calls[0]?.[0].sessionOptions;
+    if (agent === "claude") expect(sessionOptions?.allowedTools).toEqual(["mcp__paperclip_runner_fixture__*"]);
+    else expect(sessionOptions?.allowedTools).toBeUndefined();
+    expect(created.nonInteractivePermissions).toBe("deny");
+    expect(created.permissionPolicy).toMatchObject({ defaultAction: "deny", autoApprove: undefined, escalate: undefined });
+    expect(created.spawnEnvironment!().PAPERCLIP_ACPX_ISOLATED_CONTEXT).toBeUndefined();
+    if (agent === "claude") expect(created.spawnEnvironment!()).toMatchObject({
+      ANTHROPIC_MODEL: options.profile.reportedModelId, ANTHROPIC_CUSTOM_MODEL_OPTION: options.profile.reportedModelId,
+    });
+    else expect(created.spawnEnvironment!().ANTHROPIC_CUSTOM_MODEL_OPTION).toBeUndefined();
+    await expect(created.onPermissionRequest!({ sessionId: "backend-1", raw: {}, inferredKind: "execute" } as never,
+      { signal: new AbortController().signal })).resolves.toEqual({ outcome: "reject_once" });
+    expect(runtime.setMode).not.toHaveBeenCalled();
+    await port.close({ reason: "verified" });
+  });
+
   it("rejects forged permission session identifiers before delegating or applying full-auto policy", async () => {
     const pending = pendingExtensionTurn("turn-1");
     const runtime = fakeRuntime(); vi.mocked(runtime.startTurn).mockReturnValue(pending.turn);

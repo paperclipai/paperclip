@@ -111,7 +111,7 @@ async function fetchVerifiedRun(
   candidateRunId: string | null | undefined,
   agentId: string,
   issueId: string,
-): Promise<{ id: string; status: string } | null> {
+): Promise<{ id: string; status: string; errorCode: string | null } | null> {
   if (!candidateRunId) return null;
   const runRes = await board.get(`${BASE_URL}/api/heartbeat-runs/${candidateRunId}`);
   if (!runRes.ok()) return null;
@@ -119,7 +119,9 @@ async function fetchVerifiedRun(
   const context = candidateRun.contextSnapshot ?? {};
   if (candidateRun.agentId !== agentId) return null;
   if (context.issueId !== issueId && context.taskId !== issueId) return null;
-  return { id: candidateRunId, status: candidateRun.status };
+  const errorCode = typeof candidateRun.errorCode === "string" && /^[a-z][a-z0-9_.-]{0,79}$/i.test(candidateRun.errorCode)
+    ? candidateRun.errorCode : null;
+  return { id: candidateRunId, status: candidateRun.status, errorCode };
 }
 
 /**
@@ -270,6 +272,31 @@ async function getIssueRunLockState(board: APIRequestContext, issueId: string): 
   };
 }
 
+async function waitForFixtureRun(
+  board: APIRequestContext,
+  agentId: string,
+  issueId: string,
+  runId: string,
+  allowCancelledLock = false,
+) {
+  // Negative authorization cases deliberately invoke a non-participant. Leave
+  // their API rejection intact instead of waiting for a run they cannot own.
+  if ((await getIssueRunLockState(board, issueId)).assigneeAgentId !== agentId) return;
+  const waitBudgetMs = wakeupWaitBudgetMs();
+  const deadline = Date.now() + waitBudgetMs;
+  let status: string | null = null;
+  do {
+    const run = await fetchVerifiedRun(board, runId, agentId, issueId);
+    expect(run, "Fixture run must belong to the acting agent and issue").not.toBeNull();
+    status = run!.status;
+    if (status === "succeeded") return true;
+    if (status === "cancelled" && allowCancelledLock) return false;
+    expect(["queued", "running"], `Fixture run ${runId} ended as ${status} (errorCode=${run!.errorCode ?? "unavailable"})`).toContain(status);
+    await new Promise((resolve) => setTimeout(resolve, WAKEUP_POLL_INTERVAL_MS));
+  } while (Date.now() < deadline);
+  throw new Error(`Fixture run ${runId} did not succeed within ${waitBudgetMs}ms (last status: ${status})`);
+}
+
 async function retryAgentPatchWithCurrentLockOnConflict(
   board: APIRequestContext,
   agent: AgentAuth,
@@ -286,6 +313,11 @@ async function retryAgentPatchWithCurrentLockOnConflict(
     if (issueRunLock.assigneeAgentId !== agent.agentId) return res;
 
     const lockedRunId = issueRunLock.checkoutRunId ?? issueRunLock.executionRunId ?? fallbackRunId;
+    // A new lock can belong to a newly promoted fixture run, not the completed
+    // run we first invoked. Let that exact verified run settle before PATCH.
+    // Recovery can cancel the selected lock while this wait is in flight.
+    // Read the current lock again; never PATCH under that cancelled run.
+    if (!(await waitForFixtureRun(board, agent.agentId, issueId, lockedRunId, true))) continue;
     res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
       headers: { "X-Paperclip-Run-Id": lockedRunId },
       data: patchData,
@@ -325,6 +357,9 @@ async function agentPatch(
   }: { maxAttempts?: number; backoffMs?: number; maxBackoffMs?: number } = {},
 ) {
   const runId = await invokeHeartbeat(board, agent.agentId, issueId);
+  // The fixture process only prints "done". Let its startup and cleanup settle
+  // before a simulated decision reassigns the issue and cancels that process.
+  await waitForFixtureRun(board, agent.agentId, issueId, runId);
   const patchWith = (patchRunId: string) =>
     agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
       headers: { "X-Paperclip-Run-Id": patchRunId },
@@ -339,6 +374,7 @@ async function agentPatch(
     // run-lock race — leave it for the caller to assert on.
     if (issueRunLock.assigneeAgentId !== agent.agentId) break;
     const retryRunId = issueRunLock.checkoutRunId ?? issueRunLock.executionRunId ?? runId;
+    if (!(await waitForFixtureRun(board, agent.agentId, issueId, retryRunId, true))) continue;
     res = await patchWith(retryRunId);
   }
   return res;
@@ -353,6 +389,7 @@ async function agentCheckoutAndPatch(
   patchData: Record<string, unknown>,
 ) {
   const runId = await invokeHeartbeat(board, agent.agentId, issueId);
+  await waitForFixtureRun(board, agent.agentId, issueId, runId);
   const directPatchRes = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
     headers: { "X-Paperclip-Run-Id": runId },
     data: patchData,

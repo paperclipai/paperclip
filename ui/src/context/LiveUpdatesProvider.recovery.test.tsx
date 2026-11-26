@@ -6,15 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 
 const { pushToast } = vi.hoisted(() => ({ pushToast: vi.fn() }));
+const { sessionRead, healthRead } = vi.hoisted(() => ({ sessionRead: vi.fn(), healthRead: vi.fn() }));
 vi.mock("./CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: "company-1", selectedCompany: { id: "company-1" } }),
 }));
 vi.mock("./ToastContext", () => ({ useToastActions: () => ({ pushToast }) }));
 vi.mock("../lib/router", () => ({ useLocation: () => ({ pathname: "/tasks" }) }));
 vi.mock("../api/auth", () => ({
-  authApi: { getSession: async () => ({ user: { id: "viewer" }, session: { id: "session", userId: "viewer" } }) },
+  authApi: { getSession: sessionRead },
 }));
-vi.mock("../api/health", () => ({ healthApi: { get: async () => ({ deploymentMode: "authenticated" }) } }));
+vi.mock("../api/health", () => ({ healthApi: { get: healthRead } }));
 import { LiveUpdatesProvider } from "./LiveUpdatesProvider";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -41,6 +42,8 @@ describe("LiveUpdatesProvider connection recovery", () => {
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     read.mockReset();
     read.mockResolvedValue("current task data");
+    sessionRead.mockReset().mockResolvedValue({ user: { id: "viewer" }, session: { id: "session", userId: "viewer" } });
+    healthRead.mockReset().mockResolvedValue({ deploymentMode: "authenticated" });
     Socket.instances = [];
     client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity, staleTime: Infinity } } });
     client.setQueryData(queryKeys.auth.session, { user: { id: "viewer" }, session: { id: "session", userId: "viewer" } });
@@ -80,9 +83,17 @@ describe("LiveUpdatesProvider connection recovery", () => {
     await act(async () => Socket.instances[0].onopen?.());
     await act(async () => vi.advanceTimersByTimeAsync(1));
     expect(container.textContent).toBe("reply saved during connection setup");
+    expect(sessionRead).not.toHaveBeenCalled();
+    expect(healthRead).not.toHaveBeenCalled();
     const readsAfterConnect = read.mock.calls.length;
     await act(async () => vi.advanceTimersByTimeAsync(30_000));
     expect(read).toHaveBeenCalledTimes(readsAfterConnect);
+    await act(async () => Socket.instances[0].onclose?.());
+    await act(async () => vi.advanceTimersByTimeAsync(1_001));
+    await act(async () => Socket.instances.at(-1)?.onopen?.());
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(sessionRead).toHaveBeenCalled();
+    expect(healthRead).toHaveBeenCalled();
   });
 
   it.each(["missing", "throws"])("polls visible data and resumes realtime when the constructor %s", async (failure) => {

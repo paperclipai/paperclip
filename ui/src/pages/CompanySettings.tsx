@@ -1,4 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
+import { AgentObservabilitySettingsSection } from "../components/observability/AgentObservabilitySettings";
 import { useNavigate } from "react-router-dom";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -374,6 +375,8 @@ export function CompanySettings() {
       {fastResponses.loaded && !fastResponses.enabled && (
         <DecisionModelSettingsSection key={selectedCompanyId} companyId={selectedCompanyId!} />
       )}
+
+      <AgentObservabilitySettingsSection companyId={selectedCompanyId!} />
 
       <InstanceGeneralSettings embedded />
 

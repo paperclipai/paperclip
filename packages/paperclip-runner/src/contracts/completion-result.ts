@@ -370,7 +370,7 @@ export const PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA = {
       ...waitContinuationSchema,
       type: ["object", "null"],
       description:
-        "Use null or omit this field for done, completed, or needs_review. Only yielded requires a wait object with kind (response_wake or monitor), summary, and idempotencyKey.",
+        "For yielded, omit or use null to reuse this task's eligible saved monitor; the controller reads current task state. Otherwise provide a real response_wake or monitor with summary and idempotencyKey. Use null or omit for done, completed, or needs_review.",
     },
   },
   // Keep the provider-facing root a concrete object. Codex code-mode renders a
@@ -378,7 +378,7 @@ export const PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA = {
   // every required field from the model. This equivalent direct conditional
   // preserves validation without obscuring the object-shaped tool signature.
   if: { properties: { reportedWorkDisposition: { const: "yielded" } }, required: ["reportedWorkDisposition"] },
-  then: { required: ["continuation"], properties: { continuation: { type: "object" } } },
+  then: { properties: { continuation: { type: ["object", "null"] } } },
   else: { properties: { continuation: { type: "null" } } },
 } as const;
 

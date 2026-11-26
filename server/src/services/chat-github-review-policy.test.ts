@@ -311,13 +311,14 @@ describe("GitHub score validation", () => {
     expect(() => validateGitHubReviewAssessment(invalid, context.headSha, defaultGitHubReviewPolicy()))
       .toThrow(expect.objectContaining({ status: 400, message: expect.stringContaining("coverage.limitations.0") }));
   });
-  it("incomplete reviews never pass even at 5/5 or report-only", () => {
+  it("keeps report-only conclusions neutral while incomplete gated reviews require action", () => {
     expect(
       githubReviewConclusion({ ...assessment(), complete: false }, 5),
     ).toBe("action_required");
     expect(
       githubReviewConclusion({ ...assessment(), complete: false }, null),
-    ).toBe("action_required");
+    ).toBe("neutral");
+    expect(githubReviewConclusion({ ...assessment(), score: 0 }, null)).toBe("neutral");
     expect(githubReviewConclusion({ ...assessment(), score: 3 }, 5)).toBe(
       "failure",
     );

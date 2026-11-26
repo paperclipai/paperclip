@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
 import { and, desc, eq, inArray, lte } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -22,6 +23,7 @@ import type {
   PluginEnvironmentCaptureTemplateResult,
   PluginEnvironmentInteractiveSetupConnectionPayload,
   PluginEnvironmentInteractiveSetupSession,
+  PluginEnvironmentLeaseObservation,
   PluginEnvironmentTemplateRefKind,
 } from "@paperclipai/plugin-sdk";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -167,7 +169,7 @@ function normalizeConnectionSummary(
 
 function normalizeProviderMetadata(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> | null {
   if (!metadata) return null;
-  return redactEnvironmentCustomImageValue(metadata);
+  return redactEnvironmentCustomImageValue(withoutCleanupVerification(metadata) ?? {});
 }
 
 function metadataRecord(metadata: Record<string, unknown> | null | undefined): Record<string, unknown> {
@@ -647,7 +649,7 @@ export function environmentCustomImageService(
       return await markSessionStatus({
         sessionId: session.id,
         status,
-        metadata: cancelled.metadata,
+        metadata: mergeSetupSessionMetadata(session.metadata, cancelled.metadata),
         failureReason: status === "failed" ? "Provider failed to cancel setup session." : null,
       });
     } catch (error) {
@@ -759,6 +761,22 @@ export function environmentCustomImageService(
     }): Promise<EnvironmentCustomImageTemplate | null> => resolveActiveTemplate(db, input),
 
     getSessionById,
+
+    async inspectSetupResource(session: typeof environmentCustomImageSetupSessions.$inferSelect): Promise<PluginEnvironmentLeaseObservation | undefined> {
+      if (!session.providerLeaseId || !session.finishedAt || session.connectionSecretRef !== null ||
+          !["promoted", "cancelled", "timed_out", "failed"].includes(session.status)) return undefined;
+      const environment = await requireEnvironment(session.environmentId);
+      const provider = await resolveSetupProvider({ environment, storedProvider: session.provider,
+        storedRpcCompanyId: readSetupRpcCompanyId(session.metadata) });
+      const recordedFingerprint = readString(session.metadata?.[SOURCE_ENVIRONMENT_CONFIG_FINGERPRINT_METADATA_KEY]);
+      if (!recordedFingerprint || fingerprintEnvironmentSandboxProviderConfig(provider.runtimeConfig) !== recordedFingerprint) return undefined;
+      if (!options.pluginWorkerManager?.getWorker(provider.pluginId)?.supportedMethods?.includes("environmentInspectLease")) return undefined;
+      return await options.pluginWorkerManager.call(provider.pluginId, "environmentInspectLease", {
+        driverKey: provider.provider, companyId: provider.rpcCompanyId, environmentId: environment.id,
+        issueId: null, config: provider.driverConfig, providerLeaseId: session.providerLeaseId,
+        leaseMetadata: session.metadata ?? {},
+      }, 15_000);
+    },
 
     startSetupSession: async (input: {
       environmentId: string;

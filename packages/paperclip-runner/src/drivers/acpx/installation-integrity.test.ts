@@ -42,6 +42,20 @@ import {
 } from "./installation-integrity.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 
+async function withLinuxX64TestPlatform<T>(run: () => Promise<T>): Promise<T> {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  const archDescriptor = Object.getOwnPropertyDescriptor(process, "arch");
+  if (!platformDescriptor || !archDescriptor) throw new Error("Missing process platform descriptors");
+  try {
+    Object.defineProperty(process, "platform", { ...platformDescriptor, value: "linux" });
+    Object.defineProperty(process, "arch", { ...archDescriptor, value: "x64" });
+    return await run();
+  } finally {
+    try { Object.defineProperty(process, "platform", platformDescriptor); }
+    finally { Object.defineProperty(process, "arch", archDescriptor); }
+  }
+}
+
 const temporaryDirectories: string[] = [];
 const descriptorCommandPath = "/proc/self/fd/4/server.js";
 
@@ -54,6 +68,77 @@ afterEach(async () => {
 });
 
 describe("ACPX installation integrity", () => {
+  it.each([["linux", "x64"], ["linux", "arm64"], ["darwin", "arm64"], ["darwin", "x64"]] as const)(
+    "retains Claude executable admission for a published bundle on %s %s", async (os, cpu) => {
+      const parent = await realpath(await mkdtemp(join(tmpdir(), "paperclip-claude-npm-admission-")));
+      temporaryDirectories.push(parent);
+      const root = join(parent, "node_modules/@paperclipai/server");
+      const bridge = join(root, "node_modules/@agentclientprotocol/claude-agent-acp");
+      const runtime = join(bridge, "node_modules/@anthropic-ai/claude-agent-sdk");
+      const name = `@anthropic-ai/claude-agent-sdk-${os}-${cpu}`;
+      const platformRoot = join(parent, "node_modules", name);
+      const optionalDependencies = { [name]: "0.3.286" };
+      const runtimeMetadata = { name: "@anthropic-ai/claude-agent-sdk", version: "0.3.286" };
+      const platformMetadata = { name, version: "0.3.286", os: [os], cpu: [cpu] };
+      await Promise.all([mkdir(runtime, { recursive: true }), mkdir(platformRoot, { recursive: true })]);
+      const command = 'process.stdout.write("unexecuted fixture");';
+      const reset = () => Promise.all([
+        writeFile(join(root, "package.json"), JSON.stringify({ name: "@paperclipai/server", optionalDependencies })),
+        writeFile(join(runtime, "package.json"), JSON.stringify(runtimeMetadata)),
+        writeFile(join(platformRoot, "package.json"), JSON.stringify(platformMetadata)),
+      ]);
+      await reset();
+      await Promise.all([
+        writeFile(join(bridge, "package.json"), JSON.stringify({ name: "@agentclientprotocol/claude-agent-acp", version: "0.73.0", bin: "server.js" })),
+        writeFile(join(bridge, "server.js"), command),
+        writeFile(join(platformRoot, "claude"), "unqualified native bytes", { mode: 0o755 }),
+      ]);
+      const profile = { ...resolveQualifiedAcpxProfile("claude", "claude-opus-5-5"), commandDigest: `sha256:${createHash("sha256").update(command).digest("hex")}` };
+      const resolver = createAcpxPackageJsonResolver(root);
+      expect(resolver(name, join(runtime, "package.json"))).toBe(join(platformRoot, "package.json"));
+      expect(() => resolver(name)).toThrow("outside the selected provider root");
+      for (const [file, metadata] of [
+        [join(root, "package.json"), { name: "@paperclipai/server", optionalDependencies: { [name]: "latest" } }],
+        [join(runtime, "package.json"), { ...runtimeMetadata, version: "0.3.285" }],
+        [join(runtime, "package.json"), { ...runtimeMetadata, optionalDependencies: {} }],
+        [join(platformRoot, "package.json"), { ...platformMetadata, name: "unqualified-provider" }],
+        [join(platformRoot, "package.json"), { ...platformMetadata, version: "0.3.285" }],
+        [join(platformRoot, "package.json"), { ...platformMetadata, cpu: ["ia32"] }],
+      ] as const) {
+        await writeFile(file, JSON.stringify(metadata));
+        expect(() => resolver(name, join(runtime, "package.json"))).toThrow("outside the selected provider root");
+        await reset();
+      }
+      const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue(os);
+      const archSpy = vi.spyOn(process, "arch", "get").mockReturnValue(cpu);
+      try {
+        await expect(verifyQualifiedAcpxInstallation(profile, (...args) => resolver(...args))).rejects.toThrow("runtime omitted its verified platform executable package");
+        await expect(verifyQualifiedAcpxInstallation(profile, resolver)).rejects.toThrow(/digest mismatch/);
+        vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", root);
+        vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", undefined);
+        await expect(verifyQualifiedAcpxInstallation(profile)).rejects.toThrow(/digest mismatch/);
+      } finally {
+        vi.unstubAllEnvs();
+        platformSpy.mockRestore();
+        archSpy.mockRestore();
+      }
+    },
+  );
+  it("explains a missing Claude ACP installation without leaking the resolver stack", async () => {
+    const missingPackage = Object.assign(new Error(
+      "Cannot find module '@agentclientprotocol/claude-agent-acp/package.json'\nRequire stack: /srv/private/server.js",
+    ), { code: "MODULE_NOT_FOUND" });
+    const error = await verifyQualifiedAcpxInstallation(
+      resolveQualifiedAcpxProfile("claude", "claude-opus-5-5"),
+      () => { throw missingPackage; },
+    ).catch(error => error);
+    expect(error).toMatchObject({ code: "ACPX_RUNTIME_PACKAGE_MISSING" });
+    expect(error.message).toContain("@agentclientprotocol/claude-agent-acp");
+    expect(error.message).toContain("Reinstall or rebuild");
+    expect(error.message).not.toContain("/srv/private");
+    expect(error.message).not.toContain("Require stack");
+  });
+
   it.each([false, true])("admits only the declared qualified Codex platform in its npm-hoisted slot (published platform declaration: %s)", async (publishedDeclaration) => {
     const parent = await realpath(await mkdtemp(join(tmpdir(), "paperclip-codex-npm-hoist-")));
     temporaryDirectories.push(parent);
@@ -152,7 +237,7 @@ describe("ACPX installation integrity", () => {
     }
   });
 
-  it.each([["linux", "arm64"], ["darwin", "ia32"], ["freebsd", "x64"]] as const)(
+  it.each([["linux", "ia32"], ["darwin", "ia32"], ["freebsd", "x64"]] as const)(
     "rejects the actual Claude runtime probe on unsupported %s %s",
     async (platform, arch) => {
       const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue(platform);
@@ -676,7 +761,7 @@ describe("ACPX installation integrity", () => {
     );
   });
 
-  it.runIf((process.platform === "linux" && process.arch === "x64") || (process.platform === "darwin" && ["arm64", "x64"].includes(process.arch)))(
+  it.runIf(["linux", "darwin"].includes(process.platform) && ["arm64", "x64"].includes(process.arch))(
     "resolves and pins the installed Claude ACP dependency graph",
     async () => {
       const profile = resolveQualifiedAcpxProfile("claude", "claude-sonnet-5");
@@ -715,11 +800,11 @@ describe("ACPX installation integrity", () => {
     expect(resolveQualifiedAcpxProfile("grok", "grok-4.7").agentServerPackage).toBe("builtin:grok-acp");
   });
 
-  it("reports a missing environment prerequisite before launching Grok", async () => {
+  it("reports a missing environment prerequisite before launching Grok", () => withLinuxX64TestPlatform(async () => {
     const fixture = await installationFixture();
     await expect(verifyProvisionedGrokExecutable(join(fixture.commandDirectory, "missing")))
       .rejects.toThrow(/Grok Build 1.0.13 prerequisite missing/);
-  });
+  }));
 
   it("resolves a controller-owned builtin root for descriptor-loaded sidecars and rejects relative roots", () => {
     vi.stubEnv("PAPERCLIP_ACPX_BUILTIN_ROOT", "/verified/dist/providers");
@@ -730,7 +815,7 @@ describe("ACPX installation integrity", () => {
     finally { vi.unstubAllEnvs(); }
   });
 
-  it("rejects a tampered native Grok executable and symlink substitution", async () => {
+  it("rejects a tampered native Grok executable and symlink substitution", () => withLinuxX64TestPlatform(async () => {
     const fixture = await installationFixture();
 
     const native = join(fixture.commandDirectory, "grok");
@@ -739,7 +824,7 @@ describe("ACPX installation integrity", () => {
     await rm(native);
     await symlink(fixture.commandPath, native);
     await expect(verifyProvisionedGrokExecutable(native)).rejects.toThrow(/regular file|symlink|no-follow/);
-  });
+  }));
 
   it("rejects package version and executable digest drift", async () => {
     const fixture = await installationFixture();

@@ -408,8 +408,7 @@ export interface PluginExecutionWorkspaceMetadata {
   id: string;
   /** UUID of the owning company. */
   companyId: string;
-  /** UUID of the parent project. */
-  projectId: string;
+  projectId: string | null;
   /** UUID of the backing project workspace, when present. */
   projectWorkspaceId: string | null;
   /** Absolute filesystem path to the workspace when locally realized. */
@@ -548,7 +547,8 @@ export interface PluginLocalFoldersClient {
 export interface PluginEventsClient {
   /** Read durable resource hooks. Requires events.subscribe and a company scope.
    * Creation is delivered first, then the remaining events in id order.
-   * Page using afterId; reset it each polling sweep to retry failures and late commits.
+   * Prefer manifest resourceLifecycle + onResourceLifecycle for automatic delivery.
+   * Manual consumers page using afterId and restart pagination to revisit unacknowledged events.
    * Events repeat until acknowledged; use a company-scoped provider idempotency key.
    */
   listLifecycle(companyId: string, limit?: number, afterId?: string): Promise<ResourceLifecycleEvent[]>;
@@ -598,8 +598,18 @@ export type ResourceLifecycleEvent = {
   createdAt: string;
 } & (
   | { resourceType: "agent"; action: "create" | "pause" | "resume" | "terminate" }
-  | { resourceType: "project"; action: "create" | "update" | "archive" }
+  | { resourceType: "project"; action: "create" | "update" | "archive" | "delete" }
+  | { resourceType: "agent_runtime"; action: "update" | "delete" }
 );
+
+/** Return acknowledged only after durable effects finish. Retry unfinished work;
+ * defer when configuration is missing (replayed on configuration changes or startup).
+ * Both retry and deferred leave the event unacknowledged.
+ */
+export interface ResourceLifecycleResult {
+  eventId: string;
+  status: "acknowledged" | "retry" | "deferred";
+}
 
 /**
  * `ctx.jobs` — register handlers for scheduled jobs declared in the manifest.
@@ -1677,7 +1687,34 @@ export interface PluginApprovalsClient {
  * Requires `agents.read` for reads; `agents.pause` / `agents.resume` /
  * `agents.invoke` for write operations.
  */
+export interface PluginAgentRuntimeSkill {
+  key: string;
+  runtimeName: string;
+  source: string;
+  versionId?: string | null;
+  currentVersionId?: string | null;
+  sourceStatus?: "available" | "missing";
+  missingDetail?: string | null;
+}
+
+export interface PluginAgentConnectionAssignments {
+  features: { publicMcp: boolean; chatConnectors: boolean };
+  connections: Array<{ id: string; name: string; transport: string; enabled: boolean; status: string }>;
+  profileIds: string[];
+}
+
+export interface PluginAgentRuntimeState {
+  connectionAssignments: PluginAgentConnectionAssignments;
+  skills: PluginAgentRuntimeSkill[];
+  revision: string;
+  agent: Agent;
+  instructionsRootPath: string | null;
+  instructionsEntryFile: string;
+  instanceSecrets: Record<string, string>;
+}
+
 export interface PluginAgentsClient {
+  getRuntime(agentId: string, companyId: string): Promise<PluginAgentRuntimeState | null>;
   list(input: { companyId: string; status?: Agent["status"]; limit?: number; offset?: number }): Promise<Agent[]>;
   get(agentId: string, companyId: string): Promise<Agent | null>;
   /** Pause an agent. Throws if agent is terminated or not found. Requires `agents.pause`. */

@@ -15,9 +15,9 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
 const CODEX_ACPX_DIGEST: &str =
-    "sha256:c4538599d1ab767db5dff50934f13bb5ba313a59d9c4a83e993fac4617ea63d3";
+    "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc";
 const PI_ACPX_DIGEST: &str =
-    "sha256:e92078bee3c23bec4100aa589013a44613d054cd686826534025d8019e9f39a9";
+    "sha256:4918a4d5472d66b22b1ec642b68b5c60a8092a39c84ec1ab1c9ad0289cb8c68c";
 
 fn temporary_directory(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
@@ -32,6 +32,86 @@ fn temporary_directory(label: &str) -> PathBuf {
     #[cfg(unix)]
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
     directory
+}
+
+#[test]
+#[cfg(unix)]
+fn credential_observation_allows_fresh_acpx_session_startup() {
+    let directory = temporary_directory("fresh-observed-acpx");
+    let config = acpx_config(&directory, "turns-reserved-result-terminal");
+    let mut prepare = prepare_payload(&directory, "codex");
+    prepare["observeCredentials"] = json!(true);
+    let runtime = directory.join("acpx-runtime");
+    assert!(!runtime.exists());
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&directory, &config);
+    let prepared = executor
+        .execute(&command(1, "run.prepare", prepare))
+        .unwrap();
+    assert_eq!(prepared.result["status"], "prepared");
+    assert_eq!(
+        fs::metadata(&runtime).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    executor
+        .execute(&command(2, "session.open", json!({})))
+        .unwrap();
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn credential_updates_replay_through_the_native_executor_until_durable_ack() {
+    let root = temporary_directory("credential-updates");
+    let root = fs::canonicalize(root).unwrap();
+    let auth = root.join("auth.json");
+    let write_auth = |marker: &str| {
+        fs::write(
+            &auth,
+            serde_json::to_vec(&json!({"tokens":{
+                "account_id":"account", "access_token":format!("access-{marker}"),
+                "refresh_token":format!("refresh-{marker}")
+            }}))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::set_permissions(&auth, fs::Permissions::from_mode(0o600)).unwrap();
+    };
+    let state_path = root.join("credential-observer-state.json");
+    fs::write(&state_path, serde_json::to_vec(&json!({
+        "schema":"paperclip.runner.credential-observer.v1", "sessionId":"session-1",
+        "provider":"codex", "path":auth, "snapshot":null, "revision":0, "armed":true, "pending":null
+    })).unwrap()).unwrap();
+    fs::set_permissions(&state_path, fs::Permissions::from_mode(0o600)).unwrap();
+    let runner_config = config(&root);
+    write_auth("initial");
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(&root, &runner_config);
+    assert!(executor.poll_events().unwrap().is_empty());
+    write_auth("refreshed");
+    let _ = executor.execute(&Command {
+        schema: "paperclip.prp.command.v1".to_owned(),
+        command_id: "close-unselected".to_owned(),
+        controller_seq: 1,
+        command_type: "session.close".to_owned(),
+        issued_at: "2026-10-15T12:00:00.000Z".to_owned(),
+        deadline_at: None,
+        precondition: None,
+        payload: json!({}),
+    });
+    let updates = executor.retained_events().unwrap();
+    assert_eq!(updates.len(), 1);
+    assert_eq!(updates[0].event_type, "auth.credentials.updated");
+    assert_eq!(
+        updates[0].priority,
+        paperclip_runner_core::durable::EventPriority::P0
+    );
+    drop(executor);
+    let mut resumed = NativeProviderCommandExecutor::with_runner_config(&root, &runner_config);
+    assert_eq!(resumed.poll_events().unwrap(), updates);
+    assert_eq!(resumed.retained_runner_events().unwrap(), updates);
+    resumed.acknowledge_events(1).unwrap();
+    assert!(resumed.poll_events().unwrap().is_empty());
+    fs::remove_dir_all(root).unwrap();
 }
 
 fn config(state_dir: &Path) -> DurableRunnerConfig {

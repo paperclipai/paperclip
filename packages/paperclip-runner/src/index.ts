@@ -46,6 +46,7 @@ export type { DurableRecoveryIdentity } from "./control-plane/prp-transport-type
 export * from "./drivers/codex/app-server-transport.js";
 export * from "./drivers/codex/codex-app-server-driver.js";
 export { resolveCodexCommand, resolvePinnedCodexCommand } from "./drivers/codex/codex-command.js";
+export { runnerBinaryTarget } from "./live/runner-binary.js";
 export * from "./drivers/opencode/opencode-server-driver.js";
 export * from "./drivers/opencode/mcp-bridge.js";
 export * from "./drivers/acpx/qualified-profiles.js";
@@ -56,9 +57,11 @@ export {
   type QualifiedAcpxEnvironmentProbe,
 } from "./drivers/acpx/codex-acpx-driver.js";
 export * from "./drivers/acpx/sidecar-protocol.js";
+export { resolveClaudeEffort } from "./drivers/acpx/claude-effort.js";
 export * from "./drivers/runner-tool-bridge.js";
 export {
   createRunnerdCodexTransport,
+  probeNativeRunnerEnvironment,
   runnerCodexDynamicToolsFit,
   defaultCapabilityRunnerdBinary,
   readRunnerdArtifactBinding,
@@ -89,4 +92,7 @@ export * from "./compatibility.js";
 export { probeAcpxClaudeInstallation, probeAcpxGrokInstallation, probeAcpxPiInstallation } from "./drivers/acpx/installation-integrity.js";
 export { bundledRemoteProviderPackManifestPath, bundledRemoteRunnerBinary } from "./live/bundled-remote-provider-pack.js";
 
+export { RunnerdMuseDriver, describeRunnerdMuseDriver, type RunnerdMuseDriverOptions } from "./drivers/muse/runnerd-muse-driver.js";
 export { RunnerdDotDriver, type RunnerdDotDriverOptions } from "./drivers/dot/runnerd-dot-driver.js";
+
+export type { RunnerExecutionDriver } from "./control-plane/runner-execution-driver.js";

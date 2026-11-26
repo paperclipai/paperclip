@@ -1,3 +1,7 @@
+import { getWorkspaceAction } from "../protocol-actions/get-workspace.js";
+import { listWorkspacesAction } from "../protocol-actions/list-workspaces.js";
+import { selectWorkspaceAction } from "../protocol-actions/select-workspace.js";
+import { prepareRepositoryAction } from "../protocol-actions/prepare-repository.js";
 import { setTaskMonitorInputSchema } from "../protocol-actions/set-task-monitor.js";
 import { listProjectsDescription, listProjectsInputSchema } from "../protocol-actions/list-projects.js";
 import { setTaskTitleAction } from "../protocol-actions/set-task-title.js";
@@ -471,6 +475,10 @@ const descriptors: readonly PaperclipSemanticActionDescriptor[] = [
     ),
     outputSchema: operationReceipt,
   }),
+  descriptor({ ...getWorkspaceAction.live.descriptor, placement: "optional" }),
+  descriptor({ ...listWorkspacesAction.live.descriptor, placement: "optional" }),
+  descriptor({ ...selectWorkspaceAction.live.descriptor, placement: "optional" }),
+  descriptor({ ...prepareRepositoryAction.live.descriptor, placement: "optional" }),
   descriptor({
     operationId: "list_projects",
     title: "List projects",

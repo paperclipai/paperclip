@@ -6,7 +6,6 @@ import { issueComments, issueThreadInteractions, issues } from "@paperclipai/db"
 import { createLocalAgentJwt } from "../../agent-auth-jwt.js";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
 import { issueThreadInteractionService } from "../issue-thread-interactions.js";
-import { runnerApiMutationRestriction } from "./runner-api-policy.js";
 
 describe("confirmation reply through the native API tool", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
@@ -52,10 +51,11 @@ describe("confirmation reply through the native API tool", () => {
     const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, f.userId);
     expect((await fetch(url, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ ...call.arguments.body, actorUserId: f.userId }) })).status).toBe(400);
   });
-  it("does not open the ordinary interaction or governance mutation routes", () => {
-    for (const operation of ["accept", "reject", "respond", "verdicts", "withdraw"]) {
-      expect(runnerApiMutationRestriction(`/api/issues/{id}/interactions/{interactionId}/${operation}`)).not.toBeNull();
-    }
-    expect(runnerApiMutationRestriction("/api/issues/{id}/interactions/{interactionId}/resolve-from-comment")).toBeNull();
+  it("preserves formal approval authority in the HTTP route", async () => {
+    const { f } = await seed();
+    expect(await f.authority.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "POST /api/approvals/{id}/approve", pathParams: { id: f.approvalId }, body: {},
+    } })).toMatchObject({ ok: false, status: 403 });
+    expect((await f.snapshot()).approvals.find(row => row.id === f.approvalId)?.status).toBe("pending");
   });
 });

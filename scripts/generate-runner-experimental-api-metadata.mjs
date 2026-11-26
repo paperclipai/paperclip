@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 
 const root = new URL("../", import.meta.url);
 const metadata = {};
-for (const name of ["pipelines", "cases", "smoke-lab"]) {
+for (const name of ["cases", "smoke-lab"]) {
   const source = await readFile(new URL(`server/src/routes/${name}.ts`, root), "utf8");
   const routes = [...source.matchAll(/router\.(get|post|put|patch|delete)\(\s*"([^"]+)"/g)];
   for (const [index, route] of routes.entries()) {

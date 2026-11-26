@@ -1,3 +1,5 @@
+import { buildRemotePidLockAcquireScript, buildRemotePidLockCleanupScript } from "./remote-pid-lock.js";
+import { syncRemoteTextFile, syncRemoteTextFiles, type RemoteTextFileSyncInput, type RemoteTextFileBatchInput } from "./remote-text-file-sync.js";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { promises as fs } from "node:fs";
 import http2 from "node:http2";
@@ -149,8 +151,16 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/companies\/[^/]+\/approvals$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/routines$/ },
   { method: "GET", path: /^\/api\/companies\/[^/]+\/skills$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/skills\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/skills\/[^/]+\/files$/ },
   { method: "GET", path: /^\/api\/projects\/[^/]+$/ },
   { method: "GET", path: /^\/api\/goals\/[^/]+$/ },
+
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/heartbeat-runs$/ },
+  { method: "GET", path: /^\/api\/companies\/[^/]+\/live-runs$/ },
+  { method: "GET", path: /^\/api\/heartbeat-runs\/[^/]+$/ },
+  { method: "GET", path: /^\/api\/heartbeat-runs\/[^/]+\/(?:events|log|workspace-operations|issues)$/ },
+  { method: "GET", path: /^\/api\/issues\/[^/]+\/(?:runs|recovery-actions)$/ },
 
   // Task-bound email actions. Company, inbox ownership, task/run authority,
   // and action policies are enforced by the controller; mailbox setup stays denied.
@@ -162,6 +172,10 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   // Issue lifecycle: read context, checkout, update, comment, document, release
   { method: "GET", path: /^\/api\/issues\/[^/]+$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/heartbeat-context$/ },
+  { method: "GET", path: /^\/api\/issues\/[^/]+\/diagnostics\/wakes$/ },
+  { method: "POST", path: /^\/api\/issues\/[^/]+\/monitor\/check-now$/ },
+  // The controller still checks company membership and issue read authority.
+  { method: "GET", path: /^\/api\/issues\/[^/]+\/activity$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/comments(?:\/[^/]+)?$/ },
   { method: "POST", path: /^\/api\/issues\/[^/]+\/comments$/ },
   { method: "GET", path: /^\/api\/issues\/[^/]+\/documents(?:\/[^/]+)?$/ },
@@ -176,6 +190,7 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "GET", path: /^\/api\/issues\/[^/]+\/attachments$/ },
   { method: "POST", path: /^\/api\/companies\/[^/]+\/issues\/[^/]+\/attachments$/ },
   { method: "GET", path: /^\/api\/attachments\/[^/]+\/content$/ },
+  { method: "GET", path: /^\/api\/assets\/[^/]+\/content$/ },
 
   // Work products: publish branch/commit/artifact metadata for completed work.
   { method: "GET", path: /^\/api\/issues\/[^/]+\/work-products$/ },
@@ -410,39 +425,6 @@ function base64Chunks(body: string): string[] {
 
 async function pathExists(filePath: string): Promise<boolean> {
   return await fs.stat(filePath).then(() => true).catch(() => false);
-}
-
-function buildRemotePidLockAcquireScript(lockDirExpr: string, timeoutMessage: string): string[] {
-  return [
-    "attempts=0",
-    `while ! mkdir ${lockDirExpr} 2>/dev/null; do`,
-    "  holder_pid=\"\"",
-    `  if [ -s ${lockDirExpr}/pid ]; then`,
-    `    holder_pid="$(cat ${lockDirExpr}/pid 2>/dev/null || true)"`,
-    "  fi",
-    "  if [ -n \"$holder_pid\" ] && ! kill -0 \"$holder_pid\" 2>/dev/null; then",
-    `    rm -rf ${lockDirExpr}`,
-    "    continue",
-    "  fi",
-    "  attempts=$((attempts + 1))",
-    "  if [ \"$attempts\" -ge 600 ]; then",
-    `    echo ${shellQuote(timeoutMessage)} >&2`,
-    "    exit 1",
-    "  fi",
-    "  sleep 0.05",
-    "done",
-    `printf '%s\\n' "$$" > ${lockDirExpr}/pid`,
-  ];
-}
-
-function buildRemotePidLockCleanupScript(lockDirExpr: string, cleanupLines: string[]): string[] {
-  return [
-    "cleanup() {",
-    ...cleanupLines.map((line) => `  ${line}`),
-    `  rm -rf ${lockDirExpr}`,
-    "}",
-    "trap cleanup EXIT INT TERM",
-  ];
 }
 
 export function createSandboxCallbackBridgeToken(bytes = DEFAULT_BRIDGE_TOKEN_BYTES): string {
@@ -1669,113 +1651,12 @@ export async function startSandboxCallbackBridgeWorker(input: {
   };
 }
 
-/**
- * Content-hash-skip write of a Paperclip-authored text file into the sandbox, in
- * a SINGLE remote exec. The body's sha256 is computed on the host; the one shell
- * round-trip skips the write entirely when the remote file already hashes to the
- * same value (warm start — 0 write execs), otherwise it uploads (base64 over
- * stdin), verifies the decoded bytes, and atomically renames into place. A
- * PID-liveness lock serializes concurrent writers to the same path and the
- * verify step guards against a torn upload.
- *
- * Fail loudly: a non-zero remote exit (surfaced by `requireSuccessfulResult`) or
- * malformed result JSON throws rather than silently re-uploading and masking a
- * failed check. The only intentional degradation is when the remote has neither
- * `sha256sum` nor `shasum` — then the skip cannot be proven and we conservatively
- * re-upload (and the post-upload verify is best-effort, as noted inline).
- */
-export async function syncRemoteTextFileWithHashSkip(input: {
-  runner: CommandManagedRuntimeRunner;
-  remoteCwd: string;
-  remoteDir: string;
-  remotePath: string;
-  body: string;
-  // Human-readable noun phrase used in fail-loud messages, e.g.
-  // "Sandbox callback bridge entrypoint" / "Process session remote script".
-  label: string;
-  // Short action label for `requireSuccessfulResult`, e.g.
-  // "sync sandbox callback bridge entrypoint".
-  action: string;
-  lockDir: string;
-  timeoutMs?: number | null;
-  shellCommand?: "bash" | "sh" | null;
-}): Promise<{ uploaded: boolean; sha256: string }> {
-  const timeoutMs = normalizeTimeoutMs(input.timeoutMs, DEFAULT_BRIDGE_RESPONSE_TIMEOUT_MS);
-  const shellCommand = preferredShellForSandbox(input.shellCommand);
-  const remotePartial = `${input.remotePath}.partial`;
-  const remoteUploadPath = `${input.remotePath}.paperclip-upload.b64`;
-  const base64Body = toBuffer(Buffer.from(input.body, "utf8")).toString("base64");
-  const sha256 = createHash("sha256").update(input.body, "utf8").digest("hex");
+export async function syncRemoteTextFileWithHashSkip(input: RemoteTextFileSyncInput) {
+  return syncRemoteTextFile(input, { runShell, check: requireSuccessfulResult });
+}
 
-  const syncResult = await runShell(
-    input.runner,
-    input.remoteCwd,
-    [
-      "set -eu",
-      `remote_dir=${shellQuote(input.remoteDir)}`,
-      `remote_path=${shellQuote(input.remotePath)}`,
-      `remote_partial=${shellQuote(remotePartial)}`,
-      `remote_upload=${shellQuote(remoteUploadPath)}`,
-      `lock_dir=${shellQuote(input.lockDir)}`,
-      `expected_sha=${shellQuote(sha256)}`,
-      "hash_file() {",
-      "  if command -v sha256sum >/dev/null 2>&1; then",
-      "    sha256sum \"$1\" | awk '{print $1}'",
-      "    return 0",
-      "  fi",
-      "  if command -v shasum >/dev/null 2>&1; then",
-      "    shasum -a 256 \"$1\" | awk '{print $1}'",
-      "    return 0",
-      "  fi",
-      "  return 127",
-      "}",
-      "mkdir -p \"$remote_dir\"",
-      ...buildRemotePidLockAcquireScript("\"$lock_dir\"", `Timed out acquiring ${input.label} upload lock.`),
-      ...buildRemotePidLockCleanupScript("\"$lock_dir\"", [
-        "rm -f \"$remote_upload\" \"$remote_partial\"",
-      ]),
-      "current_sha=\"\"",
-      "if [ -f \"$remote_path\" ]; then",
-      "  current_sha=\"$(hash_file \"$remote_path\" 2>/dev/null)\" || current_sha=\"\"",
-      "fi",
-      "if [ -n \"$current_sha\" ] && [ \"$current_sha\" = \"$expected_sha\" ]; then",
-      "  printf '{\"uploaded\":false}\\n'",
-      "  exit 0",
-      "fi",
-      "rm -f \"$remote_upload\" \"$remote_partial\"",
-      "cat > \"$remote_upload\"",
-      "base64 -d < \"$remote_upload\" > \"$remote_partial\"",
-      // Verify upload integrity. If neither sha256sum nor shasum is on PATH
-      // (minimal Alpine/scratch images), surface the missing-tool error
-      // instead of a misleading "sha mismatch" — the verify step is then
-      // best-effort and we trust base64-decode + atomic rename below.
-      "if partial_sha=\"$(hash_file \"$remote_partial\" 2>/dev/null)\"; then",
-      "  if [ \"$partial_sha\" != \"$expected_sha\" ]; then",
-      `    echo ${shellQuote(`${input.label} upload sha mismatch.`)} >&2`,
-      "    exit 1",
-      "  fi",
-      "else",
-      `  echo ${shellQuote(`${input.label} sha verify skipped: no sha256sum/shasum on remote.`)} >&2`,
-      "fi",
-      "mv \"$remote_partial\" \"$remote_path\"",
-      "printf '{\"uploaded\":true}\\n'",
-    ].join("\n"),
-    timeoutMs,
-    shellCommand,
-    base64Body,
-  );
-  requireSuccessfulResult(input.action, syncResult);
-
-  let uploaded = false;
-  try {
-    uploaded = JSON.parse(syncResult.stdout.trim())?.uploaded === true;
-  } catch (error) {
-    throw new Error(
-      `${input.label} sync wrote invalid result JSON: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-
-  return { uploaded, sha256 };
+export async function syncRemoteTextFilesWithHashSkip(input: RemoteTextFileBatchInput) {
+  return syncRemoteTextFiles(input, { runShell, check: requireSuccessfulResult });
 }
 
 export async function syncSandboxCallbackBridgeEntrypoint(input: {
@@ -2405,6 +2286,24 @@ function tokensMatch(received) {
   return timingSafeEqual(expected, actual);
 }
 
+// Read the bridge token a local caller presented. The gateway accepts two
+// header conventions for the same token. "Authorization: Bearer <token>" is the
+// bridge convention. "X-API-Key: <token>" is the convention the public Paperclip
+// API documents, so an agent that follows those docs sends it first. Both
+// headers carry the same per-run token and both reach the same constant-time
+// comparison in tokensMatch, so the second header removes a needless 401 without
+// widening what the gateway trusts. The header allowlist strips both
+// headers before the gateway forwards a request, so neither one leaves the
+// sandbox. Authorization wins when a caller presents a bearer token in it.
+function readBridgeToken(req) {
+  const auth = req.headers.authorization || "";
+  if (auth.startsWith("Bearer ")) {
+    return auth.slice("Bearer ".length);
+  }
+  const apiKey = req.headers["x-api-key"];
+  return typeof apiKey === "string" ? apiKey : "";
+}
+
 function writeJsonResponse(res, status, body) {
   res.statusCode = status;
   res.setHeader("content-type", "application/json");
@@ -2482,8 +2381,7 @@ async function runFileGateway() {
     let envelopeReservation = 0;
     let dispatched = false;
     try {
-      const auth = req.headers.authorization || "";
-      const receivedToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+      const receivedToken = readBridgeToken(req);
       if (!tokensMatch(receivedToken)) {
         writeJsonResponse(res, 401, { error: "Invalid bridge token." });
         return;
@@ -2766,8 +2664,7 @@ function runHttp2Gateway() {
     // deadline timeout all reach the same finally.
     let releaseBodyReservation = null;
     try {
-      const auth = req.headers.authorization || "";
-      const receivedToken = auth.startsWith("Bearer ") ? auth.slice("Bearer ".length) : "";
+      const receivedToken = readBridgeToken(req);
       if (!tokensMatch(receivedToken)) {
         writeJsonResponse(res, 401, { error: "Invalid bridge token." });
         return;

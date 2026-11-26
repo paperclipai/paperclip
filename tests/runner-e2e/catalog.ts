@@ -1,3 +1,4 @@
+import { TASK_WORKSPACES_SUITE, taskWorkspaceTask, taskWorkspaceProfile, taskWorkspaceDefinitionDigest } from "./task-workspaces-cases.js";
 import { nativeActiveStopTasks } from "./native-active-stop-tasks.js";
 import { piControlTasks } from "./pi-controls-cases.js";
 import { cursorNativeTasks } from "./cursor-native-cases.js";
@@ -39,6 +40,7 @@ import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/dri
 import { ACPX_QUALIFICATION_MODELS } from "../acpx-qualification-models.js";
 import { QUALIFIED_OPENCODE_MODEL } from "../../packages/paperclip-runner/src/drivers/opencode/opencode-server-driver.js";
 import { CREDENTIAL_NAMES } from "./types.js";
+import { repositorySkillsTask, repositorySkillsProfile } from "./repository-skills.js";
 import { createGitStreamingTask } from "./daytona-git-streaming.js";
 import { PENDING_PROFILE_PREREQUISITES } from "./prerequisites.js";
 import {
@@ -99,6 +101,7 @@ function commonAgent(
     capabilities:
       "Completes deterministic standard, planning, and ask-mode runner acceptance tasks.",
     adapterType,
+    ...(adapterType === "codex_local" ? { runner: "legacy" as const } : {}),
     adapterConfig,
     defaultEnvironmentId: input.environmentId,
     budgetMonthlyCents: 0,
@@ -1104,6 +1107,41 @@ export const extendedHarnessFileTask: RunnerTaskFixture = {
 
 export const runnerSuites: readonly RunnerSuiteFixture[] = [
   {
+    id: "codie-latency-diagnostic",
+    label: "Native Codex latency diagnostic",
+    description: "One real Daytona turn on the staging-selected model. API-key auth and a fresh fixture do not reproduce the staging subscription, data or Slack delivery.",
+    groups: ["native"],
+    manualOnly: true,
+    profiles: [(() => {
+      const profile = nativeProfile({
+        id: "runner-codex-61-diagnostic", label: "Native Codex 6.1 diagnostic",
+        provider: "codex", model: "gpt-6.1-sol", credential: "OPENAI_API_KEY",
+        supportedEnvironments: ["daytona"],
+        modelQualification: { source: "candidate_runner_profile", qualificationId: "explicit-model-latency-diagnostic" },
+      });
+      return { ...profile, buildAgent(input: AgentFixtureBuildInput) {
+        const agent = profile.buildAgent(input);
+        return { ...agent, budgetMonthlyCents: 1000,
+          adapterConfig: { ...(agent.adapterConfig as Record<string, unknown>), lifecycleMode: "warm", idleTimeoutMs: 300_000 } };
+      } };
+    })()],
+    environments: [daytonaWarmEnvironment],
+    tasks: runnerTasks.filter(task => task.id === "message-marker")
+      .map(task => ({ ...task, automaticRetryPolicy: "single_attempt" as const })),
+    expectedMatrixSize: 1,
+    definitionMetadata: { diagnostic: true, modelSource: "observed-staging-run", providerAuth: "api_key", stagingAuth: "subscription", companyData: "fresh-fixture", slackDelivery: false, maximumAutomaticRetries: 0 },
+  },
+  {
+    id: TASK_WORKSPACES_SUITE, label: "Task workspaces without projects", manualOnly: true,
+    description: "Three browser-driven admissions prove deferred repository preparation, stable projectless task files and nested Git persistence across a controller restart.",
+    groups: [], profiles: runnerProfiles.filter(profile => ["legacy-opencode", "runner-opencode"].includes(profile.id)).map(taskWorkspaceProfile),
+    environments: runnerEnvironments, tasks: [taskWorkspaceTask],
+    excludedExecutionIds: ["task-workspaces.legacy-opencode.daytona.task-directory-repository-resume"],
+    expectedMatrixSize: 3,
+    definitionMetadata: { version: 1, definitionDigest: taskWorkspaceDefinitionDigest(), scheduling: "explicit-only", providerTurns: 3,
+      attempts: 1, budgetMonthlyCents: 1000, project: "none", cwd: "unconfigured-task-default", oracle: "public-file-download-and-host-nested-git", remoteLifecycle: "per_turn" },
+  },
+  {
     id: "pi-controls", label: "Pi active controls", manualOnly: true,
     description: "Pending native-write Stop and browser-originated same-turn steering, with exact control receipts and independent retirement/no-effect evidence.",
     groups: ["native"], profiles: extendedHarnessProfiles.filter(profile => profile.qualificationCandidate === "pi"),
@@ -1354,7 +1392,8 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
         ...(["hire-reuse", "delegate-feedback"].includes(task.id) ? [] : [`everyday-workflows.runner-opencode.local.${task.id}`]),
       ]),
     ],
-    definitionMetadata: { version: 6, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
+    definitionMetadata: { version: 7, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
+      remoteCodexRestart: "same-active-process-lease-native-prefix-and-workspace-receipt",
       procedureCases: { ids: ["hire-reuse", "delegate-feedback"], maximumAttemptsPerCell: 1, companyAndLeadBudgetCents: 1_000 } },
   },
   {
@@ -1427,7 +1466,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     groups: ["onboarding"],
     profiles: runnerProfiles.filter(profile => ["legacy-codex", "legacy-claude", "runner-codex", "runner-acpx-claude"].includes(profile.id)),
     environments: [localEnvironment], tasks: firstTaskTasks, expectedMatrixSize: 52,
-    definitionMetadata: { version: 4, runGrading: "evidenced-nonexecution-and-refusal", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "post-onboarding-runtime-switch", productionInstructions: true, qualityGrading: "informational" },
+    definitionMetadata: { version: 8, runGrading: "evidenced-nonexecution-and-refusal", credentialPersistenceCheck: false, questionChoiceMinimum: 2, nativeSetup: "qualified-platform-wizard-saved-default", claudeDefaultTargets: ["darwin-arm64", "darwin-x64", "linux-x64", "linux-arm64"], legacySetup: "explicit-advanced-runner-choice", productionInstructions: true, qualityGrading: "informational" },
   },
   {
     id: "agent-chat", label: "Persistent Agent Chat",
@@ -1483,10 +1522,14 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     groups: ["chat", "native"],
     profiles: runnerProfiles.filter(profile => ["runner-codex", "runner-acpx-claude"].includes(profile.id))
       .map(profile => productionStoryProfile(defaultPermissionProfile(profile))),
-    environments: [localEnvironment],
+    environments: [localEnvironment, runnerEnvironments.find(environment => environment.id === "daytona")!],
+    excludedExecutionIds: ["runner-codex", "runner-acpx-claude"].flatMap(profile =>
+      [...firstTaskTasks.filter(task => ["task-reply-accept", "interview-plan-accept", "reject-no-execution", "task-card-accept"].includes(task.id)), ...chatConfirmationTasks]
+        .map(task => `confirmation-replies.${profile}.daytona.${task.id}`)
+        .filter(id => id !== "confirmation-replies.runner-codex.daytona.task-card-accept")),
     tasks: [...firstTaskTasks.filter(task => ["task-reply-accept", "interview-plan-accept", "reject-no-execution", "task-card-accept"].includes(task.id)), ...chatConfirmationTasks],
-    expectedMatrixSize: 12,
-    definitionMetadata: { version: 6, instructions: "production", grading: "card-message-provenance-before-child-creation", unansweredQuestionComposer: "history-card-only-including-fresh-dismissal", completionObservation: "120-seconds", scheduling: "explicit-only" },
+    expectedMatrixSize: 13,
+    definitionMetadata: { version: 7, managedOnboarding: "ui-owned-qualification-and-physical-file", managedExpectedTaskRuns: 4, managedAutomaticRetries: 0, instructions: "production", grading: "card-message-provenance-before-child-creation", unansweredQuestionComposer: "history-card-only-including-fresh-dismissal", completionObservation: "120-seconds", scheduling: "explicit-only" },
   },
   {
     id: "completion-updates", label: "Delegated Completion Updates", manualOnly: true,
@@ -1604,6 +1647,15 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     definitionMetadata: { version: 8, instructions: "fixed-external", nativeIdleTimeoutMs: 1_200_000, autoStopIntervalMinutes: 25, generatedFileCount: 60_000, filenameBytes: 39_828_890, scheduling: "explicit-only", finalization: "committed-without-active-sync-or-retry", copyback: "all-generated-file-contents-change-each-turn" },
   },
   buildConnectionSuite(runnerProfiles, runnerEnvironments),
+  {
+    id: "repository-skills", label: "Repository skill packages", manualOnly: true,
+    description: "Live private Poteto import and byte-for-byte delivery to local and Daytona agent runtimes.",
+    groups: ["native"],
+    profiles: runnerProfiles.filter(profile => profile.id === "runner-codex").map(repositorySkillsProfile),
+    environments: [localEnvironment, daytonaWarmEnvironment], tasks: [repositorySkillsTask], expectedMatrixSize: 2,
+    definitionMetadata: { version: 1, scheduling: "explicit-only", maximumAttemptsPerCell: 1,
+      source: "paperclipai/poteto-stack", skills: ["architect", "bro"], grading: "independent-git-blob-hashes-and-file-modes-from-owned-runtime", budgetMonthlyCents: 1000 },
+  },
 ] as const;
 
 export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
@@ -1625,6 +1677,7 @@ export function suiteDefinitionHash(suite: RunnerSuiteFixture) {
           id: task.id,
           flow: task.flow,
           expectedRunCount: task.expectedRunCount,
+          ...(task.requiredCredentials ? { requiredCredentials: task.requiredCredentials } : {}),
           ...(task.minimumExpectedRunCount === undefined ? {} : { minimumExpectedRunCount: task.minimumExpectedRunCount }),
           restartServerBeforeQuestionAnswer:
             task.restartServerBeforeQuestionAnswer ?? false,
@@ -1654,8 +1707,10 @@ export function buildRunnerMatrix(
               suiteDefinitionHash: suiteDefinitionHash(suite),
               profile,
               environment,
-              task: suite.id === "extended-harnesses" && profile.qualificationCandidate === "pi" && task.id === "file-edit-validate"
-                ? { ...task, buildPrompt: piFilePrompt } : task,
+              task: suite.id === "confirmation-replies" && profile.id === "runner-codex" && environment.id === "daytona" && task.id === "task-card-accept"
+                ? { ...task, expectedRunCount: 4, automaticRetryPolicy: "single_attempt" as const }
+                : suite.id === "extended-harnesses" && profile.qualificationCandidate === "pi" && task.id === "file-edit-validate"
+                  ? { ...task, buildPrompt: piFilePrompt } : task,
               groups: [
                 ...new Set([
                   ...suite.groups,
@@ -1667,6 +1722,7 @@ export function buildRunnerMatrix(
               requiredCredentials: [
                 ...(task.flow === "provider_connection" ? [] : [profile.credential]),
                 ...(task.flow !== "provider_connection" && environment.credential ? [environment.credential] : []),
+                ...(task.requiredCredentials ?? []),
               ],
             }))
             .filter((execution) => !excludedExecutionIds.has(execution.id)),
@@ -1715,6 +1771,7 @@ export function validateRunnerCatalog(): MatrixExecution[] {
   const connectionSuite = runnerSuites.find(suite => suite.id === "provider-connections")!;
   const allProfiles = [...connectionSuite.profiles, ...extendedHarnessProfiles, ...runnerProfiles, ...legacyAcpxProfiles, ...pendingContextIntegrityProfiles, ...openRouterBreadthProfiles, ...everydayProfiles.filter(p => !runnerProfiles.some(existing => existing.id === p.id))];
   const allTasks = [
+    repositorySkillsTask,
     ...piNativeTasks,
     ...copilotProtectionTasks,
     ...connectionSuite.tasks,

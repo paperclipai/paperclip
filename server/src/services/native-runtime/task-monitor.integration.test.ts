@@ -1,3 +1,5 @@
+import { subscribeDatabaseWork } from "@paperclipai/db";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -38,6 +40,32 @@ describeEmbeddedPostgres("native task monitors", () => {
     const read = async () => (await db.select().from(issues).where(eq(issues.id, issueId)))[0]!;
     return { ...binding, binding, authority, monitor, call, read };
   }
+
+  it("notifies committed monitor changes for another owned task without replay or authorization wakeups", async () => {
+    const value = await fixture(), targetId = randomUUID();
+    await db.insert(issues).values({ id: targetId, companyId: value.companyId,
+      title: "Another owned monitor", status: "in_review", assigneeAgentId: value.agentId });
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.issueMonitors, event => { events.push(event); });
+    const original = { taskId: targetId, idempotencyKey: "notify-first", monitor: value.monitor };
+    try {
+      await value.call(original);
+      expect(events).toEqual(["intent", "settled"]);
+      events.length = 0;
+      await value.call({ ...original, idempotencyKey: "notify-earlier",
+        monitor: { ...value.monitor, nextCheckAt: new Date(Date.now() + 30_000).toISOString() } });
+      expect(events).toEqual(["intent", "settled"]);
+      events.length = 0;
+      await value.call(original);
+      expect(events).toEqual([]);
+      await value.call({ taskId: targetId, idempotencyKey: "notify-clear", monitor: null });
+      expect(events).toEqual(["intent", "settled"]);
+      events.length = 0;
+      await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, targetId));
+      await expect(value.call({ ...original, idempotencyKey: "notify-forbidden" })).rejects.toThrow();
+      expect(events).toEqual([]);
+    } finally { unsubscribe(); }
+  });
 
   it("advertises a real binding only in standard execution", async () => {
     const value = await fixture();
@@ -88,6 +116,25 @@ describeEmbeddedPostgres("native task monitors", () => {
     const audits = await db.select().from(activityLog).where(and(eq(activityLog.entityId, value.issueId), eq(activityLog.action, "issue.monitor_scheduled")));
     expect(audits).toHaveLength(1);
     expect(audits[0]).toMatchObject({ runId: value.runId, agentId: value.agentId });
+  });
+
+  it("defaults completion only to the current eligible saved monitor and clears it when consumed", async () => {
+    const value = await fixture();
+    const context = () => value.authority.execute({ tool: "get_task_context", callId: randomUUID(), arguments: {} });
+    expect(await context()).toMatchObject({ completionContinuation: null });
+    await value.call({ idempotencyKey: "default-schedule", monitor: value.monitor });
+    expect(await context()).toMatchObject({
+      run: { id: value.runId }, activeTask: { executionRunId: value.runId },
+      completionContinuation: { kind: "monitor", summary: "Wait for the saved task monitor.",
+        idempotencyKey: `task-monitor:${value.issueId}:${value.monitor.nextCheckAt}` },
+    });
+    const scheduled = await value.read();
+    await db.update(issues).set(buildIssueMonitorTriggeredPatch({ issue: scheduled,
+      policy: normalizeIssueExecutionPolicy(scheduled.executionPolicy), triggeredAt: new Date() })).where(eq(issues.id, value.issueId));
+    expect(await context()).toMatchObject({ completionContinuation: null });
+    await value.call({ idempotencyKey: "replacement-schedule", monitor: value.monitor });
+    await value.call({ idempotencyKey: "cleared-schedule", monitor: null });
+    expect(await context()).toMatchObject({ completionContinuation: null });
   });
 
   it("replaces and clears schedules without re-arming a receipt on replay", async () => {

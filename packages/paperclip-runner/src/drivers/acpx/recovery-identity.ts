@@ -1,3 +1,4 @@
+import { resolveClaudeEffort } from "./claude-effort.js";
 import { parseProviderMode } from "../../contracts/provider-mode.js";
 import { resolvePiThinkingLevel, type PiThinkingLevel } from "./pi-thinking.js";
 import { createHash } from "node:crypto";
@@ -23,6 +24,7 @@ export interface AcpxRecoveryBinding {
   permissionMode: NativeAcpxPermissionMode;
   mode?: string;
   piThinkingLevel?: PiThinkingLevel;
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   profileSessionKey: string;
 }
 
@@ -39,6 +41,7 @@ export interface AcpxIdentityRecord {
   permissionMode: NativeAcpxPermissionMode;
   mode?: string;
   piThinkingLevel?: PiThinkingLevel;
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 
@@ -51,12 +54,15 @@ export async function createAcpxRecoveryBinding(input: {
   permissionMode: NativeAcpxPermissionMode;
   mode?: string;
   piThinkingLevel?: PiThinkingLevel;
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   providerConfigurationDigest?: string;
+  homeBinding?: Readonly<Record<string, string>>;
   providerPolicy?: { readOnly: boolean; readRoots?: readonly string[]; protectedPaths?: readonly string[] };
 }): Promise<AcpxRecoveryBinding> {
   validateIdentity(input.normalizedSessionId, "normalized session");
   const mode = parseProviderMode(input.mode);
   const piThinkingLevel = resolvePiThinkingLevel(input.profile.agent, input.piThinkingLevel);
+  const claudeEffort = resolveClaudeEffort(input.profile.agent, input.claudeEffort);
   if (input.providerPolicy !== undefined && typeof input.providerPolicy.readOnly !== "boolean") throw new Error("ACPX recovery requires a valid task execution policy");
   if (input.requestedModel !== input.profile.qualificationModel) {
     throw new Error("ACPX recovery requested model does not match its admitted profile");
@@ -84,6 +90,7 @@ export async function createAcpxRecoveryBinding(input: {
       agentRuntimeVersion: input.profile.agentRuntimeVersion,
       commandDigest: input.profile.commandDigest,
       qualificationModel: input.profile.qualificationModel,
+      ...(input.homeBinding === undefined ? {} : { homeMode: "preconfigured", homeBinding: input.homeBinding }),
       reportedModelId: input.profile.reportedModelId,
       permissionPolicy: input.profile.permissionPolicy,
       ...(input.providerConfigurationDigest === undefined ? {} : { providerConfigurationDigest: input.providerConfigurationDigest }),
@@ -104,6 +111,7 @@ export async function createAcpxRecoveryBinding(input: {
       permissionMode: input.permissionMode,
       ...(mode ? { mode } : {}),
       ...(piThinkingLevel ? { piThinkingLevel } : {}),
+      ...(claudeEffort ? { claudeEffort } : {}),
     }),
   ).replace("sha256:", "paperclip-");
   return {
@@ -118,6 +126,7 @@ export async function createAcpxRecoveryBinding(input: {
     permissionMode: input.permissionMode,
     ...(mode ? { mode } : {}),
       ...(piThinkingLevel ? { piThinkingLevel } : {}),
+      ...(claudeEffort ? { claudeEffort } : {}),
     profileSessionKey,
   };
 }
@@ -140,6 +149,7 @@ export function createAcpxIdentityRecord(
     permissionMode: binding.permissionMode,
     ...(binding.mode ? { mode: binding.mode } : {}),
     ...(binding.piThinkingLevel ? { piThinkingLevel: binding.piThinkingLevel } : {}),
+    ...(binding.claudeEffort ? { claudeEffort: binding.claudeEffort } : {}),
     providerLifetimeFenceCandidates: Object.freeze([
       ...expected.providerLifetimeFenceCandidates,
     ]) as readonly [number, number, number],
@@ -167,6 +177,7 @@ export function acpxProviderSessionIdentity(
     permissionMode: record.permissionMode,
     ...(record.mode ? { mode: record.mode } : {}),
     ...(record.piThinkingLevel ? { piThinkingLevel: record.piThinkingLevel } : {}),
+    ...(record.claudeEffort ? { claudeEffort: record.claudeEffort } : {}),
     providerLifetimeFenceCandidates: record.providerLifetimeFenceCandidates,
   };
   verifyExpectedAcpxIdentity(identity, binding, record);
@@ -193,7 +204,8 @@ export function verifyExpectedAcpxIdentity(
     expected.effectiveModel !== binding.effectiveModel ||
     expected.permissionMode !== binding.permissionMode ||
     expected.mode !== binding.mode ||
-    expected.piThinkingLevel !== binding.piThinkingLevel
+    expected.piThinkingLevel !== binding.piThinkingLevel ||
+    expected.claudeEffort !== binding.claudeEffort
   ) {
     throw new Error(
       "ACPX recovery identity conflicts with the immutable session configuration",
@@ -214,6 +226,7 @@ export function verifyExpectedAcpxIdentity(
     record.permissionMode !== binding.permissionMode ||
     record.mode !== binding.mode ||
     record.piThinkingLevel !== binding.piThinkingLevel ||
+    record.claudeEffort !== binding.claudeEffort ||
     !sameFenceCandidates(
       record.providerLifetimeFenceCandidates,
       expected.providerLifetimeFenceCandidates,
@@ -240,6 +253,7 @@ function parsePersistedRecord(value: unknown): AcpxIdentityRecord {
     "permissionMode",
     "mode",
     "piThinkingLevel",
+    "claudeEffort",
     "providerLifetimeFenceCandidates",
   ]);
   return validatedRecord(record);
@@ -267,6 +281,7 @@ function validatedRecord(value: Record<string, unknown>): AcpxIdentityRecord {
     throw new Error("ACPX identity permission mode is invalid");
   }
   if (value.mode !== undefined) parseProviderMode(value.mode);
+  resolveClaudeEffort("claude", value.claudeEffort);
   if (value.piThinkingLevel !== undefined) resolvePiThinkingLevel("pi", value.piThinkingLevel);
   validateFenceCandidates(value.providerLifetimeFenceCandidates);
   return value as unknown as AcpxIdentityRecord;
@@ -297,6 +312,7 @@ function validateExpected(expected: AcpxExpectedSessionIdentity): void {
     throw new Error("Expected ACPX permission mode is invalid");
   }
   if (expected.mode !== undefined) parseProviderMode(expected.mode);
+  resolveClaudeEffort("claude", expected.claudeEffort);
   if (expected.piThinkingLevel !== undefined) resolvePiThinkingLevel("pi", expected.piThinkingLevel);
   validateFenceCandidates(expected.providerLifetimeFenceCandidates);
 }

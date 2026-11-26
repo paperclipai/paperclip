@@ -1,3 +1,4 @@
+import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import {
@@ -12,6 +13,8 @@ import {
 import {
   agents,
   companies,
+  authUsers,
+  companyMemberships,
   createDb,
   heartbeatRuns,
   agentWakeupRequests,
@@ -87,7 +90,7 @@ describe("durable inbound chat scheduler receipts", () => {
         testedAt: new Date(0).toISOString(),
       }),
     });
-  }, 30_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterEach(() => {
     execute.mockClear();
     for (const unregister of unregisterAuthorities.splice(0)) unregister();
@@ -111,6 +114,8 @@ describe("durable inbound chat scheduler receipts", () => {
       defaultResponsibleUserId: "board-user",
       requireBoardApprovalForNewAgents: false,
     });
+    await db.insert(authUsers).values({ id: "board-user", name: "Fixture user", email: "board-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -191,9 +196,12 @@ describe("durable inbound chat scheduler receipts", () => {
     };
   }
 
-  it.each(["unmentioned", "mentioned", "coalesced", "recovery", "deferred"])("checks Slack mentions after a real heartbeat queue wait (%s)", async (scenario) => {
+  it.each([
+    ...["unmentioned", "mentioned", "coalesced", "recovery", "deferred"].map((scenario) => ({ scenario, isDM: false })),
+    ...["unmentioned", "coalesced"].map((scenario) => ({ scenario, isDM: true })),
+  ])("checks Slack channel mentions after a real heartbeat queue wait ($scenario, DM=$isDM)", async ({ scenario, isDM }) => {
     const mentioned = scenario === "mentioned" || scenario === "coalesced";
-    const allowed = scenario === "mentioned" || scenario === "recovery";
+    const allowed = isDM || scenario === "mentioned" || scenario === "recovery";
     const f = await fixture();
     await db.update(agents).set({ adapterType: "durable_chat_retry_test" }).where(eq(agents.id, f.agentId));
     const applicationId = randomUUID(), connectionId = randomUUID(), endpointId = randomUUID();
@@ -206,8 +214,8 @@ describe("durable inbound chat scheduler receipts", () => {
     await db.insert(issueComments).values({ id: request.commentId, companyId: f.companyId, issueId: f.issueId,
       authorUserId: "board-user", body: mentioned ? "@bot work" : "Work" });
     const [delivery] = await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId,
-      providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: "direct_message", state: "processed",
-      normalizedEvent: { trigger: "direct_message", message: { mentionedBot: mentioned } } }).returning();
+      providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: isDM ? "direct_message" : "message", state: "processed",
+      normalizedEvent: { trigger: isDM ? "direct_message" : "subscribed_message", conversation: { isDirectMessage: isDM }, message: { mentionedBot: mentioned } } }).returning();
     await db.insert(chatActions).values({ id: request.id, companyId: f.companyId, endpointId,
       deliveryId: delivery.id, kind: "inbound_wakeup", providerActionId: randomUUID(), status: "processed",
       payload: { issueId: f.issueId, commentId: request.commentId } });
@@ -228,8 +236,8 @@ describe("durable inbound chat scheduler receipts", () => {
       await db.insert(issueComments).values({ id: second.commentId, companyId: f.companyId, issueId: f.issueId,
         authorUserId: "board-user", body: scenario === "deferred" ? "@bot follow-up" : "Unmentioned follow-up" });
       const [secondDelivery] = await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId,
-        providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: "direct_message", state: "processed",
-        normalizedEvent: { trigger: "direct_message", message: { mentionedBot: scenario === "deferred" } } }).returning();
+        providerEventId: randomUUID(), deduplicationKey: randomUUID(), eventKind: isDM ? "direct_message" : "message", state: "processed",
+        normalizedEvent: { trigger: isDM ? "direct_message" : "subscribed_message", conversation: { isDirectMessage: isDM }, message: { mentionedBot: scenario === "deferred" } } }).returning();
       await db.insert(chatActions).values({ id: second.id, companyId: f.companyId, endpointId,
         deliveryId: secondDelivery.id, kind: "inbound_wakeup", providerActionId: randomUUID(), status: "processed",
         payload: { issueId: f.issueId, commentId: second.commentId } });

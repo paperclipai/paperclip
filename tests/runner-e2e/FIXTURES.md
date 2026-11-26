@@ -111,6 +111,32 @@ registry therefore discovers that row through the public environments API.
 This still provides full isolation because every cell starts a new Paperclip
 instance and database.
 
+
+Native-generation Codex on Daytona qualifies its immutable image through one
+existing saved-environment probe before agent creation. Automatic Codex requests
+also inspect the scoped server discovery default. Legacy and other provider
+fixtures keep their existing setup. The probe uses no provider turn, permits one
+setup lease per cell, has a 330-second HTTP deadline and a 10-second platform
+command budget, and performs no retry. It uses the existing archive/release and
+provider-expiry cleanup policy. The returned owned probe lease joins task leases
+in the existing runtime-cost estimator; unrelated lease IDs do not gain task
+attribution. Failed setup before fixture completion retains unavailable/unknown
+cost coverage and its holds. A connection-only probe or name-only snapshot cannot
+qualify native defaults.
+
+The manual managed first-task cell is the exception to fixture prequalification:
+`confirmation-replies.runner-codex.daytona.task-card-accept` leaves the saved
+environment unqualified until the ordinary onboarding Connect action. It
+observes exactly one platform response and one selected-runtime response, fresh
+scoped native discovery and the saved automatic choice. Both setup leases must
+have authoritative response IDs, match this company/environment, and reach
+released/success before setup is accepted. Exact IDs join the existing task-run
+lease collector and runtime estimate, including failed setup. New uncorrelated
+or response-less leases remain unknown and unattributed; incomplete coverage
+removes the estimate and retains its budget holds. No retry or extra fixture
+probe closes that gap. The existing environment deletion, expiry backstops and
+instance cleanup still apply on every outcome.
+
 Daytona creates sandbox environments through the public API. The core fixture
 keeps `reuseLease:false` and `runnerLifecycleMode:"per_turn"`. The dedicated
 warm-continuity fixture uses `reuseLease:true` and
@@ -853,3 +879,21 @@ not task success or operator cancellation. Stop during an unresolved permission
 remains a separate `native-active-stop/pending-permission-stop` gate.
 
 Pi controls definition 9 and native definition 16 create an explicit title through the production search creation action and bind the task ID from the public creation response. The scoped task and assignee must match before any native control. Automatic naming is outside these strict native-operation fixtures; all existing permission, byte, process, run-count and cleanup assertions remain required. Preserve the failed title-lookup attempt as its original failure.
+
+## Projectless task files and repository admission
+
+The explicit `task_workspaces` flow supplies no project and strips the legacy
+profile's operator cwd. It retains the ordinary company, encrypted credentials,
+environment and agent fixtures. All mutations use production browser/API/semantic
+surfaces; the oracle never inserts database rows or prepares a replacement checkout.
+The passive public Git source is `https://github.com/octocat/Hello-World`.
+No GitHub credentials, remote repository creation or push is used.
+
+Three user-requested turns test pending idempotent preparation, controller restart,
+next-admission realization and later nested Git/dirty-file persistence. The source
+pin is observed from the real checkout rather than assumed from a mutable branch.
+Host Git inspection is limited to the verified isolated company/task root. Public
+execution-workspace file reads and run-attributed artifact downloads verify bytes.
+Calibration rejects wrong roots, missing history, changed pins, duplicate receipts,
+extra wakes, incomplete persistence, tool bypass and missing remote leases. Partial
+observations remain in retained attempt evidence; missing evidence cannot pass.

@@ -18,6 +18,17 @@ Native runners retain a session-owned broker and launcher path across warm turns
 
 The session broker listens only on controller loopback and accepts only its authenticated GitHub credential operation. Remote executions reach it through the existing authenticated callback bridge. Its transport and launchers are retired with the provider session. If remote bridge startup fails, anonymous launchers keep ordinary work available; the next run retries setup with a fresh session. Controller restart/cold recovery still uses the existing checkpoint and process-recovery rules; the broker's in-memory authority is not persisted for adoption.
 
+The native GitHub callback bridge uses HTTP/2 only when the server-selected
+`enableSandboxDuplexBridge` flag and the sandbox's verified duplex capability
+permit it. Missing settings, unsupported providers and failed channel startup
+keep the authenticated file bridge. Changing the server flag retires a retained
+warm bridge at the next normal run boundary, before a retained instruction copy
+is claimed. A lost HTTP/2 channel also makes the broker unavailable and retires
+that warm session at its next admission. An unchanged flag and a healthy broker
+permit reuse. Normal session cleanup closes the channel as an orderly completion.
+This selection changes transport only; operation-time credential checks remain
+the same. Local and SSH execution retain their existing transport.
+
 Other adapters continue using the run-scoped signed capability and public broker endpoint. That endpoint rejects browser origins and session cookies, validates a distinct signed runtime scope, and rechecks the company, agent, and live run. GitHub credentials are returned only to the managed command process, never persisted in identity history or injected into the long-lived provider process.
 
 Low-trust executions cannot receive raw GitHub credentials, including dedicated
@@ -29,6 +40,11 @@ Read-only access must use separately authorized tools that enforce that boundary
 Server-side Git operations and GitHub gateway calls follow the same selection rules. Approved gateway operations retain their signed originating identity. Connection audience and tool policies continue to apply to the selected person's connection. Native catalogs remain stable across identity changes, but each invocation resolves the selected grant again. Personal OAuth secret declarations survive connection pauses and metadata edits.
 
 Managed commands disable ambient Git credential helpers, Git global/system configuration, host GitHub CLI configuration, and host SSH identity access. Per-operation GitHub CLI configuration is isolated in a writable configuration directory beneath the managed launcher directory. Missing credentials clear previous author and token values; no teammate, standing delegation, host token, or company-default user's account is substituted. Anonymous/local operations remain available where supported.
+
+OpenCode retains the controller-projected GitHub broker environment through
+runner startup and provider startup. Shell operations acquire credentials for
+the active run through that broker. They do not require a persistent GitHub CLI
+login or inherit an ambient host broker capability.
 
 Without a managed identity, local commits can use an explicitly configured
 repository identity or `git -c user.name=... -c user.email=...`. The launcher
@@ -50,6 +66,13 @@ project's package configuration. Sandbox command checks use
 the same sanitized environment as execution, so a CLI visible only in the
 provider's default environment cannot pass the launch check. Failed path
 discovery stops startup instead of silently falling back to a minimal path.
+
+Providers that declare concurrent sync support stage at most three independent
+launcher files at once. Other providers keep serial staging. Each file retains
+its content hash, upload lock, integrity check and atomic rename. A failed batch
+settles all started uploads before startup rejects; later files and the final
+permission step do not start. This changes startup scheduling, not credentials
+or callback transport selection.
 
 Scripts that previously read a persistent `GH_TOKEN` must use managed `git`, `gh`, or GitHub gateway tools. Managed execution skips legacy GitHub token bindings in agent, environment, project, and routine configuration before secret preflight. Configure personal or dedicated access through the GitHub connection instead. Directly invoking an unmanaged executable or retaining a token obtained during an earlier invocation is outside the managed invocation contract.
 

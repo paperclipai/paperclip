@@ -1,22 +1,22 @@
+import { assertIsolatedWorkspaceSourceReadAccess, retainIsolatedWorkspaceSourceAccess } from "../execution-workspace-repositories.js";
+import { selectRestoredProjectRepositories, type GitWorkspaceContents } from "../git-workspace-contents.js";
+import { GitCacheRestorationFailure } from "../git-workspace-restoration.js";
+import { deriveRepoNameFromRepoUrl, managedProjectCheckoutName, projectRepositoryIdentity } from "../managed-project-checkout-name.js";
+import { forbidden } from "../../errors.js";
+import { readGitConnectionFailure } from "../git-connection-failure.js";
+import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored } from "../managed-repository-checkout.js";
+export { materializeManagedProjectWorkspace } from "../managed-repository-checkout.js";
+import { sql } from "drizzle-orm";
+import { materializeIsolatedTaskDirectory } from "../isolated-task-directory.js";
 import { readConnectionFailure, type GitConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
-import { classifyGitCloneFailure, GitConnectionFailureError, readGitConnectionFailure } from "../git-connection-failure.js";
 import { managedAiSessionFingerprintConfig } from "../ai-connection-runtime.js";
 import {
   PROJECT_REPOSITORIES_DIR,
   readGitWorkspaceSnapshot,
-  disposeGitWorkspaceSnapshot,
 } from "@paperclipai/adapter-utils/git-workspace-sync";
-import {
-  isWorkspaceGitScanError,
-  WorkspaceGitScanError,
-} from "../workspace-git-operation-scheduler.js";
-import {
-  captureDirectorySnapshot,
-  disposeDirectorySnapshot,
-  mergeDirectoryWithBaseline,
-} from "@paperclipai/adapter-utils/workspace-restore-merge";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { localRepositoryPath } from "../local-repository-path.js";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import {
@@ -43,7 +43,6 @@ import {
 import { logger } from "../../middleware/logger.js";
 import {
   createGitRemoteAuthProvider,
-  describeGitAuthFailure,
   scrubGitCredentialText,
   type GitRemoteAuthProvider,
 } from "../git-credentials.js";
@@ -61,9 +60,9 @@ import {
   inspectManagedGitWorktreeBranch,
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
-  sanitizeRuntimeServiceBaseEnv,
 } from "../workspace-runtime.js";
 import { resolvePersistedGitWorkspaceSource } from "../persisted-workspace-source.js";
+import { verifiedRecordedIsolatedRemoteSource } from "../isolated-remote-workspace-source.js";
 import { issueService } from "../issues.js";
 import { projectService } from "../projects.js";
 import {
@@ -97,7 +96,6 @@ const execFile = promisify(execFileCallback);
 
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 
-const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 
 export const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 
@@ -336,18 +334,17 @@ export function buildExecutionWorkspaceConfigSnapshot(
   return hasSnapshot ? snapshot : null;
 }
 
-export function stripHostWorkspaceProvisionForLowTrustSandbox(input: {
+export function stripHostWorkspaceProvision(input: {
   config: Record<string, unknown>;
-  trustPreset: TrustPresetResolution;
-  selectedEnvironmentDriver: string | null | undefined;
+  skipHostProvision: boolean;
 }): Record<string, unknown> {
-  if (input.trustPreset.kind !== "low_trust_review") return input.config;
-  if (input.selectedEnvironmentDriver !== "sandbox") return input.config;
+  if (!input.skipHostProvision) return input.config;
 
   const workspaceStrategy = parseObject(input.config.workspaceStrategy);
   if (
     typeof workspaceStrategy.provisionCommand !== "string" &&
-    typeof workspaceStrategy.runtimeProvisionCommand !== "string"
+    typeof workspaceStrategy.runtimeProvisionCommand !== "string" &&
+    typeof input.config.runtimeProvisionCommand !== "string"
   )
     return input.config;
 
@@ -355,10 +352,9 @@ export function stripHostWorkspaceProvisionForLowTrustSandbox(input: {
   delete nextWorkspaceStrategy.provisionCommand;
   delete nextWorkspaceStrategy.runtimeProvisionCommand;
 
-  return {
-    ...input.config,
-    workspaceStrategy: nextWorkspaceStrategy,
-  };
+  const nextConfig: Record<string, unknown> = { ...input.config, workspaceStrategy: nextWorkspaceStrategy };
+  delete nextConfig.runtimeProvisionCommand;
+  return nextConfig;
 }
 
 export async function preflightLowTrustWorkspaceIsolation(input: {
@@ -430,23 +426,7 @@ export async function resolveWorkspaceAfterLowTrustPreflight<
   };
 }
 
-function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
-  const trimmed = repoUrl?.trim() ?? "";
-  if (!trimmed) return null;
-  try {
-    const parsed = new URL(trimmed);
-    const cleanedPath = parsed.pathname.replace(/\/+$/, "");
-    const repoName =
-      cleanedPath
-        .split("/")
-        .filter(Boolean)
-        .pop()
-        ?.replace(/\.git$/i, "") ?? "";
-    return repoName || null;
-  } catch {
-    return null;
-  }
-}
+type PrepareManagedLocalSource = (sourceCwd: string, targetCwd: string) => Promise<(targetCwd: string) => Promise<void>>;
 
 /**
  * In-flight managed-checkout materializations keyed by target cwd. Two issues on the same
@@ -463,6 +443,7 @@ export async function ensureManagedProjectWorkspace(input: {
   companyId: string;
   projectId: string;
   repoUrl: string | null;
+  prepareLocalSource?: PrepareManagedLocalSource;
   /** Optional git credential source for cloning private repos; null/absent preserves ambient behavior. */
   resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<{ cwd: string; warning: string | null }> {
@@ -485,11 +466,19 @@ export async function ensureManagedProjectWorkspace(input: {
     // The winner may have cloned a different repository with the same basename.
     return ensureManagedProjectWorkspace(input);
   }
-  const attempt = materializeManagedProjectWorkspace(cwd, input).finally(() => {
+  const localSource = input.repoUrl ? localRepositoryPath(input.repoUrl) : null;
+  const guardLocalSource = localSource ? await input.prepareLocalSource?.(localSource, cwd) : undefined;
+  await guardLocalSource?.(cwd);
+  const attempt = materializeManagedProjectWorkspace(cwd, {
+    ...input,
+    beforeCopy: guardLocalSource,
+    beforePublish: guardLocalSource ? () => guardLocalSource(cwd) : undefined,
+  }).finally(() => {
     managedCheckoutMaterializations.delete(cwd);
   });
   managedCheckoutMaterializations.set(cwd, attempt);
   const result = await attempt;
+  await guardLocalSource?.(cwd);
   if (input.repoUrl) {
     // A different server process can publish a same-name checkout between the
     // initial origin check and the atomic rename. Never adopt its other repo.
@@ -503,179 +492,60 @@ export async function ensureManagedProjectWorkspace(input: {
   return result;
 }
 
-async function materializeManagedProjectWorkspace(
-  cwd: string,
-  input: {
-    repoUrl: string | null;
-    repoRef?: string | null;
-    localSource?: string | null;
-    resolveGitAuth?: GitRemoteAuthProvider | null;
-  },
-): Promise<{ cwd: string; warning: string | null }> {
-  await fs.mkdir(path.dirname(cwd), { recursive: true });
-  const stats = await fs.stat(cwd).catch(() => null);
-
-  if (!input.repoUrl) {
-    if (!stats) {
-      await fs.mkdir(cwd, { recursive: true });
-    }
-    return { cwd, warning: null };
-  }
-
-  const hasAdoptableGitDir = () =>
-    fs
-      .stat(path.resolve(cwd, ".git"))
-      .then((entry) => entry.isDirectory())
-      .catch(() => false);
-  if (await hasAdoptableGitDir()) {
-    return { cwd, warning: null };
-  }
-
-  if (stats) {
-    const entries = await fs.readdir(cwd).catch(() => []);
-    if (entries.length > 0) {
-      return {
-        cwd,
-        warning: `Managed workspace path "${cwd}" already exists but is not a git checkout. Using it as-is.`,
-      };
-    }
-    await fs.rm(cwd, { recursive: true, force: true });
-  }
-
-  // Clone into a temp sibling, then move into place atomically. The shared target directory
-  // is never created in a partial state and never removed on failure, so a concurrent
-  // materialization (another process, or a run racing this one) can neither adopt a broken
-  // checkout nor lose its own completed one.
-  const auth = input.resolveGitAuth && !input.localSource
-    ? await input.resolveGitAuth(input.repoUrl)
-    : null;
-  const cloneTmpDir = await fs.mkdtemp(`${cwd}.clone-`);
-  try {
-    try {
-      await execFile(
-        "git",
-        [...(auth?.configArgs ?? []), "clone", "--no-hardlinks", "--", input.localSource ?? input.repoUrl, cloneTmpDir],
-        {
-          env: {
-            // Spread order matters: the sanitizer strips PAPERCLIP_*, which would remove the
-            // credential-helper token env if it came first. GIT_TERMINAL_PROMPT=0 fails a
-            // credential-less private clone immediately instead of hanging on a prompt until
-            // the clone timeout.
-            ...sanitizeRuntimeServiceBaseEnv(process.env),
-            GIT_TERMINAL_PROMPT: "0",
-            ...(auth?.env ?? {}),
-          },
-          timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
-        },
-      );
-    } catch (error) {
-      const connectionFailure = !input.localSource ? classifyGitCloneFailure(input.repoUrl, error) : null;
-      if (connectionFailure) throw new GitConnectionFailureError(
-        error instanceof Error ? error.message : "Git clone failed", connectionFailure,
-      );
-      throw error;
-    }
-    if (input.localSource) {
-      const snapshot = await readGitWorkspaceSnapshot(input.localSource, false);
-      if (!snapshot) throw new Error("Configured repository folder is not a Git checkout");
-      let baseline;
-      try {
-        baseline = await captureDirectorySnapshot(cloneTmpDir, { exclude: [".git", ".paperclip-runtime", PROJECT_REPOSITORIES_DIR], ignoredPaths: snapshot.ignoredPaths, diskBacked: true });
-        await mergeDirectoryWithBaseline({ baseline, sourceDir: input.localSource, targetDir: cloneTmpDir });
-      } finally {
-        if (baseline) await disposeDirectorySnapshot(baseline);
-        await disposeGitWorkspaceSnapshot(snapshot);
-      }
-      await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
-    } else if (input.repoRef) {
-      await execFile("git", ["-C", cloneTmpDir, "checkout", input.repoRef], { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS });
-    }
-  } catch (error) {
-    await fs
-      .rm(cloneTmpDir, { recursive: true, force: true })
-      .catch(() => undefined);
-    const reason = error instanceof Error ? error.message : String(error);
-    const authNote = describeGitAuthFailure({
-      error: reason,
-      used: auth ? { source: auth.source, secretName: auth.secretName } : null,
-    });
-    const message = scrubGitCredentialText(
-      `Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}${authNote ? ` ${authNote}` : ""}`,
-    );
-    // Preserve the closed failure code without copying subprocess output or
-    // credentials into the durable run. Setup recovery needs the actual cause.
-    if (isWorkspaceGitScanError(error)) throw new WorkspaceGitScanError(error.code, message);
-    const connectionFailure = readGitConnectionFailure(error);
-    if (connectionFailure) throw new GitConnectionFailureError(message, connectionFailure);
-    throw new Error(message);
-  }
-
-  try {
-    await fs.rename(cloneTmpDir, cwd);
-  } catch (renameError) {
-    await fs
-      .rm(cloneTmpDir, { recursive: true, force: true })
-      .catch(() => undefined);
-    // The target appearing between the emptiness check and the rename means another
-    // materialization won the race; adopt its checkout instead of failing the run.
-    if (await hasAdoptableGitDir()) {
-      return { cwd, warning: null };
-    }
-    const reason =
-      renameError instanceof Error ? renameError.message : String(renameError);
-    throw new Error(
-      `Failed to move managed checkout into place at "${cwd}": ${reason}`,
-    );
-  }
-  return { cwd, warning: null };
-}
-
 /** Keep every distinct project repository inside the task's writable/synced root. */
 export async function prepareProjectRepositoryWorkspaces(input: {
   cwd: string;
   anchorRepoUrl: string | null;
   workspaces: Array<Pick<typeof projectWorkspaces.$inferSelect, "id" | "repoUrl" | "repoRef"> & { cwd?: string | null }>;
   resolveGitAuth?: GitRemoteAuthProvider | null;
+  beforePublish?: () => Promise<void>;
+  prepareLocalSource?: (sourceCwd: string) => Promise<() => Promise<void>>;
+  restoredContents?: GitWorkspaceContents;
 }): Promise<Array<{ workspaceId: string; cwd: string; repoUrl: string; repoRef: string | null }>> {
-  const identity = (url: string) => url.trim().replace(/\.git\/?$/, "").replace(/\/$/, "");
+  const identity = projectRepositoryIdentity;
   const seen = new Set(input.anchorRepoUrl ? [identity(input.anchorRepoUrl)] : []);
-  const selected = input.workspaces.filter((workspace) => {
+  const selected = selectRestoredProjectRepositories(input.workspaces, input.restoredContents).filter((workspace) => {
     if (!workspace.repoUrl || seen.has(identity(workspace.repoUrl))) return false;
     seen.add(identity(workspace.repoUrl));
     return true;
   });
+  if (input.restoredContents?.checkouts.some(checkout => !selected.some(source => source.id === checkout.source.id))) throw new GitCacheRestorationFailure();
   const root = path.join(input.cwd, PROJECT_REPOSITORIES_DIR);
   if (selected.length === 0 && !(await fs.lstat(root).catch(() => null))) return [];
   await fs.mkdir(root, { recursive: true });
   if (await fs.realpath(root) !== path.join(await fs.realpath(input.cwd), PROJECT_REPOSITORIES_DIR)) {
     throw new Error("Project repositories directory escapes the task workspace");
   }
-  const excludePath = await execFile("git", ["-C", input.cwd, "rev-parse", "--git-path", "info/exclude"], { timeout: 10_000 })
-    .then((result) => path.resolve(input.cwd, result.stdout.trim()));
-  const exclude = await fs.readFile(excludePath, "utf8").catch(() => "");
-  if (!exclude.split(/\r?\n/).includes(`/${PROJECT_REPOSITORIES_DIR}/`)) {
-    await fs.mkdir(path.dirname(excludePath), { recursive: true });
-    await fs.appendFile(excludePath, `\n/${PROJECT_REPOSITORIES_DIR}/\n`);
-  }
+  await ensureManagedRepositoriesIgnored(input.cwd);
   const results = [];
   for (const workspace of selected) {
     const repoUrl = workspace.repoUrl!;
-    const name = (deriveRepoNameFromRepoUrl(repoUrl) ?? "repo").replace(/[^a-zA-Z0-9_-]/g, "-");
-    const key = `${name}-${createHash("sha256").update(JSON.stringify([workspace.id, identity(repoUrl), workspace.repoRef, workspace.cwd ?? null])).digest("hex").slice(0, 12)}`;
+    const key = managedProjectCheckoutName({ id: workspace.id, repoUrl, repoRef: workspace.repoRef, cwd: workspace.cwd });
     const cwd = path.join(root, key);
     const existing = await fs.lstat(cwd).catch(() => null);
+    if (!existing && input.restoredContents?.checkouts.some(checkout => checkout.name === key)) throw new GitCacheRestorationFailure();
     if (existing && (!existing.isDirectory() || existing.isSymbolicLink())) throw new Error("Invalid project repository checkout path");
-    const localSource = workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL
-      && await fs.stat(workspace.cwd).then((entry) => entry.isDirectory()).catch(() => false)
-      ? workspace.cwd : null;
-    const result = await materializeManagedProjectWorkspace(cwd, { repoUrl, repoRef: workspace.repoRef, localSource, resolveGitAuth: input.resolveGitAuth });
+    const configuredLocalSource = workspace.cwd && workspace.cwd !== REPO_ONLY_CWD_SENTINEL ? workspace.cwd : null;
+    const localSource = configuredLocalSource
+      && await fs.stat(configuredLocalSource).then((entry) => entry.isDirectory()).catch(() => false)
+      ? configuredLocalSource : null;
+    const urlLocalSource = localRepositoryPath(repoUrl);
+    const sourceToAuthorize = localSource ?? urlLocalSource;
+    const recheckLocalSource = sourceToAuthorize
+      ? await input.prepareLocalSource?.(sourceToAuthorize) : undefined;
+    const beforePublish = async () => {
+      await recheckLocalSource?.();
+      await input.beforePublish?.();
+    };
+    const result = await materializeManagedProjectWorkspace(cwd, { repoUrl, repoRef: workspace.repoRef, localSource, resolveGitAuth: input.resolveGitAuth, beforePublish });
     if (result.warning) throw new Error(result.warning);
+    await beforePublish();
     results.push({ workspaceId: workspace.id, cwd, repoUrl, repoRef: workspace.repoRef });
   }
   // Retain detached checkout work outside the synchronized repository set.
   const active = new Set(results.map((repo) => path.basename(repo.cwd)));
   for (const entry of await fs.readdir(root)) {
-    if (active.has(entry) || entry.includes(".clone-")) continue;
+    if (active.has(entry) || entry.startsWith("task-repo-") || entry.includes(".clone-")) continue;
     const retained = path.join(input.cwd, ".paperclip-runtime", "detached-repositories", randomUUID());
     await fs.mkdir(path.dirname(retained), { recursive: true });
     await fs.rename(path.join(root, entry), retained);
@@ -695,6 +565,7 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
   cwd: string | null;
   repoUrl: string | null;
   resolveGitAuth?: GitRemoteAuthProvider | null;
+  prepareLocalSource?: PrepareManagedLocalSource;
 }): Promise<{ cwd: string; warning: string | null }> {
   const configuredCwd = readNonEmptyString(input.cwd);
   if (configuredCwd && configuredCwd !== REPO_ONLY_CWD_SENTINEL) {
@@ -705,6 +576,7 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
     projectId: input.projectId,
     repoUrl: readNonEmptyString(input.repoUrl),
     resolveGitAuth: input.resolveGitAuth ?? null,
+    prepareLocalSource: input.prepareLocalSource,
   });
 }
 
@@ -727,6 +599,7 @@ export interface ResolveAdditionalProjectWorkspaceDeps {
 function defaultAdditionalProjectWorkspaceDeps(
   db: Db,
   resolveGitAuth?: GitRemoteAuthProvider,
+  prepareLocalSource?: PrepareManagedLocalSource,
 ): ResolveAdditionalProjectWorkspaceDeps {
   return {
     loadProjectWorkspaceRows: (companyId, projectId) =>
@@ -743,6 +616,7 @@ function defaultAdditionalProjectWorkspaceDeps(
     resolveConfiguredOrManagedProjectCwd: (input) =>
       resolveConfiguredOrManagedProjectCwd({
         ...input,
+        prepareLocalSource: input.prepareLocalSource ?? prepareLocalSource,
         resolveGitAuth:
           input.resolveGitAuth ??
           resolveGitAuth ??
@@ -751,6 +625,7 @@ function defaultAdditionalProjectWorkspaceDeps(
     ensureManagedProjectWorkspace: (input) =>
       ensureManagedProjectWorkspace({
         ...input,
+        prepareLocalSource: input.prepareLocalSource ?? prepareLocalSource,
         resolveGitAuth:
           input.resolveGitAuth ??
           resolveGitAuth ??
@@ -1282,7 +1157,7 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
     });
   };
 
-  if (issue.projectWorkspaceId && !issue.projectId) {
+  if (issue.projectWorkspaceId && !issue.projectId && !input.persistedExecutionWorkspace?.projectId) {
     fail(
       "missing_project_id",
       `Issue ${issue.identifier ?? issue.id} is linked to a project workspace but has no project id; refusing to launch ${input.adapterType} from fallback cwd.`,
@@ -1371,6 +1246,7 @@ export async function assertGitSensitiveAdapterWorkspaceValid(input: {
 
   if (
     workspaceExpectation &&
+    !(input.resolvedWorkspace.localPathOnlyWorkspace === true && input.executionWorkspace.strategy === "project_primary" && !input.executionWorkspace.repoUrl && !input.executionWorkspace.branchName) &&
     effectiveCwd &&
     !(await hasGitMetadata(effectiveCwd))
   ) {
@@ -2910,6 +2786,9 @@ function buildSessionConfigCategoryValues(input: {
   // boundary; the reusable row and its evolving generation are state.
   delete workspaceConfig.existingExecutionWorkspace;
   delete workspaceConfig.reusableExecutionWorkspaceConfig;
+  const issueSettings = { ...parseObject(workspaceConfig.issueSettings) };
+  if (issueSettings.mode === workspaceConfig.requestedMode) delete issueSettings.mode;
+  workspaceConfig.issueSettings = Object.keys(issueSettings).length ? issueSettings : null;
   return {
     adapter: {
       adapterType: input.adapterType,
@@ -3372,6 +3251,50 @@ function readNonEmptyString(value: unknown): string | null {
 
 /** Database-bound workspace resolution for a heartbeat service instance. */
 export function createHeartbeatWorkspaceResolver(db: Db) {
+  function managedLocalSourceGuard(
+    agent: typeof agents.$inferSelect,
+    issueId: string | null,
+    runId: string | null,
+  ): PrepareManagedLocalSource {
+    return async (sourceCwd) => {
+      const [run] = runId
+        ? await db.select().from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, runId),
+            eq(heartbeatRuns.companyId, agent.companyId),
+            eq(heartbeatRuns.agentId, agent.id),
+          ))
+        : [];
+      const runIssueId = run?.nativeIssueId ?? run?.contextSnapshot?.issueId
+        ?? run?.contextSnapshot?.taskId ?? run?.issueId ?? null;
+      if (!run || runIssueId !== issueId) {
+        throw forbidden("Local repository source requires an authoritative run identity");
+      }
+      const actor = {
+        type: "agent" as const,
+        source: "agent_jwt" as const,
+        companyId: agent.companyId,
+        agentId: agent.id,
+        runId: run.id,
+        onBehalfOfUserId: run.responsibleUserId === "local-board" ? null : run.responsibleUserId,
+      };
+      const captured = await assertIsolatedWorkspaceSourceReadAccess(db, {
+        companyId: agent.companyId,
+        sourceCwd,
+        actor,
+        copyKind: "repository",
+      });
+      return targetCwd => retainIsolatedWorkspaceSourceAccess(db, {
+        companyId: agent.companyId,
+        sourceCwd,
+        targetCwd,
+        actor,
+        captured,
+        issueId: issueId ?? undefined,
+        copyKind: "repository",
+      });
+    };
+  }
+
   async function resolveReusedGitWorkspaceAnchor(input: {
     agent: typeof agents.$inferSelect;
     workspace: ExecutionWorkspace;
@@ -3390,20 +3313,21 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       ? await db.select({ projectId: issues.projectId, projectWorkspaceId: issues.projectWorkspaceId }).from(issues)
           .where(and(eq(issues.id, input.issueId), eq(issues.companyId, agent.companyId))).then(rows => rows[0] ?? null)
       : null;
-    const sourceProjectId = input.issueId && !input.immutableNativeBinding ? currentIssueSource?.projectId ?? null : input.projectId;
+    const sourceProjectId = workspace.projectId;
     const explicitProjectWorkspaceId = currentIssueSource?.projectWorkspaceId ?? input.explicitProjectWorkspaceId;
     const projectWorkspaceRows = await db.select().from(projectWorkspaces).where(and(
       eq(projectWorkspaces.companyId, agent.companyId),
-      eq(projectWorkspaces.projectId, workspace.projectId),
+      workspace.projectId ? eq(projectWorkspaces.projectId, workspace.projectId) : sql`false`,
     )).orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
     const boundProjectWorkspace = projectWorkspaceRows.find(row => row.id === workspace.projectWorkspaceId) ?? null;
     const configuredSource = prioritizeProjectWorkspaceCandidatesForRun(projectWorkspaceRows, explicitProjectWorkspaceId)[0];
-    const managedBase = workspace.repoUrl ? resolveManagedProjectWorkspaceDir({
+    const managedBase = workspace.repoUrl && workspace.projectId ? resolveManagedProjectWorkspaceDir({
       companyId: agent.companyId,
       projectId: workspace.projectId,
       repoName: deriveRepoNameFromRepoUrl(workspace.repoUrl),
     }) : null;
     const candidateBaseCwds = [
+      await verifiedRecordedIsolatedRemoteSource(workspace),
       managedBase,
       managedBase && workspace.repoUrl
         ? `${managedBase}-${createHash("sha256").update(workspace.repoUrl).digest("hex").slice(0, 12)}` : null,
@@ -3416,11 +3340,12 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       boundProjectWorkspace,
       candidateBaseCwds,
       managedSourceRoot: resolvePaperclipInstanceRoot(),
-      materializeOriginalRepository: workspace.repoUrl ? async () => {
+      materializeOriginalRepository: workspace.repoUrl && workspace.projectId ? async () => {
         const original = await ensureManagedProjectWorkspace({
           companyId: agent.companyId,
-          projectId: workspace.projectId,
+          projectId: workspace.projectId!,
           repoUrl: workspace.repoUrl,
+          prepareLocalSource: managedLocalSourceGuard(agent, input.issueId, input.runId),
           resolveGitAuth: createGitRemoteAuthProvider(db, agent.companyId, {
             issueId: input.issueId, heartbeatRunId: input.runId, agentId: agent.id,
             responsibleUserId: input.responsibleUserId,
@@ -3455,7 +3380,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: { useProjectWorkspace?: boolean | null; configuredCwd?: string | null },
   ): Promise<ResolvedAnchorWorkspaceForRun> {
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
@@ -3476,6 +3401,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
           .select({
             projectId: issues.projectId,
             projectWorkspaceId: issues.projectWorkspaceId,
+            workspaceSelection: issues.workspaceSelection,
           })
           .from(issues)
           .where(
@@ -3484,11 +3410,17 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
           .then((rows) => rows[0] ?? null)
       : null;
     const issueProjectId = issueProjectRef?.projectId ?? null;
+    const workspaceSelection = issueProjectRef?.workspaceSelection?.selection;
+    const configuredSourceId = workspaceSelection?.kind === "configured_source"
+      ? workspaceSelection.projectWorkspaceId : null;
     const preferredProjectWorkspaceId =
-      issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
-    const resolvedProjectId = issueProjectId ?? contextProjectId;
+      configuredSourceId ?? issueProjectRef?.projectWorkspaceId ?? contextProjectWorkspaceId ?? null;
+    const [selectedSource] = preferredProjectWorkspaceId ? await db.select({ projectId: projectWorkspaces.projectId }).from(projectWorkspaces)
+      .where(and(eq(projectWorkspaces.id, preferredProjectWorkspaceId), eq(projectWorkspaces.companyId, agent.companyId))) : [];
+    const resolvedProjectId = selectedSource?.projectId ?? issueProjectId ?? contextProjectId;
+    const forceTaskDirectory = workspaceSelection?.kind === "task_directory";
     const useProjectWorkspace = opts?.useProjectWorkspace !== false;
-    const workspaceProjectId = useProjectWorkspace ? resolvedProjectId : null;
+    const workspaceProjectId = useProjectWorkspace && !forceTaskDirectory ? resolvedProjectId : null;
 
     const unorderedProjectWorkspaceRows = workspaceProjectId
       ? await db
@@ -3502,10 +3434,13 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
           )
           .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
       : [];
-    const projectWorkspaceRows = prioritizeProjectWorkspaceCandidatesForRun(
+    const prioritizedWorkspaceRows = prioritizeProjectWorkspaceCandidatesForRun(
       unorderedProjectWorkspaceRows,
       preferredProjectWorkspaceId,
     );
+    const projectWorkspaceRows = configuredSourceId
+      ? prioritizedWorkspaceRows.filter((workspace) => workspace.id === configuredSourceId)
+      : prioritizedWorkspaceRows;
 
     const workspaceHints = projectWorkspaceRows.map((workspace) => ({
       workspaceId: workspace.id,
@@ -3514,7 +3449,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       repoRef: readNonEmptyString(workspace.repoRef),
     }));
 
-    if (projectWorkspaceRows.length > 0) {
+    if (projectWorkspaceRows.length > 0 || configuredSourceId) {
       const preferredWorkspace = preferredProjectWorkspaceId
         ? (projectWorkspaceRows.find(
             (workspace) => workspace.id === preferredProjectWorkspaceId,
@@ -3538,6 +3473,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
             cwd: workspace.cwd,
             repoUrl: workspace.repoUrl,
             resolveGitAuth,
+            prepareLocalSource: managedLocalSourceGuard(agent, issueId, readNonEmptyString(context.executionIdentityRunId)),
           });
           projectCwd = resolvedCwd.cwd;
           managedWorkspaceWarning = resolvedCwd.warning;
@@ -3592,52 +3528,31 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
         missingProjectCwds.push(projectCwd);
       }
 
-      const fallbackCwd = resolveDefaultAgentWorkspaceDir(agent.id);
-      await fs.mkdir(fallbackCwd, { recursive: true });
-      const warnings = buildAnchorFallbackWorkspaceNotes({
-        fallbackCwd,
-        preferredWorkspaceWarning,
-        materializationFailures,
-        missingProjectCwds,
-        hasConfiguredProjectCwd,
-      });
-      return {
-        cwd: fallbackCwd,
-        source: "project_primary" as const,
-        projectId: resolvedProjectId,
-        workspaceId: projectWorkspaceRows[0]?.id ?? null,
-        repoUrl: projectWorkspaceRows[0]?.repoUrl ?? null,
-        repoRef: projectWorkspaceRows[0]?.repoRef ?? null,
-        workspaceHints,
-        warnings,
-        baseCwdFallback: true,
-        materializationFailures,
-      };
-    }
-
-    if (workspaceProjectId) {
-      const managedWorkspace = await ensureManagedProjectWorkspace({
-        companyId: agent.companyId,
-        projectId: workspaceProjectId,
-        repoUrl: null,
-      });
-      return {
-        cwd: managedWorkspace.cwd,
-        source: "project_primary" as const,
-        projectId: resolvedProjectId,
-        workspaceId: null,
-        repoUrl: null,
-        repoRef: null,
-        workspaceHints,
-        warnings: managedWorkspace.warning ? [managedWorkspace.warning] : [],
-        baseCwdFallback: false,
-        materializationFailures: [],
-      };
+      const connections = materializationFailures.map((failure) => readConnectionFailure(failure.connectionFailure));
+      const connectionFailure = connections.length > 0 && connections.every((failure) => failure?.provider === "git")
+        ? connections[0] as GitConnectionFailure : undefined;
+      throw new WorkspaceValidationFailure(
+        `Configured project workspace is unavailable: ${preferredWorkspaceWarning ?? materializationFailures[0]?.error ?? missingProjectCwds[0] ?? "source could not be prepared"}. Repair the configured path or repository access, then retry.`,
+        {
+          ...(connectionFailure ? { connectionFailure } : {}),
+          workspaceValidation: {
+            reason: materializationFailures.length > 0 ? "git_worktree_base_materialization_failed" : "configured_workspace_unavailable",
+            issueId,
+            issueProjectId,
+            issueProjectWorkspaceId: preferredProjectWorkspaceId,
+            resolvedWorkspaceSource: "project_primary",
+            resolvedProjectId,
+            resolvedProjectWorkspaceId: preferredWorkspace?.id ?? null,
+            baseCwdFallback: false,
+            materializationFailures,
+          },
+        },
+      );
     }
 
     const sessionCwd = readNonEmptyString(previousSessionParams?.cwd);
     const sessionCwdLooksUnsafe = isUnsafeSessionWorkspaceCwd(sessionCwd);
-    if (sessionCwd && !sessionCwdLooksUnsafe) {
+    if (!forceTaskDirectory && sessionCwd && !sessionCwdLooksUnsafe) {
       const sessionCwdExists = await fs
         .stat(sessionCwd)
         .then((stats) => stats.isDirectory())
@@ -3658,7 +3573,12 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       }
     }
 
-    const cwd = resolveDefaultAgentWorkspaceDir(agent.id);
+    const configuredCwd = forceTaskDirectory ? null
+      : opts?.configuredCwd !== undefined ? opts.configuredCwd
+      : readNonEmptyString(parseObject(agent.adapterConfig).cwd);
+    const cwd = configuredCwd ? path.resolve(configuredCwd)
+      : issueId ? await materializeIsolatedTaskDirectory({ companyId: agent.companyId, issueId })
+      : resolveDefaultAgentWorkspaceDir(agent.id);
     await fs.mkdir(cwd, { recursive: true });
     const warnings: string[] = [];
     if (sessionCwd && sessionCwdLooksUnsafe) {
@@ -3680,8 +3600,8 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     }
     return {
       cwd,
-      source: "agent_home" as const,
-      projectId: resolvedProjectId,
+      source: issueId || configuredCwd ? "task_session" as const : "agent_home" as const,
+      projectId: null,
       workspaceId: null,
       repoUrl: null,
       repoRef: null,
@@ -3703,6 +3623,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     previousSessionParams: Record<string, unknown> | null,
     opts?: {
       useProjectWorkspace?: boolean | null;
+      configuredCwd?: string | null;
       executionEnvironmentDriver?: string | null;
       anchorWorkspace?: ResolvedAnchorWorkspaceForRun;
     },
@@ -3728,12 +3649,12 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
     const executionEnvironmentDriver = opts?.executionEnvironmentDriver ?? null;
     const issueId =
       readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const responsibleUserId = readNonEmptyString(context.responsibleUserId)
+      ?? readNonEmptyString(context.responsible_user_id);
     const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, {
       issueId,
       heartbeatRunId: readNonEmptyString(context.executionIdentityRunId),
-      responsibleUserId:
-        readNonEmptyString(context.responsibleUserId) ??
-        readNonEmptyString(context.responsible_user_id),
+      responsibleUserId,
       agentId: agent.id,
     });
     const { additionalWorkspaces, warnings, failures } =
@@ -3752,6 +3673,8 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
           agentId: agent.id,
           companyId: agent.companyId,
           source: "agent_key",
+          runId: readNonEmptyString(context.executionIdentityRunId),
+          onBehalfOfUserId: responsibleUserId === "local-board" ? null : responsibleUserId,
         },
         issues: issueService(db),
         projects: projectService(db),
@@ -3759,7 +3682,8 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
         resolveProjectWorkspace: (project) =>
           resolveAdditionalProjectWorkspace(
             { companyId: agent.companyId, project },
-            defaultAdditionalProjectWorkspaceDeps(db, resolveGitAuth),
+            defaultAdditionalProjectWorkspaceDeps(db, resolveGitAuth,
+              managedLocalSourceGuard(agent, issueId, readNonEmptyString(context.executionIdentityRunId))),
           ),
       });
 

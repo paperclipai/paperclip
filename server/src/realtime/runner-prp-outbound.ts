@@ -167,9 +167,19 @@ async function awaitWithinDeadline<T>(input: {
   }
 }
 
+async function closeOwnedWire(wire: WsJsonWireConnection): Promise<void> {
+  const closed = wire.socket.readyState === WebSocket.CLOSED
+    ? Promise.resolve()
+    : new Promise<void>((resolve) => wire.socket.once("close", () => resolve()));
+  wire.close(1001);
+  wire.socket.terminate();
+  await closed;
+}
+
 async function openEndpoint(input: {
   endpoint: RunnerIngressEndpoint;
   signal: AbortSignal;
+  onWire: (wire: WsJsonWireConnection) => void;
 }): Promise<{ wire: WsJsonWireConnection; statusCode: number | null }> {
   validateEndpoint(input.endpoint);
   return await new Promise((resolve, reject) => {
@@ -211,6 +221,7 @@ async function openEndpoint(input: {
       input.signal.removeEventListener("abort", onAbort);
       reject(Object.assign(error, { statusCode }));
     });
+    input.onWire(wire);
   });
 }
 
@@ -258,7 +269,7 @@ export function connectRunnerPrpIngress(input: {
   ) => void;
 }): RunnerPrpOutboundHandle {
   const abort = new AbortController();
-  let activeWire: WsJsonWireConnection | null = null;
+  const ownedWires = new Set<WsJsonWireConnection>();
   let endpoint = input.endpoint;
   const startupDeadline =
     Date.now() + (input.startupDeadlineMs ?? DEFAULT_STARTUP_DEADLINE_MS);
@@ -288,8 +299,16 @@ export function connectRunnerPrpIngress(input: {
     while (!abort.signal.aborted) {
       try {
         input.onStateChange?.(attempt === 0 ? "connecting" : "reconnecting");
-        const opened = await openEndpoint({ endpoint, signal: abort.signal });
-        activeWire = opened.wire;
+        if (abort.signal.aborted) return;
+        const opened = await openEndpoint({
+          endpoint,
+          signal: abort.signal,
+          onWire: (wire) => {
+            ownedWires.add(wire);
+            wire.socket.once("close", () => ownedWires.delete(wire));
+          },
+        });
+        if (abort.signal.aborted) return;
         const attachment = input.authority.attachWireConnection(opened.wire);
         const authenticated = await waitForPrpReady({
           isAuthenticated: attachment.isAuthenticated,
@@ -311,10 +330,8 @@ export function connectRunnerPrpIngress(input: {
         input.onStateChange?.("authenticated");
         attempt = 0;
         await socketClosed(opened.wire);
-        activeWire = null;
         recoveryDeadline = Date.now() + recoveryGraceMs;
       } catch (error) {
-        activeWire = null;
         // close() owns intentional shutdown. openEndpoint rejects its pending
         // handshake when the abort signal fires, but that cancellation is not
         // an active-run transport failure and must not reject the long-lived
@@ -380,7 +397,7 @@ export function connectRunnerPrpIngress(input: {
     failure,
     async close() {
       abort.abort();
-      activeWire?.close(1001);
+      await Promise.all([...ownedWires].map(closeOwnedWire));
       await loop;
       await endpoint.close();
       input.onStateChange?.("closed");

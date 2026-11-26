@@ -1,3 +1,10 @@
+import type { TaskWorkspaceSelection } from "./task-workspace.js";
+
+export interface ChatExecutionDefaults {
+  projectId?: string | null;
+  workspace?: TaskWorkspaceSelection | null;
+}
+
 /** Provider-neutral contracts for Paperclip's native external chat subsystem. */
 export const CHAT_PROVIDERS = [
   "slack",
@@ -190,7 +197,8 @@ export interface SlackAppConfiguration {
 }
 
 export interface ChatEndpointSetupState {
-  slackSetupMethod?: "automatic" | "manual" | "existing";
+  slackSetupMethod?: "managed" | "automatic" | "manual" | "existing";
+  slackManagerError?: string;
   slackRegistration?: import("../slack-app-manifest.js").SlackRegistrationState;
   /** Provider-confirmed app icon outcome; configuration tokens are never retained. */
   slackAvatar?: import("../slack-app-manifest.js").SlackAvatarState;
@@ -243,6 +251,7 @@ export type ChannelPublicationMode = "automatic" | "explicit";
 export type ExternalMessageExecutionPolicy = "restricted" | "agent";
 
 export interface ChatEndpoint {
+  executionDefaults?: ChatExecutionDefaults | null;
   /** Additional presentation instructions captured only for newly created tasks. */
   communicationInstructions?: string;
   id: string;
@@ -282,6 +291,7 @@ export interface ChatEndpoint {
 }
 
 export interface ChatEndpointResource {
+  executionDefaults?: ChatExecutionDefaults | null;
   id: string;
   companyId: string;
   endpointId: string;
@@ -331,6 +341,7 @@ export interface ChatIdentityLink {
   externalDetail?: string | null;
   paperclipUserId?: string | null;
   paperclipUserLabel?: string | null;
+  paperclipUserImage?: string | null;
   status: ChatIdentityLinkStatus;
   expiresAt?: string | null;
   confirmedAt?: string | null;
@@ -508,10 +519,12 @@ export interface CreateChatEndpointInput {
   applicationId?: string;
   name?: string;
   slackApp?: SlackAppConfiguration;
+  slackSetupMethod?: "managed" | "automatic" | "manual" | "existing";
 }
 
 export interface UpdateChatEndpointInput {
-  slackSetupMethod?: "automatic" | "manual" | "existing";
+  executionDefaults?: ChatExecutionDefaults | null;
+  slackSetupMethod?: "managed" | "automatic" | "manual" | "existing";
   slackApp?: SlackAppConfiguration;
   communicationInstructions?: string;
   allowDirectMessages?: boolean;

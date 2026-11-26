@@ -377,7 +377,7 @@ export function activityRoutes(db: Db) {
       res.json([]);
       return;
     }
-    const result = await svc.issuesForRun(runId);
+    const result = await svc.issuesForRun(runId, await issueReadSqlCondition(db, req.actor));
     res.json(result);
   });
 

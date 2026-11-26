@@ -2,6 +2,7 @@ import type { ErrorObject, ValidateFunction } from "ajv/dist/2020.js";
 import type { FromSchema } from "json-schema-to-ts";
 
 import {
+  authCredentialsSchema,
   capabilitiesSchema,
   capabilitiesV2Schema,
   capabilitiesV3Schema,
@@ -21,6 +22,7 @@ import {
   terminalSchema,
 } from "./generated/schema-bundle.js";
 import {
+  authCredentialsValidator as standaloneAuthCredentialsValidator,
   eventValidator as standaloneEventV1Validator,
   eventV2Validator as standaloneEventV2Validator,
   eventV3Validator as standaloneEventV3Validator,
@@ -36,13 +38,18 @@ export const PRP_FIXTURE_SCHEMA = "paperclip.prp.fixture.v1";
 
 type TerminalReferences = [typeof stopReasonSchema];
 type EventReferences = [
+  typeof authCredentialsSchema,
   typeof semanticToolSchema,
   typeof stopReasonSchema,
   typeof terminalSchema,
   typeof resultSchema,
 ];
-type EventV2References = [typeof sessionGoalSchema];
+type EventV2References = [typeof sessionGoalSchema, typeof authCredentialsSchema];
 type CapabilitiesV2References = [typeof sessionGoalSchema];
+export type PrpAuthCredentialsUpdated = FromSchema<typeof authCredentialsSchema>;
+export function isPrpAuthCredentialsUpdated(value: unknown): value is PrpAuthCredentialsUpdated {
+  return (standaloneAuthCredentialsValidator as ValidateFunction<PrpAuthCredentialsUpdated>)(value);
+}
 export type PrpIdentity = FromSchema<typeof identitySchema>;
 export type PrpCapabilities = FromSchema<typeof capabilitiesSchema>;
 export type PrpCapabilitiesV2 = FromSchema<

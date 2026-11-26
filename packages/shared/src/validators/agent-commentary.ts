@@ -21,3 +21,31 @@ export type AgentCommentaryAcknowledgement = {
   createdAt: string;
   replayed: boolean;
 };
+
+export const agentCommentaryQuerySchema = z.object({
+  agentId: z.string().uuid().optional(),
+  kind: z.enum(AGENT_COMMENTARY_KINDS).optional(),
+  q: z.string().trim().max(200).optional(),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  offset: z.coerce.number().int().min(0).max(100_000).default(0),
+});
+
+export type AgentCommentaryQuery = z.infer<typeof agentCommentaryQuerySchema>;
+export interface AgentCommentaryEntry {
+  id: string;
+  kind: AgentCommentaryKind;
+  preview: string;
+  createdAt: string;
+  agent: { id: string; name: string; icon: string | null };
+  runId: string;
+  task: { id: string; identifier: string | null; title: string } | null;
+}
+export interface AgentCommentaryDetail extends AgentCommentaryEntry {
+  body: string;
+}
+export interface AgentCommentaryPage {
+  items: AgentCommentaryEntry[];
+  total: number;
+  limit: number;
+  offset: number;
+}

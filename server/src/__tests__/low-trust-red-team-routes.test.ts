@@ -977,14 +977,19 @@ describeEmbeddedPostgres(
       const handoff = await request(directedAgent).patch(`/api/issues/${created.body.id}`)
         .send({ status: "in_review", assigneeAgentId: null, assigneeUserId: "board-user", comment: "Ready for human review" });
       expect(handoff.status, JSON.stringify(handoff.body)).toBe(200);
-      const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, directRun.id));
-      expect(stopped).toMatchObject({ status: "cancelled", errorCode: "issue_reassigned" });
+      expect(handoff.body).toMatchObject({ status: "in_review", assigneeAgentId: null, assigneeUserId: "board-user" });
+      const [outgoing] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, directRun.id));
+      expect(outgoing).toMatchObject({ status: "running", errorCode: null });
+      const lateEdit = await request(directedAgent).patch(`/api/issues/${created.body.id}`)
+        .send({ description: "Late outgoing edit" });
+      expect([403, 404]).toContain(lateEdit.status);
       const returned = await request(board).patch(`/api/issues/${created.body.id}`)
         .send({ status: "backlog", assigneeAgentId: fixture.agents.lowTrust.id, assigneeUserId: null });
       expect(returned.status, JSON.stringify(returned.body)).toBe(200);
-      // Reassignment back does not revive the cancelled run's human request.
-      const staleRead = await request(directedAgent).get(`/api/issues/${created.body.id}`);
-      expect([403, 404]).toContain(staleRead.status);
+      const [humanRequest] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+      expect(humanRequest.status).toBe("cancelled");
+      const reassignedRead = await request(directedAgent).get(`/api/issues/${created.body.id}`);
+      expect(reassignedRead.status, JSON.stringify(reassignedRead.body)).toBe(200);
 
     });
 

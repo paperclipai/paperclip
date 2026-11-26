@@ -186,3 +186,9 @@ describe("ACPX sidecar input sequencing", () => {
     );
   });
 });
+
+it("preserves a missing runtime package category across wrapped bootstrap errors", () => {
+  const error = Object.assign(new Error("private resolver stack"), { code: "ACPX_RUNTIME_PACKAGE_MISSING" });
+  expect(acpxSidecarErrorCode(new Error("bootstrap failed", { cause: error }))).toBe("ACPX_RUNTIME_PACKAGE_MISSING");
+  expect(acpxSidecarErrorCode(acpxBootstrapBlockedError(error, "session.read")!)).toBe("ACPX_RUNTIME_PACKAGE_MISSING");
+});

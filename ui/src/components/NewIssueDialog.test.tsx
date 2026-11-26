@@ -1026,13 +1026,13 @@ describe("NewIssueDialog", () => {
   it("hides isolation choices and omits stale workspace draft overrides", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     mockProjectsApi.list.mockResolvedValue([{
-      id: "project-1", name: "Alpha", workspaces: [],
+      id: "project-1", name: "Alpha", workspaces: [{ id: "source-default", isPrimary: true }],
       executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" },
     }]);
     localStorage.setItem("paperclip:issue-draft", JSON.stringify({
       title: "Draft task", description: "", status: "todo", priority: "medium", assigneeValue: "",
       reviewerValue: "", approverValue: "", projectId: "project-1",
-      selectedExecutionWorkspaceId: "stale-workspace", executionWorkspaceMode: "reuse_existing",
+      projectWorkspaceId: "stale-source", selectedExecutionWorkspaceId: "stale-workspace", executionWorkspaceMode: "reuse_existing",
       assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: false, workMode: "standard",
     }));
     const { root } = renderDialog(container, ["workspaces.isolation"]);
@@ -1047,13 +1047,34 @@ describe("NewIssueDialog", () => {
     expect(payload).not.toHaveProperty("executionWorkspacePreference");
     expect(payload).not.toHaveProperty("executionWorkspaceSettings");
     expect(payload).not.toHaveProperty("executionWorkspaceId");
+    expect(payload).not.toHaveProperty("projectWorkspaceId");
+    act(() => root.unmount());
+  });
+
+  it("leaves a fresh hidden project source choice to the server default", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    mockProjectsApi.list.mockResolvedValue([{
+      id: "project-1", name: "Alpha", workspaces: [{ id: "source-default", isPrimary: true }],
+      executionWorkspacePolicy: { enabled: true, defaultMode: "isolated_workspace" },
+    }]);
+    dialogState.newIssueDefaults = { projectId: "project-1" };
+    const { root } = renderDialog(container, ["workspaces.isolation"]);
+    await flush();
+    await typeTextareaValue(container.querySelector('textarea[aria-label="Describe a task…"]')!, "Managed task");
+    const create = Array.from(container.querySelectorAll("button")).find((button) => button.getAttribute("aria-label") === "Create task");
+    act(() => create!.click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalled());
+    const payload = mockIssuesApi.create.mock.calls[0][1];
+    expect(payload.projectId).toBe("project-1");
+    expect(payload).not.toHaveProperty("projectWorkspaceId");
+    expect(payload).not.toHaveProperty("executionWorkspaceId");
     act(() => root.unmount());
   });
 
   it.each([false, true])("keeps explicit workspace launch context when isolation controls are hidden (subtask: %s)", async (subtask) => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
     dialogState.newIssueDefaults = {
-      projectId: "project-1", executionWorkspaceId: "workspace-context",
+      projectId: "project-1", projectWorkspaceId: "source-context", executionWorkspaceId: "workspace-context",
       ...(subtask ? { parentId: "parent-task", parentIdentifier: "TEST-1" } : {}),
     };
     const { root } = renderDialog(container, ["workspaces.isolation"]);
@@ -1065,6 +1086,7 @@ describe("NewIssueDialog", () => {
     await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalled());
     expect(mockIssuesApi.create.mock.calls[0][1]).toMatchObject({
       executionWorkspaceId: "workspace-context", executionWorkspacePreference: "reuse_existing",
+      projectWorkspaceId: "source-context",
     });
     act(() => root.unmount());
   });

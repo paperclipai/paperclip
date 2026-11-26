@@ -19,13 +19,7 @@ function interaction(overrides: Record<string, unknown> = {}) {
 }
 
 describe("issue-thread interaction resolver audience", () => {
-  it.each([
-    "suggest_tasks",
-    "ask_user_questions",
-    "request_confirmation",
-    "request_checkbox_confirmation",
-    "request_item_verdicts",
-  ])("allows the creator and creating run under anyone for %s", () => {
+  it("allows the creator and creating run under anyone", () => {
     expect(evaluateIssueThreadInteractionResolverAudience({
       actor: agent,
       interaction: interaction(),

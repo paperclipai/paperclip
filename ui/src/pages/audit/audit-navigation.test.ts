@@ -10,6 +10,7 @@ import {
 describe("audit navigation", () => {
   it("builds stable section routes", () => {
     expect(auditSectionHref("activity")).toBe("/activity");
+    expect(auditSectionHref("commentary")).toBe("/activity/commentary");
     expect(auditSectionHref("runs")).toBe("/activity/runs");
     expect(auditSectionHref("costs")).toBe("/activity/costs");
     expect(auditSectionHref("budgets")).toBe("/activity/budgets");

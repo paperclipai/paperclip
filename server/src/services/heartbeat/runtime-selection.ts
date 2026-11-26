@@ -1,3 +1,6 @@
+import { museRunnerBroker } from "../muse-runner-broker.js";
+import { measureRunTransaction } from "../execution-transaction-timing.js";
+import { measureRunPhase } from "../execution-preparation-timing.js";
 import {
   ConfigurationIncompleteFailure,
   type buildPaperclipWakePayload,
@@ -18,7 +21,7 @@ import type { agentInstructionWorkingCopyService } from "../agent-instruction-wo
 import { createHash, randomUUID } from "node:crypto";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { CHAT_PROVIDERS } from "@paperclipai/shared";
+import { agentHarnessType, CHAT_PROVIDERS } from "@paperclipai/shared";
 import {
   type agents,
   completionContracts,
@@ -70,6 +73,7 @@ import {
   materializeExternalChatQuestionResponseInput,
 } from "../native-runtime/external-chat-question-response-input.js";
 import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../chat-control-recovery-stop.js";
+import { NATIVE_PREPARATION_FENCING_VERSION } from "../native-runtime/native-active-runs.js";
 import type { issueService } from "../issues.js";
 import { buildPlanReviewContext } from "../plan-review-context.js";
 import { resolvePaperclipRunnerIdleTimeoutMs } from "@paperclipai/adapter-utils";
@@ -118,6 +122,8 @@ export interface HeartbeatRuntimeSelectionInput {
     activeEnvironmentLease: Pick<Parameters<typeof prepareNativeWorkspaceSync>[0], "lease">;
     isDotRun: boolean;
     projectRepositoryPaths: string[];
+    onCheckpoint?: Parameters<typeof prepareNativeWorkspaceSync>[0]["onCheckpoint"];
+    onPhase?: Parameters<typeof prepareNativeWorkspaceSync>[0]["onPhase"];
   };
   config: {
     runtimeConfig: Record<string, unknown>;
@@ -270,10 +276,10 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     const nativeExecutionWorkspaceId =
       persistedExecutionWorkspace?.id ?? run.id;
     const nativeReviewContext = readNativeReviewAssignmentContext(context);
-    const nativeReview = nativeReviewContext ? await getNativeReviewAssignment(db, {
+    const nativeReview = nativeReviewContext ? await measureRunPhase("runtime_selection.review", () => getNativeReviewAssignment(db, {
       companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id,
       contextSnapshot: nativeReviewContext,
-    }) : null;
+    })) : null;
     if (nativeReviewContext && !nativeReview) throw new Error("native_review_assignment_no_longer_available");
     const nativeReviewRequest = nativeReview
       ? buildNativeReviewRequest({
@@ -283,18 +289,18 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         })
       : null;
     const persistedContract = run.completionContractId
-      ? await db
+      ? await measureRunPhase("runtime_selection.contract_read", () => db
           .select()
           .from(completionContracts)
           .where(
             and(
-              eq(completionContracts.id, run.completionContractId),
+              eq(completionContracts.id, run.completionContractId!),
               eq(completionContracts.companyId, agent.companyId),
               eq(completionContracts.issueId, issueRef.id),
             ),
           )
           .limit(1)
-          .then((rows) => rows[0] ?? null)
+          .then((rows) => rows[0] ?? null))
       : null;
     // Only a server-verified human resolution may supply a current answer
     // reference. Tool/agent results and generated summaries stay evidence.
@@ -356,7 +362,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             row: persistedContract,
             contract: persistedContract.contractJson as never,
           }
-        : await ensureNativeCompletionContract({
+        : await measureRunPhase("runtime_selection.contract_ensure", () => ensureNativeCompletionContract({
             db,
             companyId: agent.companyId,
             issue: issueRef,
@@ -377,7 +383,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             humanResponseId: currentHumanResponseId,
             immediateRequests: immediateCompletion.requests,
             immediateRequestSources: immediateCompletion.sources,
-          });
+          }));
     const taskNativeSessionId = !taskSessionCredentialCompatible ? null : readNonEmptyString(
       taskSessionDecodedParams?.sessionId,
     );
@@ -387,7 +393,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     // replacement makes the ownership ambiguous and therefore ineligible.
     const legacyRetrySource =
       run.retryOfRunId && !isFailedChatRunRetry
-        ? await db
+        ? await measureRunPhase("runtime_selection.resume", () => db
             .select({
               id: heartbeatRuns.id,
               companyId: heartbeatRuns.companyId,
@@ -401,19 +407,19 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             .from(heartbeatRuns)
             .where(
               and(
-                eq(heartbeatRuns.id, run.retryOfRunId),
+                eq(heartbeatRuns.id, run.retryOfRunId!),
                 eq(heartbeatRuns.companyId, agent.companyId),
                 eq(heartbeatRuns.agentId, agent.id),
               ),
             )
             .limit(1)
-            .then((rows) => rows[0] ?? null)
+            .then((rows) => rows[0] ?? null))
         : null;
     const nativeBootstrapHasProviderEvidence =
       legacyRetrySource ||
       run.nativeSessionId ||
       persistedNativeExecutionInput
-        ? await db
+        ? await measureRunPhase("runtime_selection.resume", () => db
             .select({ id: heartbeatRunEvents.id })
             .from(heartbeatRunEvents)
             .where(
@@ -431,7 +437,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
               ),
             )
             .limit(1)
-            .then((rows) => rows.length > 0)
+            .then((rows) => rows.length > 0))
         : false;
     const compatibleLegacyRetrySource =
       !managedAiRuntime && !isConversation(issueContext) && context.forceFreshSession !== true && isUnusedLegacyNativeRetryReplacement({
@@ -464,14 +470,14 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         run,
         nativeBootstrapHasProviderEvidence,
       )
-        ? await findNativeSessionResumeRun(db, {
+        ? await measureRunPhase("runtime_selection.resume", () => findNativeSessionResumeRun(db, {
             companyId: agent.companyId,
             agentId: agent.id,
             issueId: issueRef.id,
             normalizedSessionId: requestedNativeSessionId,
             currentRunId: run.id,
             beforeCreatedAt: run.createdAt,
-          })
+          }))
         : null;
     nativeRunnerInstanceId =
       previousNativeRun?.runnerInstanceId &&
@@ -504,7 +510,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     const supportsManagedWarmSession = agent.adapterType === "paperclip_runner" &&
       nativeRuntimeResolution.profile.backend === "codex_app_server";
     const effectiveLifecyclePolicy = persistedNativeExecutionInput?.session.lifecyclePolicy ??
-      (nativeRuntimeResolution.profile.backend === "openai_dot_mcp" || managedAiRuntime && !supportsManagedWarmSession
+      (["openai_dot_mcp", "grok_bot_mcp", "muse_external"].includes(nativeRuntimeResolution.profile.backend) || managedAiRuntime && !supportsManagedWarmSession
         ? { mode: "per_turn" as const, idleTimeoutMs: null }
         : environmentLifecyclePolicy ?? agentLifecyclePolicy);
     if (
@@ -534,6 +540,16 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         throw new Error(
           "native_execution_input_persisted_binding_mismatch",
         );
+      if ("runtimeContext" in nativeExecution) {
+        const savedVersions = parseObject(run.contextSnapshot?.skillVersions);
+        const accessibleKeys = new Set(runtimeSkillEntries.filter(entry => entry.sourceStatus !== "missing").map(entry => entry.key));
+        if (nativeExecution.runtimeContext.skills.some(skill =>
+          Object.prototype.hasOwnProperty.call(savedVersions, skill.key) && !accessibleKeys.has(skill.key))) {
+          throw new ConfigurationIncompleteFailure("Project skill access changed while this execution was suspended. Restore access or start a new execution.", {
+            configurationIncomplete: { reason: "skill_access_changed", actionUrl: "/skills" },
+          });
+        }
+      }
       // Recover only the originally admitted request. A stored idle
       // checkpoint can precede an already-started provider turn, so even
       // apparent idleness is not authority to rewrite its contract.
@@ -556,12 +572,13 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         });
       }
       if (nativeExecution.provider.kind === "claude_managed") {
-        const recoveryProfile = await managedAgentProfileService(
+        const recoveryProfileId = nativeExecution.provider.managedProfile.profileId;
+        const recoveryProfile = await measureRunPhase("runtime_selection.profile", () => managedAgentProfileService(
           db,
         ).requireQualified(
           agent.companyId,
-          nativeExecution.provider.managedProfile.profileId,
-        );
+          recoveryProfileId,
+        ));
         assertManagedProfileRecoveryBinding({
           adapterConfig: agent.adapterConfig,
           snapshot: nativeExecution.provider.managedProfile,
@@ -569,13 +586,14 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         });
       }
       if (nativeExecution.provider.kind === "aws_agentcore") {
-        const recoveryProfile = await remoteAgentProfileService(
+        const recoveryProfileId = nativeExecution.provider.agentCoreProfile.profileId;
+        const recoveryProfile = await measureRunPhase("runtime_selection.profile", () => remoteAgentProfileService(
           db,
         ).requireQualified(
           agent.companyId,
-          nativeExecution.provider.agentCoreProfile.profileId,
+          recoveryProfileId,
           "aws_bedrock_agentcore_harness",
-        );
+        ));
         assertAgentCoreProfileRecoveryBinding({
           snapshot: nativeExecution.provider.agentCoreProfile,
           stored: recoveryProfile,
@@ -586,7 +604,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       const interactionResponses = context[
         EXTERNAL_CHAT_QUESTION_RESPONSE_KEY
       ]
-        ? await materializeExternalChatQuestionResponseInput({
+        ? await measureRunPhase("runtime_selection.interactions", () => materializeExternalChatQuestionResponseInput({
             db,
             binding: {
               companyId: agent.companyId,
@@ -595,8 +613,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
               agentId: agent.id,
             },
             contextSnapshot: context,
-          })
-        : await materializeNativeInteractionResponses({
+          }))
+        : await measureRunPhase("runtime_selection.interactions", () => materializeNativeInteractionResponses({
             db,
             companyId: agent.companyId,
             issueId: issueRef.id,
@@ -614,27 +632,27 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
               : interactionId
                 ? [interactionId]
                 : [],
-          });
+          }));
       const runnerAdapterConfig = parseObject(agent.adapterConfig);
       const managedProfile =
         nativeRuntimeResolution.profile.backend ===
         "claude_managed_agents_api"
-          ? await managedAgentProfileService(db).requireQualified(
+          ? await measureRunPhase("runtime_selection.profile", () => managedAgentProfileService(db).requireQualified(
               agent.companyId,
               readNonEmptyString(runnerAdapterConfig.managedProfileId) ??
                 "",
-            )
+            ))
           : null;
       const agentCoreProfile =
         nativeRuntimeResolution.profile.backend ===
         "aws_agentcore_harness_api"
-          ? await remoteAgentProfileService(db).requireQualified(
+          ? await measureRunPhase("runtime_selection.profile", () => remoteAgentProfileService(db).requireQualified(
               agent.companyId,
               readNonEmptyString(
                 runnerAdapterConfig.agentCoreProfileId,
               ) ?? "",
               "aws_bedrock_agentcore_harness",
-            )
+            ))
           : null;
       if (managedProfile) {
         const rawApiKeyBinding = parseObject(
@@ -684,8 +702,10 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             })
           : null;
       const pinnedPlanMarkdown = pinnedPlan?.body ?? "";
-      const dotBinding = nativeRuntimeResolution.profile.backend === "openai_dot_mcp"
-        ? await dotRunnerBroker(db).snapshot(agent.companyId, agent.id, String(parseObject(agent.adapterConfig).dotBindingId ?? "")) : undefined;
+      const museBinding = nativeRuntimeResolution.profile.backend === "muse_external"
+        ? await museRunnerBroker(db).snapshot(agent.companyId, agent.id, String(parseObject(agent.adapterConfig).museBindingId ?? "")) : undefined;
+      const dotBinding = ["openai_dot_mcp", "grok_bot_mcp"].includes(nativeRuntimeResolution.profile.backend)
+        ? await dotRunnerBroker(db).snapshot(agent.companyId, agent.id, String(parseObject(agent.adapterConfig)[nativeRuntimeResolution.profile.backend === "grok_bot_mcp" ? "externalBindingId" : "dotBindingId"] ?? "")) : undefined;
       const nativeRuntimeContext = await buildNativeRuntimeContext({
         db,
         agent,
@@ -696,6 +716,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       });
       getNativeFreshSessionHandoff = nativeReviewRequest ? undefined : getFreshSessionHandoff;
       const nativeProviderConfig = nativeRuntimeResolution.profile.backend === "codex_app_server"
+        || (nativeRuntimeResolution.profile.backend === "acpx_runtime" && agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig)) === "claude_local")
         || nativeRuntimeResolution.profile.backend === "opencode_server"
         ? projectPaperclipRunnerTaskConfig(
             nativeRuntimeResolution.profile.backend,
@@ -706,7 +727,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         : agent.adapterConfig;
       const requestedNativeProvider = resolvePaperclipRunnerNativeProviderInput({
         backend: nativeRuntimeResolution.profile.backend,
-        adapterConfig: nativeProviderConfig, managedProfile, agentCoreProfile, dotBinding,
+        adapterConfig: nativeProviderConfig, managedProfile, agentCoreProfile, dotBinding, museBinding,
       });
       const codexCliVersion = agent.adapterType === "paperclip_runner" && requestedNativeProvider.provider === "codex"
         ? await readRemoteCodexModelCliVersion({
@@ -718,7 +739,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       const nativeProvider = codexCliVersion
         ? resolvePaperclipRunnerNativeProviderInput({
             backend: nativeRuntimeResolution.profile.backend,
-            adapterConfig: nativeProviderConfig, codexCliVersion, managedProfile, agentCoreProfile, dotBinding,
+            adapterConfig: nativeProviderConfig, codexCliVersion, managedProfile, agentCoreProfile, dotBinding, museBinding,
           }) : requestedNativeProvider;
       if (nativeProvider.model !== requestedNativeProvider.model) {
         await postNativeModelFallbackWarning({
@@ -741,7 +762,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
                   }),
                 ) ??
                 `# ${issueRef.identifier ?? issueRef.id}: ${issueRef.title}`,
-                nativeRuntimeResolution.profile.backend !== "openai_dot_mcp" && projectRepositoryPaths.length > 0
+                !["openai_dot_mcp", "grok_bot_mcp", "muse_external"].includes(nativeRuntimeResolution.profile.backend) && projectRepositoryPaths.length > 0
                   ? `## Project repositories\nThe task workspace also contains these editable Git repositories:\n${projectRepositoryPaths.map((repo) => `- ${repo}`).join("\n")}`
                   : null,
               ].filter(Boolean).join("\n\n"),
@@ -814,9 +835,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
               },
               runtimeContext: nativeRuntimeContext,
             });
-      const backendDescriptor = await describeRunnerdNativeSessionBackend(buildExecution({
+      const backendDescriptor = await measureRunPhase("runtime_selection.provider_discovery", () => describeRunnerdNativeSessionBackend(buildExecution({
         normalizedSessionId: nativeSessionId, resumedSession: previousNativeRun !== null,
-      }));
+      })));
       const nativeExecutionWithCheckpoint = buildNativeExecutionWithCheckpoint({
         previousRun: previousNativeRun,
         normalizedSessionId: nativeSessionId,
@@ -875,14 +896,14 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             : undefined;
     onProviderResourceDisposition(providerResourceDispositionForRun);
     await beforeNativeRuntimeSelection?.(run.id);
-    const nativeSelected = await db.transaction(async (tx) => {
-      const lockedRun = await tx
+    const nativeSelected = await measureRunTransaction(db, "runtime_selection", async (tx) => {
+      const lockedRun = await measureRunPhase("runtime_selection.row_lock", () => tx
         .select()
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, run.id))
         .for("update")
         .limit(1)
-        .then((rows) => rows[0] ?? null);
+        .then((rows) => rows[0] ?? null));
       if (!lockedRun) throw new Error("native_runtime_run_missing");
       // Cancellation and runtime selection serialize on this row. A
       // stopped preparation must never create a new native coordinator.
@@ -900,13 +921,13 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       }
       const lockedProfile = parseObject(lockedRun.runnerProfileJson);
       const persistedNativeSessionId =
-        await prepareNativeSessionBootstrapPersistence(tx, {
+        await measureRunPhase("runtime_selection.bootstrap", () => prepareNativeSessionBootstrapPersistence(tx, {
           run: lockedRun,
           selectedSessionId: nativeSessionId,
           execution: nativeExecution!,
           restoringCheckpoint: nativeResumeCheckpoint !== null,
-        });
-      await tx
+        }));
+      await measureRunPhase("runtime_selection.run_write", () => tx
         .update(heartbeatRuns)
         .set({
           runtimeMode: "native",
@@ -920,6 +941,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           runnerProfileJson: {
             ...nativeRuntimeResolution.profile,
             ...lockedProfile,
+            nativePreparationFencingVersion: !lockedRun.runnerInstanceId && !lockedRun.nativeSessionId
+              ? NATIVE_PREPARATION_FENCING_VERSION
+              : lockedProfile.nativePreparationFencingVersion,
             ...(lockedProfile.nativeExecutionInput
               ? {}
               : { recoveryEventInventoryVersion: 1 }),
@@ -989,8 +1013,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             lockedRun.nativePhaseUpdatedAt ?? new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(heartbeatRuns.id, run.id));
-      await tx
+        .where(eq(heartbeatRuns.id, run.id)));
+      await measureRunPhase("runtime_selection.finalization_write", () => tx
         .insert(nativeRunFinalizations)
         .values({
           runId: run.id,
@@ -998,12 +1022,12 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           issueId: issueRef.id,
           phase: "observed",
         })
-        .onConflictDoNothing();
+        .onConflictDoNothing());
       return true;
     });
     if (!nativeSelected) return { selected: false };
     stopControllerLease();
-    nativeWorkspaceSync = await prepareNativeWorkspaceSync({
+    nativeWorkspaceSync = await measureRunPhase("runtime_selection.workspace_sync", () => prepareNativeWorkspaceSync({
       db,
       runId: run.id,
       companyId: agent.companyId,
@@ -1014,7 +1038,10 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       restartRecovery: runOptions.nativeRestartRecovery,
       sameRunRecovery: Boolean(runOptions.nativeLeaseOwner),
       resourceDisposition: providerResourceDispositionForRun,
-    });
+      onCheckpoint: input.workspace.onCheckpoint,
+      onPhase: input.workspace.onPhase,
+      onEvent: onAdapterEvent,
+    }));
   } else {
     const legacyWarmLifecycle =
       executionTarget?.kind === "remote" &&
@@ -1029,7 +1056,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       providerResourceDispositionForRun = "keep_running";
       onProviderResourceDisposition(providerResourceDispositionForRun);
     }
-    await db
+    await measureRunPhase("runtime_selection.run_write", () => db
       .update(heartbeatRuns)
       .set({
         runtimeMode: "legacy",
@@ -1047,7 +1074,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
                 else '{}'::jsonb end) || ${JSON.stringify(providerTraceRequested ? { providerTrace: { mode: "raw", traceId: providerTraceCapture?.metadata.id ?? null, maxBytes: PROVIDER_TRACE_MAX_BYTES } } : {})}::jsonb`,
         updatedAt: new Date(),
       })
-      .where(eq(heartbeatRuns.id, run.id));
+      .where(eq(heartbeatRuns.id, run.id)));
   }
   return { selected: true, nativeExecution, nativeRunnerInstanceId, getNativeFreshSessionHandoff, nativeWorkspaceSync };
 }

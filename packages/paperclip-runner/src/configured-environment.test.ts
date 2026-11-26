@@ -27,10 +27,11 @@ describe('controller-configured environment across native runner boundaries', ()
   });
   it('passes configured Pages values through the runner spawn boundary', () => {
     let launched: NodeJS.ProcessEnv | undefined;
-    spawnRunner({ connection: { mode: 'connect', connectUrl: 'ws://127.0.0.1:43127' }, stateDirectory: '/tmp/runner-env-proof', identity, ticket: 'fake-ticket', maxOutboxBytes: 262144, p0ReserveBytes: 65536, runnerVersion: '0.3.0', runnerDigest: `sha256:${'a'.repeat(64)}`, environment: source,
+    spawnRunner({ connection: { mode: 'connect', connectUrl: 'ws://127.0.0.1:43127' }, stateDirectory: '/tmp/runner-env-proof', identity, ticket: 'fake-ticket', maxOutboxBytes: 262144, p0ReserveBytes: 65536, runnerVersion: '0.3.0', runnerDigest: `sha256:${'a'.repeat(64)}`, environment: { ...source, OTEL_EXPORTER_OTLP_LOGS_HEADERS: 'authorization=Bearer%20export-canary', OTEL_LOGS_EXPORTER: 'otlp' },
       processLauncher: spec => { launched = spec.environment; return { child: { pid: 42, exitCode: null, signalCode: null, kill: () => true }, completion: Promise.resolve({ code: 0, signal: null, stdout: '', stderr: '' }) }; },
     });
-    expect(launched).toMatchObject(pages);
+    expect(launched).toMatchObject({ ...pages, OTEL_EXPORTER_OTLP_LOGS_HEADERS: 'authorization=Bearer%20export-canary', OTEL_LOGS_EXPORTER: 'otlp' });
+    expect(launched!.PAPERCLIP_CONFIGURED_ENV_KEYS).not.toContain('OTEL_');
     expect(launched!.DATABASE_URL).toBeUndefined();
     expect(launched!.NODE_OPTIONS).toBeUndefined();
     expect(launched!.PAPERCLIP_API_KEY).toBeUndefined();
@@ -95,5 +96,22 @@ describe("configured environment authority", () => {
     const { createSanitizedAcpxSpawnInput } = await import("./drivers/acpx/environment.js");
     expect(createSanitizedAcpxSpawnInput(source, "codex").env).toMatchObject(pages);
     expect(createCapabilityRunnerdProviderEnvironment({ provider: "opencode", options: { environment: source }, identity, codexHome: "/isolated/home", runtimeContextPath: "/isolated/context", hasRuntimeContext: false })).toMatchObject(pages);
+  });
+
+  it("does not inherit an ambient GitHub broker into OpenCode", () => {
+    vi.stubEnv("PAPERCLIP_GITHUB_BROKER_TOKEN", "ambient-capability");
+    vi.stubEnv("PAPERCLIP_GITHUB_BROKER_URL", "http://ambient.invalid");
+    vi.stubEnv("GH_TOKEN", "ambient-github-token");
+    try {
+      for (const environment of [undefined, {}]) {
+        const prepared = createCapabilityRunnerdProviderEnvironment({
+          provider: "opencode", options: { environment }, identity,
+          codexHome: "/isolated/home", runtimeContextPath: "/isolated/context", hasRuntimeContext: false,
+        });
+        expect(prepared.PAPERCLIP_GITHUB_BROKER_TOKEN).toBeUndefined();
+        expect(prepared.PAPERCLIP_GITHUB_BROKER_URL).toBeUndefined();
+        expect(prepared.GH_TOKEN).toBeUndefined();
+      }
+    } finally { vi.unstubAllEnvs(); }
   });
 });

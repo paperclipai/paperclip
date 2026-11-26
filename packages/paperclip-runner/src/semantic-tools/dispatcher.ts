@@ -188,6 +188,10 @@ export class CapabilitySemanticDispatcher {
           // it must neither advertise nor accept them merely for lacking claims.
           denyOperations: [...new Set([
             ...(scenario.denyOperations ?? []),
+            "get_workspace" as const,
+            "list_workspaces" as const,
+            "select_workspace" as const,
+            "prepare_repository" as const,
             "create_project" as const,
             "list_project_repositories" as const,
             "list_projects" as const,

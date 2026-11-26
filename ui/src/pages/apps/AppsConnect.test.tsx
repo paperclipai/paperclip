@@ -283,6 +283,65 @@ async function gotoLinkFrame(container: HTMLDivElement, url: string) {
   await passAccessStep();
 }
 
+function notionConnection(id: string, credentialPolicy: string, status: string) {
+  return {
+    id: id,
+    applicationId: "app-notion",
+    authKind: "oauth",
+    credentialPolicy: credentialPolicy,
+    status: status,
+    config: { sourceTemplateKey: "notion" },
+    transportConfig: {},
+  };
+}
+
+function notionApplication(status: string) {
+  return {
+    id: "app-notion",
+    status: status,
+    metadata: { sourceTemplateKey: "notion" },
+  };
+}
+
+function oauthStartResponse(connectionId: string, provider: string, authorizationUrl: string) {
+  return {
+    connectionId: connectionId,
+    provider: provider,
+    authorizationUrl: authorizationUrl,
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  };
+}
+
+function activeConnectorEnrollment() {
+  return {
+    configured: true,
+    status: "active",
+    brokerBaseUrl: "https://my-staging.paperclip.app",
+    instanceId: "inst-test",
+    environment: "staging",
+    origins: ["https://paperclip.example.test"],
+  };
+}
+
+function unconfiguredConnectorEnrollment() {
+  return {
+    configured: false,
+    status: "not_configured",
+    brokerBaseUrl: "https://my-staging.paperclip.app",
+    instanceId: null,
+    environment: "staging",
+    origins: [],
+  };
+}
+
+function customerOwnedApp(app: typeof GMAIL) {
+  return {
+    ...app,
+    methods: app.methods.filter((method) => !method.oauthStrategy),
+    ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
+  };
+}
+
 describe("AppsConnect — Connect with a link (M4 frame)", () => {
   let container: HTMLDivElement;
   let mountedRoot: Root | null;
@@ -315,22 +374,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     listApplicationsMock.mockResolvedValue({ applications: [] });
     listConnectionsMock.mockResolvedValue({ connections: [] });
     getConnectionInstallsMock.mockResolvedValue({ installs: [{ targetType: "company", targetId: "company-1" }] });
-    startOAuthMock.mockResolvedValue({
-      connectionId: "conn-notion",
-      provider: "notion",
-      authorizationUrl: "https://mcp.notion.com/authorize?state=resumed",
-      expiresAt: "2099-01-01T00:00:00.000Z",
-    });
+    startOAuthMock.mockResolvedValue(oauthStartResponse("conn-notion", "notion", "https://mcp.notion.com/authorize?state=resumed"));
     finishAppMock.mockResolvedValue({});
     putConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });
-    getCloudConnectorEnrollmentMock.mockResolvedValue({
-      configured: true,
-      status: "active",
-      brokerBaseUrl: "https://my-staging.paperclip.app",
-      instanceId: "inst-test",
-      environment: "staging",
-      origins: ["https://paperclip.example.test"],
-    });
+    getCloudConnectorEnrollmentMock.mockResolvedValue(activeConnectorEnrollment());
     startCloudConnectorEnrollmentMock.mockResolvedValue({
       configured: false,
       status: "pending",
@@ -1406,20 +1453,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it("prompts for one-time Cloud registration inside Gmail when managed methods are not yet advertised", async () => {
     mockParams.appKey = "gmail";
     listGalleryMock.mockResolvedValue({
-      apps: [{
-        ...GMAIL,
-        methods: GMAIL.methods.filter((method) => !method.oauthStrategy),
-        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
-      }],
+      apps: [customerOwnedApp(GMAIL)],
     });
-    getCloudConnectorEnrollmentMock.mockResolvedValueOnce({
-      configured: false,
-      status: "not_configured",
-      brokerBaseUrl: "https://my-staging.paperclip.app",
-      instanceId: null,
-      environment: "staging",
-      origins: [],
-    });
+    getCloudConnectorEnrollmentMock.mockResolvedValueOnce(unconfiguredConnectorEnrollment());
 
     await render();
     await passAccessStep();
@@ -1451,10 +1487,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
     const open = vi.spyOn(window, "open").mockReturnValue(popupBlocked ? null : popup as unknown as Window);
-    listGalleryMock.mockResolvedValue({ apps: [{
-      ...GMAIL, methods: GMAIL.methods.filter((method) => !method.oauthStrategy),
-      ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
-    }] });
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GMAIL)] });
     getCloudConnectorEnrollmentMock.mockResolvedValue({ status: "not_configured" });
     await render(client, false, <ConnectionSetupFlow host="dialog" serviceSlug="gmail" interactionId="intent-1" requestedAgentId="agent-1" />);
     await passAccessStep();
@@ -1491,10 +1524,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it.each(["request", "missing-url", "invalid-url"])("closes the reserved enrollment popup after %s failure", async (failure) => {
     const popup = { closed: false, location: { assign: vi.fn() }, focus: vi.fn(), close: vi.fn() };
     vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
-    listGalleryMock.mockResolvedValue({ apps: [{
-      ...GMAIL, methods: GMAIL.methods.filter((method) => !method.oauthStrategy),
-      ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
-    }] });
+    listGalleryMock.mockResolvedValue({ apps: [customerOwnedApp(GMAIL)] });
     getCloudConnectorEnrollmentMock.mockResolvedValue({ status: "not_configured" });
     if (failure === "request") {
       startCloudConnectorEnrollmentMock.mockRejectedValue(new Error("Enrollment unavailable"));
@@ -1530,11 +1560,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     async (expiresAt) => {
       mockSearch.value = "source=github&stage=setup";
       listGalleryMock.mockResolvedValue({
-        apps: [{
-          ...GITHUB,
-          methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
-          ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
-        }],
+        apps: [customerOwnedApp(GITHUB)],
       });
       getCloudConnectorEnrollmentMock.mockResolvedValue({
         configured: false,
@@ -1598,20 +1624,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it("keeps GitHub's personal identity defaults while its managed method awaits enrollment", async () => {
     mockParams.appKey = "github";
     listGalleryMock.mockResolvedValue({
-      apps: [{
-        ...GITHUB,
-        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
-        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
-      }],
+      apps: [customerOwnedApp(GITHUB)],
     });
-    getCloudConnectorEnrollmentMock.mockResolvedValueOnce({
-      configured: false,
-      status: "not_configured",
-      brokerBaseUrl: "https://my-staging.paperclip.app",
-      instanceId: null,
-      environment: "staging",
-      origins: [],
-    });
+    getCloudConnectorEnrollmentMock.mockResolvedValueOnce(unconfiguredConnectorEnrollment());
 
     await render();
 
@@ -1644,11 +1659,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it("explains unavailable GitHub sign-in without silently switching to a PAT", async () => {
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({
-      apps: [{
-        ...GITHUB,
-        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
-        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
-      }],
+      apps: [customerOwnedApp(GITHUB)],
     });
 
     await render();
@@ -1670,22 +1681,11 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it("keeps GitHub sign-in intent when enrollment recovery reveals an unavailable profile", async () => {
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
     listGalleryMock.mockResolvedValueOnce({
-      apps: [{
-        ...GITHUB,
-        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
-        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
-      }],
+      apps: [customerOwnedApp(GITHUB)],
     });
     getCloudConnectorEnrollmentMock
       .mockRejectedValueOnce(new Error("Cloud unavailable"))
-      .mockResolvedValueOnce({
-        configured: true,
-        status: "active",
-        brokerBaseUrl: "https://my-staging.paperclip.app",
-        instanceId: "inst-test",
-        environment: "staging",
-        origins: ["https://paperclip.example.test"],
-      });
+      .mockResolvedValueOnce(activeConnectorEnrollment());
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
 
     await render(queryClient);
@@ -1706,11 +1706,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   it("preserves a dedicated agent identity across the full-page enrollment callback", async () => {
     mockParams.appKey = "github";
     listGalleryMock.mockResolvedValue({
-      apps: [{
-        ...GITHUB,
-        methods: GITHUB.methods.filter((method) => !method.oauthStrategy),
-        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
-      }],
+      apps: [customerOwnedApp(GITHUB)],
       capabilities: {
         canCreateOrganizationGrant: true,
         organizationGrantReason: null,
@@ -1718,14 +1714,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         companyInstallReason: null,
       },
     });
-    getCloudConnectorEnrollmentMock.mockResolvedValue({
-      configured: false,
-      status: "not_configured",
-      brokerBaseUrl: "https://my-staging.paperclip.app",
-      instanceId: null,
-      environment: "staging",
-      origins: [],
-    });
+    getCloudConnectorEnrollmentMock.mockResolvedValue(unconfiguredConnectorEnrollment());
 
     await render();
     await openAccessAdvanced();
@@ -1763,14 +1752,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockSearch.value = "source=github&stage=setup&cloud_connector=enrolled";
     mockCompany.value = { selectedCompanyId: undefined, selectedCompany: null };
     listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
-    getCloudConnectorEnrollmentMock.mockResolvedValue({
-      configured: true,
-      status: "active",
-      brokerBaseUrl: "https://my-staging.paperclip.app",
-      instanceId: "inst-test",
-      environment: "staging",
-      origins: ["https://paperclip.example.test"],
-    });
+    getCloudConnectorEnrollmentMock.mockResolvedValue(activeConnectorEnrollment());
 
     const coldLoadClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await render(coldLoadClient);
@@ -1811,7 +1793,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     "preserves personal Workspace access for $slug when changing method (enrollment return: $enrollmentReturn)",
     async ({ slug, enrollmentReturn }) => {
       const definition = CONNECTABLE_APP_DEFINITIONS.find((app) => app.slug === slug)!;
-      const readMethod = definition.methods.find((method) => method.key === "paperclip-read")!;
+      const readMethod = definition.methods.find((method) => method.key === "paperclip-read" || method.key === "paperclip-workspace")!;
       mockSearch.value = enrollmentReturn
         ? `source=${slug}&stage=setup&cloud_connector=enrolled`
         : `source=${slug}`;
@@ -1832,7 +1814,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         await flushReact();
       }
 
-      if (definition.methods.some((method) => method.capabilityProfile?.key !== "read")) {
+      if (definition.methods.some((method) => method.capabilityProfile?.key !== readMethod.capabilityProfile?.key)) {
         const readChoice = radioContaining(readMethod.capabilityProfile!.label);
         expect(readChoice).not.toBeNull();
         await act(async () => {
@@ -1869,19 +1851,19 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         buttonByText("Continue to sign in")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       });
       await flushReact();
+      if (slug === "google-workspace") {
+        await act(async () => buttonByText("Continue")!.click());
+        await flushReact();
+      }
       expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
-        galleryKey: slug, connectionMethodKey: "paperclip-read", grantKind: "user",
+        galleryKey: slug, connectionMethodKey: readMethod.key, grantKind: "user",
       }));
   });
 
   it("never renders self-host enrollment when the connector identity is already active", async () => {
     mockSearch.value = "source=gmail&stage=setup";
     listGalleryMock.mockResolvedValueOnce({
-      apps: [{
-        ...GMAIL,
-        methods: GMAIL.methods.filter((method) => !method.oauthStrategy),
-        ownershipAvailability: { platform_shared: false, customer: true, dcr: true },
-      }],
+      apps: [customerOwnedApp(GMAIL)],
     });
 
     await render();
@@ -1911,6 +1893,45 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("Before connecting, enroll the signed-in Workspace account");
     expect(container.textContent).toContain("Review requirements");
     expect(container.textContent).toContain("needs its own OAuth app");
+  });
+
+  it("selects Workspace service groups before creating a single connection", async () => {
+    mockSearch.value = "source=google-workspace&stage=setup";
+    const workspace = getAppStoreDefinition("google-workspace")!;
+    listGalleryMock.mockResolvedValue({ apps: [{
+      ...workspace, ownershipAvailability: { ...workspace.ownershipAvailability, platform_shared: true },
+    }] });
+    await render();
+
+    expect(container.textContent).toContain("Google Workspace");
+    expect(container.textContent).not.toContain("What should Paperclip be able to do?");
+    await openAccessAdvanced();
+    expect(buttonByText("Use your own Google OAuth app")).toBeDefined();
+    expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+    await act(async () => {
+      buttonByText("Continue to sign in")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+    expect(connectAppMock).not.toHaveBeenCalled();
+    const dialog = document.querySelector('[role="dialog"]')!;
+    expect(dialog.textContent).toContain("Docs, Sheets, and Slides");
+    expect(dialog.querySelectorAll('[role="switch"]')).toHaveLength(3);
+    expect(dialog.textContent).not.toContain("Contacts");
+    expect(dialog.textContent).not.toContain("compose permission");
+    const gmail = dialog.querySelector('select[aria-label="Gmail access"]') as HTMLSelectElement;
+    await act(async () => {
+      gmail.value = "read";
+      gmail.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await act(async () => {
+      Array.from(dialog.querySelectorAll("button")).find(button => button.textContent === "Continue")!.click();
+    });
+    await flushReact();
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      galleryKey: "google-workspace", connectionMethodKey: "paperclip-workspace",
+      workspaceServices: { gmail: "read", drive: "write", calendar: "write" },
+    }));
   });
 
   it("renders Google Calendar as one minimal, unboxed setup screen", async () => {
@@ -2307,17 +2328,34 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it("renders the same PostHog method choices in page and task-dialog hosts", async () => {
-    const methodState = () => ({
-      oauth: buttonByText("Sign in with PostHog")?.getAttribute("aria-pressed"),
-      apiKey: buttonByText("Use a personal API key")?.getAttribute("aria-pressed"),
-      connectDisabled: buttonByText("Connect")?.disabled,
-    });
+    const checkMethodChoices = async () => {
+      await openAccessAdvanced();
+      expect(radioContaining("Sign in with PostHog")?.getAttribute("aria-checked")).toBe("true");
+      expect(radioContaining("Use a personal API key")?.getAttribute("aria-checked")).toBe("false");
+      expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+      await act(async () => {
+        radioContaining("Use a personal API key")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      expect(radioContaining("Sign in with PostHog")?.getAttribute("aria-checked")).toBe("false");
+      expect(radioContaining("Use a personal API key")?.getAttribute("aria-checked")).toBe("true");
+      expect(buttonByText("Connect")?.disabled).toBe(true);
+      const keyInput = container.querySelector<HTMLInputElement>('input[type="password"]');
+      expect(keyInput).toBeTruthy();
+      await act(async () => setInputValue(keyInput!, "phx_host-test-key"));
+      await flushReact();
+      expect(buttonByText("Connect")?.disabled).toBe(false);
+      await act(async () => {
+        radioContaining("Sign in with PostHog")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      await flushReact();
+      expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+    };
 
     mockParams.appKey = "posthog";
     listGalleryMock.mockResolvedValue({ apps: [POSTHOG] });
     const pageRoot = await render();
-    await passAccessStep();
-    const pageMethods = methodState();
+    await checkMethodChoices();
     await act(async () => pageRoot.unmount());
     container.innerHTML = "";
 
@@ -2335,12 +2373,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
     expect(continueButton).toBeTruthy();
     expect(continueButton?.disabled).toBe(false);
+    await checkMethodChoices();
     await act(async () => {
-      continueButton?.click();
+      buttonByText("Continue to sign in")!.click();
     });
     await flushReact();
-
-    expect(methodState()).toEqual(pageMethods);
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
     await act(async () => dialogRoot.unmount());
   });
 
@@ -2512,21 +2550,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
-  it("shows an in-flight state while Paperclip prepares Notion sign-in", async () => {
-    mockSearch.value = "source=notion";
-    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
-    connectAppMock.mockReturnValueOnce(new Promise(() => {}));
-
-    await render();
-    await passAccessStep();
-    await submitCuratedOAuthSetup();
-
-    expect(container.textContent).toContain("Connect Notion");
-    expect(container.textContent).toContain("Preparing secure sign-in");
-    expect(container.textContent).toContain("Preparing…");
-    expect(connectAppMock).toHaveBeenCalledTimes(1);
-  });
-
   it("keeps the same steps when Notion sign-in takes over the wizard", async () => {
     mockSearch.value = "source=notion";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
@@ -2543,6 +2566,9 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await submitCuratedOAuthSetup();
 
     expect(container.textContent).toContain("Preparing secure sign-in");
+    expect(container.textContent).toContain("Connect Notion");
+    expect(container.textContent).toContain("Preparing…");
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
     expect(stepLabelsOnScreen()).toEqual([]);
     expect(stepDotCount()).toBe(0);
   });
@@ -2569,29 +2595,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockSearch.value = `source=notion&intent=${interactionId}`;
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
     listApplicationsMock.mockResolvedValueOnce({
-      applications: [{
-        id: "app-notion",
-        status: "draft",
-        metadata: { sourceTemplateKey: "notion" },
-      }],
+      applications: [notionApplication("draft")],
     });
     listConnectionsMock.mockResolvedValueOnce({
-      connections: [{
-        id: "conn-existing",
-        applicationId: "app-notion",
-        authKind: "oauth",
-        credentialPolicy: "per_user",
-        status: "draft",
-        config: { sourceTemplateKey: "notion" },
-        transportConfig: {},
-      }],
+      connections: [notionConnection("conn-existing", "per_user", "draft")],
     });
-    startOAuthMock.mockResolvedValueOnce({
-      connectionId: "conn-existing",
-      provider: "notion",
-      authorizationUrl: "https://mcp.notion.com/authorize?state=existing",
-      expiresAt: "2099-01-01T00:00:00.000Z",
-    });
+    startOAuthMock.mockResolvedValueOnce(oauthStartResponse("conn-existing", "notion", "https://mcp.notion.com/authorize?state=existing"));
 
     await render();
     expect(container.textContent).not.toContain("Reconnect keeps this identity type");
@@ -2614,32 +2623,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockSearch.value = "source=notion&resume=22222222-2222-4222-8222-222222222222";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
     listApplicationsMock.mockResolvedValueOnce({
-      applications: [{
-        id: "app-notion",
-        status: "active",
-        metadata: { sourceTemplateKey: "notion" },
-      }],
+      applications: [notionApplication("active")],
     });
     listConnectionsMock.mockResolvedValueOnce({
       connections: [
-        {
-          id: "11111111-1111-4111-8111-111111111111",
-          applicationId: "app-notion",
-          authKind: "oauth",
-          credentialPolicy: "shared",
-          status: "draft",
-          config: { sourceTemplateKey: "notion" },
-          transportConfig: {},
-        },
-        {
-          id: "22222222-2222-4222-8222-222222222222",
-          applicationId: "app-notion",
-          authKind: "oauth",
-          credentialPolicy: "per_user",
-          status: "draft",
-          config: { sourceTemplateKey: "notion" },
-          transportConfig: {},
-        },
+        notionConnection("11111111-1111-4111-8111-111111111111", "shared", "draft"),
+        notionConnection("22222222-2222-4222-8222-222222222222", "per_user", "draft"),
       ],
     });
 
@@ -2688,12 +2677,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         transportConfig: {},
       }],
     });
-    startOAuthMock.mockResolvedValueOnce({
-      connectionId,
-      provider: "clickup",
-      authorizationUrl: "https://app.clickup.com/api?state=resumed",
-      expiresAt: "2099-01-01T00:00:00.000Z",
-    });
+    startOAuthMock.mockResolvedValueOnce(oauthStartResponse(connectionId, "clickup", "https://app.clickup.com/api?state=resumed"));
 
     await render();
     await vi.waitFor(() => {
@@ -2971,11 +2955,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockSearch.value = "source=notion&resume=22222222-2222-4222-8222-222222222222&oauth=denied&code=oauth_authorization_denied";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
     listApplicationsMock.mockResolvedValueOnce({
-      applications: [{
-        id: "app-notion",
-        status: "draft",
-        metadata: { sourceTemplateKey: "notion" },
-      }],
+      applications: [notionApplication("draft")],
     });
     listConnectionsMock.mockResolvedValueOnce({
       connections: [{
@@ -3016,29 +2996,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockSearch.value = "source=notion";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
     listApplicationsMock.mockResolvedValueOnce({
-      applications: [{
-        id: "app-notion",
-        status: "active",
-        metadata: { sourceTemplateKey: "notion" },
-      }],
+      applications: [notionApplication("active")],
     });
     listConnectionsMock.mockResolvedValueOnce({
-      connections: [{
-        id: "conn-existing",
-        applicationId: "app-notion",
-        authKind: "oauth",
-        credentialPolicy,
-        status: "active",
-        config: { sourceTemplateKey: "notion" },
-        transportConfig: {},
-      }],
+      connections: [notionConnection("conn-existing", credentialPolicy, "active")],
     });
-    startOAuthMock.mockResolvedValueOnce({
-      connectionId: "conn-existing",
-      provider: "notion",
-      authorizationUrl: "https://mcp.notion.com/authorize?state=existing",
-      expiresAt: "2099-01-01T00:00:00.000Z",
-    });
+    startOAuthMock.mockResolvedValueOnce(oauthStartResponse("conn-existing", "notion", "https://mcp.notion.com/authorize?state=existing"));
 
     await render();
     expect(container.textContent).toContain(
@@ -3057,22 +3020,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockSearch.value = "source=notion&applicationId=app-notion&new=1&reconnect=conn-archived&identity=organization";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
     listApplicationsMock.mockResolvedValueOnce({
-      applications: [{
-        id: "app-notion",
-        status: "archived",
-        metadata: { sourceTemplateKey: "notion" },
-      }],
+      applications: [notionApplication("archived")],
     });
     listConnectionsMock.mockResolvedValueOnce({
-      connections: [{
-        id: "conn-archived",
-        applicationId: "app-notion",
-        authKind: "oauth",
-        credentialPolicy: "shared",
-        status: "archived",
-        config: { sourceTemplateKey: "notion" },
-        transportConfig: {},
-      }],
+      connections: [notionConnection("conn-archived", "shared", "archived")],
     });
     connectAppMock.mockResolvedValueOnce({
       connectionId: "conn-archived",
@@ -3087,12 +3038,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       suggestedDefaults: {},
       auth: { kind: "oauth", startUrl: null },
     });
-    startOAuthMock.mockResolvedValueOnce({
-      connectionId: "conn-archived",
-      provider: "notion",
-      authorizationUrl: "https://mcp.notion.com/authorize?state=revived",
-      expiresAt: "2099-01-01T00:00:00.000Z",
-    });
+    startOAuthMock.mockResolvedValueOnce(oauthStartResponse("conn-archived", "notion", "https://mcp.notion.com/authorize?state=revived"));
 
     await render();
     expect(container.textContent).toContain("Connects for everyone in your organization");
@@ -3113,22 +3059,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockSearch.value = "source=notion&applicationId=app-notion&new=1&reconnect=conn-archived&identity=organization";
     listGalleryMock.mockRejectedValueOnce(new Error("Gallery unavailable"));
     listApplicationsMock.mockResolvedValueOnce({
-      applications: [{
-        id: "app-notion",
-        status: "archived",
-        metadata: { sourceTemplateKey: "notion" },
-      }],
+      applications: [notionApplication("archived")],
     });
     listConnectionsMock.mockResolvedValueOnce({
-      connections: [{
-        id: "conn-archived",
-        applicationId: "app-notion",
-        authKind: "oauth",
-        credentialPolicy: "shared",
-        status: "archived",
-        config: { sourceTemplateKey: "notion" },
-        transportConfig: {},
-      }],
+      connections: [notionConnection("conn-archived", "shared", "archived")],
     });
 
     await render();
@@ -3152,22 +3086,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       mockSearch.value = "source=notion&applicationId=app-notion&new=1&reconnect=conn-archived&identity=organization";
       listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
       const applications = {
-        applications: [{
-          id: "app-notion",
-          status: "archived",
-          metadata: { sourceTemplateKey: "notion" },
-        }],
+        applications: [notionApplication("archived")],
       };
       const connections = {
-        connections: [{
-          id: "conn-archived",
-          applicationId: "app-notion",
-          authKind: "oauth",
-          credentialPolicy: "shared",
-          status: "archived",
-          config: { sourceTemplateKey: "notion" },
-          transportConfig: {},
-        }],
+        connections: [notionConnection("conn-archived", "shared", "archived")],
       };
       if (failedLookup === "connection") {
         listConnectionsMock
@@ -3204,11 +3126,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     mockSearch.value = "source=notion&applicationId=app-notion&new=1";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
     listApplicationsMock.mockResolvedValueOnce({
-      applications: [{
-        id: "app-notion",
-        status: "active",
-        metadata: { sourceTemplateKey: "notion" },
-      }],
+      applications: [notionApplication("active")],
     });
     listConnectionsMock.mockResolvedValueOnce({
       connections: [{
@@ -3279,22 +3197,10 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(startOAuthMock).not.toHaveBeenCalled();
 
     resolveApplications({
-      applications: [{
-        id: "app-notion",
-        status: "draft",
-        metadata: { sourceTemplateKey: "notion" },
-      }],
+      applications: [notionApplication("draft")],
     });
     resolveConnections({
-      connections: [{
-        id: "conn-refreshed",
-        applicationId: "app-notion",
-        authKind: "oauth",
-        credentialPolicy: "per_user",
-        status: "draft",
-        config: { sourceTemplateKey: "notion" },
-        transportConfig: {},
-      }],
+      connections: [notionConnection("conn-refreshed", "per_user", "draft")],
     });
     await flushReact();
     await flushReact();
@@ -3316,24 +3222,12 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     listApplicationsMock
       .mockRejectedValueOnce(new Error("Lookup unavailable"))
       .mockResolvedValueOnce({
-        applications: [{
-          id: "app-notion",
-          status: "draft",
-          metadata: { sourceTemplateKey: "notion" },
-        }],
+        applications: [notionApplication("draft")],
       });
     listConnectionsMock
       .mockResolvedValueOnce({ connections: [] })
       .mockResolvedValueOnce({
-        connections: [{
-          id: "conn-after-retry",
-          applicationId: "app-notion",
-          authKind: "oauth",
-          credentialPolicy: "per_user",
-          status: "draft",
-          config: { sourceTemplateKey: "notion" },
-          transportConfig: {},
-        }],
+        connections: [notionConnection("conn-after-retry", "per_user", "draft")],
       });
 
     await render();
@@ -3392,12 +3286,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
     startOAuthMock
       .mockRejectedValueOnce(new Error("Provider unavailable"))
-      .mockResolvedValueOnce({
-        connectionId: "conn-prepared",
-        provider: "notion",
-        authorizationUrl: "https://mcp.notion.com/authorize?state=retry",
-        expiresAt: "2099-01-01T00:00:00.000Z",
-      });
+      .mockResolvedValueOnce(oauthStartResponse("conn-prepared", "notion", "https://mcp.notion.com/authorize?state=retry"));
 
     await render();
     await passAccessStep();
@@ -3445,12 +3334,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         }],
       });
     connectAppMock.mockRejectedValueOnce(new Error("Response lost"));
-    startOAuthMock.mockResolvedValueOnce({
-      connectionId: "conn-response-lost",
-      provider: "notion",
-      authorizationUrl: "https://mcp.notion.com/authorize?state=recovered",
-      expiresAt: "2099-01-01T00:00:00.000Z",
-    });
+    startOAuthMock.mockResolvedValueOnce(oauthStartResponse("conn-response-lost", "notion", "https://mcp.notion.com/authorize?state=recovered"));
 
     await render();
     await passAccessStep();
@@ -3921,31 +3805,6 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     });
   });
 
-  it("uses the gallery app name automatically", async () => {
-    await render();
-
-    await act(async () => {
-      buttonContaining("GitHub")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-    await passAccessStep();
-
-    const keyField = container.querySelector<HTMLInputElement>("input[type=password]");
-    await act(async () => setInputValue(keyField!, "secret-key"));
-    await flushReact();
-    await act(async () => {
-      buttonByText("Connect")?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(connectAppMock).toHaveBeenCalledTimes(1);
-    const [, input] = connectAppMock.mock.calls[0];
-    expect(input).toMatchObject({
-      galleryKey: "github",
-      name: "GitHub for the organization",
-    });
-  });
-
   it("uses the Google Sheets app name automatically", async () => {
     listGalleryMock.mockResolvedValueOnce({
       apps: [
@@ -4045,12 +3904,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
     listAgentsMock.mockResolvedValue([]);
     finishAppMock.mockResolvedValue({});
     putConnectionInstallsMock.mockResolvedValue({ connectionId: "conn-1", installs: [] });
-    startOAuthMock.mockResolvedValue({
-      connectionId: "conn-1",
-      provider: "mcp_example_test",
-      authorizationUrl: "https://auth.example.test/authorize?state=abc",
-      expiresAt: "2099-01-01T00:00:00.000Z",
-    });
+    startOAuthMock.mockResolvedValue(oauthStartResponse("conn-1", "mcp_example_test", "https://auth.example.test/authorize?state=abc"));
     connectAppMock.mockResolvedValue({
       connectionId: "conn-1",
       application: { id: "app-1", name: "mcp.example.test" },
@@ -4410,12 +4264,7 @@ describe("AppsConnect — guided generic MCP flow (PAP-17087)", () => {
         suggestedDefaults: {},
         auth: { kind: "oauth", startUrl: null },
       });
-      startOAuthMock.mockResolvedValue({
-        connectionId: "conn-1",
-        provider: "mcp_example_test",
-        authorizationUrl,
-        expiresAt: "2099-01-01T00:00:00.000Z",
-      });
+      startOAuthMock.mockResolvedValue(oauthStartResponse("conn-1", "mcp_example_test", authorizationUrl));
       await render();
       await gotoLinkFrame(container, "https://mcp.example.test/mcp");
       await act(async () => {

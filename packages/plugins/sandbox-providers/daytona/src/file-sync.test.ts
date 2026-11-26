@@ -1157,3 +1157,30 @@ describe.skipIf(!gnuTar)("automatic unsafe workspace export recovery", () => {
     expect(await fs.readdir(output)).toEqual([]);
   });
 });
+
+
+describe("precompressed file transport", () => {
+  it.each(["gzip", "zstd"])("uploads %s bytes without trying to recompress them", async codec => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-compressed-transfer-"));
+    try {
+      const raw = crypto.randomBytes(ZSTD_MIN_SOURCE_BYTES_FOR_TEST + 1024);
+      const bytes = codec === "gzip" ? zlib.gzipSync(raw) : zlib.zstdCompressSync(raw);
+      expect(bytes.length).toBeGreaterThan(ZSTD_MIN_SOURCE_BYTES_FOR_TEST);
+      const source = path.join(root, "artifact-without-extension");
+      await fs.writeFile(source, bytes);
+      const uploadedSources: string[] = [];
+      const uploadedDestinations: string[] = [];
+      const commands: RecordedCommand[] = [];
+      const sandbox = createRecordingSandbox({ probeReportsZstd: true, uploadedSources, uploadedDestinations, commands });
+      const compressor = vi.spyOn(zlib, "createZstdCompress");
+      await performSyncIn({ sandbox: sandbox as never, remoteDir: "/workspace", timeoutSeconds: 30,
+        operations: [{ operationId: "archive", files: [{ kind: "file", sourcePath: source, targetPath: "/workspace/archive", mode: 0o600 }] }] });
+      expect(compressor).not.toHaveBeenCalled();
+      expect(uploadedSources).toEqual([source]);
+      expect(await sha256OfFile(source)).toBe(crypto.createHash("sha256").update(bytes).digest("hex"));
+    } finally {
+      vi.restoreAllMocks();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+});

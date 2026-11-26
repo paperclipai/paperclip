@@ -11,7 +11,7 @@ import {
 import type { EmailConnectionInput, EmailCredentialOption } from "@paperclipai/shared";
 import { badRequest, forbidden, HttpError, notFound } from "../errors.js";
 import { secretService } from "./secrets.js";
-import { toolAccessService } from "./tool-access.js";
+import { lockToolConnectionRuntimeInputs, toolAccessService } from "./tool-access.js";
 import { agentmailApi } from "./agentmail-api.js";
 import { logActivity } from "./activity-log.js";
 import type { EmailActor } from "./email-channels.js";
@@ -321,16 +321,7 @@ export function emailConnectionService(
   ) {
     return db.transaction(async (tx) => {
       const db = tx as unknown as Db;
-      await db
-        .select()
-        .from(toolConnections)
-        .where(
-          and(
-            eq(toolConnections.id, id),
-            eq(toolConnections.companyId, companyId),
-          ),
-        )
-        .for("update");
+      await lockToolConnectionRuntimeInputs(db, companyId, id);
       const connection = await emailConnectionService(db, fetchImpl).get(companyId, id, actor);
       const tools = toolAccessService(db);
       const installs = await db

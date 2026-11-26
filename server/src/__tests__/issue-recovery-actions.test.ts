@@ -38,6 +38,8 @@ import { deliverReconciledExecutions } from "../services/execution-recovery-reso
 import { workspaceOperationService, isNativeWorkspaceFinalizationOperationActive } from "../services/workspace-operations.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { recoveryService } from "../services/recovery/service.js";
+import { issueService } from "../services/issues.js";
+import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import { noticeMetadataReferencesRecoveryAction } from "../services/recovery/successful-run-handoff.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -1751,6 +1753,36 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(list.body.actions).toHaveLength(1);
   });
 
+  it("lists a settled reconciliation hold that still blocks replay", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    const [action] = await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId,
+      kind: "active_run_watchdog",
+      status: "resolved",
+      outcome: "blocked",
+      ownerType: "board",
+      returnOwnerAgentId: coderId,
+      cause: "legacy_execution_requires_reconciliation",
+      fingerprint: runId,
+      nextAction: "Preserve recorded work without replay.",
+      evidence: { runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+    }).returning();
+
+    const list = await request(createApp()).get(`/api/issues/${sourceIssueId}/recovery-actions`).expect(200);
+
+    expect(list.body.active).toBeNull();
+    expect(list.body.actions).toEqual([
+      expect.objectContaining({
+        id: action!.id,
+        status: "resolved",
+        cause: "legacy_execution_requires_reconciliation",
+        evidence: { runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+      }),
+    ]);
+  });
+
   it("projects recovery action metadata into the structured wake payload", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const action = await issueRecoveryActionService(db).upsertSourceScoped({
@@ -2479,6 +2511,51 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       trigger: "read_projection",
       recoveryActionId: action.id,
     });
+    expect(activityRows.find((row) => row.action === "issue.recovery_action_resolved")).toMatchObject({
+      actorType: "system", actorId: "recovery", agentId: null,
+    });
+  });
+
+  it.each(["done", "cancelled"])("keeps one workspace owner hold across reads and sweeps of a %s task", async (status) => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const runId = randomUUID();
+    const owner = { token: randomUUID(), hostname: "old-controller.invalid", pid: 42, processStartedAt: new Date(0).toISOString() };
+    await db.insert(heartbeatRuns).values({
+      id: runId, companyId, agentId: coderId, nativeIssueId: sourceIssueId,
+      runtimeMode: "native", status: "failed", finishedAt: new Date(),
+      runnerProfileJson: { nativeWorkspaceFinalizationOwner: owner },
+    });
+    await db.update(issues).set({ status }).where(eq(issues.id, sourceIssueId));
+    const userId = "board-reader";
+    const app = createApp({ type: "board", source: "local_implicit", userId });
+    const copyback = vi.fn();
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+    let firstAction: typeof issueRecoveryActions.$inferSelect | undefined;
+    for (let tick = 0; tick < 3; tick += 1) {
+      expect(await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId }, copyback)).toEqual({ acquired: false });
+      const detail = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
+      expect(detail.body.activeRecoveryAction).toMatchObject({
+        cause: "native_workspace_finalization_owner_unverified", status: "active", attemptCount: 1,
+      });
+      await request(app).get(`/api/companies/${companyId}/issues?view=compact`).expect(200);
+      await request(app).get(`/api/issues/${sourceIssueId}/recovery-actions`).expect(200);
+      await recovery.reconcileStrandedAssignedIssues();
+      const actions = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+      expect(actions).toHaveLength(1);
+      firstAction ??= actions[0]!;
+      expect(actions[0]).toEqual(firstAction);
+    }
+    expect(copyback).not.toHaveBeenCalled();
+    expect(await issueService(db).list(companyId, { touchedByUserId: userId })).toEqual([]);
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId))).toHaveLength(0);
+
+    // Only clearing the exact physical owner receipt makes this hold stale.
+    await db.update(heartbeatRuns).set({ runnerProfileJson: {} }).where(eq(heartbeatRuns.id, runId));
+    const cleared = await request(app).get(`/api/issues/${sourceIssueId}`).expect(200);
+    expect(cleared.body.activeRecoveryAction).toBeNull();
+    const rows = await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssueId));
+    expect(rows).toEqual([expect.objectContaining({ actorType: "system", actorId: "recovery", action: "issue.recovery_action_resolved" })]);
+    expect(await issueService(db).list(companyId, { touchedByUserId: userId })).toEqual([]);
   });
 
   it("keeps active recovery visible when a plain comment does not create a live path", async () => {

@@ -263,9 +263,10 @@ describe("GitHub App wizard", () => {
     vi.mocked(chatEndpointsApi.setup).mockResolvedValue(fixture.endpoint);
     await render("resume=draft-1&reconnect=1");
     const button = [...container.querySelectorAll("button")].find(
-      (button) => button.textContent === "Reconnect App",
+      (button) => button.getAttribute("aria-label") === "Reconnect saved App",
     )!;
     expect(button.disabled).toBe(false);
+    expect(container.querySelector("#github-private-key")).toBeNull();
     expect(container.querySelector("#github-webhook-secret")).toBeNull();
     await act(async () => {
       button.click();
@@ -274,6 +275,76 @@ describe("GitHub App wizard", () => {
       action: "reconnect",
     });
     expect(githubChatApi.connectApp).not.toHaveBeenCalled();
+  });
+  it("keeps a failed saved-App repair retryable and explains the credential fallback", async () => {
+    fixture.endpoint.status = "attention";
+    fixture.endpoint.botExternalId = "1234";
+    vi.mocked(chatEndpointsApi.setup).mockRejectedValue(new Error("GitHub could not verify the saved private key"));
+    await render("resume=draft-1&reconnect=1");
+    const button = [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Reconnect saved App")!;
+    await act(async () => button.click());
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Could not reconnect the saved App");
+    expect(button.disabled).toBe(false);
+    expect(container.querySelector("#github-private-key")).toBeNull();
+    const replace = [...container.querySelectorAll("button")].find(button => button.textContent === "Replace App credentials…")!;
+    await act(async () => replace.click());
+    expect((container.querySelector("#github-app-id") as HTMLInputElement).value).toBe("1234");
+    expect(container.textContent).toContain("Credentials → Key pairs → New key");
+    expect((container.querySelector("#github-private-key") as HTMLInputElement).type).toBe("password");
+    expect([...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Verify and reconnect")?.disabled).toBe(true);
+    expect(githubChatApi.advance).not.toHaveBeenCalled();
+  });
+  it("does not reuse an old connected result when fresh verification fails", async () => {
+    fixture.endpoint.status = "attention";
+    fixture.endpoint.botExternalId = "1234";
+    client.setQueryData(["github-wizard", "draft-1"], { endpointId: "draft-1", state: "connected" });
+    vi.mocked(chatEndpointsApi.setup).mockResolvedValue(fixture.endpoint);
+    vi.mocked(githubChatApi.advance).mockRejectedValue(new Error("Delivery verification is unavailable"));
+    await render("resume=draft-1&reconnect=1");
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Reconnect saved App")!.click());
+    expect(container.querySelector("output")?.textContent).toContain("/BOT/apps/chat/connect");
+    expect(container.textContent).toContain("Delivery verification is unavailable");
+    expect([...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Reconnect saved App")?.disabled).toBe(false);
+  });
+  it.each(["paste", "upload"])("preserves a multiline PEM from %s when replacing credentials", async (source) => {
+    fixture.endpoint.status = "attention";
+    fixture.endpoint.botExternalId = "1234";
+    vi.mocked(chatEndpointsApi.setup).mockResolvedValue(fixture.endpoint);
+    await render("resume=draft-1&reconnect=1");
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Replace App credentials…")!.click());
+    const key = "-----BEGIN RSA PRIVATE KEY-----\nfixture-only\n-----END RSA PRIVATE KEY-----";
+    if (source === "paste") {
+      const paste = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(paste, "clipboardData", { value: { getData: () => key } });
+      await act(async () => container.querySelector("#github-private-key")!.dispatchEvent(paste));
+    } else {
+      const upload = container.querySelector('input[type="file"]')!;
+      Object.defineProperty(upload, "files", { value: [{ text: async () => key }] });
+      await act(async () => upload.dispatchEvent(new Event("change", { bubbles: true })));
+    }
+    expect((container.querySelector("#github-private-key") as HTMLInputElement).value).toBe("");
+    expect(container.querySelector('[role="status"]')?.textContent).toContain("Private key loaded");
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Verify and reconnect")!.click());
+    expect(chatEndpointsApi.setup).toHaveBeenCalledWith("draft-1", { action: "reconnect", credentials: { appId: "1234", privateKey: key } });
+  });
+  it("treats typing after loading a PEM as a new key instead of editing a flattened PEM", async () => {
+    fixture.endpoint.status = "attention";
+    fixture.endpoint.botExternalId = "1234";
+    await render("resume=draft-1&reconnect=1");
+    await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "Replace App credentials…")!.click());
+    const input = container.querySelector("#github-private-key") as HTMLInputElement;
+    const paste = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(paste, "clipboardData", { value: { getData: () => "-----BEGIN RSA PRIVATE KEY-----\nfixture-only\n-----END RSA PRIVATE KEY-----" } });
+    await act(async () => input.dispatchEvent(paste));
+    expect(input.value).toBe("");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "replacement");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(input.value).toBe("replacement");
+    expect(container.textContent).not.toContain("Private key loaded");
+    expect([...container.querySelectorAll("button")].find(button => button.getAttribute("aria-label") === "Verify and reconnect")?.disabled).toBe(true);
+    expect(chatEndpointsApi.setup).not.toHaveBeenCalled();
   });
   async function render(query = "agentId=reviewer") {
     await act(async () =>

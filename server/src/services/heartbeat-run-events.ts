@@ -1,4 +1,4 @@
-import { and, asc, eq, or, sql } from "drizzle-orm";
+import { and, asc, eq, getTableColumns, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
 import { nativeSha256 } from "./native-runtime/canonical.js";
@@ -68,6 +68,30 @@ export async function appendHeartbeatRunEvent(
   db: Db,
   input: AppendHeartbeatRunEventInput,
 ): Promise<AppendHeartbeatRunEventResult> {
+  if (!input.nativeSource && !input.retryExhaustion) {
+    const allocated = db.$with("allocated_run_event", {}).as(sql`
+      update ${heartbeatRuns}
+      set next_event_seq = ${heartbeatRuns.nextEventSeq} + 1,
+          updated_at = ${sql.param(new Date(), heartbeatRuns.updatedAt)}
+      where ${heartbeatRuns.id} = ${input.runId}
+        and ${heartbeatRuns.companyId} = ${input.companyId}
+        and ${heartbeatRuns.agentId} = ${input.agentId}
+      returning company_id, id as run_id, agent_id, next_event_seq - 1 as seq
+    `);
+    const appended = db.$with("appended_run_event", getTableColumns(heartbeatRunEvents)).as(sql`
+      insert into ${heartbeatRunEvents}
+        (company_id, run_id, agent_id, seq, event_type, stream, level, color, message, payload)
+      select company_id, run_id, agent_id, seq,
+        ${input.eventType}, ${input.stream ?? null}, ${input.level ?? null},
+        ${input.color ?? null}, ${input.message ?? null},
+        ${sql.param(input.payload ?? null, heartbeatRunEvents.payload)}
+      from ${allocated}
+      returning *
+    `);
+    const [row] = await db.with(allocated, appended).select().from(appended);
+    if (!row) throw new Error("heartbeat_run_event_binding_mismatch");
+    return { row, disposition: "committed", highestContiguousSourceSeq: 0 };
+  }
   return db.transaction(async (tx) => {
     const run = await tx
       .select()

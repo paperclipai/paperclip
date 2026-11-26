@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
 
 const mockAgentService = vi.hoisted(() => ({
@@ -47,7 +47,10 @@ const mockResolveEnvironmentExecutionTarget = vi.hoisted(() => vi.fn());
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(async () => ({ defaultEnvironmentId: null as string | null })),
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
-  getExperimental: vi.fn(async () => ({ enableManagedSandboxOnly: false })),
+  getExperimental: vi.fn(async (): Promise<{
+    enableManagedSandboxOnly: boolean;
+    enableOpenAiDot?: boolean;
+  }> => ({ enableManagedSandboxOnly: false })),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -161,11 +164,15 @@ function mockManagedRuntime(method: "api_key" | "subscription") {
   );
 }
 
-async function createApp() {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+function loadAppModules() {
+  return Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
+}
+
+async function createApp() {
+  const [{ agentRoutes }, { errorHandler }] = await loadAppModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -189,8 +196,12 @@ async function unregisterTestAdapter(type: string) {
 }
 
 describe("agent test-environment route", () => {
-  beforeEach(async () => {
+  beforeAll(async () => {
     vi.resetModules();
+    await loadAppModules();
+  });
+
+  beforeEach(async () => {
     vi.clearAllMocks();
     mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: false });
@@ -255,6 +266,10 @@ describe("agent test-environment route", () => {
 
   it("accepts a managed Dot environment without allocating an idle sandbox", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableManagedSandboxOnly: false,
+      enableOpenAiDot: true,
+    });
     mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: "11111111-1111-4111-8111-111111111111" });
     const app = await createApp();
     try {
@@ -270,6 +285,10 @@ describe("agent test-environment route", () => {
   it("fails the Cloud Dot check without a managed sandbox instead of probing the host", async () => {
     vi.stubEnv("PAPERCLIP_PUBLIC_URL", "https://paperclip.example");
     vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "test-cloud");
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({
+      enableManagedSandboxOnly: false,
+      enableOpenAiDot: true,
+    });
     const app = await createApp();
     try {
       const res = await request(app).post("/api/companies/company-1/adapters/paperclip_runner/test-environment")

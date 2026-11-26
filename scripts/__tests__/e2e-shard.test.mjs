@@ -16,6 +16,7 @@ const playwrightConfig = path.join(repoRoot, "tests", "e2e", "playwright.config.
 const prCallerWorkflow = path.join(repoRoot, ".github", "workflows", "pr.yml");
 const trustedPrWorkflowPath = ".github/workflows/pr-trusted.yml";
 const trustedPrWorkflow = path.join(repoRoot, trustedPrWorkflowPath);
+const routingWorkflow = path.join(repoRoot, ".github", "workflows", "ci-routing.yml");
 
 const SHARD_COUNT = 8;
 
@@ -54,11 +55,11 @@ function readWorkflowJobs(workflow) {
 }
 
 function runStackScope(stack, prBaseRef) {
-  const workflow = readFileSync(trustedPrWorkflow, "utf8");
+  const workflow = readFileSync(routingWorkflow, "utf8");
   const match = workflow.match(
-    /      - name: Select stacked PR CI scope[\s\S]*?        run: \|\n([\s\S]*?)\n\n  policy:/,
+    /      - name: Select PR CI scope[\s\S]*?        run: \|\n([\s\S]*?)\s*$/,
   );
-  assert.ok(match, "trusted workflow must define the stacked PR scope script");
+  assert.ok(match, "routing workflow must define the PR CI scope script");
   const script = match[1]
     .split("\n")
     .map((line) => line.replace(/^ {10}/, ""))
@@ -207,10 +208,22 @@ test("the trusted PR workflow keeps a stable aggregate check named e2e over the 
   }
 });
 
+test("runner selection has reserved AWS capacity and executes metadata checks only", () => {
+  const workflow = readFileSync(routingWorkflow, "utf8");
+  const jobs = readWorkflowJobs(workflow.split(/^jobs:\n/m)[1]);
+  assert.deepEqual([...jobs.keys()], ["gate"]);
+  assert.match(jobs.get("gate"), /^ {4}runs-on: \$\{\{ vars\.AWS_CI_ENABLED[\s\S]*paperclip-ci-routing-x64/m);
+  assert.doesNotMatch(jobs.get("gate"), /uses:|actions\/checkout|secrets\./);
+  assert.match(workflow, /^ {6}runner:\n {8}value: \$\{\{ jobs\.gate\.outputs\.runner \}\}$/m);
+  assert.match(workflow, /^ {6}full_ci:\n {8}value: \$\{\{ jobs\.gate\.outputs\.full_ci \}\}$/m);
+  assert.doesNotMatch(workflow, /^ {2}(?:actions|contents|pull-requests): write$/m);
+});
+
 test("the trusted PR workflow limits full CI to merge-relevant stack layers", () => {
   const workflow = readFileSync(trustedPrWorkflow, "utf8");
   const jobs = readWorkflowJobs(workflow);
-  const gate = jobs.get("gate");
+  assert.match(jobs.get("gate"), /uses: paperclipai\/paperclip\/\.github\/workflows\/ci-routing\.yml@master/);
+  const gate = readWorkflowJobs(readFileSync(routingWorkflow, "utf8")).get("gate");
 
   assert.match(gate, /^ {6}full_ci: \$\{\{ steps\.scope\.outputs\.full_ci \}\}$/m);
   assert.match(gate, /STACK_JSON: \$\{\{ toJSON\(github\.event\.pull_request\.stack\) \}\}/);

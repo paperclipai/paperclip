@@ -1,5 +1,6 @@
 import { TextAttachmentContext } from "@/context/TextAttachmentContext";
-import { useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { ArtifactUploadContent, type ArtifactUploadEntry } from "@/components/artifacts/ArtifactUploadControls";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AttachmentArtifactWorkProductMetadata,
@@ -23,7 +24,7 @@ import { useIssueDocuments } from "@/hooks/useIssueDocuments";
 import { useIssueWorkProducts } from "@/hooks/useIssueWorkProducts";
 import {
   documentDisplayTitle,
-  selectAgentArtifactAttachments,
+  selectArtifactAttachments,
 } from "@/lib/issue-artifacts";
 import { DocumentCard } from "@/components/artifacts/RichArtifactCards";
 import {
@@ -44,6 +45,7 @@ import { useLocation } from "@/lib/router";
 
 interface IssuePropertiesArtifactsTabProps {
   issue: Issue;
+  uploadState?: { entries: ArtifactUploadEntry[]; retry: (id: string) => void; dismiss: (id: string) => void };
   onOpenDocument?: (document: IssueDocument) => void;
   documentDeepLink?: {
     requestId: number;
@@ -355,17 +357,16 @@ function DocumentRow({
 /**
  * Artifacts tab of the properties pane (PAP-491).
  *
- * A read-only "what did this task produce" view composed from three sources:
+ * Task files and output composed from three sources:
  * work products, issue documents (also readable in the Plan tab — the
- * redundancy is intentional), and agent-created attachments. Attachments
- * already promoted to attachment-backed work products are deduped out, and
- * user uploads are excluded — those stay first-class in the conversation
- * thread.
+ * redundancy is intentional), and attachments from agents and people.
+ * Attachments already promoted to work products are deduped out.
  */
 export function IssuePropertiesArtifactsTab({
   issue,
   documentDeepLink,
   onOpenDocument,
+  uploadState,
 }: IssuePropertiesArtifactsTabProps) {
   const {
     data: attachments,
@@ -406,7 +407,7 @@ export function IssuePropertiesArtifactsTab({
   const reviewDocsByKey = new Map(
     (documents ?? []).map((doc) => [doc.key, doc]),
   );
-  const fileRows = selectAgentArtifactAttachments(attachments, workProducts);
+  const fileRows = selectArtifactAttachments(attachments, workProducts);
   const runsById = useMemo(
     () => new Map((runs ?? []).map((run) => [run.runId, run])),
     [runs],
@@ -513,21 +514,26 @@ export function IssuePropertiesArtifactsTab({
     </p>
   ) : null;
 
+  const withUploads = (content: ReactNode, empty = false) => uploadState ? (
+    <ArtifactUploadContent empty={empty} entries={uploadState.entries} onRetry={uploadState.retry} onDismiss={uploadState.dismiss}>{content}</ArtifactUploadContent>
+  ) : content;
+
   if (
     workProductRows.length === 0 &&
     documentRows.length === 0 &&
     fileRows.length === 0
   ) {
-    if (feedback) return feedback;
-    return (
+    if (feedback) return withUploads(feedback);
+    return withUploads(
       <div className="px-1 py-6 text-sm text-muted-foreground">
         No artifacts yet. Work products, documents, and agent-produced files
         will appear here.
-      </div>
+      </div>,
+      true,
     );
   }
 
-  return (
+  return withUploads(
     <div className="@container flex flex-col gap-3 py-2">
       {feedback}
       {groupedRows.map((group) => {

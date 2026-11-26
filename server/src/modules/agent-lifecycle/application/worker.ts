@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { LifecycleDriver, LifecycleStore, LifecycleFailure } from "./ports.js";
 import { isLifecycleWorkPending } from "../domain/policy.js";
+import { lifecycleFailureMessage } from "./failure.js";
 
 /** Database leases protect each attempt across server processes. */
 export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDriver, reportFailure: (context: LifecycleFailure, error: unknown) => void, canRun = () => true) {
@@ -20,10 +21,13 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
       if (!agent || !isLifecycleWorkPending(agent.lifecycleState)) return;
       const context = { agentId: agent.id, companyId: agent.companyId, phase: agent.lifecycleState,
         operationId: agent.lifecycleOperation?.id, version: agent.lifecycleVersion };
-      const runStep = <T>(stage: LifecycleFailure["stage"], work: () => Promise<T>, pluginId?: string) =>
-        attempt({ ...context, stage, ...(pluginId ? { pluginId } : {}) }, work);
+      let failureContext: LifecycleFailure = { ...context, stage: "host" };
+      const runStep = <T>(stage: LifecycleFailure["stage"], work: () => Promise<T>, pluginId?: string) => {
+        const stepContext = { ...context, stage, ...(pluginId ? { pluginId } : {}) };
+        return attempt(stepContext, work).catch(error => { failureContext = stepContext; throw error; });
+      };
       const renewal = setInterval(() => {
-        void runStep("renew", () => store.renew(agent, owner, new Date())).catch(() => {});
+        void attempt({ ...context, stage: "renew" }, () => store.renew(agent, owner, new Date())).catch(() => {});
       }, 30_000);
       renewal.unref?.();
       try {
@@ -65,8 +69,9 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
           async () => { await driver.onReady?.(changed); }).catch(() => {});
         }
         if (changed && !isLifecycleWorkPending(changed.lifecycleState)) return;
-      } catch {
-        if (!await runStep("defer", () => store.defer(agent, owner, "The lifecycle step failed. Retry the operation.", new Date()))) continue;
+      } catch (error) {
+        const message = lifecycleFailureMessage(failureContext, error);
+        if (!await runStep("defer", () => store.defer(agent, owner, message, new Date()))) continue;
         return;
       } finally {
         clearInterval(renewal);

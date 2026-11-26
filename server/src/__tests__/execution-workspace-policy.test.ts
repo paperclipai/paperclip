@@ -11,6 +11,7 @@ import {
   isUnrunnableWorktreeCombo,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
+  parseIssueAssigneeAdapterOverrides,
   parseProjectExecutionWorkspacePolicy,
   ManagedSandboxUnavailableError,
   resolveEffectiveWorkspaceStrategyType,
@@ -22,6 +23,10 @@ import {
 } from "../services/execution-workspace-policy.ts";
 
 describe("execution workspace policy helpers", () => {
+  it("ignores operator-owned homeMode in stored task overrides while retaining task settings", () => {
+    expect(parseIssueAssigneeAdapterOverrides({ adapterConfig: { homeMode: "preconfigured", model: "task-model" } }))
+      .toEqual({ adapterConfig: { model: "task-model" }, useProjectWorkspace: null });
+  });
   it("defaults new issue settings from enabled project policy", () => {
     expect(
       defaultIssueExecutionWorkspaceSettingsForProject({

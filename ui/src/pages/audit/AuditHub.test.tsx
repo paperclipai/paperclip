@@ -40,6 +40,12 @@ vi.mock("./AuditFeed", () => ({
   ),
 }));
 
+vi.mock("./AgentCommentary", () => ({
+  AgentCommentary: ({ companyId }: { companyId: string }) => (
+    <div data-testid="agent-commentary" data-company={companyId} />
+  ),
+}));
+
 vi.mock("./AuditRuns", () => ({
   AuditRuns: ({ companyId, routineId }: { companyId: string; routineId?: string }) => (
     <div data-testid="audit-runs" data-company={companyId} data-routine={routineId} />
@@ -88,7 +94,7 @@ describe("AuditHub", () => {
     vi.clearAllMocks();
   });
 
-  function render(section: "activity" | "runs" | "costs" | "budgets" | "timeline") {
+  function render(section: "activity" | "runs" | "costs" | "budgets" | "timeline" | "commentary") {
     root = createRoot(container);
     flushSync(() => root.render(<AuditHub section={section} />));
   }
@@ -97,9 +103,10 @@ describe("AuditHub", () => {
     currentSearch = "mode=agents&agentId=agent-1&runId=run-1&action=tool_";
     render("activity");
 
-    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(5);
+    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(6);
     expect(container.textContent).toContain("Activity");
     expect(container.textContent).toContain("Runs");
+    expect(container.textContent).toContain("Commentary");
     expect(container.textContent).toContain("Costs");
     expect(container.textContent).toContain("Budgets");
     expect(container.textContent).toContain("Timeline");
@@ -110,6 +117,17 @@ describe("AuditHub", () => {
     expect(feed?.dataset.entity).toBe(JSON.stringify(null));
     expect(feed?.dataset.action).toBe("tool_");
     expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Audit" }]);
+  });
+
+  it("renders Commentary for the selected company without an experimental gate", () => {
+    render("commentary");
+    expect(container.querySelector<HTMLElement>('[data-testid="agent-commentary"]')?.dataset.company).toBe("company-1");
+    const tab = Array.from(container.querySelectorAll<HTMLElement>('[role="tab"]'))
+      .find((item) => item.textContent?.trim() === "Commentary");
+    expect(tab?.getAttribute("aria-selected")).toBe("true");
+    expect(setBreadcrumbsMock).toHaveBeenCalledWith([
+      { label: "Audit", href: "/activity" }, { label: "Commentary" },
+    ]);
   });
 
   it("uses routine-scoped activity instead of the privileged organization feed", () => {
@@ -136,7 +154,7 @@ describe("AuditHub", () => {
 
     const labels = Array.from(container.querySelectorAll<HTMLElement>('[role="tab"]'))
       .map((tab) => tab.textContent?.trim());
-    expect(labels).toEqual(["Activity", "Runs", "Costs", "Budgets", "Timeline"]);
+    expect(labels).toEqual(["Activity", "Runs", "Commentary", "Costs", "Budgets", "Timeline"]);
     expect(container.querySelector<HTMLElement>('[data-testid="audit-timeline"]')?.dataset.embedded)
       .toBe("true");
   });

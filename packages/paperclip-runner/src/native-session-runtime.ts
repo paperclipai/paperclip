@@ -2042,6 +2042,7 @@ export async function executeNativeSession(
     const providerRecoveryCheckpoint = persistedSession;
 
     const replacementAllowed =
+      !("homeMode" in input && input.homeMode === "preconfigured") &&
       providerRecoveryCheckpoint.providerRecoveryPolicy ===
       "allow_replacement_after_resume_failure";
     const failedProviderSession =
@@ -2062,6 +2063,7 @@ export async function executeNativeSession(
             operation: (signal) =>
               options.backend.recoverSession!(providerRecoveryCheckpoint, {
                 signal,
+                normalizeReplayPayload: options.controlPlane.normalizeReplayPayload?.bind(options.controlPlane),
               }),
             onLateResolution: async (lateRecovery) => {
               if (lateRecovery.session) {
@@ -2761,7 +2763,8 @@ export async function executeNativeSession(
           if (
             expected === undefined ||
             existing.eventType !== expected.eventType ||
-            canonicalJson(existing.payload) !== canonicalJson(expected.payload)
+            canonicalJson(options.controlPlane.normalizeReplayPayload?.(existing.payload) ?? existing.payload)
+              !== canonicalJson(options.controlPlane.normalizeReplayPayload?.(expected.payload) ?? expected.payload)
           ) {
             throw new Error(
               `native_control_event_replay_conflict:${existing.sourceSeq}`,

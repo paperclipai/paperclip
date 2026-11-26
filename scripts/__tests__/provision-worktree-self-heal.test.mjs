@@ -345,16 +345,11 @@ test("rejects a dangling base workspace .paperclip symlink instead of falling ba
   assert.match(result.stderr, /\.paperclip is a broken symlink/);
 });
 
-test("falls back to an isolated config when the base CLI cannot boot", () => {
-  // Simulates the dangling pnpm symlink incident: the runner and entry files
-  // exist, but booting the CLI fails ESM resolution. The base has no
-  // package.json/pnpm-lock.yaml, so the repair install is not possible and the
-  // script must degrade to the no-CLI fallback config instead of failing.
+test("isolates fallback configuration and reconciles deployment mode from the registered source when reusing a guest config", () => {
   const baseCwd = makeBaseWorkspace({ helpExit: 1, initExit: 0 });
-  const { result, worktreeCwd, worktreesHome } = runProvision(baseCwd);
-
-  assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stderr, /writing isolated fallback config/);
+  const { result: first, worktreeCwd, worktreesHome, paperclipHome } = runProvision(baseCwd);
+  assert.equal(first.status, 0, first.stderr);
+  assert.match(first.stderr, /writing isolated fallback config/);
   const config = readWorktreeConfig(worktreeCwd);
   assert.equal(config.$meta.source, "configure");
   const dataDir = config.database.embeddedPostgresDataDir;
@@ -368,12 +363,7 @@ test("falls back to an isolated config when the base CLI cannot boot", () => {
     JSON.parse(fs.readFileSync(path.join(worktreeCwd, ".paperclip", "seed-manifest.json"), "utf8")).state,
     "pending",
   );
-});
 
-test("reconciles deployment mode from the registered source when reusing a guest config", () => {
-  const baseCwd = makeBaseWorkspace({ helpExit: 1, initExit: 0 });
-  const { result: first, worktreeCwd, worktreesHome, paperclipHome } = runProvision(baseCwd);
-  assert.equal(first.status, 0, first.stderr);
   assert.equal(readWorktreeConfig(worktreeCwd).server.deploymentMode, "local_trusted");
 
   // A base workspace that does carry its own instance config outranks the fallback.

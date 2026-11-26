@@ -7,6 +7,7 @@ import { cn } from "../lib/utils";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { SidePanelFrame, SidePanelWindowControls } from "@/components/side-panel";
+import { useDesignSandbox } from "@/context/DesignSandboxContext";
 
 export function PropertiesPanel({ taskDetailLayout = false }: { taskDetailLayout?: boolean }) {
   const {
@@ -19,6 +20,7 @@ export function PropertiesPanel({ taskDetailLayout = false }: { taskDetailLayout
   } = usePanel();
   const { enabled: classicTaskInterfaceEnabled } = useClassicTaskInterfaceEnabled();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
+  const designSandbox = useDesignSandbox();
   const streamlinedTaskDetailLayout = streamlinedUiEnabled && taskDetailLayout;
 
   if (!panelContent) return null;
@@ -46,12 +48,13 @@ export function PropertiesPanel({ taskDetailLayout = false }: { taskDetailLayout
 
   return (
     <ResizablePropertiesPanel
-      key={streamlinedTaskDetailLayout ? "task-detail" : "default"}
+      key={`${streamlinedTaskDetailLayout ? "task-detail" : "default"}-${designSandbox ? "proposal" : "production"}`}
       panelContent={panelContent}
       panelContentMode={panelContentMode}
       panelVisible={panelVisible}
       setPanelVisible={setPanelVisible}
       taskDetailLayout={streamlinedTaskDetailLayout}
+      designSandbox={designSandbox}
       maximizeRequested={panelMaximizeRequested}
       clearMaximizeRequest={clearPanelMaximizeRequest}
     />
@@ -80,6 +83,7 @@ export const PROPERTIES_PANE_FOOTER_SLOT_ID = "properties-pane-footer-slot";
 
 const WIDTH_STORAGE_KEY = "taskChatRedesign.propertiesPaneWidth";
 const TASK_DETAIL_WIDTH_STORAGE_KEY = "taskChatRedesign.taskDetailPropertiesPaneWidth";
+const PROPOSAL_WIDTH_STORAGE_KEY = "paperclip.design-proposal.properties-pane-width";
 const DEFAULT_PANE_WIDTH = 322;
 const TASK_DETAIL_DEFAULT_PANE_WIDTH = 434;
 const MIN_PANE_WIDTH = 260;
@@ -93,6 +97,12 @@ const MAXIMIZED_CONTENT_MAX_WIDTH = 840;
  * token in index.css.
  */
 const RESTORE_FALLBACK_DELAY = 400;
+
+function readProposalPaneWidth(fallback: number): number {
+  if (typeof window === "undefined") return fallback;
+  const tokenWidth = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--design-page-aside-width"));
+  return Number.isFinite(tokenWidth) && tokenWidth > 0 ? tokenWidth : fallback;
+}
 
 function clampPaneWidth(width: number): number {
   const max =
@@ -153,6 +163,7 @@ interface ResizablePropertiesPanelProps {
   panelVisible: boolean;
   setPanelVisible: (visible: boolean) => void;
   taskDetailLayout: boolean;
+  designSandbox: boolean;
   /** Pending `viewer=full` deep-link request (LOOA-2181); cleared once consumed. */
   maximizeRequested: boolean;
   clearMaximizeRequest: () => void;
@@ -164,13 +175,17 @@ function ResizablePropertiesPanel({
   panelVisible,
   setPanelVisible,
   taskDetailLayout,
+  designSandbox,
   maximizeRequested,
   clearMaximizeRequest,
 }: ResizablePropertiesPanelProps) {
-  const defaultPaneWidth = taskDetailLayout
+  const productionPaneWidth = taskDetailLayout
     ? TASK_DETAIL_DEFAULT_PANE_WIDTH
     : DEFAULT_PANE_WIDTH;
-  const widthStorageKey = taskDetailLayout
+  const defaultPaneWidth = designSandbox ? readProposalPaneWidth(productionPaneWidth) : productionPaneWidth;
+  const widthStorageKey = designSandbox
+    ? `${PROPOSAL_WIDTH_STORAGE_KEY}.${taskDetailLayout ? "task-detail" : "default"}`
+    : taskDetailLayout
     ? TASK_DETAIL_WIDTH_STORAGE_KEY
     : WIDTH_STORAGE_KEY;
   const [width, setWidth] = useState(() =>
@@ -264,9 +279,9 @@ function ResizablePropertiesPanel({
   }, [endDrag]);
 
   const handleGripDoubleClick = useCallback(() => {
-    setWidth(defaultPaneWidth);
+    setWidth(designSandbox ? clampPaneWidth(readProposalPaneWidth(productionPaneWidth)) : defaultPaneWidth);
     clearStoredPaneWidth(widthStorageKey);
-  }, [defaultPaneWidth, widthStorageKey]);
+  }, [defaultPaneWidth, designSandbox, productionPaneWidth, widthStorageKey]);
 
   const handleMaximize = useCallback(() => {
     const aside = asideRef.current;
@@ -359,7 +374,7 @@ function ResizablePropertiesPanel({
                 panelVisible ? "overflow-visible" : "overflow-hidden",
                 // The width/opacity transition would fight pointer-driven
                 // resizing, so it is suspended while dragging.
-                !dragging && "transition-(--tp-width-opacity) duration-200 ease-in-out",
+                !dragging && "transition-(--tp-width-opacity) duration-(--motion-pane-width-reset) ease-(--motion-ease-pane-width-reset)",
               ),
         )}
         style={
@@ -380,7 +395,7 @@ function ResizablePropertiesPanel({
             aria-orientation="vertical"
             aria-label="Resize panel"
             data-dragging={dragging ? "" : undefined}
-            className="group absolute inset-y-0 z-10 cursor-col-resize touch-none"
+            className="pane-resize-handle group absolute inset-y-0 z-10 cursor-col-resize touch-none"
             style={{ left: -4, width: 8 }}
             onPointerDown={handleGripPointerDown}
             onPointerMove={handleGripPointerMove}

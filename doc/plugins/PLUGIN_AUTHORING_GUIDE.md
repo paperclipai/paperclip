@@ -114,48 +114,71 @@ agents. The durable event inbox below is separate: acknowledging an event does
 not complete required lifecycle work. See [Agent lifecycle](../AGENT-LIFECYCLE.md)
 for phase ordering, recovery, and existing-installation limits.
 
-## Durable resource lifecycle inbox
+## Durable resource lifecycle delivery
 
-Plugins with `events.subscribe` can read durable, company-scoped resource hooks
-through `ctx.events.listLifecycle(companyId, limit?, afterId?)` and acknowledge successful
-work with `ctx.events.acknowledgeLifecycle(companyId, eventId)`. Use an existing
-plugin job to poll each configured company; the host checks invocation scope and whether
-the plugin is ready and enabled for that company. These methods are separate
-from the fire-and-forget `ctx.events.on()` bus.
-Proactive jobs and timers may read only companies authorized by the plugin's
-company configuration. Calls inside a host-issued invocation must match its company.
+Declare `resourceLifecycle: ["project"]` (or `["agent", "project"]`) in the
+manifest, with `events.subscribe`, and implement `onResourceLifecycle(event)`:
 
-An event has `id`, `companyId`, `resourceType`, `resourceId`, `action`, and
+```ts
+async onResourceLifecycle(event) {
+  const config = await ctx.config.get(event.companyId);
+  if (!config.provider) return { eventId: event.id, status: "deferred" };
+  const finished = await reconcileCurrentResource(event);
+  return { eventId: event.id, status: finished ? "acknowledged" : "retry" };
+}
+```
+
+Core delivers events to ready plugins with a configuration row for that company,
+unless the plugin is disabled there. Each invocation has the event's company
+scope. The dispatcher wakes after the mutation's outer transaction settles,
+on host startup, plugin activation/worker start, and company configuration or
+enablement changes. Successful worker `onConfigChanged` completion wakes delivery
+again, so a callback that deferred while configuration was still applying is
+revisited. Failed scans retain pending work through idle drain. Empty and deferred
+queues have no periodic scans. `retry`,
+exceptions, invalid results, and unavailable workers leave the event pending and
+schedule another attempt after 30 seconds. Other acknowledgments or mutations
+do not bypass that event's delay; a host restart may replay it immediately.
+`deferred` retains the event without
+a retry deadline, useful while waiting for operator configuration. A later wake
+revisits deferred events. Acknowledgment immediately exposes subsequent work.
+
+Events contain `id`, `companyId`, `resourceType`, `resourceId`, `action`, and
 `createdAt`. Agent actions are `create`, `pause`, `resume`, and `terminate`;
-project actions are `create`, `update`, and `archive`. Pending hires produce creation
-after approval. Project updates include repository/workspace mutations and restoring
-an archived project. Provider cleanup and retention policy belong to the plugin.
+project actions are `create`, `update`, `archive`, and `delete`. Pending hires
+produce creation after approval. Project updates include repository/workspace
+mutations and restoring an archived project. Deletion is recorded in the same
+transaction as removal and survives the project row. Earlier deletions cannot
+be reconstructed. Provider cleanup and retention policy belong to the plugin.
 
-Reads return at most one pending event per resource (default 50, maximum 100).
 Creation is delivered before other events for that resource, even when its
-backfilled ID is newer. Remaining events follow ID order. After acknowledging
-an event, a later read exposes its successor. A failed
-resource remains pending without blocking other resources; process the rest of
-the batch independently. Progress is stored per plugin, survives worker restarts,
-and is not a global sequence cursor. The delivery migration seeds existing hired
-agents and all projects once, including archived projects. Pending hires require
-approval; paused and terminated agents retain their current status intents.
-This baseline represents current desired state, not reconstructed history.
-The baseline includes archive for existing archived projects and update for restored projects whose
-journal still ends at archive. Archiving does not authorize provider cleanup.
-After that migration, capture stays forward-only; no later journal backfill runs.
+backfilled ID is newer. Remaining events follow ID order. Failed or deferred
+resources do not block independent resources. Acknowledgments are stored per
+plugin, survive worker/host restarts, and are not a global sequence cursor.
+The initial journal migration seeds existing hired agents and projects,
+including archived projects; this is a desired-state baseline, not history.
+Agent lifecycle participation (`onAgentLifecycle`) remains a separate contract:
+acknowledging a resource event does not advance an agent lifecycle phase.
 
-Delivery is at least once: concurrent reads or a crash after a provider operation
-can repeat an event. Serialize polling and use stable company/event idempotency
-keys, then acknowledge only after successful completion. Load current authorized
-agent/project/workspace data before acting; the journal contains no configuration
-snapshots, repository credentials, or deletion authority. For offline plugin tests,
-seed `lifecycleEvents` with `createTestHarness().seed()`.
+Delivery is at least once. Re-read current authorized state and make provider
+operations idempotent; a worker can finish an external effect and exit before
+Core commits its acknowledgment. Content-free events contain no repository
+credentials or configuration snapshots. Deleted projects may return `null`.
+Use stable resource identifiers and fence delayed provider requests when removing
+resources. Neither the callback nor an acknowledgment proves mounts are unused.
 
-Lifecycle polls can page past failed resources using the last returned event id as
-`afterId`. Reset `afterId` at the start of every polling sweep: it is a page
-cursor, never a persisted high-water mark. This retries failures and includes
-transactions that commit later with lower ids.
+Delivery uses the same process-local transaction signals as Core's other durable
+queues. Startup replays committed work. Independent database writers and separate
+active server processes need an explicit ownership/wake protocol; see
+[database work signals](../DATABASE.md#transaction-aware-delivery-work-signals).
+
+The existing `ctx.events.listLifecycle(companyId, limit?, afterId?)` and
+`acknowledgeLifecycle(companyId, eventId)` remain available for manual consumers.
+Do not mix automatic and manual acknowledgment for the same resources. Reads
+return one pending event per resource (default 50, maximum 100). `afterId` is a
+page cursor, never a durable high-water mark: restart pagination to revisit
+failures and transactions that commit later with lower IDs. Offline SDK tests
+can seed `lifecycleEvents` with `createTestHarness().seed()`.
 
 ## External object reference providers
 

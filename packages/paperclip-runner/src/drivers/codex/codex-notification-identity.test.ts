@@ -14,6 +14,8 @@ describe("provider notification authority", () => {
   it.each([
     ["warning", { message: "buffered before replacement rejection" }, "root"],
     ["paperclip/canonicalProviderEvent", { threadId: null, eventType: "provider.notice.recorded" }, "root"],
+    ["paperclip/canonicalProviderEvent", { threadId: null, eventType: "auth.credentials.updated" }, "root"],
+    ["paperclip/canonicalProviderEvent", { threadId: "child", eventType: "auth.credentials.updated" }, "invalid_authority"],
     ["paperclip/canonicalProviderEvent", { threadId: null, eventType: "tool.execution.started" }, "invalid_authority"],
     ["item/started", { threadId: "root", turnId: "active" }, "root"],
     ["turn/completed", { threadId: "root", turnId: "old" }, "stale_turn"],

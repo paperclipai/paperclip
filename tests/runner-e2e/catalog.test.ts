@@ -32,6 +32,36 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it("keeps the single managed onboarding variant explicit-only without changing local onboarding coverage", () => {
+    const id = "confirmation-replies.runner-codex.daytona.task-card-accept";
+    const suite = runnerSuites.find(candidate => candidate.id === "confirmation-replies")!;
+    const remote = runnerMatrix.filter(entry => entry.suite.id === suite.id && entry.environment.id === "daytona");
+    expect(remote.map(entry => entry.id)).toEqual([id]);
+    expect(suite.manualOnly).toBe(true);
+    expect(remote[0]!.task.flow).toBe("first_task");
+    expect(remote[0]!.task.expectedRunCount).toBe(4);
+    expect(remote[0]!.task.automaticRetryPolicy).toBe("single_attempt");
+    expect(remote[0]!.requiredCredentials).toEqual(["OPENAI_API_KEY", "DAYTONA_API_KEY"]);
+    expect(runnerMatrix.filter(entry => entry.suite.id === "first-task")).toHaveLength(52);
+    expect(runnerMatrix.filter(entry => entry.suite.id === suite.id && entry.environment.id === "local")).toHaveLength(12);
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--id", id])).map(entry => entry.id)).toEqual([id]);
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(entry => entry.id === id)).toBe(false);
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--profile", "runner-codex", "--environment", "daytona"])).some(entry => entry.id === id)).toBe(false);
+  });
+
+  it("keeps private repository skill delivery explicit and bounded in both environments", () => {
+    const cases = runnerMatrix.filter(entry => entry.suite.id === "repository-skills");
+    expect(cases).toHaveLength(2);
+    expect(cases.map(entry => entry.environment.id)).toEqual(["local", "daytona"]);
+    for (const entry of cases) {
+      expect(entry.suite.manualOnly).toBe(true);
+      expect(entry.task.automaticRetryPolicy).toBe("single_attempt");
+      expect(entry.task.expectedRunCount).toBe(1);
+      expect(entry.requiredCredentials).toContain("GITHUB_TOKEN");
+      expect(entry.requiredCredentials).toContain("OPENAI_API_KEY");
+      expect(entry.requiredCredentials.includes("DAYTONA_API_KEY")).toBe(entry.environment.id === "daytona");
+    }
+  });
   it.each(["daytona-journal-continuity"])(
     "%s retains native processes with fixed external instructions",
     (suiteId) => {
@@ -146,10 +176,10 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      4, 8, 10, 4, 4, 6, 63, 12, 6, 2, 30, 3, 16, 16, 2, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 28, 18, 2, 6, 6, 12, 10, 48, 16, 10, 2, 1, 1, 116,
+      1, 3, 4, 8, 10, 4, 4, 6, 63, 12, 6, 2, 30, 3, 16, 16, 2, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 28, 18, 2, 6, 6, 13, 10, 48, 16, 10, 2, 1, 1, 116, 2,
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(724);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(724);
+    expect(validateRunnerCatalog()).toHaveLength(731);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(731);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(48);

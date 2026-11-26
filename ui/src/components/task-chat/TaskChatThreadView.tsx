@@ -364,6 +364,7 @@ export function TaskChatThreadView({
                 key={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
                 }
+                data-conversation-typography=""
                 data-thread-anchor={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
                 }
@@ -384,6 +385,7 @@ export function TaskChatThreadView({
                 key={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
                 }
+                data-conversation-typography=""
                 data-thread-anchor={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
                 }
@@ -440,7 +442,7 @@ export function TaskChatThreadView({
         </div>
       ) : null}
       {history}
-      {tail ? streamlined ? <div className="mt-4">{tail}</div> : tail : null}
+      {tail ? <div data-conversation-typography="" className={streamlined ? "mt-4" : undefined}>{tail}</div> : null}
     </div>
   );
 

@@ -1,7 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
-import { useQueries } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
-import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import {
@@ -33,9 +32,16 @@ export function useRecentTasks({
     () => companyId ? getRecentTasksStorageKey(companyId, userId) : null,
     [companyId, userId],
   );
-  const [entries, setEntries] = useState<RecentTaskEntry[]>(() => (
-    storageKey && companyId ? readRecentTasks(storageKey, companyId) : []
-  ));
+  const queryClient = useQueryClient();
+  const [snapshot, setSnapshot] = useState(() => ({
+    storageKey,
+    entries: storageKey && companyId ? readRecentTasks(storageKey, companyId) : [],
+  }));
+  // A scope change must not request the previous account's IDs for one render.
+  const entries = snapshot.storageKey === storageKey
+    ? snapshot.entries
+    : storageKey && companyId ? readRecentTasks(storageKey, companyId) : [];
+  const setEntries = (next: RecentTaskEntry[]) => setSnapshot({ storageKey, entries: next });
 
   useEffect(() => {
     if (storageKey && companyId) migrateRecentTasks(storageKey, companyId);
@@ -62,53 +68,77 @@ export function useRecentTasks({
     };
   }, [companyId, storageKey]);
 
-  // Keep query observers in a fixed order when activity changes the display order.
-  const queryEntries = [...entries].sort((left, right) => left.id.localeCompare(right.id));
-  const membership = JSON.stringify(queryEntries.map((entry) => entry.id));
-  const detailQueries = useQueries({
-    queries: queryEntries.map((entry) => ({
-      queryKey: queryKeys.issues.detail(entry.id),
-      queryFn: () => issuesApi.get(entry.id),
-      retry: false,
-      staleTime: 30_000,
-    })),
+  const queryIds = useMemo(() => entries.map((entry) => entry.id).sort(), [entries]);
+  const membership = JSON.stringify(queryIds);
+  const scope = JSON.stringify([storageKey, queryIds]);
+  const summaryKey = queryKeys.issues.summaryBatch(companyId ?? "__none__", userId, queryIds);
+  // A cached omission predates IDs that the user has just added back. Only a
+  // response completed during this visit to the batch may remove those IDs.
+  const batchVisit = useMemo(() => ({
+    initialUpdateCount: queryClient.getQueryState(summaryKey)?.dataUpdateCount ?? 0,
+    // The serialized scope includes the account, company, and sorted ID set.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [queryClient, scope]);
+  const summaryQuery = useQuery({
+    queryKey: summaryKey,
+    queryFn: ({ signal }) => issuesApi.summaries(companyId!, queryIds, { signal }),
+    enabled: Boolean(companyId && queryIds.length),
+    retry: false,
+    staleTime: 30_000,
   });
-
-  const issueById = new Map(detailQueries.flatMap((query) => query.data ? [[query.data.id, query.data] as const] : []));
+  // Observe completion even when structural sharing preserves the data object.
+  // The successful-update counter itself is only available on the cache state.
+  const fetchingSummaries = summaryQuery.isFetching;
+  const updateCount = queryClient.getQueryState(summaryKey)?.dataUpdateCount ?? 0;
+  const summaries = summaryQuery.isSuccess ? summaryQuery.data : undefined;
+  const confirmed = new Map((summaries ?? []).filter((issue) => issue.companyId === companyId)
+    .map((issue) => [issue.id, issue]));
   const refreshedEntries = entries.map((entry) => {
-    const issue = issueById.get(entry.id);
-    if (!issue || issue.companyId !== companyId || issue.hiddenAt) return entry;
-    return mergeRecentTaskSnapshot(entry, issue);
+    const issue = confirmed.get(entry.id);
+    return issue ? mergeRecentTaskSnapshot(entry, issue) : entry;
   });
-  const queryRevision = detailQueries
-    .map((query) => `${query.dataUpdatedAt}:${query.errorUpdatedAt}:${query.status}`)
-    .join("|");
+  const processed = useRef<{ scope: string; revision: number } | null>(null);
 
   useEffect(() => {
-    if (!storageKey || !companyId || detailQueries.length === 0) return;
-
-    const resolvedIssues: Issue[] = [];
-    const removeIds = new Set<string>();
-    detailQueries.forEach((query, index) => {
-      const entry = queryEntries[index];
-      if (!entry) return;
-      if (query.data) {
-        if (query.data.companyId !== companyId || query.data.hiddenAt) {
-          removeIds.add(entry.id);
-        } else {
-          resolvedIssues.push(query.data);
-        }
-      } else if (query.error instanceof ApiError && [403, 404].includes(query.error.status)) {
-        removeIds.add(entry.id);
-      }
-    });
-
-    updateRecentTaskSnapshots(storageKey, companyId, resolvedIssues);
-    pruneRecentTasks(storageKey, companyId, removeIds);
-    // Publish only when queries or membership change. A storage notification must
-    // not feed the same cached query results back into storage in every tab.
+    if (!storageKey || !companyId || !summaries) return;
+    if (processed.current?.scope === scope && processed.current.revision === updateCount) return;
+    processed.current = { scope, revision: updateCount };
+    const returnedIds = new Set(summaries.filter((issue) => issue.companyId === companyId).map((issue) => issue.id));
+    updateRecentTaskSnapshots(storageKey, companyId, summaries);
+    const omittedIds = new Set(queryIds.filter((id) => !returnedIds.has(id)));
+    if (omittedIds.size && updateCount <= batchVisit.initialUpdateCount) {
+      void summaryQuery.refetch({ cancelRefetch: false });
+      return;
+    }
+    // Never prune IDs added after this particular batch was requested.
+    pruneRecentTasks(storageKey, companyId, omittedIds);
+    // A storage notification must not republish the same successful revision.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [companyId, membership, queryRevision, storageKey]);
+  }, [batchVisit, companyId, fetchingSummaries, scope, updateCount, summaries, storageKey]);
+
+  useEffect(() => {
+    if (!storageKey || !companyId || !summaries) return;
+    const authorizedIds = new Set(summaries.filter((issue) => issue.companyId === companyId).map((issue) => issue.id));
+    const mergeCached = (value: unknown) => {
+      if (!value || typeof value !== "object") return;
+      const issue = value as Issue;
+      if (!authorizedIds.has(issue.id) || issue.companyId !== companyId || issue.hiddenAt
+        || typeof issue.title !== "string" || typeof issue.status !== "string"
+        || !issue.updatedAt || !Object.hasOwn(issue, "projectId")) return;
+      // At equal task versions, the summary's independently computed readiness
+      // is newer than an already-cached full detail response.
+      const summary = summaries.find((item) => item.id === issue.id);
+      if (!summary || new Date(issue.updatedAt).getTime() <= new Date(summary.updatedAt).getTime()) return;
+      updateRecentTaskSnapshots(storageKey, companyId, [issue]);
+    };
+    for (const id of authorizedIds) mergeCached(queryClient.getQueryData(queryKeys.issues.detail(id)));
+    return queryClient.getQueryCache().subscribe((event) => {
+      if (event.type !== "updated" || event.action.type !== "success") return;
+      const key = event.query.queryKey;
+      if (key.length === 3 && key[0] === "issues" && key[1] === "detail"
+        && event.query.state.status === "success") mergeCached(event.query.state.data);
+    });
+  }, [companyId, queryClient, summaries, storageKey]);
 
   const [settledOrder, setSettledOrder] = useState(() => entries.map((entry) => entry.id));
   const activityRevision = JSON.stringify(entries.map((entry) => [entry.id, entry.recordedAt]));

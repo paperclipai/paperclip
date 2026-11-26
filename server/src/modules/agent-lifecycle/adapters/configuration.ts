@@ -9,7 +9,7 @@ import type { LifecycleEffects } from "./effects.js";
 export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects, id: string, data: AgentConfigurationPatch, options?: UpdateAgentOptions, publications: ActivityPublication[] = []) {
   if (!("nestedIndex" in tx)) throw new AgentLifecycleConflict("Configuration integration requires a database transaction");
   assertConfigurationFields(data);
-  const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("update");
+  const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("no key update");
   if (!current) return null;
   const patch = await effects.prepareConfiguration(tx, current, data, options);
   assertConfigurationFields(patch);

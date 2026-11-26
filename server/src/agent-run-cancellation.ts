@@ -19,7 +19,9 @@ export async function assertAgentRunWriteAllowed(tx: Db, companyId: string, acto
   stopId?: string | null;
 }) {
   if (!actor.agentId || !actor.runId) return;
-  const [run] = await tx.select({ status: heartbeatRuns.status, resultJson: heartbeatRuns.resultJson })
+  const [run] = await tx.select({ status: heartbeatRuns.status, resultJson: heartbeatRuns.resultJson,
+    runtimeMode: heartbeatRuns.runtimeMode, companyId: heartbeatRuns.companyId,
+    contextSnapshot: heartbeatRuns.contextSnapshot })
     .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, actor.runId),
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, actor.agentId)))
     .for("share");
@@ -28,4 +30,5 @@ export async function assertAgentRunWriteAllowed(tx: Db, companyId: string, acto
   if (agentRunWritesRevoked(run) && !stoppedForThisMutation) {
     throw forbidden("This run was cancelled", { code: "agent_run_cancelled" });
   }
+  return run;
 }

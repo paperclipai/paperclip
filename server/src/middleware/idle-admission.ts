@@ -2,13 +2,21 @@ import { markIdleIngressTracked } from "../services/idle-local-work.js";
 import type { Application, Request, RequestHandler } from "express";
 import { beginIdleTrackedWork, isIdleTaskDrainActive } from "../services/task-admission.js";
 
-type RequestWork = { pending: number; ended: boolean; closed: boolean; asyncRoute: boolean; routeSequence: number; active: boolean; finish: () => void };
+type RequestWork = { application: Application; pending: number; ended: boolean; closed: boolean; asyncRoute: boolean; routeSequence: number; active: boolean; finish: () => void };
 const requests = new WeakMap<Request, RequestWork>();
+const trackedApplications = new WeakSet<Application>();
 function settle(work: RequestWork) {
   if (work.active && (work.ended || (work.closed && work.asyncRoute)) && work.pending === 0) {
     work.active = false;
     work.finish();
   }
+}
+
+export function completeIdleReadOnlyResponse(req: Request, application: Application): void {
+  const work = requests.get(req);
+  if (!work || work.application !== application || !trackedApplications.has(application)) return;
+  work.ended = true;
+  settle(work);
 }
 
 // Only the exact control endpoint and health probes bypass admission. The
@@ -25,6 +33,12 @@ function isControlRequest(req: Request) {
 
 /** Install before body parsers, auth, webhooks and tool ingress. */
 export const idleAdmissionMiddleware: RequestHandler = (req, res, next) => {
+  // This exact route is synchronous and has no auth, SQL, or accepted work.
+  // Probing it must not prevent an otherwise quiescent instance from draining.
+  if (req.path.replace(/\/$/, "") === "/api/liveness" && ["GET", "HEAD"].includes(req.method)) {
+    next();
+    return;
+  }
   const controlRequest = isControlRequest(req);
   if (!controlRequest && isIdleTaskDrainActive()) {
     res.set("Retry-After", "1").status(503).json({ error: "instance_preparing_to_sleep" });
@@ -34,7 +48,7 @@ export const idleAdmissionMiddleware: RequestHandler = (req, res, next) => {
     next();
     return;
   }
-  const work: RequestWork = { pending: 0, ended: false, closed: false, asyncRoute: false, routeSequence: 0, active: true, finish: beginIdleTrackedWork() };
+  const work: RequestWork = { application: req.app, pending: 0, ended: false, closed: false, asyncRoute: false, routeSequence: 0, active: true, finish: beginIdleTrackedWork() };
   requests.set(req, work);
   res.once("close", () => { work.closed = true; settle(work); });
   // close/aborted are NOT completion: an async handler can still be committing
@@ -97,5 +111,6 @@ export function trackIdleRequestHandlers(app: Application): void {
     }
   };
   visit(app.router.stack as Layer[]);
+  trackedApplications.add(app);
   markIdleIngressTracked();
 }

@@ -244,6 +244,8 @@ impl AcpxSidecarTransport {
             // The qualified sidecar configures the runner-owned gateway. Keep
             // its credential with the name/URL; unrelated secrets stay excluded.
             "PAPERCLIP_NATIVE_MCP_TOKEN",
+            "PAPERCLIP_NATIVE_MCP_STDIO",
+            "PAPERCLIP_NATIVE_MCP_PROXY",
             "PAPERCLIP_ACPX_BUILTIN_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
@@ -256,6 +258,33 @@ impl AcpxSidecarTransport {
         if agent == "claude" {
             keys.extend_from_slice(&[
                 "ANTHROPIC_BASE_URL",
+                "CLAUDE_CODE_ENABLE_TELEMETRY",
+                "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
+                "ENABLE_ENHANCED_TELEMETRY_BETA",
+                "OTEL_LOGS_EXPORTER",
+                "OTEL_TRACES_EXPORTER",
+                "OTEL_METRICS_EXPORTER",
+                "OTEL_RESOURCE_ATTRIBUTES",
+                "OTEL_EXPORTER_OTLP_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_PROTOCOL",
+                "OTEL_EXPORTER_OTLP_HEADERS",
+                "OTEL_EXPORTER_OTLP_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_LOGS_PROTOCOL",
+                "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL",
+                "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+                "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+                "OTEL_EXPORTER_OTLP_METRICS_HEADERS",
+                "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
+                "OTEL_LOG_USER_PROMPTS",
+                "OTEL_LOG_ASSISTANT_RESPONSES",
+                "OTEL_LOG_TOOL_DETAILS",
+                "OTEL_LOG_TOOL_CONTENT",
+                "OTEL_LOG_RAW_API_BODIES",
                 "CLAUDE_CODE_USE_BEDROCK",
                 "AWS_REGION",
                 "AWS_DEFAULT_REGION",
@@ -268,6 +297,13 @@ impl AcpxSidecarTransport {
                 "CLAUDE_CODE_SUBAGENT_MODEL",
             ]);
         }
+        if agent == "codex" {
+            keys.extend_from_slice(&[
+                "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG",
+                "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+            ]);
+        }
         let pi_keys = if agent == "pi" {
             pi_credential_environment_keys(
                 std::env::var("PAPERCLIP_ACPX_CREDENTIAL_BINDING")
@@ -278,6 +314,17 @@ impl AcpxSidecarTransport {
             Vec::new()
         };
         keys.extend(pi_keys.iter().map(String::as_str));
+        if std::env::var("PAPERCLIP_RUNNER_HOME_MODE").as_deref() == Ok("preconfigured") {
+            keys.extend_from_slice(&[
+                "PAPERCLIP_RUNNER_HOME_MODE",
+                "ACPX_CLAUDE_INCLUDE_USER_SETTINGS",
+                "CODEX_HOME",
+                "CLAUDE_CONFIG_DIR",
+                "XDG_CONFIG_HOME",
+                "XDG_DATA_HOME",
+                "XDG_CACHE_HOME",
+            ]);
+        }
         keys.extend_from_slice(credential_keys);
         // Pi owns a native distribution copy, including a pending refresh at
         // suspension. Allow its bounded cleanup to settle before group KILL;
@@ -844,6 +891,7 @@ fn stderr_diagnostic_categories(value: &str) -> BTreeSet<&'static str> {
 
 fn response_error_classification(error: &ResponseError) -> &'static str {
     match error.code.as_str() {
+        "ACPX_RUNTIME_PACKAGE_MISSING" => return "runtime_package_missing",
         "ACP_MODEL_UNSUPPORTED" => return "requested_model_unsupported",
         "AGENT_STARTUP_FAILED" => return "agent_startup_failed",
         "AGENT_STARTUP_FAILED.UNVERIFIED_MODULE" => return "agent_startup_unverified_module",
@@ -1038,6 +1086,7 @@ mod tests {
     #[test]
     fn candidate_auth_diagnostics_use_only_closed_codes_and_never_provider_text() {
         for (code, expected) in [
+            ("ACPX_RUNTIME_PACKAGE_MISSING", "runtime_package_missing"),
             ("ACPX_TOOL_CALL_STALE", "provider_tool_call_retired"),
             ("ACPX_TOOL_CALL_STALE_EXTRA", "unclassified"),
             ("COPILOT_AUTH_REQUIRED", "authentication_required"),

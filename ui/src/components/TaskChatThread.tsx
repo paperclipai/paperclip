@@ -1,7 +1,9 @@
+import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
 import {
   ISSUE_DETAIL_CONTENT_PAINT_MARK,
   ISSUE_DETAIL_CONTENT_MEASURE,
   scheduleIssueDetailPaintMeasure,
+  recordIssueDetailReadiness,
 } from "@/lib/issue-detail-performance";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { workspaceRestoreMarkerDetail } from "@/lib/workspace-restore-marker";
@@ -11,7 +13,7 @@ import { useProjectCreatedItems } from "@/hooks/useProjectCreatedItems";
 import { skillCreatedItems } from "@/components/task-chat/skill-created-items";
 import { requiresExecutionReconciliation } from "@paperclipai/shared";
 import { TaskChatExpansionState } from "@/components/task-chat/expansion-state";
-import { TaskChatScrollReady } from "@/components/task-chat/scroll-navigation";
+import { TaskChatScrollReady, useTaskChatScrollNavigation } from "@/components/task-chat/scroll-navigation";
 import {
   useCallback,
   useEffect,
@@ -527,6 +529,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     conversationMode,
     reassignOptions,
     currentAssigneeValue,
+    suggestedAssigneeValue,
     assigneeAdapterOverrides,
     issueStatus,
     issueAssigneeAgentId = null,
@@ -588,6 +591,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       ) return false;
       return [
         "working",
+        "waiting_for_provider",
         "retry_scheduled",
         "reconnecting",
         "finishing",
@@ -604,12 +608,15 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const [pendingComposerAssignee, setPendingComposerAssignee] = useState<
     string | null
   >(null);
-  const effectiveGoalAgentId =
-    pendingComposerAssignee === null
-      ? issueAssigneeAgentId
-      : pendingComposerAssignee.startsWith("agent:")
-        ? pendingComposerAssignee.slice("agent:".length) || null
-        : null;
+  const composerSuggestedAssignee = currentUserId && currentAssigneeValue === `user:${currentUserId}`
+    ? suggestedAssigneeValue
+    : undefined;
+  const effectiveComposerAssignee = pendingComposerAssignee ?? composerSuggestedAssignee;
+  const effectiveGoalAgentId = effectiveComposerAssignee === undefined
+    ? issueAssigneeAgentId
+    : effectiveComposerAssignee.startsWith("agent:")
+      ? effectiveComposerAssignee.slice("agent:".length) || null
+      : null;
   const runnerGoal = useRunnerGoalControl(issueId, effectiveGoalAgentId);
 
   useEffect(() => {
@@ -1646,7 +1653,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? "native_runner_timed_out"
             : "native_runner_process_exited");
         const label =
-          code === "native_provider_model_rejected" && source.status === "failed"
+          code === "native_provider_runtime_missing" && source.status === "failed"
+            ? "Runtime missing"
+            : code === "native_provider_model_rejected" && source.status === "failed"
             ? "Model unavailable"
             : code === "native_provider_approval_required" && source.status === "failed"
             ? "Approval required"
@@ -1667,6 +1676,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? `The run was cancelled${responseBoundary}.`
             : source.status === "interrupted"
               ? `The run was interrupted${responseBoundary}.`
+              : code === "native_provider_runtime_missing"
+                ? "The selected provider runtime is missing a required package. Reinstall or rebuild Paperclip with its bundled provider dependencies, restart the server, then test the agent's runtime before retrying."
               : code === "native_provider_approval_required"
                 ? "This operation requires approval, but this runner has no interactive approval handler. Review the operation and update the agent's permission setting before retrying."
                 : code === "native_provider_model_rejected"
@@ -2626,6 +2637,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   );
   const optimisticRunnerStartup =
     assigneeUsesPaperclipRunner &&
+    !props.executionBlocked &&
     !tailRunId &&
     (runnerSubmissionPending ||
       commentItems.some(
@@ -2901,6 +2913,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // history and plan before revealing; older runs outside that window do not
   // delay it, and the latch below keeps subsequent refreshes visible.
   const historyPending = initialHistoryPending || planLoading || transcriptHistoryPending;
+  const scrollNavigation = useTaskChatScrollNavigation();
+  useEffect(() => {
+    recordIssueDetailReadiness({ plan: !planLoading, transcripts: !transcriptHistoryPending, history: !historyPending });
+  }, [issueId, planLoading, transcriptHistoryPending, historyPending]);
   const historyError =
     initialHistoryError ||
     planError ||
@@ -2910,31 +2926,33 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           (logTranscriptByRun.get(run.id)?.length ?? 0) === 0
         : Boolean(logErrorsByRun?.has(run.id)),
     );
-  const [revealedIssue, setRevealedIssue] = useState<string | null | undefined>(
-    () => (historyPending ? undefined : issueId),
+  const historyKey = conversationMode && draftKey ? draftKey : issueId;
+  const [revealedHistoryKey, setRevealedHistoryKey] = useState<string | null | undefined>(
+    () => (historyPending ? undefined : historyKey),
   );
-  const historyRevealed = revealedIssue === issueId;
-  const [expiredHistoryWait, setExpiredHistoryWait] = useState<{ issueId: typeof issueId } | null>(null);
-  const historyWaitExpired = expiredHistoryWait !== null && expiredHistoryWait.issueId === issueId;
+  const historyRevealed = revealedHistoryKey === historyKey;
+  const [expiredHistoryWait, setExpiredHistoryWait] = useState<{ historyKey: typeof historyKey } | null>(null);
+  const historyWaitExpired = expiredHistoryWait !== null && expiredHistoryWait.historyKey === historyKey;
+  const prepareInitialContent = Boolean(scrollNavigation.hash) || !historyPending || historyRevealed || historyWaitExpired;
   // Supporting requests can stall without rejecting. Bound the first reveal
   // independently of their pending states so saved conversation and the
   // composer stay accessible, with an explicit incomplete-history notice.
   useEffect(() => {
     if (historyRevealed) return;
     const timer = window.setTimeout(() => {
-      setExpiredHistoryWait({ issueId });
-      setRevealedIssue(issueId);
+      setExpiredHistoryWait({ historyKey });
+      setRevealedHistoryKey(historyKey);
     }, INITIAL_HISTORY_REVEAL_TIMEOUT_MS);
     return () => window.clearTimeout(timer);
-  }, [historyRevealed, issueId]);
+  }, [historyRevealed, historyKey]);
   // Mount and measure the real thread while concealed, then reveal in one
   // commit. A frame also lets ancestor navigation scroll restoration finish.
   // Readiness is latched per issue: refetches never hide existing conversation.
   useEffect(() => {
     if (historyRevealed || historyPending) return;
-    const frame = requestAnimationFrame(() => setRevealedIssue(issueId));
+    const frame = requestAnimationFrame(() => setRevealedHistoryKey(historyKey));
     return () => cancelAnimationFrame(frame);
-  }, [historyPending, historyRevealed, issueId]);
+  }, [historyPending, historyRevealed, historyKey]);
   useEffect(() => {
     if (!historyRevealed || !issueId) return;
     scheduleIssueDetailPaintMeasure(ISSUE_DETAIL_CONTENT_PAINT_MARK, ISSUE_DETAIL_CONTENT_MEASURE);
@@ -3008,145 +3026,149 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 )}
                 inert={!historyRevealed}
               >
-                {items.length === 0 && !tailRunId ? (
-                  <div
-                    className={
-                      isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"
-                    }
-                  >
-                    {threadHeaderWithBlockers ? (
+                {prepareInitialContent ? (
+                  <>
+                    {items.length === 0 && !tailRunId ? (
                       <div
-                        className={cn(
-                          "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-6 px-4",
-                          isMobile ? "pt-4" : "pt-3",
-                          streamlinedUiEnabled && "md:px-0",
-                        )}
-                        data-testid="task-chat-thread-header"
+                        className={
+                          isMobile ? undefined : "min-h-0 flex-1 overflow-y-auto"
+                        }
                       >
-                        {threadHeaderWithBlockers}
+                        {threadHeaderWithBlockers ? (
+                          <div
+                            className={cn(
+                              "mx-auto flex w-full max-w-(--tc-shell-max-w) flex-col gap-6 px-4",
+                              isMobile ? "pt-4" : "pt-3",
+                              streamlinedUiEnabled && "md:px-0",
+                            )}
+                            data-testid="task-chat-thread-header"
+                          >
+                            {threadHeaderWithBlockers}
+                          </div>
+                        ) : null}
+                        <div className="px-3 py-10 text-center text-sm text-muted-foreground">
+                          {emptyMessage}
+                        </div>
+                        {bottomBlockerLinks ? (
+                          <div
+                            className={cn(
+                              "mx-auto w-full max-w-(--tc-shell-max-w) px-4 pb-4",
+                              streamlinedUiEnabled && "md:px-0",
+                            )}
+                          >
+                            {bottomBlockerLinks}
+                          </div>
+                        ) : null}
                       </div>
-                    ) : null}
-                    <div className="px-3 py-10 text-center text-sm text-muted-foreground">
-                      {emptyMessage}
-                    </div>
-                    {bottomBlockerLinks ? (
-                      <div
-                        className={cn(
-                          "mx-auto w-full max-w-(--tc-shell-max-w) px-4 pb-4",
-                          streamlinedUiEnabled && "md:px-0",
-                        )}
-                      >
-                        {bottomBlockerLinks}
-                      </div>
-                    ) : null}
-                  </div>
-                ) : (
-                  <TaskChatThreadView
-                    items={items}
-                    attachments={attachments}
-                    header={threadHeaderWithBlockers}
-                    renderInteraction={renderInteraction}
-                    renderBrief={renderBrief}
-                    renderMessageActions={renderMessageActions}
-                    renderQueuedAction={renderQueuedAction}
-                    onTryAgainNoLiveExecutionPath={
-                      issueStatus === "blocked" &&
-                      !requiresExecutionReconciliation(
-                        props.recoveryAction?.cause,
-                      ) &&
-                      !linkedRuns?.some(
-                        (run) => run.execution?.phase === "recovery_needed",
-                      )
-                        ? onTryAgainNoLiveExecutionPath
-                        : undefined
-                    }
-                    tryAgainNoLiveExecutionPathPending={
-                      tryAgainNoLiveExecutionPathPending
-                    }
-                    onRetryFailedRun={retryFailedRunHandler}
-                    retryFailedRunId={retryFailedRunId}
-                    onOpenSkill={onOpenSkill}
-                    onOpenBrowser={onOpenBrowser}
-                    tail={
-                      tailRunId ||
-                      optimisticRunnerStartup ||
-                      bottomBlockerLinks ? (
-                        <>
-                          {tailRunId || optimisticRunnerStartup ? (
-                            <div data-testid="task-chat-live-transcript">
-                              {paperclipRunnerTail ||
-                              optimisticRunnerStartup ? (
-                                <TaskChatRunnerTurn
-                                  runId={tailRunId}
-                                  execution={
-                                    liveRun?.id === tailRunId
-                                      ? liveRun.execution
-                                      : null
-                                  }
-                                  agentName={visibleTailAgentName}
-                                  agentIcon={visibleTailAgentIcon}
-                            agent={tailAgent ?? (tailAgentId ? { id: tailAgentId } : undefined)}
-                                  items={tailItems}
-                                  status={
-                                    optimisticRunnerStartup
-                                      ? "queued"
-                                      : tailStatus
-                                  }
-                                  startedAtMs={tailStartedAtMs}
-                                  finishedAtMs={tailFinishedAtMs}
-                                  activityUnavailable={tailActivityUnavailable}
-                                  suppressFinal={
-                                    suppressPaperclipRunnerTailFinal
-                                  }
-                                  continuedAfterSteering={
-                                    paperclipRunnerTail &&
-                                    tailTimelineAnchors.length > 0
-                                  }
-                                  onRuntimeRequestDecision={
-                                    handleRuntimeRequestDecision
-                                  }
-                                />
-                              ) : (
-                                <>
-                                  <TaskChatLiveRunPill
-                                    status={tailStatus}
-                                    execution={
-                                      liveRun?.id === tailRunId
-                                        ? liveRun.execution
-                                        : null
-                                    }
-                                    startedAtMs={tailStartedAtMs}
-                                    finishedAtMs={tailFinishedAtMs}
-                                    toolSummary={tailToolSummary}
-                                  />
-                                  <TaskChatLiveTail
-                                    items={tailItems}
-                                    emptyMessage={
-                                      tailStatus === "queued"
-                                        ? "Waiting to start..."
-                                        : (liveRun && liveRun.id === tailRunId
-                                            ? liveRun.currentStatusMessage
-                                            : null) ||
-                                          (tailStatus === "failed"
-                                            ? linkedRunMetaById.get(tailRunId ?? "")?.errorCode?.startsWith("workspace_git_scan_")
-                                              ? "Workspace setup failed before the agent started."
-                                              : "This run stopped before a response was available. Review the task’s connection or recovery action below."
-                                            : "Waiting for transcript...")
-                                    }
-                                  />
-                                </>
-                              )}
-                            </div>
-                          ) : null}
-                          {bottomBlockerLinks}
-                        </>
-                      ) : null
-                    }
-                    contentKey={`${autoFollowContentKey}:${historyRevealed}`}
-                    className={isMobile ? undefined : "pt-3"}
-                    scroll={!isMobile}
-                  />
-                )}
+                    ) : (
+                      <TaskChatThreadView
+                        items={items}
+                        attachments={attachments}
+                        header={threadHeaderWithBlockers}
+                        renderInteraction={renderInteraction}
+                        renderBrief={renderBrief}
+                        renderMessageActions={renderMessageActions}
+                        renderQueuedAction={renderQueuedAction}
+                        onTryAgainNoLiveExecutionPath={
+                          issueStatus === "blocked" &&
+                          !requiresExecutionReconciliation(
+                            props.recoveryAction?.cause,
+                          ) &&
+                          !linkedRuns?.some(
+                            (run) => run.execution?.phase === "recovery_needed",
+                          )
+                            ? onTryAgainNoLiveExecutionPath
+                            : undefined
+                        }
+                        tryAgainNoLiveExecutionPathPending={
+                          tryAgainNoLiveExecutionPathPending
+                        }
+                        onRetryFailedRun={retryFailedRunHandler}
+                        retryFailedRunId={retryFailedRunId}
+                        onOpenSkill={onOpenSkill}
+                        onOpenBrowser={onOpenBrowser}
+                        tail={
+                          tailRunId ||
+                          optimisticRunnerStartup ||
+                          bottomBlockerLinks ? (
+                            <>
+                              {tailRunId || optimisticRunnerStartup ? (
+                                <div data-testid="task-chat-live-transcript">
+                                  {paperclipRunnerTail ||
+                                  optimisticRunnerStartup ? (
+                                    <TaskChatRunnerTurn
+                                      runId={tailRunId}
+                                      execution={
+                                        liveRun?.id === tailRunId
+                                          ? liveRun.execution
+                                          : null
+                                      }
+                                      agentName={visibleTailAgentName}
+                                      agentIcon={visibleTailAgentIcon}
+                                agent={tailAgent ?? (tailAgentId ? { id: tailAgentId } : undefined)}
+                                      items={tailItems}
+                                      status={
+                                        optimisticRunnerStartup
+                                          ? "queued"
+                                          : tailStatus
+                                      }
+                                      startedAtMs={tailStartedAtMs}
+                                      finishedAtMs={tailFinishedAtMs}
+                                      activityUnavailable={tailActivityUnavailable}
+                                      suppressFinal={
+                                        suppressPaperclipRunnerTailFinal
+                                      }
+                                      continuedAfterSteering={
+                                        paperclipRunnerTail &&
+                                        tailTimelineAnchors.length > 0
+                                      }
+                                      onRuntimeRequestDecision={
+                                        handleRuntimeRequestDecision
+                                      }
+                                    />
+                                  ) : (
+                                    <TaskChatShimmerScope items={tailItems}>
+                                      <TaskChatLiveRunPill
+                                        status={tailStatus}
+                                        execution={
+                                          liveRun?.id === tailRunId
+                                            ? liveRun.execution
+                                            : null
+                                        }
+                                        startedAtMs={tailStartedAtMs}
+                                        finishedAtMs={tailFinishedAtMs}
+                                        toolSummary={tailToolSummary}
+                                      />
+                                      <TaskChatLiveTail
+                                        items={tailItems}
+                                        emptyMessage={
+                                          tailStatus === "queued"
+                                            ? "Waiting to start..."
+                                            : (liveRun && liveRun.id === tailRunId
+                                                ? liveRun.currentStatusMessage
+                                                : null) ||
+                                              (tailStatus === "failed"
+                                                ? linkedRunMetaById.get(tailRunId ?? "")?.errorCode?.startsWith("workspace_git_scan_")
+                                                  ? "Workspace setup failed before the agent started."
+                                                  : "This run stopped before a response was available. Review the task’s connection or recovery action below."
+                                                : "Waiting for transcript...")
+                                        }
+                                      />
+                                    </TaskChatShimmerScope>
+                                  )}
+                                </div>
+                              ) : null}
+                              {bottomBlockerLinks}
+                            </>
+                          ) : null
+                        }
+                        contentKey={`${autoFollowContentKey}:${historyRevealed}`}
+                        className={isMobile ? undefined : "pt-3"}
+                        scroll={!isMobile}
+                      />
+                    )}
+                  </>
+                ) : null}
               </div>
             </div>
             {assignedAgentForNotice?.status === "paused" ? (
@@ -3160,109 +3182,114 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ) : null}
             {showComposer ? (
               <TaskChatComposerDock mobile={isMobile} streamlined={streamlinedUiEnabled} concealed={!historyRevealed}>
-                {composerAccessory}
-                {tailTurnStatus ? (
-                  <TaskChatTurnStatusIsland model={tailTurnStatus} />
+                {prepareInitialContent ? (
+                  <>
+                    {composerAccessory}
+                    {tailTurnStatus ? (
+                      <TaskChatTurnStatusIsland model={tailTurnStatus} />
+                    ) : null}
+                    <RunnerGoalWidget control={runnerGoal} />
+                    <div
+                      className="relative isolate flex flex-col"
+                      data-testid="task-chat-composer-stack"
+                    >
+                      {!composerPause ? (
+                        <TaskChatQueuedMessages
+                          key={issueId}
+                          queue={queuedMessageQueue ?? emptyQueuedCommentQueue}
+                          onEdit={beginQueuedEdit}
+                          onReorder={async (orderedCommentIds, revision) => {
+                            if (!onReorderQueuedComments)
+                              throw new Error("Queue reordering is unavailable.");
+                            await onReorderQueuedComments(
+                              orderedCommentIds,
+                              revision,
+                            );
+                          }}
+                          onSteer={async (commentId, revision) => {
+                            if (!onSteerQueuedComment)
+                              throw new Error("Steering is unavailable.");
+                            await onSteerQueuedComment(commentId, revision);
+                          }}
+                          onInterrupt={
+                            onInterruptQueued && queuedMessageQueue?.queueId
+                              ? async () => {
+                                  await onInterruptQueued(
+                                    queuedMessageQueue.targetRunId,
+                                  );
+                                }
+                              : undefined
+                          }
+                          onDiscard={async (commentId, revision) => {
+                            if (commentId.startsWith("optimistic-")) {
+                              if (!onCancelQueued)
+                                throw new Error("Discard is unavailable.");
+                              onCancelQueued(commentId);
+                              return;
+                            }
+                            if (!onDiscardQueuedComment)
+                              throw new Error("Discard is unavailable.");
+                            await onDiscardQueuedComment(commentId, revision);
+                            if (queuedEdit?.commentId === commentId)
+                              setQueuedEdit(null);
+                          }}
+                        />
+                      ) : null}
+                      <div className="relative z-10">
+                        <TaskChatComposer
+                          onAdd={handleThreadAdd}
+                          confirmedSubmissionIds={new Set(comments.filter((comment) =>
+                            comment.authorUserId === currentUserId && comment.clientRequestId &&
+                            !("clientStatus" in comment && comment.clientStatus)
+                          ).map((comment) => comment.clientRequestId!))}
+                          onReviewConversation={onReviewConversation}
+                          onStop={liveRun ? onCancelRun : undefined}
+                          stopPending={stopPending}
+                          stopScope={stopScope}
+                          workMode={issueWorkMode}
+                          onWorkModeChange={onWorkModeChange}
+                          disabled={Boolean(runtimeComposerDisabledReason)}
+                          disabledReason={runtimeComposerDisabledReason}
+                          onAttachImage={onAttachImage}
+                          onImageUpload={imageUploadHandler}
+                          mentions={mentions}
+                          enableReassign={enableReassign}
+                          conversationMode={conversationMode}
+                          reassignOptions={reassignOptions}
+                          agentMap={agentMap}
+                          modelAgents={agentMap}
+                          userProfileMap={userProfileMap}
+                          currentAssigneeValue={currentAssigneeValue}
+                          suggestedAssigneeValue={composerSuggestedAssignee}
+                          companyId={companyId}
+                          assigneeAdapterOverrides={assigneeAdapterOverrides}
+                          onPendingAssigneeChange={setPendingComposerAssignee}
+                          issueStatus={issueStatus}
+                          mobile={isMobile}
+                          draftKey={draftKey}
+                          queuedEdit={queuedEdit}
+                          onSaveQueuedEdit={saveQueuedEdit}
+                          onCancelQueuedEdit={() => setQueuedEdit(null)}
+                          pause={composerPause}
+                          takeover={composerTakeover}
+                          runnerGoalCapability={runnerGoal.data?.capability ?? null}
+                          onRunnerGoalCommand={runnerGoal.executeComposerCommand}
+                          onRunnerGoalReassign={reassignForRunnerGoal}
+                          pendingTakeover={
+                            pendingReminderInputs.length > 0
+                              ? {
+                                  count: pendingReminderInputs.length,
+                                  label: `${pendingReminderInputs.length} pending input${pendingReminderInputs.length === 1 ? "" : "s"}`,
+                                  onOpen: openPendingTakeover,
+                                }
+                              : null
+                          }
+                        />
+                      </div>
+                    </div>
+                    {footer}
+                  </>
                 ) : null}
-                <RunnerGoalWidget control={runnerGoal} />
-                <div
-                  className="relative isolate flex flex-col"
-                  data-testid="task-chat-composer-stack"
-                >
-                  {!composerPause ? (
-                    <TaskChatQueuedMessages
-                      key={issueId}
-                      queue={queuedMessageQueue ?? emptyQueuedCommentQueue}
-                      onEdit={beginQueuedEdit}
-                      onReorder={async (orderedCommentIds, revision) => {
-                        if (!onReorderQueuedComments)
-                          throw new Error("Queue reordering is unavailable.");
-                        await onReorderQueuedComments(
-                          orderedCommentIds,
-                          revision,
-                        );
-                      }}
-                      onSteer={async (commentId, revision) => {
-                        if (!onSteerQueuedComment)
-                          throw new Error("Steering is unavailable.");
-                        await onSteerQueuedComment(commentId, revision);
-                      }}
-                      onInterrupt={
-                        onInterruptQueued && queuedMessageQueue?.queueId
-                          ? async () => {
-                              await onInterruptQueued(
-                                queuedMessageQueue.targetRunId,
-                              );
-                            }
-                          : undefined
-                      }
-                      onDiscard={async (commentId, revision) => {
-                        if (commentId.startsWith("optimistic-")) {
-                          if (!onCancelQueued)
-                            throw new Error("Discard is unavailable.");
-                          onCancelQueued(commentId);
-                          return;
-                        }
-                        if (!onDiscardQueuedComment)
-                          throw new Error("Discard is unavailable.");
-                        await onDiscardQueuedComment(commentId, revision);
-                        if (queuedEdit?.commentId === commentId)
-                          setQueuedEdit(null);
-                      }}
-                    />
-                  ) : null}
-                  <div className="relative z-10">
-                    <TaskChatComposer
-                      onAdd={handleThreadAdd}
-                      confirmedSubmissionIds={new Set(comments.filter((comment) =>
-                        comment.authorUserId === currentUserId && comment.clientRequestId &&
-                        !("clientStatus" in comment && comment.clientStatus)
-                      ).map((comment) => comment.clientRequestId!))}
-                      onReviewConversation={onReviewConversation}
-                      onStop={liveRun ? onCancelRun : undefined}
-                      stopPending={stopPending}
-                      stopScope={stopScope}
-                      workMode={issueWorkMode}
-                      onWorkModeChange={onWorkModeChange}
-                      disabled={Boolean(runtimeComposerDisabledReason)}
-                      disabledReason={runtimeComposerDisabledReason}
-                      onAttachImage={onAttachImage}
-                      onImageUpload={imageUploadHandler}
-                      mentions={mentions}
-                      enableReassign={enableReassign}
-                      conversationMode={conversationMode}
-                      reassignOptions={reassignOptions}
-                      agentMap={agentMap}
-                      modelAgents={agentMap}
-                      userProfileMap={userProfileMap}
-                      currentAssigneeValue={currentAssigneeValue}
-                      companyId={companyId}
-                      assigneeAdapterOverrides={assigneeAdapterOverrides}
-                      onPendingAssigneeChange={setPendingComposerAssignee}
-                      issueStatus={issueStatus}
-                      mobile={isMobile}
-                      draftKey={draftKey}
-                      queuedEdit={queuedEdit}
-                      onSaveQueuedEdit={saveQueuedEdit}
-                      onCancelQueuedEdit={() => setQueuedEdit(null)}
-                      pause={composerPause}
-                      takeover={composerTakeover}
-                      runnerGoalCapability={runnerGoal.data?.capability ?? null}
-                      onRunnerGoalCommand={runnerGoal.executeComposerCommand}
-                      onRunnerGoalReassign={reassignForRunnerGoal}
-                      pendingTakeover={
-                        pendingReminderInputs.length > 0
-                          ? {
-                              count: pendingReminderInputs.length,
-                              label: `${pendingReminderInputs.length} pending input${pendingReminderInputs.length === 1 ? "" : "s"}`,
-                              onOpen: openPendingTakeover,
-                            }
-                          : null
-                      }
-                    />
-                  </div>
-                </div>
-                {footer}
               </TaskChatComposerDock>
             ) : null}
           </div>

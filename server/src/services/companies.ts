@@ -1,3 +1,4 @@
+import { isRunnerApiResponseAsset } from "./asset-content-access.js";
 import { deleteCompany } from "./company-deletion.js";
 import { createAgentLifecycle } from "./agent-lifecycle.js";
 import { publishAccountingActivities } from "./accounting-transaction.js";
@@ -316,11 +317,14 @@ export function companyService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
 
         if (logoAssetId !== undefined && logoAssetId !== null) {
           const nextLogoAsset = await tx
-            .select({ id: assets.id, companyId: assets.companyId })
+            .select()
             .from(assets)
             .where(eq(assets.id, logoAssetId))
             .then((rows) => rows[0] ?? null);
           if (!nextLogoAsset) throw notFound("Logo asset not found");
+          if (await isRunnerApiResponseAsset(tx, nextLogoAsset)) {
+            throw unprocessable("API response snapshots cannot be company logos; upload a logo asset");
+          }
           if (nextLogoAsset.companyId !== existing.id) {
             throw unprocessable("Logo asset must belong to the same company");
           }

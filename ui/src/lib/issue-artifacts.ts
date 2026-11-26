@@ -51,6 +51,15 @@ export function selectAgentArtifactAttachments(
   );
 }
 
+/** All task files, regardless of author, with promoted work products deduped. */
+export function selectArtifactAttachments(
+  attachments: IssueAttachment[] | null | undefined,
+  workProducts: IssueWorkProduct[] | null | undefined,
+): IssueAttachment[] {
+  const promoted = getAttachmentBackedWorkProductAttachmentIds(workProducts);
+  return (attachments ?? []).filter(attachment => !promoted.has(attachment.id));
+}
+
 /**
  * Where a work-product row should link. Many rows carry `url: null` with the
  * usable link only in metadata — `openPath` for attachment-backed artifacts

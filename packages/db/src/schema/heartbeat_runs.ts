@@ -189,5 +189,17 @@ export const heartbeatRuns = pgTable(
       sql`(${table.contextSnapshot} ->> 'taskKey')`,
       table.createdAt.desc(),
     ),
+    companyCtxPaperclipIssueCreatedIdx: index("heartbeat_runs_company_ctx_paperclip_issue_created_idx")
+      .on(table.companyId, sql`(${table.contextSnapshot} -> 'paperclipIssue' ->> 'id')`, table.createdAt.desc())
+      .concurrently(),
+    // Match creation provenance precedence, including empty legacy IDs.
+    companyOriginIssueIdx: index("heartbeat_runs_company_origin_issue_idx")
+      .on(table.companyId, sql`coalesce(
+        ${table.nativeIssueId}::text,
+        nullif(${table.contextSnapshot}->>'issueId', ''),
+        nullif(${table.contextSnapshot}->>'taskId', ''),
+        nullif(${table.contextSnapshot}->>'taskKey', '')
+      )`)
+      .concurrently(),
   }),
 );

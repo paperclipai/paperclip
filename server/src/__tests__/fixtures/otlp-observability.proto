@@ -1,0 +1,21 @@
+// Wire-compatible test subset of OpenTelemetry protobuf messages.
+// Field numbers/types: https://github.com/open-telemetry/opentelemetry-proto/tree/v1.9.0/opentelemetry/proto
+// Unknown production fields are intentionally ignored by this test decoder.
+syntax = "proto3";
+package paperclip.test.otlp;
+message AnyValue { oneof value { string string_value = 1; bool bool_value = 2; int64 int_value = 3; double double_value = 4; ArrayValue array_value = 5; KeyValueList kvlist_value = 6; bytes bytes_value = 7; } }
+message ArrayValue { repeated AnyValue values = 1; }
+message KeyValueList { repeated KeyValue values = 1; }
+message KeyValue { string key = 1; AnyValue value = 2; }
+message Resource { repeated KeyValue attributes = 1; }
+message Scope { string name = 1; string version = 2; }
+message LogRecord { fixed64 time_unix_nano = 1; int32 severity_number = 2; string severity_text = 3; AnyValue body = 5; repeated KeyValue attributes = 6; fixed32 flags = 8; bytes trace_id = 9; bytes span_id = 10; fixed64 observed_time_unix_nano = 11; string event_name = 12; }
+message ScopeLogs { Scope scope = 1; repeated LogRecord log_records = 2; }
+message ResourceLogs { Resource resource = 1; repeated ScopeLogs scope_logs = 2; }
+message ExportLogsServiceRequest { repeated ResourceLogs resource_logs = 1; }
+message Span { bytes trace_id = 1; bytes span_id = 2; bytes parent_span_id = 4; string name = 5; int32 kind = 6; fixed64 start_time_unix_nano = 7; fixed64 end_time_unix_nano = 8; repeated KeyValue attributes = 9; }
+message ScopeSpans { Scope scope = 1; repeated Span spans = 2; }
+message ResourceSpans { Resource resource = 1; repeated ScopeSpans scope_spans = 2; }
+message ExportTraceServiceRequest { repeated ResourceSpans resource_spans = 1; }
+message PartialSuccess { int64 rejected_log_records = 1; string error_message = 2; }
+message ExportResponse { PartialSuccess partial_success = 1; }

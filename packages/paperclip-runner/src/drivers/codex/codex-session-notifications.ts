@@ -4,7 +4,7 @@ import { paperclipWorkspaceFileReferencesFromText } from "../../live/workspace-f
 import { canonicalProviderEventsFromCodex, isCanonicalProviderEventType } from "../../provider-events.js";
 import { harnessRuntimeRequestOutcome } from "../../contracts/harness-driver.js";
 import { NativeSessionProtocolIntegrityError } from "../../contracts/native-session-backend.js";
-import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
+import { isPrpAuthCredentialsUpdated, validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
 import type { CodexRpcNotification, CodexTraceInterpretation } from "./app-server-transport.js";
 import { redactCodexDiagnostic } from "./app-server-transport.js";
 import { boundedCodexPayload as boundedPayload, boundedCodexValue, isRetainableCodexPayload } from "./codex-boundaries.js";
@@ -156,6 +156,14 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
         return;
       }
       const canonicalPayload = record(params.payload);
+      if (params.eventType === "auth.credentials.updated") {
+        if (!isPrpAuthCredentialsUpdated(canonicalPayload)) {
+          state.failProtocol("credential_update_invalid", "Invalid credential update notification.");
+          return;
+        }
+        state.emit(params.eventType, canonicalPayload, { turnId: turnId || undefined, itemId: itemId || undefined });
+        return;
+      }
       if (params.eventType === "harness.diagnostic" && canonicalPayload.code === "codex_resume_usage_snapshot") {
         state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, canonicalPayload.cumulative, true);
         state.usageSnapshot = codexRunUsage(state.codexUsageBaseline);

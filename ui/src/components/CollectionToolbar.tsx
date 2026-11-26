@@ -22,6 +22,7 @@ export interface CollectionToolbarProps {
  * State, queries, and control behavior stay with the consuming surface. Keeping
  * this component slot-based lets Inbox, Tasks, routine runs, and scoped task
  * lists share geometry without coupling their data models.
+ * Canonical proposal composition reference: Components / Toolbars / Collection.
  */
 export function CollectionToolbar({
   context,
