@@ -3477,6 +3477,7 @@ export function createToolGatewayService(
     projectId?: string | null;
     gatewayId?: string | null;
     sessionOpenedByUserId?: string | null;
+    argumentsUnknown?: boolean;
   }): ToolAccessDecisionInput {
     const actorType = input.actorType ?? (input.agentId ? "agent" : "system");
     const actorId =
@@ -3507,6 +3508,7 @@ export function createToolGatewayService(
         upstreamToolName: input.tool.upstreamToolName ?? input.tool.name,
         riskLevel: input.tool.risk,
         arguments: input.parameters ?? {},
+        argumentsUnknown: input.argumentsUnknown === true,
         idempotencyKey: input.idempotencyKey ?? null,
         sideEffecting: input.tool.risk !== "read",
       },
@@ -3525,10 +3527,17 @@ export function createToolGatewayService(
     cache: ToolAccessDecisionCache = createToolAccessDecisionCache(),
     signal?: AbortSignal,
   ): Promise<Array<{ tool: T; decision: ToolAccessDecision }>> {
-    return mapWithConcurrency(tools, LISTING_DECISION_CONCURRENCY, async (tool) => ({
-      tool,
-      decision: await policyService.decide(inputForTool(tool), { cache }),
-    }), signal);
+    return mapWithConcurrency(tools, LISTING_DECISION_CONCURRENCY, async (tool) => {
+      const input = inputForTool(tool);
+      // Listing has no real call arguments; argument conditions must not hide
+      // or block the tool here. The call path still decides with the actual
+      // arguments.
+      input.request.argumentsUnknown = true;
+      return {
+        tool,
+        decision: await policyService.decide(input, { cache }),
+      };
+    }, signal);
   }
 
   function policyErrorStatus(decision: ToolAccessDecision) {
