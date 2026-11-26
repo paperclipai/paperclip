@@ -155,6 +155,7 @@ function buildRuntime(
   onSetConfigOption?: (input: { key: string; value: string }) => void,
   onEnsureSession?: (input: Record<string, unknown>) => void,
   onStartTurn?: (input: Record<string, unknown>) => void,
+  onSetModel?: (input: { model: string }) => void,
 ) {
   return {
     ensureSession: async (input: Record<string, unknown>) => {
@@ -178,6 +179,13 @@ function buildRuntime(
     setConfigOption: async (input: { key: string; value: string }) => {
       onSetConfigOption?.(input);
     },
+    ...(onSetModel
+      ? {
+          setModel: async (input: { model: string }) => {
+            onSetModel(input);
+          },
+        }
+      : {}),
     close: async () => {},
   };
 }
@@ -210,6 +218,7 @@ async function runExecutor(
   }
   const runtimeOptions: Record<string, unknown>[] = [];
   const configOptions: Array<{ key: string; value: string }> = [];
+  const modelSelections: Array<{ model: string }> = [];
   const sessionInputs: Record<string, unknown>[] = [];
   const turnInputs: Record<string, unknown>[] = [];
   const meta: Record<string, unknown>[] = [];
@@ -230,6 +239,7 @@ async function runExecutor(
           turnInputs.push(input);
           options.onStartTurn?.();
         },
+        (input) => modelSelections.push(input),
       ) as never;
     },
   });
@@ -263,7 +273,7 @@ async function runExecutor(
   } as never);
 
   expect(result.exitCode).toBe(options.expectedExitCode ?? 0);
-  return { logs, meta, events, receipts, runtimeOptions, configOptions, sessionInputs, turnInputs, result };
+  return { logs, meta, events, receipts, runtimeOptions, configOptions, modelSelections, sessionInputs, turnInputs, result };
 }
 
 // Under `vi.useFakeTimers()`, setup before `ensureSession` still performs real
@@ -796,9 +806,46 @@ describe("shared ACPX engine runtime behavior", () => {
       env: { GEMINI_MODEL: "stale-model" },
     });
     expect((gemini.meta[0]?.env as Record<string, string>).GEMINI_MODEL).toBe("gemini-2.5-pro");
+    expect(gemini.modelSelections).toEqual([]);
     expect(gemini.configOptions).toEqual([
       { key: "effort", value: "high" },
     ]);
+  });
+
+  it("applies session/set_model when running gemini via the Antigravity CLI bridge", async () => {
+    const antigravity = await runExecutor({
+      agent: "gemini",
+      agentCommand: "agy acp",
+      model: "gemini-4-hydrogen-xhigh",
+    });
+    expect((antigravity.meta[0]?.env as Record<string, string>).GEMINI_MODEL).toBe(
+      "gemini-4-hydrogen-xhigh",
+    );
+    expect(antigravity.modelSelections).toEqual([
+      expect.objectContaining({ model: "gemini-4-hydrogen-xhigh" }),
+    ]);
+
+    const quotedAntigravity = await runExecutor({
+      agent: "gemini",
+      agentCommand: '"/opt/Antigravity CLI/agy" acp',
+      model: "gemini-4-hydrogen-high",
+    });
+    expect(quotedAntigravity.modelSelections).toEqual([
+      expect.objectContaining({ model: "gemini-4-hydrogen-high" }),
+    ]);
+    expect(quotedAntigravity.meta[0]?.commandNotes).toContain(
+      "Requested Antigravity model: gemini-4-hydrogen-high (session/set_model requested at session start).",
+    );
+
+    const autoAntigravity = await runExecutor({
+      agent: "gemini",
+      agentCommand: "agy acp",
+      model: "auto",
+    });
+    expect(autoAntigravity.modelSelections).toEqual([]);
+    expect(autoAntigravity.meta[0]?.commandNotes).toContain(
+      "Requested Antigravity model: auto (bridge default).",
+    );
   });
 
   it("bounds Codex shell inheritance even without model overrides or an agent identity", async () => {

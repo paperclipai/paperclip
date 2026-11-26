@@ -2824,12 +2824,43 @@ function sessionConfigOptions(prepared: AcpxPreparedRuntime): Array<{ key: strin
   return options;
 }
 
+function isAntigravityBridgeCommand(agentCommand: string | null | undefined): boolean {
+  if (typeof agentCommand !== "string") return false;
+  const trimmed = agentCommand.trim();
+  if (!trimmed) return false;
+  const executable = splitWindowsAgentCommand(trimmed)[0] ?? "";
+  const baseName = executable.split(/[\\/]/).pop() ?? "";
+  return /^agy(?:\.(?:cmd|exe|bat))?$/i.test(baseName);
+}
+
 async function applySessionConfigOptions(input: {
   runtime: AcpRuntime;
   handle: AcpRuntimeHandle;
   prepared: AcpxPreparedRuntime;
   onLog: AdapterExecutionContext["onLog"];
 }) {
+  if (
+    input.prepared.acpxAgent === "gemini"
+    && isAntigravityBridgeCommand(input.prepared.agentCommand)
+    && input.prepared.requestedModel
+    && input.prepared.requestedModel !== "auto"
+  ) {
+    if (input.runtime.setModel) {
+      await input.runtime.setModel({
+        handle: input.handle,
+        model: input.prepared.requestedModel,
+      });
+      await input.onLog(
+        "stdout",
+        `[paperclip] Applied Antigravity session model=${input.prepared.requestedModel}\n`,
+      );
+    } else {
+      await input.onLog(
+        "stdout",
+        `[paperclip] Skipped Antigravity session model=${input.prepared.requestedModel} (ACPX runtime does not expose setModel)\n`,
+      );
+    }
+  }
   const options = sessionConfigOptions(input.prepared);
   if (options.length === 0) return;
   if (!input.runtime.setConfigOption) {
@@ -5141,7 +5172,11 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                       : prepared.acpxAgent === "codex"
                         ? `Requested ACPX model: ${prepared.requestedModel} (set via CODEX_CONFIG at startup).`
                       : prepared.acpxAgent === "gemini"
-                        ? `Requested ACPX model: ${prepared.requestedModel} (set via GEMINI_MODEL at startup).`
+                        ? isAntigravityBridgeCommand(prepared.agentCommand)
+                          ? prepared.requestedModel === "auto"
+                            ? "Requested Antigravity model: auto (bridge default)."
+                            : `Requested Antigravity model: ${prepared.requestedModel} (session/set_model requested at session start).`
+                          : `Requested ACPX model: ${prepared.requestedModel} (set via GEMINI_MODEL at startup).`
                       : `Requested ACPX model: ${prepared.requestedModel}.`,
                   ]
                 : []),
