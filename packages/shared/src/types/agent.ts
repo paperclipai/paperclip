@@ -1,3 +1,5 @@
+import type { AgentLifecycleState } from "./agent-lifecycle.js";
+import type { AgentAppearance } from "../agent-appearance.js";
 import type { AiConnectionLoginIntent } from "../ai-connections.js";
 import type {
   AgentAdapterType,
@@ -15,22 +17,34 @@ import type {
 } from "../trust-policy.js";
 import type { AgentOrgChainHealth } from "../agent-eligibility.js";
 import type { AgentApiKeyScope } from "../validators/agent.js";
+import type { AgentInteractionPermissions } from "../agent-interaction-permissions.js";
 
 export interface AgentPermissions extends Record<string, unknown> {
   canCreateAgents: boolean;
   canCreateSkills?: boolean;
   trustPreset?: TrustPreset;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  interactions?: AgentInteractionPermissions;
+}
+
+export interface AgentProjectAccess {
+  projectIds: string[];
+  canManage: boolean;
 }
 
 export type AgentRuntimeConfig = Record<string, unknown> & {
-  aiConnection?: import("../ai-connections.js").AiConnectionBinding;
+  aiConnection?: import("../ai-connection-router.js").AiRuntimeConnectionBinding;
 };
 
 export type AgentInstructionsBundleMode = "managed" | "external";
 
 export interface AgentInstructionsFileSummary {
   path: string;
+  /** Creation is exposed only when recorded; historical files may only have a modification date. */
+  createdAt?: string;
+  updatedAt?: string;
+  contentHash?: string;
+  binary?: boolean;
   size: number;
   language: string;
   markdown: boolean;
@@ -42,11 +56,14 @@ export interface AgentInstructionsFileSummary {
 
 export interface AgentInstructionsFileDetail extends AgentInstructionsFileSummary {
   content: string;
+  revision?: AgentInstructionRevision;
+  receipt?: AgentInstructionCommitReceipt;
 }
 
 export interface AgentInstructionsBundle {
   agentId: string;
   companyId: string;
+  persistence?: "agent_files";
   mode: AgentInstructionsBundleMode | null;
   rootPath: string | null;
   managedRootPath: string;
@@ -81,11 +98,18 @@ export interface Agent {
   role: AgentRole;
   title: string | null;
   icon: string | null;
+  appearance?: AgentAppearance | null;
+  avatarUrl?: string;
   status: AgentStatus;
+  lifecycleState?: AgentLifecycleState;
+  lifecycleVersion?: number;
+  lifecycleError?: string | null;
   reportsTo: string | null;
   capabilities: string | null;
   adapterType: AgentAdapterType;
   adapterConfig: Record<string, unknown>;
+  /** Non-fatal options ignored by this configuration write; not persisted. */
+  configurationWarnings?: import("../runner-configuration-warnings.js").AgentConfigurationWarning[];
   runtimeConfig: AgentRuntimeConfig;
   defaultEnvironmentId?: string | null;
   budgetMonthlyCents: number;
@@ -97,6 +121,7 @@ export interface Agent {
   lastHeartbeatAt: Date | null;
   metadata: Record<string, unknown> | null;
   orgChainHealth?: AgentOrgChainHealth;
+  createdByUserId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -200,6 +225,8 @@ export interface CodexAccountBindingClaim {
 // The owner read of a login session. It adds the one-time prompt to the public
 // response. Only the owner principal that started the session reads this shape.
 export interface AdapterAuthSessionOwnerResponse extends AdapterAuthSessionResponse {
+  /** The saved computer executing this login; independent of account grants. */
+  agentId?: string;
   aiConnection?: AiConnectionLoginIntent;
   prompt: AdapterAuthSessionPrompt | null;
   codexAccountBinding?: CodexAccountBindingClaim | null;
@@ -208,6 +235,7 @@ export interface AdapterAuthSessionOwnerResponse extends AdapterAuthSessionRespo
 // The request that starts a login session for one adapter in one environment.
 // The owner principal comes from the authenticated caller, not from this body.
 export interface StartAdapterAuthSessionRequest {
+  agentId?: string;
   aiConnection?: AiConnectionLoginIntent;
   environmentId: string;
   adapterType: AgentAdapterType;
@@ -283,6 +311,7 @@ export interface ClaudeSetupTokenSessionResponse {
 // the session reads this shape.
 export interface ClaudeSetupTokenSessionOwnerResponse
   extends ClaudeSetupTokenSessionResponse {
+  agentId?: string;
   aiConnection?: AiConnectionLoginIntent;
   panelMode: AdapterAuthPanelMode;
   prompt: ClaudeSetupTokenSessionPrompt | null;
@@ -313,6 +342,8 @@ export interface AdapterEnvironmentCheck {
   message: string;
   detail?: string | null;
   hint?: string | null;
+  /** The check could not complete because its execution target was unavailable. */
+  retryable?: boolean;
 }
 
 export interface AdapterEnvironmentTestResult {
@@ -332,4 +363,86 @@ export type AdapterAuthSignal = "present" | "absent" | "unknown";
 
 export interface AdapterAuthSignalResponse {
   status: AdapterAuthSignal;
+}
+
+export type AgentInstructionSource = "seed" | "board" | "api" | "tool" | "cleanup" | "restore";
+export interface AgentInstructionRevision {
+  id: string;
+  companyId: string;
+  agentId: string;
+  entryFile: string;
+  contentHash: string;
+  byteLength: number;
+  parentRevisionId: string | null;
+  baseRevisionId: string | null;
+  restoredFromRevisionId: string | null;
+  actorAgentId: string | null;
+  actorUserId: string | null;
+  responsibleUserId: string | null;
+  sourceRunId: string | null;
+  source: AgentInstructionSource;
+  createdAt: string;
+}
+export interface AgentInstructionSnapshot {
+  revision: AgentInstructionRevision;
+  content: string;
+}
+export interface AgentInstructionCommitReceipt extends AgentInstructionSnapshot {
+  changed: boolean;
+  materialization: "current" | "pending";
+}
+export interface AgentInstructionHistory {
+  revisions: AgentInstructionRevision[];
+  nextCursor: string | null;
+}
+export interface AgentInstructionDiff {
+  from: AgentInstructionSnapshot;
+  to: AgentInstructionSnapshot;
+  prefix: string;
+  removed: string;
+  added: string;
+  suffix: string;
+}
+
+export type AgentInstructionErrorCode =
+  | "INSTRUCTION_BASE_REQUIRED"
+  | "INSTRUCTION_REVISION_REQUIRED"
+  | "INSTRUCTION_REVISION_CONFLICT"
+  | "INSTRUCTION_ENTRY_CHANGED"
+  | "INSTRUCTION_MANAGED_BUNDLE_REQUIRED"
+  | "INSTRUCTION_IDENTITY_INVALID"
+  | "INSTRUCTION_CONTENT_INVALID"
+  | "INSTRUCTION_PATH_INVALID"
+  | "RESPONSIBLE_USER_UNAVAILABLE"
+  | "RESPONSIBLE_USER_UNAUTHORIZED";
+export interface AgentInstructionErrorDetails {
+  code: AgentInstructionErrorCode;
+  baseRevisionId?: string | null;
+  currentRevisionId?: string | null;
+  entryFile?: string;
+  reason?: string;
+}
+
+/** Preserved instruction edits; filesystem locations and responsible identity stay server-side. */
+export interface AgentInstructionCandidate {
+  contract?: "agent_files" | "legacy";
+  runId: string;
+  entryFile: string;
+  baseRevisionId: string | null;
+  baseHash: string;
+  state: "conflict" | "pending_collection" | "pending_commit" | "unavailable";
+  candidateHash: string | null;
+  content: string | null;
+  errorCode: string | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** Public cryptographic identity; private material is runtime-only. */
+export interface AgentPublicIdentity {
+  algorithm: "Ed25519";
+  keyId: string;
+  publicKeyPem: string;
+  createdAt: string;
 }

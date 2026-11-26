@@ -2,6 +2,8 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
+import { pluginManifestValidator } from "../services/plugin-manifest-validator.js";
+import kubernetes from "../../../packages/plugins/sandbox-providers/kubernetes/src/manifest.js";
 import {
   BUNDLED_PLUGIN_CATALOG,
   DEFAULT_BUNDLED_CATALOG_ROOT,
@@ -9,6 +11,7 @@ import {
   ensureBundledPlugins,
   resolveBundledCatalogRoot,
   resolveBundledPluginInstalls,
+  resolveManagedBundledPluginKeys,
   type BundledPluginProvisionerDeps,
   type ResolvedBundledPlugin,
 } from "../services/bundled-plugins.js";
@@ -30,7 +33,46 @@ afterAll(() => {
 // Catalog-root resolution (fail-to-start allowlist)
 // ---------------------------------------------------------------------------
 
+describe("managed bundled plugin selection", () => {
+  it.each([
+    { env: {}, selected: undefined, expected: null },
+    { env: { PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-fixture" }, selected: undefined, expected: [] },
+    { env: { PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: " " }, selected: undefined, expected: null },
+    { env: { PAPERCLIP_MANAGED_CONFIG: "" }, selected: undefined, expected: [] },
+    { env: { PAPERCLIP_MANAGED_CONFIG: "{}" }, selected: null, expected: [] },
+    { env: { PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "tenant-fixture" }, selected: ["daytona"], expected: ["daytona"] },
+    { env: {}, selected: ["modal"], expected: ["modal"] },
+    { env: {}, selected: [], expected: [] },
+  ])("uses the canonical Cloud floor and preserves explicit selection: $env / $selected", ({ env, selected, expected }) => {
+    expect(resolveManagedBundledPluginKeys(selected, env)).toEqual(expected);
+  });
+});
+
 describe("resolveBundledPluginInstalls", () => {
+  it("resolves the optional CreateOS sandbox provider without making it a self-hosted default", () => {
+    expect(resolveBundledPluginInstalls(["createos"], {
+      catalogRoot: CATALOG_ROOT,
+      env: {},
+      enforceCatalogRoot: true,
+    })).toEqual([{
+      key: "createos",
+      pluginKey: "paperclip.createos-sandbox-provider",
+      localPath: path.join(CATALOG_ROOT, "sandbox-providers/createos"),
+    }]);
+    expect(SELF_HOSTED_AUTO_INSTALL_KEYS).not.toContain("createos");
+  });
+  it("resolves the optional boxd sandbox provider without making it a self-hosted default", () => {
+    expect(resolveBundledPluginInstalls(["boxd"], {
+      catalogRoot: CATALOG_ROOT,
+      env: {},
+      enforceCatalogRoot: true,
+    })).toEqual([{
+      key: "boxd",
+      pluginKey: "paperclip.boxd-sandbox-provider",
+      localPath: path.join(CATALOG_ROOT, "sandbox-providers/boxd"),
+    }]);
+    expect(SELF_HOSTED_AUTO_INSTALL_KEYS).not.toContain("boxd");
+  });
   it("resolves known keys to paths inside the catalog root", () => {
     const resolved = resolveBundledPluginInstalls(["kubernetes", "daytona"], {
       catalogRoot: CATALOG_ROOT,
@@ -203,12 +245,13 @@ type LooseRow = {
   version?: string;
   manifestJson?: Record<string, unknown>;
   lastError?: string | null;
+  packagePath?: string | null;
 };
 
 // Build a minimal manifest for a persisted row or a shipped bundle. The reconcile
 // step compares the bundle version with the persisted version.
 function makeManifest(pluginKey: string, version: string) {
-  return { id: pluginKey, apiVersion: 1, version } as unknown as import("@paperclipai/shared").PaperclipPluginManifestV1;
+  return { id: pluginKey, apiVersion: 1, version, capabilities: [] } as unknown as import("@paperclipai/shared").PaperclipPluginManifestV1;
 }
 
 function makeDeps(overrides?: {
@@ -231,7 +274,7 @@ function makeDeps(overrides?: {
   const installedRows = new Map(
     Object.entries(rows).map(([key, row]) => [key, normalize(row)] as const),
   );
-  const installPlugin = vi.fn(async ({ localPath }: { localPath: string }) => {
+  const installPlugin = vi.fn(async ({ localPath }: { localPath: string }): Promise<{ manifest: { id: string } | null }> => {
     if (overrides?.installError) throw overrides.installError;
     const entry = BUNDLED_PLUGIN_CATALOG.find((candidate) =>
       localPath.endsWith(candidate.relativePath),
@@ -374,6 +417,59 @@ describe("ensureBundledPlugins", () => {
     );
   });
 
+  it.each(["plugin", "driver", "setting"] as const)("refreshes only a %s description for an existing Core bundle at the same version", async (field) => {
+    const previous = { ...makeManifest(DAYTONA.pluginKey, "0.1.0"), description: "Old plugin description",
+      environmentDrivers: [{ driverKey: "daytona", kind: "sandbox_provider" as const, displayName: "Daytona", description: "Old driver description",
+        configSchema: { type: "object", properties: { autoStopInterval: { type: "number", description: "Old setting description" } } } }] };
+    const manifest = structuredClone(previous);
+    if (field === "plugin") manifest.description = "New plugin description";
+    if (field === "driver") manifest.environmentDrivers[0]!.description = "New driver description";
+    if (field === "setting") manifest.environmentDrivers[0]!.configSchema.properties.autoStopInterval.description = "New setting description";
+    const { deps, loadManifest, update, installPlugin } = makeDeps({ rows: { [DAYTONA.pluginKey]: {
+      id: "row-daytona", pluginKey: DAYTONA.pluginKey, status: "ready", version: "0.1.0", manifestJson: previous,
+    } } });
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([DAYTONA], deps, { reinstallUninstalled: false });
+    expect(update).toHaveBeenCalledExactlyOnceWith("row-daytona", { version: "0.1.0", manifest });
+    expect(installPlugin).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a parsed Core bundle against a JSON-persisted registration without repeated writes", async () => {
+    const manifest = pluginManifestValidator().parseOrThrow(kubernetes);
+    const stored = JSON.parse(JSON.stringify(manifest)); stored.description = "Previous help text";
+    const { deps, loadManifest, update } = makeDeps({ rows: { [K8S.pluginKey]: {
+      id: "row-kubernetes", pluginKey: K8S.pluginKey, status: "ready", version: manifest.version, manifestJson: stored,
+    } } });
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([K8S], deps, { reinstallUninstalled: false });
+    expect(update).toHaveBeenCalledExactlyOnceWith("row-kubernetes", { version: manifest.version, manifest });
+    const unchanged = makeDeps({ rows: { [K8S.pluginKey]: {
+      id: "row-kubernetes", pluginKey: K8S.pluginKey, status: "ready", version: manifest.version, manifestJson: JSON.parse(JSON.stringify(manifest)),
+    } } });
+    unchanged.loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([K8S], unchanged.deps, { reinstallUninstalled: false });
+    expect(unchanged.update).not.toHaveBeenCalled();
+  });
+
+  it.each(["capability", "entrypoint", "schema", "default", "pending-approval", "uninstalled"] as const)("does not treat a %s change as description-only", async (change) => {
+    const previous = { ...makeManifest(DAYTONA.pluginKey, "0.1.0"), description: "Old description",
+      entrypoints: { worker: "dist/worker.js" },
+      environmentDrivers: [{ driverKey: "daytona", kind: "sandbox_provider" as const, displayName: "Daytona",
+        configSchema: { type: "object", properties: { config: { type: "object", default: { description: "old runtime value" } } } } }] };
+    const manifest = structuredClone(previous); manifest.description = "New description";
+    if (change === "capability") manifest.capabilities = ["issues.read"];
+    if (change === "entrypoint") manifest.entrypoints.worker = "dist/other.js";
+    if (change === "schema") manifest.environmentDrivers[0]!.configSchema.properties.config.type = "string";
+    if (change === "default") manifest.environmentDrivers[0]!.configSchema.properties.config.default.description = "new runtime value";
+    const { deps, loadManifest, update } = makeDeps({ rows: { [DAYTONA.pluginKey]: {
+      id: "row-daytona", pluginKey: DAYTONA.pluginKey, status: change === "pending-approval" ? "upgrade_pending" : change === "uninstalled" ? "uninstalled" : "ready",
+      version: "0.1.0", manifestJson: previous,
+    } } });
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([DAYTONA], deps, { reinstallUninstalled: false });
+    expect(update).not.toHaveBeenCalled();
+  });
+
   it("does not reconcile when the persisted version already matches the bundle", async () => {
     const { deps, update } = makeDeps({
       rows: {
@@ -387,6 +483,112 @@ describe("ensureBundledPlugins", () => {
       bundleVersionByKey: { [DAYTONA.pluginKey]: "0.1.2" },
     });
     await ensureBundledPlugins([DAYTONA], deps, { reinstallUninstalled: false });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it.each([null, "/old/plugins/widget"])("adopts a selected distribution path from %s even at the same version", async (packagePath) => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    for (const status of ["ready", "disabled", "error"]) {
+      const { deps, loadManifest, update, installPlugin, updateStatus } = makeDeps({
+        rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status, version: "0.1.0", packagePath } },
+        // Distribution packages may declare a manifest outside dist/manifest.js.
+        bundleManifestExists: () => false,
+      });
+      const manifest = makeManifest("acme.widget", "0.1.0");
+      loadManifest.mockResolvedValue(manifest);
+      await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+      // Same row: retain config/state and operator-disabled status; only error
+      // gets the existing one-shot boot retry. No reinstall/capability reset.
+      expect(update).toHaveBeenCalledExactlyOnceWith("row-widget", { packagePath: localPath, version: "0.1.0", manifest });
+      expect(installPlugin).not.toHaveBeenCalled();
+      expect(updateStatus).toHaveBeenCalledTimes(status === "error" ? 1 : 0);
+      expect(loadManifest).toHaveBeenCalledExactlyOnceWith(localPath);
+      expect(deps.logger.error).not.toHaveBeenCalled();
+    }
+  });
+
+  it("does not rebind a distribution install whose new manifest fails validation", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const { deps, loadManifest, update, updateStatus } = makeDeps({
+      rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "error", packagePath: "/old/widget" } },
+    });
+    loadManifest.mockRejectedValue(new Error("Distribution manifest entrypoints do not match the verified package"));
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).not.toHaveBeenCalled();
+    expect(updateStatus).not.toHaveBeenCalled();
+    expect(deps.logger.error).toHaveBeenCalled();
+  });
+
+  it.each(["ready", "error", "disabled"])("gates same-version distribution capability additions from %s atomically", async (status) => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const oldManifest = makeManifest("acme.widget", "0.1.0");
+    const { deps, loadManifest, update, updateStatus, installPlugin } = makeDeps({
+      rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status, packagePath: localPath, manifestJson: { ...oldManifest } } },
+    });
+    const replacement = { ...oldManifest, capabilities: ["issues.read" as const] };
+    loadManifest.mockResolvedValue(replacement);
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).toHaveBeenCalledExactlyOnceWith("row-widget", { version: "0.1.0", manifest: replacement, status: "upgrade_pending" });
+    expect(updateStatus).not.toHaveBeenCalled();
+    expect(installPlugin).not.toHaveBeenCalled();
+    expect(deps.lifecycle.load).not.toHaveBeenCalled();
+
+    // A later boot must leave the approval gate in place.
+    vi.mocked(deps.registry.getByKey).mockResolvedValue({ id: "row-widget", pluginKey: "acme.widget", status: "upgrade_pending", version: "0.1.0", packagePath: localPath, manifestJson: replacement });
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(updateStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not save an inconsistent distribution manifest", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const { deps, loadManifest, update } = makeDeps({ rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "ready", packagePath: localPath } } });
+    const manifest = makeManifest("acme.widget", "0.1.0");
+    manifest.ui = { slots: [{ type: "appShellOverlay", id: "overlay", displayName: "Overlay", exportName: "Overlay" }] };
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).not.toHaveBeenCalled();
+    expect(deps.logger.error).toHaveBeenCalled();
+  });
+
+  it("does not replace an operator uninstall with a distribution approval request", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const { deps, loadManifest, update, updateStatus, installPlugin } = makeDeps({ rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "uninstalled" } } });
+    loadManifest.mockResolvedValue({ ...makeManifest("acme.widget", "0.1.0"), capabilities: ["issues.read"] });
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: false });
+    expect(update).not.toHaveBeenCalled();
+    expect(updateStatus).not.toHaveBeenCalled();
+    expect(installPlugin).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a same-version rollback while retaining the pending operator decision", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const pending = { ...makeManifest("acme.widget", "0.1.0"), capabilities: ["issues.read", "issues.update"] };
+    const { deps, loadManifest, update, updateStatus } = makeDeps({ rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "upgrade_pending", packagePath: localPath, manifestJson: pending } } });
+    // A smaller capability set is not proof that every remaining capability
+    // was approved, or that the plugin was enabled before the pending upgrade.
+    const rollback = { ...makeManifest("acme.widget", "0.1.0"), capabilities: ["issues.read" as const] };
+    loadManifest.mockResolvedValue(rollback);
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
+    expect(update).toHaveBeenCalledExactlyOnceWith("row-widget", { version: "0.1.0", manifest: rollback });
+    expect(updateStatus).not.toHaveBeenCalled();
+    expect(deps.lifecycle.load).not.toHaveBeenCalled();
+  });
+
+  it("ignores object key order when comparing a distribution manifest read from JSONB", async () => {
+    const localPath = path.join(CATALOG_ROOT, "distribution/widget");
+    const distribution = { key: "widget", pluginKey: "acme.widget", version: "0.1.0", directory: "widget", digest: `sha256:${"a".repeat(64)}`, localPath, entrypoints: { worker: "dist/worker.js" } };
+    const manifest = { ...makeManifest("acme.widget", "0.1.0"), entrypoints: { worker: "dist/worker.js", ui: "dist/ui" } };
+    const reordered = { entrypoints: { ui: "dist/ui", worker: "dist/worker.js" }, capabilities: [], version: "0.1.0", apiVersion: 1, id: "acme.widget" };
+    const { deps, loadManifest, update } = makeDeps({ rows: { "acme.widget": { id: "row-widget", pluginKey: "acme.widget", status: "ready", packagePath: localPath, manifestJson: reordered } } });
+    loadManifest.mockResolvedValue(manifest);
+    await ensureBundledPlugins([{ ...distribution, distribution }], deps, { reinstallUninstalled: true });
     expect(update).not.toHaveBeenCalled();
   });
 

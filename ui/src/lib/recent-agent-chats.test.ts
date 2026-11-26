@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { clearLegacyChatMessageRequests } from "./chat-message-request";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   orderChatAgents,
   parseRecentAgentChats,
+  recordedAgentChatIssueId,
   recordAgentChatVisit,
 } from "./recent-agent-chats";
 import { commentsToTaskChatItems } from "@/components/task-chat/task-chat-adapter";
@@ -19,7 +20,7 @@ describe("agent chat navigation and session markers", () => {
       "Five",
       "Six",
       "Seven",
-    ].map((name, i) => ({ id: String(i), name }));
+    ].map((name, i) => ({ id: String(i), name, createdAt: new Date(i * 1000) }));
     expect(
       orderChatAgents(agents, ["0", "1"], ["0", "6", "5", "4", "3", "2"]).map(
         (agent) => agent.name,
@@ -27,6 +28,18 @@ describe("agent chat navigation and session markers", () => {
     ).toEqual(["Alpha", "Zulu", "Seven", "Six", "Five", "Four"]);
     expect(parseRecentAgentChats('["a","a",null,1,"b"]')).toEqual(["a", "b"]);
     expect(parseRecentAgentChats("broken")).toEqual([]);
+  });
+  it("always includes the first-created agent, with deterministic ties and no duplicates", () => {
+    const agents = [
+      { id: "new", name: "New", createdAt: new Date("2026-09-12") },
+      { id: "first", name: "First", createdAt: new Date("2026-09-01") },
+      { id: "tie", name: "Tie", createdAt: new Date("2026-09-01") },
+    ];
+    expect(orderChatAgents(agents, [], []).map((a) => a.id)).toEqual(["first"]);
+    expect(orderChatAgents(agents, ["new"], ["first", "new", "tie", "tie", "missing"]).map((a) => a.id)).toEqual(["new", "first", "tie"]);
+    expect(orderChatAgents(agents, ["first"], ["first"]).map((a) => a.id)).toEqual(["first"]);
+    expect(orderChatAgents([], ["missing"], ["missing"])).toEqual([]);
+    expect(orderChatAgents(agents.slice(0, 1), [], []).map((a) => a.id)).toEqual(["new"]);
   });
   it("keeps visits personal and company scoped and moves only the visited agent", () => {
     localStorage.clear();
@@ -44,6 +57,29 @@ describe("agent chat navigation and session markers", () => {
     expect(
       JSON.parse(localStorage.getItem("paperclip.recentAgentChats:a:user2")!),
     ).toEqual(["agent4"]);
+  });
+  it("remembers an existing conversation and clears its identity for a new empty chat", () => {
+    recordAgentChatVisit("company-c", "user1", "agent1", "issue-1");
+    expect(recordedAgentChatIssueId("company-c", "user1", "agent1")).toBe("issue-1");
+    expect(recordedAgentChatIssueId("company-c", "user2", "agent1")).toBeNull();
+    recordAgentChatVisit("company-c", "user1", "agent1", null);
+    expect(recordedAgentChatIssueId("company-c", "user1", "agent1")).toBeNull();
+  });
+  it("recognizes a conversation cleared in another tab while retaining failed-write fallback", () => {
+    const storageKey = "paperclip.recentAgentChatIssue:company-d:user1:agent1";
+    recordAgentChatVisit("company-d", "user1", "agent1", "issue-1");
+    localStorage.removeItem(storageKey);
+    expect(recordedAgentChatIssueId("company-d", "user1", "agent1")).toBeNull();
+
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("storage unavailable");
+    });
+    try {
+      recordAgentChatVisit("company-d", "user1", "agent1", "issue-2");
+      expect(recordedAgentChatIssueId("company-d", "user1", "agent1")).toBe("issue-2");
+    } finally {
+      setItem.mockRestore();
+    }
   });
   it("removes legacy plaintext retry records", () => {
     const scope = "company:user:agent";

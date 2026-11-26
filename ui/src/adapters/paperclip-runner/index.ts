@@ -2,6 +2,9 @@ import type { PaperclipQuestion, PaperclipQuestionResponse, PaperclipQuestionSet
 import type { UIAdapterModule } from "../types";
 import { parseCodexStdoutLine, buildPaperclipRunnerConfig } from "@paperclipai/adapter-codex-local/ui";
 import { CodexLocalConfigFields } from "../codex-local/config-fields";
+import { isRunLogOnlyProviderEvent } from "@/components/transcript/run-log-only-events";
+import { createBridgeCallPairing, type BridgeCallPairing } from "@/components/transcript/bridge-call-pairing";
+import { summarizeToolInput } from "@/components/task-chat/transcript-adapter";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -13,6 +16,29 @@ interface PaperclipRunnerParserState {
   itemChannels: Map<string, "progress" | "final" | "summary" | "detail" | "unknown">;
   structuredFinalItemIds: Set<string>;
   runtimeRequests: Map<string, Extract<TranscriptEntry, { kind: "runtime_request" }>>;
+  previousPiRuntimeFailure: string | null;
+  bridgeCalls: BridgeCallPairing;
+  /** The latest row of each Paperclip tool call in flight, for a bridge call that joins it. */
+  paperclipExecutions: Map<string, { ts: string; eventType: string; summary: string; payload: JsonRecord }>;
+}
+
+/**
+ * A bridge call that belongs to an in-flight provider call (bridge-call-pairing.ts)
+ * shows on that call's row: its start adds the subject, its result adds nothing.
+ */
+function pairedBridgeEntries(event: JsonRecord, item: JsonRecord, phase: "started" | "completed", state: PaperclipRunnerParserState): TranscriptEntry[] | null {
+  const type = text(item.type).replaceAll("_", "").toLowerCase();
+  const id = type === "toolresult" ? text(item.tool_use_id, itemId(event, item)) : itemId(event, item);
+  const executionId = phase === "started" && type !== "toolresult"
+    ? state.bridgeCalls.bridgeCall(id, text(item.name, text(item.tool)) || null)
+    : state.bridgeCalls.pairedExecution(id);
+  if (!executionId) return null;
+  const row = state.paperclipExecutions.get(executionId);
+  // The same summary the settled row shows for these arguments ("u1.txt", a search query).
+  const subject = phase === "started" ? summarizeToolInput(item.input ?? item.arguments) : undefined;
+  if (!row || !subject) return [];
+  return [{ kind: "provider_activity", ts: row.ts, family: "tool_execution", eventType: row.eventType, status: "running",
+    title: "Tool execution", summary: row.summary, payload: { ...row.payload, subject } }];
 }
 
 function itemChannel(payload: JsonRecord): "progress" | "final" | "summary" | "detail" | "unknown" {
@@ -252,6 +278,10 @@ function parseItemEvent(
     return entries;
   }
   if (type === "filechange") return fileChangeEntries(event, item, phase, ts);
+  if (type === "dynamictoolcall" || type === "tooluse" || type === "toolresult") {
+    const paired = pairedBridgeEntries(event, item, phase, state);
+    if (paired) return paired;
+  }
   if (type === "dynamictoolcall") return dynamicToolEntries(event, item, phase, ts);
   if (type === "tooluse" || type === "toolresult" || type === "mcptoolcall") {
     return genericToolEntries(event, item, phase, ts);
@@ -341,7 +371,7 @@ function nullableNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-function workspaceChangeEntry(payload: JsonRecord, ts: string): TranscriptEntry {
+export function workspaceChangeEntry(payload: JsonRecord, ts: string): TranscriptEntry {
   const totals = record(payload.totals);
   const files = (Array.isArray(payload.files) ? payload.files : [])
     .map(record)
@@ -361,6 +391,7 @@ function workspaceChangeEntry(payload: JsonRecord, ts: string): TranscriptEntry 
         deletions: nullableNumber(file.deletions),
         binary: file.binary === true,
         diff: nullableText(file.diff),
+        ...(file.diffTruncated === true ? { diffTruncated: true } : {}),
       };
     });
   return {
@@ -573,7 +604,9 @@ function parseQuestionSet(value: unknown): PaperclipQuestionSet | null {
   return {
     schema: "paperclip.question_set.v1",
     ...(nullableText(input.title) ? { title: text(input.title).slice(0, 1_000) } : {}),
-    ...(nullableText(input.description) ? { description: text(input.description).slice(0, 4_000) } : {}),
+    // Native plan decisions bind to the complete canonical question context.
+    // The event boundary rejects oversized context rather than approving a slice.
+    ...(nullableText(input.description) ? { description: text(input.description) } : {}),
     ...(nullableText(input.submitLabel) ? { submitLabel: text(input.submitLabel).slice(0, 200) } : {}),
     questions,
   };
@@ -662,6 +695,22 @@ function semanticToolEntries(eventType: string, payload: JsonRecord, ts: string)
   }];
 }
 
+function piRuntimeFailureKey(event: JsonRecord, payload: JsonRecord): string | null {
+  // The frozen Pi projection emits both process-exit and prompt-rejection
+  // facts. Coalesce their identical consecutive display rows, retaining the
+  // original PRP log and requiring the complete run/turn/session binding.
+  if (event.eventType !== "provider.notice.recorded"
+    || payload.schema !== "paperclip.provider.notice.v1"
+    || payload.category !== "pi.runtime_failure"
+    || !text(event.runId) || !text(event.turnId) || !text(event.normalizedSessionId)) return null;
+  const details = Array.isArray(payload.details) ? payload.details.map(record) : [];
+  if (!details.some(detail => detail.name === "source.method" && detail.value === "paperclip/pi_notice")
+    || !details.some(detail => detail.name === "source.nativeEvent" && detail.value === "runtime_failure")
+    || !details.some(detail => detail.name === "source.sessionId" && text(detail.value))) return null;
+  const { noticeId: _noticeId, ...notice } = payload;
+  return JSON.stringify([event.runId, event.turnId, event.normalizedSessionId, notice]);
+}
+
 function parsePrpEvent(
   event: JsonRecord,
   ts: string,
@@ -669,7 +718,12 @@ function parsePrpEvent(
 ): TranscriptEntry[] {
   const eventType = text(event.eventType);
   const payload = record(event.payload);
-  const family = eventType.startsWith("plan.") ? "plan"
+  if (isRunLogOnlyProviderEvent(eventType, payload)) return [];
+  const failure = piRuntimeFailureKey(event, payload);
+  if (failure !== null && failure === state.previousPiRuntimeFailure) return [];
+  state.previousPiRuntimeFailure = failure;
+  const family = eventType === "plan.proposed" ? "plan_proposal"
+    : eventType.startsWith("plan.") ? "plan"
     : eventType.startsWith("tool.execution.") ? "tool_execution"
       : eventType.startsWith("research.") ? "research"
         : eventType.startsWith("delegation.") ? "delegation"
@@ -685,14 +739,22 @@ function parsePrpEvent(
                             : eventType.startsWith("provider.notice.") ? "provider_notice" : null;
   if (family !== null) {
     const rawStatus = text(payload.status);
-    const status = (family === "plan" && payload.complete === false) || rawStatus === "running" || rawStatus === "pending" || eventType.endsWith("started") || eventType.endsWith("progressed") ? "running"
+    const status = (family === "plan" && payload.complete === false) || rawStatus === "streaming" || rawStatus === "running" || rawStatus === "pending" || eventType.endsWith("started") || eventType.endsWith("progressed") ? "running"
       : rawStatus === "failed" || rawStatus === "denied" ? "failed"
         : rawStatus === "interrupted" || rawStatus === "cancelled" ? "interrupted"
           : (family === "plan" && payload.complete === true) || eventType.endsWith("completed") || rawStatus === "completed" ? "completed" : "informational";
-    const title = ({ plan: "Plan", tool_execution: "Tool execution", research: "Research", delegation: "Delegation", model_identity: "Model", context: "Context", artifact: "Artifact", review: "Review mode", hook: "Hook", memory: "Memory citation", safety: "Safety review", terminal: "Terminal input", wait: "Intentional wait", provider_notice: "Provider notice" } as const)[family];
+    const title = ({ plan: "Plan", plan_proposal: "Plan", tool_execution: "Tool execution", research: "Research", delegation: "Delegation", model_identity: "Model", context: "Context", artifact: "Artifact", review: "Review mode", hook: "Hook", memory: "Memory citation", safety: "Safety review", terminal: "Terminal input", wait: "Intentional wait", provider_notice: "Provider notice" } as const)[family];
     const summary = family === "model_identity"
       ? text(payload.summary, text(payload.effectiveModel, text(payload.requestedModel, text(payload.provider, eventType))))
       : text(payload.summary, text(payload.name, text(payload.query, eventType)));
+    if (family === "tool_execution") {
+      state.bridgeCalls.execution(eventType, payload);
+      const executionId = text(payload.executionId);
+      if (executionId && payload.namespace === "paperclip") {
+        if (status === "running") state.paperclipExecutions.set(executionId, { ts, eventType, summary, payload });
+        else state.paperclipExecutions.delete(executionId);
+      }
+    }
     return [{ kind: "provider_activity", ts, family, eventType, status, title, summary, payload }];
   }
   if (eventType === "workspace.change.updated" || eventType === "workspace.diff.recorded") {
@@ -703,6 +765,11 @@ function parsePrpEvent(
     return entry ? [entry] : [{ kind: "system", ts, text: "Runner: Ignored an unsafe workspace file reference" }];
   }
   if (eventType.startsWith("runtime_request.")) {
+    const request = record(payload.request ?? payload);
+    const input = record(request.input);
+    if (typeof input.description === "string" && input.description.length > 100_000) {
+      return [{ kind: "system", ts, text: "Runner: Cannot display this input request because its complete context exceeds 100,000 characters. No decision can be submitted from this request." }];
+    }
     const entry = runtimeRequestEntry(eventType, payload, event, ts, state);
     return entry ? [entry] : [];
   }
@@ -761,6 +828,9 @@ function createParserState(): PaperclipRunnerParserState {
     itemChannels: new Map(),
     structuredFinalItemIds: new Set(),
     runtimeRequests: new Map(),
+    previousPiRuntimeFailure: null,
+    bridgeCalls: createBridgeCallPairing(),
+    paperclipExecutions: new Map(),
   };
 }
 
@@ -769,12 +839,18 @@ function parsePaperclipRunnerLine(line: string, ts: string, state: PaperclipRunn
   try {
     parsed = JSON.parse(line);
   } catch {
+    state.previousPiRuntimeFailure = null;
     return parseCodexStdoutLine(line, ts);
   }
   const envelope = record(parsed);
-  if (envelope.type !== "paperclip.prp.event") return parseCodexStdoutLine(line, ts);
+  if (envelope.type !== "paperclip.prp.event") {
+    state.previousPiRuntimeFailure = null;
+    return parseCodexStdoutLine(line, ts);
+  }
   const event = record(envelope.event);
-  return Object.keys(event).length > 0 ? parsePrpEvent(event, ts, state) : [];
+  if (Object.keys(event).length > 0) return parsePrpEvent(event, ts, state);
+  state.previousPiRuntimeFailure = null;
+  return [];
 }
 
 export function parsePaperclipRunnerStdoutLine(line: string, ts: string): TranscriptEntry[] {

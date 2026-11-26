@@ -15,6 +15,7 @@ import {
 } from "@paperclipai/adapter-utils/local-process-sandbox";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
+  ensureAdapterExecutionTargetDirectory,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
@@ -30,6 +31,8 @@ import type {
   AcpxEngineExecutorOptions,
   AcpxRemoteManagedHomeContext,
   AcpxRemoteManagedHomeResult,
+  AcpxTerminalSessionFailure,
+  AcpxTerminalFailureClassification,
 } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asBoolean,
@@ -37,10 +40,13 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { resolveEnvBillingIdentity, resolveManagedApiKeyBilling } from "./acp-billing.js";
 import {
   materializeRemoteClaudeConfig,
+  overrideRemoteClaudeLocalPermissionMode,
   prepareClaudeConfigSeed,
   prepareSandboxClaudeProbeRuntime,
+  resolveRemoteClaudeToolShellPrefixPath,
 } from "./claude-config.js";
 import {
   buildAdapterTestTargetCheck,
@@ -50,9 +56,14 @@ import {
 } from "./probe-diagnostics.js";
 import { createWorkspaceRestoreTeardown } from "@paperclipai/adapter-utils/workspace-restore-teardown";
 import { buildLocalAdapterTestProbeEnv } from "./probe-env.js";
-import { detectClaudeLoginRequired, parseClaudeStreamJson } from "./parse.js";
-import { buildClaudeProbePermissionArgs } from "./permissions.js";
+import { detectClaudeLoginRequired, extractClaudeRetryNotBefore, isClaudeProviderQuotaError, parseClaudeStreamJson } from "./parse.js";
+import { buildClaudeProbePermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { ADAPTER_AUTH_MISSING_CHECK_CODE } from "./auth-check.js";
+import {
+  claudeCliVersionAtLeast,
+  minimumClaudeCliVersionForModel,
+  readBundledClaudeCodeVersion,
+} from "./cli-capabilities.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -118,6 +129,11 @@ function firstNonEmptyString(...values: unknown[]): string | undefined {
   return undefined;
 }
 
+function resolveAcpPermissionMode(config: Record<string, unknown>): string {
+  const requested = firstNonEmptyString(config.permissionMode);
+  return requested === undefined || requested === "default" ? DEFAULT_ACP_ENGINE_PERMISSION_MODE : requested;
+}
+
 export function buildClaudeAcpConfig(
   config: Record<string, unknown>,
   inheritedEnv: Record<string, unknown> = {},
@@ -162,7 +178,9 @@ export function buildClaudeAcpConfig(
 export function resolveClaudeAcpBillingIdentity(
   ctx: Pick<AdapterExecutionContext, "config"> &
     Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
-): { provider: string; biller: string; billingType: AdapterBillingType } {
+): { provider: string; biller: string; billingType: AdapterBillingType; preferRequestedModel?: true } {
+  const connection = resolveManagedApiKeyBilling(ctx.config);
+  if (connection) return connection;
   const envConfig = parseObject(parseObject(ctx.config).env);
   const target = readAdapterExecutionTarget({
     executionTarget: ctx.executionTarget,
@@ -175,18 +193,7 @@ export function resolveClaudeAcpBillingIdentity(
     const fromHost = considerHostEnv ? process.env[key] : undefined;
     return typeof fromHost === "string" ? fromHost.trim() : "";
   };
-  const bedrockFlag = readEnvValue("CLAUDE_CODE_USE_BEDROCK");
-  const bedrock = bedrockFlag === "1" || bedrockFlag === "true" || Boolean(readEnvValue("ANTHROPIC_BEDROCK_BASE_URL"));
-  const billingType: AdapterBillingType = bedrock
-    ? "metered_api"
-    : readEnvValue("ANTHROPIC_API_KEY")
-    ? "api"
-    : "subscription";
-  return {
-    provider: "anthropic",
-    biller: bedrock ? "aws_bedrock" : "anthropic",
-    billingType,
-  };
+  return resolveEnvBillingIdentity(readEnvValue);
 }
 
 /**
@@ -267,9 +274,12 @@ async function prepareClaudeRemoteManagedHome(
 
   // Content-addressed sanitized seed (managed cache under the instance root, not
   // a temp dir — reused across runs, so no teardown cleanup).
+  const bypassPermissions = resolveAcpPermissionMode(input.config) === "approve-all";
   const claudeConfigSeedDir = input.config.managedAiConnection
     ? explicitClaudeConfigDir
-    : await prepareClaudeConfigSeed(process.env, onLog, input.companyId);
+    : await prepareClaudeConfigSeed(process.env, onLog, input.companyId, {
+      permissionDefaultMode: bypassPermissions ? "bypassPermissions" : "default",
+    });
   // Ship the per-run skill bundle, staged only when the run selected at
   // least one skill. The bundle directory holds a plain copy of each
   // selected skill's files (`materializePaperclipSkillCopy` never copies a
@@ -293,13 +303,16 @@ async function prepareClaudeRemoteManagedHome(
   const remoteClaudeConfigSeedDir =
     stagedRuntime.assetDirs["config-seed"] ?? path.posix.join(remoteClaudeRuntimeRoot, "config-seed");
   const remoteClaudeConfigDir = path.posix.join(remoteClaudeRuntimeRoot, "config");
+  const remoteToolShellPrefixPath = resolveRemoteClaudeToolShellPrefixPath(env, remoteClaudeRuntimeRoot);
 
   await onLog("stdout", `[paperclip] Materializing Claude auth/config into ${remoteClaudeConfigDir}.\n`);
-  await materializeRemoteClaudeConfig({
+  const { toolShellPrefixInstalled } = await materializeRemoteClaudeConfig({
+      allowHostCredentials: !input.config.managedAiConnection,
     runId,
     target: executionTarget,
     remoteClaudeConfigDir,
     remoteClaudeConfigSeedDir,
+    remoteToolShellPrefixPath,
     options: {
       cwd: stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir,
       env,
@@ -310,13 +323,69 @@ async function prepareClaudeRemoteManagedHome(
   });
   // Repoint CLAUDE_CONFIG_DIR onto the in-sandbox config dir.
   env.CLAUDE_CONFIG_DIR = remoteClaudeConfigDir;
-  return { stagedRuntime, teardown: registerWorkspaceSyncBack(stagedRuntime) };
+  const localPermissionOverride = bypassPermissions && !input.config.managedAiConnection
+    ? await overrideRemoteClaudeLocalPermissionMode({
+      runId,
+      target: executionTarget,
+      workspaceLocalDir: input.workspaceLocalDir,
+      workspaceRemoteDir: stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir,
+      defaultMode: "bypassPermissions",
+      options: {
+        cwd: stagedRuntime.workspaceRemoteDir ?? input.workspaceLocalDir,
+        env,
+        timeoutSec: Math.max(input.timeoutSec, 15),
+        graceSec: 20,
+        onLog,
+      },
+    })
+    : null;
+  if (bypassPermissions && !input.config.managedAiConnection) {
+    Object.assign(env, claudeSandboxPermissionEnv({ dangerouslySkipPermissions: true, targetIsSandbox: true }));
+  }
+  if (toolShellPrefixInstalled && remoteToolShellPrefixPath) {
+    env.CLAUDE_CODE_SHELL_PREFIX = remoteToolShellPrefixPath;
+  }
+  const syncBack = registerWorkspaceSyncBack(stagedRuntime);
+  const teardown: AcpxRemoteManagedHomeResult["teardown"] = localPermissionOverride && syncBack
+    ? async () => {
+      await localPermissionOverride.beforeRestore();
+      const outcome = await syncBack();
+      await localPermissionOverride.afterRestore();
+      return outcome;
+    }
+    : syncBack;
+  return { stagedRuntime, teardown };
+}
+
+export function classifyClaudeTerminalSessionFailure(
+  failure: AcpxTerminalSessionFailure,
+  now: Date,
+): AcpxTerminalFailureClassification | null {
+  // Claude's typed AIR access category is emitted for auth_required. This is
+  // a provider signal, including its generic fallback, not a tool permission
+  // error inferred from text. Keep it on the existing sign-in recovery path.
+  if (failure.category === "access") return { errorCode: "acpx_auth_required" };
+  // `limit` also includes context, turn, rate and configured budget limits.
+  // Only the provider's quota wording qualifies for a quota wait.
+  if (failure.category !== "limit") return null;
+  const surface = { errorMessage: [failure.title, failure.details].filter(Boolean).join("\n") };
+  // claude-agent-acp uses this exact quota_exhausted fallback when no provider
+  // title is available. It does not match the CLI's usage-limit wording.
+  const isQuotaFallback = failure.title === "The Claude account has no available quota.";
+  if (!isQuotaFallback && !isClaudeProviderQuotaError(surface)) return null;
+  const retryNotBefore = extractClaudeRetryNotBefore(surface, now)?.toISOString();
+  return {
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    ...(retryNotBefore ? { retryNotBefore } : {}),
+  };
 }
 
 function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveClaudeAcpBillingIdentity,
     prepareRemoteManagedHome: prepareClaudeRemoteManagedHome,
+    classifyTerminalSessionFailure: classifyClaudeTerminalSessionFailure,
     ...options,
     adapterType: "claude_local",
     moduleDir,
@@ -344,14 +413,63 @@ const CLAUDE_AUTH_REQUIRED_ERROR_CODE = "claude_auth_required";
  * `acpx_auth_required` code for every adapter. The user interface run gate reads
  * the Claude-specific `claude_auth_required` code, the same code the Claude CLI
  * lane emits. Without this translation the default ACP run never shows the login
- * prompt. The function changes only the error code and keeps every other field,
- * so the error message and the error metadata stay intact.
+ * prompt. Provider diagnostics stay intact; the generic terminal-access
+ * fallback instead explains that Claude needs sign-in.
  */
 export function mapClaudeAcpAuthErrorCode(
   result: AdapterExecutionResult,
 ): AdapterExecutionResult {
   if (result.errorCode !== ACPX_AUTH_REQUIRED_ERROR_CODE) return result;
-  return { ...result, errorCode: CLAUDE_AUTH_REQUIRED_ERROR_CODE };
+  return {
+    ...result,
+    errorCode: CLAUDE_AUTH_REQUIRED_ERROR_CODE,
+    ...(result.errorMessage === "ACP agent reported a terminal access failure."
+      ? { errorMessage: "Claude sign-in failed. Sign in again and try again." }
+      : {}),
+  };
+}
+
+/**
+ * Mirror the CLI lane's minimum-version check (`execute.ts`) for the Claude
+ * Code bundled with the local ACP bridge. Without it an unsupported model
+ * fails only as a generic terminal service failure. A remote target, a custom
+ * agentCommand, or CLAUDE_CODE_EXECUTABLE brings its own Claude Code.
+ */
+async function bundledClaudeCodeVersionFailure(
+  ctx: AdapterExecutionContext,
+  config: Record<string, unknown>,
+  target: ReturnType<typeof readAdapterExecutionTarget>,
+): Promise<AdapterExecutionResult | null> {
+  const model = asString(config.model, "");
+  const minimumCliVersion = minimumClaudeCliVersionForModel(model);
+  if (
+    !minimumCliVersion ||
+    target?.kind === "remote" ||
+    firstNonEmptyString(config.agentCommand) ||
+    firstNonEmptyString(parseObject(config.env).CLAUDE_CODE_EXECUTABLE)
+  ) {
+    return null;
+  }
+  const bundledCliVersion = await readBundledClaudeCodeVersion();
+  if (!bundledCliVersion || claudeCliVersionAtLeast(bundledCliVersion, minimumCliVersion)) return null;
+  const errorMessage =
+    `${model} requires Claude Code ${minimumCliVersion} or newer; the ACP lane runs the bundled Claude Code ${bundledCliVersion}. ` +
+    "Set CLAUDE_CODE_EXECUTABLE in the agent env to a newer Claude Code, or set engine=cli, before retrying.";
+  await ctx.onLog("stderr", `[paperclip] ${errorMessage}\n`);
+  return {
+    exitCode: 1,
+    signal: null,
+    timedOut: false,
+    errorMessage,
+    errorCode: "claude_cli_version_incompatible",
+    ...resolveClaudeAcpBillingIdentity(ctx),
+    model,
+    resultJson: {
+      stopReason: "claude_cli_version_incompatible",
+      requiredClaudeCodeVersion: minimumCliVersion,
+      detectedClaudeCodeVersion: bundledCliVersion,
+    },
+  };
 }
 
 export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}): ClaudeAcpExecutor {
@@ -367,10 +485,10 @@ export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}):
       executionTarget: ctx.executionTarget,
       legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
     });
-    const result = await currentExecutor({
-      ...ctx,
-      config: buildClaudeAcpConfig(ctx.config, target?.kind === "remote" ? {} : process.env),
-    });
+    const config = buildClaudeAcpConfig(ctx.config, target?.kind === "remote" ? {} : process.env);
+    const versionFailure = await bundledClaudeCodeVersionFailure(ctx, config, target);
+    if (versionFailure) return versionFailure;
+    const result = await currentExecutor({ ...ctx, config });
     return mapClaudeAcpAuthErrorCode(result);
   };
 }
@@ -439,7 +557,16 @@ async function commandIsResolvable(
         trimmed,
         target,
         resolveAdapterExecutionTargetCwd(target, asString(input?.config.cwd, ""), process.cwd()),
-        process.env,
+        target.transport === "ssh" ? { PATH: process.env.PATH } : {},
+        {
+          // Fresh sandboxes need the same ACP server that ships with this
+          // adapter. Only bootstrap our default command; an operator's custom
+          // command must remain an actionable setup failure.
+          ...(target.transport === "sandbox" && trimmed === "claude-agent-acp" &&
+            !firstNonEmptyString(input?.config.agentCommand, input?.config.acpAgentCommand)
+            ? { installCommand: "npm install -g @agentclientprotocol/claude-agent-acp@0.73.0", timeoutSec: 120 }
+            : {}),
+        },
       );
       return true;
     } catch {
@@ -483,11 +610,13 @@ async function claudeAcpUnavailableReason(
     executionTarget: input.executionTarget,
     legacyRemoteExecution: input.executionTransport?.remoteExecution,
   });
-  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target)) {
+  const managedSsh = target?.kind === "remote" && target.transport === "ssh"
+    && target.spec.useHostAuth === false && Boolean(input.config.managedAiConnection);
+  if (target?.kind === "remote" && !sandboxTargetHasProcessSessionBridge(target) && !managedSsh) {
     if (target.transport === "sandbox") {
       return "Claude ACP requires a bidirectional remote process target; this sandbox exposes only one-shot command execution.";
     }
-    return "Claude ACP supports sandbox remote targets only; this run targets a non-sandbox remote environment.";
+    return "Claude ACP requires an agent-managed SSH account; host authentication is supported by the CLI engine.";
   }
   if (!nodeVersionMeetsClaudeAcpMinimum()) {
     return `Node ${process.version} (${process.execPath}) does not satisfy Claude ACP's Node >=${MIN_ACP_NODE_VERSION} prerequisite.`;
@@ -626,6 +755,9 @@ export async function probeClaudeAcpSandboxLogin(input: {
     cwd = asString(config.cwd, process.cwd());
   }
 
+  Object.assign(env, claudeSandboxPermissionEnv({
+    dangerouslySkipPermissions: asBoolean(config.dangerouslySkipPermissions, true), targetIsSandbox,
+  }));
   const args = ["--print", "-", "--output-format", "stream-json", "--verbose"];
   if (config.managedAiConnection) args.push("--setting-sources", "user");
   args.push(
@@ -684,7 +816,10 @@ export async function probeClaudeAcpSandboxLogin(input: {
     });
     return [buildAcpLoginProbeUnavailableCheck("The Claude login probe did not complete.", targetIsSandbox)];
   }
-  return [];
+  if (!/\bhello\b/i.test(parsedStream.summary)) {
+    return [buildAcpLoginProbeUnavailableCheck("The Claude login probe did not return hello.", targetIsSandbox)];
+  }
+  return [{ code: "claude_hello_probe_passed", level: "info", message: "Claude login probe succeeded." }];
 }
 
 export async function testClaudeAcpEnvironment(
@@ -718,9 +853,13 @@ export async function testClaudeAcpEnvironment(
     });
   }
 
-  const cwd = asString(config.cwd, process.cwd());
+  const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   try {
-    await fs.mkdir(cwd, { recursive: true });
+    await ensureAdapterExecutionTargetDirectory(`claude-acp-envtest-${Date.now()}`, target, cwd, {
+      cwd,
+      env: {},
+      createIfMissing: true,
+    });
     checks.push({
       code: "claude_acp_cwd_valid",
       level: "info",
@@ -785,12 +924,13 @@ export async function testClaudeAcpEnvironment(
     });
   } else if (isNonEmpty(configApiKey) || isNonEmpty(hostApiKey)) {
     const source = isNonEmpty(configApiKey) ? "adapter config env" : "server environment";
+    const selectedApiKey = Boolean(config.managedAiConnection) || isNonEmpty(configApiKey);
     checks.push({
       code: "claude_acp_anthropic_api_key_detected",
-      level: config.managedAiConnection ? "info" : "warn",
-      message: config.managedAiConnection ? "Using the selected Claude API connection." : "ANTHROPIC_API_KEY is set. Claude ACP will use API-key auth instead of subscription credentials.",
+      level: selectedApiKey ? "info" : "warn",
+      message: selectedApiKey ? "Using the selected Claude API connection." : "ANTHROPIC_API_KEY is set. Claude ACP will use API-key auth instead of subscription credentials.",
       detail: `Detected in ${source}.`,
-      hint: config.managedAiConnection ? undefined : "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
+      hint: selectedApiKey ? undefined : "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
   } else if (
     isNonEmpty(envConfig.CLAUDE_CODE_OAUTH_TOKEN) ||
@@ -861,24 +1001,30 @@ export async function testClaudeAcpEnvironment(
       probeEnv.CLAUDE_CONFIG_DIR = hostConfigDir.trim();
     }
     const runId = `claude-acp-envtest-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    checks.push(
-      ...(await prepareSandboxClaudeProbeRuntime({
-      managedAiConnection: Boolean(config.managedAiConnection),
-        runId,
-        target,
-        cwd,
-        companyId: ctx.companyId,
-        env: probeEnv,
-        installCommand: SANDBOX_INSTALL_COMMAND,
-        detectCommand: "claude",
-        targetIsRemote,
-        targetIsSandbox,
-        helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
-      })),
-    );
-    const canProbe = !checks.some((check) => check.code === "claude_managed_config_dir_failed");
-    if (canProbe) {
-      checks.push(...(await probeClaudeAcpSandboxLogin({ config, target, env: probeEnv })));
+    let cleanupManagedProbe: (() => Promise<void>) | undefined;
+    try {
+      checks.push(
+        ...(await prepareSandboxClaudeProbeRuntime({
+          registerCleanup: (cleanup) => { cleanupManagedProbe = cleanup; },
+          managedAiConnection: Boolean(config.managedAiConnection),
+          runId,
+          target,
+          cwd,
+          companyId: ctx.companyId,
+          env: probeEnv,
+          installCommand: SANDBOX_INSTALL_COMMAND,
+          detectCommand: "claude",
+          targetIsRemote,
+          targetIsSandbox,
+          helloProbeTimeoutSec: asNumber(config.helloProbeTimeoutSec, targetIsSandbox ? 90 : 45),
+        })),
+      );
+      const canProbe = !checks.some((check) => check.code === "claude_managed_config_dir_failed");
+      if (canProbe) {
+        checks.push(...(await probeClaudeAcpSandboxLogin({ config, target, env: probeEnv })));
+      }
+    } finally {
+      await cleanupManagedProbe?.();
     }
   }
 

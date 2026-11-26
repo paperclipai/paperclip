@@ -41,7 +41,7 @@ describeEmbeddedPostgres("environmentRuntimeService.readSandboxDuplexBridgeInput
 
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase("environment-runtime-duplex-bridge");
-    stopDb = started.stop;
+    stopDb = started.cleanup;
     db = createDb(started.connectionString);
     runtime = environmentRuntimeService(db);
     settings = instanceSettingsService(db);

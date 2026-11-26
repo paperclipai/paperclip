@@ -1,4 +1,5 @@
-import { lstat, mkdir, open, readFile, rename, rm } from "node:fs/promises";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
@@ -334,6 +335,11 @@ export async function withCodexAccountHomePromotionLock<T>(
  * create) can still call into a secrets-service write that takes this lock
  * without deadlocking on itself.
  */
+// An outer credential transaction acquires this lock before database row locks.
+// Nested secret-service writes must share that ownership, not acquire it again.
+// Expire ownership on return so detached work cannot inherit a released lock.
+const secretMutationOwnership = new AsyncLocalStorage<Map<string, { active: boolean }>>();
+
 export async function withAccountHomeSecretMutationLock<T>(
   env: NodeJS.ProcessEnv = process.env,
   companyId: string,
@@ -341,7 +347,16 @@ export async function withAccountHomeSecretMutationLock<T>(
 ): Promise<T> {
   const lockDir = resolveCodexAuthCacheNamedLockDir(env, companyId, "codex-account-home-secret-mutation-lock");
   await ensurePrivateDir(lockDir);
-  return withDirectoryMergeLock(lockDir, fn, env);
+  const key = await realpath(lockDir);
+  const inherited = secretMutationOwnership.getStore();
+  if (inherited?.get(key)?.active) return fn();
+  return withDirectoryMergeLock(lockDir, async () => {
+    const ownership = { active: true };
+    const scope = new Map(inherited);
+    scope.set(key, ownership);
+    try { return await secretMutationOwnership.run(scope, fn); }
+    finally { ownership.active = false; }
+  }, env);
 }
 
 /**

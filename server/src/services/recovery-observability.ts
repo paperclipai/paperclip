@@ -1,3 +1,4 @@
+import { historicalRecoveryCounts } from "./workspace-recovery-backfill.js";
 import { and, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { heartbeatRuns, issueRecoveryActions, issues } from "@paperclipai/db";
@@ -55,6 +56,7 @@ export type RecoveryHandoffSummary = {
   /** Original agent recovered its own issue (owner == original assignee). */
   selfRecovery: number;
   boardOwned: number;
+  systemOwned: number;
   activeTakeovers: number;
   /** handedBack / (handedBack + ownerCompleted); null when no resolved takeovers. */
   handedBackRatio: number | null;
@@ -91,6 +93,7 @@ export type FleetQuotaBanner = {
 };
 
 export type RecoveryObservabilityReport = {
+  historicalRecovery: Awaited<ReturnType<typeof historicalRecoveryCounts>>;
   companyId: string;
   generatedAt: string;
   window: { weeks: number; since: string };
@@ -109,10 +112,12 @@ export type HandoffClass =
   | "handed_back"
   | "owner_completed"
   | "board_owned"
+  | "system_owned"
   | "active"
   | "other";
 
 type RecoveryActionFacts = {
+  ownerType?: string;
   status: string;
   outcome: string | null;
   ownerAgentId: string | null;
@@ -146,6 +151,7 @@ export function displayCauseFor(cause: string): string {
  * doing the work becomes rare".
  */
 export function classifyRecoveryHandoff(facts: RecoveryActionFacts): HandoffClass {
+  if (facts.ownerType === "system") return "system_owned";
   if (ACTIVE_STATUSES.has(facts.status)) return "active";
   if (!facts.ownerAgentId) return "board_owned";
   // Original agent recovered its own issue — the ideal per-cause routing, not a takeover.
@@ -289,6 +295,7 @@ export function recoveryObservabilityService(db: Db) {
         status: issueRecoveryActions.status,
         outcome: issueRecoveryActions.outcome,
         ownerAgentId: issueRecoveryActions.ownerAgentId,
+        ownerType: issueRecoveryActions.ownerType,
         returnOwnerAgentId: issueRecoveryActions.returnOwnerAgentId,
         finalAssigneeAgentId: issues.assigneeAgentId,
         finalIssueStatus: issues.status,
@@ -309,6 +316,7 @@ export function recoveryObservabilityService(db: Db) {
       otherTakeover: 0,
       selfRecovery: 0,
       boardOwned: 0,
+      systemOwned: 0,
       activeTakeovers: 0,
       handedBackRatio: null,
       ownerCompletedRatio: null,
@@ -356,6 +364,10 @@ export function recoveryObservabilityService(db: Db) {
       if (row.status === "cancelled" && row.outcome !== "false_positive") routing.cancelled += 1;
 
       switch (klass) {
+        case "system_owned":
+          handoff.systemOwned += 1;
+          if (ACTIVE_STATUSES.has(row.status)) routing.active += 1;
+          break;
         case "self_recovery":
           handoff.selfRecovery += 1;
           if (row.status === "resolved") routing.retriedByOriginalSucceeded += 1;
@@ -433,6 +445,7 @@ export function recoveryObservabilityService(db: Db) {
       perCauseRouting,
       providerQuotaDeferrals,
       fleetQuotaBanner,
+      historicalRecovery: await historicalRecoveryCounts(db, companyId),
     };
   }
 

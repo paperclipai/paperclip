@@ -8,8 +8,7 @@
   ],
   "featured": false,
   "branding": {
-    "logoUrl": "/brands/apps/agentmail.svg",
-    "darkLogoUrl": "/brands/apps/agentmail-dark.svg"
+    "logoUrl": "/brands/apps/agentmail.svg"
   },
   "urlPatterns": [
     "https://console.agentmail.to/*"
@@ -38,7 +37,7 @@
       ],
       "guidanceMd": "Connect an AgentMail API key, then create or select an inbox for your agent. WebSocket receiving works without a public URL.",
       "consoleLinks": {
-        "keys": "https://console.agentmail.to",
+        "keys": "https://console.agentmail.to/dashboard/api-keys",
         "docs": "https://docs.agentmail.to/inboxes"
       },
       "riskTier": "S3",
