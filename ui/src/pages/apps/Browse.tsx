@@ -13,7 +13,7 @@ import {
   isRetiredComposioConnection,
   RETIRED_COMPOSIO_MESSAGE,
 } from "@paperclipai/shared";
-import { AssistantConnectionCard, useAssistantConnections } from "./AssistantConnection";
+import { AssistantConnectionTile, useAssistantConnections } from "./AssistantConnection";
 import { TailscaleConnectorCard } from "./TailscaleConnector";
 import { useTailscaleConnections } from "@/hooks/useTailscaleConnections";
 import type { TailscaleConnection } from "@/api/tailscale";
@@ -53,7 +53,7 @@ import {
 } from "@paperclipai/shared";
 import { useNavigate, useParams } from "@/lib/router";
 import { PLUGIN_CATEGORIES, PLUGIN_CATEGORY_ORDER, PLUGIN_GRID, PluginCategories, PluginShelf, PluginTile, isPluginCategoryId, pluginCategoryId, pluginCategorySectionId, type PluginCategoryId, type PluginTileState } from "./PluginMarketplace";
-import { aggregatorPluginCategory } from "./plugin-categories";
+import { aggregatorPluginCategory, groupPluginsByCategory } from "./plugin-categories";
 import { PluginSkills } from "./PluginSkills";
 import { ONE_CLICK_PARAM, isOneClickOAuthApp, reserveOneClickPopup } from "@/features/connections/one-click-oauth";
 import { PluginPermissions } from "./PluginPermissions";
@@ -360,6 +360,13 @@ export function pluginTileState(row: ConnectorRowModel, connectionById?: Readonl
     || row.connections.some((connection) => needsAction(connectionState(connection)))
     || row.chatEndpoints.some((endpoint) => ["attention", "revoked"].includes(endpoint.status) || chatEndpointNeedsSetup(endpoint));
   return needsAttention ? "attention" : "connected";
+}
+
+/** Why a chat connection is asking for the user, or null when it is fine. */
+export function chatEndpointAttention(endpoint: Pick<ChatEndpoint, "status" | "setup">): string | null {
+  if (endpoint.status === "revoked") return "Access revoked";
+  if (endpoint.status === "attention") return "Needs attention";
+  return chatEndpointNeedsSetup(endpoint as ChatEndpoint) ? "Setup not finished" : null;
 }
 
 function connectorAction(
@@ -1065,10 +1072,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
   const noteworthyRows = marketplace ? fullRows(NOTEWORTHY_PLUGIN_SLUGS.flatMap((slug) => visibleRows.filter((row) => row.slug === slug && !row.entry?.featured)), 6) : [];
   const shelvedKeys = new Set([...featuredRows, ...noteworthyRows].map((row) => row.key));
   const categoryGroups = marketplace
-    ? PLUGIN_CATEGORY_ORDER.map((id) => {
-        const all = visibleRows.filter((row) => rowCategory(row) === id);
-        return { id, total: all.length, rows: all.filter((row) => !shelvedKeys.has(row.key)).slice(0, CATEGORY_BLOCK_SIZE) };
-      }).filter((group) => group.total > 0)
+    ? groupPluginsByCategory(visibleRows, PLUGIN_CATEGORY_ORDER, rowCategory, (row) => shelvedKeys.has(row.key), CATEGORY_BLOCK_SIZE)
     : [];
   const openCategory = (id: PluginCategoryId) => { navigate(`/apps/category/${id}`); catalogTop.current?.scrollIntoView?.({ block: "start" }); };
   const setupEnabledFor = (row: ConnectorRowModel) => connectorAvailability.enabled(row.entry ?? getConnectableAppDefinition(row.slug))
@@ -1217,7 +1221,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               </Button>
               <PluginPageHeader
                 name={openRow.name}
-                kind={`Connector · ${PLUGIN_CATEGORIES[pluginCategoryId(openRow.entry?.categories)].label}`}
+                kind={`Connector · ${PLUGIN_CATEGORIES[rowCategory(openRow)].label}`}
                 description={openRow.description}
                 brandKey={openRow.brandKey}
                 logoUrl={openRow.logoUrl}
@@ -1246,7 +1250,7 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
               onNavigate={navigate}
             />
             <PluginInformation
-              category={PLUGIN_CATEGORIES[pluginCategoryId(openRow.entry?.categories)].label}
+              category={PLUGIN_CATEGORIES[rowCategory(openRow)].label}
               signIn={pluginSignIn(openRow.entry?.methods)}
               host={pluginHost(openRow.entry?.methods)}
               docsUrl={openRow.entry?.docsUrl}
@@ -1256,13 +1260,6 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
           <div className="flex flex-col items-start gap-3 rounded-2xl bg-muted/50 px-4 py-6 text-sm text-muted-foreground">
             <p>This plugin isn’t in the catalog anymore.</p>
             <Button variant="outline" size="sm" onClick={() => navigate("/apps")}>Back to Plugins</Button>
-          </div>
-        ) : source === "installed" && !categoryId ? (
-          <div className={cn("space-y-3", ANALYTICS_MASK_CLASS)} role="list" aria-label="Connector list">
-            {showAssistantConnection && <AssistantConnectionCard onNavigate={navigate} />}
-            {paginatedRows.map((row) => (
-              row.networkConnections ? <TailscaleConnectorCard key={row.key} onNavigate={navigate} /> : <div key={row.key} role="presentation" className="contents">{renderConnectorCard(row)}</div>
-            ))}
           </div>
         ) : marketplace ? (
           <div className={cn("flex flex-col gap-10", ANALYTICS_MASK_CLASS)} role="list" aria-label="Connector list">
@@ -1276,7 +1273,10 @@ export function Browse({ renderAccountDetails = (connection) => connection.conne
           </div>
         ) : (
           <div className={cn("flex flex-col gap-3", ANALYTICS_MASK_CLASS)} role="list" aria-label="Connector list">
-            <div className={PLUGIN_GRID}>{paginatedRows.map(renderTile)}</div>
+            <div className={PLUGIN_GRID}>
+              {showAssistantConnection && !categoryId ? <AssistantConnectionTile onNavigate={navigate} /> : null}
+              {paginatedRows.map(renderTile)}
+            </div>
           </div>
         )
       )}
@@ -1584,15 +1584,23 @@ export function ConnectorCard({
                     <AgentAvatar agent={chatAgentById?.get(endpoint.assignedAgentId) ?? { id: endpoint.assignedAgentId, name: endpoint.assignedAgentName }}
                       size={40} label={`${endpoint.assignedAgentName} avatar`} />
                     <div className="min-w-0">
-                      <button
-                        type="button"
-                        className="block max-w-full truncate text-left text-sm font-medium hover:underline"
-                        onClick={() =>
-                          onNavigate(`/apps/chat/${endpoint.id}/settings`)
-                        }
-                      >
-                        {endpoint.assignedAgentName} · {endpoint.provider === "agentmail" ? "Email" : endpoint.provider === "github" ? "Code review bot" : "Chat"}
-                      </button>
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <button
+                          type="button"
+                          className="block min-w-0 truncate text-left text-sm font-medium hover:underline"
+                          onClick={() =>
+                            onNavigate(`/apps/chat/${endpoint.id}/settings`)
+                          }
+                        >
+                          {endpoint.assignedAgentName} · {endpoint.provider === "agentmail" ? "Email" : endpoint.provider === "github" ? "Code review bot" : "Chat"}
+                        </button>
+                        {chatEndpointAttention(endpoint) ? (
+                          <span className="shrink-0 text-(--status-task-icon-todo)" title={chatEndpointAttention(endpoint) ?? undefined} data-testid="account-attention">
+                            <AlertTriangle className="size-3.5" aria-hidden="true" />
+                            <span className="sr-only">{chatEndpointAttention(endpoint)}</span>
+                          </span>
+                        ) : null}
+                      </div>
                       <p className="truncate text-xs text-muted-foreground">
                         {endpoint.providerAccountLabel ??
                           endpoint.botLabel ??
