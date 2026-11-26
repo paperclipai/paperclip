@@ -13,6 +13,7 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      target: production
     # Ceiling on processes. The image makes tini PID 1 so orphaned agent
     # descendants are reaped instead of piling up as zombies; this is the
     # backstop if something leaks anyway — the container hits its own limit and
