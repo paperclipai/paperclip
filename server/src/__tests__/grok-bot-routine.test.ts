@@ -363,6 +363,23 @@ describe("durable Grok routine qualification", () => {
     expect((await db.select().from(grokBotDispatches).where(eq(grokBotDispatches.id, queued.id)))[0]?.status).toBe("cancelled");
   });
 
+  it("sends and acknowledges a work wake on a one-connection pool", async () => {
+    const f = await fixture(); const { work } = await admittedWork(f, "offered");
+    const queued = await f.service.reserve({ companyId: f.company.id, agentId: f.agent.id,
+      bindingId: f.pairing.bindingId, assignmentId: work.id, kind: "mailbox_updated", sourceEventId: randomUUID() });
+    const single = createDb(temporary?.connectionString ?? resolveExternalTestDatabaseUrl("PAPERCLIP_GROK_ROUTINE_TEST_DATABASE_URL")!, { maxConnections: 1 });
+    try {
+      const service = grokRoutineService(single, f.delivery);
+      const bounded = <T,>(work: Promise<T>) => Promise.race([work, new Promise<"deadlocked">(resolve => setTimeout(() => resolve("deadlocked"), 20_000))]);
+      f.delivery.mockClear();
+      expect(await bounded(service.send(f.company.id, f.agent.id, queued.id))).not.toBe("deadlocked");
+      expect(f.delivery).toHaveBeenCalledTimes(1);
+      expect(await bounded(service.acknowledge(f.principal, { correlationId: queued.id, bindingId: f.pairing.bindingId, bindingGeneration: 1 })))
+        .not.toBe("deadlocked");
+      expect((await db.select().from(grokBotDispatches).where(eq(grokBotDispatches.id, queued.id)))[0]?.acknowledgedAt).not.toBeNull();
+    } finally { await single.$client.end({ timeout: 0 }); }
+  }, 60_000);
+
   it("cancels an unsent wake when acceptance commits during secret lookup", async () => {
     const f = await fixture(); const { work } = await admittedWork(f, "offered");
     const queued = await f.service.reserve({ companyId: f.company.id, agentId: f.agent.id,

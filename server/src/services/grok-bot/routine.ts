@@ -179,7 +179,7 @@ export function grokRoutineService(db: Db, deliver: Delivery = deliverGrokRoutin
       if (row.kind === "mailbox_updated") {
         if (!row.assignmentId) throw fail("Work wake requires an admitted assignment.");
         const { dotRunnerBroker } = await import("../dot-runner-broker.js");
-        await dotRunnerBroker(db).assertWakeAuthority(companyId, agentId, row.bindingId, row.assignmentId, { requireOffered: true });
+        await dotRunnerBroker(database).assertWakeAuthority(companyId, agentId, row.bindingId, row.assignmentId, { requireOffered: true });
       }
       // Accepted, acknowledged and uncertain work is never sent again after restart.
       if (row.expiresAt <= new Date()) throw fail("Unsent dispatch expired. Inspect before creating a new verification.");
@@ -301,7 +301,7 @@ export function grokRoutineService(db: Db, deliver: Delivery = deliverGrokRoutin
         if (row.status === "cancelled" && !settledDelivery) throw fail("Wake was cancelled.");
         if (row.kind === "mailbox_updated" && row.assignmentId && !settledDelivery) {
           const { dotRunnerBroker } = await import("../dot-runner-broker.js");
-          await dotRunnerBroker(db).assertWakeAuthority(binding.companyId, binding.agentId, binding.id, row.assignmentId);
+          await dotRunnerBroker(database).assertWakeAuthority(binding.companyId, binding.agentId, binding.id, row.assignmentId);
         }
         if (!assignment || (row.kind === "authority_revoked" ? assignment.status !== "fenced"
           : !settledDelivery && (!["offered", "accepted"].includes(assignment.status) || assignment.expiresAt <= new Date()))) throw fail("Work wake authority is no longer current.");
