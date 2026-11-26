@@ -6,6 +6,27 @@ Run scope: `ui/src/components/` and `ui/src/pages/` on branch `design/token-extr
 
 ## Counts
 
+### Connection recovery — 2026-09-29
+
+`CloudAccessGate.tsx` contains the startup `CloudAccessError` composition, using
+the existing Button and typography tokens. It covers automatic reconnection,
+an in-flight check, and manual retry after access-check failures. See
+`/design-guide` and Storybook **App / Connection recovery**.
+
+### Independent MCP connection setup — 2026-09-21
+
+`ui/src/features/connections/remote-mcp/RemoteMcpConnectionSetup.tsx` is the controlled
+Access → Connect and management composition for Zapier, Arcade,
+Composio and Executor. It reuses Gmail’s StepHeader and AccessStepContent, plus SetupWizardFooter,
+AppLogo, InlineBanner and existing form/dialog primitives. Saved connections reuse
+the canonical PermissionsPanel ActionsSection and its ActionTestDialog; there is
+no separate setup test or permission list. Each
+provider has an independent state and controller. It does not initiate network
+authentication requests or persist credentials. The shared Test dialog uses normal
+API calls, intercepted by scoped in-memory Storybook fixtures. The first milestone is design review; production
+routes do not use it yet. See `/design-guide` and Storybook **Apps / Connections**
+for the provider variants and complete interactive state matrix.
+
 Execution recovery reuses the existing transcript header and task status. Routine phases add no list badges, status cards, or reconciliation dialogs. Only a transient reconnection changes the header text. Automatic recovery decisions remain in the local run log. Storybook **Tasks / Execution recovery** demonstrates quiet task lists, native and legacy transcript headers, and dashboard composition.
 
 | Area | Count |
@@ -430,3 +451,34 @@ Independently addressable examples live under `Connections/In-task connections` 
 `ui/src/components/SetupWizard.tsx` extracts the Slack setup navigation into reusable numbered steps, a portal sidebar, an optional section-menu takeover outlet, and a single-row footer. `SetupWizardSidebarProvider` owns the portal target and takeover lifecycle. Chat exports retain their existing names and defaults for compatibility. The Design Guide demonstrates the components. The production routine trigger wizard and its Storybook previews share the sidebar takeover, navigation, and footer. `routine-triggers/TriggerWizard.tsx`, `TriggerCard.tsx`, and `WebhookFields.tsx` provide the shared trigger setup, compact editable cards, copyable credentials, and agent instructions.
 
 `routine-triggers/WebhookUrlWarning.tsx` uses `InlineBanner` for non-blocking localhost, private-network, Tailscale, and HTTP guidance. Setup and saved webhook editors share it; the Design Guide shows each warning. URL classification is heuristic, not a public reachability test.
+
+## Browser Use surfaces — 2026-09-29
+
+| Component | Responsibility | Storybook |
+| --- | --- | --- |
+| `TaskBrowserPanel` | Live iframe, debounced fitting with viewer ownership, connecting/closed/error/access states | Tasks / Browser Use / Panel |
+| `TaskBrowserFooter` | Fit to pane and fixed viewport presets, ownership feedback, last-five-minute countdown, contextual stop/extend, explained session menu | Tasks / Browser Use / Footer |
+| `TaskBrowserActivity` | Compact single-session row, interleaved at browser creation time in the task feed; opens the matching panel tab | Tasks / Browser Use / Task activity, including Inline History |
+| `BrowserUseSettingsPanel` | Per-credential cost caps and saved-profile access | Connections / Browser Use / Settings |
+
+The footer also appears on `/design-guide`. All stories use offline fixtures;
+they do not create provider sessions. The viewer fixture intentionally scales a
+fixed desktop viewport, preserving the current provider embed's sizing limitation.
+
+## Personal Muse connection — 2026-10-10
+
+The shared `new-agent/ExternalAgentInviteDialog.tsx` and
+`ExternalAgentInviteContent.tsx` now support personal Muse alongside Dot. They
+reuse the agent picker, name and role form, setup instruction, and single-row
+footer. The Muse journey distinguishes pairing, detector contact, an independent
+background reply, and the existing agent lifecycle gate. Company/operator drafts
+contain only the name, role, and agent reference; pairing tickets stay transient.
+
+`MuseRunnerConnection.tsx` is the agent settings surface for connection health,
+verification, repair, disconnection, and attestation of a specific stop boundary.
+Its examples appear in the Design Guide. The [guided Muse stories](../../ui/storybook/stories/agents/external-agent-invite/muse.stories.tsx)
+use the real invitation and connection details components with offline fixtures,
+including setup milestones, recovery, disabled cleanup, and the exact stop boundary.
+The [Storybook catalog](../../maps/storybook-map/INDEX.md) registers these under
+agent hiring and lifecycle. The examples remain unreviewed for Vault/provider parity
+and do not establish provider connectivity or remote stopping.

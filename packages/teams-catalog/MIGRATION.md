@@ -8,11 +8,11 @@ The approved plan for this package lives at [PAP-10206 plan document](/PAP/issue
 
 | Source | Status |
 | --- | --- |
-| `server/src/onboarding-assets/ceo/` | **Keep as-is.** Drives current onboarding default agent creation. Will be removed only when onboarding switches to the teams-catalog service (post-Phase E/G). |
+| `server/src/onboarding-assets/ceo/` | **Keep compatibility assets.** New default CEO hires receive only the short `AGENTS.md`. The legacy `HEARTBEAT.md`, `SOUL.md`, and `TOOLS.md` remain on disk but are not selected into new default bundles. Existing managed/custom bundles are not rewritten. The directory can be removed when onboarding switches to the teams-catalog service (post-Phase E/G). |
 | `server/src/onboarding-assets/default/` | **Keep as-is.** Generic `AGENTS.md` fallback used outside the catalog path. |
-| `skills/paperclip-create-agent/references/agents/coder.md` | **Migrated content** into `bundled/software-development/product-engineering/agents/senior-coder/AGENTS.md` (collaboration/handoffs/safety sections collapsed for catalog brevity). Keep the template as a reference for ad-hoc hiring until onboarding switches. |
-| `skills/paperclip-create-agent/references/agents/qa.md` | **Migrated content** into both `bundled/company-defaults/core-exec-team/agents/qa/AGENTS.md` and `bundled/software-development/product-engineering/agents/qa/AGENTS.md`. Keep the template. |
-| `skills/paperclip-create-agent/references/agents/uxdesigner.md` | **Migrated content** into `bundled/product/product-design/agents/ux-designer/AGENTS.md`. Lens dictionary intentionally trimmed in the catalog copy — the template stays authoritative for ad-hoc hiring. |
+| `skills/paperclip-create-agent/references/agents/coder.md` | **Short role description mirrored** in `bundled/software-development/product-engineering/agents/senior-coder/AGENTS.md` (runtime procedures come from the harness, repository instructions, and installed skills). Keep the template as a reference for ad-hoc hiring until onboarding switches. |
+| `skills/paperclip-create-agent/references/agents/qa.md` | **Short role description mirrored** in both `bundled/company-defaults/core-exec-team/agents/qa/AGENTS.md` and `bundled/software-development/product-engineering/agents/qa/AGENTS.md`. Keep the template. |
+| `skills/paperclip-create-agent/references/agents/uxdesigner.md` | **Short role description mirrored** in `bundled/product/product-design/agents/ux-designer/AGENTS.md`. Both copies describe role responsibility without a default lens dictionary. |
 | `skills/paperclip-create-agent/references/agents/securityengineer.md` | **Not migrated.** No `SecurityEngineer` team ships in Phase H — see deferred entries below. |
 
 ## Bundled entries shipped in Phase H

@@ -1,8 +1,10 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
+import { authorizationService, issueReadSqlCondition } from "../services/authorization.js";
 import { validate } from "../middleware/validate.js";
 import { decisionTrainingService, logActivity } from "../services/index.js";
+import { withoutGoogleWorkspaceContent } from "../services/decision-training.js";
 import { assertBoard, assertCompanyAccess, getActorInfo, hasCompanyAccess } from "./authz.js";
 
 const sourceKindSchema = z.enum(["interaction", "approval", "execution_decision"]);
@@ -52,6 +54,14 @@ function requireExampleOwner(res: Response, userId: string, createdByUserId: str
 export function decisionTrainingRoutes(db: Db) {
   const router = Router();
   const svc = decisionTrainingService(db);
+  async function canRead(req: Request, companyId: string, issueId: string) {
+    return (await authorizationService(db).decide({ actor: req.actor, action: "issue:read", resource: { type: "issue", companyId, issueId } })).allowed;
+  }
+  async function requireRead(req: Request, res: Response, companyId: string, issueId: string) {
+    if (await canRead(req, companyId, issueId)) return true;
+    res.status(404).json({ error: "Decision training source not found" });
+    return false;
+  }
 
   router.post(
     "/companies/:companyId/decision-training",
@@ -61,6 +71,7 @@ export function decisionTrainingRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       const userId = requireHumanUser(req, res);
       if (!userId) return;
+      if (!(await requireRead(req, res, companyId, req.body.issueId))) return;
 
       const example = await svc.create({
         companyId,
@@ -97,6 +108,7 @@ export function decisionTrainingRoutes(db: Db) {
       assertCompanyAccess(req, companyId);
       const userId = requireHumanUser(req, res);
       if (!userId) return;
+      if (!(await requireRead(req, res, companyId, req.body.issueId))) return;
       const preview = await svc.preview({
         companyId,
         sourceKind: req.body.sourceKind,
@@ -126,6 +138,7 @@ export function decisionTrainingRoutes(db: Db) {
       return;
     }
     res.json(await svc.list(companyId, {
+      readCondition: await issueReadSqlCondition(db, req.actor),
       projectId: parsed.data.project,
       kind: parsed.data.kind,
       author: parsed.data.author,
@@ -137,11 +150,12 @@ export function decisionTrainingRoutes(db: Db) {
     const companyId = req.params.companyId as string;
     assertBoard(req);
     assertCompanyAccess(req, companyId);
-    const rows = await svc.list(companyId);
+    const rows = await svc.list(companyId, { readCondition: await issueReadSqlCondition(db, req.actor) });
+    const states = await withoutGoogleWorkspaceContent(db, companyId, rows.map(({ example }) => example));
     const body = rows
-      .map(({ example }) => JSON.stringify({
+      .map(({ example }, index) => JSON.stringify({
         retentionPolicy: example.retentionPolicy,
-        state: example.snapshot,
+        state: states[index],
         label: { outcome: example.decisionOutcome, notes: example.notes },
       }))
       .join("\n");
@@ -165,7 +179,7 @@ export function decisionTrainingRoutes(db: Db) {
     const exampleId = parseExampleId(req, res);
     if (!exampleId) return;
     const example = await svc.getById(exampleId);
-    if (!example || !hasCompanyAccess(req, example.companyId)) {
+    if (!example || !hasCompanyAccess(req, example.companyId) || !(await canRead(req, example.companyId, example.issueId))) {
       res.status(404).json({ error: "Decision training example not found" });
       return;
     }

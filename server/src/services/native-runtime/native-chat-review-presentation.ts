@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
   agents,
@@ -180,7 +181,6 @@ async function reviewPresentationEvidence(
   if (
     !gate ||
     gate.kind !== "request_confirmation" ||
-    gate.createdByAgentId ||
     gate.createdByUserId ||
     !gate.sourceRunId ||
     gate.sourceRunId === run.id ||
@@ -196,8 +196,16 @@ async function reviewPresentationEvidence(
     return null;
   const [origin, competingInteraction, competingApproval] = await Promise.all([
     db
-      .select({ id: statusDecisions.id, decisionJson: statusDecisions.decisionJson })
+      .select({ id: statusDecisions.id, decisionJson: statusDecisions.decisionJson, agentId: heartbeatRuns.agentId })
       .from(statusDecisions)
+      .innerJoin(
+        heartbeatRuns,
+        and(
+          eq(heartbeatRuns.id, statusDecisions.runId),
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.nativeIssueId, input.issueId),
+        ),
+      )
       .innerJoin(
         statusDecisionEffects,
         and(
@@ -254,7 +262,8 @@ async function reviewPresentationEvidence(
       .limit(1)
       .then((rows) => rows[0]),
   ]);
-  if (!origin || competingInteraction || competingApproval) return null;
+  if (!origin || competingInteraction || competingApproval
+    || (gate.createdByAgentId !== null && gate.createdByAgentId !== origin.agentId)) return null;
   const reviewEffects = Array.isArray(origin.decisionJson.effects) ? origin.decisionJson.effects : [];
   const matchesReviewRequest = reviewEffects.some((value) => {
     const effect = record(value);
@@ -499,6 +508,7 @@ export async function restoreNativeChatReviewPresentationInTransaction(
     decisionId: string;
     resultId: string;
     assessmentId: string;
+    onlyWhenDue?: boolean;
   },
 ): Promise<boolean> {
   const [coordinator] = await db
@@ -518,6 +528,8 @@ export async function restoreNativeChatReviewPresentationInTransaction(
     .for("update")
     .limit(1);
   if (!coordinator) return false;
+  if (input.onlyWhenDue && (coordinator.leaseOwner !== null
+    || coordinator.nextAttemptAt !== null && coordinator.nextAttemptAt.getTime() > Date.now())) return false;
   const [decision] = await db
     .select()
     .from(statusDecisions)
@@ -573,20 +585,28 @@ export async function restoreNativeChatReviewPresentationInTransaction(
     assessmentId: input.assessmentId,
     externalChatReviewPresentation: { ...proof, decisionId: input.decisionId },
   };
+  const runOwner = and(
+    eq(heartbeatRuns.id, input.runId),
+    eq(heartbeatRuns.companyId, input.companyId),
+    eq(heartbeatRuns.nativeIssueId, input.issueId),
+    eq(heartbeatRuns.runtimeMode, "native"),
+  );
+  const projectedResult = sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(projection)}::jsonb`;
+  const [run] = await db.select({
+    needsUpdate: sql<boolean>`${projectedResult} is distinct from ${heartbeatRuns.resultJson}`,
+  }).from(heartbeatRuns).where(runOwner).for("update");
+  if (!run) return false;
+  // A valid existing projection still permits the caller to materialize its
+  // response. Replaying recovery must not rewrite it or signal another scan.
+  if (!run.needsUpdate) return true;
+  await notifyChatRunMilestones(db, input);
   const [updated] = await db
     .update(heartbeatRuns)
     .set({
-      resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || ${JSON.stringify(projection)}::jsonb`,
+      resultJson: projectedResult,
       updatedAt: new Date(),
     })
-    .where(
-      and(
-        eq(heartbeatRuns.id, input.runId),
-        eq(heartbeatRuns.companyId, input.companyId),
-        eq(heartbeatRuns.nativeIssueId, input.issueId),
-        eq(heartbeatRuns.runtimeMode, "native"),
-      ),
-    )
+    .where(runOwner)
     .returning({ id: heartbeatRuns.id });
   return Boolean(updated);
 }

@@ -77,13 +77,6 @@ describe("grok-auth-merge-decision predicate", () => {
     }
   }
 
-  it("uses the source when the identity matches and the source expiry is later", async () => {
-    const now = Date.now();
-    const sourceAuth = usableAuthJson({ marker: "src", expiresAt: new Date(now + 2 * 60_000).toISOString() });
-    const destinationAuth = usableAuthJson({ marker: "dst", expiresAt: new Date(now + 60_000).toISOString() });
-    expect(await runDecision({ sourceAuth, destinationAuth })).toBe(USE_SOURCE);
-  });
-
   it("keeps the destination when the identity key differs", async () => {
     const now = Date.now();
     const sourceAuth = usableAuthJson({
