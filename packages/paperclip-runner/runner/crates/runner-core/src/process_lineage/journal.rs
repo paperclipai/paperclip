@@ -367,6 +367,7 @@ fn reap_journals_from<T: ProcessTable>(
     loop {
         let elapsed = started.elapsed();
         let Some(table) = read_table() else {
+            consecutive_clean_reads = 0;
             if elapsed >= deadline {
                 return ReapReport {
                     journals: count,
@@ -441,6 +442,7 @@ fn reap_journals_from<T: ProcessTable>(
                 remaining: Vec::new(),
             };
         }
+        consecutive_clean_reads = 0;
         if elapsed >= deadline {
             let mut remaining: Vec<i32> = live
                 .iter()

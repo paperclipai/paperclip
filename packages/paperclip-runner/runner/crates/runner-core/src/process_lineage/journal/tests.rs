@@ -288,6 +288,14 @@ fn reap_torn_reads(
     reads: Vec<FixedTable>,
     settled: fn() -> FixedTable,
 ) -> (ReapReport, bool) {
+    reap_scripted_reads(name, reads.into_iter().map(Some).collect(), settled)
+}
+
+fn reap_scripted_reads(
+    name: &str,
+    reads: Vec<Option<FixedTable>>,
+    settled: fn() -> FixedTable,
+) -> (ReapReport, bool) {
     let directory = temporary_directory(name);
     let writer = exited_writer();
     write_marker(&directory, writer);
@@ -310,7 +318,7 @@ fn reap_torn_reads(
         writer.pid,
         Duration::ZERO,
         Duration::from_millis(200),
-        || Some(reads.pop_front().unwrap_or_else(settled)),
+        || reads.pop_front().unwrap_or_else(|| Some(settled())),
         |_| true,
     );
     let journal_kept = journal.exists();
@@ -335,6 +343,19 @@ fn reaping_counts_a_process_whose_parent_exited_during_the_first_read() {
     assert!(!report.verified);
     assert_eq!(report.remaining, vec![TORN_CHILD], "{report:?}");
     assert_eq!(report.signalled, 0, "{report:?}");
+    assert!(journal_kept, "a refused proof keeps the journal");
+}
+
+#[test]
+fn reaping_restarts_its_clean_reads_after_an_unreadable_table() {
+    let (report, journal_kept) = reap_scripted_reads(
+        "unreadable-between-clean-reads",
+        vec![Some(table(Vec::new())), None, Some(table(Vec::new()))],
+        || table(vec![(entry(TORN_ORPHAN, 1, TORN_ORPHAN, 200), TORN_ORPHAN)]),
+    );
+    assert_eq!(report.reason, Some("unattributed_orphan"), "{report:?}");
+    assert!(!report.verified);
+    assert_eq!(report.remaining, vec![TORN_ORPHAN], "{report:?}");
     assert!(journal_kept, "a refused proof keeps the journal");
 }
 
