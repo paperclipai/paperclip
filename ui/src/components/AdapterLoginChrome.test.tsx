@@ -121,6 +121,20 @@ describe("the connect step's cards", () => {
     expect(key!.getAttribute("aria-label")).toBe("API key");
   });
 
+  it("associates a field with its optional description", () => {
+    render(
+      <>
+        <OnboardingCardField description="Account details" value="" onChange={() => {}} onSubmit={() => {}} />
+        <OnboardingCardField value="" onChange={() => {}} onSubmit={() => {}} />
+      </>,
+    );
+
+    const [described, plain] = container.querySelectorAll("input");
+    const descriptionId = described!.getAttribute("aria-describedby");
+    expect(document.getElementById(descriptionId ?? "")?.textContent).toBe("Account details");
+    expect(plain!.hasAttribute("aria-describedby")).toBe(false);
+  });
+
   it("holds one height across the card's waiting and ready states", () => {
     // The card opens on a spinner and then fills. Both states share a floor, so
     // the footer below is pushed down once for one event rather than twice —
