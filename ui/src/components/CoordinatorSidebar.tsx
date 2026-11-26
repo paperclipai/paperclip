@@ -208,7 +208,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
           {experimental?.enableStatusCards === true && <SidebarNavItem className="design-sidebar-item" to="/status" label="Status" icon={LayoutGrid} textBadge="beta" />}
           {experimental?.enableGoalsSidebarLink === true && <SidebarNavItem className="design-sidebar-item" to="/goals" label="Goals" icon={Target} />}
           <PluginSlotOutlet slotTypes={["sidebar"]} context={pluginContext} className="flex flex-col gap-0.5" itemClassName="design-sidebar-plugin-item" missingBehavior="placeholder" />
-          <PluginLauncherOutlet placementZones={["sidebar"]} context={pluginContext} className="flex flex-col gap-0.5" itemClassName="design-sidebar-plugin-item mx-2" />
+          <PluginLauncherOutlet placementZones={["sidebar"]} context={pluginContext} className="flex flex-col gap-0.5" itemClassName="design-sidebar-plugin-item mx-2" onNavigate={isMobile ? () => setSidebarOpen(false) : undefined} />
           {orderedPins.length > 0 && <PinnedNavigationList key={`${companyId}:${userId}`} items={orderedPins} userId={userId} onReorder={pinnedNavigation.reorder} onUnpin={pinnedNavigation.toggle} />}
         </div>
         <Flyout open={moreOpen} onOpenChange={setMoreOpen}>

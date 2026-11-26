@@ -786,7 +786,13 @@ type PluginLauncherOutletProps = {
   entityType?: PluginUiSlotEntityType | null;
   className?: string;
   itemClassName?: string;
+  onNavigate?: () => void;
 };
+
+function launcherNavigatesInApp(launcher: ResolvedPluginLauncher) {
+  return launcher.action.type === "navigate"
+    || (launcher.action.type === "deepLink" && !/^https?:\/\//.test(launcher.action.target));
+}
 
 /**
  * Renders the plugin launchers for a host placement. Like `PluginSlotOutlet`,
@@ -799,6 +805,7 @@ export function PluginLauncherOutlet({
   entityType,
   className,
   itemClassName,
+  onNavigate,
 }: PluginLauncherOutletProps) {
   const { activateLauncher } = usePluginLauncherRuntime();
   const { launchers, contributionsByPluginId } = usePluginLaunchers({
@@ -821,6 +828,7 @@ export function PluginLauncherOutlet({
             onClick={(event) => {
               const contribution = contributionsByPluginId.get(launcher.pluginId);
               if (!contribution) return;
+              if (launcherNavigatesInApp(launcher)) onNavigate?.();
               void activateLauncher(launcher, context, contribution, event.currentTarget);
             }}
           />

@@ -8,7 +8,7 @@ import { TooltipProvider } from "./ui/tooltip";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const fixture = vi.hoisted(() => ({ enableStatusCards: false, enableGoalsSidebarLink: false }));
+const fixture = vi.hoisted(() => ({ enableStatusCards: false, enableGoalsSidebarLink: false, isMobile: false, setSidebarOpen: vi.fn() }));
 
 vi.mock("@/hooks/useAgentChatNavigation", () => ({ useAgentChatNavigation: () => ({
   companyId: "company", userId: "user", agents: { data: [] }, chats: { data: [] }, session: { isSuccess: true },
@@ -30,11 +30,11 @@ vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({
   selectedCompanyId: "company", selectedCompany: { id: "company", issuePrefix: "ACME" },
 }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
-vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: false, setSidebarOpen: vi.fn() }) }));
+vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: fixture.isMobile, setSidebarOpen: fixture.setSidebarOpen }) }));
 vi.mock("@/plugins/slots", () => ({ PluginSlotOutlet: ({ slotTypes, context, itemClassName }: { slotTypes: string[]; context: Record<string, unknown>; itemClassName?: string }) =>
   <div data-testid="plugin-slot-outlet" data-slot-types={slotTypes.join(",")} data-context={JSON.stringify(context)}><div data-testid="plugin-slot-item" className={itemClassName} /></div> }));
-vi.mock("@/plugins/launchers", () => ({ PluginLauncherOutlet: ({ placementZones, context, itemClassName }: { placementZones: string[]; context: Record<string, unknown>; itemClassName?: string }) =>
-  <div data-testid="plugin-launcher-outlet" data-placement-zones={placementZones.join(",")} data-context={JSON.stringify(context)}><div data-testid="plugin-launcher-item" className={itemClassName} /></div> }));
+vi.mock("@/plugins/launchers", () => ({ PluginLauncherOutlet: ({ placementZones, context, itemClassName, onNavigate }: { placementZones: string[]; context: Record<string, unknown>; itemClassName?: string; onNavigate?: () => void }) =>
+  <div data-testid="plugin-launcher-outlet" data-placement-zones={placementZones.join(",")} data-context={JSON.stringify(context)}><div data-testid="plugin-launcher-item" className={itemClassName}><button type="button" data-testid="plugin-launcher-navigate" onClick={() => onNavigate?.()} /></div></div> }));
 vi.mock("./SidebarCompanyMenu", () => ({ SidebarCompanyMenu: () => null }));
 vi.mock("@/lib/router", () => ({
   useLocation: () => ({ pathname: "/ACME/issues", search: "" }),
@@ -48,6 +48,8 @@ let root: Root, container: HTMLDivElement, client: QueryClient;
 beforeEach(() => {
   fixture.enableStatusCards = false;
   fixture.enableGoalsSidebarLink = false;
+  fixture.isMobile = false;
+  fixture.setSidebarOpen.mockReset();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -94,6 +96,13 @@ describe("CoordinatorSidebar plugin and flag-gated entries", () => {
     await renderSidebar();
     expect(navigation().querySelector('a[href="/status"]') !== null).toBe(enabled);
     expect(navigation().querySelector('a[href="/goals"]') !== null).toBe(enabled);
+  });
+
+  it.each([true, false])("closes the sidebar when a plugin launcher navigates only on mobile (%s)", async isMobile => {
+    fixture.isMobile = isMobile;
+    await renderSidebar();
+    await act(async () => { navigation().querySelector<HTMLButtonElement>('[data-testid="plugin-launcher-navigate"]')!.click(); });
+    expect(fixture.setSidebarOpen.mock.calls).toEqual(isMobile ? [[false]] : []);
   });
 
   it("controls Status and Goals independently", async () => {
