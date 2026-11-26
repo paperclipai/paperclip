@@ -339,6 +339,7 @@ pub fn reap_journals(
     let count = journals.len();
     let started = Instant::now();
     let mut signalled: HashSet<(i32, u64)> = HashSet::new();
+    let mut orphan_seen = false;
     loop {
         let elapsed = started.elapsed();
         let Some(table) = read_process_table() else {
@@ -369,12 +370,22 @@ pub fn reap_journals(
             if let Some(since) = unsampled_since {
                 let escaped = unattributed_orphans(&table, since, &journals);
                 if !escaped.is_empty() {
-                    return ReapReport {
-                        journals: count,
-                        signalled: signalled.len(),
-                        remaining: escaped,
-                        ..ReapReport::refused("unattributed_orphan")
-                    };
+                    if elapsed >= deadline {
+                        return ReapReport {
+                            journals: count,
+                            signalled: signalled.len(),
+                            remaining: escaped,
+                            ..ReapReport::refused("unattributed_orphan")
+                        };
+                    }
+                    orphan_seen = true;
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                if orphan_seen {
+                    orphan_seen = false;
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
                 }
             }
             for (path, _) in &journals {
@@ -722,7 +733,7 @@ mod tests {
             &directory,
             writer.pid,
             Duration::ZERO,
-            Duration::from_secs(5),
+            Duration::from_secs(1),
         );
         let alive = ProcessIdentity {
             pid: orphan.pid,
@@ -739,6 +750,68 @@ mod tests {
         assert!(!report.verified);
         assert!(report.remaining.contains(&orphan.pid), "{report:?}");
         assert!(alive, "an unattributed process is never signalled");
+    }
+
+    #[test]
+    fn reaping_waits_out_a_short_lived_orphan_it_cannot_attribute() {
+        let _no_foreign_orphans = super::super::host_orphans::no_foreign_orphans();
+        let directory = temporary_directory("short-orphan");
+        let writer = exited_writer();
+        write_marker(&directory, writer);
+        let provider = exited_writer();
+        let mut state = LineageState::default();
+        state.root = Some((provider.pid, provider.started));
+        fs::write(
+            directory
+                .join(JOURNAL_DIRECTORY_NAME)
+                .join(format!("lineage-{}-0.json", writer.pid)),
+            serde_json::to_vec(&state.journal_record(writer, newest_start())).unwrap(),
+        )
+        .unwrap();
+        let pid_file = directory.join("orphan.pid");
+        let status = std::process::Command::new("perl")
+            .args([
+                "-e",
+                "use POSIX (); exit 0 if fork(); POSIX::setsid() or die; exit 0 if fork(); select(undef, undef, undef, 0.01) while getppid() != 1; open(STDIN, '<', '/dev/null'); open(STDOUT, '>', '/dev/null'); open(STDERR, '>', '/dev/null'); open(my $f, '>', \"$ARGV[0].tmp\") or die; print $f $$; close $f; rename(\"$ARGV[0].tmp\", $ARGV[0]) or die; select(undef, undef, undef, 0.5); exit 0",
+                &pid_file.display().to_string(),
+            ])
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let orphan = loop {
+            if let Some(entry) = fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<i32>().ok())
+                .and_then(|pid| paperclip_process_table::read(pid).entry())
+                .filter(|entry| entry.ppid == 1 && !entry.zombie)
+            {
+                break entry;
+            }
+            assert!(Instant::now() < deadline, "orphan job did not start");
+            thread::sleep(Duration::from_millis(5));
+        };
+        let report = reap_journals(
+            &directory,
+            writer.pid,
+            Duration::ZERO,
+            Duration::from_secs(5),
+        );
+        let alive = ProcessIdentity {
+            pid: orphan.pid,
+            started: orphan.started,
+        }
+        .is_alive();
+        if alive {
+            if let Some(group) = rustix::process::Pid::from_raw(orphan.pgid) {
+                let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+            }
+            super::super::host_orphans::wait_until_group_gone(orphan.pgid);
+        }
+        let _ = fs::remove_dir_all(&directory);
+        assert!(report.verified, "{report:?}");
+        assert_eq!(report.signalled, 0, "{report:?}");
+        assert!(!alive, "the reap returned while the orphan lived");
     }
 
     /// A record that could not be written may be missing a member. The
