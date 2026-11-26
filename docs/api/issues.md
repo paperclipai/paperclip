@@ -213,7 +213,7 @@ satisfying attestation returns `422`:
 keys cannot set it. On create — including
 `POST /api/issues/{issueId}/children` and
 `POST /api/issues/{issueId}/accepted-plan-decompositions` — any supplied value,
-including `null`, which would skip the workspace default, returns `403` with code
+including `null`, returns `403` with code
 `completion_requirement_protected`. On update, a value that differs from the
 stored one returns the same error; resending the value the issue already carries
 is a no-op and neither advances the revision nor returns an error. Board sessions
