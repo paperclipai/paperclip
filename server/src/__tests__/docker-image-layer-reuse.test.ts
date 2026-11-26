@@ -56,7 +56,7 @@ it("copies the large provider-pack files as a linked layer with fixed timestamps
 });
 
 function linkedCopyOwners(text: string): string[] {
-  return [...text.matchAll(/^COPY\b.*$/gm)]
+  return [...text.matchAll(/^COPY\b.*$/gim)]
     .map((m) => m[0])
     .filter((line) => /\s--link\b/.test(line))
     .flatMap((line) => [...line.matchAll(/\s--chown=(\S+)/g)].map((m) => m[1]));
@@ -66,13 +66,15 @@ function argDefault(stageName: string, name: string): string | undefined {
   return stageBody(stageName).match(new RegExp(`^ARG ${name}=(\\S+)$`, "m"))?.[1];
 }
 
-it("finds linked copy owners whatever the flag order", () => {
+it("finds linked copy owners regardless of flag order or instruction case", () => {
   const fixture = [
     "COPY --chown=node:node --link --from=deps /a /a",
     "COPY --link --chown=0:0 --from=pack /b /b",
     "COPY --chown=node:node --from=build /c /c",
+    "copy --chown=node:node --link --from=deps /d /d",
+    "CoPy --link --chown=0:0 --from=pack /e /e",
   ].join("\n");
-  expect(linkedCopyOwners(fixture)).toEqual(["node:node", "0:0"]);
+  expect(linkedCopyOwners(fixture)).toEqual(["node:node", "0:0", "node:node", "0:0"]);
 });
 
 it("gives every linked copy numeric owner ids, because a linked layer cannot look up user names", () => {
