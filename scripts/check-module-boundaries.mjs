@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { scanAgentLifecycleBoundaries } from "./check-agent-lifecycle-boundaries.mjs";
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +10,12 @@ const defaultServerSrc = resolve(repoRoot, "server/src");
 const defaultModulesRoot = resolve(defaultServerSrc, "modules");
 const layerNames = new Set(["domain", "application", "adapters"]);
 const databasePackages = ["@paperclipai/db", "drizzle-orm", "embedded-postgres", "postgres"];
+const configurationTransactionCallers = new Set([
+  "modules/external-agents/muse.ts", "modules/external-agents/dot.ts",
+  "services/secret-proposals.ts", "services/connection-intents.ts", "services/dot-runner-broker.ts",
+  "services/public-mcp/oauth.ts", "services/agent-profile-avatar.ts", "services/agent-instruction-revisions.ts", "services/company-skills.ts",
+  "services/agent-file-store.ts",
+]);
 
 function normalizedRelative(from, to) {
   return relative(from, to).split(sep).join("/");
@@ -99,13 +106,35 @@ export function scanModuleBoundaries({
       const targetSegments = targetServerSegments(serverSrc, target);
       const targetLocation = target ? moduleLocation(modulesRoot, target) : null;
 
+      if (/^services\/agent-configuration-transaction\.(?:js|ts)$/.test(targetSegments.join("/")) &&
+          !configurationTransactionCallers.has(normalizedRelative(serverSrc, sourceFile))) {
+        addViolation(violations, sourceLabel, sourceLocation?.layer ?? null, specifier,
+          "configuration transaction integration is limited to its explicit workflow callers");
+      }
+
+      if (sourceLocation?.moduleName === "agent-lifecycle" &&
+          (targetSegments.includes("services") || targetSegments.includes("routes"))) {
+        addViolation(violations, sourceLabel, sourceLocation.layer, specifier,
+          "agent lifecycle must receive service integrations through its ports");
+      }
+
       if (sourceLocation?.layer === "domain") {
         if (isDatabasePackage(specifier)) {
           addViolation(violations, sourceLabel, "domain", specifier, "domain cannot import database packages");
         } else if (specifier.startsWith("node:")) {
           addViolation(violations, sourceLabel, "domain", specifier, "domain cannot import Node.js runtime modules");
-        } else if (targetSegments.includes("services") || targetSegments.includes("routes")) {
-          addViolation(violations, sourceLabel, "domain", specifier, "domain cannot import server services or routes");
+        } else if (
+          targetSegments.includes("services") ||
+          targetSegments.includes("routes") ||
+          targetSegments.includes("adapters")
+        ) {
+          addViolation(
+            violations,
+            sourceLabel,
+            "domain",
+            specifier,
+            "domain cannot import server services, routes, or adapters",
+          );
         } else if (targetLocation?.layer === "application" || targetLocation?.layer === "adapters") {
           addViolation(violations, sourceLabel, "domain", specifier, "domain cannot depend on outer module layers");
         }
@@ -114,8 +143,10 @@ export function scanModuleBoundaries({
       if (sourceLocation?.layer === "application") {
         if (isDatabasePackage(specifier)) {
           addViolation(violations, sourceLabel, "application", specifier, "application cannot import database packages");
-        } else if (targetLocation?.layer === "adapters") {
+        } else if (targetLocation?.layer === "adapters" || targetSegments.includes("adapters")) {
           addViolation(violations, sourceLabel, "application", specifier, "application cannot import concrete adapters");
+        } else if (targetSegments.includes("services") || targetSegments.includes("routes")) {
+          addViolation(violations, sourceLabel, "application", specifier, "application cannot import server services or routes");
         } else if (targetSegments.join("/") === "errors.js" || targetSegments.join("/") === "errors.ts") {
           addViolation(violations, sourceLabel, "application", specifier, "application cannot import HTTP error helpers");
         }
@@ -123,7 +154,11 @@ export function scanModuleBoundaries({
 
       if (targetLocation && sourceLocation?.moduleName !== targetLocation.moduleName) {
         const targetRelative = normalizedRelative(resolve(modulesRoot, targetLocation.moduleName), target);
-        if (targetRelative !== "index.js" && targetRelative !== "index.ts") {
+        const configurationIntegration = /^configuration\.(?:js|ts)$/.test(targetRelative) &&
+          normalizedRelative(serverSrc, sourceFile) === "services/agent-configuration-transaction.ts";
+        const companyDeletionIntegration = /^company-deletion\.(?:js|ts)$/.test(targetRelative) &&
+          normalizedRelative(serverSrc, sourceFile) === "services/company-deletion.ts";
+        if (targetRelative !== "index.js" && targetRelative !== "index.ts" && !companyDeletionIntegration && !configurationIntegration) {
           addViolation(
             violations,
             sourceLabel,
@@ -146,13 +181,15 @@ export function formatViolation(violation) {
 
 function main() {
   const violations = scanModuleBoundaries();
+  const lifecycleViolations = scanAgentLifecycleBoundaries();
+  if (lifecycleViolations.length) { console.error(lifecycleViolations.join("\n")); process.exitCode = 1; }
   if (violations.length > 0) {
     console.error("Feature module boundary check failed:");
     for (const violation of violations) console.error(`- ${formatViolation(violation)}`);
     process.exitCode = 1;
     return;
   }
-  console.log("Feature module boundary check passed.");
+  if (!lifecycleViolations.length) console.log("Feature module boundary check passed.");
 }
 
 if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) main();

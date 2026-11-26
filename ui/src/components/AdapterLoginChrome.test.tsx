@@ -2,14 +2,17 @@
 
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type React from "react";
 import {
+  LocalProviderLoginInstructions,
   OnboardingLoginCard,
   OnboardingCardField,
+  OnboardingLoginCodeRow,
   onboardingCardInputClass,
 } from "./AdapterLoginChrome";
+import { isBlockedFromReplay, replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
 /**
  * The connect step's canvas holds one of two cards, and the credential switch
@@ -93,9 +96,11 @@ describe("the connect step's cards", () => {
     expect(key!.className).toBe(code!.className);
   });
 
-  it("masks a key and does not mask a one-time code", () => {
-    // A provider key is a credential that goes on living; a browser code is
-    // single-use and about to be pasted somewhere the customer can see.
+  it("masks only when asked", () => {
+    // The primitive leaves the choice to each card rather than guessing from
+    // the label. The key card asks, and so does the Claude card for its code —
+    // that call site is pinned by the wizard's paste test. What this pins is
+    // that asking is what does it, and that not asking shows the value.
     render(
       <>
         <OnboardingCardField value="" onChange={() => {}} onSubmit={() => {}} />
@@ -114,6 +119,20 @@ describe("the connect step's cards", () => {
     expect(code!.getAttribute("aria-label")).toBe("Authorization code");
     expect(key!.getAttribute("type")).toBe("password");
     expect(key!.getAttribute("aria-label")).toBe("API key");
+  });
+
+  it("associates a field with its optional description", () => {
+    render(
+      <>
+        <OnboardingCardField description="Account details" value="" onChange={() => {}} onSubmit={() => {}} />
+        <OnboardingCardField value="" onChange={() => {}} onSubmit={() => {}} />
+      </>,
+    );
+
+    const [described, plain] = container.querySelectorAll("input");
+    const descriptionId = described!.getAttribute("aria-describedby");
+    expect(document.getElementById(descriptionId ?? "")?.textContent).toBe("Account details");
+    expect(plain!.hasAttribute("aria-describedby")).toBe(false);
   });
 
   it("holds one height across the card's waiting and ready states", () => {
@@ -139,5 +158,202 @@ describe("the connect step's cards", () => {
 
     expect(waiting).toContain("min-h-(--sz-108px)");
     expect(ready).toContain("min-h-(--sz-108px)");
+  });
+});
+
+/**
+ * The displayed-code card puts the code on the clipboard the moment it is
+ * readable, so the customer can paste it wherever they are being asked for it
+ * without reaching for the button. That convenience is only worth anything if
+ * it actually happened — a card claiming "Copied!" over an empty clipboard is
+ * worse than one that never claimed it, because the customer stops checking.
+ */
+describe("the displayed code's auto-copy", () => {
+  function stubClipboard() {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    return writeText;
+  }
+
+  function stubFocus(focused: boolean) {
+    const original = document.hasFocus;
+    document.hasFocus = () => focused;
+    return () => {
+      document.hasFocus = original;
+    };
+  }
+
+  afterEach(() => {
+    Reflect.deleteProperty(navigator, "clipboard");
+  });
+
+  it("writes nothing when there is no code yet", async () => {
+    // The row renders before the server's one-time prompt carries a value on
+    // some paths. The latch used to be taken on that first run, so the copy
+    // that mattered never ran and the clipboard kept whatever it already had.
+    const writeText = stubClipboard();
+    const restore = stubFocus(true);
+    try {
+      await render(<OnboardingLoginCodeRow code="" autoCopy />);
+      expect(writeText).not.toHaveBeenCalled();
+    } finally {
+      restore();
+    }
+  });
+
+  it("copies the code once it arrives", async () => {
+    const writeText = stubClipboard();
+    const restore = stubFocus(true);
+    try {
+      await render(<OnboardingLoginCodeRow code="WFK7-4GA3U" autoCopy />);
+      expect(writeText).toHaveBeenCalledWith("WFK7-4GA3U");
+    } finally {
+      restore();
+    }
+  });
+
+  it("asks once while a write is still in flight", async () => {
+    // The success latch is only taken when the write resolves, so it cannot
+    // also mean "already running" — without a separate guard a focus event
+    // arriving mid-write started a second attempt.
+    let settle: () => void = () => {};
+    const writeText = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+    );
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const restore = stubFocus(true);
+    try {
+      await render(<OnboardingLoginCodeRow code="WFK7-4GA3U" autoCopy />);
+      expect(writeText).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(writeText).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        settle();
+      });
+    } finally {
+      restore();
+    }
+  });
+
+  it("waits for the document rather than spending its one attempt unfocused", async () => {
+    // A write from an unfocused document is refused, and the first attempt is
+    // the most likely to be refused, since it fires while the card is still
+    // arriving. Latching before the attempt made that refusal permanent.
+    const writeText = stubClipboard();
+    const restore = stubFocus(false);
+    try {
+      await render(<OnboardingLoginCodeRow code="WFK7-4GA3U" autoCopy />);
+      expect(writeText).not.toHaveBeenCalled();
+
+      document.hasFocus = () => true;
+      await act(async () => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      expect(writeText).toHaveBeenCalledWith("WFK7-4GA3U");
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe("session replay", () => {
+  const login = { preparing: false, error: null, retry: vi.fn() };
+
+  it("blocks the one-time login code", async () => {
+    await render(<OnboardingLoginCodeRow code="QZRT-77XKV" />);
+    expect(isBlockedFromReplay("QZRT-77XKV", document.body)).toBe(true);
+  });
+
+  it("blocks the displayed device code in the provider sign-in card", async () => {
+    await render(<LocalProviderLoginInstructions adapterType="codex_local" login={{ ...login, authorizationUrl: "https://auth.example.test/device", code: "MNPL-48WQD" }} />);
+    expect(isBlockedFromReplay("MNPL-48WQD", document.body)).toBe(true);
+  });
+
+  it("blocks the terminal sign-in command", async () => {
+    await render(<LocalProviderLoginInstructions adapterType="grok_local" login={{ ...login, command: "grok login --token-hint vexmoor-9182" }} />);
+    expect(isBlockedFromReplay("grok login --token-hint vexmoor-9182", document.body)).toBe(true);
+  });
+
+  it("masks the signed-in account label", async () => {
+    await render(<LocalProviderLoginInstructions adapterType="claude_local" login={{ ...login, status: "ready", accountLabel: "hollis.brennan@example.test" }} />);
+    expect(replayLeaks("hollis.brennan@example.test", document.body)).toEqual({ rendered: true, recorded: false });
+  });
+
+  it("blocks hosted Google redirect input from session replay and preserves retryable errors", async () => {
+    const submitCode = vi.fn().mockRejectedValueOnce(new Error("The pasted URL does not match this Google sign-in attempt.")).mockResolvedValueOnce(undefined);
+    const container = await render(
+      <LocalProviderLoginInstructions
+        adapterType="antigravity_runtime"
+        hostedRedirect
+        login={{
+          ...login,
+          authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=test-state",
+          submitCode,
+        }}
+      />,
+    );
+    const link = container.querySelector('a[href="https://accounts.google.com/o/oauth2/v2/auth?state=test-state"]') as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link!.getAttribute("target")).toBe("_blank");
+    expect(link!.getAttribute("rel")).toBe("noreferrer noopener");
+    expect(container.textContent).toContain("Sign in to Antigravity");
+    expect(container.textContent).toContain("127.0.0.1");
+
+    const input = container.querySelector('input[aria-label="Antigravity redirect URL"]') as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    expect(input!.getAttribute("autocomplete")).toBe("off");
+    expect(input!.getAttribute("spellcheck")).toBe("false");
+    expect(input!.className).toContain("ph-mask");
+    expect(input!.className).toContain("ph-no-capture");
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "http://127.0.0.1:41234/?state=bad&code=abc");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const submitButton = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Submit redirect URL") as HTMLButtonElement;
+    await act(async () => { submitButton.click(); });
+    await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("does not match"));
+    expect(submitCode).toHaveBeenCalledWith("http://127.0.0.1:41234/?state=bad&code=abc");
+    // Input stays open after a retryable bad paste.
+    const retryInput = container.querySelector('input[aria-label="Antigravity redirect URL"]') as HTMLInputElement | null;
+    expect(retryInput).not.toBeNull();
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(retryInput, "http://127.0.0.1:41234/?state=good&code=xyz");
+      retryInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const retrySubmit = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Submit redirect URL") as HTMLButtonElement;
+    await act(async () => { retrySubmit.click(); });
+    await vi.waitFor(() => expect(container.textContent).toContain("Finishing sign-in"));
+    expect(submitCode).toHaveBeenCalledWith("http://127.0.0.1:41234/?state=good&code=xyz");
+  });
+
+  it("keeps the direct local Antigravity prompt without a paste field when hostedRedirect is false", async () => {
+    const container = await render(
+      <LocalProviderLoginInstructions
+        adapterType="antigravity_runtime"
+        hostedRedirect={false}
+        login={{
+          ...login,
+          authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=local-state",
+        }}
+      />,
+    );
+    expect(container.querySelector('input[aria-label="Antigravity redirect URL"]')).toBeNull();
+    expect(container.textContent).toContain("Finish signing in in the Antigravity browser window");
   });
 });

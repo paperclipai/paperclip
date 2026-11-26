@@ -13,10 +13,12 @@ import { describe, expect, it } from "vitest";
 import {
   boundedCodexPayload,
   codexToolAcceptsDisposition,
+  codexToolAcceptsResult,
   isCodexSemanticTool,
   isRetainableCodexPayload,
   redactCodexValue,
   validateCodexWorkingDirectory,
+  validatePreparedLaunchWorkingDirectory,
 } from "./codex-boundaries.js";
 
 describe("Codex value and workspace boundaries", () => {
@@ -187,6 +189,7 @@ describe("Codex value and workspace boundaries", () => {
     expect(isCodexSemanticTool("paperclip_block")).toBe(true);
     expect(isCodexSemanticTool("shell")).toBe(false);
     expect(codexToolAcceptsDisposition("paperclip_finish", "done")).toBe(true);
+    expect(codexToolAcceptsDisposition("paperclip_finish", "yielded")).toBe(true);
     expect(codexToolAcceptsDisposition("paperclip_finish", "blocked")).toBe(
       false,
     );
@@ -194,5 +197,63 @@ describe("Codex value and workspace boundaries", () => {
       true,
     );
     expect(codexToolAcceptsDisposition("unknown_tool", "done")).toBe(false);
+    expect(codexToolAcceptsResult("paperclip_finish", {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "yielded",
+      summary: "Waiting for the next response.",
+      completionClaim: {
+        contractRevision: "1",
+        objectiveSatisfied: false,
+        criteria: [],
+        remainingWork: [{ description: "Wait for the response.", blocksCompletion: true }],
+      },
+      evidence: [],
+      verification: [],
+      attentionRequests: [],
+      artifacts: [],
+      continuation: {
+        kind: "response_wake",
+        summary: "Resume after the response.",
+        idempotencyKey: "response-wake-1",
+      },
+    })).toBe(true);
+    expect(codexToolAcceptsResult("paperclip_finish", {
+      schema: "paperclip.run_result.v1",
+      reportedWorkDisposition: "yielded",
+      summary: "Continue immediately.",
+      completionClaim: {
+        contractRevision: "1",
+        objectiveSatisfied: false,
+        criteria: [],
+        remainingWork: [{ description: "Continue.", blocksCompletion: true }],
+      },
+      evidence: [],
+      verification: [],
+      attentionRequests: [],
+      artifacts: [],
+      continuation: {
+        kind: "same_agent",
+        summary: "Continue immediately.",
+        idempotencyKey: "same-agent-1",
+      },
+    })).toBe(false);
+  });
+});
+
+describe("runner-prepared launch working directory", () => {
+  it("accepts the reported VM directory without a Core workspace or local filesystem", () => {
+    for (const cwd of ["/home/agent", "/projects/repository/worktrees/workspace"]) {
+      expect(validateCodexWorkingDirectory(cwd, {}, "runner_prepared_launch")).toBe(cwd);
+    }
+  });
+
+  it.each([
+    ["relative", "home/agent", "normalized absolute path"],
+    ["unnormalized", "/home/agent/../root", "normalized absolute path"],
+    ["control character", "/home/agent\n", "normalized absolute path"],
+    ["root", "/", "filesystem root"],
+    ["non-string", 7, "normalized absolute path"],
+  ])("rejects a %s directory", (_label, cwd, message) => {
+    expect(() => validatePreparedLaunchWorkingDirectory(cwd)).toThrow(message);
   });
 });

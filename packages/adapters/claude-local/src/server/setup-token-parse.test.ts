@@ -122,6 +122,36 @@ describe("parseSetupTokenPrompt", () => {
     expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
   });
 
+  it("keeps joining a hard-wrapped URL past a full-width row that already validates", () => {
+    const wrapped = hardWrap(CLAUDE_COM_URL, 64).split("\n");
+    const lastRow = wrapped[wrapped.length - 1];
+    expect(STATE.length - lastRow.length).toBeGreaterThanOrEqual(16);
+    const text = [
+      PREAMBLE_LINE,
+      ...wrapped,
+      "Hold Shift while selecting to use your terminal's native copy",
+      PROMPT_LINE,
+    ].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it("returns the full URL for every hard-wrap width from 40 to 200 columns", () => {
+    for (const url of [CLAUDE_AI_URL, CLAUDE_COM_URL]) {
+      for (let width = 40; width <= 200; width += 1) {
+        const text = [PREAMBLE_LINE, hardWrap(url, width), PROMPT_LINE].join("\n");
+        expect(parseSetupTokenPrompt(text)?.url, `${url.slice(0, 20)} at ${width}`).toBe(url);
+      }
+    }
+  });
+
+  it("returns null, not a truncated URL, when a two-row wrap leaves the first row valid", () => {
+    const width = CLAUDE_COM_URL.length - 8;
+    const text = [PREAMBLE_LINE, hardWrap(CLAUDE_COM_URL, width), PROMPT_LINE].join("\n");
+    expect(parseSetupTokenPrompt(text)).toBeNull();
+  });
+
   it("returns the URL when the output arrives split across chunks", () => {
     // The streaming caller accumulates chunks and re-parses the whole buffer. The
     // chunk boundary falls inside the URL token with no line break, so the joined
@@ -335,6 +365,84 @@ describe("parseSetupTokenPrompt", () => {
     // prompt result.
     const withKey = `${CLAUDE_COM_URL}&sk%2Dant%2Dredacted=x`;
     expect(parseSetupTokenPrompt(completeOutput(withKey))).toBeNull();
+  });
+
+  it("skips the 2.1.291 copy hint between the URL and the prompt", () => {
+    const hint = chaSpaced("Hold Shift while selecting to use your terminal's native copy".split(" "));
+    const text = [PREAMBLE_LINE, hardWrap(CLAUDE_COM_URL, 130), "", hint, "", "", PROMPT_LINE].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it.each([
+    "Fn",
+    "Option",
+    "Shift (Option in iTerm2, Fn in Terminal.app)",
+  ])("skips the copy hint that names the %s key", (key) => {
+    const hint = chaSpaced(`Hold ${key} while selecting to use your terminal's native copy`.split(" "));
+    const text = [PREAMBLE_LINE, CLAUDE_COM_URL, "", hint, "", "", PROMPT_LINE].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it("skips the long copy hint when it wraps across two rows", () => {
+    const first = chaSpaced("Hold Shift (Option in iTerm2, Fn in Terminal.app) while selecting to use your".split(" "));
+    const second = chaSpaced("terminal's native copy".split(" "));
+    const text = [PREAMBLE_LINE, CLAUDE_COM_URL, "", "", "", first, "", second, "", "", "", "", "", PROMPT_LINE].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it("skips the 2.1.306 login-method line after the copy hint", () => {
+    const rows = hardWrap(CLAUDE_COM_URL, 78)
+      .split("\n")
+      .map((row) => osc8Hyperlink(CLAUDE_COM_URL, row));
+    const hint = chaSpaced("Hold Shift while selecting to use your terminal's native copy".split(" "));
+    const method = chaSpaced("Login method pre-selected: Subscription Plan (Claude Pro/Max)".split(" "));
+    const text = [PREAMBLE_LINE, ...rows, hint, method, PROMPT_LINE].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
+  it("skips the login-method line when no copy hint precedes it", () => {
+    const text = [
+      PREAMBLE_LINE,
+      CLAUDE_COM_URL,
+      "Login method pre-selected: Claude account with subscription",
+      PROMPT_LINE,
+    ].join("\n");
+    expect(parseSetupTokenPrompt(text)?.url).toBe(CLAUDE_COM_URL);
+  });
+
+  it.each([
+    "Login method pre-selected: https://claude.com.example/x",
+    "Login method pre-selected: ABCD-EFGHJ:code",
+    "Login method pre-selected:",
+    "Login method selected: Subscription Plan",
+  ])("returns null for a malformed login-method line: %s", (line) => {
+    const text = [PREAMBLE_LINE, CLAUDE_COM_URL, line, PROMPT_LINE].join("\n");
+    expect(parseSetupTokenPrompt(text)).toBeNull();
+  });
+
+  it("returns null when a copy hint names an unknown key", () => {
+    const hint = "Hold Ctrl while selecting to use your terminal's native copy";
+    const text = [PREAMBLE_LINE, CLAUDE_COM_URL, hint, PROMPT_LINE].join("\n");
+    expect(parseSetupTokenPrompt(text)).toBeNull();
+  });
+
+  it("returns null when an unrelated line follows a partial copy hint", () => {
+    const text = [
+      PREAMBLE_LINE,
+      CLAUDE_COM_URL,
+      "Hold Shift (Option in iTerm2, Fn in Terminal.app) while selecting to use your",
+      "an unrelated line",
+      PROMPT_LINE,
+    ].join("\n");
+    expect(parseSetupTokenPrompt(text)).toBeNull();
   });
 
   it("returns null when a code-like value sits on the line after the URL", () => {

@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -84,14 +84,15 @@ describe("paperclip-runner real server vertical slice", () => {
     await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
     const address = server.address();
     if (address === null || typeof address === "string") throw new Error("Expected a TCP listener.");
-    setupRunnerPrpWebSocketServer(server, {
-      apiUrl: `http://127.0.0.1:${address.port}`,
-    });
+    setupRunnerPrpWebSocketServer(server);
     const stateDirectory = await mkdtemp(resolve(tmpdir(), "paperclip-runner-real-resume-"));
+    const expectedContextFile = resolve(stateDirectory, "expected-context.json");
+    await writeFile(expectedContextFile, JSON.stringify({ companyId, actorId: agentId, taskId: issueId, runId, callId: "semantic-call-1" }));
+    const fakeArgs = ["--state-file", resolve(stateDirectory, "fake-provider-state.json"), "--emit-tool-call", "--durable-turn-ids", "--durable-tool-ids", "--expected-canonical-task-context-file", expectedContextFile];
     const bundle = createRunnerdCodexTransport({
       runnerBinary: defaultCapabilityRunnerdBinary(),
       codexCommand: fakeCodexAppServer,
-      codexArgs: [],
+      codexArgs: fakeArgs,
       stateDirectory,
       lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
       prpIdentity: {
@@ -115,7 +116,7 @@ describe("paperclip-runner real server vertical slice", () => {
       observedResults.push(result);
       return {
         success: true,
-        contentItems: [{ type: "inputText", text: JSON.stringify({ ok: true, result }) }],
+        contentItems: [{ type: "inputText", text: JSON.stringify({ ok: true, operationId: params.tool, callId: params.callId, value: result }) }],
       };
     });
 
@@ -158,10 +159,11 @@ describe("paperclip-runner real server vertical slice", () => {
         issueId,
         runId: resumedRunId,
       });
+      await writeFile(expectedContextFile, JSON.stringify({ companyId, actorId: agentId, taskId: issueId, runId: resumedRunId, callId: "semantic-call-2" }));
       const restored = createRunnerdCodexTransport({
         runnerBinary: defaultCapabilityRunnerdBinary(),
         codexCommand: fakeCodexAppServer,
-        codexArgs: [],
+        codexArgs: fakeArgs,
         stateDirectory,
         lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
         resumeDynamicTools: await resumedAuthority.definitions(),
@@ -189,7 +191,7 @@ describe("paperclip-runner real server vertical slice", () => {
         observedResults.push(result);
         return {
           success: true,
-          contentItems: [{ type: "inputText", text: JSON.stringify({ ok: true, result }) }],
+          contentItems: [{ type: "inputText", text: JSON.stringify({ ok: true, operationId: params.tool, callId: params.callId, value: result }) }],
         };
       });
       try {
@@ -206,7 +208,7 @@ describe("paperclip-runner real server vertical slice", () => {
           run: { id: resumedRunId },
         });
         expect(restored.evidence().diagnostics).toContain(
-          "runnerd restored its durable PRP session and provider thread",
+          "runnerd attached the durable provider session to a fresh PRP run authority",
         );
       } finally {
         await restored.transport.close();

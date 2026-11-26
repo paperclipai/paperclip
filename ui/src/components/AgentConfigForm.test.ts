@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Environment } from "@paperclipai/shared";
 import {
+  resolveEffectiveAgentEnv,
   resolvePaperclipRunnerTransitionModel,
   supportsAdapterModelRefresh,
 } from "./AgentConfigForm";
@@ -14,12 +15,16 @@ describe("supportsAdapterModelRefresh", () => {
   });
 
   it("keeps the refresh action hidden for adapters without a live refresh hook", () => {
-    expect(supportsAdapterModelRefresh("opencode_local")).toBe(false);
+    expect(supportsAdapterModelRefresh("opencode_local")).toBe(true);
+    expect(supportsAdapterModelRefresh("paperclip_runner")).toBe(true);
     expect(supportsAdapterModelRefresh("process")).toBe(false);
   });
 });
 
 describe("resolvePaperclipRunnerTransitionModel", () => {
+  it("preserves Claude custom model IDs", () => {
+    expect(resolvePaperclipRunnerTransitionModel("claude_local", "custom-claude-model")).toBe("custom-claude-model");
+  });
   it("preserves an explicit model from codex_local", () => {
     expect(resolvePaperclipRunnerTransitionModel("codex_local", "gpt-5.5"))
       .toBe("gpt-5.5");
@@ -27,7 +32,7 @@ describe("resolvePaperclipRunnerTransitionModel", () => {
 
   it("uses the current Codex default when the source model is blank", () => {
     expect(resolvePaperclipRunnerTransitionModel("codex_local", ""))
-      .toBe("gpt-5.6-sol");
+      .toBe("gpt-6.1-sol");
   });
 });
 
@@ -83,5 +88,30 @@ describe("resolveForcedKubernetesEnvironment", () => {
     const result = resolveForcedKubernetesEnvironment("kubernetes", [localEnv, fakeSandbox]);
     expect(result.forced).toBe(true);
     expect(result.kubernetesEnvironment).toBeNull();
+  });
+});
+
+describe("resolveEffectiveAgentEnv", () => {
+  it("treats an explicit overlay env: undefined (all variables removed) as empty instead of restoring saved env", () => {
+    const savedAdapterConfig = {
+      env: { OLD_VAR: { type: "plain", value: "stale" } },
+    };
+    const clearedOverlay = { env: undefined };
+    expect(resolveEffectiveAgentEnv(clearedOverlay, savedAdapterConfig, null)).toEqual({});
+  });
+
+  it("falls back to saved env only when overlay does not own env", () => {
+    const savedAdapterConfig = {
+      env: { KEPT_VAR: { type: "plain", value: "kept" } },
+    };
+    expect(resolveEffectiveAgentEnv({}, savedAdapterConfig, null)).toEqual(savedAdapterConfig.env);
+  });
+
+  it("prefers freshly flushed env over both overlay and saved env", () => {
+    const savedAdapterConfig = {
+      env: { OLD_VAR: { type: "plain", value: "stale" } },
+    };
+    const flushed = { NEW_VAR: { type: "plain" as const, value: "fresh" } };
+    expect(resolveEffectiveAgentEnv({ env: undefined }, savedAdapterConfig, flushed)).toEqual(flushed);
   });
 });

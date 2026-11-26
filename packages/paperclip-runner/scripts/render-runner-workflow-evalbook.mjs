@@ -309,6 +309,15 @@ export async function renderRunnerWorkflowWithCanonicalEvalbook({
   environment = process.env,
 }) {
   const program = await resolveCanonicalEvalProgram(packageRoot, environment);
+  const viewerRoot = resolve(
+    environment.PAPERCLIP_EVAL_VIEWER_ROOT ??
+      resolve(packageRoot, "dist-issue-thread"),
+  );
+  await access(resolve(viewerRoot, "index.html")).catch(() => {
+    throw new Error(
+      "Evalbook requires the chat viewer. Run pnpm --filter @paperclipai/paperclip-runner build:issue-thread first.",
+    );
+  });
   const runsRoot = resolve(outputDirectory, "evalbook-runs");
   await rm(runsRoot, { recursive: true, force: true });
   const attempts = await writeRunnerWorkflowEvalbookAttempts({
@@ -331,6 +340,8 @@ export async function renderRunnerWorkflowWithCanonicalEvalbook({
     runsRoot,
     "--output",
     outputDirectory,
+    "--viewer-root",
+    viewerRoot,
   ]);
   const programBytes = await readFile(program);
   const manifest = {

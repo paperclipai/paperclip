@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { appTabHref } from "../app-tabs";
 import type { ActivityPanelProps } from "./types";
+import { googleAccessRetrySummary } from "../../../features/connections/googleAccessRemoval";
 
 export function ActivityPanel(props: ActivityPanelProps) {
   return <RecentActivity {...props} />;
@@ -229,6 +230,9 @@ function humanizeLifecycleEvent(
       const count = numberFrom(event.details?.count);
       return `${count} new ${count === 1 ? "action" : "actions"} need review`;
     }
+    case "google_access_ended":
+    case "google_access_not_ended":
+      return googleAccessRetrySummary(event.type, event.details);
     default:
       return `${who} updated this app`;
   }
@@ -274,5 +278,6 @@ function dotColor(event: ToolCallEvent): string {
 function lifecycleDotColor(event: ToolConnectionLifecycleEvent): string {
   if (event.type === "disconnected") return "bg-red-400";
   if (event.type === "app_paused" || event.type === "actions_quarantined") return "bg-amber-400";
+  if (event.type === "google_access_not_ended" && event.details?.result !== "other_connections_remain") return "bg-amber-400";
   return "bg-emerald-400";
 }

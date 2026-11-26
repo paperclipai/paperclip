@@ -26,6 +26,7 @@ async function fixture() {
     mkdir(join(program, "rosters"), { recursive: true }),
     mkdir(join(program, "configs"), { recursive: true }),
     mkdir(join(program, "cases"), { recursive: true }),
+    mkdir(join(program, "campaigns"), { recursive: true }),
   ]);
   const config = {
     schema: "paperclip-runner/eval-config/v1",
@@ -33,7 +34,7 @@ async function fixture() {
     provider: "opencode",
     driver: "opencode_server",
     model: "openrouter/example/model",
-    opencodeVersion: "1.18.17",
+    opencodeVersion: "1.18.34",
   };
   const evalCase = {
     schema: "paperclip-runner/eval-case/v1",
@@ -65,12 +66,26 @@ async function fixture() {
       join(program, "rosters/live-opencode-model.json"),
       JSON.stringify(roster),
     ),
+    writeFile(
+      join(program, "campaigns/live-direct-full.json"),
+      JSON.stringify({
+        schema: "paperclip-runner/live-campaign/v1",
+        lanes: [
+          {
+            id: "opencode-model",
+            executionClass: "default",
+            roster: "../rosters/live-opencode-model.json",
+          },
+        ],
+      }),
+    ),
   ]);
   return { root, program, config, evalCase, roster };
 }
 
 test("maps every qualified driver to one explicit credential boundary", () => {
   assert.equal(credentialForConfig({ provider: "codex" }), "OPENAI_API_KEY");
+  assert.equal(credentialForConfig({ provider: "acpx", acpxAgent: "grok" }), "XAI_API_KEY");
   assert.equal(
     credentialForConfig({ provider: "opencode" }),
     "OPENROUTER_API_KEY",
@@ -89,6 +104,95 @@ test("maps every qualified driver to one explicit credential boundary", () => {
   );
 });
 
+test("selects the Copilot token for the exact protocol roster and execution matrix", async () => {
+  const { root, program, config } = await fixture();
+  await writeFile(join(program, "configs/live-opencode-model.json"), JSON.stringify({
+    ...config,
+    provider: "acpx",
+    driver: "acpx_runtime",
+    acpxAgent: "copilot",
+    model: "gpt-5.6-luna",
+  }));
+  const catalog = await buildProtocolEvalCatalog({
+    evalsRoot: root,
+    campaignId: "copilot-credential-01",
+    rosterSelection: "live-opencode-model.json",
+  });
+  assert.equal(catalog.rosters.length, 1);
+  assert.equal(catalog.rosters[0].credentialName, "COPILOT_GITHUB_TOKEN");
+  assert.equal(catalog.cells.length, 1);
+  assert.equal(catalog.cells[0].credentialName, "COPILOT_GITHUB_TOKEN");
+  assert.deepEqual(
+    catalog.matrices.flatMap(matrix => matrix.include).map(cell => cell.credentialName),
+    ["COPILOT_GITHUB_TOKEN"],
+  );
+});
+
+async function grokFixture() {
+  const value = await fixture();
+  value.config = {
+    schema: "paperclip-runner/eval-config/v1", id: "live-grok",
+    provider: "acpx", driver: "acpx_runtime", acpxAgent: "grok", model: "grok-4.7",
+  };
+  value.roster.model = value.config.model;
+  await writeFile(join(value.program, "configs/live-opencode-model.json"), JSON.stringify(value.config));
+  await writeFile(join(value.program, "rosters/live-opencode-model.json"), JSON.stringify(value.roster));
+  return value;
+}
+
+test("selects exactly one Grok credential and preserves authentication provenance", async () => {
+  const { root } = await grokFixture();
+  for (const [mode, credential] of [
+    ["api_key", "XAI_API_KEY"],
+    ["subscription", "PAPERCLIP_ACPX_GROK_AUTH_JSON_SECRET"],
+  ]) {
+    const catalog = await buildProtocolEvalCatalog({ evalsRoot: root, campaignId: "gha-42-1", grokAuthenticationMode: mode });
+    assert.equal(catalog.selection.grokAuthenticationMode, mode);
+    assert.equal(catalog.cells[0].credentialName, credential);
+    assert.equal(catalog.cells[0].authenticationMode, mode);
+    assert.equal(catalog.rosters[0].authenticationMode, mode);
+    assert.equal(catalog.matrices[0].include[0].credentialName, credential);
+  }
+  for (const mode of ["", "auto", "subscription,api_key", null]) {
+    await assert.rejects(buildProtocolEvalCatalog({ evalsRoot: root, campaignId: "gha-42-1", grokAuthenticationMode: mode }), /authentication mode/);
+  }
+  const other = await fixture();
+  await assert.rejects(buildProtocolEvalCatalog({ evalsRoot: other.root, campaignId: "gha-42-1", grokAuthenticationMode: "subscription" }), /requires an explicit Grok roster/);
+});
+
+test("subscription evidence cannot be substituted with an API or missing authentication record", async () => {
+  const { root, config, evalCase } = await grokFixture();
+  const catalog = await buildProtocolEvalCatalog({ evalsRoot: root, campaignId: "gha-42-1", grokAuthenticationMode: "subscription" });
+  const catalogPath = join(root, "catalog.json");
+  await writeFile(catalogPath, JSON.stringify(catalog));
+  const cell = catalog.cells[0];
+  const download = join(root, "downloads/cell");
+  const attemptId = "grok-attempt-01";
+  const attempt = join(download, "runs", attemptId);
+  await mkdir(attempt, { recursive: true });
+  for (const [file, value] of Object.entries({
+    "artifact.json": { attemptId, usage: null },
+    "score.json": { attemptId, caseId: evalCase.id, passed: true, disposition: "passed" },
+    "case.json": evalCase, "config.json": config,
+  })) await writeFile(join(attempt, file), JSON.stringify(value));
+  const aggregate = () => aggregateProtocolEvalCampaign({
+    catalogPath, downloadsRoot: join(root, "downloads"), evalsRoot: root,
+    runsOut: join(root, "merged"), campaignOut: join(root, "campaign.json"), source: {},
+  });
+  const status = { cellId: cell.cellId, rosterFile: cell.rosterFile, caseId: cell.caseId, exitCode: 0 };
+  await writeFile(join(download, "cell.json"), JSON.stringify({ ...status, authenticationMode: "subscription" }));
+  const passed = await aggregate();
+  assert.equal(passed.totals.passed, 1);
+  assert.equal(passed.results[0].authenticationMode, "subscription");
+  assert.equal(passed.rosters[0].authenticationMode, "subscription");
+  await writeFile(join(download, "cell.json"), JSON.stringify({ ...status, authenticationMode: "subscription", authenticationEvidenceFailure: "grok_authentication_evidence_unreadable" }));
+  await assert.rejects(aggregate(), /Invalid Grok authentication evidence/);
+  for (const authenticationMode of [undefined, "api_key", "auto"]) {
+    await writeFile(join(download, "cell.json"), JSON.stringify({ ...status, authenticationMode }));
+    await assert.rejects(aggregate(), /Invalid Grok authentication evidence/);
+  }
+});
+
 test("catalogs roster plus case cells and emits bounded balanced shards", async () => {
   const { root } = await fixture();
   const catalog = await buildProtocolEvalCatalog({
@@ -97,6 +201,7 @@ test("catalogs roster plus case cells and emits bounded balanced shards", async 
     maxParallel: 80,
   });
   assert.equal(catalog.cells.length, 1);
+  assert.equal(catalog.selection.kind, "maintained_full");
   assert.equal(catalog.cells[0].credentialName, "OPENROUTER_API_KEY");
   assert.equal(catalog.maxParallelPerShard, 40);
   assert.equal(catalog.matrices[0].include.length, 1);
@@ -116,6 +221,84 @@ test("catalogs roster plus case cells and emits bounded balanced shards", async 
       maxParallel: 1,
     }),
     /from 2 through 100/,
+  );
+});
+
+test("all selects the maintained enabled campaign and explicit diagnostics can select disabled rosters", async () => {
+  const { root, program, config, evalCase } = await fixture();
+  const disabledRoster = {
+    schema: "paperclip-runner/live-roster/v1",
+    id: "protocol-live-disabled-model",
+    model: config.model,
+    config: "../configs/live-opencode-model.json",
+    cases: [evalCase.id],
+  };
+  await Promise.all([
+    writeFile(
+      join(program, "rosters/live-disabled-model.json"),
+      JSON.stringify(disabledRoster),
+    ),
+    writeFile(
+      join(program, "campaigns/live-direct-full.json"),
+      JSON.stringify({
+        schema: "paperclip-runner/live-campaign/v1",
+        lanes: [
+          {
+            id: "opencode-model",
+            executionClass: "default",
+            roster: "../rosters/live-opencode-model.json",
+          },
+          {
+            id: "disabled-model",
+            executionClass: "disabled",
+            roster: "../rosters/live-disabled-model.json",
+          },
+        ],
+      }),
+    ),
+  ]);
+
+  const maintained = await buildProtocolEvalCatalog({
+    evalsRoot: root,
+    campaignId: "gha-42-1",
+  });
+  assert.deepEqual(
+    maintained.rosters.map((roster) => roster.rosterId),
+    ["protocol-live-opencode-model"],
+  );
+
+  const diagnostic = await buildProtocolEvalCatalog({
+    evalsRoot: root,
+    campaignId: "gha-42-2",
+    rosterSelection: "protocol-live-disabled-model",
+  });
+  assert.deepEqual(
+    diagnostic.rosters.map((roster) => roster.rosterId),
+    ["protocol-live-disabled-model"],
+  );
+  assert.equal(diagnostic.selection.kind, "subset");
+});
+
+test("all fails closed when the maintained campaign is missing", async () => {
+  const { root, program } = await fixture();
+  await rm(join(program, "campaigns/live-direct-full.json"));
+
+  await assert.rejects(
+    buildProtocolEvalCatalog({
+      evalsRoot: root,
+      campaignId: "gha-42-1",
+    }),
+    /ENOENT/,
+  );
+
+  const diagnostic = await buildProtocolEvalCatalog({
+    evalsRoot: root,
+    campaignId: "gha-42-2",
+    rosterSelection: "protocol-live-opencode-model",
+  });
+  assert.deepEqual(
+    diagnostic.rosters.map((roster) => roster.rosterId),
+    ["protocol-live-opencode-model"],
   );
 });
 
@@ -161,6 +344,37 @@ test("aggregates retained attempts and synthesizes missing cells as infrastructu
   );
 });
 
+test("campaign cost includes failed attempts before a successful retry", async () => {
+  const { root, config, evalCase } = await fixture();
+  const catalog = await buildProtocolEvalCatalog({ evalsRoot: root, campaignId: "gha-42-1" });
+  const catalogPath = join(root, "catalog.json");
+  const download = join(root, "downloads/cell");
+  await mkdir(download, { recursive: true });
+  await writeFile(catalogPath, JSON.stringify(catalog));
+  await writeFile(join(download, "cell.json"), JSON.stringify({
+    cellId: catalog.cells[0].cellId, caseId: evalCase.id,
+    rosterFile: catalog.cells[0].rosterFile, exitCode: 0,
+  }));
+  for (const [attemptId, amount, passed] of [["attempt-01", 2, false], ["attempt-02", 3, true]]) {
+    const directory = join(download, "runs", attemptId);
+    await mkdir(directory, { recursive: true });
+    for (const [file, value] of Object.entries({
+      "artifact.json": { attemptId, usage: { estimatedCostNanodollars: amount } },
+      "score.json": { attemptId, caseId: evalCase.id, passed, disposition: passed ? "passed" : "infrastructure_failure" },
+      "case.json": evalCase, "config.json": config,
+    })) await writeFile(join(directory, file), JSON.stringify(value));
+  }
+  const result = await aggregateProtocolEvalCampaign({
+    catalogPath, downloadsRoot: join(root, "downloads"), evalsRoot: root,
+    runsOut: join(root, "merged"), campaignOut: join(root, "campaign.json"), source: {},
+  });
+  assert.equal(result.totals.passed, 1);
+  assert.equal(result.results[0].usage.estimatedCostNanodollars, 3);
+  assert.equal(result.costs.estimated.nanodollars, 5);
+  assert.equal(result.costs.attempts, 2);
+  assert.equal(result.selection.kind, "maintained_full");
+});
+
 test("rejects downloaded cells that were not declared by the immutable catalog", async () => {
   const { root } = await fixture();
   const catalog = await buildProtocolEvalCatalog({
@@ -195,7 +409,7 @@ test("rejects downloaded cells that were not declared by the immutable catalog",
   );
 });
 
-test("public run projection removes provider sessions, traces, transcripts, evidence, and state", async () => {
+test("public run projection removes raw evidence and gives unverified recordings an empty chat view", async () => {
   const { root, config, evalCase } = await fixture();
   const attemptId = "get-task-context-opencode-gha-42-1-attempt-01";
   const source = join(root, "raw-runs", attemptId);
@@ -266,12 +480,14 @@ test("public run projection removes provider sessions, traces, transcripts, evid
   );
   assert.doesNotMatch(
     serialized,
-    /private-session|private transcript|private-turn|issueThread|trace/,
+    /private-session|private transcript|private-turn|"trace":/,
   );
   const artifact = JSON.parse(serialized);
   assert.deepEqual(artifact.snapshot.transcript, []);
   assert.deepEqual(artifact.snapshot.evidence, []);
   assert.deepEqual(artifact.devtools.revisions, []);
+  assert.equal(artifact.issueThread.composer.state, "disabled");
+  assert.equal(artifact.issueThread.turns[0].items[0].kind, "system_notice");
   const score = JSON.parse(
     await readFile(join(root, "public-runs", attemptId, "score.json"), "utf8"),
   );

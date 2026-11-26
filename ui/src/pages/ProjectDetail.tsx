@@ -1,3 +1,5 @@
+import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
+import { configurationWarningMessages } from "../lib/configuration-warnings";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { Link, useParams, useNavigate, useLocation, Navigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -22,10 +24,12 @@ import { ProjectTile } from "../components/ProjectTile";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
 import { IssuesList } from "../components/IssuesList";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { PageTabBar } from "../components/PageTabBar";
 import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent";
 import { SummarySlotCard } from "../components/SummarySlotCard";
 import { MembershipAction } from "../components/MembershipAction";
+import { useCoordinatorWorkspaceEnabled } from "../hooks/useCoordinatorWorkspaceEnabled";
 import { StarToggle } from "../components/StarToggle";
 import { buildProjectWorkspaceSummaries } from "../lib/project-workspaces-tab";
 import { collectLiveIssueIds } from "../lib/liveIssueIds";
@@ -45,10 +49,12 @@ import {
   useResourceMembershipMutation,
   useResourceMemberships,
 } from "../hooks/useResourceMemberships";
+import { useUpdateIssueMutation } from "../hooks/useUpdateIssueMutation";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 /* ── Top-level tab types ── */
 
-type ProjectBaseTab = "overview" | "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
+type ProjectBaseTab = "list" | "plugin-operations" | "workspaces" | "configuration" | "budget";
 type ProjectPluginTab = `plugin:${string}`;
 type ProjectTab = ProjectBaseTab | ProjectPluginTab;
 
@@ -61,55 +67,13 @@ function resolveProjectTab(pathname: string, projectId: string): ProjectTab | nu
   const projectsIdx = segments.indexOf("projects");
   if (projectsIdx === -1 || segments[projectsIdx + 1] !== projectId) return null;
   const tab = segments[projectsIdx + 2];
-  if (tab === "overview") return "overview";
+  if (tab === "overview") return "configuration";
   if (tab === "configuration") return "configuration";
   if (tab === "budget") return "budget";
   if (tab === "issues") return "list";
   if (tab === "plugin-operations") return "plugin-operations";
   if (tab === "workspaces") return "workspaces";
   return null;
-}
-
-/* ── Overview tab content ── */
-
-function OverviewContent({
-  project,
-  onUpdate,
-  imageUploadHandler,
-}: {
-  project: { description: string | null; status: string; targetDate: string | null };
-  onUpdate: (data: Record<string, unknown>) => void;
-  imageUploadHandler?: (file: File) => Promise<string>;
-}) {
-  return (
-    <div className="space-y-6">
-      <InlineEditor
-        value={project.description ?? ""}
-        onSave={(description) => onUpdate({ description })}
-        nullable
-        as="p"
-        className="text-sm text-muted-foreground"
-        placeholder="Add a description..."
-        multiline
-        imageUploadHandler={imageUploadHandler}
-      />
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
-        <div>
-          <span className="text-muted-foreground">Status</span>
-          <div className="mt-1">
-            <StatusBadge status={project.status} />
-          </div>
-        </div>
-        {project.targetDate && (
-          <div>
-            <span className="text-muted-foreground">Target Date</span>
-            <p>{project.targetDate}</p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
 }
 
 /* ── Combined icon + color picker popover (PAP-72 / PAP-68 part 4) ── */
@@ -228,6 +192,7 @@ function ProjectTilePicker({
 /* ── List (issues) tab content ── */
 
 function ProjectIssuesList({ projectId, companyId }: { projectId: string; companyId: string }) {
+  const showAgentCreatedTasks = useShowAgentCreatedTasks(companyId, "paperclip:project-issues-view");
   const queryClient = useQueryClient();
 
   const { data: agents } = useQuery({
@@ -254,36 +219,35 @@ function ProjectIssuesList({ projectId, companyId }: { projectId: string; compan
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(companyId),
-    queryFn: () => projectsApi.list(companyId),
+    ...companyProjectsQuery(companyId),
     enabled: !!companyId,
   });
 
-  const { data: issues, isLoading, error } = useQuery({
-    queryKey: queryKeys.issues.listByProject(companyId, projectId),
-    queryFn: () => issuesApi.list(companyId, { projectId }),
+  const issuesQuery = useQuery({
+    queryKey: [...queryKeys.issues.listByProject(companyId, projectId), showAgentCreatedTasks],
+    queryFn: () => issuesApi.listAll(companyId, { projectId, includeRoutineExecutions: true, includeAgentCreatedTasks: showAgentCreatedTasks }),
     enabled: !!companyId,
   });
+  const { data: issues } = issuesQuery;
+  const issuesView = useQueryView(issuesQuery);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    },
+  const updateIssue = useUpdateIssueMutation({
+    companyId,
+    invalidateKeys: [queryKeys.issues.listByProject(companyId, projectId), queryKeys.issues.list(companyId)],
   });
+
+  if (issuesView.kind === "error") return <QueryErrorState error={issuesView.error} action="load project tasks" onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
 
   return (
     <IssuesList
       issues={issues ?? []}
-      isLoading={isLoading}
-      error={error as Error | null}
+      isLoading={issuesView.kind === "loading" || issuesView.kind === "reconnecting"}
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
       projectId={projectId}
+      enableAgentCreatedVisibilityFilter
       viewStateKey="paperclip:project-issues-view"
       onUpdateIssue={(id, data) => updateIssue.mutate({ id, data })}
     />
@@ -308,8 +272,7 @@ function ProjectPluginOperationsList({
     enabled: !!companyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(companyId),
-    queryFn: () => projectsApi.list(companyId),
+    ...companyProjectsQuery(companyId),
     enabled: !!companyId,
   });
   const liveRunsQueryKey = queryKeys.liveRuns(companyId);
@@ -329,28 +292,30 @@ function ProjectPluginOperationsList({
     refetchInterval: sharedLiveRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
-  const { data: issues, isLoading, error } = useQuery({
+  const issuesQuery = useQuery({
     queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix),
     queryFn: () => issuesApi.list(companyId, { projectId, originKindPrefix }),
     enabled: !!companyId && !!projectId,
   });
+  const { data: issues } = issuesQuery;
+  const issuesView = useQueryView(issuesQuery);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns, issues), [issues, liveRuns]);
 
-  const updateIssue = useMutation({
-    mutationFn: ({ id, data }: { id: string; data: Record<string, unknown> }) =>
-      issuesApi.update(id, data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
-    },
+  const updateIssue = useUpdateIssueMutation({
+    companyId,
+    invalidateKeys: [
+      queryKeys.issues.listPluginOperationsByProject(companyId, projectId, originKindPrefix),
+      queryKeys.issues.listByProject(companyId, projectId),
+      queryKeys.issues.list(companyId),
+    ],
   });
+
+  if (issuesView.kind === "error") return <QueryErrorState error={issuesView.error} action="load project tasks" onRetry={issuesView.retry} retrying={issuesView.isFetching} />;
 
   return (
     <IssuesList
       issues={issues ?? []}
-      isLoading={isLoading}
-      error={error as Error | null}
+      isLoading={issuesView.kind === "loading" || issuesView.kind === "reconnecting"}
       agents={agents}
       projects={projects}
       liveIssueIds={liveIssueIds}
@@ -370,6 +335,8 @@ export function ProjectDetail() {
     filter?: string;
   }>();
   const { companies, selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const workspace = useCoordinatorWorkspaceEnabled();
+  const classicWorkspace = workspace.loaded && !workspace.enabled;
   const { closePanel } = usePanel();
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToastActions();
@@ -395,11 +362,20 @@ export function ProjectDetail() {
   }, [location.search]);
   const activeTab = activeRouteTab ?? pluginTabFromSearch;
 
-  const { data: project, isLoading, error } = useQuery({
+  const projectQuery = useQuery({
     queryKey: [...queryKeys.projects.detail(routeProjectRef), lookupCompanyId ?? null],
     queryFn: () => projectsApi.get(routeProjectRef, lookupCompanyId),
     enabled: canFetchProject,
+    // Canonicalizing the same project's URL must not unmount its edit form
+    // while the alias query loads. Never carry data into another company or project.
+    placeholderData: (previous) => previous &&
+      previous.companyId === lookupCompanyId &&
+      (previous.id === routeProjectRef || projectRouteRef(previous) === routeProjectRef)
+      ? previous
+      : undefined,
   });
+  const { data: project, isLoading, error } = projectQuery;
+  const projectView = useQueryView(projectQuery);
   const canonicalProjectRef = project ? projectRouteRef(project) : routeProjectRef;
   const projectLookupRef = project?.id ?? routeProjectRef;
   const resolvedCompanyId = project?.companyId ?? selectedCompanyId;
@@ -436,24 +412,27 @@ export function ProjectDetail() {
   const pluginTabDecisionLoaded = Boolean(resolvedCompanyId) && !pluginDetailSlotsLoading;
   const isolatedWorkspacesEnabled = experimentalSettingsQuery.data?.enableIsolatedWorkspaces === true;
   const workspaceTabProjectId = project?.id ?? null;
-  const { data: workspaceTabIssues = [], isLoading: isWorkspaceTabIssuesLoading, error: workspaceTabIssuesError } = useQuery({
+  const workspaceTabIssuesQuery = useQuery({
     queryKey: workspaceTabProjectId && resolvedCompanyId
       ? queryKeys.issues.listByProject(resolvedCompanyId, workspaceTabProjectId)
       : ["issues", "__workspace-tab__", "disabled"],
     queryFn: () => issuesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }),
     enabled: Boolean(resolvedCompanyId && workspaceTabProjectId && isolatedWorkspacesEnabled),
   });
-  const {
-    data: workspaceTabExecutionWorkspaces = [],
-    isLoading: isWorkspaceTabExecutionWorkspacesLoading,
-    error: workspaceTabExecutionWorkspacesError,
-  } = useQuery({
+  const { data: workspaceTabIssues = [], isLoading: isWorkspaceTabIssuesLoading } = workspaceTabIssuesQuery;
+  const workspaceTabIssuesView = useQueryView(workspaceTabIssuesQuery);
+  const workspaceTabExecutionWorkspacesQuery = useQuery({
     queryKey: workspaceTabProjectId && resolvedCompanyId
       ? queryKeys.executionWorkspaces.list(resolvedCompanyId, { projectId: workspaceTabProjectId })
       : ["execution-workspaces", "__workspace-tab__", "disabled"],
     queryFn: () => executionWorkspacesApi.list(resolvedCompanyId!, { projectId: workspaceTabProjectId! }),
     enabled: Boolean(resolvedCompanyId && workspaceTabProjectId && isolatedWorkspacesEnabled),
   });
+  const {
+    data: workspaceTabExecutionWorkspaces = [],
+    isLoading: isWorkspaceTabExecutionWorkspacesLoading,
+  } = workspaceTabExecutionWorkspacesQuery;
+  const workspaceTabExecutionWorkspacesView = useQueryView(workspaceTabExecutionWorkspacesQuery);
   const workspaceSummaries = useMemo(() => {
     if (!project || !isolatedWorkspacesEnabled) return [];
     return buildProjectWorkspaceSummaries({
@@ -463,10 +442,18 @@ export function ProjectDetail() {
     });
   }, [project, isolatedWorkspacesEnabled, workspaceTabIssues, workspaceTabExecutionWorkspaces]);
   const showWorkspacesTab = isolatedWorkspacesEnabled && workspaceSummaries.length > 0;
+  const workspaceTabReconnecting =
+    workspaceTabIssuesView.kind === "reconnecting" || workspaceTabExecutionWorkspacesView.kind === "reconnecting";
   const workspaceTabDecisionLoaded =
     experimentalSettingsQuery.isFetched &&
-    (!isolatedWorkspacesEnabled || (!isWorkspaceTabIssuesLoading && !isWorkspaceTabExecutionWorkspacesLoading));
-  const workspaceTabError = (workspaceTabIssuesError ?? workspaceTabExecutionWorkspacesError) as Error | null;
+    (!isolatedWorkspacesEnabled ||
+      (!isWorkspaceTabIssuesLoading && !isWorkspaceTabExecutionWorkspacesLoading && !workspaceTabReconnecting));
+  // Only a real failure shows an error; loaded summaries stay through an outage.
+  const workspaceTabFailure = workspaceTabIssuesView.kind === "error"
+    ? workspaceTabIssuesView
+    : workspaceTabExecutionWorkspacesView.kind === "error"
+      ? workspaceTabExecutionWorkspacesView
+      : null;
 
   useEffect(() => {
     if (!project?.companyId || project.companyId === selectedCompanyId) return;
@@ -484,7 +471,12 @@ export function ProjectDetail() {
   const updateProject = useMutation({
     mutationFn: (data: Record<string, unknown>) =>
       projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId),
-    onSuccess: invalidateProject,
+    onSuccess: (updated, data) => {
+      const notice = configurationWarningMessages(updated);
+      if (notice) pushToast({ title: "Project saved", body: notice, tone: "warn" });
+      invalidateProject();
+      if (data.visibility !== undefined) queryClient.invalidateQueries({ queryKey: ["issues"] });
+    },
   });
 
   const archiveProject = useMutation({
@@ -536,13 +528,9 @@ export function ProjectDetail() {
 
   useEffect(() => {
     if (!project) return;
-    if (routeProjectRef === canonicalProjectRef) return;
+    if (routeProjectRef === canonicalProjectRef && !location.pathname.endsWith("/overview")) return;
     if (isProjectPluginTab(activeTab)) {
       navigate(`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(activeTab)}`, { replace: true });
-      return;
-    }
-    if (activeTab === "overview") {
-      navigate(`/projects/${canonicalProjectRef}/overview`, { replace: true });
       return;
     }
     if (activeTab === "configuration") {
@@ -570,7 +558,7 @@ export function ProjectDetail() {
       return;
     }
     navigate(`/projects/${canonicalProjectRef}`, { replace: true });
-  }, [project, routeProjectRef, canonicalProjectRef, activeTab, filter, navigate]);
+  }, [project, routeProjectRef, canonicalProjectRef, activeTab, filter, navigate, location.pathname]);
 
   useEffect(() => {
     closePanel();
@@ -617,8 +605,11 @@ export function ProjectDetail() {
     fieldSaveRequestIds.current[field] = requestId;
     setFieldState(field, "saving");
     try {
-      await projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId);
+      const updated = await projectsApi.update(projectLookupRef, data, resolvedCompanyId ?? lookupCompanyId);
+      const notice = configurationWarningMessages(updated);
+      if (notice) pushToast({ title: "Project saved", body: notice, tone: "warn" });
       invalidateProject();
+      if (data.visibility !== undefined) queryClient.invalidateQueries({ queryKey: ["issues"] });
       if (fieldSaveRequestIds.current[field] !== requestId) return;
       setFieldState(field, "saved");
       scheduleFieldReset(field, 1800);
@@ -628,7 +619,7 @@ export function ProjectDetail() {
       scheduleFieldReset(field, 3000);
       throw error;
     }
-  }, [invalidateProject, lookupCompanyId, projectLookupRef, resolvedCompanyId, scheduleFieldReset, setFieldState]);
+  }, [invalidateProject, lookupCompanyId, projectLookupRef, pushToast, queryClient, resolvedCompanyId, scheduleFieldReset, setFieldState]);
 
   const projectBudgetSummary = useMemo(() => {
     const matched = budgetOverview?.policies.find(
@@ -644,6 +635,8 @@ export function ProjectDetail() {
       metric: "billed_cents",
       windowKind: "lifetime",
       amount: 0,
+      unpricedEventCount: 0, pendingRunCount: 0,
+      unpricedUsagePolicy: "block",
       observedAmount: 0,
       remainingAmount: 0,
       utilizationPercent: 0,
@@ -695,7 +688,7 @@ export function ProjectDetail() {
       try { cachedTab = localStorage.getItem(`paperclip:project-tab:${project.id}`); } catch {}
     }
     if (cachedTab === "overview") {
-      return <Navigate to={`/projects/${canonicalProjectRef}/overview`} replace />;
+      return <Navigate to={`/projects/${canonicalProjectRef}/configuration`} replace />;
     }
     if (cachedTab === "configuration") {
       return <Navigate to={`/projects/${canonicalProjectRef}/configuration`} replace />;
@@ -718,11 +711,13 @@ export function ProjectDetail() {
     return <Navigate to={`/projects/${canonicalProjectRef}/issues`} replace />;
   }
 
-  if (isLoading) return <PageSkeleton variant="detail" />;
-  if (error) return <p className="text-sm text-destructive">{error.message}</p>;
+  if (isLoading || projectView.kind === "reconnecting") return <PageSkeleton variant="detail" />;
+  if (projectView.kind === "error") {
+    return <QueryErrorState size="page" error={error} action="load this project" onRetry={projectView.retry} retrying={projectView.isFetching} />;
+  }
   if (!project) return null;
   const showLeftProjectNotice =
-    projectMembershipState === "left" && !dismissedLeftProjectIds.has(project.id);
+    classicWorkspace && projectMembershipState === "left" && !dismissedLeftProjectIds.has(project.id);
   const projectMembershipPending =
     membershipMutation.isPending &&
     membershipMutation.variables?.resourceType === "project" &&
@@ -740,9 +735,7 @@ export function ProjectDetail() {
       navigate(`/projects/${canonicalProjectRef}?tab=${encodeURIComponent(tab)}`);
       return;
     }
-    if (tab === "overview") {
-      navigate(`/projects/${canonicalProjectRef}/overview`);
-    } else if (tab === "workspaces") {
+    if (tab === "workspaces") {
       navigate(`/projects/${canonicalProjectRef}/workspaces`);
     } else if (tab === "budget") {
       navigate(`/projects/${canonicalProjectRef}/budget`);
@@ -820,20 +813,22 @@ export function ProjectDetail() {
             </div>
           ) : null}
         </div>
-        <div className="ml-auto flex items-center gap-2">
-          <StarToggle
-            size="button"
-            starred={projectStarred}
-            pending={projectStarPending}
-            resourceName={project.name}
-            onToggle={(next) => membershipMutation.mutate({
-              resourceType: "project",
-              resourceId: project.id,
-              resourceName: project.name,
-              starred: next,
-            })}
-          />
-        </div>
+        {classicWorkspace && (
+          <div className="ml-auto flex items-center gap-2">
+            <StarToggle
+              size="button"
+              starred={projectStarred}
+              pending={projectStarPending}
+              resourceName={project.name}
+              onToggle={(next) => membershipMutation.mutate({
+                resourceType: "project",
+                resourceId: project.id,
+                resourceName: project.name,
+                starred: next,
+              })}
+            />
+          </div>
+        )}
       </div>
 
       <SummarySlotCard
@@ -879,7 +874,7 @@ export function ProjectDetail() {
         <PageTabBar
           items={[
             { value: "list", label: "Tasks" },
-            { value: "overview", label: "Overview" },
+
             ...(project.managedByPlugin ? [{ value: "plugin-operations", label: "Plugin operations" }] : []),
             ...(showWorkspacesTab ? [{ value: "workspaces", label: "Workspaces" }] : []),
             { value: "configuration", label: "Configuration" },
@@ -895,16 +890,7 @@ export function ProjectDetail() {
         />
       </Tabs>
 
-      {activeTab === "overview" && (
-        <OverviewContent
-          project={project}
-          onUpdate={(data) => updateProject.mutate(data)}
-          imageUploadHandler={async (file) => {
-            const asset = await uploadImage.mutateAsync(file);
-            return asset.contentPath;
-          }}
-        />
-      )}
+
 
       {activeTab === "list" && project?.id && resolvedCompanyId && (
         <ProjectIssuesList projectId={project.id} companyId={resolvedCompanyId} />
@@ -920,8 +906,13 @@ export function ProjectDetail() {
 
       {activeTab === "workspaces" ? (
         workspaceTabDecisionLoaded ? (
-          workspaceTabError ? (
-            <p className="text-sm text-destructive">{workspaceTabError.message}</p>
+          workspaceTabFailure ? (
+            <QueryErrorState
+              error={workspaceTabFailure.error}
+              action="load workspaces"
+              onRetry={workspaceTabFailure.retry}
+              retrying={workspaceTabFailure.isFetching}
+            />
           ) : (
             <ProjectWorkspacesContent
               companyId={resolvedCompanyId!}

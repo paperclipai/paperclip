@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -86,6 +87,7 @@ const originalPaperclipHome = process.env.PAPERCLIP_HOME;
 const originalPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
 const originalCodexHome = process.env.CODEX_HOME;
 const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
+const originalCodexApiKey = process.env.CODEX_API_KEY;
 
 // Older/newer ISO timestamps for the copy-back monotonic (strictly-newer)
 // decision predicate, plus a subscription-shaped auth.json fixture matching the
@@ -138,6 +140,8 @@ afterEach(async () => {
   else process.env.CODEX_HOME = originalCodexHome;
   if (originalOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
   else process.env.OPENAI_API_KEY = originalOpenAiApiKey;
+  if (originalCodexApiKey === undefined) delete process.env.CODEX_API_KEY;
+  else process.env.CODEX_API_KEY = originalCodexApiKey;
   await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -290,7 +294,7 @@ function buildContext(root: string, overrides: Partial<AdapterExecutionContext> 
 }
 
 describe("codex_local ACP lane", () => {
-  it("defaults to ACP when prerequisites pass and falls back to CLI only for auto resolution", async () => {
+  it("keeps ACP selected and reports unavailable prerequisites for default and explicit engines", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-default-");
     const commandPath = path.join(root, "bin", "codex-acp");
     await fs.mkdir(path.dirname(commandPath), { recursive: true });
@@ -322,44 +326,44 @@ describe("codex_local ACP lane", () => {
         executionTarget: null,
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("Node"),
+      unavailableReason: expect.stringContaining("Node"),
     });
     await expect(
       resolveCodexExecutionEngineForRun({
         config: { engine: "acp", agentCommand: "/missing/codex-acp" },
         executionTarget: null,
       }),
-    ).resolves.toEqual({ engine: "acp", explicit: true });
+    ).resolves.toMatchObject({ engine: "acp", explicit: true, unavailableReason: expect.stringContaining("Node") });
   });
 
-  it("selects the confined CLI lane for local filesystem or network scope", async () => {
+  it("requires explicit CLI selection for local filesystem or network scope", async () => {
     await expect(
       resolveCodexExecutionEngineForRun({
         config: { filesystemScope: "workspace" },
         executionTarget: null,
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("spawn-level confinement"),
+      unavailableReason: expect.stringContaining("confinement"),
     });
     await expect(
       resolveCodexExecutionEngineForRun({
         config: { engine: "acp", filesystemScope: "workspace" },
         executionTarget: null,
       }),
-    ).rejects.toThrow("ACP confinement is not supported");
+    ).resolves.toMatchObject({ engine: "acp", unavailableReason: expect.stringContaining("ACP confinement is not supported") });
     await expect(
       resolveCodexExecutionEngineForRun({
         config: { networkScope: "allowlist" },
         executionTarget: null,
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("network scope"),
+      unavailableReason: expect.stringContaining("confinement"),
     });
     await expect(
       resolveCodexExecutionEngineForRun({
@@ -369,7 +373,7 @@ describe("codex_local ACP lane", () => {
     ).rejects.toThrow('filesystemScope must be "workspace"');
   });
 
-  it("selects the CLI lane for in-place realization and rejects explicitly required ACP", async () => {
+  it("requires explicit CLI selection for in-place realization", async () => {
     const executionTarget = {
       kind: "remote" as const,
       transport: "sandbox" as const,
@@ -384,13 +388,13 @@ describe("codex_local ACP lane", () => {
     await expect(
       resolveCodexExecutionEngineForRun({ config: {}, executionTarget }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("without ACP archive staging"),
+      unavailableReason: expect.stringContaining("ACP archive staging"),
     });
     await expect(
       resolveCodexExecutionEngineForRun({ config: { engine: "acp" }, executionTarget }),
-    ).rejects.toThrow("In-place workspace realization requires the Codex CLI engine");
+    ).resolves.toMatchObject({ engine: "acp", unavailableReason: expect.stringContaining("In-place workspace realization requires the Codex CLI engine") });
   });
 
   it("uses ACP for bridged sandbox auto runs when the ACP command is configured as a shell command", async () => {
@@ -419,7 +423,7 @@ describe("codex_local ACP lane", () => {
     ).resolves.toEqual({ engine: "acp", explicit: false });
   });
 
-  it("falls back to the CLI lane for one-shot sandbox auto runs", async () => {
+  it("reports unavailable ACP for one-shot sandbox auto runs", async () => {
     setNodeVersion("v24.11.0");
     await expect(
       resolveCodexExecutionEngineForRun({
@@ -432,13 +436,13 @@ describe("codex_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("bidirectional remote process"),
+      unavailableReason: expect.stringContaining("bidirectional remote process"),
     });
   });
 
-  it("falls back to the CLI lane for non-sandbox remote auto runs", async () => {
+  it("reports unavailable ACP for SSH host authentication", async () => {
     setNodeVersion("v24.11.0");
     await expect(
       resolveCodexExecutionEngineForRun({
@@ -460,9 +464,27 @@ describe("codex_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("sandbox remote targets only"),
+      unavailableReason: expect.stringContaining("agent-managed SSH account"),
+    });
+  });
+
+  it("enables workspace networking for ACP without changing other env settings", () => {
+    expect(buildCodexAcpConfig({ env: { CUSTOM: "kept" } })).toMatchObject({
+      env: { CUSTOM: "kept", PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: "true" },
+    });
+  });
+
+  it.each([
+    { env: { PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: "false" } },
+    { extraArgs: ["-c", "sandbox_workspace_write.network_access=false"] },
+    { extraArgs: ["--config=sandbox_workspace_write.network_access=false"] },
+    { args: ["-csandbox_workspace_write.network_access=false"] },
+    { extraArgs: ["-c", "sandbox_workspace_write.network_access=true", "-c", "sandbox_workspace_write.network_access=false"] },
+  ])("preserves explicit ACP network denial %j", (config) => {
+    expect(buildCodexAcpConfig(config)).toMatchObject({
+      env: { PAPERCLIP_CODEX_ACP_NETWORK_ACCESS: "false" },
     });
   });
 
@@ -491,15 +513,15 @@ describe("codex_local ACP lane", () => {
     });
   });
 
-  it("forwards GPT-6 Astra controls to the ACPX Codex target", () => {
+  it.each([["gpt-6-astra", "ultra"], ["gpt-6.1-sol", "ultra"], ["gpt-6-sol", "ultra"], ["gpt-6-luna", "max"], ["gpt-5.6-sol", "ultra"], ["gpt-5.6-terra", "ultra"], ["gpt-5.6-luna", "max"]])("forwards %s controls to the ACPX Codex target", (model, effort) => {
     expect(buildCodexAcpConfig({
       engine: "acp",
-      model: "gpt-6-astra",
-      modelReasoningEffort: "ultra",
+      model,
+      modelReasoningEffort: effort,
       fastMode: true,
     })).toMatchObject({
-      model: "gpt-6-astra",
-      modelReasoningEffort: "ultra",
+      model,
+      modelReasoningEffort: effort,
       fastMode: true,
     });
   });
@@ -780,12 +802,86 @@ describe("codex_local ACP lane", () => {
     expect(meta[0]?.env?.CODEX_HOME).toBe(
       path.join(root, "state", "codex-run-homes", "run-1", "home"),
     );
-    expect(JSON.parse(String(meta[0]?.env?.CODEX_CONFIG))).toEqual({
+    expect(JSON.parse(String(meta[0]?.env?.CODEX_CONFIG))).toMatchObject({
       model: "gpt-5.5",
       model_reasoning_effort: "high",
       service_tier: "fast",
       features: { fast_mode: true },
+      shell_environment_policy: {
+        inherit: "all",
+        ignore_default_excludes: true,
+        include_only: expect.arrayContaining(["PATH", "CODEX_HOME"]),
+      },
     });
+  });
+
+  it("sends assignment-owned markdown and ordered distinct wake comments at the ACP boundary", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-context-owner-");
+    const runtimes: FakeRuntime[] = [];
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => {
+        const runtime = new FakeRuntime(options);
+        runtimes.push(runtime);
+        return runtime as never;
+      },
+    });
+    const issue = {
+      id: "issue-1",
+      identifier: "PAP-901",
+      title: "Repeat phrase Repeat phrase",
+      description: "Repeat phrase Repeat phrase",
+    };
+    const comments = [
+      { id: "comment-a", body: "Same event body." },
+      { id: "comment-b", body: "Same event body." },
+    ];
+    // The adapter receives server-rendered fields. Keep the server builder's
+    // own tests in the server package; adapter packages compile independently.
+    const assignmentMarkdown = [
+      "Paperclip task context:",
+      `- Issue: ${JSON.stringify(issue.identifier)}`,
+      `- Title: ${JSON.stringify(issue.title)}`,
+      "", "Issue description:", "```text", issue.description, "```",
+    ].join("\n");
+    const historicalMarkdown = [
+      assignmentMarkdown,
+      ...comments.map((comment) => `${comment.id}: ${comment.body}`),
+    ].join("\n");
+    const result = await execute(buildContext(root, {
+      context: {
+        issueId: issue.id,
+        paperclipTaskMarkdown: historicalMarkdown,
+        paperclipTaskMarkdownAssignment: assignmentMarkdown,
+        paperclipWake: {
+          reason: "issue_commented",
+          issue: { ...issue, status: "in_progress" },
+          comments: comments.map((comment, index) => ({
+            ...comment,
+            issueId: issue.id,
+            createdAt: `2026-09-21T00:0${index}:00.000Z`,
+          })),
+          commentWindow: { requestedCount: 2, includedCount: 2, missingCount: 0 },
+          fallbackFetchNeeded: false,
+        },
+        paperclipTurnContext: {
+          version: 1,
+          assignment: { owner: "task_markdown" },
+          events: {
+            owner: "wake_prompt",
+            comments: [
+              { id: "comment-a", revision: "a" },
+              { id: "comment-b", revision: "b" },
+            ],
+          },
+        },
+        paperclipWorkspace: { cwd: root, source: "project_workspace", workspaceId: "workspace-1" },
+      },
+    }));
+    expect(result.exitCode).toBe(0);
+    const prompt = String(runtimes[0]?.startInputs[0]?.text ?? "");
+    expect(prompt.split("Same event body.")).toHaveLength(3);
+    expect(prompt.indexOf("comment comment-a")).toBeLessThan(prompt.indexOf("comment comment-b"));
+    expect(prompt).toContain("Repeat phrase Repeat phrase");
   });
 
   it("creates the ACP session on the in-sandbox workspace cwd for runner-backed remote runs", async () => {
@@ -973,6 +1069,54 @@ describe("codex_local ACP lane", () => {
     expect(mode).toBe(0o600);
   });
 
+  it("does not copy an API-key run's sandbox auth into the shared subscription home", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-key-copyback-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    const keyHome = path.join(root, "api-key-home");
+    const sharedHostHome = path.join(root, "shared-codex-home");
+    await Promise.all([localCwd, remoteCwd, keyHome, sharedHostHome].map((dir) => fs.mkdir(dir, { recursive: true })));
+    const sharedAuth = subscriptionAuthJson("acct-same", OLDER_REFRESH, "host-older");
+    await fs.writeFile(path.join(sharedHostHome, "auth.json"), sharedAuth, { mode: 0o600 });
+    // A subscription-shaped sandbox credential must never be considered for
+    // the shared home when this run explicitly authenticates with an API key.
+    await fs.writeFile(
+      path.join(keyHome, "auth.json"),
+      subscriptionAuthJson("acct-same", NEWER_REFRESH, "sandbox-newer"),
+      { mode: 0o600 },
+    );
+    process.env.CODEX_HOME = sharedHostHome;
+
+    const execute = createCodexAcpExecutor({
+      createRuntime: (options: FakeRuntimeOptions) => new FakeRuntime(options) as never,
+    });
+    const result = await execute(buildContext(localCwd, {
+      config: {
+        engine: "acp",
+        cwd: localCwd,
+        agentCommand: "node ./fake-acp.js",
+        stateDir: path.join(root, "state"),
+        env: { CODEX_HOME: keyHome, OPENAI_API_KEY: "sk-test-key" },
+        promptTemplate: "Do the assigned work.",
+      },
+      context: {
+        issueId: "issue-1",
+        paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+      },
+      executionTarget: {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "fake-plugin",
+        remoteCwd,
+        runner: createLocalSandboxRunner(),
+      } as never,
+      authToken: "real-run-jwt",
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(await fs.readFile(path.join(sharedHostHome, "auth.json"), "utf8")).toBe(sharedAuth);
+  });
+
   it("keeps the shared host Codex auth when the sandbox copy is not strictly newer", async () => {
     const root = await makeTempRoot("paperclip-codex-acp-copyback-older-");
     const localCwd = path.join(root, "worktree");
@@ -1038,7 +1182,7 @@ describe("codex_local ACP lane", () => {
     // `disposeStaged`, fired only when the runtime is dropped. So after a CLEAN
     // turn the engine caches the staged runtime warm and its host staged home is
     // still on disk for the next compatible resume to reuse.
-    const runId = "run-keep-staged-home";
+    const runId = `run-keep-staged-home-${randomUUID()}`;
     const root = await makeTempRoot("paperclip-codex-acp-keep-staged-");
     const localCwd = path.join(root, "worktree");
     const remoteCwd = path.join(root, "remote-workspace");
@@ -1111,12 +1255,60 @@ describe("codex_local ACP lane", () => {
     await Promise.all(stagedDirs.map((dir) => fs.rm(dir, { recursive: true, force: true })));
   });
 
+  it.each(["none", "OPENAI_API_KEY", "CODEX_API_KEY"])("copies selected subscription refreshes to the current home with controller key %s", async controllerKey => {
+    const root = await makeTempRoot("paperclip-codex-acp-rebind-");
+    const localCwd = path.join(root, "workspace");
+    const remoteCwd = path.join(root, "remote");
+    const firstHome = path.join(root, "first-account-home");
+    const nextHome = path.join(root, "next-account-home");
+    for (const dir of [localCwd, remoteCwd, firstHome, nextHome]) await fs.mkdir(dir);
+    const originalAuth = subscriptionAuthJson("acct-same", OLDER_REFRESH, "original");
+    for (const home of [firstHome, nextHome]) await fs.writeFile(path.join(home, "auth.json"), originalAuth, { mode: 0o600 });
+    process.env.OPENAI_API_KEY = "";
+    process.env.CODEX_API_KEY = "";
+    if (controllerKey !== "none") process.env[controllerKey] = "fixture-unselected-controller-key";
+    const stagedRuntimes = new Map();
+    const execute = createCodexAcpExecutor({
+      createRuntime: options => new FakeRuntime(options) as never,
+      stagedRuntimes, stagingLocks: new Map(),
+    });
+    const result = await execute(buildContext(localCwd, {
+      runId: `run-rebind-home-${randomUUID()}`,
+      config: {
+        engine: "acp", cwd: localCwd, agentCommand: "node ./fake-acp.js", stateDir: path.join(root, "state"),
+        managedAiConnection: { identity: "selected-account", sessionIdentity: "selected-account-session" },
+        env: { CODEX_HOME: firstHome, OPENAI_API_KEY: "", CODEX_API_KEY: "" }, promptTemplate: "Do the assigned work.",
+      },
+      context: { issueId: "issue-1", paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" } },
+      executionTarget: { kind: "remote", transport: "sandbox", providerKey: "fake-plugin", remoteCwd, runner: createLocalSandboxRunner() } as never,
+      authToken: "fixture-run-jwt",
+    }));
+    expect(result.exitCode).toBe(0);
+    expect(stagedRuntimes.size).toBe(1);
+    const entry = [...stagedRuntimes.values()][0]!;
+    try {
+      await fs.rm(firstHome, { recursive: true });
+      const currentLogs: string[] = [];
+      await entry.rebindRun({ env: { CODEX_HOME: nextHome }, onLog: async (_stream: string, chunk: string) => { currentLogs.push(chunk); } });
+      await fs.writeFile(path.join(entry.stagedRuntime.assetDirs.home, "auth.json"), subscriptionAuthJson("acct-same", NEWER_REFRESH, "refreshed"));
+      expect(await entry.teardown()).toMatchObject({ ok: true });
+      const auth = JSON.parse(await fs.readFile(path.join(nextHome, "auth.json"), "utf8"));
+      expect(auth.tokens.refresh_token).toBe("ref-refreshed");
+      expect(auth.last_refresh).toBe(NEWER_REFRESH);
+      expect((await fs.stat(path.join(nextHome, "auth.json"))).mode & 0o777).toBe(0o600);
+      await expect(fs.stat(firstHome)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(currentLogs.some(line => line.includes("Codex auth"))).toBe(true);
+    } finally {
+      await entry.dispose();
+    }
+  });
+
   it("removes the host staged Codex home when a failed turn drops the staged runtime", async () => {
     // The complementary guardrail: when the staged runtime IS dropped (here, a
     // failed turn), the one-time `disposeStaged` fires and removes the host
     // staged-home temp dir — while the per-run copy-back (`teardown`) STILL fires
     // on the unclean exit path, so a rotated sandbox credential is never lost.
-    const runId = "run-drop-staged-home";
+    const runId = `run-drop-staged-home-${randomUUID()}`;
     const root = await makeTempRoot("paperclip-codex-acp-drop-staged-");
     const localCwd = path.join(root, "worktree");
     const remoteCwd = path.join(root, "remote-workspace");
@@ -1237,7 +1429,7 @@ describe("codex_local ACP lane", () => {
     );
   });
 
-  it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
+  it("reports unavailable ACP for a runner-less sandbox even when the ACP command is set", async () => {
     setNodeVersion("v24.11.0");
     // Isolate the missing bidirectional runner as the sole fallback cause:
     // provide a valid ACP command and Node version so the only difference from
@@ -1253,9 +1445,9 @@ describe("codex_local ACP lane", () => {
         },
       }),
     ).resolves.toMatchObject({
-      engine: "cli",
+      engine: "acp",
       explicit: false,
-      fallbackReason: expect.stringContaining("bidirectional remote process"),
+      unavailableReason: expect.stringContaining("bidirectional remote process"),
     });
   });
 
@@ -1309,6 +1501,12 @@ describe("codex_local ACP lane", () => {
 });
 
 describe("resolveCodexAcpBillingIdentity", () => {
+  it.each([["openrouter", "api_key", "openrouter"], ["custom", "api_key", "unknown"], ["local", "none", "unknown"]])("classifies managed %s/%s independently of host authentication", (kind, auth, biller) => {
+    expect(resolveCodexAcpBillingIdentity({ config: {
+      managedAiRouting: { kind, auth },
+      env: { OPENAI_API_KEY: "", PAPERCLIP_AI_PROVIDER_KEY: auth === "none" ? "" : "fixture" },
+    } })).toEqual({ provider: "openai", biller, billingType: "api" });
+  });
   const originalOpenAiKey = process.env.OPENAI_API_KEY;
   const originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
 
