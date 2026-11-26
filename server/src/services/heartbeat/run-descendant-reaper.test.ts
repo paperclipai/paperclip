@@ -3,11 +3,14 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDb } from "@paperclipai/db";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
+import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import {
   forgetTrackedRunLineageForTests,
   reapRunDescendants,
   registeredServiceExclusions,
+  registerRunLineageSampling,
   setRunLineageSampleIntervalForTests,
   trackRunDescendants,
 } from "./run-descendant-reaper.js";
@@ -47,6 +50,29 @@ describe.skipIf(process.platform !== "linux")("run lineage file", () => {
   const children: ChildProcess[] = [];
   let home: string;
   let previousHome: string | undefined;
+  let sampling: {
+    db: ReturnType<typeof createDb>;
+    coordinator: ReturnType<typeof createDeliveryWorkCoordinator>;
+    worker: ReturnType<typeof registerRunLineageSampling>;
+  } | null = null;
+
+  async function startSampling() {
+    const db = createDb("postgres://127.0.0.1:1/unused");
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: () => undefined });
+    const worker = registerRunLineageSampling(coordinator);
+    sampling = { db, coordinator, worker };
+    await worker.ready;
+    return sampling;
+  }
+
+  async function stopSampling() {
+    if (!sampling) return;
+    const { db, coordinator, worker } = sampling;
+    sampling = null;
+    await worker.stop();
+    await coordinator.stop();
+    await db.$client.end({ timeout: 1 });
+  }
 
   beforeEach(async () => {
     previousHome = process.env.PAPERCLIP_HOME;
@@ -56,6 +82,7 @@ describe.skipIf(process.platform !== "linux")("run lineage file", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    await stopSampling();
     setRunLineageSampleIntervalForTests(null);
     forgetTrackedRunLineageForTests();
     for (const child of children.splice(0)) child.kill("SIGKILL");
@@ -92,6 +119,7 @@ describe.skipIf(process.platform !== "linux")("run lineage file", () => {
     // A plain file where the lineage directory belongs makes the save fail.
     await fsp.writeFile(path.join(root, "run-lineage"), "");
     setRunLineageSampleIntervalForTests(20);
+    await startSampling();
     const pid = startSleeper();
     await trackRunDescendants({ runId, rootPid: pid });
     await expect(fsp.stat(lineageFile(runId))).rejects.toThrow();
@@ -101,6 +129,37 @@ describe.skipIf(process.platform !== "linux")("run lineage file", () => {
     expect(await savedPids(runId)).toEqual([pid]);
 
     await reapRunDescendants({ runId, graceMs: 200, reason: "test" });
+  });
+
+  it("samples on the shared delivery scheduler only while a run is tracked, and stops with it", async () => {
+    const setIntervalSpy = vi.spyOn(globalThis, "setInterval");
+    setRunLineageSampleIntervalForTests(20);
+    const { coordinator, worker } = await startSampling();
+    expect(coordinator.nextWakeAt()).toBeNull();
+
+    const runId = "lineage-scheduler-run";
+    const root = resolvePaperclipInstanceRoot();
+    await fsp.mkdir(root, { recursive: true });
+    await fsp.writeFile(path.join(root, "run-lineage"), "");
+    const pid = startSleeper();
+    await trackRunDescendants({ runId, rootPid: pid });
+    expect(coordinator.nextWakeAt()).not.toBeNull();
+    await fsp.rm(path.join(root, "run-lineage"));
+    expect(await waitFor(async () => fsp.stat(lineageFile(runId)).then(() => true, () => false))).toBe(true);
+
+    await reapRunDescendants({ runId, graceMs: 200, reason: "test" });
+    expect(await waitFor(() => coordinator.nextWakeAt() === null)).toBe(true);
+
+    const laterRunId = "lineage-scheduler-later-run";
+    await trackRunDescendants({ runId: laterRunId, rootPid: startSleeper() });
+    expect(coordinator.nextWakeAt()).not.toBeNull();
+    await worker.stop();
+    expect(coordinator.nextWakeAt()).toBeNull();
+    await trackRunDescendants({ runId: laterRunId, rootPid: startSleeper() });
+    expect(coordinator.nextWakeAt()).toBeNull();
+
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+    await reapRunDescendants({ runId: laterRunId, graceMs: 200, reason: "test" });
   });
 
   it("writes one run's saves one at a time, each from its own temporary file", async () => {

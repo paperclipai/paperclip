@@ -10,19 +10,22 @@ import {
 import { logger } from "../../middleware/logger.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { listLocalServiceRegistryRecords } from "../local-service-supervisor.js";
+import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 
 export const RUN_DESCENDANT_DEFAULT_GRACE_MS = 5_000;
 export const RUN_LINEAGE_SAMPLE_INTERVAL_MS = 250;
 
 /**
- * Lineage of live local legacy runs. One shared timer reads the process table
- * and records each run's processes, so a process that later clears its
- * environment or is reparented stays owned by its run. Each run's lineage is
+ * Lineage of live local legacy runs. One worker on the shared delivery
+ * scheduler reads the process table while runs are tracked and records each
+ * run's processes, so a process that later clears its environment or is
+ * reparented stays owned by its run. Each run's lineage is
  * also saved to a small file, so a cancel or recovery after a server restart
  * still knows what the run started.
  */
 const trackedRuns = new Map<string, RunProcessLineage>();
-let sampleTimer: NodeJS.Timeout | null = null;
+let samplingWorker: { wake: () => void } | null = null;
 let sampleIntervalMs = RUN_LINEAGE_SAMPLE_INTERVAL_MS;
 
 function lineageDir() {
@@ -152,25 +155,34 @@ function sampleTrackedRuns() {
 }
 
 function ensureSampler() {
-  if (sampleTimer || trackedRuns.size === 0) return;
-  sampleTimer = setInterval(() => void sampleTrackedRuns(), sampleIntervalMs);
-  sampleTimer.unref();
+  if (trackedRuns.size > 0) samplingWorker?.wake();
 }
 
-function stopSamplerIfIdle() {
-  if (trackedRuns.size > 0 || !sampleTimer) return;
-  clearInterval(sampleTimer);
-  sampleTimer = null;
+export function registerRunLineageSampling(
+  coordinator: Pick<ReturnType<typeof createDeliveryWorkCoordinator>, "register">,
+) {
+  const worker = coordinator.register(DELIVERY_QUEUES.runLineage, {
+    retryMs: 3_000,
+    coalesceMs: sampleIntervalMs,
+    runDuringDrain: true,
+    run: () => sampleTrackedRuns(),
+    hasPending: async () => false,
+    nextRunAt: () => (trackedRuns.size > 0 ? Date.now() + sampleIntervalMs : null),
+  });
+  samplingWorker = worker;
+  return {
+    ...worker,
+    async stop() {
+      if (samplingWorker === worker) samplingWorker = null;
+      await worker.stop();
+      await sampleInFlight;
+    },
+  };
 }
 
 /** Test seam: sampling interval for runs tracked after this call. */
 export function setRunLineageSampleIntervalForTests(ms: number | null) {
   sampleIntervalMs = ms ?? RUN_LINEAGE_SAMPLE_INTERVAL_MS;
-  if (sampleTimer) {
-    clearInterval(sampleTimer);
-    sampleTimer = null;
-    ensureSampler();
-  }
 }
 
 /**
@@ -181,7 +193,6 @@ export function forgetTrackedRunLineageForTests() {
   trackedRuns.clear();
   unsavedRuns.clear();
   saveFailureLogged.clear();
-  stopSamplerIfIdle();
 }
 
 /**
@@ -271,7 +282,6 @@ export async function reapRunDescendants(input: {
   trackedRuns.delete(input.runId);
   unsavedRuns.delete(input.runId);
   saveFailureLogged.delete(input.runId);
-  stopSamplerIfIdle();
   try {
     // Read the saved file only after any save still in progress has finished.
     const lineage =
