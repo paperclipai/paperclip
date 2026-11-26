@@ -25,9 +25,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::{
-    read_process_table, signal_member, LineageState, LiveProcessTable, ProcessEntry, ProcessTable,
-};
+use super::{read_process_table, signal_member, LineageState, ProcessEntry, ProcessTable};
 
 impl LineageState {
     fn journal_record(&self, writer: ProcessIdentity, sampled_through: u64) -> JournalRecord {
@@ -141,6 +139,8 @@ struct JournalWrite {
 /// `sampled_through`. A shorter interval narrows the window a reaper must
 /// treat as unsampled, at one small write per interval.
 const SAMPLED_THROUGH_REFRESH: Duration = Duration::from_secs(1);
+
+const CLEAN_READS_TO_OUTLAST_A_TORN_TABLE_READ: usize = 2;
 
 impl Journal {
     pub(super) fn create(state: &LineageState) -> io::Result<Option<Self>> {
@@ -282,11 +282,36 @@ impl ReapReport {
 /// directory are reaped too; a live writer's journals are never touched. Each
 /// process is signalled only while its PID and start time still match a
 /// recorded identity: TERM first, KILL after `grace`.
+///
+/// A live orphan of this user that started after the dead runnerd's last
+/// sample cannot be attributed and is never signalled. The reap waits for
+/// such orphans to exit and refuses with `unattributed_orphan` only if one
+/// still lives at `deadline`. A table read is not atomic, so after it saw one
+/// it verifies only after `CLEAN_READS_TO_OUTLAST_A_TORN_TABLE_READ`
+/// consecutive reads without one.
 pub fn reap_journals(
     state_dir: &Path,
     runner_pid: i32,
     grace: Duration,
     deadline: Duration,
+) -> ReapReport {
+    reap_journals_from(
+        state_dir,
+        runner_pid,
+        grace,
+        deadline,
+        read_process_table,
+        owned_by_this_user,
+    )
+}
+
+fn reap_journals_from<T: ProcessTable>(
+    state_dir: &Path,
+    runner_pid: i32,
+    grace: Duration,
+    deadline: Duration,
+    mut read_table: impl FnMut() -> Option<T>,
+    owned: impl Fn(i32) -> bool,
 ) -> ReapReport {
     let directory = state_dir.join(JOURNAL_DIRECTORY_NAME);
     let marker_path = directory.join(format!("writer-{runner_pid}.json"));
@@ -339,10 +364,10 @@ pub fn reap_journals(
     let count = journals.len();
     let started = Instant::now();
     let mut signalled: HashSet<(i32, u64)> = HashSet::new();
-    let mut orphan_seen = false;
+    let mut consecutive_clean_reads = CLEAN_READS_TO_OUTLAST_A_TORN_TABLE_READ - 1;
     loop {
         let elapsed = started.elapsed();
-        let Some(table) = read_process_table() else {
+        let Some(table) = read_table() else {
             if elapsed >= deadline {
                 return ReapReport {
                     journals: count,
@@ -368,7 +393,7 @@ pub fn reap_journals(
             // cannot be proven either way, so it is never signalled, and the
             // proof is refused.
             if let Some(since) = unsampled_since {
-                let escaped = unattributed_orphans(&table, since, &journals);
+                let escaped = unattributed_orphans(&table, since, &journals, &owned);
                 if !escaped.is_empty() {
                     if elapsed >= deadline {
                         return ReapReport {
@@ -378,12 +403,12 @@ pub fn reap_journals(
                             ..ReapReport::refused("unattributed_orphan")
                         };
                     }
-                    orphan_seen = true;
+                    consecutive_clean_reads = 0;
                     thread::sleep(Duration::from_millis(10));
                     continue;
                 }
-                if orphan_seen {
-                    orphan_seen = false;
+                consecutive_clean_reads += 1;
+                if consecutive_clean_reads < CLEAN_READS_TO_OUTLAST_A_TORN_TABLE_READ {
                     thread::sleep(Duration::from_millis(10));
                     continue;
                 }
@@ -432,9 +457,10 @@ pub fn reap_journals(
 /// `since` and belong to no journal. An orphan of a subreaper other than init
 /// is not seen here; such a host keeps the in-process teardown only.
 fn unattributed_orphans(
-    table: &LiveProcessTable,
+    table: &dyn ProcessTable,
     since: u64,
     journals: &[(PathBuf, LineageState)],
+    owned: &dyn Fn(i32) -> bool,
 ) -> Vec<i32> {
     let mut pids: Vec<i32> = table
         .entries()
@@ -446,7 +472,7 @@ fn unattributed_orphans(
                 && !journals
                     .iter()
                     .any(|(_, state)| state.members.get(&entry.pid) == Some(&entry.started))
-                && owned_by_this_user(entry.pid)
+                && owned(entry.pid)
         })
         .map(|entry| entry.pid)
         .collect();
@@ -750,6 +776,56 @@ mod tests {
         assert!(!report.verified);
         assert!(report.remaining.contains(&orphan.pid), "{report:?}");
         assert!(alive, "an unattributed process is never signalled");
+    }
+
+    #[test]
+    fn reaping_rereads_after_an_orphan_exits_so_a_torn_read_cannot_hide_its_child() {
+        let directory = temporary_directory("torn-read");
+        let writer = exited_writer();
+        write_marker(&directory, writer);
+        let provider = exited_writer();
+        let mut state = LineageState::default();
+        state.root = Some((provider.pid, provider.started));
+        let journal = directory
+            .join(JOURNAL_DIRECTORY_NAME)
+            .join(format!("lineage-{}-0.json", writer.pid));
+        fs::write(
+            &journal,
+            serde_json::to_vec(&state.journal_record(writer, 100)).unwrap(),
+        )
+        .unwrap();
+        let orphan = 900_001;
+        let child = 900_002;
+        let reads = std::cell::RefCell::new(vec![
+            table(vec![(entry(child, 1, child, 300), child)]),
+            table(vec![(entry(child, orphan, child, 300), child)]),
+            table(vec![
+                (entry(orphan, 1, orphan, 200), orphan),
+                (entry(child, orphan, child, 300), child),
+            ]),
+        ]);
+        let report = reap_journals_from(
+            &directory,
+            writer.pid,
+            Duration::ZERO,
+            Duration::from_millis(200),
+            || {
+                let mut reads = reads.borrow_mut();
+                Some(if reads.len() > 1 {
+                    reads.pop().unwrap()
+                } else {
+                    table(vec![(entry(child, 1, child, 300), child)])
+                })
+            },
+            |_| true,
+        );
+        let journal_kept = journal.exists();
+        let _ = fs::remove_dir_all(&directory);
+        assert_eq!(report.reason, Some("unattributed_orphan"), "{report:?}");
+        assert!(!report.verified);
+        assert_eq!(report.remaining, vec![child], "{report:?}");
+        assert_eq!(report.signalled, 0, "{report:?}");
+        assert!(journal_kept, "a refused proof keeps the journal");
     }
 
     #[test]
