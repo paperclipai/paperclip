@@ -18,7 +18,6 @@ function makeModule(loginCapability?: unknown) {
 
 const validLoginCapability: AdapterLoginCapability = {
   panelMode: "displayed_code",
-  sandboxTransport: "streamed_exec",
   timeoutPolicy: "caller_bounded",
   getCommand: () => "vendor login",
   parsePrompt: () => null,

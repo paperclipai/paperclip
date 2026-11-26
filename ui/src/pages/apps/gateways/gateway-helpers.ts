@@ -11,7 +11,7 @@ import { humanizeConnectionDisplayName, isToolConnectionAttentionHealth } from "
 /** Days before expiry at which we surface a token as "Expiring". */
 export const TOKEN_EXPIRING_WINDOW_DAYS = 14;
 
-export type TokenStatus = "active" | "expiring" | "expired" | "revoked";
+export type TokenStatus = "pending" | "active" | "expiring" | "expired" | "revoked";
 
 export function toDate(value: Date | string | null | undefined): Date | null {
   if (!value) return null;
@@ -25,19 +25,22 @@ export function maskedTokenLabel(token: Pick<ToolMcpGatewayToken, "tokenPrefix">
 }
 
 export function tokenStatus(
-  token: Pick<ToolMcpGatewayToken, "revokedAt" | "expiresAt">,
+  token: Pick<ToolMcpGatewayToken, "revokedAt" | "expiresAt" | "pendingReveal">,
   now: number = Date.now(),
 ): TokenStatus {
   if (token.revokedAt) return "revoked";
   const expires = toDate(token.expiresAt);
-  if (!expires) return "active";
-  const diffMs = expires.getTime() - now;
+  const diffMs = expires ? expires.getTime() - now : Infinity;
+  // An unrevealed token that expired can never be revealed, so it shows as expired.
   if (diffMs <= 0) return "expired";
+  if (token.pendingReveal) return "pending";
+  if (!expires) return "active";
   if (diffMs <= TOKEN_EXPIRING_WINDOW_DAYS * 24 * 60 * 60 * 1000) return "expiring";
   return "active";
 }
 
 export const TOKEN_STATUS_LABEL: Record<TokenStatus, string> = {
+  pending: "Not revealed",
   active: "Active",
   expiring: "Expiring",
   expired: "Expired",
@@ -86,7 +89,7 @@ export function formatScope(
   }
   if (gateway.projectId) return `Project · ${projectNames.get(gateway.projectId) ?? shortId(gateway.projectId)}`;
   if (gateway.agentId) return `Agent · ${agentNames.get(gateway.agentId) ?? shortId(gateway.agentId)}`;
-  return "Company";
+  return "Organization";
 }
 
 export function formatOwner(gateway: ToolMcpGatewayWithTokens, agentNames: Map<string, string>): string {
@@ -206,4 +209,43 @@ export function orderedSnippets(
 
 export function formatSnippetConfig(config: Record<string, unknown>): string {
   return JSON.stringify(config, null, 2);
+}
+
+export function defaultGatewayTokenName(
+  gateway: Pick<ToolMcpGatewayWithTokens, "displaySlug">,
+  now: Date = new Date(),
+): string {
+  const stamp = now.toISOString().slice(0, 16).replace(/[-:T]/g, "");
+  return `${gateway.displaySlug}-${stamp}`;
+}
+
+type SnippetConfigReplacements = {
+  endpointPath: string;
+  endpoint: string;
+  token: string;
+};
+
+function replaceSnippetConfigValue(value: unknown, replacements: SnippetConfigReplacements): unknown {
+  if (typeof value === "string") {
+    return value
+      .split(replacements.endpointPath)
+      .join(replacements.endpoint)
+      .replaceAll("pcgw_...", replacements.token);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => replaceSnippetConfigValue(item, replacements));
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, replaceSnippetConfigValue(item, replacements)]),
+    );
+  }
+  return value;
+}
+
+export function formatHydratedSnippetConfig(
+  config: Record<string, unknown>,
+  replacements: SnippetConfigReplacements,
+): string {
+  return JSON.stringify(replaceSnippetConfigValue(config, replacements), null, 2);
 }

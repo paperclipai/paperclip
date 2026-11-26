@@ -49,6 +49,11 @@ type BetterAuthInstance = BetterAuthHandlerTarget & BetterAuthSessionResolver;
 const AUTH_COOKIE_PREFIX_FALLBACK = "default";
 const AUTH_COOKIE_PREFIX_INVALID_SEGMENTS_RE = /[^a-zA-Z0-9_-]+/g;
 
+export function legacyAccountIssuerForCreate(account: { providerId: string; issuer?: unknown }): string | null {
+  if (typeof account.issuer === "string" && account.issuer.trim()) return account.issuer;
+  return account.providerId === "credential" ? "local:credential" : null;
+}
+
 export function deriveAuthCookiePrefix(instanceId = resolvePaperclipInstanceId()): string {
   const scopedInstanceId = instanceId
     .trim()
@@ -92,11 +97,21 @@ export function shouldDisableSecureAuthCookies(input: {
   authBaseUrlMode: Config["authBaseUrlMode"];
   authPublicBaseUrl: string | undefined;
   publicUrl?: string | undefined;
+  managedRuntimePublicUrl?: string | undefined;
+  requestUrl?: string | undefined;
 }): boolean {
   const publicUrl = (
     input.publicUrl?.trim() ||
     (input.authBaseUrlMode === "explicit" ? input.authPublicBaseUrl?.trim() : "")
   );
+  if (
+    input.deploymentMode === "authenticated" &&
+    isHttpsUrl(publicUrl) &&
+    isHttpsUrl(input.managedRuntimePublicUrl) &&
+    isHttpLoopbackUrl(input.requestUrl)
+  ) {
+    return true;
+  }
   if (publicUrl) return publicUrl.startsWith("http://");
 
   return (
@@ -106,6 +121,52 @@ export function shouldDisableSecureAuthCookies(input: {
       input.deploymentExposure === undefined
     )
   );
+}
+
+function isHttpsUrl(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = hostname.trim().toLowerCase();
+  return (
+    normalized === "localhost" ||
+    normalized === "127.0.0.1" ||
+    normalized === "[::1]" ||
+    normalized === "::1"
+  );
+}
+
+function isHttpLoopbackUrl(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" && isLoopbackHostname(url.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function requestUrlFromHeaders(headers: Headers): string | undefined {
+  const host = headers.get("host")?.trim();
+  if (!host) return undefined;
+
+  const forwardedProtocol = headers.get("x-forwarded-proto")?.split(",", 1)[0]?.trim().toLowerCase();
+  const protocol = forwardedProtocol === "http" || forwardedProtocol === "https"
+    ? forwardedProtocol
+    : (() => {
+      try {
+        return isLoopbackHostname(new URL(`http://${host}`).hostname) ? "http" : "https";
+      } catch {
+        return "https";
+      }
+    })();
+  return `${protocol}://${host}`;
 }
 
 function headersFromNodeHeaders(rawHeaders: IncomingHttpHeaders): Headers {
@@ -185,6 +246,7 @@ export function resolveWorkspaceHandoffIdentity(
 export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins: string[]): BetterAuthInstance {
   const baseUrl = config.authBaseUrlMode === "explicit" ? config.authPublicBaseUrl : undefined;
   const publicUrl = process.env.PAPERCLIP_PUBLIC_URL?.trim() || baseUrl;
+  const managedRuntimePublicUrl = process.env.PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL?.trim() || undefined;
   const secret = process.env.BETTER_AUTH_SECRET ?? process.env.PAPERCLIP_AGENT_JWT_SECRET;
   if (!secret) {
     throw new Error(
@@ -213,6 +275,20 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
         verification: authVerifications,
       },
     }),
+    account: {
+      additionalFields: {
+        issuer: { type: "string" as const, required: false, input: false, returned: false },
+      },
+    },
+    databaseHooks: {
+      account: {
+        create: {
+          before: async (account: { providerId: string; issuer?: unknown }) => ({
+            data: { ...account, issuer: legacyAccountIssuerForCreate(account) },
+          }),
+        },
+      },
+    },
     emailAndPassword: {
       enabled: true,
       requireEmailVerification: false,
@@ -252,7 +328,48 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
     delete (authConfig as { baseURL?: string }).baseURL;
   }
 
-  return betterAuth(authConfig);
+  const defaultAuth = betterAuth(authConfig);
+  const supportsManagedLoopbackAuth = Boolean(
+    !disableSecureCookies &&
+    isHttpsUrl(publicUrl) &&
+    isHttpsUrl(managedRuntimePublicUrl),
+  );
+  if (!supportsManagedLoopbackAuth) return defaultAuth;
+
+  // Better Auth fixes both the Secure attribute and the __Secure- name prefix
+  // when an instance is created. Keep the public instance unchanged and route
+  // only managed HTTP-loopback requests through a cookie-compatible instance.
+  const loopbackAuth = betterAuth({
+    ...authConfig,
+    advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies: true }),
+  });
+  const cookieSecurityInput = {
+    deploymentMode: config.deploymentMode,
+    deploymentExposure: config.deploymentExposure,
+    authBaseUrlMode: config.authBaseUrlMode,
+    authPublicBaseUrl: config.authPublicBaseUrl,
+    publicUrl,
+    managedRuntimePublicUrl,
+  };
+
+  return {
+    handler: (request) => {
+      const auth = shouldDisableSecureAuthCookies({
+        ...cookieSecurityInput,
+        requestUrl: request.url,
+      }) ? loopbackAuth : defaultAuth;
+      return auth.handler(request);
+    },
+    api: {
+      getSession: (input) => {
+        const auth = shouldDisableSecureAuthCookies({
+          ...cookieSecurityInput,
+          requestUrl: requestUrlFromHeaders(input.headers),
+        }) ? loopbackAuth : defaultAuth;
+        return auth.api.getSession(input);
+      },
+    },
+  };
 }
 
 export function createBetterAuthHandler(auth: BetterAuthHandlerTarget): RequestHandler {

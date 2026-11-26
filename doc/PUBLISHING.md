@@ -41,7 +41,9 @@ This script:
 3. bundles the CLI entrypoint with esbuild into `cli/dist/index.js`
 4. verifies the bundled entrypoint with `node --check`
 5. rewrites `cli/package.json` into a publishable npm manifest and stores the dev copy as `cli/package.dev.json`
-6. copies the repo `README.md` into `cli/README.md` for npm metadata
+6. copies the repo `README.md` into `cli/README.md` for npm metadata, rewriting
+   repository-relative image assets to raw GitHub URLs pinned to the source
+   commit
 
 After the release script exits, the dev manifest and temporary files are restored automatically.
 

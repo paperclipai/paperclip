@@ -11,7 +11,7 @@ import {
   ensurePaperclipSkillSymlink,
   readPaperclipRuntimeSkillEntries,
   readInstalledSkillTargets,
-  resolvePaperclipDesiredSkillNames,
+  resolveLegacyPaperclipDesiredSkillNames,
 } from "@paperclipai/adapter-utils/server-utils";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -38,7 +38,7 @@ function resolveKimiSkillsHome(config: Record<string, unknown>) {
 
 async function buildKimiSkillSnapshot(config: Record<string, unknown>): Promise<AdapterSkillSnapshot> {
   const availableEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
-  const desiredSkills = resolvePaperclipDesiredSkillNames(config, availableEntries);
+  const desiredSkills = resolveLegacyPaperclipDesiredSkillNames(config, availableEntries);
   const skillsHome = resolveKimiSkillsHome(config);
   const installed = await readInstalledSkillTargets(skillsHome);
   return buildPersistentSkillSnapshot({
@@ -63,7 +63,10 @@ export async function syncKimiSkills(
   desiredSkills: string[],
 ): Promise<AdapterSkillSnapshot> {
   const availableEntries = await readPaperclipRuntimeSkillEntries(ctx.config, __moduleDir);
-  const desiredSet = new Set(desiredSkills);
+  const desiredSet = new Set([
+    ...resolveLegacyPaperclipDesiredSkillNames({}, availableEntries),
+    ...desiredSkills,
+  ]);
   const skillsHome = resolveKimiSkillsHome(ctx.config);
   await fs.mkdir(skillsHome, { recursive: true });
   const installed = await readInstalledSkillTargets(skillsHome);

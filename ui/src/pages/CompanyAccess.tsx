@@ -2,13 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS,
+  hidesCompanyPage,
   type Agent,
 } from "@paperclipai/shared";
-import { Shield, ShieldCheck, Trash2 } from "lucide-react";
+import { Shield, ShieldCheck, Trash2, UserPlus } from "lucide-react";
 import { accessApi, type CompanyMember } from "@/api/access";
 import { agentsApi } from "@/api/agents";
-import { ApiError } from "@/api/client";
+import { cloudApi } from "@/api/cloud";
 import { issuesApi } from "@/api/issues";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -23,9 +25,16 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
-import { Link, Navigate } from "@/lib/router";
+import { Link, Navigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
+import { cloudStackInviteUrl } from "@/lib/cloudLinks";
 import { usePluginSlots } from "@/plugins/slots";
+import { Tabs, TabsContent } from "@/components/ui/tabs";
+import { PageTabBar } from "@/components/PageTabBar";
+import { useHiddenSettings } from "@/hooks/useHiddenSettings";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { InvitesSection } from "@/components/access/InvitesSection";
+import { describeError } from "@/api/errors";
 
 const reassignmentIssueStatuses = "backlog,todo,in_progress,in_review,blocked,failed,timed_out";
 type EditableMemberStatus = "pending" | "active" | "suspended";
@@ -35,6 +44,42 @@ export function CompanyAccess() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const { pushToast } = useToast();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const cloud = useCloudInstance();
+  const cloudStacksQuery = useQuery({
+    queryKey: queryKeys.cloud.stacks,
+    queryFn: () => cloudApi.listStacks(),
+    enabled: Boolean(cloud && selectedCompanyId),
+    staleTime: 30_000,
+  });
+  const cloudStacksView = useQueryView(cloudStacksQuery);
+  const currentStack = cloudStacksQuery.data?.stacks.find((stack) => stack.isCurrent);
+  // Company roles can differ from Cloud roles. Only the current stack's
+  // owner/admin may invite, even if another portfolio entry grants ownership.
+  const cloudInviteUrl = cloud && cloudStacksView.kind !== "error" &&
+    (currentStack?.role === "owner" || currentStack?.role === "admin")
+    ? cloudStackInviteUrl(cloud.cloudBaseUrl, currentStack.stackSlug)
+    : null;
+  // Invites render as a tab of this page; `company.invites` hides just that
+  // tab while `company.members` (the route gate) hides the whole page.
+  const { hidden: hiddenSettings } = useHiddenSettings();
+  const hideInvitesTab = hidesCompanyPage(hiddenSettings, "company.invites");
+  const requestedTab = searchParams.get("tab") === "invites" ? "invites" : "members";
+  const activeTab = hideInvitesTab ? "members" : requestedTab;
+  const handleTabChange = (value: string) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value === "invites") {
+          next.set("tab", "invites");
+        } else {
+          next.delete("tab");
+        }
+        return next;
+      },
+      { replace: true },
+    );
+  };
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
   const [removingMemberId, setRemovingMemberId] = useState<string | null>(null);
   const [reassignmentTarget, setReassignmentTarget] = useState<string>("__unassigned");
@@ -43,7 +88,7 @@ export function CompanyAccess() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
       { label: "Members" },
     ]);
@@ -54,6 +99,7 @@ export function CompanyAccess() {
     queryFn: () => accessApi.listMembers(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const membersView = useQueryView(membersQuery);
 
   const agentsQuery = useQuery({
     queryKey: queryKeys.agents.list(selectedCompanyId ?? ""),
@@ -92,7 +138,7 @@ export function CompanyAccess() {
     onError: (error) => {
       pushToast({
         title: "Failed to update member",
-        body: error instanceof Error ? error.message : "Unknown error",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -110,7 +156,7 @@ export function CompanyAccess() {
     onError: (error) => {
       pushToast({
         title: "Failed to approve join request",
-        body: error instanceof Error ? error.message : "Unknown error",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -128,7 +174,7 @@ export function CompanyAccess() {
     onError: (error) => {
       pushToast({
         title: "Failed to reject join request",
-        body: error instanceof Error ? error.message : "Unknown error",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -184,7 +230,7 @@ export function CompanyAccess() {
     onError: (error) => {
       pushToast({
         title: "Failed to remove member",
-        body: error instanceof Error ? error.message : "Unknown error",
+        body: describeError(error).body,
         tone: "error",
       });
     },
@@ -202,21 +248,26 @@ export function CompanyAccess() {
   }, [removingMember]);
 
   if (!selectedCompanyId) {
-    return <div className="text-sm text-muted-foreground">Select a company to manage access.</div>;
+    return <div className="text-sm text-muted-foreground">Select an organization to manage access.</div>;
   }
 
-  if (membersQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading company access…</div>;
+  if (membersQuery.isLoading || membersView.kind === "reconnecting") {
+    return <div className="text-sm text-muted-foreground">Loading organization access…</div>;
   }
 
-  if (membersQuery.error) {
-    const message =
-      membersQuery.error instanceof ApiError && membersQuery.error.status === 403
-        ? "You do not have permission to manage company members."
-        : membersQuery.error instanceof Error
-          ? membersQuery.error.message
-          : "Failed to load company members.";
-    return <div className="text-sm text-destructive">{message}</div>;
+  if (membersView.kind === "error") {
+    if (membersView.errorKind === "forbidden") {
+      return <div className="text-sm text-destructive">You do not have permission to manage organization members.</div>;
+    }
+    return (
+      <QueryErrorState
+        size="page"
+        error={membersQuery.error}
+        action="load organization members"
+        onRetry={membersView.retry}
+        retrying={membersView.isFetching}
+      />
+    );
   }
 
   const members = membersQuery.data?.members ?? [];
@@ -236,14 +287,35 @@ export function CompanyAccess() {
 
   return (
     <div className="max-w-6xl space-y-8">
-      <div className="flex items-center gap-2">
-        <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Company Members</h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="h-5 w-5 text-muted-foreground" />
+          <h1 className="text-lg font-semibold">Organization Members</h1>
+        </div>
+        {cloudInviteUrl && (
+          <Button asChild>
+            <a href={cloudInviteUrl}><UserPlus />Invite people</a>
+          </Button>
+        )}
       </div>
+
+      <Tabs value={activeTab} onValueChange={handleTabChange} className="flex flex-col gap-4">
+        {!hideInvitesTab && (
+          <PageTabBar
+            items={[
+              { value: "members", label: "Members" },
+              { value: "invites", label: "Invites" },
+            ]}
+            align="start"
+            value={activeTab}
+            onValueChange={handleTabChange}
+          />
+        )}
+        <TabsContent value="members" className="space-y-8">
 
       {access && !access.currentUserRole && (
         <div className="rounded-xl bg-amber-500/10 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
-          This account can manage access here through instance-admin privileges, but it does not currently hold an active company membership.
+          This account can manage access here through instance-admin privileges, but it does not currently hold an active organization membership.
         </div>
       )}
 
@@ -254,7 +326,7 @@ export function CompanyAccess() {
               <div>
                 <h3 className="text-sm font-semibold">Pending human joins</h3>
                 <p className="text-sm text-muted-foreground">
-                  Review pending join requests before they become active company members.
+                  Review pending join requests before they become active organization members.
                 </p>
               </div>
               <Badge variant="outline">{pendingHumanJoinRequests.length} pending</Badge>
@@ -307,7 +379,7 @@ export function CompanyAccess() {
               {members.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="px-3 py-8 text-muted-foreground">
-                    No user memberships found for this company yet.
+                    No user memberships found for this organization yet.
                   </td>
                 </tr>
               ) : members.map((member) => {
@@ -373,14 +445,14 @@ export function CompanyAccess() {
           <DialogHeader>
             <DialogTitle>Edit member</DialogTitle>
             <DialogDescription>
-              Update company role and membership status for {editingMember?.user?.name || editingMember?.user?.email || editingMember?.principalId}.
+              Update organization role and membership status for {editingMember?.user?.name || editingMember?.user?.email || editingMember?.principalId}.
             </DialogDescription>
           </DialogHeader>
           {editingMember && (
             <div className="space-y-5">
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="space-y-2 text-sm">
-                  <span className="font-medium">Company role</span>
+                  <span className="font-medium">Organization role</span>
                   <select
                     className="w-full rounded-md border border-border bg-background px-3 py-2"
                     value={draftRole ?? ""}
@@ -519,6 +591,13 @@ export function CompanyAccess() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+        </TabsContent>
+        {!hideInvitesTab && (
+          <TabsContent value="invites">
+            <InvitesSection />
+          </TabsContent>
+        )}
+      </Tabs>
     </div>
   );
 }
@@ -556,7 +635,7 @@ export function CompanyAccessLegacyRoute() {
           <h1 className="text-lg font-semibold">Advanced Permissions</h1>
         </div>
         <p className="text-sm text-muted-foreground">
-          Advanced access, scoped assignment, and explicit grant controls are provided by installed company settings extensions.
+          Advanced access, scoped assignment, and explicit grant controls are provided by installed organization settings extensions.
         </p>
       </div>
 
@@ -564,7 +643,7 @@ export function CompanyAccessLegacyRoute() {
         <div className="space-y-2">
           <h2 className="text-sm font-semibold">Advanced permissions unavailable</h2>
           <p className="text-sm text-muted-foreground">
-            Core Paperclip keeps enforcing company boundaries and any existing restrictive policy data, but editing advanced permissions requires an installed extension.
+            Core Paperclip keeps enforcing organization boundaries and any existing restrictive policy data, but editing advanced permissions requires an installed extension.
           </p>
           {errorMessage ? (
             <p className="text-sm text-destructive">Plugin extensions unavailable: {errorMessage}</p>
@@ -575,7 +654,7 @@ export function CompanyAccessLegacyRoute() {
             <Link to="/company/settings/members">Open Members</Link>
           </Button>
           <Button asChild variant="outline">
-            <Link to="/company/settings/invites">Open Invites</Link>
+            <Link to="/company/settings/members?tab=invites">Open Invites</Link>
           </Button>
         </div>
       </div>

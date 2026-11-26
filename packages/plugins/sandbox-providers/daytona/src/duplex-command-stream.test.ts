@@ -7,6 +7,7 @@ import {
   type DaytonaPtyHandle,
   type DaytonaPtyProcess,
 } from "./duplex-command-stream.js";
+import { PTY_INPUT_CHUNK_BYTES, PTY_MESSAGE_CAP_BYTES } from "./pty-chunked-input.js";
 
 // The carriage return that submits the launch wrapper line to the terminal.
 const ENTER = "\r";
@@ -269,10 +270,12 @@ describe("openDaytonaDuplexChannelSession", () => {
     const received: string[] = [];
 
     const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
-    session.onData((chunk) => received.push(chunk));
+    session.onData((chunk) => received.push(new TextDecoder().decode(chunk)));
 
     // The launch wrapper is the first input; the host frame write is the second.
-    session.write('{"version":1,"type":"heartbeat"}\n');
+    session.write(new TextEncoder().encode('{"version":1,"type":"heartbeat"}\n'));
+    // The chunker awaits each send, so let the write settle before the assertion.
+    await new Promise((resolve) => setImmediate(resolve));
     expect(process.handle?.inputs[1]).toBe('{"version":1,"type":"heartbeat"}\n');
     // The fake terminal echoes nothing, so the write produces no data callback.
     // A real terminal in raw mode with echo off behaves the same way.
@@ -284,7 +287,7 @@ describe("openDaytonaDuplexChannelSession", () => {
     const received: string[] = [];
 
     const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
-    session.onData((chunk) => received.push(chunk));
+    session.onData((chunk) => received.push(new TextDecoder().decode(chunk)));
 
     process.handle?.emitText('{"version":1,"type":"ready","address":"127.0.0.1:8080"}\n');
     process.handle?.emitText('{"version":1,"type":"heartbeat"}\n');
@@ -302,7 +305,7 @@ describe("openDaytonaDuplexChannelSession", () => {
     const received: string[] = [];
 
     const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
-    session.onData((chunk) => received.push(chunk));
+    session.onData((chunk) => received.push(new TextDecoder().decode(chunk)));
 
     const frame = '{"version":1,"type":"response","id":"r1","status":200,"headers":{},"body":"","outcome":"completed"}\n';
     process.handle?.emitText(frame.slice(0, 20));
@@ -316,7 +319,7 @@ describe("openDaytonaDuplexChannelSession", () => {
     const received: string[] = [];
 
     const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
-    session.onData((chunk) => received.push(chunk));
+    session.onData((chunk) => received.push(new TextDecoder().decode(chunk)));
 
     const body = "x".repeat(500_000);
     const frame = `{"version":1,"type":"response","id":"big","status":200,"headers":{},"body":"${body}","outcome":"completed"}\n`;
@@ -326,20 +329,41 @@ describe("openDaytonaDuplexChannelSession", () => {
     expect(received.join("").length).toBe(frame.length);
   });
 
-  it("keeps a multibyte character whole across two output chunks", async () => {
+  it("test_stream_forwards_bytes_without_utf8_conversion", async () => {
     const process = createFakeProcess();
-    const received: string[] = [];
+    const received: Uint8Array[] = [];
 
     const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
     session.onData((chunk) => received.push(chunk));
 
-    // The euro sign is three UTF-8 bytes. Split it across two chunks, so the
-    // stream decoder must join the bytes.
+    // The euro sign is three UTF-8 bytes. Split it across two chunks. The
+    // session no longer runs a UTF-8 stream decoder (see `duplex-command-stream.ts`),
+    // so it forwards each raw byte chunk unchanged; it does not wait for a whole
+    // character. The two chunks concatenate back to the exact original bytes —
+    // proof that no layer here converts the data to a string.
     const euro = new TextEncoder().encode("€");
     process.handle?.emitBytes(euro.subarray(0, 2));
     process.handle?.emitBytes(euro.subarray(2));
 
-    expect(received.join("")).toBe("€");
+    expect(received).toHaveLength(2);
+    expect(received[0]).toEqual(euro.subarray(0, 2));
+    expect(received[1]).toEqual(euro.subarray(2));
+    const joined = Buffer.concat(received);
+    expect(joined).toEqual(Buffer.from(euro));
+    expect(new TextDecoder().decode(joined)).toBe("€");
+  });
+
+  it("sends the full 256-value byte corpus through the channel unchanged", async () => {
+    const process = createFakeProcess();
+    const received: Uint8Array[] = [];
+
+    const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
+    session.onData((chunk) => received.push(chunk));
+
+    const allByteValues = Uint8Array.from({ length: 256 }, (_, value) => value);
+    process.handle?.emitBytes(allByteValues);
+
+    expect(Buffer.concat(received)).toEqual(Buffer.from(allByteValues));
   });
 
   it("buffers early output until the listener registers", async () => {
@@ -352,27 +376,109 @@ describe("openDaytonaDuplexChannelSession", () => {
     process.handle?.emitText('"type":"heartbeat"}\n');
     expect(received).toEqual([]);
 
-    session.onData((chunk) => received.push(chunk));
+    session.onData((chunk) => received.push(new TextDecoder().decode(chunk)));
     // The session flushes the buffered output in order on registration.
     expect(received).toEqual(['{"version":1,"type":"heartbeat"}\n']);
   });
 
-  it("resolves wait with the gateway exit code", async () => {
+  it("maps a numeric SDK exit code to a process exit", async () => {
     const process = createFakeProcess();
 
     const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
     process.handle?.finish(3);
 
-    await expect(session.wait()).resolves.toEqual({ exitCode: 3 });
+    // A numeric exit code is a real process exit, not a transport close.
+    await expect(session.wait()).resolves.toEqual({ exitCode: 3, transportClosed: false });
   });
 
-  it("maps an absent exit code to null", async () => {
+  it("maps an absent SDK exit code to a transport close", async () => {
     const process = createFakeProcess();
 
     const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
     process.handle?.finish(undefined);
 
-    await expect(session.wait()).resolves.toEqual({ exitCode: null });
+    // A non-numeric SDK result marks a reason-less transport close with no exit
+    // data, so the seam reports a transport close, not a process exit.
+    await expect(session.wait()).resolves.toEqual({ exitCode: null, transportClosed: true });
+  });
+
+  it("splits a write above the provider cap into more than one send under the cap", async () => {
+    const process = createFakeProcess();
+    const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
+    const handle = process.handle;
+    if (!handle) throw new Error("The fake process opened no handle.");
+    // The launch wrapper is the first recorded input. Count only the write's sends.
+    const before = handle.inputs.length;
+
+    // A fixed payload well above the provider message cap. It stays fixed, so a
+    // raised chunk size above this size makes the write one send and fails this
+    // test. The payload is ASCII, so the fake's per-send decode keeps each byte.
+    const payload = "x".repeat(150_416);
+    session.write(new TextEncoder().encode(payload));
+    // The chunker awaits each send, so let the write settle before the assertion.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const sends = handle.inputs.slice(before);
+    expect(sends.length).toBeGreaterThan(1);
+    for (const chunk of sends) {
+      expect(Buffer.byteLength(chunk, "utf8")).toBeLessThanOrEqual(PTY_INPUT_CHUNK_BYTES);
+      expect(Buffer.byteLength(chunk, "utf8")).toBeLessThanOrEqual(PTY_MESSAGE_CAP_BYTES);
+    }
+    // The sends rejoin to the exact payload, so the chunker loses no byte.
+    expect(sends.join("")).toBe(payload);
+  });
+
+  it("sends a write below the provider cap as exactly one send", async () => {
+    const process = createFakeProcess();
+    const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
+    const handle = process.handle;
+    if (!handle) throw new Error("The fake process opened no handle.");
+    const before = handle.inputs.length;
+
+    session.write(new TextEncoder().encode('{"version":1,"type":"heartbeat"}\n'));
+    // The chunker awaits each send, so let the write settle before the assertion.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(handle.inputs.slice(before)).toHaveLength(1);
+  });
+
+  it("keeps two writes in order and never interleaves their chunks", async () => {
+    // A handle whose `sendInput` yields a microtask before it records the chunk.
+    // The yield opens a window where a second write could jump ahead. The session
+    // chains the writes, so the second write starts only after the first ends.
+    const inputs: string[] = [];
+    const handle: DaytonaPtyHandle = {
+      async waitForConnection(): Promise<void> {},
+      async sendInput(data: string | Uint8Array): Promise<void> {
+        await Promise.resolve();
+        inputs.push(typeof data === "string" ? data : new TextDecoder().decode(data));
+      },
+      wait(): Promise<{ exitCode?: number; error?: string }> {
+        return new Promise(() => {});
+      },
+      async kill(): Promise<void> {},
+      async disconnect(): Promise<void> {},
+    };
+    const process: DaytonaPtyProcess = {
+      async createPty(): Promise<DaytonaPtyHandle> {
+        return handle;
+      },
+    };
+    const session = await openDaytonaDuplexChannelSession(process, GATEWAY);
+    // Two payloads above the cap, so each write is more than one chunk. "a" marks
+    // the first write and "b" marks the second write.
+    const first = "a".repeat(150_416);
+    const second = "b".repeat(150_416);
+
+    session.write(new TextEncoder().encode(first));
+    session.write(new TextEncoder().encode(second));
+    // Let both writes settle.
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Drop the launch wrapper (the first input) and rejoin the chunks. The rejoin
+    // equals the first payload then the second payload, so no chunk of the second
+    // write lands between the chunks of the first write.
+    expect(inputs.slice(1).join("")).toBe(`${first}${second}`);
   });
 
   it("kills the child on stop and releases the socket on close", async () => {
@@ -429,7 +535,7 @@ describe("openDaytonaDuplexChannelSession", () => {
       onWriteError: (reason) => writeErrors.push(reason),
     });
 
-    session.write("frame\n");
+    session.write(new TextEncoder().encode("frame\n"));
     // Let the rejected write settle.
     await new Promise((resolve) => setImmediate(resolve));
 
@@ -468,12 +574,61 @@ describe("openDaytonaDuplexChannelSession", () => {
       onWriteError: (reason) => writeErrors.push(reason),
     });
 
-    session.write("a");
-    session.write("b");
+    session.write(new TextEncoder().encode("a"));
+    session.write(new TextEncoder().encode("b"));
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(writeErrors).toEqual(["write_error"]);
     expect(killed).toBe(1);
+  });
+
+  it("does not send a queued write after a first-send rejection terminalizes the channel", async () => {
+    // Two writes queue on the chain. The launch wrapper write succeeds, then the
+    // first frame write rejects and terminalizes the channel. The second queued
+    // write must not reach `sendInput`, so no write runs on the closed transport.
+    const sends: string[] = [];
+    let killed = 0;
+    const handle: DaytonaPtyHandle = {
+      async waitForConnection(): Promise<void> {},
+      async sendInput(data: string | Uint8Array): Promise<void> {
+        const text = typeof data === "string" ? data : new TextDecoder().decode(data);
+        sends.push(text);
+        // The launch wrapper write (the first send) succeeds. The first frame
+        // write (the second send) rejects and terminalizes the channel.
+        if (sends.length === 1) return;
+        throw new Error("broken");
+      },
+      wait(): Promise<{ exitCode?: number; error?: string }> {
+        return new Promise(() => {});
+      },
+      async kill(): Promise<void> {
+        killed += 1;
+      },
+      async disconnect(): Promise<void> {},
+    };
+    const process: DaytonaPtyProcess = {
+      async createPty(): Promise<DaytonaPtyHandle> {
+        return handle;
+      },
+    };
+    const writeErrors: string[] = [];
+    const session = await openDaytonaDuplexChannelSession(process, GATEWAY, {
+      onWriteError: (reason) => writeErrors.push(reason),
+    });
+
+    session.write(new TextEncoder().encode("first\n"));
+    session.write(new TextEncoder().encode("second\n"));
+    // Let the write chain settle both queued writes.
+    await new Promise((resolve) => setImmediate(resolve));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // The channel terminalized one time on the first frame write. The second
+    // queued write sent no chunk, so exactly two sends ran: the launch wrapper and
+    // the first frame write. The second frame never reached the transport.
+    expect(writeErrors).toEqual(["write_error"]);
+    expect(killed).toBe(1);
+    expect(sends).toHaveLength(2);
+    expect(sends.some((text) => text.includes("second"))).toBe(false);
   });
 });
 
