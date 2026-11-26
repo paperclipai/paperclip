@@ -15,6 +15,8 @@ describe("adapter display registry", () => {
   it("keeps a configured Antigravity runner branded as Google Antigravity", () => {
     const type = agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "antigravity" } });
     expect(getAdapterLabel(type)).toBe("Google Antigravity");
+    const bridgedType = agentDisplayAdapterType({ adapterType: "gemini_local", adapterConfig: { agentCommand: "agy acp", command: "gemini" } });
+    expect(getAdapterLabel(bridgedType)).toBe("Google Antigravity");
   });
   it.each([
     ["openai_dot", "OpenAI Dot"],

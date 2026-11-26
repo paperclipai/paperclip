@@ -208,7 +208,7 @@ export function resolveEffectiveAgentEnv(
 }
 
 export function supportsAdapterModelRefresh(adapterType: string): boolean {
-  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local";
+  return adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "paperclip_runner" || adapterType === "opencode_local" || adapterType === "gemini_local";
 }
 
 export function resolvePaperclipRunnerTransitionModel(

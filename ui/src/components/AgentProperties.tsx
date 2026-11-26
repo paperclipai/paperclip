@@ -63,6 +63,11 @@ export function AgentProperties({ agent, runtimeState }: AgentPropertiesProps) {
         <PropertyRow label="Adapter">
           <span className="text-sm font-mono">{getAdapterLabel(agentDisplayAdapterType(agent))}</span>
         </PropertyRow>
+        {typeof agent.adapterConfig?.model === "string" && agent.adapterConfig.model.trim() ? (
+          <PropertyRow label="Model">
+            <span className="text-sm font-mono break-all">{agent.adapterConfig.model.trim()}</span>
+          </PropertyRow>
+        ) : null}
       </div>
 
       <Separator />
