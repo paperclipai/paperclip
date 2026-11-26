@@ -1,0 +1,112 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: steering
+status: planned
+scenarios:
+  - id: steering.queue-follow-up
+    capabilities:
+      - steering/queue
+    context: >-
+      Morgan is busy on the linked website task and cannot immediately consume a normal
+      follow-up.
+    query: >-
+      Also add a contact section to the website.
+    expected_outcome: >-
+      The requirement is saved once in the correct task queue with its order and waiting state
+      visible. Chat does not claim it has already been consumed. When the task becomes eligible,
+      the normal continuation receives the saved requirement without dropping earlier work.
+  - id: steering.edit-queued-message
+    capabilities:
+      - steering/edit-order-discard
+    context: >-
+      The person owns an undispatched queued message asking for a red page; queue mutations
+      require their board session.
+    query: >-
+      Change my queued request from red to blue, and put it first.
+    expected_outcome: >-
+      The person reaches the supported queue editing controls with the intended message
+      identified. The updated full text and order persist, while already-dispatched or
+      concurrently changed messages reject stale edits visibly. The agent does not forge a human
+      message edit through its own comment API.
+  - id: steering.discard-queued-message
+    capabilities:
+      - steering/edit-order-discard
+    context: >-
+      A user-owned queued contact-section request has not been dispatched.
+    query: >-
+      Cancel the contact-section request I just queued.
+    expected_outcome: >-
+      The supported human queue control removes only that eligible pending message. History and
+      queue state make clear that it will not be delivered. If it has already dispatched, the
+      system says so and treats cancellation as new direction instead of pretending the consumed
+      input vanished.
+  - id: steering.steer-active
+    capabilities:
+      - steering/steer
+    context: >-
+      The active harness advertises same-turn steering; the person selects the supported Steer
+      control for their saved message.
+    query: >-
+      Switch to a blue design while you are working.
+    expected_outcome: >-
+      The explicit steering action delivers the selected message to the compatible active run,
+      with delivery state distinct from mere queue admission. Subsequent work reflects blue. If
+      the provider rejects steering, the message and failure remain visible with a supported
+      continuation option instead of silent loss.
+  - id: steering.interrupt-with-direction
+    capabilities:
+      - steering/interrupt
+      - steering/queue
+    context: >-
+      A task is running; the person uses the supported interruption control after saving new
+      direction.
+    query: >-
+      Stop this attempt and start again with the simpler layout.
+    expected_outcome: >-
+      The current execution is stopped through its authorized control and accepted direction
+      reaches one eligible continuation after cleanup. The old run's evidence remains
+      inspectable. The system never runs both attempts as concurrent owners or delivers the new
+      requirement twice.
+  - id: steering.stop-versus-pause
+    capabilities:
+      - steering/stop-and-pause
+      - task-coordination/tree-control
+    context: >-
+      A website task is running under a parent launch task. The person wants sustained
+      suspension, not just cancellation of one turn.
+    query: >-
+      Pause all work on the launch until tomorrow.
+    expected_outcome: >-
+      The agent identifies the parent scope and guides the person to the supported task-tree
+      pause control; a future resume needs a supported explicit schedule or later action. The UI
+      distinguishes requested stop, confirmed stop and the persistent pause. Chat does not claim
+      that one stopped run prevents future work by itself.
+  - id: steering.preserve-draft
+    capabilities:
+      - steering/drafts
+      - documents-artifacts/attachments
+    context: >-
+      The person types the query and uploads a brief but has not sent it; they switch tasks and
+      reload before returning.
+    query: >-
+      Build the page from this brief, but keep the copy short.
+    expected_outcome: >-
+      The correct task's unsent draft and completed upload receipt survive the navigation
+      without becoming an instruction on the other task. Sending saves one user message and
+      correct attachment references. An uncertain submission is reconciled with persisted
+      history before any resend duplicates the work.
+  - id: steering.approval-delivery
+    capabilities:
+      - steering/approval-queue
+      - questions-and-approvals/continuation
+    context: >-
+      A question is answered while ordinary comments wait in the queue and the worker is
+      settling its prior turn.
+    query: >-
+      Use Acorn; that answers your naming question.
+    expected_outcome: >-
+      The bound answer is retained as an interaction response with its own delivery semantics,
+      separate from editable queued comments. Normal admission delivers it once to eligible
+      waiting work. Editing, reordering or deleting an ordinary comment cannot revoke or replay
+      the accepted decision.

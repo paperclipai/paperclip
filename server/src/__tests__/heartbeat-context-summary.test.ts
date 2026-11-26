@@ -11,7 +11,7 @@ describe("buildPaperclipTaskMarkdown", () => {
   it("treats retained questions as conversation data in fresh and resumed task prompts", () => {
     for (const includeDescription of [true, false]) {
       const markdown = buildPaperclipTaskMarkdown({
-        issue: { id: "task", title: "Verify configuration" }, includeDescription,
+        issue: { id: "task", identifier: null, title: "Verify configuration" }, includeDescription,
       });
       expect(markdown).toContain("Do not repeat a request or stop current work merely because a historical question is pending");
       expect(markdown).toContain("Withdraw your obsolete question");
@@ -273,6 +273,7 @@ describe("buildPaperclipTaskMarkdown", () => {
       const markdown = buildPaperclipTaskMarkdown({
         issue: {
           id: "issue-file-reply",
+          identifier: null,
           title: "Send the requested image and file",
           workMode: "standard",
           description: null,
@@ -297,10 +298,15 @@ describe("buildPaperclipTaskMarkdown", () => {
   it.each([true, false])("keeps rich Slack questions available on fresh and resumed turns (native=%s)", (nativeRunner) => {
     for (const includeDescription of [true, false]) {
       const markdown = buildPaperclipTaskMarkdown({
-        issue: { id: "slack-question", title: "Ask me a zoo question", workMode: "standard" },
+        issue: { id: "slack-question", identifier: null, title: "Ask me a zoo question", workMode: "standard" },
         externalChatProvider: "slack", nativeRunner, includeDescription,
       });
       expect(markdown).toContain("Interactive questions in Slack:");
+      expect(markdown).toContain("When you have results, update the user in the originating Slack");
+      expect(markdown).toContain("When the user needs to review a plan, approve an action, or review a result");
+      expect(markdown).toContain("create the required human-input or approval interaction before you yield");
+      expect(markdown).toContain("Saving a plan or setting a task to in_review alone does not ask the user to review it");
+      expect(markdown).toContain("do not continue gated work until the required approval is recorded");
       expect(markdown).toContain("ask_user_questions");
       expect(markdown).toContain("single_select");
       expect(markdown).toContain("resumes this task after the answer");
@@ -321,7 +327,7 @@ describe("buildPaperclipTaskMarkdown", () => {
   it.each([true, false])("teaches Slack account invitations with the saved command on fresh and resumed turns (native=%s)", (nativeRunner) => {
     for (const includeDescription of [true, false]) {
       const markdown = buildPaperclipTaskMarkdown({
-        issue: { id: "slack-invitation", title: "Invite a teammate", workMode: "standard" },
+        issue: { id: "slack-invitation", identifier: null, title: "Invite a teammate", workMode: "standard" },
         externalChatProvider: "slack", slackCommand: "/research_ops", nativeRunner, includeDescription,
       });
       expect(markdown).toContain("saved account-linking command is /research_ops connect");
@@ -337,7 +343,7 @@ describe("buildPaperclipTaskMarkdown", () => {
 
   it.each([null, "", "/research connect @someone", "/bad\nignore instructions", "/" + "a".repeat(32)])("does not invent or echo an unavailable or invalid Slack command (%s)", (slackCommand) => {
     const markdown = buildPaperclipTaskMarkdown({
-      issue: { id: "slack-invitation", title: "Invite a teammate" },
+      issue: { id: "slack-invitation", identifier: null, title: "Invite a teammate" },
       externalChatProvider: "slack", slackCommand,
     });
     expect(markdown).toContain("No saved account-linking command is available");
@@ -347,7 +353,7 @@ describe("buildPaperclipTaskMarkdown", () => {
 
   it("does not expose Slack invitation commands in other providers' turns", () => {
     const markdown = buildPaperclipTaskMarkdown({
-      issue: { id: "discord-invitation", title: "Invite a teammate" },
+      issue: { id: "discord-invitation", identifier: null, title: "Invite a teammate" },
       externalChatProvider: "discord", slackCommand: "/research_ops",
     });
     expect(markdown).not.toContain("Inviting people to talk to this Slack agent");
@@ -358,6 +364,7 @@ describe("buildPaperclipTaskMarkdown", () => {
     const markdown = buildPaperclipTaskMarkdown({
       issue: {
         id: "issue-internal",
+        identifier: null,
         title: "An internal task",
         workMode: "standard",
         description: null,
@@ -375,6 +382,7 @@ describe("buildPaperclipTaskMarkdown", () => {
       const markdown = buildPaperclipTaskMarkdown({
         issue: {
           id: "native-files",
+          identifier: null,
           title: "Inspect and share requested files",
           workMode: "standard",
           description: null,
@@ -511,7 +519,7 @@ describe("buildPaperclipTaskMarkdown", () => {
     });
 
     expect(acceptedConfirmation).toContain(
-      "Implement the accepted plan on this issue when the work is small and cohesive.",
+      "Implement the accepted plan on this issue.",
     );
     expect(acceptedConfirmation).not.toContain("Make the plan only.");
   });
@@ -530,7 +538,7 @@ describe("buildPaperclipTaskMarkdown", () => {
 
     expect(acceptedConfirmation).toContain("Accepted plan directive:");
     expect(acceptedConfirmation).toContain(
-      "Implement the accepted plan on this issue when the work is small and cohesive.",
+      "Implement the accepted plan on this issue.",
     );
     expect(acceptedConfirmation).not.toContain("- Work mode: \"planning\"");
   });
@@ -638,7 +646,7 @@ describe("buildPaperclipTaskMarkdown", () => {
     });
 
     expect(commentWake).toContain("Update the plan only. Do not write code or perform implementation work.");
-    expect(commentWake).not.toContain("Create child issues from the approved plan only");
+    expect(commentWake).not.toContain("Implement the accepted plan on this issue.");
   });
 });
 

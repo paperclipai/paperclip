@@ -7,6 +7,7 @@ import postgres from "postgres";
 import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
@@ -105,7 +106,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       if (previous === undefined) delete process.env.PAPERCLIP_PG_DUMP_PATH;
       else process.env.PAPERCLIP_PG_DUMP_PATH = previous;
     }
-  });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it("preserves identity generation, sequence options and progress in JavaScript backups", async () => {
     const source = await createTempDatabase();

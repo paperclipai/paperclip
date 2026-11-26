@@ -72,7 +72,12 @@ runs and browser instances. Each hosted run records its invocation, parent run,
 event cursor and cost checkpoint. A leased reconciler polls minimal status,
 drains bounded event pages, discovers browser instances by conversation, and
 checks each instance's authoritative conversation association. Restarting the
-server resumes reconciliation. A lost paid-create response becomes an explicit
+server resumes reconciliation. The app schedules the next check from saved
+session deadlines and cleanup leases. Session writes wake it after commit.
+With no live sessions it performs no recurring browser database scan. Existing
+sessions still poll provider state (about three seconds while running, fifteen
+while idle), enforce expiry and access changes, and retry failed cleanup.
+A lost paid-create response becomes an explicit
 unknown outcome and is never submitted again automatically; the operator must
 inspect Browser Use before starting replacement work.
 

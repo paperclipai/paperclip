@@ -1,18 +1,35 @@
+import { hasHermesGatewayTerminalStopProof } from "@paperclipai/hermes-paperclip-adapter/gateway/server";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
-import { and, desc, eq, inArray, isNotNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 import { readProcessStartedAt } from "./hot-restart.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 
-// These adapters accept a conversation turn. Retrying a process or webhook can
-// replay the action itself, so those adapters retain their recovery contract.
-export const CONVERSATION_ADAPTER_TYPES = [
+const LOCAL_CONVERSATION_ADAPTER_TYPES = [
   "claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
   "pi_local", "grok_local", "kimi_local", "hermes_local",
 ] as const;
 
+// These adapters accept a conversation turn. Retrying a process or webhook can
+// replay the action itself, so those adapters retain their recovery contract.
+export const CONVERSATION_ADAPTER_TYPES = [
+  ...LOCAL_CONVERSATION_ADAPTER_TYPES,
+  "hermes_gateway",
+] as const;
+
 export function isConversationAdapter(adapterType: string): boolean {
   return (CONVERSATION_ADAPTER_TYPES as readonly string[]).includes(adapterType);
+}
+
+/** Remote hermes_gateway runs have no local host PID; require adapter-confirmed stop proof. */
+export function isConversationContinuationEligible(
+  adapterType: string,
+  resultJson: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!isConversationAdapter(adapterType)) return false;
+  if (adapterType === "hermes_gateway") return hasHermesGatewayTerminalStopProof(resultJson);
+  return true;
 }
 
 export const CONVERSATION_CONTINUATION_POLICY = "continue_conversation_v1";
@@ -29,20 +46,21 @@ export function claimedAdapterType(run: Pick<typeof heartbeatRuns.$inferSelect, 
 
 function conversationRunPredicate() {
   return or(
-    inArray(sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType'`, [...CONVERSATION_ADAPTER_TYPES]),
+    inArray(sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType'`, [...LOCAL_CONVERSATION_ADAPTER_TYPES]),
     sql`${heartbeatRuns.resultJson}->>'conversationContinuation' = ${CONVERSATION_CONTINUATION_POLICY}`,
     sql`exists (
       select 1 from ${heartbeatRunEvents}
       where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
         and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id}
         and ${heartbeatRunEvents.eventType} = 'adapter.invoke'
-        and ${inArray(sql`${heartbeatRunEvents.payload}->>'adapterType'`, [...CONVERSATION_ADAPTER_TYPES])}
+        and ${inArray(sql`${heartbeatRunEvents.payload}->>'adapterType'`, [...LOCAL_CONVERSATION_ADAPTER_TYPES])}
     )`,
   );
 }
 
 /** Recovery must not infer the old adapter from the agent's mutable settings. */
-export async function historicalAdapterType(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<string | null> {
+export async function historicalAdapterType(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "runnerProfileJson">): Promise<string | null> {
   const selected = claimedAdapterType(run);
   if (selected) return selected;
   const [invocation] = await db.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents)
@@ -55,8 +73,9 @@ export async function historicalAdapterType(db: Db, run: typeof heartbeatRuns.$i
 
 export async function runUsedConversationAdapter(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
   if (run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive" || hasRequiredWorkspaceRecovery(run.resultJson)) return false;
-  if (hasConversationContinuationPolicy(run.resultJson)) return true;
   const adapterType = await historicalAdapterType(db, run);
+  if (adapterType === "hermes_gateway") return hasHermesGatewayTerminalStopProof(run.resultJson);
+  if (hasConversationContinuationPolicy(run.resultJson)) return true;
   return adapterType !== null && isConversationAdapter(adapterType);
 }
 
@@ -70,8 +89,11 @@ export function conversationRecoveryActionPredicate() {
     sql`exists (
       select 1 from ${heartbeatRuns}
       where ${heartbeatRuns.companyId} = ${issueRecoveryActions.companyId}
-        and ${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'runId'
-        and coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueRecoveryActions.sourceIssueId}::text
+        and ${heartbeatRuns.id} = ${canonicalExecutionUuid(sql`${issueRecoveryActions.evidence}->>'runId'`)}
+        and ${or(
+          eq(heartbeatRuns.nativeIssueId, issueRecoveryActions.sourceIssueId),
+          and(isNull(heartbeatRuns.nativeIssueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text`),
+        )}
         and ${heartbeatRuns.runtimeMode} = 'legacy'
         and coalesce(${heartbeatRuns.resultJson}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
         and coalesce(${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'->>'schema', '') <> 'paperclip.workspace-restore-recovery.v1'
@@ -107,11 +129,21 @@ export async function getConversationOwnershipBlocker(db: Db, companyId: string,
       and (${environmentLeases.releasedAt} is null
         or ${environmentLeases.status} = 'pending_cleanup'
         or ${environmentLeases.cleanupStatus} = 'failed'))`;
-  const candidates = await db.select({ run: heartbeatRuns, activeLease }).from(heartbeatRuns)
+  const candidates = await db.select({ run: {
+    id: heartbeatRuns.id,
+    agentId: heartbeatRuns.agentId,
+    processPid: heartbeatRuns.processPid,
+    processGroupId: heartbeatRuns.processGroupId,
+    processStartedAt: heartbeatRuns.processStartedAt,
+    resultJson: heartbeatRuns.resultJson,
+  }, activeLease }).from(heartbeatRuns)
     .where(and(
       eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.runtimeMode, "legacy"),
       conversationRunPredicate(),
-      sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+      or(
+        eq(heartbeatRuns.nativeIssueId, canonicalExecutionUuid(sql`${issueId}::text`)),
+        and(isNull(heartbeatRuns.nativeIssueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`),
+      ),
       inArray(heartbeatRuns.status, ["failed", "timed_out", "interrupted", "cancelled"]),
       or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), activeLease,
         sql`${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'`),

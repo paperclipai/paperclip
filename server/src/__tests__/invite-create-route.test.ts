@@ -7,6 +7,10 @@ const canUserMock = vi.fn();
 const insertMock = vi.fn();
 
 function registerModuleMocks() {
+  vi.doMock("../services/agent-lifecycle.js", () => ({
+    createAgentLifecycle: () => ({}),
+    AgentLifecycleConflict: class extends Error {},
+  }));
   vi.doMock("../services/index.js", () => ({
     accessService: () => ({
       isInstanceAdmin: vi.fn(),

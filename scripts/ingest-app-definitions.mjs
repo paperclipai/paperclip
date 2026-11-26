@@ -232,6 +232,7 @@ const apps = [
         serverUrl: "https://mcp.railway.com",
         scopesHint: ["openid", "offline_access", "workspace:member"],
         oauthAuthorizationParams: { prompt: "consent" },
+        tokenEndpoint: "https://backboard.railway.com/oauth/token",
       },
       "S4",
       "Sign in to Railway and select the workspaces your agents may use. Paperclip adds direct service, deployment, and bounded log tools when Railway accepts the connection for API access. Container commands require the separate SSH setup on the connection. Project tokens are not supported by Railway's hosted connection.",
@@ -355,12 +356,43 @@ const apps = [
         "oauth",
         {
           serverUrl: "https://mcp.slack.com/mcp",
-          authorizationEndpoint: "https://slack.com/oauth/v2/authorize",
-          tokenEndpoint: "https://slack.com/api/oauth.v2.access",
-          scopesHint: ["channels:read", "chat:write", "search:read"],
+          authorizationEndpoint: "https://slack.com/oauth/v2_user/authorize",
+          tokenEndpoint: "https://slack.com/api/oauth.v2.user.access",
+          scopesHint: [
+            "canvases:read",
+            "canvases:write",
+            "channels:history",
+            "channels:read",
+            "channels:write",
+            "chat:write",
+            "emoji:read",
+            "files:read",
+            "files:write",
+            "groups:history",
+            "groups:read",
+            "groups:write",
+            "im:history",
+            "im:read",
+            "im:write",
+            "lists:read",
+            "lists:write",
+            "mpim:history",
+            "mpim:read",
+            "mpim:write",
+            "reactions:read",
+            "reactions:write",
+            "search:read.files",
+            "search:read.im",
+            "search:read.mpim",
+            "search:read.private",
+            "search:read.public",
+            "search:read.users",
+            "users:read",
+            "users:read.email",
+          ],
         },
         "S3",
-        "Connect a Slack workspace and limit access to the channels agents need.",
+        "In your Slack app settings, add Paperclip's callback URL under OAuth & Permissions, add the requested scopes under User Token Scopes (not Bot Token Scopes), and enable Model Context Protocol under Features → Agents & AI Apps.",
         {
           label: "Use this connection as an agent tool",
           purpose: "tool",
@@ -776,19 +808,51 @@ const apps = [
     "developer",
     "sentry.io",
     ["https://mcp.sentry.dev/*"],
-    method(
-      "mcp-oauth",
-      "mcp_remote",
-      "oauth",
-      {
-        serverUrl: "https://mcp.sentry.dev/mcp",
-        discoveryUrl:
-          "https://sentry.io/.well-known/oauth-authorization-server",
-      },
-      "S2",
-      "Connect the Sentry organization and projects agents need for incident work.",
-      { requiredResourceFilters: ["organization", "project", "environment"] },
-    ),
+    [
+      method(
+        "mcp-oauth",
+        "mcp_remote",
+        "oauth",
+        {
+          serverUrl: "https://mcp.sentry.dev/mcp",
+          discoveryUrl:
+            "https://mcp.sentry.dev/.well-known/oauth-protected-resource/mcp",
+        },
+        "S2",
+        "Connect the Sentry organization and projects agents need for incident work.",
+        { requiredResourceFilters: ["organization", "project", "environment"] },
+      ),
+      method(
+        "mcp-user-token",
+        "mcp_remote",
+        "api_key",
+        { serverUrl: "https://mcp.sentry.dev/mcp" },
+        "S2",
+        "Connect with a Sentry user auth token for unattended agents. Browser sign-in grants expire and need the owner to sign in again; a user auth token lasts until you revoke it.",
+        {
+          label: "Use a user auth token",
+          whenToUse:
+            "Use a user auth token when an unattended agent needs Sentry access that does not expire with a browser sign-in grant.",
+          credentialFields: [
+            {
+              ...field("authorization", "Sentry user auth token", "sntryu_..."),
+              helperMd:
+                "Create a user auth token with org:read, project:read, project:write, team:read, team:write and event:write. The token acts as its creator, limited to that person's organization role.",
+            },
+          ],
+          keyPlacement: {
+            location: "header",
+            name: "Authorization",
+            prefix: "Sentry-Bearer ",
+          },
+          consoleLinks: {
+            keys: "https://sentry.io/settings/account/api/auth-tokens/",
+            docs: "https://github.com/getsentry/sentry-mcp#remote-server",
+          },
+          requiredResourceFilters: ["organization", "project", "environment"],
+        },
+      ),
+    ],
   ],
   [
     "vercel",
@@ -894,8 +958,8 @@ const apps = [
   ],
   [
     "anthropic",
-    "Anthropic",
-    "Use Anthropic APIs with a restricted key.",
+    "Anthropic (Claude)",
+    "Connect to Claude with Anthropic.",
     "ai",
     "anthropic.com",
     ["https://api.anthropic.com/*"],
@@ -1014,6 +1078,7 @@ const categoryBySlug = {
   cloudflare: "developer",
   cloudinary: "content",
   coda: "productivity",
+  ditto: "content",
   egnyte: "content",
   embat: "commerce",
   fireflies: "productivity",
@@ -1095,6 +1160,11 @@ const apiKeySpec = {
     name: "Authorization",
     prefix: "Bearer ",
     placeholder: "Paste your Cloudflare API token",
+  },
+  ditto: {
+    name: "Authorization",
+    prefix: "token ",
+    placeholder: "Paste your Ditto API key",
   },
   coda: {
     name: "Authorization",
@@ -1213,6 +1283,7 @@ const specialMethodsFor = (entry) => {
       defaults: {
         serverUrl: entry.serverUrl,
         discoveryUrl: "https://mcp.asana.com/.well-known/oauth-protected-resource/v2",
+        tokenEndpoint: "https://app.asana.com/-/oauth_token",
         scopesHint: ["default"],
       },
       oauthClientSecretRequired: true,
@@ -1233,6 +1304,34 @@ const specialMethodsFor = (entry) => {
   ];
   // Gauge's sign-in picks one organization during consent; an API key is bound
   // to the organization that created it and carries no user identity.
+  // Ditto's sign-in runs on Auth0, which issues refresh tokens only for
+  // offline_access. Its API keys use the `token` scheme, not `Bearer`, and act
+  // as the user who created them.
+  if (entry.slug === "ditto") {
+    const warning =
+      "Ditto delete tools cannot be undone, and linking text to a library component replaces each text item's developer ID. Set those actions to Ask first before agents run unattended.";
+    const capabilityProfile = {
+      key: "write",
+      label: "Read and write",
+      description: `Read style guide rules and search product text, and create, edit and translate text, components, variants and style guides. ${warning}`,
+    };
+    return [
+      oauthMethodFor(entry, "mcp-oauth", entry.serverUrl, {
+        guidanceMd:
+          "Connect Ditto in the browser. The connection acts as the Ditto user who signs in. Write tools start enabled and remain governed by Paperclip's action policies.",
+        warnings: [entry.prerequisite, warning],
+        capabilityProfile,
+      }),
+      apiKeyMethodFor(entry, "mcp-api-key", entry.serverUrl, {
+        whenToUse: "Use a Ditto workspace API key when browser sign-in is not suitable.",
+        guidanceMd:
+          "In Ditto, open Developers → API keys, create a key for Paperclip, and paste it below.",
+        consoleLinks: { keys: "https://app.dittowords.com/developers", docs: entry.docsUrl },
+        warnings: [entry.prerequisite, warning],
+        capabilityProfile,
+      }),
+    ];
+  }
   if (entry.slug === "gauge") {
     const warning =
       "Gauge content tools can publish to your connected CMS, including live. Set publish actions to Ask first before agents run unattended.";
@@ -1783,7 +1882,7 @@ for (const entry of researchManifest.entries) {
     schemaVersion: 1,
     slug: entry.slug,
     name: entry.name,
-    description: ({ neon: "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.", gauge: "Track how AI answers mention your brand, research keywords and traffic, and run content workflows.", superagent: "Review security findings, start red-team reports, and score content and packages before agents trust them.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers.", telem: "Search the web and read pages across many search providers with one API key." })[entry.slug] ?? (entry.slug === "fireflies"
+    description: ({ neon: "Manage Postgres projects and branches, run SQL, and inspect schemas in Neon.", ditto: "Search and reuse approved product copy, follow your style guide, and edit and translate text.", gauge: "Track how AI answers mention your brand, research keywords and traffic, and run content workflows.", superagent: "Review security findings, start red-team reports, and score content and packages before agents trust them.", mem0: "Remember preferences, conversations, events, and agent state.", zep: "Retrieve temporal graph memory and authorized business context.", supermemory: "Search and save shared memories, documents, and profiles.", honcho: "Remember conversations and retrieve context about peers.", telem: "Search the web and read pages across many search providers with one API key." })[entry.slug] ?? (entry.slug === "fireflies"
       ? "Search meeting transcripts, read summaries and action items, and connect meeting-ready routines."
       : `Connect ${entry.name}'s provider-hosted MCP server.`),
     categories: [categoryBySlug[entry.slug] ?? "other"],
@@ -1807,10 +1906,10 @@ for (const entry of researchManifest.entries) {
   });
 }
 // Google Workspace definitions are reviewed, first-class app entries rather
-// than rows synthesized from the generic connection corpus. Keep each product
-// independent in the generated manifest while sharing only backend OAuth
-// infrastructure.
+// than rows synthesized from the generic connection corpus. Keep legacy product
+// definitions for saved connections alongside the combined Workspace entry.
 const reviewedGoogleSlugs = [
+  "google-workspace",
   "gmail",
   "google-drive",
   "google-docs",
@@ -1926,7 +2025,6 @@ const aiCatalogEntries = [
   { slug: "openai", name: "OpenAI", provider: "openai", subscription: true, envKey: "OPENAI_API_KEY", url: "https://api.openai.com/*" },
   { slug: "openrouter", name: "OpenRouter", provider: "openrouter", envKey: "OPENROUTER_API_KEY", url: "https://openrouter.ai/api/*" },
   { slug: "xai", name: "Grok", provider: "xai", subscription: true, envKey: "XAI_API_KEY", url: "https://api.x.ai/*" },
-  { slug: "google", name: "Google Gemini", provider: "google", envKey: "GEMINI_API_KEY", url: "https://generativelanguage.googleapis.com/*" },
   { slug: "bedrock", name: "Amazon Bedrock", provider: "anthropic", envKey: "AWS_BEARER_TOKEN_BEDROCK", description: "Use Claude through Amazon Bedrock with a Bedrock API key and AWS region." },
   { slug: "responses-api", name: "Responses API", provider: "openai", envKey: "OPENAI_API_KEY", description: "Connect any compatible harness to an OpenAI Responses-compatible provider or gateway, including Emissary." },
   { slug: "messages-api", name: "Messages API", provider: "anthropic", envKey: "ANTHROPIC_API_KEY", description: "Connect any compatible harness to an Anthropic Messages-compatible provider or gateway." },
@@ -2030,6 +2128,7 @@ const validateApp = (app) => {
     if (
       connectionMethod.auth === "api_key" &&
       !connectionMethod.keyPlacement &&
+      !connectionMethod.credentialMinter &&
       (connectionMethod.purpose ?? "tool") !== "channel"
     )
       throw new Error(
@@ -2057,6 +2156,62 @@ const validateApp = (app) => {
         );
   }
 };
+apps.push({
+  "schemaVersion": 1,
+  "slug": "speko",
+  "name": "Speko",
+  "description": "Talk with a Paperclip agent through an experimental hosted voice connection.",
+  "categories": [
+    "communication"
+  ],
+  "featured": false,
+  "branding": {
+    "logoUrl": "/brands/apps/speko.svg"
+  },
+  "urlPatterns": [
+    "https://speko.ai/*",
+    "https://platform.speko.ai/*"
+  ],
+  "methods": [
+    {
+      "key": "voice-agent",
+      "label": "Talk with an agent",
+      "purpose": "channel",
+      "provider": "speko",
+      "transport": "voice",
+      "auth": "api_key",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use browser voice to start and continue work with a selected Paperclip agent.",
+      "credentialFields": [
+        {
+          "key": "apiKey",
+          "label": "Speko API key",
+          "type": "password",
+          "required": true,
+          "placeholder": "Paste your Speko API key",
+          "secret": true
+        },
+        {
+          "key": "agentId",
+          "label": "Speko agent ID",
+          "type": "text",
+          "required": true,
+          "placeholder": "agent_\u2026",
+          "secret": false
+        }
+      ],
+      "guidanceMd": "Create a dedicated Speko voice persona and choose its voice. Paperclip registers signed session tools and keeps the selected Paperclip agent responsible for task work. Public HTTPS callbacks are required. Review provider recording settings; Speko charges are separate from agent costs. Phone calling is withheld pending live qualification.",
+      "consoleLinks": {
+        "register": "https://platform.speko.ai/agents",
+        "docs": "https://docs.speko.ai/guides/tool-calling"
+      },
+      "riskTier": "S3",
+      "requiredResourceFilters": []
+    }
+  ]
+});
 const captureFiles = definitionsOnly ? [] : fs
   .readdirSync(corpus)
   .filter((fileName) => fileName.endsWith(".md") && fileName !== "INDEX.md")

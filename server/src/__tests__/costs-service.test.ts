@@ -341,7 +341,7 @@ describe("cost routes", () => {
       .send({ budgetMonthlyCents: 2500 });
 
     expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "Board access required" });
+    expect(res.body).toMatchObject({ error: "Board access required", code: "board_access_required" });
     expect(mockAgentService.update).not.toHaveBeenCalled();
     expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
@@ -360,7 +360,7 @@ describe("cost routes", () => {
       .send({ budgetMonthlyCents: 2500 });
 
     expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: "Board access required" });
+    expect(res.body).toMatchObject({ error: "Board access required", code: "board_access_required" });
     expect(mockAgentService.update).not.toHaveBeenCalled();
     expect(mockBudgetService.upsertPolicy).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
@@ -472,13 +472,44 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
       cachedInputTokens: 2_632_998,
       outputTokens: 32_644,
       costCents: 0,
-      occurredAt: new Date("2026-07-13T14:22:54.000Z"),
+      occurredAt: new Date(),
     });
 
     expect(event.costStatus).toBe("unpriced");
     expect(event.inputTokens).toBe(2_732_577);
-    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
-    expect(agent?.spentMonthlyCents).toBe(0);
+    expect(await costs.summary(companyId)).toMatchObject({ eventCount: 1, spendCents: 0, spendCentsExact: "0.0000000" });
+    const [usage] = await costs.byAgent(companyId);
+    expect(usage).toMatchObject({ agentId, costCents: 0, inputTokens: 2_732_577,
+      cachedInputTokens: 2_632_998, outputTokens: 32_644 });
+  });
+
+  it("marks metered usage with no known price as unpriced in the agent, model and project reports", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const projectId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Morgan", role: "engineer", status: "active",
+      adapterType: "opencode_local", adapterConfig: {}, runtimeConfig: {}, permissions: {},
+    });
+    await db.insert(projects).values({ id: projectId, companyId, name: "Launch" });
+    const base = { agentId, projectId, provider: "deepseek", biller: "openrouter", billingType: "metered_api" as const,
+      inputTokens: 100, cachedInputTokens: 0, outputTokens: 10, occurredAt: new Date() };
+    await costs.createEvent(companyId, { ...base, model: "priced-model", costStatus: "reported", costCents: 137 });
+    await costs.createEvent(companyId, { ...base, model: "unpriced-model", costStatus: "unpriced", costCents: 0 });
+
+    const [byAgentRow] = await costs.byAgent(companyId);
+    expect(byAgentRow).toMatchObject({ agentId, costCents: 137, eventCount: 2, unpricedEventCount: 1 });
+    const modelRows = await costs.byAgentModel(companyId);
+    expect(modelRows.find(row => row.model === "unpriced-model")).toMatchObject({ costCents: 0, unpricedEventCount: 1 });
+    expect(modelRows.find(row => row.model === "priced-model")).toMatchObject({ costCents: 137, unpricedEventCount: 0 });
+    const [byProjectRow] = await costs.byProject(companyId);
+    expect(byProjectRow).toMatchObject({ projectId, costCents: 137, eventCount: 2, unpricedEventCount: 1 });
   });
 
   it("aggregates cost event sums above int32 without raising Postgres integer overflow", async () => {
@@ -537,6 +568,7 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
         cachedInputTokens: 10,
         outputTokens: 200_000_000,
         costCents: 2_000_000_000,
+        costStatus: "estimated",
         occurredAt: new Date("2026-04-11T00:00:00.000Z"),
       },
     ]);
@@ -555,6 +587,11 @@ describeEmbeddedPostgres("cost and finance aggregate overflow handling", () => {
     expect(byAgentRow?.inputTokens).toBe(3_999_999_990);
     expect(byAgentRow!.inputTokens + byAgentRow!.cachedInputTokens).toBe(4_000_000_000);
     expect(byProjectRow?.costCents).toBe(4_000_000_000);
+    expect(byProjectRow).toMatchObject({ eventCount: 2, estimatedEventCount: 1 });
+    const [firstDayProject] = await costs.byProject(companyId, {
+      ...range, to: new Date("2026-04-10T23:59:59.999Z"),
+    });
+    expect(firstDayProject).toMatchObject({ eventCount: 1, estimatedEventCount: 0 });
     expect(byAgentModelRow?.costCents).toBe(4_000_000_000);
   });
 
