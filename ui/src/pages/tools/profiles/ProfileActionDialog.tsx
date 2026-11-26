@@ -1,5 +1,5 @@
 import { AlertTriangle } from "lucide-react";
-import type { ToolProfileWithDetails } from "@paperclipai/shared";
+import type { ToolProfileListItem } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -22,7 +22,7 @@ export function ProfileActionDialog({
   onDelete,
 }: {
   kind: ProfileActionDialogKind | null;
-  profile: ToolProfileWithDetails | null;
+  profile: Pick<ToolProfileListItem, "summary"> | null;
   pending: boolean;
   onClose: () => void;
   onArchive: () => void;
@@ -48,7 +48,7 @@ export function ProfileActionDialog({
     delete: {
       title: "Delete profile",
       body: defaultDeleteBlocked
-        ? "This profile is the company default. Reassign the company default to another profile before deleting it."
+        ? "This profile is the organization default. Reassign the organization default to another profile before deleting it."
         : `This permanently deletes the profile and removes ${profile.summary.assignmentCount} ${profile.summary.assignmentCount === 1 ? "assignment" : "assignments"}.`,
       confirm: "Delete",
       action: onDelete,
@@ -65,7 +65,7 @@ export function ProfileActionDialog({
         {defaultDeleteBlocked ? (
           <div className="flex gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
             <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-            <span>Choose another access profile and make it the company default first.</span>
+            <span>Choose another access profile and make it the organization default first.</span>
           </div>
         ) : null}
         <DialogFooter>

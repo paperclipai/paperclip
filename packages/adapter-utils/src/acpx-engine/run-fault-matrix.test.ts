@@ -8,6 +8,7 @@ import {
   startAdapterExecutionTargetProcessSessionBridge,
 } from "@paperclipai/adapter-utils/execution-target";
 import { runChildProcess } from "../server-utils.js";
+import { classifyWorkspaceRestoreFailure } from "../workspace-restore-merge.js";
 
 // The composed fault matrix.
 //
@@ -46,6 +47,14 @@ import { LedgerStateError, type ResourceId } from "./run-contracts.js";
 import type { SettlementDispositionReport } from "./run-coordinator.js";
 
 const tempRoots: string[] = [];
+const bridgeStops: Array<ReturnType<typeof vi.fn>> = [];
+const stagingLockMaps: Array<Map<string, Promise<unknown>>> = [];
+
+function makeStagingLocks() {
+  const locks = new Map<string, Promise<unknown>>();
+  stagingLockMaps.push(locks);
+  return locks;
+}
 
 async function makeTempRoot() {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-acpx-fault-"));
@@ -150,16 +159,17 @@ function throwingHandoffContext(): Record<string, unknown> {
 // handles without running the real bridge transport. `stopRejects` makes the
 // bridge stop reject during settlement.
 function stubBridges(options: { stopRejects?: boolean } = {}) {
-  const stop = options.stopRejects
-    ? vi.fn(async () => {
-        throw new Error("bridge stop boom");
-      })
+  const makeStop = () => options.stopRejects
+    ? vi.fn(async () => { throw new Error("bridge stop boom"); })
     : vi.fn(async () => {});
+  const controlStop = makeStop();
+  const agentStop = makeStop();
+  bridgeStops.push(controlStop, agentStop);
   vi.mocked(startAdapterExecutionTargetPaperclipBridge).mockImplementation(async () => {
-    return { env: {}, stop } as never;
+    return { env: {}, stop: controlStop } as never;
   });
   vi.mocked(startAdapterExecutionTargetProcessSessionBridge).mockImplementation(async () => {
-    return { agentCommand: null, stop } as never;
+    return { agentCommand: null, stop: agentStop } as never;
   });
 }
 
@@ -213,7 +223,22 @@ function managedHomeSeed(options: { teardownRejects?: boolean } = {}): AcpxEngin
         ? async () => {
             throw new Error("copy-back boom");
           }
-        : async () => {},
+        : async () => ({ ok: true as const }),
+    };
+  };
+}
+
+// Same seam, but the teardown catches its own restore error and classifies it
+// with the real classifier — the way the three real adapter teardown closures
+// do — instead of letting it reject the promise.
+function managedHomeSeedWithClassifiedTeardownFailure(
+  error: NodeJS.ErrnoException,
+): AcpxEngineExecutorOptions["prepareRemoteManagedHome"] {
+  return async (input) => {
+    const stagedRuntime = await input.stage([]);
+    return {
+      stagedRuntime,
+      teardown: async () => ({ ok: false as const, code: classifyWorkspaceRestoreFailure(error) }),
     };
   };
 }
@@ -245,6 +270,10 @@ function assertDispositionReport(
   expect(ids.length, "no resource is reported twice").toBe(new Set(ids).size);
   // The report keys equal the acquired subset of the six resource ids.
   expect(new Set(ids)).toEqual(new Set(expected.acquired));
+  // Reports alone can claim cleanup without invoking the actual cleanup callbacks.
+  if (ids.includes("control_bridge")) expect(bridgeStops[0]).toHaveBeenCalledTimes(1);
+  if (ids.includes("agent_bridge")) expect(bridgeStops[1]).toHaveBeenCalledTimes(1);
+  for (const locks of stagingLockMaps) expect(locks.size).toBe(0);
   const transferred = expected.transferred ?? null;
   for (const record of records) {
     expect(["finalized", "transferred"]).toContain(record.disposition);
@@ -273,6 +302,8 @@ const SANDBOX_WITH_MANAGED_HOME: ResourceId[] = [
 describe("composed ACPX run fault matrix", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    bridgeStops.length = 0;
+    stagingLockMaps.length = 0;
   });
 
   // Case 1 — a build failure throws before the ledger acquires any resource.
@@ -286,7 +317,7 @@ describe("composed ACPX run fault matrix", () => {
     const execute = createAcpxEngineExecutor({
       warmHandles: new Map(),
       stagedRuntimes: new Map(),
-      stagingLocks: new Map(),
+      stagingLocks: makeStagingLocks(),
       createRuntime: () => completedRuntime(),
       onSettlementDisposition: capture.onSettlementDisposition,
     });
@@ -313,7 +344,7 @@ describe("composed ACPX run fault matrix", () => {
     const execute = createAcpxEngineExecutor({
       warmHandles: new Map(),
       stagedRuntimes: new Map(),
-      stagingLocks: new Map(),
+      stagingLocks: makeStagingLocks(),
       createRuntime: () => completedRuntime(),
       onSettlementDisposition: capture.onSettlementDisposition,
     });
@@ -334,7 +365,7 @@ describe("composed ACPX run fault matrix", () => {
     const execute = createAcpxEngineExecutor({
       warmHandles: new Map(),
       stagedRuntimes: new Map(),
-      stagingLocks: new Map(),
+      stagingLocks: makeStagingLocks(),
       createRuntime: () => {
         throw new Error("createRuntime boom");
       },
@@ -347,6 +378,9 @@ describe("composed ACPX run fault matrix", () => {
     } as never);
 
     expect(result.exitCode).toBe(1);
+    expect(result.signal).toBeNull();
+    expect(result.timedOut).toBe(false);
+    expect(result.summary).toContain("createRuntime boom");
     expect(result.resultJson?.phase).toBe("create_runtime");
     assertDispositionReport(capture.last(), { acquired: SANDBOX_PRE_RUNTIME });
   });
@@ -356,17 +390,18 @@ describe("composed ACPX run fault matrix", () => {
     const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
     stubBridges();
     const capture = captureDisposition();
+    const close = vi.fn(async () => {});
     const execute = createAcpxEngineExecutor({
       warmHandles: new Map(),
       stagedRuntimes: new Map(),
-      stagingLocks: new Map(),
+      stagingLocks: makeStagingLocks(),
       createRuntime: () =>
         ({
           ensureSession: async () => {
             throw new Error("ensureSession boom");
           },
           startTurn: () => completedTurn(),
-          close: async () => {},
+          close,
         }) as never,
       onSettlementDisposition: capture.onSettlementDisposition,
     });
@@ -377,6 +412,7 @@ describe("composed ACPX run fault matrix", () => {
     } as never);
 
     expect(result.exitCode).toBe(1);
+    expect(close).toHaveBeenCalledTimes(1);
     expect(result.resultJson?.phase).toBe("ensure_session");
     assertDispositionReport(capture.last(), { acquired: SANDBOX_WITH_RUNTIME });
   });
@@ -390,7 +426,7 @@ describe("composed ACPX run fault matrix", () => {
     const execute = createAcpxEngineExecutor({
       warmHandles: new Map(),
       stagedRuntimes: new Map(),
-      stagingLocks: new Map(),
+      stagingLocks: makeStagingLocks(),
       createRuntime: () =>
         ({
           ensureSession: async () => undefined,
@@ -418,10 +454,11 @@ describe("composed ACPX run fault matrix", () => {
     const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
     stubBridges();
     const capture = captureDisposition();
+    const close = vi.fn(async () => {});
     const execute = createAcpxEngineExecutor({
       warmHandles: new Map(),
       stagedRuntimes: new Map(),
-      stagingLocks: new Map(),
+      stagingLocks: makeStagingLocks(),
       createRuntime: () =>
         ({
           ensureSession: async () => okHandle,
@@ -429,7 +466,7 @@ describe("composed ACPX run fault matrix", () => {
           setConfigOption: async () => {
             throw new Error("setConfigOption boom");
           },
-          close: async () => {},
+          close,
         }) as never,
       onSettlementDisposition: capture.onSettlementDisposition,
     });
@@ -448,7 +485,11 @@ describe("composed ACPX run fault matrix", () => {
     } as never);
 
     expect(result.exitCode).toBe(1);
-    expect(result.resultJson?.phase).toBe("configure_session");
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(result.resultJson).toMatchObject({
+      phase: "configure_session", agent: "custom", requestedModel: "custom-model-x",
+      requestedThinkingEffort: null, fastMode: false,
+    });
     assertDispositionReport(capture.last(), { acquired: SANDBOX_WITH_RUNTIME });
   });
 
@@ -460,7 +501,7 @@ describe("composed ACPX run fault matrix", () => {
     const execute = createAcpxEngineExecutor({
       warmHandles: new Map(),
       stagedRuntimes: new Map(),
-      stagingLocks: new Map(),
+      stagingLocks: makeStagingLocks(),
       createRuntime: () => completedRuntime(),
       onSettlementDisposition: capture.onSettlementDisposition,
     });
@@ -501,16 +542,20 @@ describe("composed ACPX run fault matrix", () => {
     // succeeds. The runtime is created once, so acp_runtime registers once.
     const capture = captureDisposition();
     let created = 0;
+    let started = 0;
+    const ensureInputs: Record<string, unknown>[] = [];
+    const logs: string[] = [];
     const secondExecute = createAcpxEngineExecutor({
       onSettlementDisposition: capture.onSettlementDisposition,
       createRuntime: () => {
         created += 1;
         return {
           ensureSession: async (session: Record<string, unknown>) => {
+            ensureInputs.push(session);
             if (session.resumeSessionId) throw new Error("resume session not found");
             return okHandle;
           },
-          startTurn: () => completedTurn(),
+          startTurn: () => { started += 1; return completedTurn(); },
           setConfigOption: async () => {},
           close: async () => {},
         } as never;
@@ -522,13 +567,19 @@ describe("composed ACPX run fault matrix", () => {
       runtime: { sessionParams: (first as { sessionParams?: unknown }).sessionParams },
       config,
       context: {},
-      onLog: async () => {},
+      onLog: async (_stream: string, text: string) => { logs.push(text); },
       onMeta: async () => {},
     } as never);
 
     expect(second.exitCode).toBe(0);
     // The runtime was created exactly once across the resume and the fresh retry.
     expect(created).toBe(1);
+    expect(ensureInputs).toHaveLength(2);
+    expect(ensureInputs[0]?.resumeSessionId).toBe(first.sessionId);
+    expect(ensureInputs[1]?.resumeSessionId).toBeUndefined();
+    expect(started).toBe(1);
+    expect(second.clearSession).toBe(true);
+    expect(logs.some((text) => text.includes("is unavailable; retrying with a fresh session"))).toBe(true);
     // The host lane acquires only the runtime, and it appears once.
     assertDispositionReport(capture.last(), { acquired: ["acp_runtime"] });
   });
@@ -539,15 +590,16 @@ describe("composed ACPX run fault matrix", () => {
     const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
     stubBridges();
     const capture = captureDisposition();
+    const order: string[] = [];
     const execute = createAcpxEngineExecutor({
       warmHandles: new Map(),
       stagedRuntimes: new Map(),
-      stagingLocks: new Map(),
+      stagingLocks: makeStagingLocks(),
       createRuntime: () =>
         ({
           ensureSession: async () => okHandle,
-          startTurn: () => throwingTurn(),
-          close: async () => {},
+          startTurn: () => ({ ...throwingTurn(), cancel: async () => { order.push("cancel"); } }),
+          close: async () => { order.push("close"); },
         }) as never,
       onSettlementDisposition: capture.onSettlementDisposition,
     });
@@ -558,6 +610,7 @@ describe("composed ACPX run fault matrix", () => {
     } as never);
 
     expect(result.exitCode).toBe(1);
+    expect(order).toEqual(["cancel", "close"]);
     expect(result.resultJson?.phase).toBe("turn");
     expect(result.errorCode).toBe("acpx_turn_failed");
     assertDispositionReport(capture.last(), { acquired: SANDBOX_WITH_RUNTIME });
@@ -575,7 +628,7 @@ describe("composed ACPX run fault matrix", () => {
     const execute = createAcpxEngineExecutor({
       warmHandles: new Map(),
       stagedRuntimes: new Map(),
-      stagingLocks: new Map(),
+      stagingLocks: makeStagingLocks(),
       createRuntime: () =>
         ({
           ensureSession: async () => okHandle,
@@ -613,7 +666,7 @@ describe("composed ACPX run fault matrix", () => {
     const execute = createAcpxEngineExecutor({
       warmHandles: new Map(),
       stagedRuntimes: new Map(),
-      stagingLocks: new Map(),
+      stagingLocks: makeStagingLocks(),
       createRuntime: () =>
         ({
           ensureSession: async () => okHandle,
@@ -642,7 +695,7 @@ describe("composed ACPX run fault matrix", () => {
     const execute = createAcpxEngineExecutor({
       warmHandles: new Map(),
       stagedRuntimes: new Map(),
-      stagingLocks: new Map(),
+      stagingLocks: makeStagingLocks(),
       createRuntime: () => completedRuntime(),
       prepareRemoteManagedHome: managedHomeSeed(),
       onSettlementDisposition: capture.onSettlementDisposition,
@@ -654,6 +707,13 @@ describe("composed ACPX run fault matrix", () => {
     } as never);
 
     expect(result.exitCode).toBe(0);
+    expect(result.signal).toBeNull();
+    expect(result.timedOut).toBe(false);
+    expect(result.errorCode).toBeNull();
+    expect(result.sessionId).toBe("backend-session");
+    expect(result.sessionDisplayId).toBe("agent-session");
+    expect(result.sessionParams).toBeTruthy();
+    expect(result.summary).toBe("end_turn");
     expect(result.resultJson?.status).toBe("completed");
     assertDispositionReport(capture.last(), {
       acquired: SANDBOX_WITH_MANAGED_HOME,
@@ -670,7 +730,7 @@ describe("composed ACPX run fault matrix", () => {
     const execute = createAcpxEngineExecutor({
       warmHandles: new Map(),
       stagedRuntimes: new Map(),
-      stagingLocks: new Map(),
+      stagingLocks: makeStagingLocks(),
       createRuntime: () => completedRuntime(),
       onSettlementDisposition: capture.onSettlementDisposition,
     });
@@ -689,7 +749,8 @@ describe("composed ACPX run fault matrix", () => {
   });
 
   // Case 14 — a sync-back copy-back that rejects during settlement never changes
-  // the result or the report.
+  // the run's exit code or status, and it surfaces on the result as one
+  // allowlisted `workspaceRestoreFailure` code — never the raw error message.
   it("case_14_sync_back_failure_does_not_change_result", async () => {
     const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
     stubBridges();
@@ -697,7 +758,7 @@ describe("composed ACPX run fault matrix", () => {
     const execute = createAcpxEngineExecutor({
       warmHandles: new Map(),
       stagedRuntimes: new Map(),
-      stagingLocks: new Map(),
+      stagingLocks: makeStagingLocks(),
       createRuntime: () => completedRuntime(),
       prepareRemoteManagedHome: managedHomeSeed({ teardownRejects: true }),
       onSettlementDisposition: capture.onSettlementDisposition,
@@ -710,10 +771,65 @@ describe("composed ACPX run fault matrix", () => {
 
     expect(result.exitCode).toBe(0);
     expect(result.resultJson?.status).toBe("completed");
+    expect(result.resultJson?.workspaceRestoreFailure).toBe("restore_failed");
+    expect(JSON.stringify(result.resultJson)).not.toContain("copy-back boom");
     assertDispositionReport(capture.last(), {
       acquired: SANDBOX_WITH_MANAGED_HOME,
       transferred: "staged_runtime",
     });
+  });
+
+  // Case 14b — a clean sync-back adds no `workspaceRestoreFailure` key at all.
+  it("case_14b_clean_sync_back_adds_no_workspace_restore_failure_key", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    stubBridges();
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      stagingLocks: makeStagingLocks(),
+      createRuntime: () => completedRuntime(),
+      prepareRemoteManagedHome: managedHomeSeed(),
+    });
+
+    const result = await execute({
+      runId: "fault-sync-back-clean",
+      ...remoteArgs(stateDir, localCwd, executionTarget),
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.resultJson).not.toHaveProperty("workspaceRestoreFailure");
+  });
+
+  // Case 14c — an EACCES teardown error (the reported lock-mkdir bug) reaches
+  // the run result as the allowlisted restore_permission_denied code, with no
+  // filesystem path and no process id in resultJson, and the run's exit code
+  // and status stay exactly what the turn produced.
+  it("case_14c_eacces_teardown_reaches_result_as_restore_permission_denied", async () => {
+    const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    stubBridges();
+    const eaccesError: NodeJS.ErrnoException = new Error(
+      `EACCES: permission denied, mkdir '/srv/telemetry-backend.paperclip-restore.lock' (pid ${process.pid})`,
+    );
+    eaccesError.code = "EACCES";
+    const execute = createAcpxEngineExecutor({
+      warmHandles: new Map(),
+      stagedRuntimes: new Map(),
+      stagingLocks: makeStagingLocks(),
+      createRuntime: () => completedRuntime(),
+      prepareRemoteManagedHome: managedHomeSeedWithClassifiedTeardownFailure(eaccesError),
+    });
+
+    const result = await execute({
+      runId: "fault-sync-back-eacces",
+      ...remoteArgs(stateDir, localCwd, executionTarget),
+    } as never);
+
+    expect(result.exitCode).toBe(0);
+    expect(result.resultJson?.status).toBe("completed");
+    expect(result.resultJson?.workspaceRestoreFailure).toBe("restore_permission_denied");
+    const serializedResult = JSON.stringify(result.resultJson);
+    expect(serializedResult).not.toContain("/srv/telemetry-backend");
+    expect(serializedResult).not.toContain(String(process.pid));
   });
 
   // Case 15 — a concurrent double settlement is a structural error: the second
@@ -843,6 +959,8 @@ describe("composed ACPX run fault matrix", () => {
 describe("composed ACPX run per-phase telemetry", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    bridgeStops.length = 0;
+    stagingLockMaps.length = 0;
   });
 
   it("emits a run.phase.timing event for each lifecycle phase a clean host run reaches", async () => {
