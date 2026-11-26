@@ -9,6 +9,7 @@ import type { StorageProvider } from "../storage/types.js";
 import {
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
+import { uniqueIssuePrefix } from "../__tests__/helpers/issue-prefix.js";
 
 const objects = vi.hoisted(() => new Map<string, Buffer>());
 const mirrors = vi.hoisted(() => new Map<string, Buffer>());
@@ -79,7 +80,7 @@ describe.skipIf(!support.supported)("run log migration after a retry appended to
   });
 
   async function seed(prefix: string, file: string, recordedSha256 = etag(Buffer.from(prefix)), runtimeMode = "legacy") {
-    const [company] = await db.insert(companies).values({ name: "Logs", issuePrefix: `L${Math.random().toString(36).slice(2, 6).toUpperCase()}` }).returning();
+    const [company] = await db.insert(companies).values({ name: "Logs", issuePrefix: uniqueIssuePrefix("L") }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Worker" }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company!.id, agentId: agent!.id, status: "failed", runtimeMode }).returning();
     const logRef = `${company!.id}/${agent!.id}/${run!.id}.ndjson`;

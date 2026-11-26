@@ -37,3 +37,25 @@ export function aggregatorPluginCategory(app: Pick<AggregatorAppCatalogEntry, "n
   const name = app.name.toLowerCase().replace(/[^a-z0-9]+/g, " ");
   return KEYWORDS.find(([, words]) => words.test(name))?.[0] ?? "other";
 }
+
+/**
+ * Splits catalog rows into category blocks in one pass, classifying each row once.
+ * `total` counts every row in the category; `rows` holds the first `blockSize` that are not already on a shelf.
+ */
+export function groupPluginsByCategory<T>(
+  items: readonly T[],
+  order: readonly PluginCategoryId[],
+  categoryOf: (item: T) => PluginCategoryId,
+  isShelved: (item: T) => boolean,
+  blockSize: number,
+): { id: PluginCategoryId; total: number; rows: T[] }[] {
+  const groups = new Map<PluginCategoryId, { id: PluginCategoryId; total: number; rows: T[] }>();
+  for (const id of order) groups.set(id, { id, total: 0, rows: [] });
+  for (const item of items) {
+    const group = groups.get(categoryOf(item));
+    if (!group) continue;
+    group.total += 1;
+    if (group.rows.length < blockSize && !isShelved(item)) group.rows.push(item);
+  }
+  return [...groups.values()].filter((group) => group.total > 0);
+}

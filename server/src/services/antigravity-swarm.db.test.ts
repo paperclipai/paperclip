@@ -10,6 +10,7 @@ import { deliveredQueuedCommentIds } from "./queued-comment-delivery.js";
 import { queuedCommentIdsFromWakePayload } from "../lib/queued-comment-context.js";
 import { mergeCoalescedContextSnapshot } from "./heartbeat/run-preparation.js";
 import { saveUndeliveredUserComments } from "./work-intent-outbox.js";
+import { uniqueIssuePrefix } from "../__tests__/helpers/issue-prefix.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const USER = "swarm-user";
@@ -25,7 +26,7 @@ describe.skipIf(!support.supported)("trusted /swarm run selection (database)", (
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
   async function seed(options: { author?: "user" | "agent"; record?: "match" | "none" | "other-actor" | "other-comment" } = {}) {
-    const [company] = await db.insert(companies).values({ name: "Swarm", issuePrefix: `S${randomUUID().slice(0, 4)}` }).returning();
+    const [company] = await db.insert(companies).values({ name: "Swarm", issuePrefix: uniqueIssuePrefix("S") }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Gemma", adapterType: "paperclip_runner",
       adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-low" } }).returning();
     const [issue] = await db.insert(issues).values({ companyId: company!.id, title: "Swarm", status: "todo", assigneeAgentId: agent!.id }).returning();

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Network, Monitor } from "lucide-react";
 import {
+  aiConnectionCatalogSlug,
   aiProviderRoutingSchema,
   createAiConnectionSchema,
   type AiProvider,
@@ -40,7 +41,7 @@ const providers = [
     name: "Anthropic",
     description: "Claude subscription or API key",
   },
-  { id: "google", name: "Google", description: "Antigravity sign-in or Gemini API key" },
+  { id: "google", name: "Antigravity", description: "Antigravity sign-in or Gemini API key" },
   { id: "xai", name: "xAI", description: "Grok subscription or API key" },
   {
     id: "openrouter",
@@ -235,7 +236,7 @@ export function AiProviderSetup({
                 )}
               </span>
             ) : (
-              <AppLogo name={p.name} brandKey={p.id} />
+              <AppLogo name={p.name} brandKey={aiConnectionCatalogSlug(p.id)} />
             ),
         }))}
       onSelect={(id) => {

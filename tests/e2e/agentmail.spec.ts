@@ -262,8 +262,9 @@ test("AgentMail setup and email work through the normal task conversation", asyn
   await page.screenshot({ path: test.info().outputPath("agentmail-permission-denied.png"), fullPage: true });
   await page.getByRole("button", { name: "More workspace pages", exact: true }).click();
   await page.getByRole("link", { name: "Plugins", exact: true }).click();
-  // Account rows, including one waiting on setup, are listed under Installed.
+  // Installed lists plugins as tiles; account rows, including one waiting on setup, are on the plugin page.
   await page.getByRole("radio", { name: "Installed", exact: true }).click();
+  await page.locator('[data-app-slug="agentmail"] h3 button').click();
   await page.getByRole("button", { name: "Finish setup", exact: true }).click();
   await expect(page.getByText("mail-agent-free@verified.example.test", { exact: true })).toBeVisible();
   await expect(addressField).toHaveCount(0);

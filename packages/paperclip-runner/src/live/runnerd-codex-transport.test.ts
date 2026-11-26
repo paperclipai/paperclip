@@ -5672,11 +5672,12 @@ function processAlive(pid: number | null | undefined): boolean {
 }
 
 it.each([
-  { journal: true },
+  { journal: true, foreignOrphan: false },
+  { journal: true, foreignOrphan: true },
   // A runnerd that never journalled (an older build) proves nothing: the
   // cleanup stays fail-closed, as before the journal existed.
-  { journal: false },
-])("stops a lost runnerd's provider and escaped tool job from its lineage journal (journal=$journal)", async ({ journal }) => {
+  { journal: false, foreignOrphan: false },
+])("stops a lost runnerd's provider and escaped tool job from its lineage journal (journal=$journal, foreignOrphan=$foreignOrphan)", async ({ journal, foreignOrphan }) => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-exit-stream-"));
   const jobPidFile = join(stateDirectory, "escaped-tool-job.pid");
   const diagnostics: string[] = [];
@@ -5694,6 +5695,7 @@ it.each([
   }));
   let jobPid: number | null = null;
   let providerPid: number | null = null;
+  let orphanPid: number | null = null;
   try {
     await bundle.transport.request("initialize", {});
     await bundle.transport.request("thread/start", {
@@ -5749,12 +5751,22 @@ it.each([
     // The fake provider exits when runnerd's stdin pipe closes; the tool job
     // that left its session is re-parented and keeps running.
     expect(processAlive(jobPid)).toBe(true);
+    if (foreignOrphan) {
+      orphanPid = Number(execFileSync(process.execPath, ["-e", [
+        "const { spawn } = require('node:child_process');",
+        "const orphan = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 1500)'], { detached: true, stdio: 'ignore' });",
+        "orphan.unref();",
+        "process.stdout.write(String(orphan.pid));",
+      ].join("\n")], { encoding: "utf8" }).trim());
+      expect(processAlive(orphanPid)).toBe(true);
+    }
     const runnerState = () => readFile(join(stateDirectory, "runner", "runner-state.json"), "utf8")
       .then((text) => JSON.parse(text));
     if (journal) {
       await bundle.transport.close();
       expect(processAlive(providerPid)).toBe(false);
       expect(processAlive(jobPid)).toBe(false);
+      if (foreignOrphan) expect(processAlive(orphanPid)).toBe(false);
       const report = diagnostics.find((message) => message.startsWith("native_session_runner_loss_lineage "));
       expect(JSON.parse(report!.slice("native_session_runner_loss_lineage ".length))).toMatchObject({
         verified: true, journals: 1, remaining: [],
@@ -5783,7 +5795,7 @@ it.each([
       expect(processAlive(jobPid)).toBe(true);
     }
   } finally {
-    for (const pid of [jobPid, providerPid]) {
+    for (const pid of [jobPid, providerPid, orphanPid]) {
       if (pid && processAlive(pid)) try { process.kill(pid, "SIGKILL"); } catch { /* gone */ }
     }
     await rm(stateDirectory, { recursive: true, force: true });
