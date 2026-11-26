@@ -8,7 +8,7 @@ import type {
   CapabilitySemanticToolDescriptor,
 } from "./types.js";
 
-const READ_OPERATIONS = new Set<CapabilitySemanticOperationId>([
+export const CAPABILITY_SEMANTIC_READ_OPERATION_IDS = [
   "get_task_context",
   "get_task_history",
   "list_documents",
@@ -21,7 +21,15 @@ const READ_OPERATIONS = new Set<CapabilitySemanticOperationId>([
   "get_approval",
   "get_approval_context",
   "get_workspace_runtime",
-]);
+] as const satisfies readonly CapabilitySemanticOperationId[];
+
+const READ_OPERATIONS = new Set<CapabilitySemanticOperationId>(
+  CAPABILITY_SEMANTIC_READ_OPERATION_IDS,
+);
+
+export function isCapabilitySemanticReadOperation(operationId: string): boolean {
+  return READ_OPERATIONS.has(operationId as CapabilitySemanticOperationId);
+}
 
 export const DEFAULT_CAPABILITY_SCENARIO_POLICY: CapabilitySemanticScenarioPolicy = {
   id: "capability-default",

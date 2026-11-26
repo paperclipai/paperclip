@@ -1,9 +1,9 @@
 import express from "express";
 import request from "supertest";
-import { lstat, mkdtemp, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { AdapterAuthSessionConflictError } from "../services/device-login-service.js";
 import type {
@@ -51,6 +51,7 @@ const GROK_PROMPT_OUTPUT = [
 const CREDENTIAL_BYTES = '{"tokens":{"access":"SECRET-ACCESS-TOKEN"}}';
 
 const mockAgentService = vi.hoisted(() => ({
+  create: vi.fn(),
   getById: vi.fn(),
   getChainOfCommand: vi.fn(async () => []),
 }));
@@ -77,6 +78,7 @@ const mockSecretService = vi.hoisted(() => ({
   // idempotent-repeat-login and secret-creation-failure paths.
   getByName: vi.fn(async (_companyId: string, _name: string) => null as Record<string, unknown> | null),
   create: vi.fn(async (_companyId: string, _input: Record<string, unknown>) => ({ id: "secret-1" })),
+  hasInstanceAccountHomeClaim: vi.fn(async (_companyId: string, _path: string) => false),
   // The company-wide secret listing the cleanup-safety scan reads. Empty by
   // default, so a cleanup that finds no other claimant removes the
   // directory; a test overrides it with a differently named secret to prove
@@ -253,6 +255,7 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
         promotionExpiresAt: null,
         finishedAt: null,
         failureReason: null,
+        resultClaim: null,
       });
     },
     async recordLeaseAcquired(input) {
@@ -266,6 +269,7 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
       if (input.failureReason !== undefined) row.failureReason = input.failureReason;
       if (input.finishedAt !== undefined) row.finishedAt = input.finishedAt;
       if (input.promotionExpiresAt !== undefined) row.promotionExpiresAt = input.promotionExpiresAt;
+      if (input.resultClaim !== undefined) row.resultClaim = input.resultClaim;
       if (!isActive(input.status))
         activeSlots.delete(slotKey(row.companyId, row.startedByUserId, row.adapterType));
     },
@@ -276,6 +280,7 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
       if (input.failureReason !== undefined) row.failureReason = input.failureReason;
       if (input.finishedAt !== undefined) row.finishedAt = input.finishedAt;
       if (input.promotionExpiresAt !== undefined) row.promotionExpiresAt = input.promotionExpiresAt;
+      if (input.resultClaim !== undefined) row.resultClaim = input.resultClaim;
       if (!isActive(input.status))
         activeSlots.delete(slotKey(row.companyId, row.startedByUserId, row.adapterType));
       return true;
@@ -289,6 +294,19 @@ function createMemoryStore(): AdapterAuthSessionStore & { rows: Map<string, Adap
       // foreign-company lookup reads nothing and the internal id never matches.
       for (const row of rows.values()) {
         if (row.publicSessionId === publicSessionId && row.companyId === companyId) {
+          return { ...row };
+        }
+      }
+      return null;
+    },
+    async getActiveByOwner(companyId, startedByUserId, adapterType) {
+      for (const row of rows.values()) {
+        if (
+          row.companyId === companyId &&
+          row.startedByUserId === startedByUserId &&
+          row.adapterType === adapterType &&
+          isActive(row.status)
+        ) {
           return { ...row };
         }
       }
@@ -345,11 +363,15 @@ function boardActor(userId: string, companyIds: string[] = [COMPANY_1, COMPANY_2
   };
 }
 
-async function createApp() {
-  const [{ agentRoutes }, { errorHandler }] = await Promise.all([
+async function loadRouteModules() {
+  return Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
   ]);
+}
+
+async function createApp() {
+  const [{ agentRoutes }, { errorHandler }] = await loadRouteModules();
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -369,8 +391,13 @@ describe("adapter device-login routes", () => {
   // `afterEach` whether or not the route removed them itself.
   const accountHomeTestDirs: string[] = [];
 
-  beforeEach(() => {
+  beforeAll(async () => {
     vi.resetModules();
+
+    await loadRouteModules();
+  }, 60_000);
+
+  beforeEach(() => {
     vi.clearAllMocks();
     mockDeviceLoginPromotion.mockResolvedValue({
       outcome: "promoted",
@@ -647,7 +674,7 @@ describe("adapter device-login routes", () => {
     expect(harness.acquisitions).toHaveLength(0);
   });
 
-  it("delivers the one-time prompt to the owner on the first read only", async () => {
+  it("delivers the prompt to the owner on every read while the session is active, and clears it on a terminal transition", async () => {
     const app = await createApp();
 
     const start = await request(app)
@@ -656,17 +683,30 @@ describe("adapter device-login routes", () => {
     expect(start.status, JSON.stringify(start.body)).toBe(201);
     const sessionId = start.body.sessionId as string;
 
-    // The first authorized owner read receives the one-time prompt.
+    // The first authorized owner read receives the prompt. The response
+    // repeats the live prompt on every read, so it carries the same private
+    // no-store policy as the `.../login-sessions/active` route (see the tests
+    // below).
     const first = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
     expect(first.status, JSON.stringify(first.body)).toBe(200);
     expect(first.body.prompt).toEqual({ url: DEVICE_LOGIN_URL, code: PROMPT_CODE });
+    expect(first.headers["cache-control"]).toBe("no-store, private");
 
-    // A second authorized owner read no longer carries the prompt. The status
-    // stays available, so the owner still tracks the session.
+    // A second authorized owner read still carries the prompt while the
+    // session is active. The status stays available too, so the owner still
+    // tracks the session across a page reload.
     const second = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
     expect(second.status, JSON.stringify(second.body)).toBe(200);
-    expect(second.body.prompt).toBeNull();
+    expect(second.body.prompt).toEqual({ url: DEVICE_LOGIN_URL, code: PROMPT_CODE });
     expect(second.body.status).toBe(first.body.status);
+
+    // Once the login reaches a terminal state, the prompt is gone.
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const afterTerminal = await request(app).get(`${loginPath(COMPANY_1)}/${sessionId}`);
+      expect(["authenticated", "failed"]).toContain(afterTerminal.body.status);
+      expect(afterTerminal.body.prompt).toBeNull();
+    });
   });
 
   it("starts a Grok session, delivers the Grok prompt once, and a codex_local read finds no row", async () => {
@@ -737,6 +777,52 @@ describe("adapter device-login routes", () => {
     const status = await request(app).get(`${loginPath(COMPANY_2)}/${sessionId}`);
     expect(status.status, JSON.stringify(status.body)).toBe(404);
     expect(status.body.prompt).toBeUndefined();
+  });
+
+  it("returns the caller's active login session with no session id in the URL", async () => {
+    const app = await createApp();
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+
+    const active = await request(app).get(`${loginPath(COMPANY_1)}/active`);
+    expect(active.status, JSON.stringify(active.body)).toBe(200);
+    expect(active.body.sessionId).toBe(start.body.sessionId);
+    expect(active.body.prompt).toEqual({ url: DEVICE_LOGIN_URL, code: PROMPT_CODE });
+    expect(active.headers["cache-control"]).toBe("no-store, private");
+  });
+
+  it("returns the identical 404 on the active route for no active session, another owner, another company, and another adapter", async () => {
+    const app = await createApp();
+
+    // No active session exists yet.
+    const none = await request(app).get(`${loginPath(COMPANY_1)}/active`);
+    expect(none.status, JSON.stringify(none.body)).toBe(404);
+    expect(none.body).toEqual({ error: "Adapter login session not found" });
+
+    const start = await request(app)
+      .post(loginPath(COMPANY_1))
+      .send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+
+    // A different board user in the same company holds no active session.
+    currentActor = boardActor(OWNER_B);
+    const otherOwner = await request(app).get(`${loginPath(COMPANY_1)}/active`);
+    expect(otherOwner.status, JSON.stringify(otherOwner.body)).toBe(404);
+    expect(otherOwner.body).toEqual(none.body);
+    currentActor = boardActor(OWNER_A);
+
+    // The same owner under a different company holds no active session there.
+    const otherCompany = await request(app).get(`${loginPath(COMPANY_2)}/active`);
+    expect(otherCompany.status, JSON.stringify(otherCompany.body)).toBe(404);
+    expect(otherCompany.body).toEqual(none.body);
+
+    // The owner's active session belongs to `codex_local`, not `grok_local`.
+    const otherAdapter = await request(app).get(`${loginPath(COMPANY_1, "grok_local")}/active`);
+    expect(otherAdapter.status, JSON.stringify(otherAdapter.body)).toBe(404);
+    expect(otherAdapter.body).toEqual(none.body);
   });
 
   it("durably cancels a login for the owner and releases the company slot", async () => {
@@ -836,6 +922,95 @@ describe("adapter device-login routes", () => {
       const status = await request(app).get(`${loginPath(COMPANY_1)}/${first.body.sessionId}`);
       expect(status.body.status).toBe("authenticated");
     });
+  });
+
+  it("an authenticated login's owner read carries the account-binding claim with the identity verdict", async () => {
+    // The claim is non-secret — the opaque company secret id plus whether the
+    // company default home stayed on a DIFFERENT account. The client offers
+    // binding the agent's CODEX_HOME only when the identities differ, which
+    // is the one case where the login cannot take effect through the shared
+    // company home.
+    const instanceRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-login-binding-"));
+    try {
+      vi.stubEnv("PAPERCLIP_HOME", instanceRoot);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      const companyHome = path.join(instanceRoot, "instances", "default", "companies", COMPANY_1, "codex-home");
+      await mkdir(companyHome, { recursive: true });
+      await writeFile(
+        path.join(companyHome, "auth.json"),
+        JSON.stringify({
+          tokens: { id_token: "t", access_token: "t", refresh_token: "t", account_id: "acct-other" },
+        }),
+      );
+      mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValue(
+        "/tmp/paperclip-codex-account-home/acct-default",
+      );
+      const app = await createApp();
+      const started = await request(app).post(loginPath(COMPANY_1)).send({ environmentId: SANDBOX_ENV_1 });
+      expect(started.status, JSON.stringify(started.body)).toBe(201);
+      harness.releaseGate();
+      await vi.waitFor(async () => {
+        const status = await request(app).get(`${loginPath(COMPANY_1)}/${started.body.sessionId}`);
+        expect(status.body.status).toBe("authenticated");
+        expect(status.body.codexAccountBinding).toEqual({
+          secretId: "secret-1",
+          companyIdentityDiffers: true,
+        });
+      });
+      // The claim rides the terminal write, not process memory: a fresh app
+      // over the same durable store (a restart) still serves it, so the
+      // client's bind offer survives the exact window a restart used to
+      // silently lose.
+      const restarted = await createApp();
+      const afterRestart = await request(restarted).get(
+        `${loginPath(COMPANY_1)}/${started.body.sessionId}`,
+      );
+      expect(afterRestart.body.status).toBe("authenticated");
+      expect(afterRestart.body.codexAccountBinding).toEqual({
+        secretId: "secret-1",
+        companyIdentityDiffers: true,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(instanceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("a login for the account the company home already holds reports no identity mismatch", async () => {
+    // Same-account logins take effect through the company-home refresh; the
+    // claim still rides along with `companyIdentityDiffers: false`, and the
+    // client deliberately binds nothing.
+    const instanceRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-login-binding-same-"));
+    try {
+      vi.stubEnv("PAPERCLIP_HOME", instanceRoot);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      const companyHome = path.join(instanceRoot, "instances", "default", "companies", COMPANY_1, "codex-home");
+      await mkdir(companyHome, { recursive: true });
+      await writeFile(
+        path.join(companyHome, "auth.json"),
+        JSON.stringify({
+          tokens: { id_token: "t", access_token: "t", refresh_token: "t", account_id: "acct-default" },
+        }),
+      );
+      mockSecretService.resolveSecretValueForDeviceLoginCheck.mockResolvedValue(
+        "/tmp/paperclip-codex-account-home/acct-default",
+      );
+      const app = await createApp();
+      const started = await request(app).post(loginPath(COMPANY_1)).send({ environmentId: SANDBOX_ENV_1 });
+      expect(started.status, JSON.stringify(started.body)).toBe(201);
+      harness.releaseGate();
+      await vi.waitFor(async () => {
+        const status = await request(app).get(`${loginPath(COMPANY_1)}/${started.body.sessionId}`);
+        expect(status.body.status).toBe("authenticated");
+        expect(status.body.codexAccountBinding).toEqual({
+          secretId: "secret-1",
+          companyIdentityDiffers: false,
+        });
+      });
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(instanceRoot, { recursive: true, force: true });
+    }
   });
 
   it("fails closed when promotion loses the sole-owner claim", async () => {
@@ -1165,9 +1340,6 @@ describe("adapter device-login routes", () => {
       accountHomeDir,
       accountHomeCreated: true,
     });
-    // `vi.resetModules()` in `beforeEach` gives the route module a fresh copy
-    // of `../errors.js`. Import the conflict helper from that same fresh copy,
-    // so the route's `err instanceof HttpError` check sees a matching class.
     const { conflict: freshConflict } =
       await vi.importActual<typeof import("../errors.js")>("../errors.js");
     mockSecretService.create.mockRejectedValueOnce(
@@ -1237,6 +1409,27 @@ describe("adapter device-login routes", () => {
 
     // The mismatch is a validation failure on the winner's secret, not this
     // call's own directory, so this call must still never delete it.
+    await expect(lstat(accountHomeDir)).resolves.toBeDefined();
+  });
+
+  it("keeps a newly promoted account home claimed by an instance secret when company secret creation fails", async () => {
+    const accountHomeDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-account-home-test-"));
+    accountHomeTestDirs.push(accountHomeDir);
+    mockDeviceLoginPromotion.mockResolvedValueOnce({
+      outcome: "promoted", accountId: "acct-instance-owner", accountHomeDir, accountHomeCreated: true,
+    });
+    mockSecretService.create.mockRejectedValueOnce(new Error("db unavailable"));
+    mockSecretService.hasInstanceAccountHomeClaim.mockResolvedValueOnce(true);
+    const app = await createApp();
+    const start = await request(app).post(loginPath(COMPANY_1)).send({ environmentId: SANDBOX_ENV_1 });
+    expect(start.status, JSON.stringify(start.body)).toBe(201);
+    harness.releaseGate();
+    await vi.waitFor(async () => {
+      const status = await request(app).get(`${loginPath(COMPANY_1)}/${start.body.sessionId}`);
+      expect(status.body.status).toBe("failed");
+      expect(status.body.failure?.reason).toBe("promotion_failed");
+    });
+    expect(mockSecretService.hasInstanceAccountHomeClaim).toHaveBeenCalledWith(COMPANY_1, accountHomeDir);
     await expect(lstat(accountHomeDir)).resolves.toBeDefined();
   });
 
@@ -1544,4 +1737,11 @@ describe("adapter device-login routes", () => {
     expect(loggedText).not.toContain("SECRET-ACCESS-TOKEN");
     expect(loggedText).not.toContain("provider-lease-");
   });
+});
+
+vi.mock("../services/agent-lifecycle.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../services/agent-lifecycle.js")>();
+  return { ...actual, createAgentLifecycle: () => ({
+    requestHire: (...args: unknown[]) => mockAgentService.create(...args),
+  }) };
 });

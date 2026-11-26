@@ -1,6 +1,5 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
 import { tmpdir } from "node:os";
@@ -59,7 +58,8 @@ const fakeCodexBinary = resolve(
 );
 
 function ensureRunnerTestBinaries(): void {
-  if (existsSync(runnerBinary) && existsSync(fakeCodexBinary)) return;
+  // Cargo's freshness check is necessary even when the files exist: an older
+  // fake provider can otherwise exercise a different protocol than the source.
   execFileSync("cargo", [
     "build",
     "--release",
@@ -102,9 +102,7 @@ describeEmbeddedPostgres("native Codex server vertical slice", () => {
     await new Promise<void>((resolveListen) => server!.listen(0, "127.0.0.1", resolveListen));
     const address = server.address();
     if (!address || typeof address === "string") throw new Error("Expected a TCP listener");
-    setupRunnerPrpWebSocketServer(server, {
-      apiUrl: `http://127.0.0.1:${address.port}`,
-    });
+    setupRunnerPrpWebSocketServer(server);
   }, 660_000);
 
   afterAll(async () => {

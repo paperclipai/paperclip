@@ -17,6 +17,7 @@ test('lockfile repair workflows resolve dependencies instead of updating metadat
 
     assert.ok(repairCommands.length > 0, `${workflow} must contain a lockfile repair command`);
     for (const command of repairCommands) {
+      assert.match(command, /--resolution-only/);
       assert.match(command, /--ignore-scripts/);
       assert.doesNotMatch(command, /--lockfile-only/);
     }

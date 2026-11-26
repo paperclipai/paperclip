@@ -82,6 +82,10 @@ test("AgentCore template has closed development/private resources and explicit c
   assert.match(source, /Sid: DecryptPinnedRuntimeContext[\s\S]*Action: kms:Decrypt[\s\S]*Resource: !GetAtt ContextEncryptionKey\.Arn/);
   const invocationRole = source.slice(source.indexOf("RunnerInvocationRole:"), source.indexOf("PrivateVpc:"));
   assert.doesNotMatch(invocationRole, /Action:\s+(?:-\s+)?(?:s3|kms):\*/);
+  assert.match(invocationRole, /Action: sts:AssumeRoleWithWebIdentity/);
+  assert.match(invocationRole, /token\.actions\.githubusercontent\.com:aud["']?: sts\.amazonaws\.com/);
+  assert.match(invocationRole, /token\.actions\.githubusercontent\.com:sub["']?: !Sub repo:\$\{GitHubRepository\}:environment:\$\{GitHubEnvironment\}/);
+  assert.doesNotMatch(invocationRole, /repo:\*|environment:\*/);
   assert.match(source, /\$\{AgentHarness\.Arn\}\/harness-endpoint\/\$\{HarnessEndpointName\}/);
   assert.match(source, /\$\{AgentHarness\.Arn\}\/runtime-endpoint\/\$\{HarnessEndpointName\}/);
   assert.match(source, /BedrockMarketplaceProductId/);
@@ -136,10 +140,13 @@ test("AgentCore wrapper is valid shell and writes only nonsecret profile metadat
   assert.match(source, /--query endpoint\.status/);
   assert.match(source, /o\.endpoint\?\.arn/);
   assert.match(source, /--marketplace-product-id/);
+  assert.match(source, /--github-oidc-provider-arn/);
+  assert.match(source, /GitHubOidcProviderArn=\$GITHUB_OIDC_PROVIDER_ARN/);
   assert.match(source, /BedrockMarketplaceProductId=\$MARKETPLACE_PRODUCT_ID/);
   assert.match(generatedBlock, /PAPERCLIP_AWS_AGENTCORE_CONTEXT_BUCKET=\$context_bucket/);
   assert.match(generatedBlock, /PAPERCLIP_AWS_AGENTCORE_CONTEXT_PREFIX=\$context_prefix/);
   assert.match(generatedBlock, /PAPERCLIP_AWS_AGENTCORE_CONTEXT_KMS_KEY_ARN=\$context_kms_key_arn/);
+  assert.match(generatedBlock, /PAPERCLIP_AWS_AGENTCORE_EXECUTION_ROLE_ARN=\$role_arn/);
   assert.match(source, /ContextPrefix=\$CONTEXT_PREFIX/);
   assert.match(source, /s3 rm "s3:\/\/\$context_bucket\/\$context_prefix\/assets\/" --recursive/);
   assert.ok(source.indexOf("delete-harness-endpoint") < source.lastIndexOf("cloudformation delete-stack"));

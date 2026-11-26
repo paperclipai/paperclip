@@ -9,14 +9,36 @@ const ADMIN_PASSWORD =
   process.env.SMOKE_ADMIN_PASSWORD ??
   "paperclip-smoke-password";
 
+// A hire needs a live-verified credential since #13344 — the subscription
+// path now dead-ends on a `claude auth login` no CI machine can finish — so
+// the wizard is driven through "Use API key instead". The server verifies the
+// key against api.anthropic.com, which the docker-onboard-smoke harness
+// serves from its own mock inside the container's network, so the placeholder
+// below passes without any real credential in CI.
+//
+// The placeholder is offered only to a loopback target — where the mocked
+// harness lives. Any other target reaches the real provider, which would
+// reject the placeholder late inside the wizard, so those runs must set
+// PAPERCLIP_RELEASE_SMOKE_ANTHROPIC_API_KEY and fail up front without it.
+// A real key entered here also lands in Playwright's failure traces and DOM
+// snapshots (the field is masked on screen, not in the DOM) — those artifacts
+// stay on the machine running the suite, and CI never uses a real key.
+const BASE_URL =
+  process.env.PAPERCLIP_RELEASE_SMOKE_BASE_URL ?? "http://127.0.0.1:3232";
+const TARGET_IS_LOOPBACK = /^https?:\/\/(localhost|127\.0\.0\.1)([:/]|$)/i.test(
+  BASE_URL
+);
+const ANTHROPIC_API_KEY =
+  process.env.PAPERCLIP_RELEASE_SMOKE_ANTHROPIC_API_KEY ??
+  (TARGET_IS_LOOPBACK ? "sk-ant-release-smoke-placeholder" : "");
+
 const COMPANY_NAME = `Release-Smoke-${Date.now()}`;
 const AGENT_NAME = "Release Smoke Lead";
 // The arc asks for a name, not a role, so every onboarding hire is filed under
 // the neutral role (DEFAULT_AGENT_ROLE in ui/src/lib/onboarding-agent-role.ts).
 const AGENT_ROLE = "general";
-// Seeded by the wizard's launch step (DEFAULT_TASK_TITLE in
-// ui/src/components/OnboardingWizard.tsx).
-const FIRST_TASK_TITLE = "Paperclip onboarding";
+// ONBOARDING_CHAT_ORIGIN_KIND in packages/shared/src/constants.ts.
+const ONBOARDING_CHAT_ORIGIN_KIND = "onboarding_chat";
 
 async function signIn(page: Page) {
   await page.goto("/");
@@ -76,6 +98,13 @@ test.describe("Docker authenticated onboarding smoke", () => {
   test("logs in, completes onboarding, and hires the lead agent", async ({
     page,
   }) => {
+    // Only bites off-loopback: fail on arrival rather than submitting the
+    // placeholder to the real provider and timing out deep in the wizard.
+    expect(
+      ANTHROPIC_API_KEY,
+      "This target reaches the real provider — set PAPERCLIP_RELEASE_SMOKE_ANTHROPIC_API_KEY to a key it accepts"
+    ).toBeTruthy();
+
     await signIn(page);
 
     const baseUrl = new URL(page.url()).origin;
@@ -109,12 +138,78 @@ test.describe("Docker authenticated onboarding smoke", () => {
     await expect(nextButton).toBeEnabled({ timeout: 10_000 });
     await nextButton.click();
 
-    // Step 4: keep the default adapter and connect (hire) the lead. Connect
-    // probes the adapter environment first and blocks the hire on a `fail`. In
-    // the smoke container no agent CLI is installed, which the probe reports as
-    // a warning rather than an error, so the hire proceeds — a genuine failure
-    // here means the published artifact cannot hire on a clean machine. Allow
-    // generous time for the probe + hire + auto-approval.
+    // Step 4: answer the model-source question, then connect (hire) the lead.
+    // The step now opens as a row of source tiles and the footer button has
+    // nothing to do until one is picked (#12796/#12801 rebuilt the step around
+    // that question); picking Claude collapses the row.
+    //
+    // Since #13344, a hire requires a verified credential: the subscription
+    // path opens an isolated `claude auth login` attempt that only a human at
+    // a terminal on the server can finish, and Connect refuses to proceed
+    // until it has. The clean-machine path this suite guards is therefore the
+    // API key: switch modes, pick Claude, paste a key, Connect — the server
+    // verifies it against the provider endpoint (the harness's mock, here)
+    // and then hires. A genuine failure here means the published artifact
+    // cannot hire on a clean machine even when the provider accepts the
+    // credential. Allow generous time for the validation + hire +
+    // auto-approval.
+    //
+    // The mode switch comes before the tile: picking a tile starts the step's
+    // collapse sequence and the "Use API key instead" link only offers itself
+    // while the row is still a question (`connectLinkVisible` in
+    // OnboardingWizard.tsx).
+    await expect(
+      page.getByRole("heading", { name: "Connect a model" })
+    ).toBeVisible({ timeout: 20_000 });
+
+    const companies = await getJson<Array<{ id: string; name: string }>>(
+      page,
+      `${baseUrl}/api/companies`
+    );
+    const company = companies.find((entry) => entry.name === COMPANY_NAME);
+    expect(company).toBeTruthy();
+    const agentsUrl = `${baseUrl}/api/companies/${company!.id}/agents`;
+    await expect.poll(
+      () => getJson<Array<{ id: string }>>(page, agentsUrl),
+      { message: "Connect a model must retain one paused setup record" },
+    ).toEqual([
+      expect.objectContaining({
+        name: AGENT_NAME,
+        status: "paused",
+        pauseReason: "setup",
+        metadata: expect.objectContaining({ setupAdapterPending: true }),
+        runtimeConfig: expect.objectContaining({
+          heartbeat: expect.objectContaining({ enabled: false }),
+        }),
+      }),
+    ]);
+    const [setupAgent] = await getJson<Array<{ id: string }>>(page, agentsUrl);
+    for (const resource of ["issues", "heartbeat-runs"]) {
+      expect(
+        await getJson<Array<{ id: string }>>(
+          page,
+          `${baseUrl}/api/companies/${company!.id}/${resource}`,
+        ),
+      ).toEqual([]);
+    }
+
+    await page
+      .getByRole("button", { name: "Use API key instead", exact: true })
+      .click();
+
+    // "Claude API" once the mode has swapped the tile's tag — matched on the
+    // stable half.
+    const claudeSourceTile = page
+      .getByRole("radiogroup", { name: "Model source" })
+      .getByRole("radio", { name: /Claude/ });
+    await expect(claudeSourceTile).toBeVisible({ timeout: 10_000 });
+    await claudeSourceTile.click();
+
+    // OnboardingCardField carries the accessible name via aria-label.
+    const apiKeyField = page.getByLabel("API key");
+    await expect(apiKeyField).toBeVisible({ timeout: 10_000 });
+    await apiKeyField.fill(ANTHROPIC_API_KEY);
+
     const connectButton = page.getByRole("button", {
       name: "Connect",
       exact: true,
@@ -123,9 +218,9 @@ test.describe("Docker authenticated onboarding smoke", () => {
     await expect(connectButton).toBeEnabled({ timeout: 30_000 });
     await connectButton.click();
 
-    // Step 5: review, then launch. "Get started" provisions the onboarding
-    // project and first task and, only on success, drops the user into the
-    // seeded first task's thread (not the dashboard).
+    // Step 5: review, then launch. Since #22077, "Get started" opens the lead's
+    // standing chat and, only on success, drops the user into it (not the
+    // dashboard). It creates no execution task or project.
     const getStartedButton = page.getByRole("button", {
       name: "Get started",
       exact: true,
@@ -133,20 +228,16 @@ test.describe("Docker authenticated onboarding smoke", () => {
     await expect(getStartedButton).toBeVisible({ timeout: 60_000 });
     await expect(getStartedButton).toBeEnabled({ timeout: 10_000 });
     await getStartedButton.click();
-    await expect(page).toHaveURL(/\/issues\//, { timeout: 30_000 });
-
-    const companies = await getJson<Array<{ id: string; name: string }>>(
-      page,
-      `${baseUrl}/api/companies`
-    );
-    const company = companies.find((entry) => entry.name === COMPANY_NAME);
-    expect(company).toBeTruthy();
+    await expect(page).toHaveURL(/\/chats\/[^/]+$/, { timeout: 30_000 });
 
     const agents = await getJson<
-      Array<{ id: string; name: string; role: string; adapterType: string }>
+      Array<{ id: string; name: string; role: string; adapterType: string; pauseReason: string | null }>
     >(page, `${baseUrl}/api/companies/${company!.id}/agents`);
+    expect(agents).toHaveLength(1);
     const leadAgent = agents.find((entry) => entry.name === AGENT_NAME);
     expect(leadAgent).toBeTruthy();
+    expect(leadAgent!.id).toBe(setupAgent!.id);
+    expect(leadAgent!.pauseReason).not.toBe("setup");
     expect(leadAgent!.role).toBe(AGENT_ROLE);
     expect(leadAgent!.adapterType).not.toBe("process");
 
@@ -159,50 +250,58 @@ test.describe("Docker authenticated onboarding smoke", () => {
     );
     expect(goals).toEqual([]);
 
-    const issues = await getJson<
-      Array<{
-        id: string;
-        identifier: string | null;
-        title: string;
-        assigneeAgentId: string | null;
-      }>
-    >(page, `${baseUrl}/api/companies/${company!.id}/issues`);
-    const seededIssue = issues.find((entry) => entry.title === FIRST_TASK_TITLE);
-    expect(seededIssue).toBeTruthy();
-    expect(seededIssue!.assigneeAgentId).toBe(leadAgent!.id);
-
-    // The launch must have landed on the seeded task itself, not merely on
-    // some issue route.
-    const seededRef = seededIssue!.identifier ?? seededIssue!.id;
-    expect(new URL(page.url()).pathname.endsWith(`/issues/${seededRef}`)).toBe(
+    // The launch must have landed on the lead's chat itself, not merely on
+    // some chat route.
+    expect(new URL(page.url()).pathname.endsWith(`/chats/${leadAgent!.id}`)).toBe(
       true
     );
 
-    await expect.poll(
-      async () => {
-        const runs = await getJson<
-          Array<{ agentId: string; invocationSource: string; status: string }>
-        >(
+    // Execution work waits until the user accepts a proposal, so the wizard
+    // leaves the task and project lists empty. The chat record is excluded
+    // from task collections and is listed only under chats.
+    for (const resource of ["issues", "projects"]) {
+      expect(
+        await getJson<Array<{ id: string }>>(
           page,
-          `${baseUrl}/api/companies/${company!.id}/heartbeat-runs?agentId=${leadAgent!.id}`
-        );
-        const latestRun = runs.find((entry) => entry.agentId === leadAgent!.id);
-        return latestRun
-          ? {
-              invocationSource: latestRun.invocationSource,
-              status: latestRun.status,
-            }
-          : null;
-      },
-      {
-        timeout: 30_000,
-        intervals: [1_000, 2_000, 5_000],
-      }
-    ).toEqual(
+          `${baseUrl}/api/companies/${company!.id}/${resource}`,
+        ),
+      ).toEqual([]);
+    }
+    const chats = await getJson<
+      Array<{
+        originKind: string;
+        projectId: string | null;
+        conversationAgentId: string | null;
+      }>
+    >(page, `${baseUrl}/api/companies/${company!.id}/chats`);
+    expect(chats).toEqual([
       expect.objectContaining({
-        invocationSource: "assignment",
-        status: expect.stringMatching(/^(queued|running|succeeded|failed)$/),
-      })
-    );
+        originKind: ONBOARDING_CHAT_ORIGIN_KIND,
+        projectId: null,
+        conversationAgentId: leadAgent!.id,
+      }),
+    ]);
+
+    // Assert the chat actually opened: its composer renders only once the
+    // conversation loaded.
+    await expect(page.getByTestId("task-chat-composer-add")).toBeVisible({
+      timeout: 20_000,
+    });
+
+    // Once the chat paints in a visible tab, the UI requests a live welcome
+    // through the normal agent queue. The provider mock serves no completions,
+    // so assert only that the published artifact queued the welcome run, not
+    // what it says.
+    const runsUrl = `${baseUrl}/api/companies/${company!.id}/heartbeat-runs?agentId=${leadAgent!.id}`;
+    await expect
+      .poll(
+        async () =>
+          (await getJson<Array<{ id: string }>>(page, runsUrl)).length,
+        {
+          message: "The onboarding chat must queue the lead's live welcome",
+          timeout: 30_000,
+        },
+      )
+      .toBeGreaterThan(0);
   });
 });

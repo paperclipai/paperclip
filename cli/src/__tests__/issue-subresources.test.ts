@@ -13,6 +13,7 @@ const PRODUCT_ID = "77777777-7777-4777-8777-777777777777";
 const INTERACTION_ID = "88888888-8888-4888-8888-888888888888";
 const HOLD_ID = "99999999-9999-4999-8999-999999999999";
 const ATTACHMENT_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+const SECOND_ATTACHMENT_ID = "abababab-abab-4bab-8bab-abababababab";
 const LABEL_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 
 function createProgram(): Command {
@@ -59,6 +60,24 @@ describe("issue subresource commands", () => {
       ["PATCH", `http://localhost:3100/api/issues/${ISSUE_ID}`],
       ["DELETE", `http://localhost:3100/api/issues/${ISSUE_ID}`],
     ]);
+  });
+
+  it("binds explicit uploaded attachments when adding a comment", async () => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await run([
+      "issue", "comment", ISSUE_ID,
+      "--body", "The requested files are ready.",
+      "--attachment-id", ATTACHMENT_ID, SECOND_ATTACHMENT_ID,
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(`http://localhost:3100/api/issues/${ISSUE_ID}/comments`);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toEqual({
+      body: "The requested files are ready.",
+      attachmentIds: [ATTACHMENT_ID, SECOND_ATTACHMENT_ID],
+    });
   });
 
   it("wraps comments, approvals, markers, and recovery action endpoints", async () => {

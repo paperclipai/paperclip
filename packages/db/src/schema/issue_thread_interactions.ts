@@ -39,7 +39,9 @@ export const issueThreadInteractions = pgTable(
       .notNull()
       .default("requested"),
     idempotencyKey: text("idempotency_key"),
+    originCommentIds: jsonb("origin_comment_ids").$type<string[]>().notNull().default(sql`'[]'::jsonb`),
     sourceCommentId: uuid("source_comment_id").references(() => issueComments.id, { onDelete: "set null" }),
+    sourceIdentityContextId: uuid("source_identity_context_id"),
     sourceRunId: uuid("source_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
     title: text("title"),
     summary: text("summary"),
@@ -53,6 +55,8 @@ export const issueThreadInteractions = pgTable(
     payload: jsonb("payload").$type<IssueThreadInteractionPayload>().notNull(),
     result: jsonb("result").$type<IssueThreadInteractionResult>(),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    dismissedAt: timestamp("dismissed_at", { withTimezone: true }),
+    dismissedByUserId: text("dismissed_by_user_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },

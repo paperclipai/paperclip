@@ -14,7 +14,7 @@ export interface AcpxModelControl {
 }
 
 /**
- * Select and verify the exact qualified model before a billable prompt can be
+ * Select and verify the exact requested model before a billable prompt can be
  * accepted. A provider selector is normalized only after ACP reports it.
  */
 export async function requireVerifiedAcpxModel(
@@ -22,31 +22,39 @@ export async function requireVerifiedAcpxModel(
   profile: QualifiedAcpxProfile,
 ): Promise<AcpxModelStatus> {
   if (!control.getStatus) {
-    throw new Error("ACPX agent cannot verify its effective model");
-  }
-  const requestedModel = profile.qualificationModel;
-  let status = await control.getStatus();
-  const mustSelectCanonical =
-    profile.reportedModelId !== requestedModel ||
-    status.models?.currentModelId !== requestedModel;
-  if (mustSelectCanonical) {
-    if (!control.setModel) {
-      throw new Error(
-        "ACPX agent cannot verify its canonical model through ACP config options",
-      );
-    }
-    await control.setModel(requestedModel);
-    status = await control.getStatus();
-  }
-  if (status.models?.currentModelId !== profile.reportedModelId) {
-    throw new Error(
-      `ACPX effective model mismatch: requested ${requestedModel}, expected ACP selector ${profile.reportedModelId}, received ${status.models?.currentModelId ?? "unverified"}`,
+    throw acpxModelVerificationError(
+      "ACPX_MODEL_STATUS_UNAVAILABLE",
+      "ACPX agent cannot verify its effective model",
     );
   }
-  return normalizeQualifiedModelStatus(status, profile);
+  const requestedModel = profile.qualificationModel;
+  const providerModel = profile.reportedModelId;
+  let status = await control.getStatus();
+  if (status.models?.currentModelId !== providerModel) {
+    if (!control.setModel) {
+      throw acpxModelVerificationError(
+        "ACPX_MODEL_SELECTION_UNAVAILABLE",
+        "ACPX agent cannot verify the requested model through ACP config options",
+      );
+    }
+    // Catalogs may be incomplete. Let the provider accept or reject the exact ID.
+    await control.setModel(providerModel);
+    status = await control.getStatus();
+  }
+  if (status.models?.currentModelId !== providerModel) {
+    throw acpxModelVerificationError(
+      "ACPX_EFFECTIVE_MODEL_MISMATCH",
+      `ACPX effective model mismatch: requested ${requestedModel}, expected ACP selector ${providerModel}, received ${status.models?.currentModelId ?? "unverified"}`,
+    );
+  }
+  return normalizeVerifiedModelStatus(status, profile);
 }
 
-function normalizeQualifiedModelStatus(
+function acpxModelVerificationError(code: string, message: string): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+function normalizeVerifiedModelStatus(
   status: AcpxModelStatus,
   profile: QualifiedAcpxProfile,
 ): AcpxModelStatus {
@@ -71,4 +79,92 @@ function normalizeQualifiedModelStatus(
       availableModelIds: normalizedAvailable,
     },
   };
+}
+
+export interface AcpxEffectiveModelGate {
+  /** Start fresh state for a new provider connection. */
+  connect(): void;
+  observe(direction: "inbound" | "outbound", message: unknown): void;
+  /** Throws unless the provider last reported the expected model. */
+  assertActive(): void;
+}
+
+const SESSION_OPENS = new Set(["session/new", "session/load", "session/resume"]);
+const MODEL_CONTROLS = new Set(["session/set_config_option", "session/set_model"]);
+
+/**
+ * Admission verifies the model on the connection it opens, but a cold prompt
+ * turn reconnects and loads the session again. ACPX replays the selected
+ * model after that load without checking what the provider acknowledged, so
+ * this gate reads the provider's own reports from the wire and refuses the
+ * prompt (ACPX calls assertActive just before writing it) unless the latest
+ * report is the expected model. A load that reports no model leaves the model
+ * unverified until a later acknowledgement does.
+ */
+export function createAcpxEffectiveModelGate(expectedModel: string): AcpxEffectiveModelGate {
+  const pending = new Map<string | number, { method: string; value?: unknown }>();
+  let current: string | undefined;
+  let opened = false;
+  return {
+    connect() {
+      pending.clear();
+      current = undefined;
+      opened = false;
+    },
+    observe(direction, message) {
+      const value = record(message);
+      const id = value.id;
+      if (direction === "outbound") {
+        if ((typeof id !== "string" && typeof id !== "number") || typeof value.method !== "string") return;
+        if (!SESSION_OPENS.has(value.method) && !MODEL_CONTROLS.has(value.method)) return;
+        const params = record(value.params);
+        if (pending.size < 128) pending.set(id, { method: value.method, value: params.modelId ?? (params.configId === "model" ? params.value : undefined) });
+        return;
+      }
+      if (value.method === "session/update") {
+        const update = record(record(value.params).update);
+        if (update.sessionUpdate === "config_option_update") {
+          const reported = modelFromConfigOptions(update.configOptions);
+          if (reported !== undefined) current = reported;
+        }
+        return;
+      }
+      if (value.method !== undefined || (typeof id !== "string" && typeof id !== "number")) return;
+      const request = pending.get(id);
+      pending.delete(id);
+      if (!request || value.error !== undefined) return;
+      const result = record(value.result);
+      const reported = modelFromConfigOptions(result.configOptions) ?? stringValue(record(result.models).currentModelId);
+      if (SESSION_OPENS.has(request.method)) {
+        opened = true;
+        current = reported;
+      } else if (reported !== undefined) {
+        current = reported;
+      } else if (request.method === "session/set_model" && typeof request.value === "string") {
+        // The legacy setter has no acknowledgement body; success applies it.
+        current = request.value;
+      }
+    },
+    assertActive() {
+      if (!opened || current === expectedModel) return;
+      throw acpxModelVerificationError(
+        "ACPX_EFFECTIVE_MODEL_MISMATCH",
+        `ACPX effective model mismatch: expected ACP selector ${expectedModel}, received ${current ?? "unverified"}`,
+      );
+    },
+  };
+}
+
+function modelFromConfigOptions(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const option = value.map(record).find(entry => entry.id === "model" || entry.category === "model");
+  return option ? stringValue(option.currentValue) : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }

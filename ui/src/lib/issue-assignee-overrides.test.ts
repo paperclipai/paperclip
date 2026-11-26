@@ -82,4 +82,21 @@ describe("buildAssigneeAdapterOverrides", () => {
       adapterConfig: { variant: "max" },
     });
   });
+
+  it("persists an exact GPT-6 Astra task override", () => {
+    expect(
+      buildAssigneeAdapterOverrides({
+        adapterType: "codex_local",
+        lane: "custom",
+        modelOverride: "gpt-6-astra",
+        thinkingEffortOverride: "ultra",
+        chrome: false,
+      }),
+    ).toEqual({
+      adapterConfig: {
+        model: "gpt-6-astra",
+        modelReasoningEffort: "ultra",
+      },
+    });
+  });
 });

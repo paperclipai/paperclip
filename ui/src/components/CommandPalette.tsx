@@ -1,3 +1,6 @@
+import { AgentIdentity } from "@/components/AgentIdentity";
+import { useCombinedInboxTasksEnabled } from "@/hooks/useCombinedInboxTasksEnabled";
+import { useResponsibilitiesEnabled } from "@/hooks/useResponsibilitiesEnabled";
 import { useState, useEffect, useMemo } from "react";
 import { useLocation, useNavigate } from "@/lib/router";
 import { useQuery } from "@tanstack/react-query";
@@ -7,7 +10,6 @@ import { useSidebar } from "../context/SidebarContext";
 import { issuesApi } from "../api/issues";
 import { authApi } from "../api/auth";
 import { agentsApi } from "../api/agents";
-import { projectsApi } from "../api/projects";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import {
@@ -21,6 +23,7 @@ import {
 } from "@/components/ui/command";
 import {
   CircleDot,
+  Compass,
   Bot,
   Hexagon,
   Target,
@@ -41,6 +44,7 @@ import {
   parseSearchQuery,
   type SearchQueryParserContext,
 } from "../lib/search-query-parser";
+import { companyProjectsQuery } from "@/lib/company-projects-query";
 
 const SEARCH_ALL_VALUE = "__paperclip-search-all__";
 
@@ -100,8 +104,9 @@ export function CommandPalette() {
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
+  const { enabled: combinedInboxTasksEnabled } = useCombinedInboxTasksEnabled();
+  const { enabled: responsibilitiesEnabled } = useResponsibilitiesEnabled();
   const fileViewerEnabled = experimentalSettings?.enableExperimentalFileViewer === true;
 
   useEffect(() => {
@@ -127,8 +132,7 @@ export function CommandPalette() {
   });
 
   const { data: allProjects = [] } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    ...companyProjectsQuery(selectedCompanyId!),
     enabled: !!selectedCompanyId && open,
   });
   const projects = useMemo(
@@ -353,13 +357,21 @@ export function CommandPalette() {
         <CommandSeparator />
 
         <CommandGroup heading="Pages">
-          <CommandItem onSelect={() => go("/dashboard")}>
-            <LayoutDashboard className="mr-2 h-4 w-4" />
-            Dashboard
-          </CommandItem>
-          <CommandItem onSelect={() => go("/inbox")}>
+          {/* One Dashboard: the Responsibilities home while that experiment is on, the classic one otherwise. */}
+          {responsibilitiesEnabled ? (
+            <CommandItem onSelect={() => go("/responsibilities")}>
+              <Compass className="mr-2 h-4 w-4" />
+              Dashboard
+            </CommandItem>
+          ) : (
+            <CommandItem onSelect={() => go("/dashboard")}>
+              <LayoutDashboard className="mr-2 h-4 w-4" />
+              Dashboard
+            </CommandItem>
+          )}
+          <CommandItem onSelect={() => go(combinedInboxTasksEnabled ? "/issues?view=mine" : "/inbox")}>
             <Inbox className="mr-2 h-4 w-4" />
-            Inbox
+            {combinedInboxTasksEnabled ? "My work" : "Inbox"}
           </CommandItem>
           <CommandItem onSelect={() => go("/issues")}>
             <CircleDot className="mr-2 h-4 w-4" />
@@ -408,7 +420,7 @@ export function CommandPalette() {
                   <span className="flex-1 truncate">{issue.title}</span>
                   {issue.assigneeAgentId && (() => {
                     const name = agentName(issue.assigneeAgentId);
-                    return name ? <Identity name={name} size="sm" className="ml-2 hidden sm:inline-flex" /> : null;
+                    return name ? <AgentIdentity agent={agents?.find((agent) => agent.id === issue.assigneeAgentId) ?? { id: issue.assigneeAgentId, name }} size="sm" className="ml-2 hidden sm:inline-flex" /> : null;
                   })()}
                 </CommandItem>
               ))}

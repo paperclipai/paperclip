@@ -17,6 +17,51 @@ Cost reporting happens automatically through adapters. When an agent heartbeat c
 
 The server records this as a cost event for budget tracking.
 
+Paperclip keeps token usage even when the provider does not report a price. A
+complete receipt for a supported direct API model can be priced using a recorded
+list-price estimate; estimates are labeled in the Costs dashboard. Missing costs
+are never treated as proof of free usage.
+
+## Understanding incomplete cost data
+
+The Costs overview shows a compact line such as **12 run costs unavailable** when
+usage is missing a price or final receipt. Expand it with the arrow to see the
+affected entries, grouped alphabetically by agent with links to
+each run. Unknown billing types use their own label rather than counting as
+unavailable costs. Estimates remain labeled on spend cards and tables.
+Select an agent's name to open its configuration.
+Provider and biller cards also label estimates and unavailable prices. A total
+with only unpriced entries shows a dash instead of $0.00. Successful recording
+shows a confirmation even when it resolves the last gap.
+
+- **Billing category unknown:** select an AI connection in the agent's
+  configuration for future runs. Recorded charges remain in the inference ledger.
+- **Model not reported:** select an explicit model for future runs. ACP adapters
+  also retain the provider-selected model when the runtime reports it, including
+  its default model. A model change during a turn is not priced as one model.
+- **Cost unavailable:** the past entry has no reliable price. No cleanup is
+  required; totals include known charges only.
+- **Receiving usage / Final usage unavailable:** the final provider receipt has
+  not arrived. The label changes after fifteen minutes, but this is a display
+  distinction only. Paperclip still accepts late receipts and preserves the
+  accounting debt. Rerunning an agent does not recover its previous receipt.
+- **Ready to record:** Paperclip can retry saved accounting data. **Retry cost
+  recording** records costs only and never starts agent work. Recording is
+  idempotent, and company viewers cannot request this action.
+
+Changing an agent's configuration does not reprice historical entries. Normal
+credits and fixed billing are listed as other billing usage, without an unknown
+billing warning. OpenCode API billing can be identified from a nonempty API key
+for its selected provider; the provider name alone is insufficient evidence.
+Remote OpenCode runs use only keys forwarded to the remote process. Keys present
+on the Paperclip server do not establish a remote run's billing category.
+
+Board cost readers can inspect bounded details at
+`GET /api/companies/{companyId}/costs/data-quality`, with the same date bounds as
+other cost reports. Details contain no provider errors or credentials and load
+only when expanded in the UI. Authorized board members can request recording at
+`POST /api/companies/{companyId}/costs/retry-accounting` with `{ "runId": "uuid" }`.
+
 ## Cost Events API
 
 Cost events can also be reported directly:
@@ -29,9 +74,19 @@ POST /api/companies/{companyId}/cost-events
   "model": "claude-sonnet-4-20250514",
   "inputTokens": 15000,
   "outputTokens": 3000,
-  "costCents": 12
+  "costCents": 12,
+  "billingType": "metered_api",
+  "occurredAt": "2026-11-24T10:00:00Z"
 }
 ```
+
+`occurredAt` is required. An agent can report only its own costs.
+
+## Subscription Usage
+
+Each cost event has a billing type. When an adapter runs on a provider subscription instead of an API key, it reports the billing type `subscription_included`. Paperclip keeps the token counts and records the cost as 0 cents.
+
+Budgets count billed cents only. Subscription usage therefore never moves an agent toward its budget. A hard stop on a company or project budget, and the reserve per run, still apply to an agent that runs on a subscription.
 
 ## Budget Awareness
 
@@ -42,7 +97,11 @@ GET /api/agents/me
 # Check: spentMonthlyCents vs budgetMonthlyCents
 ```
 
-If budget utilization is above 80%, focus on critical tasks only. At 100%, the agent is auto-paused.
+The Paperclip skill tells agents to focus on critical tasks only when they are above 80% of their budget. This is guidance for the agent. The server does not send the agent a message at the warning threshold.
+
+When spend reaches the budget, and the hard stop is on for that budget, the server pauses the agent, refuses new runs, and tells the running run to stop. A board user resolves the budget incident. See [Costs and Budgets](/guides/board-operator/costs-and-budgets).
+
+`spentMonthlyCents` is the sum of the recorded cost of the agent's cost events. Subscription usage adds 0 cents to it.
 
 ## Best Practices
 
@@ -50,3 +109,4 @@ If budget utilization is above 80%, focus on critical tasks only. At 100%, the a
 - Check budget early in the heartbeat to avoid wasted work
 - Above 80% utilization, skip low-priority tasks
 - If you're running out of budget mid-task, leave a comment and exit gracefully
+- Company and project budgets can also stop an agent's work, even when its own budget has room

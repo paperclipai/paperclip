@@ -8,8 +8,7 @@
   ],
   "featured": false,
   "branding": {
-    "logoUrl": "/brands/apps/miro.svg",
-    "darkLogoUrl": "/brands/apps/miro-dark.svg"
+    "logoUrl": "/brands/apps/miro.svg"
   },
   "urlPatterns": [
     "https://mcp.miro.com/*"
@@ -26,7 +25,13 @@
       ],
       "whenToUse": "Use browser sign-in for the provider-hosted MCP server.",
       "defaults": {
-        "serverUrl": "https://mcp.miro.com/"
+        "serverUrl": "https://mcp.miro.com/",
+        "scopesHint": [
+          "boards:read",
+          "boards:write",
+          "openid",
+          "email"
+        ]
       },
       "guidanceMd": "Connect Miro in the browser. A Miro account; enterprise administrators may restrict third-party MCP clients.",
       "riskTier": "S3",

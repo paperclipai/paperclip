@@ -46,7 +46,7 @@ function duplexOpenInput(directive: unknown, companyId = "company-1") {
     companyId,
     environmentId: "env-1",
     providerLeaseId: JSON.stringify(directive),
-    command: "bridge-callback",
+    command: ["bridge-callback"],
   };
 }
 
@@ -130,17 +130,22 @@ describe("plugin worker manager duplex channel route", () => {
       const session = await handle.openDuplexChannel(
         duplexOpenInput({
           data: [{ chunk: "one" }, { chunk: "two" }, { chunk: "three" }],
+          exitCode: 0,
         }),
       );
-      // Wait so the three data notifications arrive and buffer before a listener
-      // attaches. The drain then delivers them in order.
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      // The worker writes the three data notifications and the exit in one
+      // stdout write. The host reads worker stdout line by line, so it buffers
+      // all three data frames before it reads the exit. The exit settles the
+      // wait, so the wait is a deterministic barrier: once it resolves, the
+      // host holds all three frames and no listener has attached yet. This
+      // barrier replaces a fixed sleep, so the test does not race the
+      // subprocess start or the stdio latency.
+      await session.wait();
       const chunks: string[] = [];
       // The session streams raw `Uint8Array` chunks. Decode each one back to
       // text, so the assertion below compares the plain-text payload the
       // fixture directive scripted.
       session.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
-      await vi.waitFor(() => expect(chunks.length).toBe(3));
       expect(chunks).toEqual(["one", "two", "three"]);
       await session.close();
     } finally {
@@ -213,11 +218,17 @@ describe("plugin worker manager duplex channel route", () => {
       const session = await handle.openDuplexChannel(
         duplexOpenInput({
           data: [{ chunk: "one" }, { chunk: "boom" }, { chunk: "three" }],
+          exitCode: 0,
         }),
       );
-      // Wait so the three data notifications arrive and buffer before a listener
-      // attaches. The drain then delivers them in order.
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      // The worker writes the three data notifications and the exit in one
+      // stdout write. The host reads worker stdout line by line, so it buffers
+      // all three data frames before it reads the exit. The exit settles the
+      // wait, so the wait is a deterministic barrier for "the host holds every
+      // pre-bind frame and no listener has attached". This barrier replaces a
+      // fixed sleep, so the test does not race the subprocess start or the
+      // stdio latency.
+      await session.wait();
       const chunks: string[] = [];
       // The listener throws on one buffered chunk. The manager catches the throw
       // inside the drain, so it does not escape `onData` and every buffered chunk
@@ -946,6 +957,113 @@ describe("plugin worker manager duplex channel route", () => {
       await expect(
         handle.openDuplexChannel(duplexOpenInput({ mode: "normal" })),
       ).rejects.toThrow();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
+
+// A fail-closed retirement kills the worker process because the host cannot
+// prove a route is gone. The retired process, its routes, and its tombstones are
+// never reused, but the plugin itself must come back on a fresh process instead
+// of staying stopped until the server restarts.
+describe("plugin worker replacement after a fail-closed retirement", () => {
+  const fastRecovery = { crashRecovery: { minBackoffMs: 20 } };
+
+  async function retireOnce(handle: ReturnType<typeof makeDuplexHandle>) {
+    const exited = new Promise<void>((resolve) => {
+      const onExit = () => {
+        handle.off("exit", onExit);
+        resolve();
+      };
+      handle.on("exit", onExit);
+    });
+    const session = await handle.openDuplexChannel(
+      duplexOpenInput({ mode: "normal", closeMode: "bad-ack" }),
+    );
+    const waited = session.wait();
+    await session.close();
+    await exited;
+    return { session, waited };
+  }
+
+  it("replaces the retired worker with a fresh process", async () => {
+    const handle = makeDuplexHandle({
+      ...fastRecovery,
+      duplexChannelLimits: { closeTimeoutMs: 200 },
+    });
+    try {
+      await handle.start();
+      const retiredPid = handle.diagnostics().pid;
+      const sibling = await handle.openDuplexChannel(duplexOpenInput({ mode: "normal" }));
+      const siblingChunks: string[] = [];
+      sibling.onData((chunk) => siblingChunks.push(new TextDecoder().decode(chunk)));
+      const { session, waited } = await retireOnce(handle);
+      // Every route on the retired worker settles as failed.
+      await expect(waited).resolves.toEqual({ exitCode: null });
+      await expect(sibling.wait()).resolves.toEqual({ exitCode: null });
+
+      await vi.waitFor(() => expect(handle.status).toBe("running"), { timeout: 5_000 });
+      const freshPid = handle.diagnostics().pid;
+      expect(freshPid).not.toBeNull();
+      expect(freshPid).not.toBe(retiredPid);
+
+      // No retired route is revived on the fresh process.
+      session.write(new TextEncoder().encode("retired route stays closed"));
+      sibling.write(new TextEncoder().encode("retired route stays closed"));
+      await expect(session.wait()).resolves.toEqual({ exitCode: null });
+      expect(siblingChunks).toEqual([]);
+
+      // The fresh process serves new routes.
+      const next = await handle.openDuplexChannel(
+        duplexOpenInput({ workerSessionId: "ws-next", echoInput: true }),
+      );
+      const chunks: string[] = [];
+      next.onData((chunk) => chunks.push(new TextDecoder().decode(chunk)));
+      next.write(new TextEncoder().encode("fresh"));
+      await vi.waitFor(() => expect(chunks).toContain("echo:fresh"));
+      await next.close();
+      expect(handle.status).toBe("running");
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("keeps a deliberate stop stopped while a replacement is pending", async () => {
+    const handle = makeDuplexHandle({
+      crashRecovery: { minBackoffMs: 300 },
+      duplexChannelLimits: { closeTimeoutMs: 200 },
+    });
+    try {
+      await handle.start();
+      await retireOnce(handle);
+      await vi.waitFor(() => expect(handle.status).toBe("backoff"));
+      await handle.stop();
+      expect(handle.status).toBe("stopped");
+      await new Promise((resolve) => setTimeout(resolve, 700));
+      expect(handle.status).toBe("stopped");
+      expect(handle.diagnostics().pid).toBeNull();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("bounds repeated retirements instead of restarting forever", async () => {
+    const handle = makeDuplexHandle({
+      crashRecovery: { minBackoffMs: 20, maxConsecutiveRetirements: 2 },
+      duplexChannelLimits: { closeTimeoutMs: 200 },
+    });
+    try {
+      await handle.start();
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        await retireOnce(handle);
+        await vi.waitFor(() => expect(handle.status).toBe("running"), { timeout: 5_000 });
+      }
+      await retireOnce(handle);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(handle.status).toBe("crashed");
+      expect(handle.diagnostics().pid).toBeNull();
+      await expect(handle.call("health", {} as never)).rejects.toThrow("is crashed");
     } finally {
       await handle.stop().catch(() => undefined);
     }
