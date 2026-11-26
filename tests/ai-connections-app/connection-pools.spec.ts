@@ -116,7 +116,7 @@ test("native catalog setup, account edits, conflicts and removal persist through
     await expect(confirmation).toContainText("The connections in this pool are kept.");
     await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
     expect(await saved()).toBeTruthy();
-    await page.getByRole("link", { name: "All connectors", exact: true }).click();
+    await page.getByRole("link", { name: "Back to Plugins", exact: true }).click();
     await page.getByRole("button", { name: `Manage ${name} connection`, exact: true }).click();
     await page.getByRole("menuitem", { name: "Remove connection", exact: true }).click();
     await page.getByRole("alertdialog").getByRole("button", { name: "Remove connection", exact: true }).click();
