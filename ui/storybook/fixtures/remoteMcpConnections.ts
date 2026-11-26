@@ -86,7 +86,7 @@ export function initialReviewState(provider: RemoteMcpProviderId, scenario: Revi
     url: ["initial", "journey", "connect", "selected_agents"].includes(scenario) ? config.defaultUrl : scenario === "invalid_url" ? "not-a-server-url" : exampleUrl(provider),
     auth: scenario === "advanced" ? provider === "composio" ? "headers" : "bearer" : config.supportsBrowserAuth ? "auto" : "none",
     token: "", headers: scenario === "advanced" ? [{ id: "header-1", name: provider === "arcade" ? "Arcade-User-ID" : "X-Session-Key", value: "" }] : [],
-    advanced: scenario === "advanced", connectStatus: connectCases[scenario] ?? "idle",
+    connectStatus: connectCases[scenario] ?? "idle",
     connected: !access && !isConnect, identity: provider === "zapier" ? null : "reviewer@example.invalid",
     allAgents: scenario !== "selected_agents", agentIds: access && scenario !== "selected_agents" ? [] : ["researcher", "operator"],
     permissions: Object.fromEntries(tools.map((tool, index) => [tool.id, scenario !== "new_tools" || tool.id === newFixtureTool.id ? "allowed" : index === 1 ? "ask_first" : index === 2 ? "off" : "allowed"])),

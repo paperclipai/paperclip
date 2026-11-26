@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { LiveRunForIssue } from "../api/heartbeats";
-import { patchRunStatusInList, removeRunFromList } from "./live-runs-cache";
+import { CONNECTED_ACTIVE_RUN_REFETCH_MS, liveRunRefetchInterval, patchRunStatusInList, removeRunFromList } from "./live-runs-cache";
 
 function run(id: string, status: string): LiveRunForIssue {
   return {
@@ -60,5 +60,32 @@ describe("patchRunStatusInList", () => {
     const { next, present } = patchRunStatusInList(undefined, "a", "running");
     expect(present).toBe(false);
     expect(next).toBeUndefined();
+  });
+});
+
+describe("liveRunRefetchInterval", () => {
+  it.each(["pending", "error"] as const)("keeps polling %s queries with retained empty data", (status) => {
+    expect(liveRunRefetchInterval(true, { status, data: [] }, 1000)).toBe(1000);
+    expect(liveRunRefetchInterval(true, { status, data: null }, 3000)).toBe(3000);
+  });
+  it.each([null, []])("stops known-empty polling with a connected company for %j", (data) => {
+    expect(liveRunRefetchInterval(true, { status: "success", data }, 1000)).toBe(false);
+    expect(liveRunRefetchInterval(false, { status: "success", data }, 1000)).toBe(1000);
+  });
+
+  it.each([undefined, {}, { id: "run-1" }, "invalid", 0])("preserves polling for unknown data %j", (data) => {
+    expect(liveRunRefetchInterval(true, { status: "success", data }, 3000)).toBe(3000);
+    expect(liveRunRefetchInterval(false, { status: "success", data }, 3000)).toBe(3000);
+  });
+
+  it.each([
+    ["a run list", [run("active", "running")]],
+    ["a single run", run("active", "running")],
+  ])("waits for events with a slow safety read for %s while connected", (_label, data) => {
+    expect(liveRunRefetchInterval(true, { status: "success", data }, 1000)).toBe(CONNECTED_ACTIVE_RUN_REFETCH_MS);
+    expect(liveRunRefetchInterval(true, { status: "success", data }, 3000)).toBe(CONNECTED_ACTIVE_RUN_REFETCH_MS);
+    expect(liveRunRefetchInterval(true, { status: "success", data }, 60_000)).toBe(60_000);
+    // A closed connection keeps the caller's cadence.
+    expect(liveRunRefetchInterval(false, { status: "success", data }, 1000)).toBe(1000);
   });
 });

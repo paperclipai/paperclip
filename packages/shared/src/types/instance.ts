@@ -30,8 +30,6 @@ export type InstanceExecutionMode = "kubernetes" | "any";
 
 export interface InstanceGeneralSettings {
   censorUsernameInLogs: boolean;
-  /** @deprecated Legacy instance value. Use /auth/preferences for personal shortcuts. */
-  keyboardShortcuts: boolean;
   feedbackDataSharingPreference: FeedbackDataSharingPreference;
   backupRetention: BackupRetentionPolicy;
   /**
@@ -48,12 +46,15 @@ export interface InstanceExperimentalSettings {
    * Existing native runs ignore later flag changes so they remain recoverable.
    */
   enableNativeRunner: boolean;
+  enableAiConnectionRouters: boolean;
   /**
    * Hide the local environment and run all agents in the platform-managed
    * sandbox environment. Run selection refuses local while this is on.
    */
   enableManagedSandboxOnly: boolean;
   enableIsolatedWorkspaces: boolean;
+  /** Enroll eligible native sandbox workspaces in remote, snapshot-backed storage. */
+  remoteWorkspaceStorageEnabled: boolean;
   /**
    * Move the execution workspace default for a project that carries no policy
    * of its own from the shared project checkout to an isolated per-task
@@ -72,15 +73,34 @@ export interface InstanceExperimentalSettings {
   enableApps: boolean;
   /** Exposes chat connector setup and Board surfaces; existing delivery continues when hidden. */
   enableChatConnectors: boolean;
+  /** @deprecated Compatibility key only. GitHub review bots are always enabled. */
+  enableGitHubReviewBots: boolean;
+  /** @deprecated Compatibility key only. Assistant connections (MCP) are always enabled. */
+  enablePublicMcp: boolean;
+  /** Enable the standalone Dot choice and dedicated agent MCP connection independently of the general Runner rollout. */
+  enableOpenAiDot: boolean;
+  /** Enable experimental Grok Bot agents; requires MCP and the managed/native Runner. */
+  enableGrokBot: boolean;
+  enableMuse: boolean;
   /** @deprecated Compatibility key only. MCP aggregators are always enabled. */
   enableMcpAggregators: boolean;
   /** Show experimental memory connection setup. Existing connections remain usable. */
   enableMemoryConnectors: boolean;
-  enablePipelines: boolean;
+  enablePaperclipNotebook: boolean;
+  /** Show and allow the built-in Google Workspace connector while its Google verification is pending. */
+  enableGoogleWorkspaceConnector: boolean;
+  /** Show and allow the AWS connector (minted per-connection AWS credentials). */
+  enableAwsConnector: boolean;
   enableCases: boolean;
   enableAgentChat: boolean;
+  /** Reorganized left nav, Inbox-as-Tasks-views, and the chat agent rail + task cards. */
+  enableCombinedInboxTasks: boolean;
+  /** The artifact presentation from the artifact directions lab (MVP V1) on the Artifacts page, the panel's Artifacts tab and the task thread. */
+  enableArtifactsV1: boolean;
   enableConferenceRoomChat: boolean;
   enableClassicTaskInterface: boolean;
+  /** Require Cmd/Ctrl+Enter to submit task replies and new tasks. */
+  enableLegacyComposerSubmit: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
   enableExternalObjects: boolean;
@@ -89,7 +109,11 @@ export interface InstanceExperimentalSettings {
   enableBetaSkills: boolean;
   enableSummaries: boolean;
   enableStatusCards: boolean;
+  /** Areas of responsibility: per-user areas with the projects, tasks and routines under them. */
+  enableResponsibilities: boolean;
   enableDecisions: boolean;
+  /** Show company connection settings and allow contextual fast-response acknowledgements. */
+  enableFastResponses: boolean;
   enableGoalsSidebarLink: boolean;
   enableServerInfoDebugView: boolean;
   /** Shows internal Paperclip maintainer tools and observability links. */
@@ -108,6 +132,13 @@ export interface InstanceExperimentalSettings {
    * flipping it later does not change an existing first task.
    */
   enableFirstTaskPlanProposal: boolean;
+  /**
+   * Experimental Paperclip Cloud onboarding starter inference: provides a
+   * Cloud-funded $1 OpenRouter allowance (defaulting to OpenCode / Luna) via
+   * the tenant server proxy so the user's first agent works out of the box,
+   * then prompts to connect their own subscription when exhausted.
+   */
+  enableCloudTrialInference: boolean;
   autoRestartDevServerWhenIdle: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
   enableWorkspaceDirtyQuarantineRepair: boolean;
@@ -126,6 +157,17 @@ export interface InstanceExperimentalSettings {
    * redeploy.
    */
   enableSandboxDuplexBridge: boolean;
+  /**
+   * MCP Tasks: long provider tool calls become durable tasks that survive
+   * timeouts, restarts, and deploys. Default off: the extension is not
+   * declared, so behavior matches a client without it.
+   */
+  enableMcpTasks: boolean;
+  /**
+   * Let a signed-in user start Google Antigravity's native swarm with `/swarm`
+   * at the start of a task comment. Local hosts with a Google sign-in only. Default off.
+   */
+  enableAntigravitySwarm: boolean;
   /**
    * @deprecated Compatibility-only. Provider WebSocket ingress now follows
    * enableNativeRunner and this value has no runtime effect.

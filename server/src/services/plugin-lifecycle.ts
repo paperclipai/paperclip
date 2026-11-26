@@ -301,26 +301,33 @@ export interface PluginLifecycleManagerOptions {
  * @see PLUGIN_SPEC.md §21.3 — `plugins.status` column
  * @see PLUGIN_SPEC.md §12 — Process Model
  */
+async function retireConnectorConnectionsFor(db: Db, pluginKey: string): Promise<void> {
+  const { retirePluginAppConnections } = await import("./plugin-app-catalog.js");
+  await retirePluginAppConnections(db, pluginKey);
+}
+
 export function pluginLifecycleManager(
   db: Db,
-  options?: PluginLoader | PluginLifecycleManagerOptions,
+  { loader, workerManager }: PluginLifecycleManagerOptions = {},
 ): PluginLifecycleManager {
-  // Support the legacy signature: pluginLifecycleManager(db, loader)
-  // as well as the new options object form.
-  let loaderArg: PluginLoader | undefined;
-  let workerManager: PluginWorkerManager | undefined;
-
-  if (options && typeof options === "object" && "discoverAll" in options) {
-    // Legacy: second arg is a PluginLoader directly
-    loaderArg = options as PluginLoader;
-  } else if (options && typeof options === "object") {
-    const opts = options as PluginLifecycleManagerOptions;
-    loaderArg = opts.loader;
-    workerManager = opts.workerManager;
-  }
-
   const registry = pluginRegistryService(db);
-  const pluginLoaderInstance = loaderArg ?? pluginLoader(db);
+  const retireConnectorConnections = (pluginKey: string) => retireConnectorConnectionsFor(db, pluginKey);
+  /**
+   * After a plugin's worker starts with possibly new code: refresh its
+   * connector catalogs so declared tools and risks are current, and finish
+   * carrying over legacy tool access recorded while it was not running.
+   */
+  function afterConnectorPluginActivated(pluginId: string, pluginKey: string) {
+    void (async () => {
+      const [{ refreshPluginConnectionCatalogs }, { completeLegacyPluginToolAccess }] = await Promise.all([
+        import("./plugin-app-catalog.js"),
+        import("./plugin-connector-legacy-access.js"),
+      ]);
+      await refreshPluginConnectionCatalogs(db, pluginKey);
+      await completeLegacyPluginToolAccess(db, pluginKey);
+    })().catch((error) => log.warn({ err: error, pluginId }, "Could not update plugin connectors after activation"));
+  }
+  const pluginLoaderInstance = loader ?? pluginLoader(db);
   const emitter = new EventEmitter();
   emitter.setMaxListeners(100); // plugins may have many listeners; 100 is a safe upper bound
 
@@ -501,6 +508,7 @@ export function pluginLifecycleManager(
 
       const result = await transition(pluginId, "ready", null, plugin);
       await activateReadyPlugin(pluginId);
+      afterConnectorPluginActivated(pluginId, result.pluginKey);
       emitDomain("plugin.enabled", {
         pluginId,
         pluginKey: result.pluginKey,
@@ -540,6 +548,8 @@ export function pluginLifecycleManager(
 
       // If already uninstalled and removeData, hard-delete
       if (plugin.status === "uninstalled") {
+        // Finish any connector cleanup an earlier uninstall could not complete.
+        await retireConnectorConnections(plugin.pluginKey);
         if (removeData) {
           await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
           const deleted = await registry.uninstall(pluginId, true);
@@ -563,8 +573,16 @@ export function pluginLifecycleManager(
       await deactivatePluginRuntime(pluginId, plugin.pluginKey);
       await pluginLoaderInstance.cleanupInstallArtifacts(plugin);
 
-      // Perform the uninstall via registry (handles soft/hard delete)
-      const result = await registry.uninstall(pluginId, removeData);
+      // Mark the plugin uninstalled first, so no new connector setup can
+      // start. Then retire the connections made from its connector types:
+      // rows stay for audit, archived, with grants revoked and owned
+      // credentials deleted. A setup already in flight archives its own
+      // connection (see tool-access). A failure is reported, and uninstalling
+      // again finishes the cleanup; a hard delete happens only after it.
+      let result = await registry.uninstall(pluginId, false);
+      await retireConnectorConnections(plugin.pluginKey);
+      if (removeData) result = await registry.uninstall(pluginId, true);
+
 
       log.info(
         { pluginId, pluginKey: plugin.pluginKey, removeData },
@@ -694,6 +712,7 @@ export function pluginLifecycleManager(
           manifestJson: newManifest,
         } as PluginRecord);
         await activateReadyPlugin(pluginId);
+        afterConnectorPluginActivated(pluginId, result.pluginKey);
 
         emitDomain("plugin.loaded", {
           pluginId,
@@ -738,6 +757,7 @@ export function pluginLifecycleManager(
         pluginId,
         pluginKey: plugin.pluginKey,
       });
+      afterConnectorPluginActivated(pluginId, plugin.pluginKey);
 
       log.info(
         { pluginId, pluginKey: plugin.pluginKey },
@@ -802,6 +822,7 @@ export function pluginLifecycleManager(
         // migration, which makes downstream queries fail against missing tables.
         await deactivatePluginRuntime(pluginId, plugin.pluginKey);
         await activateReadyPlugin(pluginId);
+        afterConnectorPluginActivated(pluginId, plugin.pluginKey);
       } else {
         // No runtime activation services wired in (e.g. state-only test harness)
         // — fall back to a bare worker subprocess bounce.
@@ -812,6 +833,7 @@ export function pluginLifecycleManager(
         await handle.restart();
         emitDomain("plugin.worker_stopped", { pluginId, pluginKey: plugin.pluginKey });
         emitDomain("plugin.worker_started", { pluginId, pluginKey: plugin.pluginKey });
+        afterConnectorPluginActivated(pluginId, plugin.pluginKey);
       }
 
       log.info(
