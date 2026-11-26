@@ -8,6 +8,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { agentService } from "../services/agents.js";
 import { authorizationService } from "../services/authorization.js";
 import { accessService } from "../services/access.js";
+import { builtInAgentService } from "../services/built-in-agents.js";
 import { agentJoinGrantsFromDefaults } from "../services/invite-grants.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -184,6 +185,50 @@ describeDatabase("new agent configuration defaults", () => {
     await db.delete(agents).where(eq(agents.companyId, companyId));
     await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
     await db.delete(companies).where(eq(companies.id, companyId));
+  });
+
+  it("gives the root agent its default change grants whatever its role label", async () => {
+    const seed = async (roots: string[]) => {
+      const companyId = randomUUID();
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Root grant defaults",
+        issuePrefix: `PR${companyId.slice(0, 6).toUpperCase()}`,
+      });
+      const rootRows = await db.insert(agents).values(roots.map((role, index) => ({
+        companyId, name: `Root ${index}`, role, permissions: {}, adapterType: "process", adapterConfig: {}, runtimeConfig: {},
+      }))).returning();
+      const [report] = await db.insert(agents).values({
+        companyId, name: "Report", role: "engineer", reportsTo: rootRows[0]!.id, permissions: {}, adapterType: "process", adapterConfig: {}, runtimeConfig: {},
+      }).returning();
+      await builtInAgentService(db).ensureCompanyDefaultAgentGrants(companyId);
+      const grants = await db.select().from(principalPermissionGrants)
+        .where(eq(principalPermissionGrants.companyId, companyId));
+      const keysFor = (agentId: string) => grants.filter((grant) => grant.principalId === agentId)
+        .map((grant) => grant.permissionKey).sort();
+      return { companyId, rootRows, report: report!, keysFor };
+    };
+    const cleanupCompany = async (companyId: string) => {
+      await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId));
+      await db.delete(companyMemberships).where(eq(companyMemberships.companyId, companyId));
+      await db.delete(agents).where(eq(agents.companyId, companyId));
+      await db.delete(activityLog).where(eq(activityLog.companyId, companyId));
+      await db.delete(companies).where(eq(companies.id, companyId));
+    };
+
+    const generalRoot = await seed(["general"]);
+    expect(generalRoot.keysFor(generalRoot.rootRows[0]!.id)).toEqual(["agents:configure", "skills:create"]);
+    expect(generalRoot.keysFor(generalRoot.report.id)).toEqual([]);
+    await cleanupCompany(generalRoot.companyId);
+
+    const ceoAmongRoots = await seed(["general", "CEO"]);
+    expect(ceoAmongRoots.keysFor(ceoAmongRoots.rootRows[0]!.id)).toEqual([]);
+    expect(ceoAmongRoots.keysFor(ceoAmongRoots.rootRows[1]!.id)).toEqual(["agents:configure", "skills:create"]);
+    await cleanupCompany(ceoAmongRoots.companyId);
+
+    const ambiguousRoots = await seed(["general", "engineer"]);
+    for (const row of ambiguousRoots.rootRows) expect(ambiguousRoots.keysFor(row.id)).toEqual([]);
+    await cleanupCompany(ambiguousRoots.companyId);
   });
 
   it("adds the default grant when a standard pending hire is approved", async () => {

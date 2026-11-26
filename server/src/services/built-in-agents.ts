@@ -851,14 +851,17 @@ export function builtInAgentService(db: Db) {
       .select()
       .from(agents)
       .where(and(eq(agents.companyId, companyId), ne(agents.status, "terminated")));
-    const rootCeoRows = rows.filter((agent) =>
+    const rootRows = rows.filter((agent) =>
       !readBuiltInAgentMarker(agent.metadata) &&
       !agent.reportsTo &&
-      agent.role.trim().toLowerCase() === "ceo" &&
       agent.status !== "pending_approval"
     );
-    if (rootCeoRows.length !== 1) return 0;
-    return ensureAgentDefaultGrants(companyId, rootCeoRows[0]!.id, ROOT_AGENT_DEFAULT_CHANGE_GRANTS);
+    const rootCeoRows = rootRows.filter((agent) => agent.role.trim().toLowerCase() === "ceo");
+    const rootAgent = rootCeoRows.length > 0
+      ? (rootCeoRows.length === 1 ? rootCeoRows[0] : undefined)
+      : (rootRows.length === 1 ? rootRows[0] : undefined);
+    if (!rootAgent) return 0;
+    return ensureAgentDefaultGrants(companyId, rootAgent.id, ROOT_AGENT_DEFAULT_CHANGE_GRANTS);
   }
 
   async function ensureCompanyDefaultAgentGrants(companyId: string) {
