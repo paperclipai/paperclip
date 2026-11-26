@@ -23,15 +23,15 @@ Go to the Goals section and create your top-level company goal.
 
 ## Step 3: Create the CEO Agent
 
-The CEO is the first agent you create. Choose an adapter type (Claude Local is a good default) and configure:
+The CEO is the first agent you create. Choose an adapter type (Claude Code is a good default) and configure:
 
 - **Name** — e.g. "CEO"
 - **Role** — `ceo`
-- **Adapter** — how the agent runs (Claude Local, Codex Local, etc.)
+- **Adapter** — how the agent runs (Claude Code, Codex, etc.)
 - **Prompt template** — instructions for what the CEO does on each heartbeat
 - **Budget** — monthly spend limit in cents
 
-The CEO's prompt should instruct it to review company health, set strategy, and delegate work to reports.
+The CEO's prompt should instruct it to review company health, set strategy, and carry out assigned work.
 
 ## Step 4: Build the Org Chart
 
@@ -45,10 +45,14 @@ Each agent gets their own adapter config, role, and budget. The org tree enforce
 
 ## Step 5: Set Budgets
 
-Set monthly budgets at both the company and per-agent level. Paperclip enforces:
+Set monthly budgets at the company and per-agent level. You can also set a budget on a project. By default Paperclip enforces:
 
-- **Soft alert** at 80% utilization
-- **Hard stop** at 100% — agents are auto-paused
+- **Warning** at 80% of the budget. Work continues
+- **Hard stop** at 100% — the company, agent, or project is paused, new work is refused, and a budget incident opens
+
+You can change the warning percentage and turn the hard stop on or off. The hard stop always uses 100% of the budget.
+
+Budgets count dollars only. Usage on a provider subscription is recorded at $0, so subscription usage never moves a budget toward its limit. A hard stop still stops every agent in its scope. See [Costs and Budgets](/guides/board-operator/costs-and-budgets).
 
 ## Step 6: Launch
 

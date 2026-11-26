@@ -8,17 +8,6 @@ interface ShortcutEntry {
   combo?: boolean;
 }
 
-// Platform-appropriate label for the Cmd/Ctrl modifier so the cheatsheet shows
-// the same key the user actually presses (re-pointed in the collapsible sidebar
-// work — Cmd/Ctrl+B toggles the rail).
-function getPlatformLabel() {
-  if (typeof navigator === "undefined") return "";
-  const nav = navigator as Navigator & { userAgentData?: { platform?: string } };
-  return nav.userAgentData?.platform || navigator.userAgent || "";
-}
-
-const META_KEY = /Mac|iPhone|iPad|iPod/.test(getPlatformLabel()) ? "⌘" : "Ctrl";
-
 interface ShortcutSection {
   title: string;
   shortcuts: ShortcutEntry[];
@@ -50,12 +39,22 @@ const sections: ShortcutSection[] = [
     ],
   },
   {
+    title: "Decisions",
+    shortcuts: [
+      { keys: ["j"], label: "Move down" },
+      { keys: ["↓"], label: "Move down" },
+      { keys: ["k"], label: "Move up" },
+      { keys: ["↑"], label: "Move up" },
+      { keys: ["Enter"], label: "Open or close selected decision" },
+      { keys: ["x"], label: "Dismiss selected decision" },
+    ],
+  },
+  {
     title: "Global",
     shortcuts: [
       { keys: ["/"], label: "Search current page or quick search" },
       { keys: ["c"], label: "New task" },
       { keys: ["["], label: "Toggle sidebar" },
-      { keys: [META_KEY, "B"], label: "Collapse or expand sidebar", combo: true },
       { keys: ["]"], label: "Toggle panel" },
       { keys: ["?"], label: "Show keyboard shortcuts" },
     ],
@@ -64,7 +63,7 @@ const sections: ShortcutSection[] = [
 
 function KeyCap({ children }: { children: string }) {
   return (
-    <kbd className="inline-flex h-6 min-w-6 items-center justify-center rounded border border-border bg-muted px-1.5 font-mono text-xs font-medium text-foreground shadow-[0_1px_0_1px_hsl(var(--border))]">
+    <kbd className="inline-flex h-6 min-w-6 items-center justify-center rounded border border-border bg-muted px-1.5 font-mono text-xs font-medium text-foreground shadow-(--shadow-extract-10)">
       {children}
     </kbd>
   );
@@ -76,7 +75,7 @@ export function KeyboardShortcutsCheatsheetContent() {
       <div className="divide-y divide-border border-t border-border">
         {sections.map((section) => (
           <div key={section.title} className="px-5 py-3">
-            <h3 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            <h3 className="mb-2 text-(length:--text-micro) font-semibold uppercase tracking-wider text-muted-foreground">
               {section.title}
             </h3>
             <div className="space-y-1.5">

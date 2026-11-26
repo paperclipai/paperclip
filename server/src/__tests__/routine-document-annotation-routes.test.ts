@@ -21,6 +21,7 @@ const mockAnnotationService = vi.hoisted(() => ({
   createRoutineThread: vi.fn(),
   addRoutineComment: vi.fn(),
   updateRoutineThread: vi.fn(),
+  setCommentReaction: vi.fn(),
   remapOpenThreadsForRoutineDocument: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
@@ -294,9 +295,39 @@ describe("routine description annotation routes", () => {
     }));
   });
 
+  it("adds and removes routine annotation comment reactions with activity", async () => {
+    const app = await createApp();
+    const path = `/api/routines/${routineId}/description/annotations/${annotationThread.id}/comments/${annotationComment.id}/reactions/check`;
+    mockAnnotationService.setCommentReaction.mockResolvedValue({
+      thread: annotationThread,
+      comment: { ...annotationComment, reactions: [] },
+      changed: true,
+    });
+
+    await request(app).put(path).expect(200);
+    expect(mockAnnotationService.setCommentReaction).toHaveBeenCalledWith(expect.objectContaining({
+      target: { kind: "routine", routineId, key: "description" },
+      commentId: annotationComment.id,
+      reaction: "check",
+      present: true,
+    }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "routine.document_annotation_comment_reaction_added",
+      entityType: "routine",
+      entityId: routineId,
+    }));
+
+    await request(app).delete(path).expect(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "routine.document_annotation_comment_reaction_removed",
+    }));
+  });
+
   it("rejects agent cross-company routine annotation reads", async () => {
+    // Cross-tenant requests return 404 (not 403) so the status code cannot be
+    // used as an existence oracle for other tenants' routine ids.
     await request(await createApp("agent", otherCompanyId))
       .get(`/api/routines/${routineId}/description/annotations`)
-      .expect(403);
+      .expect(404);
   });
 });

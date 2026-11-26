@@ -5,6 +5,7 @@ import type {
 } from "@paperclipai/shared";
 import { cn, formatShortDate } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
+import { useCopyAction, useCopyToast } from "../lib/use-copy-action";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -23,7 +24,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Check, Copy, MoreHorizontal, ThumbsDown, ThumbsUp } from "lucide-react";
+import { Check, Copy, MoreHorizontal, ThumbsDown, ThumbsUp, X } from "lucide-react";
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -37,6 +38,38 @@ export function agentBubbleDateLabel(date: Date | string | undefined): string {
   const then = new Date(date).getTime();
   if (Date.now() - then < WEEK_MS) return timeAgo(date);
   return formatShortDate(date);
+}
+
+/**
+ * Copy-to-clipboard icon button shared by every agent-bubble footer — the
+ * conference-room {@link AgentBubbleActionRow} and the redesigned task thread's
+ * {@link TaskChatBubbleActions} (PAP-413). Single-sourced so both footers keep
+ * identical sizing, radius, and the "copied ✓" feedback affordance rather than
+ * re-declaring the same button markup on each surface.
+ */
+export function BubbleCopyButton({ copyText }: { copyText: string }) {
+  const { copied, failed, copy } = useCopyAction(2000);
+  const label = failed ? "Couldn’t copy message" : "Copy message";
+
+  return (
+    <button
+      type="button"
+      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      title={label}
+      aria-label={label}
+      onClick={() => {
+        void copy(copyText);
+      }}
+    >
+      {copied ? (
+        <Check className="h-3.5 w-3.5" />
+      ) : failed ? (
+        <X className="h-3.5 w-3.5 text-destructive" />
+      ) : (
+        <Copy className="h-3.5 w-3.5" />
+      )}
+    </button>
+  );
 }
 
 /**
@@ -78,24 +111,11 @@ export function AgentBubbleActionRow({
   menuItems?: ReactNode;
   className?: string;
 }) {
-  const [copied, setCopied] = useState(false);
-
+  // The menu closes on click, so its copy confirmation has to outlive it.
+  const copyWithToast = useCopyToast();
   return (
     <div className={cn("mt-2 flex items-center gap-1", className)}>
-      <button
-        type="button"
-        className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        title="Copy message"
-        aria-label="Copy message"
-        onClick={() => {
-          void navigator.clipboard.writeText(copyText).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-          });
-        }}
-      >
-        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
-      </button>
+      <BubbleCopyButton copyText={copyText} />
       {feedback ? (
         <IssueChatFeedbackButtons
           activeVote={feedback.activeVote}
@@ -109,7 +129,7 @@ export function AgentBubbleActionRow({
           <TooltipTrigger asChild>
             <a
               href={anchorHref}
-              className="text-[11px] text-muted-foreground hover:text-foreground hover:underline"
+              className="text-(length:--text-micro) text-muted-foreground hover:text-foreground hover:underline"
             >
               {dateLabel}
             </a>
@@ -134,7 +154,7 @@ export function AgentBubbleActionRow({
         <DropdownMenuContent align="end">
           <DropdownMenuItem
             onClick={() => {
-              void navigator.clipboard.writeText(copyText);
+              void copyWithToast(copyText, "Message copied");
             }}
           >
             <Copy className="mr-2 h-3.5 w-3.5" />
@@ -325,7 +345,7 @@ export function IssueChatFeedbackButtons({
               <span className="font-medium text-foreground">Don't allow</span> to keep this vote
               and future votes local.
             </p>
-            <p>You can change this later in Instance Settings &gt; General.</p>
+            <p>You can change this later in Settings &gt; General.</p>
             {termsUrl ? (
               <a
                 href={termsUrl}

@@ -65,10 +65,11 @@ const plugin = definePlugin({
   async setup(ctx) {
     ctx.logger.info(`${PLUGIN_NAME} plugin setup`);
 
-    // Expose the current plugin config so UI components can read operator
-    // settings from the canonical instance config store.
-    ctx.data.register("plugin-config", async () => {
-      const config = await ctx.config.get();
+    // Expose the current company-scoped plugin config so UI components can read
+    // operator settings from the canonical config store.
+    ctx.data.register("plugin-config", async (params) => {
+      const companyId = typeof params.companyId === "string" ? params.companyId : "";
+      const config = companyId ? await ctx.config.get(companyId) : null;
       return {
         showFilesInSidebar: config?.showFilesInSidebar === true,
         commentAnnotationMode: config?.commentAnnotationMode ?? "both",

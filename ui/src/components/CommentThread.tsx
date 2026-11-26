@@ -1,3 +1,6 @@
+import { AgentIdentity } from "./AgentIdentity";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { AgentAvatar } from "@/components/AgentAvatar";
 import { memo, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type {
@@ -18,13 +21,14 @@ import { MarkdownBody, type MarkdownExternalReferenceMap } from "./MarkdownBody"
 import { MarkdownEditor, type MarkdownEditorRef, type MentionOption } from "./MarkdownEditor";
 import { OutputFeedbackButtons } from "./OutputFeedbackButtons";
 import { ApprovalCard } from "./ApprovalCard";
-import { AgentIcon } from "./AgentIconPicker";
 import { formatAssigneeUserLabel } from "../lib/assignees";
 import { formatTimelineWorkspaceLabel, type IssueTimelineAssignee, type IssueTimelineEvent } from "../lib/issue-timeline-events";
 import { timeAgo } from "../lib/timeAgo";
 import { cn, formatDateTime } from "../lib/utils";
 import { restoreSubmittedCommentDraft } from "../lib/comment-submit-draft";
+import { copyTextToClipboard } from "../lib/clipboard";
 import { PluginSlotOutlet } from "@/plugins/slots";
+import { useComposerSubmitKey } from "@/hooks/useComposerSubmitKey";
 
 interface CommentWithRunMeta extends IssueComment {
   runId?: string | null;
@@ -102,7 +106,7 @@ interface CommentThreadProps {
   currentAssigneeValue?: string;
   suggestedAssigneeValue?: string;
   mentions?: MentionOption[];
-  onInterruptQueued?: (runId: string) => Promise<void>;
+  onInterruptQueued?: (runId: string | null) => Promise<void>;
   interruptingQueuedRunId?: string | null;
   composerDisabledReason?: string | null;
   externalReferences?: MarkdownExternalReferenceMap;
@@ -233,7 +237,7 @@ function runStatusClass(status: string) {
     case "timed_out":
       return "text-orange-700 dark:text-orange-300";
     case "running":
-      return "text-cyan-700 dark:text-cyan-300";
+      return "text-blue-700 dark:text-blue-300";
     case "queued":
     case "pending":
       return "text-amber-700 dark:text-amber-300";
@@ -241,27 +245,6 @@ function runStatusClass(status: string) {
       return "text-muted-foreground";
     default:
       return "text-foreground";
-  }
-}
-
-async function copyTextWithFallback(text: string) {
-  if (navigator.clipboard && window.isSecureContext) {
-    await navigator.clipboard.writeText(text);
-    return;
-  }
-
-  const textarea = document.createElement("textarea");
-  textarea.value = text;
-  textarea.style.position = "fixed";
-  textarea.style.left = "-9999px";
-  document.body.appendChild(textarea);
-
-  try {
-    textarea.select();
-    const success = document.execCommand("copy");
-    if (!success) throw new Error("execCommand copy failed");
-  } finally {
-    document.body.removeChild(textarea);
   }
 }
 
@@ -291,7 +274,7 @@ function CopyMarkdownButton({ text }: { text: string }) {
       title={label}
       aria-label="Copy comment as markdown"
       onClick={() => {
-        void copyTextWithFallback(text)
+        void copyTextToClipboard(text)
           .then(() => setStatus("copied"))
           .catch(() => setStatus("failed"));
 
@@ -364,8 +347,8 @@ function CommentCard({
       <div className="flex items-center justify-between mb-1">
         {comment.authorAgentId ? (
           <Link to={`/agents/${comment.authorAgentId}`} className="hover:underline">
-            <Identity
-              name={agentMap?.get(comment.authorAgentId)?.name ?? comment.authorAgentId.slice(0, 8)}
+            <AgentIdentity
+              agent={agentMap?.get(comment.authorAgentId) ?? { id: comment.authorAgentId, name: comment.authorAgentId.slice(0, 8) }}
               size="sm"
             />
           </Link>
@@ -374,12 +357,12 @@ function CommentCard({
         )}
         <span className="flex items-center gap-1.5">
           {isQueued ? (
-            <span className="inline-flex items-center rounded-full border border-amber-400/60 bg-amber-100/70 px-2 py-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
+            <Badge variant="outline" className="border-amber-400/60 bg-amber-100/70 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-amber-800 dark:border-amber-400/40 dark:bg-amber-500/20 dark:text-amber-200">
               Queued
-            </span>
+            </Badge>
           ) : null}
           {followUpRequested ? (
-            <Badge variant="outline" className="text-[10px] uppercase tracking-[0.14em]">
+            <Badge variant="outline" className="text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)">
               Follow-up
             </Badge>
           ) : null}
@@ -446,12 +429,12 @@ function CommentCard({
             comment.runAgentId ? (
               <Link
                 to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
-                className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+                className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-(length:--text-nano) font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
               >
                 run {comment.runId.slice(0, 8)}
               </Link>
             ) : (
-              <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
+              <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-(length:--text-nano) font-mono text-muted-foreground">
                 run {comment.runId.slice(0, 8)}
               </span>
             )
@@ -463,12 +446,12 @@ function CommentCard({
           {comment.runAgentId ? (
             <Link
               to={`/agents/${comment.runAgentId}/runs/${comment.runId}`}
-              className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
+              className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-(length:--text-nano) font-mono text-muted-foreground hover:text-foreground hover:bg-accent/50 transition-colors"
             >
               run {comment.runId.slice(0, 8)}
             </Link>
           ) : (
-            <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-[10px] font-mono text-muted-foreground">
+            <span className="inline-flex items-center rounded-md border border-border bg-accent/30 px-2 py-1 text-(length:--text-nano) font-mono text-muted-foreground">
               run {comment.runId.slice(0, 8)}
             </span>
           )}
@@ -498,9 +481,9 @@ function TimelineEventCard({
 
   return (
     <div id={`activity-${event.id}`} className="flex items-start gap-2.5 py-1.5">
-      <Avatar size="sm" className="mt-0.5">
-        <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
-      </Avatar>
+      {event.actorType === "agent" ? <AgentAvatar agent={agentMap?.get(event.actorId) ?? { id: event.actorId, name: actorName }} size={32} className="mt-0.5" /> : (
+        <Avatar size="sm" className="mt-0.5"><AvatarFallback>{initialsForName(actorName)}</AvatarFallback></Avatar>
+      )}
 
       <div className="min-w-0 flex-1 space-y-1.5">
         <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-sm">
@@ -516,7 +499,7 @@ function TimelineEventCard({
 
         {event.statusChange ? (
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            <span className="w-14 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
               Status
             </span>
             <span className="text-muted-foreground">
@@ -531,7 +514,7 @@ function TimelineEventCard({
 
         {event.assigneeChange ? (
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            <span className="w-14 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
               Assignee
             </span>
             <span className="text-muted-foreground">
@@ -546,7 +529,7 @@ function TimelineEventCard({
 
         {event.workspaceChange ? (
           <div className="flex flex-wrap items-center gap-2 text-sm">
-            <span className="w-14 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+            <span className="w-14 text-(length:--text-nano) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
               Workspace
             </span>
             <span className="text-muted-foreground">
@@ -644,9 +627,7 @@ const TimelineList = memo(function TimelineList({
           const actorName = agentMap?.get(run.agentId)?.name ?? run.agentId.slice(0, 8);
           return (
             <div id={`run-${run.runId}`} key={`run:${run.runId}`} className="flex items-center gap-2.5 py-1.5">
-              <Avatar size="sm">
-                <AvatarFallback>{initialsForName(actorName)}</AvatarFallback>
-              </Avatar>
+              <AgentAvatar agent={agentMap?.get(run.agentId) ?? { id: run.agentId, name: actorName }} size={32} />
 
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 text-sm">
@@ -672,11 +653,16 @@ const TimelineList = memo(function TimelineList({
                 </div>
               </div>
               {run.environment || run.environmentLease ? (
-                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-(length:--text-micro) text-muted-foreground">
                   {run.environment ? (
                     <span>
                       Environment <span className="text-foreground">{run.environment.name}</span>
-                      <span> · {run.environment.driver}</span>
+                      {/* The raw "sandbox" driver key stays off run details — the
+                          environment's name and the Provider entry below already
+                          identify it; other drivers (ssh, local) remain useful. */}
+                      {run.environment.driver !== "sandbox" ? (
+                        <span> · {run.environment.driver}</span>
+                      ) : null}
                     </span>
                   ) : null}
                   {run.environmentLease?.provider ? (
@@ -764,10 +750,17 @@ export function CommentThread({
   composerDisabledReason = null,
   externalReferences,
 }: CommentThreadProps) {
+  const submitKey = useComposerSubmitKey();
   const [body, setBody] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [attaching, setAttaching] = useState(false);
   const effectiveSuggestedAssigneeValue = suggestedAssigneeValue ?? currentAssigneeValue;
+  const manualAssigneeRef = useRef(false);
+  const assigneeDraftKeyRef = useRef(draftKey);
+  const selectAssignee = (value: string) => {
+    manualAssigneeRef.current = true;
+    setReassignTarget(value);
+  };
   const [reassignTarget, setReassignTarget] = useState(effectiveSuggestedAssigneeValue);
   const [highlightCommentId, setHighlightCommentId] = useState<string | null>(null);
   const [votingTargetId, setVotingTargetId] = useState<string | null>(null);
@@ -844,6 +837,7 @@ export function CommentThread({
         kind: "agent",
         agentId: a.id,
         agentIcon: a.icon,
+        agentAppearance: a.appearance,
       }));
   }, [agentMap, providedMentions]);
 
@@ -867,8 +861,12 @@ export function CommentThread({
   }, []);
 
   useEffect(() => {
-    setReassignTarget(effectiveSuggestedAssigneeValue);
-  }, [effectiveSuggestedAssigneeValue]);
+    if (assigneeDraftKeyRef.current !== draftKey) {
+      assigneeDraftKeyRef.current = draftKey;
+      manualAssigneeRef.current = false;
+    }
+    if (!manualAssigneeRef.current) setReassignTarget(effectiveSuggestedAssigneeValue);
+  }, [draftKey, effectiveSuggestedAssigneeValue]);
 
   // Scroll to comment when URL hash matches #comment-{id}
   useEffect(() => {
@@ -913,6 +911,7 @@ export function CommentThread({
     try {
       await onAdd(submittedBody, reopen, reassignment ?? undefined);
       if (draftKey) clearDraft(draftKey);
+      manualAssigneeRef.current = false;
       setReassignTarget(effectiveSuggestedAssigneeValue);
     } catch {
       setBody((current) =>
@@ -963,7 +962,7 @@ export function CommentThread({
   const canSubmit = !submitting && !!body.trim();
 
   return (
-    <div className="space-y-4">
+    <div className={cn("space-y-4", ANALYTICS_MASK_CLASS)}>
       <h3 className="text-sm font-semibold">Timeline ({timeline.length + queuedComments.length})</h3>
 
       <TimelineList
@@ -989,7 +988,7 @@ export function CommentThread({
       {queuedComments.length > 0 && (
         <div className="space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h4 className="text-xs font-semibold uppercase tracking-[0.14em] text-amber-700 dark:text-amber-300">
+            <h4 className="text-xs font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700 dark:text-amber-300">
               Queued Comments ({queuedComments.length})
             </h4>
             {onInterruptQueued && queuedComments[0]?.queueTargetRunId ? (
@@ -1034,8 +1033,9 @@ export function CommentThread({
             placeholder="Leave a comment..."
             mentions={mentions}
             onSubmit={handleSubmit}
+            submitKey={submitKey}
             imageUploadHandler={imageUploadHandler}
-            contentClassName="min-h-[60px] text-sm"
+            contentClassName="min-h-(--sz-60px) text-sm"
           />
           <div className="flex items-center justify-end gap-3">
             {(imageUploadHandler || onAttachImage) && (
@@ -1062,20 +1062,20 @@ export function CommentThread({
               <InlineEntitySelector
                 value={reassignTarget}
                 options={reassignOptions}
-                placeholder="Assignee"
-                noneLabel="No assignee"
-                searchPlaceholder="Search assignees..."
-                emptyMessage="No assignees found."
-                onChange={setReassignTarget}
+                placeholder="Responsible"
+                noneLabel="No responsible"
+                searchPlaceholder="Search responsible..."
+                emptyMessage="No responsible found."
+                onChange={selectAssignee}
                 className="text-xs h-8"
                 renderTriggerValue={(option) => {
-                  if (!option) return <span className="text-muted-foreground">Assignee</span>;
+                  if (!option) return <span className="text-muted-foreground">Responsible</span>;
                   const agentId = option.id.startsWith("agent:") ? option.id.slice("agent:".length) : null;
                   const agent = agentId ? agentMap?.get(agentId) : null;
                   return (
                     <>
                       {agent ? (
-                        <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <AgentAvatar agent={agent} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                       ) : null}
                       <span className="truncate">{option.label}</span>
                     </>
@@ -1088,7 +1088,7 @@ export function CommentThread({
                   return (
                     <>
                       {agent ? (
-                        <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                        <AgentAvatar agent={agent} size={16} className="h-3.5 w-3.5 shrink-0 text-muted-foreground"/>
                       ) : null}
                       <span className="truncate">{option.label}</span>
                     </>

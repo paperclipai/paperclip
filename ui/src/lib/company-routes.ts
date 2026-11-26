@@ -1,22 +1,29 @@
 const BOARD_ROUTE_ROOTS = new Set([
   "dashboard",
+  "responsibilities",
   "companies",
   "company",
   "skills",
   "teams-catalog",
   "org",
   "agents",
+  "chats",
+  "apps",
   "projects",
   "workspaces",
   "execution-workspaces",
   "issues",
+  "tasks",
   "routines",
   "goals",
   "artifacts",
+  "tools",
   "approvals",
   "costs",
   "usage",
   "activity",
+  "audit",
+  "decisions",
   "inbox",
   "board-chat",
   "artifacts",
@@ -24,9 +31,12 @@ const BOARD_ROUTE_ROOTS = new Set([
   "design-guide",
   "search",
   "settings",
+  "timeline",
+  "cases",
+  "status",
 ]);
 
-const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "docs", "instance"]);
+const GLOBAL_ROUTE_ROOTS = new Set(["auth", "invite", "board-claim", "cli-auth", "mcp-connect", "dot-connect", "assistant-connections", "docs", "instance"]);
 
 export function normalizeCompanyPrefix(prefix: string): string {
   return prefix.trim().toUpperCase();
@@ -63,9 +73,9 @@ export function extractCompanyPrefixFromPath(pathname: string): string | null {
   const segments = pathname.split("/").filter(Boolean);
   if (segments.length === 0) return null;
   const first = segments[0]!.toLowerCase();
-  if (GLOBAL_ROUTE_ROOTS.has(first) || BOARD_ROUTE_ROOTS.has(first)) {
-    return null;
-  }
+  if (GLOBAL_ROUTE_ROOTS.has(first)) return null;
+  const companyTaskPath = first !== "issues" && segments[1]?.toLowerCase() === "issues";
+  if (BOARD_ROUTE_ROOTS.has(first) && !companyTaskPath) return null;
   return normalizeCompanyPrefix(segments[0]!);
 }
 
@@ -80,6 +90,22 @@ export function applyCompanyPrefix(path: string, companyPrefix: string | null | 
   if (activePrefix) return path;
 
   return `/${prefix}${pathname}${search}${hash}`;
+}
+
+/**
+ * Build a company-prefixed href for an experimental Cases route, e.g.
+ * `caseHref("PAP", "PAP-C5")` → `/PAP/cases/PAP-C5`.
+ *
+ * Falls back to the unprefixed path (still valid via the redirect) when no
+ * company is active.
+ */
+export function caseHref(
+  companyPrefix: string | null | undefined,
+  ...segments: string[]
+): string {
+  const suffix = ["cases", ...segments].filter(Boolean).join("/");
+  if (!companyPrefix) return `/${suffix}`;
+  return `/${normalizeCompanyPrefix(companyPrefix)}/${suffix}`;
 }
 
 export function toCompanyRelativePath(path: string): string {

@@ -1,6 +1,10 @@
+import { CoordinatorSidebar } from "./CoordinatorSidebar";
+import { isWaitingToStart } from "../lib/agent-queue-wait";
+import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import {
   Inbox,
-  CircleDot,
+  ListChecks,
+  CircleCheck,
   Target,
   LayoutDashboard,
   DollarSign,
@@ -10,64 +14,146 @@ import {
   Network,
   Boxes,
   Repeat,
+  Layers,
   GitBranch,
   Package,
   Settings,
   FolderOpen,
-  PanelLeftClose,
-  PanelLeftOpen,
-  Pin,
+  Unplug,
   MessagesSquare,
+  MessageCircle,
+  GanttChartSquare,
+  LayoutGrid,
+  Users,
+  Compass,
 } from "lucide-react";
+import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { NavLink } from "@/lib/router";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { SidebarAgents } from "./SidebarAgents";
 import { SidebarProjects } from "./SidebarProjects";
+import { SidebarStarredProjects } from "./SidebarStarredProjects";
+import { useAgentChatEnabled } from "@/hooks/useAgentChatEnabled";
+import { useAgentChatNavigation } from "@/hooks/useAgentChatNavigation";
+import { useResponsibilitiesEnabled } from "@/hooks/useResponsibilitiesEnabled";
+import { SidebarRecentTasks } from "./SidebarRecentTasks";
 import { useDialogActions } from "../context/DialogContext";
 import { useCompany } from "../context/CompanyContext";
-import { useSidebar } from "../context/SidebarContext";
 import { heartbeatsApi } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
+import { useAttentionBadge } from "../hooks/useAttentionViews";
 import { useInboxBadge } from "../hooks/useInboxBadge";
-import { Button } from "@/components/ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
-import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
+import { useStreamlinedUiEnabled } from "../hooks/useStreamlinedUiEnabled";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
+import { cn } from "../lib/utils";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
+import { primarySidebarStyles } from "./primary-sidebar-styles";
 
-export function Sidebar() {
+export function Sidebar({ children }: { children?: ReactNode }) {
+  const { enabled } = useCoordinatorWorkspaceEnabled();
+  return enabled ? <CoordinatorSidebar>{children}</CoordinatorSidebar> : <ClassicSidebar>{children}</ClassicSidebar>;
+}
+
+function ClassicSidebar({ children }: { children?: ReactNode }) {
   const { openNewIssue } = useDialogActions();
+  const { enabled: agentChatEnabled } = useAgentChatEnabled();
+  const chatNavigation = useAgentChatNavigation();
+  const unreadChatCount = chatNavigation.chats.data?.filter(chat => chat.isUnreadForMe).length ?? 0;
+  // Every labeled section is collapsible (session-scoped, default open) —
+  // one policy across static nav groups and the data-driven sections.
+  const [workOpen, setWorkOpen] = useState(true);
+  const [organizationOpen, setOrganizationOpen] = useState(true);
   const { selectedCompanyId, selectedCompany } = useCompany();
-  const { isMobile, collapsed, collapseLocked, peeking, toggleCollapsed, setCollapsed } = useSidebar();
-  const rail = collapsed && !peeking;
+  const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const inboxBadge = useInboxBadge(selectedCompanyId);
   const { data: experimentalSettings } = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
-  const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.liveRuns(selectedCompanyId!),
-    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+  const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
+  const sharedLiveRuns = useSharedPollingQuery({
+    companyId: selectedCompanyId,
+    resourceKey: "live-runs",
+    queryKey: liveRunsQueryKey,
     enabled: !!selectedCompanyId,
-    refetchInterval: 10_000,
+    // Event-sourced via LiveUpdatesProvider (GitHub issue 9627) + reconnect reconcile — no
+    // interval poll needed. Polling here also re-armed React Query's timer on
+    // every live-event cache write, a major source of steady-state churn.
+    refetchInterval: false,
+    leaderOnly: true,
   });
-  const liveRunCount = liveRuns?.length ?? 0;
+  const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
+    queryKey: liveRunsQueryKey,
+    queryFn: () => heartbeatsApi.liveRunsForCompany(selectedCompanyId!),
+    enabled: sharedLiveRuns.enabled,
+    refetchInterval: sharedLiveRuns.refetchInterval,
+  });
+  usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
+  const liveRunCount = (liveRuns ?? []).filter((run) => !isWaitingToStart(run)).length;
+  const liveIssueIds = new Set(
+    (liveRuns ?? []).flatMap((run) => run.issueId ? [run.issueId] : []),
+  );
+  const chatRail = agentChatEnabled && streamlinedUiEnabled;
+  // The merged Tasks page only exists in the streamlined shell, so the legacy
+  // shell keeps its Inbox row even with the flag on.
+  const combinedInboxTasks = streamlinedUiEnabled && experimentalSettings?.enableCombinedInboxTasks === true;
   const showWorkspacesLink = experimentalSettings?.enableIsolatedWorkspaces === true;
-  const showPipelines = experimentalSettings?.enablePipelines === true;
-  // IA flag: branch the sidebar nav presentation. Default ON =
-  // streamlined (top-level Projects link). Users can opt out in experiments to
-  // get classic (per-project collapsible, no Projects nav link). Issue/Task
-  // wording is split to PR #7651. Gating is navigation-only; all routes stay
-  // registered in both modes.
-  const streamlined = experimentalSettings?.enableStreamlinedLeftNavigation !== false;
+  const showStatusCards = experimentalSettings?.enableStatusCards === true;
+  const goalsLinkPending = experimentalSettings === undefined;
+  const showGoalsLink = experimentalSettings?.enableGoalsSidebarLink === true;
+  // Decisions (attention home) is an experimental surface (PAP-13481): the nav
+  // item is hidden entirely until the flag is enabled (same no-flash pattern as
+  // showWorkspacesLink — it defaults hidden, so no placeholder is needed).
+  const showDecisions = experimentalSettings?.enableDecisions === true;
+  // The shared "For you" badge (PAP-749 Rule 5): same query as the Decisions
+  // page and the coordinator navigation, with no midnight reset.
+  const { count: attentionCount } = useAttentionBadge(selectedCompanyId, {
+    enabled: showDecisions,
+    refetchInterval: 60_000,
+  });
+  const showCases = experimentalSettings?.enableCases === true;
   // Conference Room Chat flag (PAP-136/PAP-137): the Conference Room nav item
   // is a new surface, hidden entirely while the flag is off (same no-flash
   // pattern as showWorkspacesLink above).
   const conferenceRoomChatEnabled = experimentalSettings?.enableConferenceRoomChat === true;
+  // Responsibilities (experimental) is home: it leads the primary group with
+  // Chat, Tasks and Inbox directly beneath it, and Dashboard moves down into
+  // Work. Hidden until the flag is known (no-flash, same as above).
+  const { enabled: responsibilitiesHome } = useResponsibilitiesEnabled();
+
+  const chatItem = <SidebarNavItem to="/chats" label="Chat" icon={MessageCircle} badge={unreadChatCount} badgeLabel="unread chats" />;
+  // Combined Inbox + Task List: Inbox is a view inside Tasks, so the
+  // unread/failed-run badge rides on Tasks.
+  const tasksItem = combinedInboxTasks ? (
+    <SidebarNavItem
+      to="/issues"
+      label="Tasks"
+      icon={CircleCheck}
+      badge={inboxBadge.inbox}
+      badgeLabel="unread"
+      badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
+      alert={inboxBadge.failedRuns > 0}
+    />
+  ) : (
+    <SidebarNavItem to="/issues" label="Tasks" icon={CircleCheck} />
+  );
+  const inboxItem = !combinedInboxTasks ? (
+    <SidebarNavItem
+      to="/inbox"
+      label="Inbox"
+      icon={Inbox}
+      badge={inboxBadge.inbox}
+      badgeLabel="unread"
+      badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
+      alert={inboxBadge.failedRuns > 0}
+    />
+  ) : null;
+  // The classic dashboard. With Responsibilities as home that page takes the "Dashboard" name and this row is not shown.
+  const dashboardItem = <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />;
 
   const pluginContext = {
     companyId: selectedCompanyId,
@@ -75,145 +161,148 @@ export function Sidebar() {
   };
 
   return (
-    <aside className="w-full h-full min-h-0 border-r border-border bg-background flex flex-col">
-      {/* Top bar: Company name (bold) + Search — aligned with top sections (no visible border) */}
-      <div className="flex items-center gap-1 px-3 h-12 shrink-0">
+    <aside
+      className={cn(
+        "w-full h-full min-h-0 flex flex-col",
+        streamlinedUiEnabled
+          ? primarySidebarStyles.surface
+          : "border-r border-border bg-background",
+      )}
+    >
+      {/* Top bar: company name, aligned with top sections and borderless.
+          Search deliberately does NOT live here:
+          the header's spare width goes to the workspace/organization name,
+          which is the user's orientation anchor and truncates otherwise.
+          Search is the first nav item below instead. */}
+      <div className="flex h-(--sz-60px) shrink-0 items-center gap-1 px-3">
         <SidebarCompanyMenu />
-        {/* In the collapsed rail the search/toggle controls don't fit beside the
-            logo — keeping them would overflow the 64px rail and squeeze the logo
-            out of alignment with the icon column below it (PAP-10676). They return
-            as soon as the panel is expanded (pinned) or peeking. Expansion in the
-            rail is still reachable via hover-peek + Pin and Cmd/Ctrl+B. */}
-        {!rail ? (
-          <>
-            <Button
-              asChild
-              variant="ghost"
-              size="icon-sm"
-              className="text-muted-foreground shrink-0"
-              aria-label="Open search"
-              title="Open search"
-            >
-              <NavLink to="/search">
-                <Search className="h-4 w-4" />
-              </NavLink>
-            </Button>
-            {/* Desktop-only collapse/expand affordance. While peeking (hover flyout
-                over the collapsed rail) it becomes a Pin that promotes the peek to a
-                pinned-expanded sidebar; otherwise it toggles the pinned rail. Mobile
-                uses the off-canvas drawer, so this control is hidden there. It is
-                also hidden while a secondary sidebar forces the rail (collapseLocked):
-                the user cannot expand the primary while a secondary sidebar is shown. */}
-            {!isMobile && !collapseLocked ? (
-              peeking ? (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="text-muted-foreground shrink-0"
-                  aria-label="Keep sidebar expanded"
-                  title="Keep sidebar expanded"
-                  onClick={() => setCollapsed(false)}
-                >
-                  <Pin className="h-4 w-4" />
-                </Button>
-              ) : (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="text-muted-foreground shrink-0"
-                  aria-expanded={!collapsed}
-                  aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-                  title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-                  onClick={() => toggleCollapsed()}
-                >
-                  {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
-                </Button>
-              )
-            ) : null}
-          </>
-        ) : null}
       </div>
 
-      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide flex flex-col gap-4 pointer-coarse:gap-3 px-3 py-2">
-        <div className="flex flex-col gap-0.5">
+      <nav className={primarySidebarStyles.nav}>
+        <div className={primarySidebarStyles.group}>
           {/* New Task button aligned with nav items */}
-          {(() => {
-            const newTaskButton = (
-              <button
-                onClick={() => openNewIssue()}
-                data-slot="icon-button"
-                aria-label={rail ? "New Task" : undefined}
-                className="flex items-center gap-2.5 px-3 py-2 pointer-coarse:py-1.5 text-[13px] font-medium text-foreground/80 hover:bg-accent/50 hover:text-foreground transition-colors"
-              >
-                <SquarePen className="h-4 w-4 shrink-0" />
-                <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "truncate"}>New Task</span>
-              </button>
-            );
-            return rail ? (
-              <Tooltip>
-                <TooltipTrigger asChild>{newTaskButton}</TooltipTrigger>
-                <TooltipContent side="right">New Task</TooltipContent>
-              </Tooltip>
-            ) : (
-              newTaskButton
-            );
-          })()}
-          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
-          <SidebarNavItem
-            to="/inbox"
-            label="Inbox"
-            icon={Inbox}
-            badge={inboxBadge.inbox}
-            badgeLabel="unread"
-            badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
-            alert={inboxBadge.failedRuns > 0}
-          />
+          <button
+            onClick={() => openNewIssue()}
+            data-slot="icon-button"
+            className="flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+          >
+            <SquarePen className="h-4 w-4 shrink-0" />
+            <span className="truncate">New Task</span>
+          </button>
+          <SidebarNavItem to="/search" label="Search" icon={Search} />
+          {responsibilitiesHome ? (
+            <>
+              <SidebarNavItem to="/responsibilities" label="Dashboard" icon={Compass} />
+              {agentChatEnabled ? chatItem : null}
+              {tasksItem}
+              {inboxItem}
+            </>
+          ) : (
+            <>
+              {dashboardItem}
+              {inboxItem}
+              {agentChatEnabled && !chatRail ? chatItem : null}
+            </>
+          )}
+          {showDecisions ? (
+            <SidebarNavItem
+              to="/decisions"
+              label="Decisions"
+              icon={ListChecks}
+              badge={attentionCount}
+              badgeLabel="decisions"
+            />
+          ) : null}
+          {showStatusCards ? (
+            <SidebarNavItem to="/status" label="Status" icon={LayoutGrid} textBadge="beta" />
+          ) : null}
           {conferenceRoomChatEnabled ? (
             <SidebarNavItem to="/board-chat" label="Conference Room" icon={MessagesSquare} />
           ) : null}
         </div>
 
-        <SidebarSection label="Work">
-          <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
-          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
-          {showPipelines ? (
-            <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
+        <SidebarSection label="Work" collapsible={{ open: workOpen, onOpenChange: setWorkOpen }}>
+          {/* Agent Chat: Chat leads the Work group as a single row — the
+              agents you talk to live in the Chat surface's own secondary rail
+              (ChatContextualSidebar), not in the primary nav. */}
+          {responsibilitiesHome ? null : (
+            <>
+              {chatRail ? chatItem : null}
+              {tasksItem}
+            </>
+          )}
+          {streamlinedUiEnabled ? (
+            <>
+              <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />
+              <SidebarStarredProjects />
+            </>
           ) : null}
-          <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
           <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
-          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
+          {showCases ? (
+            <SidebarNavItem to="/cases" label="Cases" icon={Layers} textBadge="beta" />
+          ) : null}
+          {showGoalsLink ? (
+            <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+          ) : goalsLinkPending ? (
+            <div
+              data-testid="sidebar-goals-placeholder"
+              className="h-8 pointer-coarse:h-7"
+              aria-hidden="true"
+            />
+          ) : null}
           {showWorkspacesLink ? (
             <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
-          ) : null}
-          {streamlined ? (
-            <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />
           ) : null}
           <PluginSlotOutlet
             slotTypes={["sidebar"]}
             context={pluginContext}
             className="flex flex-col gap-0.5"
-            itemClassName="text-[13px] font-medium"
+            itemClassName="text-(length:--text-compact) font-medium"
             missingBehavior="placeholder"
           />
           <PluginLauncherOutlet
             placementZones={["sidebar"]}
             context={pluginContext}
             className="flex flex-col gap-0.5"
-            itemClassName="text-[13px] font-medium"
+            itemClassName="text-(length:--text-compact) font-medium"
           />
         </SidebarSection>
 
-        {/* Classic mode restores the per-project collapsible below Work. */}
-        {streamlined ? null : <SidebarProjects />}
+        {streamlinedUiEnabled ? (
+          <SidebarSection
+            label="Org"
+            collapsible={{ open: organizationOpen, onOpenChange: setOrganizationOpen }}
+          >
+            <SidebarNavItem to="/agents" label="Agents" icon={Users} />
+            <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
+            <SidebarNavItem to="/apps" label="Plugins" icon={Unplug} />
+            <SidebarNavItem to="/activity" label="Audit" icon={History} />
+          </SidebarSection>
+        ) : null}
 
-        <SidebarAgents streamlined={streamlined} />
+        {children ?? (streamlinedUiEnabled ? <SidebarAgents streamlined /> : null)}
 
-        <SidebarSection label="Company">
-          <SidebarNavItem to="/org" label="Org" icon={Network} />
-          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
-          <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
-        </SidebarSection>
+        {streamlinedUiEnabled ? (
+          <SidebarRecentTasks companyId={selectedCompanyId} liveIssueIds={liveIssueIds} />
+        ) : (
+          <>
+            <SidebarProjects />
+            <SidebarAgents />
+            <SidebarSection
+              label="Organization"
+              collapsible={{ open: organizationOpen, onOpenChange: setOrganizationOpen }}
+            >
+              <SidebarNavItem to="/org" label="Org" icon={Network} />
+              <SidebarNavItem to="/apps" label="Plugins" icon={Unplug} />
+              <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
+              <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
+              <SidebarNavItem to="/activity" label="Activity" icon={History} />
+              <SidebarNavItem to="/activity/commentary" label="Commentary" icon={History} />
+              <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+            </SidebarSection>
+          </>
+        )}
 
         <PluginSlotOutlet
           slotTypes={["sidebarPanel"]}

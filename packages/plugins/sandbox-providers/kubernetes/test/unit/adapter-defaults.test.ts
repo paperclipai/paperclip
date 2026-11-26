@@ -28,7 +28,7 @@ describe("adapter-defaults (built-in)", () => {
     expect(() => getAdapterDefaults("nonexistent_local")).toThrow(/unknown adapter type/i);
   });
 
-  it("KNOWN_ADAPTER_TYPES contains all 7 supported adapters", () => {
+  it("KNOWN_ADAPTER_TYPES contains all 6 supported adapters", () => {
     expect(KNOWN_ADAPTER_TYPES).toEqual(
       new Set([
         "claude_local",
@@ -36,7 +36,6 @@ describe("adapter-defaults (built-in)", () => {
         "gemini_local",
         "cursor_local",
         "opencode_local",
-        "acpx_local",
         "pi_local",
       ]),
     );
@@ -76,6 +75,7 @@ describe("getAdapterDefaults", () => {
     const registry: AdapterRegistryEntry[] = [
       {
         adapterType: "opencode_local",
+        enabled: true,
         runtimeImage: "x",
         envKeys: [],
         allowFqdns: [],
@@ -89,7 +89,7 @@ describe("getAdapterDefaults", () => {
 
   it("throws when a supplied registry entry is missing runtimeImage", () => {
     const registry: AdapterRegistryEntry[] = [
-      { adapterType: "opencode_local", envKeys: [], allowFqdns: [], probeCommand: ["x"] },
+      { adapterType: "opencode_local", enabled: true, envKeys: [], allowFqdns: [], probeCommand: ["x"] },
     ];
     expect(() => getAdapterDefaults("opencode_local", registry)).toThrow(
       /missing required runtime field: runtimeImage/,
@@ -98,7 +98,7 @@ describe("getAdapterDefaults", () => {
 
   it("defaults the optional array fields to [] when the registry omits them", () => {
     const registry: AdapterRegistryEntry[] = [
-      { adapterType: "opencode_local", runtimeImage: "img" },
+      { adapterType: "opencode_local", enabled: true, runtimeImage: "img" },
     ];
     const d = getAdapterDefaults("opencode_local", registry);
     expect(d.envKeys).toEqual([]);

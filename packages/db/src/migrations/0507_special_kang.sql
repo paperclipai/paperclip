@@ -1,0 +1,2 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "tool_call_events_connection_error_idx" ON "tool_call_events" USING btree ("connection_id","created_at") WHERE "tool_call_events"."error_message" is not null;--> statement-breakpoint
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "tool_invocations_connection_error_idx" ON "tool_invocations" USING btree ("connection_id","created_at") WHERE "tool_invocations"."error_message" is not null;

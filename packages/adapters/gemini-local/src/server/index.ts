@@ -1,4 +1,7 @@
+import { normalizeAdapterExecutionTargetSessionIdentity } from "@paperclipai/adapter-utils/execution-target";
 export { execute } from "./execute.js";
+export * from "./acp.js";
+export { getConfigSchema } from "./config-schema.js";
 export { listGeminiSkills, syncGeminiSkills } from "./skills.js";
 export { testEnvironment } from "./test.js";
 export {
@@ -7,9 +10,11 @@ export {
   isGeminiTransientNetworkError,
   describeGeminiFailure,
   detectGeminiAuthRequired,
+  detectGeminiQuotaExhausted,
   isGeminiTurnLimitResult,
 } from "./parse.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
+import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -23,7 +28,7 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(record.sessionId) ??
       readNonEmptyString(record.session_id) ??
       readNonEmptyString(record.sessionID);
-    if (!sessionId) return null;
+    if (!sessionId) return acpxSessionCodec.deserialize(raw);
     const cwd =
       readNonEmptyString(record.cwd) ??
       readNonEmptyString(record.workdir) ??
@@ -31,8 +36,10 @@ export const sessionCodec: AdapterSessionCodec = {
     const workspaceId = readNonEmptyString(record.workspaceId) ?? readNonEmptyString(record.workspace_id);
     const repoUrl = readNonEmptyString(record.repoUrl) ?? readNonEmptyString(record.repo_url);
     const repoRef = readNonEmptyString(record.repoRef) ?? readNonEmptyString(record.repo_ref);
+    const remoteExecution = normalizeAdapterExecutionTargetSessionIdentity(record.remoteExecution);
     return {
       sessionId,
+      ...(remoteExecution ? { remoteExecution } : {}),
       ...(cwd ? { cwd } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
@@ -45,7 +52,7 @@ export const sessionCodec: AdapterSessionCodec = {
       readNonEmptyString(params.sessionId) ??
       readNonEmptyString(params.session_id) ??
       readNonEmptyString(params.sessionID);
-    if (!sessionId) return null;
+    if (!sessionId) return acpxSessionCodec.serialize(params);
     const cwd =
       readNonEmptyString(params.cwd) ??
       readNonEmptyString(params.workdir) ??
@@ -53,8 +60,10 @@ export const sessionCodec: AdapterSessionCodec = {
     const workspaceId = readNonEmptyString(params.workspaceId) ?? readNonEmptyString(params.workspace_id);
     const repoUrl = readNonEmptyString(params.repoUrl) ?? readNonEmptyString(params.repo_url);
     const repoRef = readNonEmptyString(params.repoRef) ?? readNonEmptyString(params.repo_ref);
+    const remoteExecution = normalizeAdapterExecutionTargetSessionIdentity(params.remoteExecution);
     return {
       sessionId,
+      ...(remoteExecution ? { remoteExecution } : {}),
       ...(cwd ? { cwd } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
@@ -66,7 +75,9 @@ export const sessionCodec: AdapterSessionCodec = {
     return (
       readNonEmptyString(params.sessionId) ??
       readNonEmptyString(params.session_id) ??
-      readNonEmptyString(params.sessionID)
+      readNonEmptyString(params.sessionID) ??
+      acpxSessionCodec.getDisplayId?.(params) ??
+      null
     );
   },
 };

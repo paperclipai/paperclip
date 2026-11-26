@@ -66,7 +66,7 @@ In agent runtime settings, configure heartbeat policy:
 For local adapters, set:
 
 - `cwd` (working directory)
-- `timeoutSec` (max runtime per heartbeat)
+- `timeoutSec` (max runtime per heartbeat; `0` uses the target default — no adapter timeout on local/SSH, a 4-hour backstop on sandbox targets — and a negative value disables the adapter timeout everywhere, including sandboxes)
 - `graceSec` (time before force-kill after timeout/cancel)
 - optional env vars and extra CLI args
 - use **Test environment** in agent configuration to run adapter-specific diagnostics before saving
@@ -132,7 +132,7 @@ If the connection drops, the UI reconnects automatically.
 
 1. Disable timer or set a long interval
 2. Keep wake-on-assignment enabled
-3. Use child issues, comments, and on-demand wakeups for handoffs instead of loops that poll agents, sessions, or processes
+3. Use comments and on-demand wakeups for existing handoffs instead of loops that poll agents, sessions, or processes
 
 ## 7.3 Safety-first loop
 

@@ -3,6 +3,119 @@ import { CheckIcon, ChevronDownIcon, ChevronUpIcon } from "lucide-react"
 import { Select as SelectPrimitive } from "radix-ui"
 
 import { cn } from "@/lib/utils"
+import { Popover, PopoverContent, PopoverTrigger } from "./popover"
+
+export const nativeSelectClassName = "w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-sm leading-5 outline-none focus-visible:ring-2 focus-visible:ring-ring"
+
+export function NativeSelect({ className, ...props }: React.ComponentProps<"select">) {
+  return <select {...props} className={cn(nativeSelectClassName, className)} />
+}
+
+// Shared with searchable picker triggers so their size and states match Select.
+export const selectTriggerClassName = "border-input data-[placeholder]:text-muted-foreground [&_svg:not([class*='text-'])]:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:bg-input/30 dark:hover:bg-input/50 flex w-fit items-center justify-between gap-2 rounded-md border bg-transparent px-3 py-2 text-base md:text-sm whitespace-nowrap shadow-xs transition-(--tp-color-box-shadow) outline-none focus-visible:ring-(length:--rad-3) disabled:cursor-not-allowed disabled:opacity-50 data-[size=default]:h-9 data-[size=sm]:h-8 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+
+export interface SelectPopoverOption {
+  value: string;
+  label: React.ReactNode;
+  disabled?: boolean;
+  suffix?: React.ReactNode;
+  group?: string;
+}
+
+export function SelectPopover({
+  value,
+  onValueChange,
+  options = [],
+  placeholder = "Select…",
+  displayValue,
+  "aria-label": ariaLabel,
+  "aria-busy": ariaBusy,
+  disabled,
+  className,
+  open: controlledOpen,
+  onOpenChange,
+  onCloseAutoFocus,
+  children,
+}: {
+  value: string;
+  onValueChange?: (value: string) => void;
+  options?: readonly SelectPopoverOption[];
+  placeholder?: string;
+  displayValue?: React.ReactNode;
+  "aria-label": string;
+  "aria-busy"?: boolean;
+  disabled?: boolean;
+  className?: string;
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+  onCloseAutoFocus?: React.ComponentProps<typeof PopoverContent>["onCloseAutoFocus"];
+  children?: React.ReactNode;
+}) {
+  const [localOpen, setLocalOpen] = React.useState(false);
+  const open = controlledOpen ?? localOpen;
+  const setOpen = (next: boolean) => {
+    setLocalOpen(next);
+    onOpenChange?.(next);
+  };
+  const contentRef = React.useRef<HTMLDivElement>(null);
+  const selected = options.find(option => option.value === value);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button type="button" aria-label={ariaLabel} aria-haspopup="listbox"
+          aria-busy={ariaBusy}
+          disabled={disabled} data-size="default"
+          onKeyDown={event => {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              setOpen(true);
+            }
+          }}
+          className={cn(selectTriggerClassName, "w-full min-w-0", className)}>
+          <span className="min-w-0 truncate text-left">{displayValue ?? selected?.label ?? (value || placeholder)}</span>
+          <ChevronDownIcon className="size-4 opacity-50" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent ref={contentRef} align="start"
+        onCloseAutoFocus={onCloseAutoFocus}
+        className="w-(--radix-popover-trigger-width) max-h-(--radix-popover-content-available-height) overflow-y-auto p-1"
+        onOpenAutoFocus={event => {
+          if (contentRef.current?.querySelector("input:not(:disabled)")) return;
+          event.preventDefault();
+          (contentRef.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]:not(:disabled)')
+            ?? contentRef.current?.querySelector<HTMLButtonElement>('[role="option"]:not(:disabled)'))?.focus();
+        }}
+        onKeyDown={event => {
+          if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)
+            || (event.target instanceof HTMLInputElement && ["Home", "End"].includes(event.key))) return;
+          const items = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="option"]:not(:disabled)')];
+          if (!items.length) return;
+          event.preventDefault();
+          const current = items.indexOf(document.activeElement as HTMLButtonElement);
+          const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+            : current < 0 ? (event.key === "ArrowDown" ? 0 : items.length - 1)
+            : (current + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+          items[next]?.focus();
+        }}>
+        {children ?? <div role="listbox" aria-label={ariaLabel}>
+          {options.map((option, index) => <React.Fragment key={option.value}>
+            {option.group && option.group !== options[index - 1]?.group && <div className="px-2 py-1 text-xs text-muted-foreground">{option.group}</div>}
+            <SelectPopoverItem data-value={option.value} selected={option.value === value}
+            disabled={option.disabled} onClick={() => { if (option.value !== value) onValueChange?.(option.value); setOpen(false); }}>
+            <span className="min-w-0 truncate">{option.label}</span>
+            {option.suffix}
+          </SelectPopoverItem></React.Fragment>)}
+        </div>}
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+export function SelectPopoverItem({ selected, className, ...props }: React.ComponentProps<"button"> & { selected?: boolean }) {
+  return <button {...props} type="button" role="option" aria-selected={selected ?? false}
+    className={cn("flex w-full items-center justify-between gap-2 rounded px-2 py-1.5 text-left text-sm outline-none hover:bg-accent/50 focus-visible:bg-accent disabled:cursor-not-allowed disabled:opacity-40", selected && "bg-accent", className)} />;
+}
 
 function Select({
   ...props
@@ -35,7 +148,7 @@ function SelectTrigger({
       data-slot="select-trigger"
       data-size={size}
       className={cn(
-        "border-input data-[placeholder]:text-muted-foreground [&_svg:not([class*='text-'])]:text-muted-foreground focus-visible:border-ring focus-visible:ring-ring/50 aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive dark:bg-input/30 dark:hover:bg-input/50 flex w-fit items-center justify-between gap-2 rounded-md border bg-transparent px-3 py-2 text-base md:text-sm whitespace-nowrap shadow-xs transition-[color,box-shadow] outline-none focus-visible:ring-[3px] disabled:cursor-not-allowed disabled:opacity-50 data-[size=default]:h-9 data-[size=sm]:h-8 *:data-[slot=select-value]:line-clamp-1 *:data-[slot=select-value]:flex *:data-[slot=select-value]:items-center *:data-[slot=select-value]:gap-2 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+        selectTriggerClassName,
         className
       )}
       {...props}
@@ -60,7 +173,7 @@ function SelectContent({
       <SelectPrimitive.Content
         data-slot="select-content"
         className={cn(
-          "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 relative z-50 max-h-(--radix-select-content-available-height) min-w-[8rem] origin-(--radix-select-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border shadow-md",
+          "bg-popover text-popover-foreground data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 relative z-50 max-h-(--radix-select-content-available-height) min-w-(--sz-8rem) origin-(--radix-select-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-md border shadow-md",
           position === "popper" &&
             "data-[side=bottom]:translate-y-1 data-[side=left]:-translate-x-1 data-[side=right]:translate-x-1 data-[side=top]:-translate-y-1",
           className
@@ -74,7 +187,7 @@ function SelectContent({
           className={cn(
             "p-1",
             position === "popper" &&
-              "h-[var(--radix-select-trigger-height)] w-full min-w-[var(--radix-select-trigger-width)] scroll-my-1"
+              "h-(--radix-select-trigger-height) w-full min-w-(--radix-select-trigger-width) scroll-my-1"
           )}
         >
           {children}

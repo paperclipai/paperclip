@@ -74,7 +74,7 @@ my-adapter/
     "picocolors": "^1.1.0"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^24.0.0",
     "typescript": "^5.7.0"
   }
 }
@@ -116,7 +116,7 @@ The plugin loader calls `createServerAdapter()` from your package root. This fun
 
 ```ts
 export const type = "my_adapter";     // snake_case, globally unique
-export const label = "My Agent (local)";
+export const label = "My Agent";
 
 export const models = [
   { id: "model-a", label: "Model A" },

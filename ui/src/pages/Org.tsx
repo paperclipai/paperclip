@@ -8,8 +8,10 @@ import { queryKeys } from "../lib/queryKeys";
 import { StatusBadge } from "../components/StatusBadge";
 import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
+import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { ChevronRight, GitBranch } from "lucide-react";
 import { cn } from "../lib/utils";
+import { agentStatusDot, agentStatusDotDefault } from "../lib/status-colors";
 
 function OrgTree({
   nodes,
@@ -67,15 +69,9 @@ function OrgTreeNode({
         <span
           className={cn(
             "h-2 w-2 rounded-full shrink-0",
-            node.status === "active"
-              ? "bg-green-400"
-              : node.status === "paused"
-                ? "bg-yellow-400"
-                : node.status === "pending_approval"
-                  ? "bg-amber-400"
-                : node.status === "error"
-                  ? "bg-red-400"
-                  : "bg-neutral-400"
+            // Gallery feedback r3: route through the canonical agentStatusDot
+            // map (identical hues for existing keys; adds the blue running dot).
+            agentStatusDot[node.status] ?? agentStatusDotDefault,
           )}
         />
         <span className="font-medium flex-1">{node.name}</span>
@@ -97,24 +93,37 @@ export function Org() {
     setBreadcrumbs([{ label: "Org Chart" }]);
   }, [setBreadcrumbs]);
 
-  const { data, isLoading, error } = useQuery({
+  const orgQuery = useQuery({
     queryKey: queryKeys.org(selectedCompanyId!),
     queryFn: () => agentsApi.org(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data, isLoading } = orgQuery;
+  const orgView = useQueryView(orgQuery);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={GitBranch} message="Select a company to view org chart." />;
+    return <EmptyState icon={GitBranch} message="Select an organization to view org chart." />;
   }
 
-  if (isLoading) {
+  // Keep a loaded chart on screen through a failed refetch; only a real
+  // failure, or an outage before the first load, replaces the page.
+  if (isLoading || orgView.kind === "reconnecting") {
     return <PageSkeleton variant="list" />;
+  }
+  if (orgView.kind === "error") {
+    return (
+      <QueryErrorState
+        size="page"
+        error={orgView.error}
+        action="load the org chart"
+        onRetry={orgView.retry}
+        retrying={orgView.isFetching}
+      />
+    );
   }
 
   return (
     <div className="space-y-4">
-      {error && <p className="text-sm text-destructive">{error.message}</p>}
-
       {data && data.length === 0 && (
         <EmptyState
           icon={GitBranch}

@@ -7,11 +7,17 @@ import {
   isJsonRpcSuccessResponse,
   parseMessage,
   serializeMessage,
+  type JsonRpcResponse,
 } from "../../../packages/plugins/sdk/src/protocol.js";
+import type { PluginEnvironmentTaskParams } from "../../../packages/plugins/sdk/src/environment-tasks.js";
 import { definePlugin } from "../../../packages/plugins/sdk/src/define-plugin.js";
 import { startWorkerRpcHost } from "../../../packages/plugins/sdk/src/worker-rpc-host.js";
 import { pluginManifestV1Schema, type PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { pluginCapabilityValidator } from "../services/plugin-capability-validator.js";
+
+// The worker host writes only responses in these tests, and each test reads
+// the result fields of the method it called.
+type WorkerResponse = JsonRpcResponse<{ supportedMethods: string[]; detections: unknown[] }>;
 
 const baseManifest: PaperclipPluginManifestV1 = {
   id: "test.environment-driver",
@@ -27,6 +33,11 @@ const baseManifest: PaperclipPluginManifestV1 = {
     {
       driverKey: "fake-plugin",
       displayName: "Fake plugin",
+      supportsInteractiveSetup: true,
+      interactiveSetupConnectionTypes: ["ssh"],
+      supportsTemplateCapture: true,
+      templateRefKind: "snapshot",
+      supportsTemplateDelete: true,
       configSchema: {
         type: "object",
         properties: {
@@ -69,6 +80,9 @@ describe("plugin environment driver seam", () => {
     expect(validator.getRequiredCapabilities("environment.acquireLease")).toEqual([
       "environment.drivers.register",
     ]);
+    expect(validator.getRequiredCapabilities("environment.captureTemplate")).toEqual([
+      "environment.drivers.register",
+    ]);
     expect(validator.checkOperation(baseManifest, "environment.execute").allowed).toBe(true);
 
     const withoutCapability = {
@@ -86,6 +100,54 @@ describe("plugin environment driver seam", () => {
     });
   });
 
+  it("negotiates and validates plugin-provided Runner execution RPCs", async () => {
+    const calls: unknown[] = [];
+    const plugin = definePlugin({
+      async setup() {},
+      async onEnvironmentTask(input) {
+        calls.push(input);
+        return { kind: "accepted", taskId: input.taskId };
+      },
+    });
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const host = startWorkerRpcHost({ plugin, stdin, stdout });
+    const responses: WorkerResponse[] = [];
+    stdout.on("data", chunk => {
+      for (const line of String(chunk).split("\n").filter(Boolean)) responses.push(parseMessage(line) as WorkerResponse);
+    });
+    try {
+      const manifest = { ...baseManifest, environmentDrivers: [{ ...baseManifest.environmentDrivers![0], supportsTasks: true }] };
+      expect(pluginManifestV1Schema.parse(manifest).environmentDrivers![0].supportsTasks).toBe(true);
+      stdin.write(serializeMessage(createRequest("initialize", {
+        manifest, config: {}, instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" }, apiVersion: 1,
+      }, 1)));
+      await waitForResponses(responses, 1);
+      const initialized = responses[0];
+      expect(isJsonRpcSuccessResponse(initialized)).toBe(true);
+      if (!isJsonRpcSuccessResponse(initialized)) return;
+      expect(initialized.result.supportedMethods).toContain("environmentTask");
+      const projectIds = ["10000000-0000-4000-8000-000000000001", "10000000-0000-4000-8000-000000000002"];
+      const params: PluginEnvironmentTaskParams = { driverKey: "fake-plugin", companyId: "company", environmentId: "environment", config: {},
+        taskId: "attempt", runId: "run", agentId: "agent", projectIds, lease: { providerLeaseId: "attempt" },
+        operation: { kind: "submit", projectIds, bootstrapTicket: "transient-test-ticket", runner: {
+          protocolMin: 1, protocolMax: 2, harness: "codex", runnerId: "runner", leaseId: "lease", runId: "run", sessionId: "session:part.1", turnId: "turn", itemId: "item",
+        } } };
+
+      stdin.write(serializeMessage(createRequest("environmentTask", params, 2)));
+      await waitForResponses(responses, 2);
+      expect(responses[1]).toMatchObject({ result: { kind: "accepted", taskId: "attempt" } });
+      expect(calls[0]).toMatchObject({ projectIds, operation: { kind: "submit", projectIds } });
+      stdin.write(serializeMessage(createRequest("environmentTask", { ...params, operation: { kind: "status" } }, 3)));
+      await waitForResponses(responses, 3);
+      expect(isJsonRpcErrorResponse(responses[2])).toBe(true); // Wrong response kind.
+      stdin.write(serializeMessage(createRequest("environmentTask", { ...params, operation: { kind: "shell", command: "echo test" } }, 4)));
+      await waitForResponses(responses, 4);
+      expect(isJsonRpcErrorResponse(responses[3])).toBe(true);
+      expect(calls).toHaveLength(2); // Invalid operation did not reach the plugin.
+    } finally { host.stop(); }
+  });
+
   it("dispatches environment driver worker hooks and reports support", async () => {
     const plugin = definePlugin({
       async setup() {},
@@ -96,16 +158,30 @@ describe("plugin environment driver seam", () => {
           metadata: { environmentId: params.environmentId },
         };
       },
+      async onEnvironmentStartInteractiveSetup(params) {
+        return {
+          providerLeaseId: `setup-${params.sessionId}`,
+          status: "waiting_for_user",
+          connectionSummary: {
+            type: "ssh",
+            username: "sandbox",
+            hostRedacted: true,
+            portRedacted: true,
+          },
+          connectionPayload: null,
+          metadata: { environmentId: params.environmentId },
+        };
+      },
     });
 
     const stdin = new PassThrough();
     const stdout = new PassThrough();
     const host = startWorkerRpcHost({ plugin, stdin, stdout });
-    const responses: unknown[] = [];
+    const responses: WorkerResponse[] = [];
     stdout.on("data", (chunk) => {
       const lines = String(chunk).split("\n").filter(Boolean);
       for (const line of lines) {
-        responses.push(parseMessage(line));
+        responses.push(parseMessage(line) as WorkerResponse);
       }
     });
 
@@ -121,6 +197,7 @@ describe("plugin environment driver seam", () => {
     expect(isJsonRpcSuccessResponse(initializeResponse)).toBe(true);
     if (!isJsonRpcSuccessResponse(initializeResponse)) return;
     expect(initializeResponse.result.supportedMethods).toContain("environmentProbe");
+    expect(initializeResponse.result.supportedMethods).toContain("environmentStartInteractiveSetup");
 
     stdin.write(serializeMessage(createRequest("environmentProbe", {
       driverKey: "fake-plugin",
@@ -139,6 +216,28 @@ describe("plugin environment driver seam", () => {
       metadata: { environmentId: "environment-1" },
     });
 
+    stdin.write(serializeMessage(createRequest("environmentStartInteractiveSetup", {
+      driverKey: "fake-plugin",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      sessionId: "session-1",
+      config: { template: "base" },
+    }, 3)));
+    await waitForResponses(responses, 3);
+
+    const setupResponse = responses[2];
+    expect(isJsonRpcSuccessResponse(setupResponse)).toBe(true);
+    if (!isJsonRpcSuccessResponse(setupResponse)) return;
+    expect(setupResponse.result).toMatchObject({
+      providerLeaseId: "setup-session-1",
+      status: "waiting_for_user",
+      connectionSummary: {
+        type: "ssh",
+        hostRedacted: true,
+        portRedacted: true,
+      },
+    });
+
     stdin.write(serializeMessage(createRequest("environmentExecute", {
       driverKey: "fake-plugin",
       companyId: "company-1",
@@ -146,10 +245,10 @@ describe("plugin environment driver seam", () => {
       config: { template: "base" },
       lease: { providerLeaseId: "lease-1" },
       command: "echo",
-    }, 3)));
-    await waitForResponses(responses, 3);
+    }, 4)));
+    await waitForResponses(responses, 4);
 
-    const executeResponse = responses[2];
+    const executeResponse = responses[3];
     expect(isJsonRpcErrorResponse(executeResponse)).toBe(true);
     if (!isJsonRpcErrorResponse(executeResponse)) return;
     expect(executeResponse.error.code).toBe(PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED);
@@ -263,11 +362,11 @@ describe("plugin external object provider seam", () => {
     const stdin = new PassThrough();
     const stdout = new PassThrough();
     const host = startWorkerRpcHost({ plugin, stdin, stdout });
-    const responses: unknown[] = [];
+    const responses: WorkerResponse[] = [];
     stdout.on("data", (chunk) => {
       const lines = String(chunk).split("\n").filter(Boolean);
       for (const line of lines) {
-        responses.push(parseMessage(line));
+        responses.push(parseMessage(line) as WorkerResponse);
       }
     });
 

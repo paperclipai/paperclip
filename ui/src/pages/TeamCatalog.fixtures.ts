@@ -7,7 +7,7 @@ import type {
 // ---------------------------------------------------------------------------
 // Shared Team Catalog fixtures.
 //
-// Used by both the Storybook stories (ui/storybook/stories/team-catalog.stories.tsx)
+// Used by both the Storybook stories (ui/storybook/stories/teams/team-catalog.stories.tsx)
 // and the in-app /design-guide showcase so the two surfaces stay in sync.
 // ---------------------------------------------------------------------------
 

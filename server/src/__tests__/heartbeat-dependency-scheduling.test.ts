@@ -1,13 +1,22 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  costEvents,
   activityLog,
   agents,
   agentRuntimeState,
   agentWakeupRequests,
   companySkills,
+  completionContracts,
+  nativeRunResults,
+  nativeRunFinalizations,
+  workAssessments,
+  statusDecisions,
+  statusDecisionEffects,
   companies,
+  authUsers,
+  companyMemberships,
   createDb,
   documentRevisions,
   documents,
@@ -19,6 +28,8 @@ import {
   issueComments,
   issueDocuments,
   issueRelations,
+  issueRecoveryActions,
+  issueThreadInteractions,
   issueTreeHolds,
   issues,
   workspaceOperations,
@@ -27,8 +38,13 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
+import { createPostgresRunDispatchAdapter } from "../modules/run-dispatch/adapters/postgres.js";
+import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
+import * as workspacePreparation from "../services/heartbeat/workspace-preparation.js";
+import { WorkspaceBusyDeferral } from "../services/heartbeat/retries.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -53,7 +69,8 @@ vi.mock("../adapters/index.ts", async () => {
   };
 });
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_DEPENDENCY_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -93,24 +110,14 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-dependency-scheduling-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-dependency-scheduling-");
+    db = createDb(external ?? tempDb!.connectionString);
+    await db.insert(authUsers).values({ id: "responsible-user", name: "Fixture owner", email: "owner@example.test", createdAt: new Date(), updatedAt: new Date() });
     heartbeat = heartbeatService(db);
     await ensureIssueRelationsTable(db);
   }, 20_000);
 
   afterEach(async () => {
-    mockAdapterExecute.mockReset();
-    mockAdapterExecute.mockImplementation(async () => ({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      errorMessage: null,
-      summary: "Dependency-aware heartbeat test run.",
-      provider: "test",
-      model: "test-model",
-    }));
-    runningProcesses.clear();
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const runs = await db
@@ -125,7 +132,19 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       }
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await heartbeat.drainActiveRunExecutions();
+    vi.restoreAllMocks();
+    mockAdapterExecute.mockReset();
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Dependency-aware heartbeat test run.",
+      provider: "test",
+      model: "test-model",
+    }));
+    runningProcesses.clear();
     await db.delete(environmentLeases);
     await db.delete(activityLog);
     await db.delete(companySkills);
@@ -135,9 +154,16 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.delete(documents);
     await db.delete(issueRelations);
     await db.delete(issueTreeHolds);
+    await db.delete(statusDecisionEffects);
+    await db.delete(statusDecisions);
+    await db.delete(workAssessments);
+    await db.delete(nativeRunFinalizations);
+    await db.delete(nativeRunResults);
+    await db.delete(completionContracts);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
+    await db.delete(costEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(agentRuntimeState);
@@ -147,13 +173,27 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.delete(workspaceOperations);
     await db.delete(executionWorkspaces);
     await db.delete(environmentLeases);
-    await db.delete(companySkills);
-    await db.delete(companies);
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await db.transaction(async (tx) => {
+          await tx.delete(companySkills);
+          await tx.delete(companyMemberships);
+          await tx.delete(companies);
+        });
+        break;
+      } catch (error) {
+        if (attempt === 4) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
   });
 
   afterAll(async () => {
+    await db?.delete(authUsers).where(eq(authUsers.id, "responsible-user"));
+    await db?.$client.end();
     await tempDb?.cleanup();
   });
+
 
   it("keeps blocked descendants idle until their blockers resolve", async () => {
     const companyId = randomUUID();
@@ -167,7 +207,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -191,6 +233,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         title: "Mission 0",
         status: "todo",
         priority: "high",
+        responsibleUserId: "responsible-user",
       },
       {
         id: blockedIssueId,
@@ -199,6 +242,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         status: "todo",
         priority: "medium",
         assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
       },
       {
         id: readyIssueId,
@@ -207,6 +251,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         status: "todo",
         priority: "critical",
         assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
       },
     ]);
     await db.insert(issueRelations).values({
@@ -255,11 +300,17 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       .then((rows) => rows[0]?.count ?? 0);
     expect(blockedRunsBeforeResolution).toBe(0);
 
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId, companyId, issueId: blockedIssueId,
+      authorType: "user", authorUserId: "responsible-user",
+      body: "Explain the current dependency without starting blocked work.",
+    });
     const interactionWake = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
-      payload: { issueId: blockedIssueId, commentId: randomUUID() },
+      payload: { issueId: blockedIssueId, commentId },
       contextSnapshot: {
         issueId: blockedIssueId,
         wakeReason: "issue_commented",
@@ -267,14 +318,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
     expect(interactionWake).not.toBeNull();
 
-    await waitForCondition(async () => {
-      const run = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, interactionWake!.id))
-        .then((rows) => rows[0] ?? null);
-      return run?.status === "succeeded";
-    });
+    // This checks dependency interaction semantics, not provider startup speed.
+    // Join the admitted execution before inspecting its persisted outcome.
+    await heartbeat.drainActiveRunExecutions();
 
     const interactionRun = await db
       .select({
@@ -401,6 +447,190 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(noActiveRuns).toBe(true);
   });
 
+  it("admits an issue_blocker_stalled wake while a blocker is unresolved", async () => {
+    // The waiter's blocker stalled on a board-owned recovery action. Parking
+    // this wake until the blocker resolves would hide the stall again.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const dependentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId, name: "Paperclip", issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "CodexCoder", role: "engineer", status: "active", adapterType: "codex_local",
+      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {},
+    });
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Stalled blocker", status: "blocked", priority: "high", responsibleUserId: "responsible-user" },
+      { id: dependentId, companyId, title: "Waiting dependent", status: "blocked", priority: "medium", assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user" },
+    ]);
+    await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: dependentId, type: "blocks" });
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: blockerId, kind: "run_recovery",
+      status: "resolved", outcome: "blocked", ownerType: "board", cause: "native_session_retry_exhausted",
+      fingerprint: "stall", nextAction: "Retry", resolvedAt: new Date() }).returning();
+    const stallWake = (requestedByActorType: "system" | "agent") => heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blocker_stalled",
+      payload: { issueId: dependentId, stalledIssueId: blockerId },
+      idempotencyKey: `issue_blocker_stalled:${dependentId}:${blockerId}:${action.id}:${requestedByActorType}`,
+      requestedByActorType,
+      requestedByActorId: requestedByActorType === "system" ? "issue-blocker-stall" : agentId,
+      contextSnapshot: { issueId: dependentId, wakeReason: "issue_blocker_stalled",
+        blockerStall: { stalledIssueId: blockerId, relation: "blocker", recoveryAction: { id: action.id } } },
+    });
+
+    // The reason string alone is not trusted: an agent cannot use it to skip the blocker gate.
+    expect(await stallWake("agent")).toBeNull();
+
+    const stalledWake = await stallWake("system");
+    expect(stalledWake).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+    const [run] = await db.select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns).where(eq(heartbeatRuns.id, stalledWake!.id));
+    expect(run?.status).toBe("succeeded");
+    expect(run?.contextSnapshot).toMatchObject({ dependencyBlockedInteraction: true, unresolvedBlockerIssueIds: [blockerId] });
+
+    // A resource wait replaces the run with a server-created retry that keeps
+    // the stall context but not the wake reason. The retry gate still admits it.
+    const retryGate = async (contextSnapshot: Record<string, unknown>) => {
+      const [retry] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "automation",
+        status: "scheduled_retry", scheduledRetryAt: new Date(), scheduledRetryReason: "transient_failure",
+        retryOfRunId: stalledWake!.id, contextSnapshot }).returning();
+      return createPostgresRunDispatchAdapter(db).evaluateScheduledRetryGate({ companyId, runId: retry.id,
+        retryReasonOverride: "transient_failure", now: new Date() });
+    };
+    const replacement: Record<string, unknown> = { ...(run!.contextSnapshot as Record<string, unknown>),
+      wakeReason: "bounded_transient_heartbeat_retry", retryReason: "transient_failure", retryOfRunId: stalledWake!.id };
+    expect(await retryGate(replacement)).toMatchObject({ allowed: true });
+    const { blockerStall: _stall, ...withoutStall } = replacement;
+    expect(await retryGate(withoutStall)).toMatchObject({ allowed: false, errorCode: "issue_dependencies_blocked" });
+    // Once the stall's action is no longer current, the retry waits for the blocker like any other.
+    await db.update(issueRecoveryActions).set({ outcome: "restored" }).where(eq(issueRecoveryActions.id, action.id));
+    expect(await retryGate(replacement)).toMatchObject({ allowed: false, errorCode: "issue_dependencies_blocked" });
+  });
+
+  it("defers issue_blockers_resolved as a follow-up when the same issue is already running", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const blockerId = randomUUID();
+    const blockedIssueId = randomUUID();
+    const activeRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `D${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "on_demand",
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        wakeReason: "manual_test_active_run",
+      },
+    });
+    await db.insert(issues).values([
+      {
+        id: blockerId,
+        companyId,
+        title: "Completed prerequisite",
+        status: "done",
+        priority: "medium",
+      },
+      {
+        id: blockedIssueId,
+        companyId,
+        title: "Blocked dependent",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        executionRunId: activeRunId,
+        executionLockedAt: new Date(),
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: blockerId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
+    runningProcesses.set(activeRunId, {
+      child: {} as import("node:child_process").ChildProcess,
+      graceSec: 1,
+      processGroupId: null,
+    });
+
+    const idempotencyKey = `issue_blockers_resolved:${blockedIssueId}:${blockerId}`;
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_blockers_resolved",
+      payload: {
+        issueId: blockedIssueId,
+        resolvedBlockerIssueId: blockerId,
+      },
+      idempotencyKey,
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        wakeReason: "issue_blockers_resolved",
+        resolvedBlockerIssueId: blockerId,
+      },
+    });
+
+    expect(wake).toBeNull();
+
+    const wakeRequests = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+        runId: agentWakeupRequests.runId,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, idempotencyKey));
+
+    expect(wakeRequests).toEqual([
+      expect.objectContaining({
+        status: "deferred_issue_execution",
+        reason: "issue_execution_deferred",
+        idempotencyKey,
+        runId: null,
+      }),
+    ]);
+
+    runningProcesses.delete(activeRunId);
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date(), updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, activeRunId));
+  });
+
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -429,7 +659,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -454,6 +686,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         status: "todo",
         priority: "high",
         assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
       },
       {
         id: secondIssueId,
@@ -462,6 +695,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         status: "todo",
         priority: "high",
         assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
       },
     ]);
 
@@ -563,7 +797,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -587,6 +823,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         title: "Security review",
         status: "blocked",
         priority: "high",
+        responsibleUserId: "responsible-user",
       },
       {
         id: blockedIssueId,
@@ -595,6 +832,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         status: "blocked",
         priority: "medium",
         assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
       },
       {
         id: readyIssueId,
@@ -603,6 +841,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         status: "todo",
         priority: "low",
         assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
       },
     ]);
     await db.insert(issueRelations).values({
@@ -686,16 +925,18 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       })
       .where(eq(issues.id, blockedIssueId));
 
+    mockAdapterExecute.mockImplementationOnce(async () => {
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, readyIssueId));
+      return { exitCode: 0, signal: null, timedOut: false, errorMessage: null,
+        summary: "Ready queued run completed.", provider: "test", model: "test-model" };
+    });
     await heartbeat.resumeQueuedRuns();
 
-    await waitForCondition(async () => {
-      const run = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, readyRunId))
-        .then((rows) => rows[0] ?? null);
-      return run?.status === "succeeded";
-    });
+    expect(await waitForCondition(async () => {
+      const [ready] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, readyRunId));
+      return ready?.status === "succeeded";
+    }, 30_000)).toBe(true);
+    await heartbeat.drainActiveRunExecutions();
 
     const [blockedRun, blockedWakeup, blockedIssue, readyRun] = await Promise.all([
       db
@@ -736,6 +977,13 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     expect(blockedRun?.errorCode).toBe("issue_dependencies_blocked");
     expect(blockedRun?.finishedAt).toBeTruthy();
     expect(blockedRun?.resultJson).toMatchObject({ stopReason: "issue_dependencies_blocked" });
+    expect(blockedRun?.resultJson).toMatchObject({ cancellation: { source: "control_plane", expected: true } });
+    const [waitingIssue] = await db.select().from(issues).where(eq(issues.id, blockedIssueId));
+    expect(await taskInterruptionPresentation(db, waitingIssue!)).toMatchObject({ state: "resolved", canRetry: false });
+    await db.update(heartbeatRuns).set({ resultJson: { ...blockedRun!.resultJson, timeoutFired: true } })
+      .where(eq(heartbeatRuns.id, blockedRunId));
+    expect(await taskInterruptionPresentation(db, waitingIssue!)).toMatchObject({ state: "failed", canRetry: true });
+    await db.update(heartbeatRuns).set({ resultJson: blockedRun!.resultJson }).where(eq(heartbeatRuns.id, blockedRunId));
     expect(blockedWakeup?.status).toBe("skipped");
     expect(blockedWakeup?.error).toContain("dependencies are still blocked");
     expect(blockedIssue).toMatchObject({
@@ -744,8 +992,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       executionLockedAt: null,
     });
     expect(readyRun?.status).toBe("succeeded");
-    expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(1);
-  });
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+  }, 40_000);
 
   it("suppresses normal wakeups while allowing comment interaction wakes under a pause hold", async () => {
     const companyId = randomUUID();
@@ -759,7 +1007,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -784,6 +1034,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         status: "todo",
         priority: "medium",
         assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
       },
       ...issueChain.map((issueId, index) => ({
         id: issueId,
@@ -793,6 +1044,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         status: "todo",
         priority: "medium",
         assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
       })),
     ]);
     const [hold] = await db
@@ -888,7 +1140,9 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "responsible-user", status: "active", membershipRole: "member" });
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -912,6 +1166,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       status: "todo",
       priority: "medium",
       assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
     });
     await db.insert(issueTreeHolds).values({
       companyId,

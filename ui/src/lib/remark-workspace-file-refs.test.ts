@@ -1,9 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildWorkspaceFileHref,
+  createRemarkWorkspaceFileRefs,
   parseWorkspaceFileHref,
-  remarkWorkspaceFileRefs,
+  type WorkspaceFileRefResolver,
 } from "./remark-workspace-file-refs";
+import type { WorkspaceFileAvailabilityTarget } from "./workspace-file-availability";
 
 type MarkdownNode = {
   type: string;
@@ -11,6 +13,19 @@ type MarkdownNode = {
   url?: string;
   children?: MarkdownNode[];
 };
+
+const AUTO_TARGET: WorkspaceFileAvailabilityTarget = {
+  workspace: "auto",
+  projectId: null,
+  workspaceId: null,
+  projectName: null,
+};
+
+/** Resolver standing in for "the server confirmed every reference is openable". */
+const resolveAllOpenable: WorkspaceFileRefResolver = () => AUTO_TARGET;
+
+/** Fail-closed resolver: nothing is openable. */
+const resolveNoneOpenable: WorkspaceFileRefResolver = () => null;
 
 function textNode(value: string): MarkdownNode {
   return { type: "text", value };
@@ -24,8 +39,8 @@ function paragraph(children: MarkdownNode[]): MarkdownNode {
   return { type: "paragraph", children };
 }
 
-function runPlugin(tree: MarkdownNode): MarkdownNode {
-  const transform = remarkWorkspaceFileRefs();
+function runPlugin(tree: MarkdownNode, resolve: WorkspaceFileRefResolver = resolveAllOpenable): MarkdownNode {
+  const transform = createRemarkWorkspaceFileRefs(resolve)();
   transform(tree);
   return tree;
 }
@@ -161,5 +176,98 @@ describe("remarkWorkspaceFileRefs", () => {
     const link = tree.children![0];
     expect(link.url).toBe("https://example.com");
     expect(link.children![1]?.type).toBe("inlineCode");
+  });
+
+  describe("availability gating", () => {
+    it("leaves unresolved inline code as plain code", () => {
+      const tree = paragraph([
+        textNode("Check "),
+        inlineCode("ui/src/pages/IssueDetail.tsx:42"),
+        textNode(" please."),
+      ]);
+      runPlugin(tree, resolveNoneOpenable);
+      expect(tree.children).toHaveLength(3);
+      expect(tree.children![1]).toEqual(inlineCode("ui/src/pages/IssueDetail.tsx:42"));
+    });
+
+    it("leaves an ordinary markdown link untouched when the ref is not openable", () => {
+      const tree: MarkdownNode = {
+        type: "paragraph",
+        children: [
+          {
+            type: "link",
+            url: "/PAP/issues/PAP-10306",
+            children: [inlineCode("ui/src/a.ts:1")],
+          },
+        ],
+      };
+      runPlugin(tree, resolveNoneOpenable);
+      expect(tree.children![0].url).toBe("/PAP/issues/PAP-10306");
+      expect(tree.children![0].children![0]?.type).toBe("inlineCode");
+    });
+
+    it("promotes only the references the resolver confirms", () => {
+      const tree = paragraph([
+        inlineCode("ui/src/present.ts:1"),
+        textNode(" and "),
+        inlineCode("ui/src/missing.ts:2"),
+      ]);
+      runPlugin(tree, (ref) => (ref.path === "ui/src/present.ts" ? AUTO_TARGET : null));
+      expect(tree.children![0].type).toBe("link");
+      expect(tree.children![2].type).toBe("inlineCode");
+    });
+
+    it("binds the resolved workspace target to the generated viewer href", () => {
+      const tree = paragraph([inlineCode("ui/src/a.ts:7")]);
+      runPlugin(tree, () => ({
+        workspace: "project",
+        projectId: "17acae7d-9d0c-46bf-9c82-be9694ac3461",
+        workspaceId: "0de5f74f-a7d4-4f73-a9a0-455a2b968cf2",
+        projectName: "Paperclip Content",
+      }));
+      expect(parseWorkspaceFileHref(tree.children![0].url)).toMatchObject({
+        path: "ui/src/a.ts",
+        line: 7,
+        workspace: "project",
+        projectId: "17acae7d-9d0c-46bf-9c82-be9694ac3461",
+        workspaceId: "0de5f74f-a7d4-4f73-a9a0-455a2b968cf2",
+      });
+    });
+
+    it("binds an execution-workspace target by selector without ids", () => {
+      const tree = paragraph([inlineCode("ui/src/a.ts:7")]);
+      runPlugin(tree, () => ({
+        workspace: "execution",
+        projectId: null,
+        workspaceId: null,
+        projectName: null,
+      }));
+      const parsed = parseWorkspaceFileHref(tree.children![0].url);
+      expect(parsed?.workspace).toBe("execution");
+      expect(parsed?.projectId).toBeNull();
+      expect(parsed?.workspaceId).toBeNull();
+    });
+
+    it("asks the resolver once per candidate reference and never for non-paths", () => {
+      const resolve = vi.fn(resolveAllOpenable);
+      const tree = paragraph([
+        inlineCode("ui/src/a.ts:1"),
+        textNode(" then "),
+        inlineCode("pnpm test"),
+      ]);
+      runPlugin(tree, resolve);
+      expect(resolve).toHaveBeenCalledTimes(1);
+      expect(resolve.mock.calls[0]![0]).toMatchObject({ path: "ui/src/a.ts" });
+    });
+
+    it("does not consult the resolver inside fenced code blocks", () => {
+      const resolve = vi.fn(resolveAllOpenable);
+      const tree: MarkdownNode = {
+        type: "root",
+        children: [{ type: "code", value: "ui/src/a.ts:1", children: [inlineCode("ui/src/a.ts:1")] }],
+      };
+      runPlugin(tree, resolve);
+      expect(resolve).not.toHaveBeenCalled();
+    });
   });
 });

@@ -188,7 +188,7 @@ describe("classifyAssigneeHandoff", () => {
 describe("describeReassignInterrupt", () => {
   it("names the running agent in the banner and confirm", () => {
     const copy = describeReassignInterrupt({ runningAgentName: "ClaudeCoder" });
-    expect(copy.banner).toBe("ClaudeCoder is running — changing the assignee will interrupt this run.");
+    expect(copy.banner).toBe("ClaudeCoder is running — changing the responsible will interrupt this run.");
     expect(copy.confirmAction).toBe("Interrupt & assign");
     expect(copy.cancelAction).toBe("Cancel");
   });

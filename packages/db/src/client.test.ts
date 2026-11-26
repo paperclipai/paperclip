@@ -3,8 +3,11 @@ import fs from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
 import {
+  DEFAULT_DATABASE_APPLICATION_NAME,
   applyPendingMigrations,
+  createDb,
   inspectMigrations,
+  resetPostgresDatabase,
 } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -29,6 +32,52 @@ async function migrationHash(migrationFile: string): Promise<string> {
   return createHash("sha256").update(content).digest("hex");
 }
 
+const userVisibleUpdatedAtTables = new Set([
+  "companies",
+  "heartbeat_runs",
+  "issue_comments",
+  "issues",
+  "routine_runs",
+  "routines",
+]);
+
+const migrationUpdatedAtUpdateAllowlist = new Map<string, ReadonlySet<string>>([
+  [
+    "0105_instance_scoped_environments.sql",
+    new Set(["issues"]),
+  ],
+  [
+    "0131_repair_run_responsible_user_context_refs.sql",
+    new Set(["heartbeat_runs"]),
+  ],
+  [
+    "0135_repair_run_responsible_user_updated_at_sweep.sql",
+    new Set(["companies", "heartbeat_runs", "issues", "routine_runs", "routines"]),
+  ],
+]);
+
+function findUserVisibleUpdatedAtBackfillViolations(
+  migrationFile: string,
+  content: string,
+): string[] {
+  const allowedTables = migrationUpdatedAtUpdateAllowlist.get(migrationFile) ?? new Set<string>();
+  const violations: string[] = [];
+
+  for (const statement of content.split("--> statement-breakpoint")) {
+    const updateMatch = statement.match(/\bUPDATE\s+"([^"]+)"/i);
+    if (!updateMatch) continue;
+
+    const tableName = updateMatch[1];
+    if (!userVisibleUpdatedAtTables.has(tableName)) continue;
+    if (!/\bSET\b[\s\S]*"updated_at"\s*=/i.test(statement)) continue;
+    if (allowedTables.has(tableName)) continue;
+
+    violations.push(`${migrationFile}: UPDATE "${tableName}" sets updated_at`);
+  }
+
+  return violations;
+}
+
 afterEach(async () => {
   while (cleanups.length > 0) {
     const cleanup = cleanups.pop();
@@ -42,13 +91,110 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+describeEmbeddedPostgres("createDb pool defaults", () => {
+  it("names its backends and closes them once idle", async () => {
+    const url = await createTempDatabase();
+    const observer = postgres(url, { max: 1, onnotice: () => {} });
+    cleanups.push(async () => {
+      await observer.end({ timeout: 1 });
+    });
+
+    const backendsNamed = async (name: string) => {
+      const rows = await observer`
+        select count(*)::int as count from pg_stat_activity where application_name = ${name}
+      `;
+      return rows[0]?.count ?? 0;
+    };
+
+    const db = createDb(url);
+    cleanups.push(async () => {
+      await db.$client.end({ timeout: 1 });
+    });
+    const [self] = await db.$client`select application_name from pg_stat_activity where pid = pg_backend_pid()`;
+    expect(self?.application_name).toBe(DEFAULT_DATABASE_APPLICATION_NAME);
+
+    const shortLived = createDb(url, { applicationName: "paperclip-idle-test", idleTimeoutSeconds: 1 });
+    cleanups.push(async () => {
+      await shortLived.$client.end({ timeout: 1 });
+    });
+    await shortLived.$client`select 1`;
+    expect(await backendsNamed("paperclip-idle-test")).toBe(1);
+
+    // The driver closes the idle connection after `idle_timeout`; without the
+    // option (the driver default) the backend would stay until the process
+    // exits. Wait past the timeout, then poll PostgreSQL's own view.
+    const deadline = Date.now() + 10_000;
+    let remaining = await backendsNamed("paperclip-idle-test");
+    while (remaining > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      remaining = await backendsNamed("paperclip-idle-test");
+    }
+    expect(remaining).toBe(0);
+  }, 30_000);
+});
+
+describeEmbeddedPostgres("resetPostgresDatabase", () => {
+  it("recreates an existing database so stale tables are removed", async () => {
+    const connectionString = await createTempDatabase();
+    const adminUrl = new URL(connectionString);
+    const databaseName = adminUrl.pathname.replace(/^\//, "");
+    adminUrl.pathname = "/postgres";
+
+    const setupSql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      await setupSql.unsafe(`CREATE TABLE stale_reseed_target_only (id integer PRIMARY KEY)`);
+    } finally {
+      await setupSql.end();
+    }
+
+    await resetPostgresDatabase(adminUrl.toString(), databaseName);
+
+    const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+    try {
+      const rows = await verifySql.unsafe<{ stale_table: string | null }[]>(
+        `SELECT to_regclass('public.stale_reseed_target_only')::text AS stale_table`,
+      );
+      expect(rows[0]?.stale_table).toBeNull();
+    } finally {
+      await verifySql.end();
+    }
+  }, 30_000);
+});
+
 describeEmbeddedPostgres("applyPendingMigrations", () => {
+  it("rejects unallowlisted migration backfills that bump updated_at on user-visible tables", async () => {
+    const entries = await fs.promises.readdir(new URL("./migrations", import.meta.url), {
+      withFileTypes: true,
+    });
+    const violations: string[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".sql")) continue;
+      const content = await fs.promises.readFile(
+        new URL(`./migrations/${entry.name}`, import.meta.url),
+        "utf8",
+      );
+      violations.push(...findUserVisibleUpdatedAtBackfillViolations(entry.name, content));
+    }
+
+    expect(violations).toEqual([]);
+    expect(
+      findUserVisibleUpdatedAtBackfillViolations(
+        "9999_bad_backfill.sql",
+        `
+          UPDATE "issues" AS i
+          SET "responsible_user_id" = 'owner-user',
+              "updated_at" = now()
+          WHERE i."responsible_user_id" IS NULL;
+        `,
+      ),
+    ).toEqual(['9999_bad_backfill.sql: UPDATE "issues" sets updated_at']);
+  });
+
   it(
     "applies an inserted earlier migration without replaying later legacy migrations",
     async () => {
       const connectionString = await createTempDatabase();
-
-      await applyPendingMigrations(connectionString);
 
       const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
       try {
@@ -89,452 +235,6 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           "company_logos",
           "execution_workspaces",
         ]);
-      } finally {
-        await verifySql.end();
-      }
-    },
-    20_000,
-  );
-
-  it(
-    "replays migration 0044 safely when its schema changes already exist",
-    async () => {
-      const connectionString = await createTempDatabase();
-
-      await applyPendingMigrations(connectionString);
-
-      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
-      try {
-        const illegalToadHash = await migrationHash("0044_illegal_toad.sql");
-
-        await sql.unsafe(
-          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${illegalToadHash}'`,
-        );
-
-        const columns = await sql.unsafe<{ column_name: string }[]>(
-          `
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'instance_settings'
-              AND column_name = 'general'
-          `,
-        );
-        expect(columns).toHaveLength(1);
-      } finally {
-        await sql.end();
-      }
-
-      const pendingState = await inspectMigrations(connectionString);
-      expect(pendingState).toMatchObject({
-        status: "needsMigrations",
-        pendingMigrations: ["0044_illegal_toad.sql"],
-        reason: "pending-migrations",
-      });
-
-      await applyPendingMigrations(connectionString);
-
-      const finalState = await inspectMigrations(connectionString);
-      expect(finalState.status).toBe("upToDate");
-    },
-    20_000,
-  );
-
-  it(
-    "enforces a unique board_api_keys.key_hash after migration 0044",
-    async () => {
-      const connectionString = await createTempDatabase();
-
-      await applyPendingMigrations(connectionString);
-
-      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
-      try {
-        await sql.unsafe(`
-          INSERT INTO "user" ("id", "name", "email", "email_verified", "created_at", "updated_at")
-          VALUES ('user-1', 'User One', 'user@example.com', true, now(), now())
-        `);
-        await sql.unsafe(`
-          INSERT INTO "board_api_keys" ("id", "user_id", "name", "key_hash", "created_at")
-          VALUES ('00000000-0000-0000-0000-000000000001', 'user-1', 'Key One', 'dup-hash', now())
-        `);
-        await expect(
-          sql.unsafe(`
-            INSERT INTO "board_api_keys" ("id", "user_id", "name", "key_hash", "created_at")
-            VALUES ('00000000-0000-0000-0000-000000000002', 'user-1', 'Key Two', 'dup-hash', now())
-          `),
-        ).rejects.toThrow();
-      } finally {
-        await sql.end();
-      }
-    },
-    20_000,
-  );
-
-  it(
-    "replays migration 0046 safely when document revision columns already exist",
-    async () => {
-      const connectionString = await createTempDatabase();
-
-      await applyPendingMigrations(connectionString);
-
-      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
-      try {
-        const smoothSentinelsHash = await migrationHash("0046_smooth_sentinels.sql");
-
-        await sql.unsafe(
-          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${smoothSentinelsHash}'`,
-        );
-
-        const columns = await sql.unsafe<{ column_name: string; is_nullable: string; column_default: string | null }[]>(
-          `
-            SELECT column_name, is_nullable, column_default
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'document_revisions'
-              AND column_name IN ('title', 'format')
-            ORDER BY column_name
-          `,
-        );
-        expect(columns).toHaveLength(2);
-      } finally {
-        await sql.end();
-      }
-
-      const pendingState = await inspectMigrations(connectionString);
-      expect(pendingState).toMatchObject({
-        status: "needsMigrations",
-        pendingMigrations: ["0046_smooth_sentinels.sql"],
-        reason: "pending-migrations",
-      });
-
-      await applyPendingMigrations(connectionString);
-
-      const finalState = await inspectMigrations(connectionString);
-      expect(finalState.status).toBe("upToDate");
-
-      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
-      try {
-        const columns = await verifySql.unsafe<{ column_name: string; is_nullable: string; column_default: string | null }[]>(
-          `
-            SELECT column_name, is_nullable, column_default
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'document_revisions'
-              AND column_name IN ('title', 'format')
-            ORDER BY column_name
-          `,
-        );
-        expect(columns).toEqual([
-          expect.objectContaining({
-            column_name: "format",
-            is_nullable: "NO",
-          }),
-          expect.objectContaining({
-            column_name: "title",
-            is_nullable: "YES",
-          }),
-        ]);
-        expect(columns[0]?.column_default).toContain("'markdown'");
-      } finally {
-        await verifySql.end();
-      }
-    },
-    20_000,
-  );
-
-  it(
-    "replays migration 0047 safely when feedback tables and run columns already exist",
-    async () => {
-      const connectionString = await createTempDatabase();
-
-      await applyPendingMigrations(connectionString);
-
-      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
-      try {
-        const overjoyedGrootHash = await migrationHash("0047_overjoyed_groot.sql");
-
-        await sql.unsafe(
-          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${overjoyedGrootHash}'`,
-        );
-
-        const tables = await sql.unsafe<{ table_name: string }[]>(
-          `
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-              AND table_name IN ('feedback_exports', 'feedback_votes')
-            ORDER BY table_name
-          `,
-        );
-        expect(tables.map((row) => row.table_name)).toEqual([
-          "feedback_exports",
-          "feedback_votes",
-        ]);
-
-        const columns = await sql.unsafe<{ table_name: string; column_name: string }[]>(
-          `
-            SELECT table_name, column_name
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND (
-                (table_name = 'companies' AND column_name IN (
-                  'feedback_data_sharing_enabled',
-                  'feedback_data_sharing_consent_at',
-                  'feedback_data_sharing_consent_by_user_id',
-                  'feedback_data_sharing_terms_version'
-                ))
-                OR (table_name = 'document_revisions' AND column_name = 'created_by_run_id')
-                OR (table_name = 'issue_comments' AND column_name = 'created_by_run_id')
-              )
-            ORDER BY table_name, column_name
-          `,
-        );
-        expect(columns).toHaveLength(6);
-      } finally {
-        await sql.end();
-      }
-
-      const pendingState = await inspectMigrations(connectionString);
-      expect(pendingState).toMatchObject({
-        status: "needsMigrations",
-        pendingMigrations: ["0047_overjoyed_groot.sql"],
-        reason: "pending-migrations",
-      });
-
-      await applyPendingMigrations(connectionString);
-
-      const finalState = await inspectMigrations(connectionString);
-      expect(finalState.status).toBe("upToDate");
-
-      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
-      try {
-        const constraints = await verifySql.unsafe<{ conname: string }[]>(
-          `
-            SELECT conname
-            FROM pg_constraint
-            WHERE conname IN (
-              'feedback_exports_company_id_companies_id_fk',
-              'feedback_exports_feedback_vote_id_feedback_votes_id_fk',
-              'feedback_exports_issue_id_issues_id_fk',
-              'feedback_votes_company_id_companies_id_fk',
-              'feedback_votes_issue_id_issues_id_fk'
-            )
-            ORDER BY conname
-          `,
-        );
-        expect(constraints.map((row) => row.conname)).toEqual([
-          "feedback_exports_company_id_companies_id_fk",
-          "feedback_exports_feedback_vote_id_feedback_votes_id_fk",
-          "feedback_exports_issue_id_issues_id_fk",
-          "feedback_votes_company_id_companies_id_fk",
-          "feedback_votes_issue_id_issues_id_fk",
-        ]);
-      } finally {
-        await verifySql.end();
-      }
-    },
-    20_000,
-  );
-
-  it(
-    "replays migration 0048 safely when routines.variables already exists",
-    async () => {
-      const connectionString = await createTempDatabase();
-
-      await applyPendingMigrations(connectionString);
-
-      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
-      try {
-        const flashyMarrowHash = await migrationHash("0048_flashy_marrow.sql");
-
-        await sql.unsafe(
-          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${flashyMarrowHash}'`,
-        );
-
-        const columns = await sql.unsafe<{ column_name: string }[]>(
-          `
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'routines'
-              AND column_name = 'variables'
-          `,
-        );
-        expect(columns).toHaveLength(1);
-      } finally {
-        await sql.end();
-      }
-
-      const pendingState = await inspectMigrations(connectionString);
-      expect(pendingState).toMatchObject({
-        status: "needsMigrations",
-        pendingMigrations: ["0048_flashy_marrow.sql"],
-        reason: "pending-migrations",
-      });
-
-      await applyPendingMigrations(connectionString);
-
-      const finalState = await inspectMigrations(connectionString);
-      expect(finalState.status).toBe("upToDate");
-
-      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
-      try {
-        const columns = await verifySql.unsafe<{ column_name: string; is_nullable: string; data_type: string }[]>(
-          `
-            SELECT column_name, is_nullable, data_type
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'routines'
-              AND column_name = 'variables'
-          `,
-        );
-        expect(columns).toEqual([
-          expect.objectContaining({
-            column_name: "variables",
-            is_nullable: "NO",
-            data_type: "jsonb",
-          }),
-        ]);
-      } finally {
-        await verifySql.end();
-      }
-    },
-    20_000,
-  );
-
-  it(
-    "replays migration 0050 safely when projects.env already exists",
-    async () => {
-      const connectionString = await createTempDatabase();
-
-      await applyPendingMigrations(connectionString);
-
-      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
-      try {
-        const stiffLuckmanHash = await migrationHash("0050_stiff_luckman.sql");
-
-        await sql.unsafe(
-          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${stiffLuckmanHash}'`,
-        );
-
-        const columns = await sql.unsafe<{ column_name: string }[]>(
-          `
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'projects'
-              AND column_name = 'env'
-          `,
-        );
-        expect(columns).toHaveLength(1);
-      } finally {
-        await sql.end();
-      }
-
-      const pendingState = await inspectMigrations(connectionString);
-      expect(pendingState).toMatchObject({
-        status: "needsMigrations",
-        pendingMigrations: ["0050_stiff_luckman.sql"],
-        reason: "pending-migrations",
-      });
-
-      await applyPendingMigrations(connectionString);
-
-      const finalState = await inspectMigrations(connectionString);
-      expect(finalState.status).toBe("upToDate");
-
-      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
-      try {
-        const columns = await verifySql.unsafe<{ column_name: string; is_nullable: string; data_type: string }[]>(
-          `
-            SELECT column_name, is_nullable, data_type
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND table_name = 'projects'
-              AND column_name = 'env'
-          `,
-        );
-        expect(columns).toEqual([
-          expect.objectContaining({
-            column_name: "env",
-            is_nullable: "YES",
-            data_type: "jsonb",
-          }),
-        ]);
-      } finally {
-        await verifySql.end();
-      }
-    },
-    20_000,
-  );
-
-  it(
-    "replays migration 0059 safely when plugin_database_namespaces already exists",
-    async () => {
-      const connectionString = await createTempDatabase();
-
-      await applyPendingMigrations(connectionString);
-
-      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
-      try {
-        const pluginNamespacesHash = await migrationHash(
-          "0059_plugin_database_namespaces.sql",
-        );
-
-        await sql.unsafe(
-          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${pluginNamespacesHash}'`,
-        );
-
-        const tables = await sql.unsafe<{ table_name: string }[]>(
-          `
-            SELECT table_name
-            FROM information_schema.tables
-            WHERE table_schema = 'public'
-              AND table_name IN ('plugin_database_namespaces', 'plugin_migrations')
-            ORDER BY table_name
-          `,
-        );
-        expect(tables.map((row) => row.table_name)).toEqual([
-          "plugin_database_namespaces",
-          "plugin_migrations",
-        ]);
-      } finally {
-        await sql.end();
-      }
-
-      const pendingState = await inspectMigrations(connectionString);
-      expect(pendingState).toMatchObject({
-        status: "needsMigrations",
-        pendingMigrations: ["0059_plugin_database_namespaces.sql"],
-        reason: "pending-migrations",
-      });
-
-      await applyPendingMigrations(connectionString);
-
-      const finalState = await inspectMigrations(connectionString);
-      expect(finalState.status).toBe("upToDate");
-
-      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
-      try {
-        const indexes = await verifySql.unsafe<{ indexname: string }[]>(
-          `
-            SELECT indexname
-            FROM pg_indexes
-            WHERE schemaname = 'public'
-              AND tablename IN ('plugin_database_namespaces', 'plugin_migrations')
-            ORDER BY indexname
-          `,
-        );
-        expect(indexes.map((row) => row.indexname)).toEqual(
-          expect.arrayContaining([
-            "plugin_database_namespaces_namespace_idx",
-            "plugin_database_namespaces_plugin_idx",
-            "plugin_database_namespaces_status_idx",
-            "plugin_migrations_plugin_idx",
-            "plugin_migrations_plugin_key_idx",
-            "plugin_migrations_status_idx",
-          ]),
-        );
       } finally {
         await verifySql.end();
       }

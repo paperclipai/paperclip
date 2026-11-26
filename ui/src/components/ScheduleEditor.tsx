@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
@@ -195,10 +195,16 @@ export function ScheduleEditor({
   value,
   onChange,
   onValidityChange,
+  inline = false,
+  trailing,
 }: {
   value: string;
   onChange: (cron: string) => void;
   onValidityChange?: (valid: boolean) => void;
+  /** Lay the frequency and its time controls out on one wrapping line. */
+  inline?: boolean;
+  /** Extra control placed after the time controls, such as a time zone picker. */
+  trailing?: ReactNode;
 }) {
   const parsed = useMemo(() => parseCronToPreset(value), [value]);
   const [preset, setPreset] = useState<SchedulePreset>(parsed.preset);
@@ -245,9 +251,9 @@ export function ScheduleEditor({
   };
 
   return (
-    <div className="space-y-3">
+    <div className={inline ? "flex flex-wrap items-center gap-2" : "space-y-3"}>
       <Select value={preset} onValueChange={(v) => handlePresetChange(v as SchedulePreset)}>
-        <SelectTrigger className="w-full" aria-label="Schedule frequency">
+        <SelectTrigger className={inline ? "w-36" : "w-full"} aria-label="Schedule frequency">
           <SelectValue placeholder="Choose frequency..." />
         </SelectTrigger>
         <SelectContent>
@@ -260,13 +266,19 @@ export function ScheduleEditor({
       </Select>
 
       {preset === "custom" ? (
-        <div className="space-y-1.5">
+        <div className={inline ? "min-w-48 flex-1 space-y-1.5" : "space-y-1.5"}>
           <Input
             value={customCron}
             onChange={(e) => {
               const nextCron = e.target.value;
               setCustomCron(nextCron);
-              if (getScheduleCronValidation(nextCron).valid) {
+              // Report validity synchronously with the keystroke so consumers can gate
+              // their submit affordance in the same render. Relying solely on the
+              // effect below leaves a one-tick window where an invalid draft still
+              // reads as valid to the parent.
+              const nextValidation = getScheduleCronValidation(nextCron);
+              onValidityChange?.(nextValidation.valid);
+              if (nextValidation.valid) {
                 emitChange("custom", hour, minute, dayOfWeek, dayOfMonth, nextCron);
               }
             }}
@@ -289,7 +301,7 @@ export function ScheduleEditor({
           </p>
         </div>
       ) : (
-        <div className="flex flex-wrap items-center gap-2">
+        <div className={inline ? "contents" : "flex flex-wrap items-center gap-2"}>
           {preset !== "every_minute" && preset !== "every_hour" && (
             <>
               <span className="text-sm text-muted-foreground">at</span>
@@ -300,7 +312,7 @@ export function ScheduleEditor({
                   emitChange(preset, h, minute, dayOfWeek, dayOfMonth, customCron);
                 }}
               >
-                <SelectTrigger className="w-[120px]">
+                <SelectTrigger className="w-(--sz-120px)">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -319,7 +331,7 @@ export function ScheduleEditor({
                   emitChange(preset, hour, m, dayOfWeek, dayOfMonth, customCron);
                 }}
               >
-                <SelectTrigger className="w-[80px]">
+                <SelectTrigger className="w-(--sz-80px)">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -343,7 +355,7 @@ export function ScheduleEditor({
                   emitChange(preset, hour, m, dayOfWeek, dayOfMonth, customCron);
                 }}
               >
-                <SelectTrigger className="w-[80px]">
+                <SelectTrigger className="w-(--sz-80px)">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -368,6 +380,7 @@ export function ScheduleEditor({
                     variant={dayOfWeek === d.value ? "default" : "outline"}
                     size="sm"
                     className="h-7 px-2 text-xs"
+                    aria-pressed={dayOfWeek === d.value}
                     onClick={() => {
                       setDayOfWeek(d.value);
                       emitChange(preset, hour, minute, d.value, dayOfMonth, customCron);
@@ -390,7 +403,7 @@ export function ScheduleEditor({
                   emitChange(preset, hour, minute, dayOfWeek, dom, customCron);
                 }}
               >
-                <SelectTrigger className="w-[80px]">
+                <SelectTrigger className="w-(--sz-80px)">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -405,6 +418,7 @@ export function ScheduleEditor({
           )}
         </div>
       )}
+      {trailing}
     </div>
   );
 }

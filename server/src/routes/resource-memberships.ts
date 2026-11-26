@@ -1,6 +1,9 @@
 import { Router, type Request, type Response } from "express";
 import type { Db } from "@paperclipai/db";
-import { updateResourceMembershipSchema } from "@paperclipai/shared";
+import {
+  updateDocumentResourceMembershipSchema,
+  updateResourceMembershipSchema,
+} from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { getActorInfo } from "./authz.js";
 import { logActivity, resourceMembershipService } from "../services/index.js";
@@ -19,9 +22,11 @@ async function logMembershipChange(
   input: {
     companyId: string;
     userId: string;
-    resourceType: "project" | "agent";
+    resourceType: "project" | "agent" | "document";
     resourceId: string;
     state: "joined" | "left";
+    starredAt: Date | null;
+    changeKind: "joined" | "left" | "starred" | "unstarred";
     policySource: string;
   },
 ) {
@@ -32,7 +37,8 @@ async function logMembershipChange(
     actorId: actor.actorId,
     agentId: actor.agentId,
     runId: actor.runId,
-    action: `resource_membership.${input.state}`,
+    agentApiKeyId: actor.agentApiKeyId,
+    action: `resource_membership.${input.changeKind}`,
     entityType: input.resourceType,
     entityId: input.resourceId,
     details: {
@@ -40,6 +46,8 @@ async function logMembershipChange(
       resourceType: input.resourceType,
       resourceId: input.resourceId,
       state: input.state,
+      starredAt: input.starredAt,
+      starred: input.starredAt !== null,
       policySource: input.policySource,
     },
   });
@@ -69,19 +77,22 @@ export function resourceMembershipRoutes(db: Db) {
         projectId,
         userId,
         state: req.body.state,
+        starred: req.body.starred,
         actor: req.actor,
       });
-      if (result.changed) {
+      if (result.changed && result.changeKind) {
         await logMembershipChange(db, req, {
           companyId,
           userId,
           resourceType: "project",
           resourceId: projectId,
           state: result.state,
+          starredAt: result.starredAt,
+          changeKind: result.changeKind,
           policySource: result.policySource,
         });
       }
-      const { changed: _changed, policySource: _policySource, ...response } = result;
+      const { changed: _changed, changeKind: _changeKind, policySource: _policySource, ...response } = result;
       res.json(response);
     },
   );
@@ -99,19 +110,54 @@ export function resourceMembershipRoutes(db: Db) {
         agentId,
         userId,
         state: req.body.state,
+        starred: req.body.starred,
         actor: req.actor,
       });
-      if (result.changed) {
+      if (result.changed && result.changeKind) {
         await logMembershipChange(db, req, {
           companyId,
           userId,
           resourceType: "agent",
           resourceId: agentId,
           state: result.state,
+          starredAt: result.starredAt,
+          changeKind: result.changeKind,
           policySource: result.policySource,
         });
       }
-      const { changed: _changed, policySource: _policySource, ...response } = result;
+      const { changed: _changed, changeKind: _changeKind, policySource: _policySource, ...response } = result;
+      res.json(response);
+    },
+  );
+
+  router.put(
+    "/companies/:companyId/resource-memberships/me/documents/:documentId",
+    validate(updateDocumentResourceMembershipSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const documentId = req.params.documentId as string;
+      const userId = requireBoardUserId(req, res);
+      if (!userId) return;
+      const result = await svc.updateDocument({
+        companyId,
+        documentId,
+        userId,
+        starred: req.body.starred,
+        actor: req.actor,
+      });
+      if (result.changed && result.changeKind) {
+        await logMembershipChange(db, req, {
+          companyId,
+          userId,
+          resourceType: "document",
+          resourceId: documentId,
+          state: result.state,
+          starredAt: result.starredAt,
+          changeKind: result.changeKind,
+          policySource: result.policySource,
+        });
+      }
+      const { changed: _changed, changeKind: _changeKind, policySource: _policySource, ...response } = result;
       res.json(response);
     },
   );

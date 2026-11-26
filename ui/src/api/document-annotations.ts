@@ -2,6 +2,7 @@ import type {
   CreateDocumentAnnotationCommentRequest,
   CreateDocumentAnnotationThreadRequest,
   DocumentAnnotationComment,
+  DocumentAnnotationCommentReactionName,
   DocumentAnnotationThread,
   DocumentAnnotationThreadStatus,
   DocumentAnnotationThreadWithComments,
@@ -13,6 +14,7 @@ export type DocumentAnnotationListFilter = "open" | "resolved" | "all";
 
 export type DocumentAnnotationTarget =
   | { kind: "issue"; issueId: string; documentKey: string }
+  | { kind: "case"; caseId: string; documentKey: string }
   | { kind: "routine"; routineId: string; documentKey: "description" };
 
 function issueTarget(issueId: string, documentKey: string): DocumentAnnotationTarget {
@@ -22,6 +24,9 @@ function issueTarget(issueId: string, documentKey: string): DocumentAnnotationTa
 function targetBasePath(target: DocumentAnnotationTarget) {
   if (target.kind === "routine") {
     return `/routines/${target.routineId}/description/annotations`;
+  }
+  if (target.kind === "case") {
+    return `/cases/${target.caseId}/documents/${encodeURIComponent(target.documentKey)}/annotations`;
   }
   return `/issues/${target.issueId}/documents/${encodeURIComponent(target.documentKey)}/annotations`;
 }
@@ -72,6 +77,18 @@ export const documentAnnotationsApi = {
       `${targetBasePath(target)}/${threadId}/comments`,
       data,
     ),
+  setReactionForTarget: (
+    target: DocumentAnnotationTarget,
+    threadId: string,
+    commentId: string,
+    reaction: DocumentAnnotationCommentReactionName,
+    present: boolean,
+  ) => {
+    const path = `${targetBasePath(target)}/${threadId}/comments/${commentId}/reactions/${reaction}`;
+    return present
+      ? api.put<DocumentAnnotationComment>(path, {})
+      : api.delete<DocumentAnnotationComment>(path);
+  },
   updateStatus: (
     issueId: string,
     key: string,

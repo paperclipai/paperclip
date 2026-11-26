@@ -1,15 +1,21 @@
 export { claudeSessionCwdMatchesExecutionTarget, execute, runClaudeLogin } from "./execute.js";
+export * from "./acp.js";
+export { getConfigSchema } from "./config-schema.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export { listClaudeModels, refreshClaudeModels, resetClaudeModelsCacheForTests } from "./models.js";
 export { testEnvironment } from "./test.js";
 export {
+  claudeCliVersionAtLeast,
+  claudeCodeVersionForAgentSdk,
   claudeCommandSupportsEffortFlag,
+  minimumClaudeCliVersionForModel,
   resetClaudeCliCapabilitiesCacheForTests,
 } from "./cli-capabilities.js";
 export {
   parseClaudeStreamJson,
   describeClaudeFailure,
   isClaudeMaxTurnsResult,
+  isClaudeProviderQuotaError,
   isClaudeRefusalResult,
   isClaudeUnknownSessionError,
 } from "./parse.js";
@@ -17,6 +23,7 @@ export {
   getQuotaWindows,
   readClaudeAuthStatus,
   readClaudeToken,
+  readIsolatedClaudeKeychainToken,
   fetchClaudeQuota,
   fetchClaudeCliQuota,
   captureClaudeCliUsageText,
@@ -25,10 +32,57 @@ export {
   fetchWithTimeout,
   claudeConfigDir,
 } from "./quota.js";
+// The Claude `setup-token` login parser. It reads the interactive login output
+// and returns the authorization URL and the browser-code prompt, or the minted
+// OAuth token from the success record. Both functions fail closed and keep every
+// input byte out of each log and each thrown error.
+export {
+  parseSetupTokenPrompt,
+  parseSetupTokenCredential,
+  SETUP_TOKEN_PROMPT,
+  SETUP_TOKEN_AUTH_URLS,
+  SETUP_TOKEN_REDIRECT_URI,
+  SETUP_TOKEN_URL_QUERY_KEYS,
+  SETUP_TOKEN_PREFIX,
+  SETUP_TOKEN_BEFORE_ANCHOR,
+  SETUP_TOKEN_AFTER_ANCHOR,
+} from "./setup-token-parse.js";
+export type { SetupTokenPrompt } from "./setup-token-parse.js";
+// The Claude `setup-token` login runner. A server-side factory binds it to a
+// sandbox pseudo-terminal driver to drive the two-way login round-trip and to
+// deliver the minted token one time in memory.
+export {
+  runSetupTokenLogin,
+  CLAUDE_SETUP_TOKEN_COMMAND,
+  CODE_SUBMISSION_TERMINATOR,
+  CLAUDE_SETUP_TOKEN_MAX_BUFFER_CHARS,
+} from "./setup-token-runner.js";
+export type {
+  SetupTokenPtyDriver,
+  SetupTokenPromptSink,
+  SetupTokenCodeProvider,
+  SetupTokenCredentialSink,
+  SetupTokenOutcome,
+  SetupTokenLoginResult,
+  RunSetupTokenLoginOptions,
+} from "./setup-token-runner.js";
 import type { AdapterSessionCodec } from "@paperclipai/adapter-utils";
+import { sessionCodec as acpxSessionCodec } from "@paperclipai/adapter-utils/acpx-engine/session-codec";
+import { normalizeAdapterExecutionTargetSessionIdentity } from "@paperclipai/adapter-utils/execution-target";
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function remoteSessionMetadata(record: Record<string, unknown>): Record<string, unknown> {
+  const remoteExecution = normalizeAdapterExecutionTargetSessionIdentity(record.remoteExecution);
+  const conversationId = readNonEmptyString(record.sshClaudeConversationId);
+  const scope = readNonEmptyString(record.sshClaudeAccountScope);
+  return {
+    ...(remoteExecution ? { remoteExecution } : {}),
+    ...(conversationId && scope && /^[a-f0-9]{64}$/.test(conversationId) && /^[a-f0-9]{64}$/.test(scope)
+      ? { sshClaudeConversationId: conversationId, sshClaudeAccountScope: scope } : {}),
+  };
 }
 
 export const sessionCodec: AdapterSessionCodec = {
@@ -36,7 +90,7 @@ export const sessionCodec: AdapterSessionCodec = {
     if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return null;
     const record = raw as Record<string, unknown>;
     const sessionId = readNonEmptyString(record.sessionId) ?? readNonEmptyString(record.session_id);
-    if (!sessionId) return null;
+    if (!sessionId) return acpxSessionCodec.deserialize(raw);
     const cwd =
       readNonEmptyString(record.cwd) ??
       readNonEmptyString(record.workdir) ??
@@ -44,13 +98,16 @@ export const sessionCodec: AdapterSessionCodec = {
     const promptBundleKey =
       readNonEmptyString(record.promptBundleKey) ??
       readNonEmptyString(record.prompt_bundle_key);
+    const mcpServerIdentity = readNonEmptyString(record.mcpServerIdentity);
     const workspaceId = readNonEmptyString(record.workspaceId) ?? readNonEmptyString(record.workspace_id);
     const repoUrl = readNonEmptyString(record.repoUrl) ?? readNonEmptyString(record.repo_url);
     const repoRef = readNonEmptyString(record.repoRef) ?? readNonEmptyString(record.repo_ref);
     return {
       sessionId,
+      ...remoteSessionMetadata(record),
       ...(cwd ? { cwd } : {}),
       ...(promptBundleKey ? { promptBundleKey } : {}),
+      ...(mcpServerIdentity ? { mcpServerIdentity } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
       ...(repoRef ? { repoRef } : {}),
@@ -59,7 +116,7 @@ export const sessionCodec: AdapterSessionCodec = {
   serialize(params: Record<string, unknown> | null) {
     if (!params) return null;
     const sessionId = readNonEmptyString(params.sessionId) ?? readNonEmptyString(params.session_id);
-    if (!sessionId) return null;
+    if (!sessionId) return acpxSessionCodec.serialize(params);
     const cwd =
       readNonEmptyString(params.cwd) ??
       readNonEmptyString(params.workdir) ??
@@ -67,13 +124,16 @@ export const sessionCodec: AdapterSessionCodec = {
     const promptBundleKey =
       readNonEmptyString(params.promptBundleKey) ??
       readNonEmptyString(params.prompt_bundle_key);
+    const mcpServerIdentity = readNonEmptyString(params.mcpServerIdentity);
     const workspaceId = readNonEmptyString(params.workspaceId) ?? readNonEmptyString(params.workspace_id);
     const repoUrl = readNonEmptyString(params.repoUrl) ?? readNonEmptyString(params.repo_url);
     const repoRef = readNonEmptyString(params.repoRef) ?? readNonEmptyString(params.repo_ref);
     return {
       sessionId,
+      ...remoteSessionMetadata(params),
       ...(cwd ? { cwd } : {}),
       ...(promptBundleKey ? { promptBundleKey } : {}),
+      ...(mcpServerIdentity ? { mcpServerIdentity } : {}),
       ...(workspaceId ? { workspaceId } : {}),
       ...(repoUrl ? { repoUrl } : {}),
       ...(repoRef ? { repoRef } : {}),
@@ -81,6 +141,11 @@ export const sessionCodec: AdapterSessionCodec = {
   },
   getDisplayId(params: Record<string, unknown> | null) {
     if (!params) return null;
-    return readNonEmptyString(params.sessionId) ?? readNonEmptyString(params.session_id);
+    return (
+      readNonEmptyString(params.sessionId) ??
+      readNonEmptyString(params.session_id) ??
+      acpxSessionCodec.getDisplayId?.(params) ??
+      null
+    );
   },
 };

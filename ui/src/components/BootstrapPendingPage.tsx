@@ -4,6 +4,7 @@ import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { BOOTSTRAP_FALLBACK_COMMAND } from "@/bootstrapSetup";
 import type { AuthSession } from "@paperclipai/shared";
+import { Card } from "@/components/ui/card";
 
 type BootstrapPendingPageProps = {
   claimAvailable: boolean;
@@ -36,7 +37,7 @@ function CliFallback({ hasActiveInvite = false }: { hasActiveInvite?: boolean })
 function StateChrome({ children }: { children: ReactNode }) {
   return (
     <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">{children}</div>
+      <Card className="block p-6">{children}</Card>
     </div>
   );
 }
@@ -49,7 +50,7 @@ function claimErrorCopy(error: BootstrapPendingPageProps["claimError"]) {
   if (error?.status === 409) {
     return {
       title: "Someone else has already claimed this instance.",
-      body: "Refresh to sign in, or ask the existing admin to invite you from Instance settings -> Access.",
+      body: "Refresh to sign in, or ask the existing admin to invite you from Settings -> Access.",
     };
   }
   if (error?.status === 401) {
@@ -99,7 +100,7 @@ export function BootstrapPendingPage({
           <div>
             <h1 className="text-xl font-semibold">You're the instance admin</h1>
             <p className="mt-2 text-sm text-muted-foreground">
-              Setup is complete. Taking you to onboarding to create your first company...
+              Setup is complete. Taking you to onboarding to create your first organization...
             </p>
           </div>
         </div>

@@ -1,7 +1,10 @@
+import { AgentAvatar, type AvatarAgent } from "./AgentAvatar";
 import type { ReactNode } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { cn, relativeTime } from "../lib/utils";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,12 +14,21 @@ import {
   DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { deriveInitials } from "./Identity";
+
+export type DocumentFrameHeaderRevisionActor = {
+  kind: "agent" | "user" | "system";
+  name: string;
+  agentIcon?: string | null;
+  agent?: AvatarAgent;
+  imageUrl?: string | null;
+};
 
 export type DocumentFrameHeaderRevision = {
   id: string;
   revisionNumber: number;
   createdAt: string | Date;
-  actorLabel: string;
+  actor: DocumentFrameHeaderRevisionActor;
 };
 
 export type DocumentFrameHeaderRevisionMenu = {
@@ -43,6 +55,16 @@ export interface DocumentFrameHeaderProps {
   annotationSlot?: ReactNode;
   titleSlot?: ReactNode;
   actionsSlot?: ReactNode;
+}
+
+function RevisionActorAvatar({ actor }: { actor: DocumentFrameHeaderRevisionActor }) {
+  if (actor.kind === "agent") return <AgentAvatar agent={actor.agent} name={actor.name} size={20} />;
+  return (
+    <Avatar size="xs" className="shrink-0">
+      {actor.imageUrl ? <AvatarImage src={actor.imageUrl} alt={actor.name} /> : null}
+      <AvatarFallback>{deriveInitials(actor.name)}</AvatarFallback>
+    </Avatar>
+  );
 }
 
 export function DocumentFrameHeader({
@@ -74,14 +96,14 @@ export function DocumentFrameHeader({
           {documentLabel ? (
             <>
               <span className="truncate text-sm font-semibold text-foreground">{documentLabel}</span>
-              <span className="shrink-0 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+              <Badge variant="outline" className="border-border font-mono text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                 {documentKey}
-              </span>
+              </Badge>
             </>
           ) : (
-            <span className="shrink-0 rounded-full border border-border px-2 py-0.5 font-mono text-[10px] uppercase tracking-[0.16em] text-muted-foreground">
+            <Badge variant="outline" className="border-border font-mono text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
               {documentKey}
-            </span>
+            </Badge>
           )}
           {sourceTrustSlot}
           {revisionMenu ? (
@@ -91,8 +113,8 @@ export function DocumentFrameHeader({
                   variant="ghost"
                   size="sm"
                   className={cn(
-                    "h-auto px-1.5 py-0 text-[11px] font-normal text-muted-foreground hover:text-foreground",
-                    revisionMenu.historicalPreview && "text-amber-300 hover:text-amber-200",
+                    "h-auto px-1.5 py-0 text-(length:--text-micro) font-normal text-muted-foreground hover:text-foreground",
+                    revisionMenu.historicalPreview && "text-amber-700 hover:text-amber-800 dark:text-amber-300 dark:hover:text-amber-200",
                   )}
                 >
                   rev {revisionMenu.displayedRevisionNumber}
@@ -118,14 +140,17 @@ export function DocumentFrameHeader({
                             <div className="flex items-center gap-2">
                               <span className="font-medium">rev {revision.revisionNumber}</span>
                               {isCurrentRevision ? (
-                                <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] uppercase tracking-[0.12em] text-muted-foreground">
+                                <Badge variant="outline" className="border-border px-1.5 text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                                   Current
-                                </span>
+                                </Badge>
                               ) : null}
                             </div>
-                            <span className="text-xs text-muted-foreground">
-                              {relativeTime(revision.createdAt)} • {revision.actorLabel}
-                            </span>
+                            <div className="mt-1 flex min-w-0 items-center gap-1.5 text-(length:--text-micro) text-muted-foreground">
+                              <RevisionActorAvatar actor={revision.actor} />
+                              <span className="truncate">
+                                {relativeTime(revision.createdAt)} • {revision.actor.name}
+                              </span>
+                            </div>
                           </div>
                         </DropdownMenuRadioItem>
                       );
@@ -140,7 +165,7 @@ export function DocumentFrameHeader({
           {updatedAt ? (
             <a
               href={updatedHref ?? `#document-${encodeURIComponent(documentKey)}`}
-              className="truncate text-[11px] text-muted-foreground transition-colors hover:text-foreground hover:underline"
+              className="truncate text-(length:--text-micro) text-muted-foreground transition-colors hover:text-foreground hover:underline"
             >
               updated {relativeTime(updatedAt)}
             </a>
