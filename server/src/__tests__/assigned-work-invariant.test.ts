@@ -312,9 +312,9 @@ describePostgres("assigned-work invariant sweep", () => {
       + "The snapshot qualification is missing or stale.";
     // The shape two GitHub review tasks on staging were left in: the task's only
     // run, legacy, failed in setup about 43 hours earlier, before provider work.
-    async function blockedReviewTask(input: { hold: boolean; providerWorkStarted?: boolean; endedAgoMs?: number }) {
+    async function blockedReviewTask(input: { hold: boolean; providerWorkStarted?: boolean; endedAgoMs?: number; blockedAgoMs?: number }) {
       const endedAgoMs = input.endedAgoMs ?? 43 * HOUR;
-      const blockedAt = new Date(Date.now() - endedAgoMs + 1_000);
+      const blockedAt = new Date(Date.now() - (input.blockedAgoMs ?? endedAgoMs - 1_000));
       const issueId = await f.issue({ status: "blocked", originKind: "chat_channel", responsibleUserId: "owner-user", blockedTransitionAt: blockedAt, updatedAt: blockedAt });
       const run = await f.run(issueId, { status: "failed", runtimeMode: "legacy", errorCode: "setup_failed", livenessState: "failed",
         error: qualification, resultJson: { stopReason: "adapter_failed", failureCause: "lease_acquire_failed", timeoutFired: false,
@@ -338,13 +338,13 @@ describePostgres("assigned-work invariant sweep", () => {
     const held = await blockedReviewTask({ hold: true });
     const unheld = await blockedReviewTask({ hold: false });
     const workStarted = await blockedReviewTask({ hold: false, providerWorkStarted: true });
+    const runTooOld = await blockedReviewTask({ hold: false, endedAgoMs: 8 * 24 * HOUR, blockedAgoMs: 2 * HOUR });
     const waitingForMessage = await f.issue({ status: "in_progress", originKind: "chat_channel" });
     const queue = wakeQueue();
     const recovery = recoveryService(db, { enqueueWakeup: queue.enqueueWakeup });
     const suspects = (await recovery.assignedWork.listSuspects({ companyId: f.companyId }, null, 100)).map(row => row.id);
     expect(suspects).toEqual(expect.arrayContaining([held, unheld]));
-    expect(suspects).not.toContain(workStarted);
-    expect(suspects).not.toContain(waitingForMessage);
+    for (const id of [workStarted, runTooOld, waitingForMessage]) expect(suspects).not.toContain(id);
 
     for (const issueId of [held, unheld]) {
       expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
@@ -352,8 +352,8 @@ describePostgres("assigned-work invariant sweep", () => {
       expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).not.toBe("blocked");
     }
     expect(queue.calls.map(call => call.issueId).sort()).toEqual([held, unheld].sort());
-    // A chat task whose agent may have started work still waits for its conversation.
-    expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId: workStarted }))
+    // A chat task whose agent may have started work, or whose failure is too old, still waits for its conversation.
+    for (const issueId of [workStarted, runTooOld]) expect(await recovery.assignedWork.checkIssue({ companyId: f.companyId, issueId }))
       .toMatchObject({ outcome: "ok", verdict: { clause: "waiting", reason: "conversation" } });
     expect(queue.calls).toHaveLength(2);
 

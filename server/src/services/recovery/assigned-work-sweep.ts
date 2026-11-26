@@ -503,17 +503,10 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     )).orderBy(desc(issues.updatedAt)).limit(limit);
   }
 
-  /**
-   * The cheap, indexed pre-filter the sweep reconstructs from: open assigned
-   * tasks with no run that is plainly live, no pending wake and no pending
-   * question. Everything it lets through is judged by the full predicate.
-   * Chat conversations (except a blocked chat task whose run failed before
-   * provider work) and blocks older than the stale window are left out:
-   * the first wait on a person's message, the second is only reported.
-   */
   /** A chat task whose latest run, its assignee's, failed in setup before any
    * provider work: the agent never received the message, so the task waits on
-   * the system, not on the person's next message. */
+   * the system, not on the person's next message. SQL twin of
+   * `chatFailedBeforeProviderWork`; the chat-review test covers both. */
   function latestRunFailedBeforeProviderWork(at: Date) {
     return sql`coalesce((select lr.status = 'failed' and lr.agent_id = ${issues.assigneeAgentId}
         and lr.finished_at > ${new Date(at.getTime() - STRANDED_PRE_PROVIDER_SETUP_MAX_AGE_MS).toISOString()}::timestamptz
@@ -529,6 +522,14 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       order by lr.created_at desc limit 1), false)`;
   }
 
+  /**
+   * The cheap, indexed pre-filter the sweep reconstructs from: open assigned
+   * tasks with no run that is plainly live, no pending wake and no pending
+   * question. Everything it lets through is judged by the full predicate.
+   * Chat conversations (except a blocked chat task whose run failed before
+   * provider work) and blocks older than the stale window are left out:
+   * the first wait on a person's message, the second is only reported.
+   */
   async function listSuspects(scope: { companyId?: string; issueId?: string; issueIds?: string[]; createdAfter?: Date | null;
     changed?: SQL },
     cursor: string | null, limit: number) {
