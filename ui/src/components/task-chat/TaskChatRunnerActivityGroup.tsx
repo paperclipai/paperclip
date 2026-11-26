@@ -31,7 +31,7 @@ import {
 import { TaskChatUsageReadout } from "./TaskChatUsageReadout";
 import { TaskChatReasoningSummary } from "./TaskChatReasoningSummary";
 import { latestReasoningHeadline } from "./reasoning-summary";
-import { toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
+import { retriedLabel, sentenceRowLabel, SUBJECT_FAMILIES, subjectRowLabel, toolActivityPresentation, type ToolIcon } from "./tool-taxonomy";
 import { useTaskChatShimmer } from "./TaskChatShimmer";
 import { TaskChatDiffCounts, TaskChatDiffView } from "./TaskChatDiffView";
 import { useTaskReferenceLabel, withTaskReference } from "./task-reference";
@@ -40,8 +40,6 @@ import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 type Activity = TaskChatActivityPhaseItem["items"][number];
 type ToolActivity = Extract<Activity, { kind: "tool" }>;
 
-/** Families whose rows read as "<verb> <subject>", for example "Ran $ node --test". */
-const SUBJECT_FAMILIES = new Set(["terminal", "read", "edit", "grep", "search", "web"]);
 const READ_RUN_MIN = 3;
 
 /** "120ms", "1.2s", "14s", "2m 03s". */
@@ -114,7 +112,7 @@ function presentation(item: Activity, active: boolean, taskLabel?: string): Acti
       active && (item.status === "pending" || item.status === "in_progress");
     const label =
       item.status === "failed"
-        ? tool.failedLabel
+        ? item.retried ? retriedLabel(tool.failedLabel) : tool.failedLabel
         : item.status === "interrupted"
           ? tool.interruptedLabel
           : running
@@ -125,13 +123,12 @@ function presentation(item: Activity, active: boolean, taskLabel?: string): Acti
     // With a concrete subject, the verb alone reads better: "Read README.md".
     // A finished command needs no verb at all: the icon and "$" say it ran.
     // A failure or stop keeps its marker ("Read · failed") unless an exit
-    // chip already says how a command ended.
-    const marker = item.status === "failed" || item.status === "interrupted" ? label.split(" · ").at(1) : undefined;
-    const verb = subject && SUBJECT_FAMILIES.has(tool.family)
-      ? terminal && !running && (item.status === "completed" || item.exitCode != null)
-        ? ""
-        : `${label.split(" ")[0]!}${marker ? ` · ${marker}` : ""}`
-      : label;
+    // chip already says how a command ended. Live rows use the same helper.
+    const verb = subject && tool.sentenceSubject
+      ? sentenceRowLabel(label)
+      : subject && SUBJECT_FAMILIES.has(tool.family)
+        ? subjectRowLabel(label, terminal && !running && (item.status === "completed" || item.exitCode != null))
+        : label;
     // Exit 0 is only news for commands; for reads and searches it is noise.
     const exitCode = item.exitCode ?? null;
     const shownExit = exitCode === 0 && !terminal ? null : exitCode;

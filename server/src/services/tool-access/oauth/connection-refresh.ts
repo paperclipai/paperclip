@@ -1,6 +1,7 @@
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import type { ActorInfo } from "../types.js";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
+import { deleteGoogleContentWhenAccessEnds } from "../connections/google-content-retention.js";
 import { oauthConfig, normalizeOauthScopes } from "./metadata.js";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, sql } from "drizzle-orm";
@@ -45,6 +46,7 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
       leaseId: string;
       refreshSecretId: string;
       refreshTokenVersion: number;
+      accessEndedAtProvider: boolean;
     },
   ) {
     const oauth = oauthConfig(connection);
@@ -64,14 +66,15 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
         reauthorizationRequiredAt: now().toISOString(),
       },
     };
-    const [updated] = await writeToolConnectionHealthChange(db, connection, tx => tx
+    const [updated] = await writeToolConnectionHealthChange(db, connection, async tx => {
+      const rows = await tx
       .update(toolConnections)
       .set({
         status: "draft",
         enabled: false,
         healthStatus: "error",
         healthMessage:
-          "OAuth authorization expired. Reconnect this app to continue.",
+          "Access to this app ended. Reconnect to continue.",
         lastError: "oauth_reauthorization_required",
         config: nextConfig,
         transportConfig: nextConfig,
@@ -92,7 +95,10 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
         )`,
         ),
       )
-      .returning());
+      .returning();
+      if (rows[0] && guard.accessEndedAtProvider) await deleteGoogleContentWhenAccessEnds(tx, rows[0], "provider_access_ended");
+      return rows;
+    });
     if (updated) {
       await syncCredentialBindings(updated);
       emitConnectionUpdated(updated, connection, "credential_refresh");
@@ -220,6 +226,7 @@ const oauthRefreshFlights = new Map<string, Promise<unknown>>();
                 leaseId,
                 refreshSecretId: refreshRef.secretId,
                 refreshTokenVersion,
+                accessEndedAtProvider: asRecord(error.details).providerError === "invalid_grant",
               })
             : null;
         if (!marked) {

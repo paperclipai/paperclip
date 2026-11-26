@@ -10,8 +10,9 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { environmentLeases, executionWorkspaces, environments, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
 import { freshWorkspaceSchema, environmentTaskOperationSchema, parseEnvironmentTaskResult,
   environmentTaskErrorData, readEnvironmentTaskErrorDiagnostic, JsonRpcCallError, PLUGIN_RPC_ERROR_CODES,
-  environmentTaskErrorCodeData, PluginEnvironmentTaskError, readEnvironmentTaskErrorCode,
-  type HostToWorkerMethodName, type HostToWorkerMethods, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult } from "@paperclipai/plugin-sdk";
+  environmentTaskErrorCodeData, PluginEnvironmentTaskError, readEnvironmentTaskErrorCode, ENVIRONMENT_TASK_ERROR_CODES,
+  type HostToWorkerMethodName, type HostToWorkerMethods, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult,
+  type PluginEnvironmentTaskErrorCode } from "@paperclipai/plugin-sdk";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -22,6 +23,109 @@ import { runnerLaunchPreparationDigest, runnerLaunchRunDigest } from "../vendor/
 import { assertPluginTaskOwnershipDispatch, PluginTaskOwnershipPendingError, readyPortableTaskSource, reconcilePluginTaskAdmission } from "./plugin-task-ownership.js";
 
 export type PluginTaskDescription = Extract<PluginEnvironmentTaskResult, { kind: "description" }>;
+
+const PLUGIN_RPC_ERROR_CODE_NAMES: Readonly<Record<number, PluginTaskRpcErrorCodeName>> = {
+  [PLUGIN_RPC_ERROR_CODES.WORKER_UNAVAILABLE]: "worker_unavailable",
+  [PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED]: "capability_denied",
+  [PLUGIN_RPC_ERROR_CODES.WORKER_ERROR]: "worker_error",
+  [PLUGIN_RPC_ERROR_CODES.TIMEOUT]: "timeout",
+  [PLUGIN_RPC_ERROR_CODES.METHOD_NOT_IMPLEMENTED]: "method_not_implemented",
+  [PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED]: "invocation_scope_denied",
+  [PLUGIN_RPC_ERROR_CODES.CROSS_TENANT_CONFIG]: "cross_tenant_config",
+  [PLUGIN_RPC_ERROR_CODES.UNKNOWN]: "unknown",
+};
+
+export type PluginTaskRpcErrorCodeName =
+  | "worker_unavailable"
+  | "capability_denied"
+  | "worker_error"
+  | "timeout"
+  | "method_not_implemented"
+  | "invocation_scope_denied"
+  | "cross_tenant_config"
+  | "unknown";
+
+const PLUGIN_RPC_ERROR_CODE_NAME_SET: ReadonlySet<string> = new Set(Object.values(PLUGIN_RPC_ERROR_CODE_NAMES));
+
+const PLUGIN_TASK_OPERATION_KINDS: ReadonlySet<string> = new Set(
+  environmentTaskOperationSchema.options.map(option => option.shape.kind.value),
+);
+
+export interface PluginTaskOperationErrorMetadata {
+  operation: PluginEnvironmentTaskOperation["kind"];
+  errorCode?: PluginEnvironmentTaskErrorCode;
+  rpcErrorCode?: PluginTaskRpcErrorCodeName;
+}
+
+export interface PluginTaskCheckpointStatusMetadata {
+  executionStopped: boolean;
+  sessionStateAvailable?: boolean;
+}
+
+const unconfirmedPluginCheckpointStatuses = new WeakMap<Error, PluginTaskCheckpointStatusMetadata>();
+
+export function createUnconfirmedPluginCheckpointError(status: PluginTaskCheckpointStatusMetadata): Error {
+  const metadata: PluginTaskCheckpointStatusMetadata = {
+    executionStopped: status.executionStopped === true,
+    ...(typeof status.sessionStateAvailable === "boolean"
+      ? { sessionStateAvailable: status.sessionStateAvailable }
+      : {}),
+  };
+  const error = Object.assign(pluginTaskResumeRefused("checkpoint_status_unconfirmed"), {
+    pluginTaskCheckpointStatus: metadata,
+  });
+  unconfirmedPluginCheckpointStatuses.set(error, metadata);
+  return error;
+}
+
+/**
+ * Returns true only when `executeEnvironmentTask` refused `checkpoint_status_unconfirmed`
+ * after the provider explicitly attested both `executionStopped: true` and
+ * `sessionStateAvailable: false`. An omitted `sessionStateAvailable` remains unknown
+ * and fails closed.
+ */
+export function isConfirmedStoppedUnavailablePluginCheckpoint(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const status = unconfirmedPluginCheckpointStatuses.get(error);
+  return status?.executionStopped === true && status.sessionStateAvailable === false;
+}
+
+function readPluginRpcErrorCodeName(error: unknown): PluginTaskRpcErrorCodeName | null {
+  for (let current: unknown = error, depth = 0; current && depth < 5; depth++) {
+    if (current instanceof JsonRpcCallError && Object.prototype.hasOwnProperty.call(PLUGIN_RPC_ERROR_CODE_NAMES, current.code)) {
+      return PLUGIN_RPC_ERROR_CODE_NAMES[current.code]!;
+    }
+    current = typeof current === "object" ? (current as { cause?: unknown }).cause : undefined;
+  }
+  return null;
+}
+
+/** Reads only closed-enum plugin task error metadata; never forwards raw worker text. */
+export function readPluginTaskError(error: unknown): PluginTaskOperationErrorMetadata | null {
+  for (let current: unknown = error, depth = 0; current && depth < 5; depth++) {
+    const raw = typeof current === "object" ? (current as { pluginTaskError?: unknown }).pluginTaskError : undefined;
+    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+      const record = raw as Record<string, unknown>;
+      const operation = typeof record.operation === "string" && PLUGIN_TASK_OPERATION_KINDS.has(record.operation)
+        ? record.operation as PluginEnvironmentTaskOperation["kind"] : null;
+      if (operation) {
+        const errorCode = typeof record.errorCode === "string"
+          && (ENVIRONMENT_TASK_ERROR_CODES as readonly string[]).includes(record.errorCode)
+          ? record.errorCode as PluginEnvironmentTaskErrorCode : undefined;
+        const rpcErrorCode = typeof record.rpcErrorCode === "string"
+          && PLUGIN_RPC_ERROR_CODE_NAME_SET.has(record.rpcErrorCode)
+          ? record.rpcErrorCode as PluginTaskRpcErrorCodeName : undefined;
+        return {
+          operation,
+          ...(errorCode ? { errorCode } : {}),
+          ...(rpcErrorCode ? { rpcErrorCode } : {}),
+        };
+      }
+    }
+    current = typeof current === "object" ? (current as { cause?: unknown }).cause : undefined;
+  }
+  return null;
+}
 
 export function isSettledReadyRunnerState(state: Record<string, unknown>): boolean {
   const commands = state.processedCommands;
@@ -206,7 +310,12 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
       const status = await executeEnvironmentTask(db, workers, { companyId: input.companyId,
         leaseId: sources[0]!.id, operation: { kind: "status" } });
       if (status.kind !== "status" || status.executionStopped !== true || status.sessionStateAvailable !== true) {
-        throw pluginTaskResumeRefused("checkpoint_status_unconfirmed");
+        throw createUnconfirmedPluginCheckpointError({
+          executionStopped: status.kind === "status" && status.executionStopped === true,
+          ...(status.kind === "status" && typeof status.sessionStateAvailable === "boolean"
+            ? { sessionStateAvailable: status.sessionStateAvailable }
+            : {}),
+        });
       }
       if (resumeFrom !== await resolvePluginTaskResume(db, { companyId: input.companyId, leaseId: lease.id,
         priorIdentity: { runnerInstanceId: runner.runnerId, environmentLeaseId: runner.leaseId,
@@ -601,8 +710,17 @@ export async function executeEnvironmentTask(db: Db, workers: Pick<PluginWorkerM
     });
     // Worker errors and schema diagnostics can contain request credentials.
     const code = readEnvironmentTaskErrorCode(error);
+    const rpcErrorCode = readPluginRpcErrorCodeName(error);
+    const pluginTaskError: PluginTaskOperationErrorMetadata = {
+      operation: operation.kind,
+      ...(code ? { errorCode: code } : {}),
+      ...(rpcErrorCode ? { rpcErrorCode } : {}),
+    };
     throw Object.assign(new Error("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying"),
-      code ? { data: environmentTaskErrorCodeData(new PluginEnvironmentTaskError(code)) } : {});
+      {
+        ...(code ? { data: environmentTaskErrorCodeData(new PluginEnvironmentTaskError(code)) } : {}),
+        pluginTaskError,
+      });
   }
 }
 

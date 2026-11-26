@@ -18,18 +18,34 @@ const policy = {
   workspaceStrategies: [undefined, null, {}],
 };
 
-describe("repository-free low-trust workspace selection", () => {
-  it("selects a private directory for sandbox tasks without a repository", () => {
+describe("repository-free workspace selection", () => {
+  it("selects a private directory for low-trust sandbox tasks without a repository", () => {
     expect(shouldUseIsolatedTaskDirectory(policy)).toBe(true);
+    expect(shouldUseIsolatedTaskDirectory({ ...policy, hasSelectedExecutionWorkspace: true })).toBe(true);
   });
 
   it.each([
-    { trustPreset: "standard" },
-    { environmentDriver: "local" },
+    { trustPreset: "standard", environmentDriver: "local" },
+    { trustPreset: "standard", environmentDriver: null },
+    { trustPreset: "standard", environmentDriver: "sandbox" },
+    { trustPreset: "standard", environmentDriver: "plugin" },
+  ])("selects a private directory for standard repository-free tasks: %j", (override) => {
+    expect(shouldUseIsolatedTaskDirectory({ ...policy, ...override })).toBe(true);
+  });
+
+  it.each([
+    { trustPreset: "low_trust_review", environmentDriver: "local" },
+    { trustPreset: "low_trust_review", environmentDriver: "plugin" },
+    { trustPreset: "low_trust_review", environmentDriver: null },
+    { trustPreset: "denied", environmentDriver: "sandbox" },
     { environmentDriver: "ssh" },
+    { trustPreset: "standard", environmentDriver: "ssh" },
     { mode: "shared_workspace" },
     { hasProjectWorkspace: true },
     { projectWorkspaceId: "workspace-1" },
+    { trustPreset: "standard", environmentDriver: "local", hasSelectedExecutionWorkspace: true },
+    { trustPreset: "standard", environmentDriver: "sandbox", hasSelectedExecutionWorkspace: true },
+    { trustPreset: "standard", environmentDriver: "plugin", hasSelectedExecutionWorkspace: true },
     { workspaceStrategies: [{ type: "git_worktree" }] },
     { workspaceStrategies: [{ existingBranch: "main" }] },
     { workspaceStrategies: [{ provisionCommand: "setup" }] },

@@ -1118,6 +1118,8 @@ const ISSUE_CASE_WORK_ACTIVITY_ACTIONS = new Set([
 const ISSUE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
   "issue.document_annotation_thread_created",
   "issue.document_annotation_comment_added",
+  "issue.document_annotation_comment_reaction_added",
+  "issue.document_annotation_comment_reaction_removed",
   "issue.document_annotation_thread_resolved",
   "issue.document_annotation_thread_reopened",
   "issue.document_annotation_remapped",
@@ -1125,6 +1127,8 @@ const ISSUE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
 const ROUTINE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
   "routine.document_annotation_thread_created",
   "routine.document_annotation_comment_added",
+  "routine.document_annotation_comment_reaction_added",
+  "routine.document_annotation_comment_reaction_removed",
   "routine.document_annotation_thread_resolved",
   "routine.document_annotation_thread_reopened",
   "routine.document_annotation_remapped",
@@ -1132,6 +1136,8 @@ const ROUTINE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
 const CASE_DOCUMENT_ANNOTATION_ACTIVITY_ACTIONS = new Set([
   "case.document_annotation_thread_created",
   "case.document_annotation_comment_added",
+  "case.document_annotation_comment_reaction_added",
+  "case.document_annotation_comment_reaction_removed",
   "case.document_annotation_thread_resolved",
   "case.document_annotation_thread_reopened",
   "case.document_annotation_remapped",
@@ -1594,6 +1600,9 @@ function invalidateActivityQueries(
     typeof details?.handledForUserId === "string" ||
     action?.startsWith("issue.thread_interaction_") ||
     action === "issue.status_decision_recorded" ||
+    action === "issue.provider_limit_retry_settled" ||
+    action === "issue.recovery_action_resolved" ||
+    action === "issue.retry_requested" ||
     action === "issue.conversation_session_started" ||
     (entityType === "issue" && ["issue.created", "issue.updated", "issue.deleted"].includes(action ?? ""));
   const decisionAudienceChanged = action?.startsWith("issue_access_grant.") ||
@@ -2181,6 +2190,9 @@ function handleLiveEvent(
     }
     invalidateVisibleIssueRunQueries(queryClient, pathname, payload);
     if (event.type === "heartbeat.run.status") {
+      if (["scheduled_retry", "running", "succeeded", "failed", "timed_out", "cancelled"].includes(String(payload.status))) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.attention(expectedCompanyId) }, { cancelRefetch: false });
+      }
       const toast = buildRunStatusToast(payload, nameOf);
       if (toast && event.toastEligible === true && !suppressRunToast) {
         gatedPushToast(gate, pushToast, "run-status", toast);
@@ -2210,6 +2222,16 @@ function handleLiveEvent(
     // The server saved a new provider rate-limit snapshot for this agent.
     const agentId = readString(payload.agentId);
     if (agentId) queryClient.invalidateQueries({ queryKey: queryKeys.agents.runtimeState(agentId) });
+    return;
+  }
+
+  if (event.type === "cloud_trial.status.updated") {
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.cloudInference.status(expectedCompanyId),
+    });
+    queryClient.invalidateQueries({
+      queryKey: queryKeys.agents.list(expectedCompanyId),
+    });
     return;
   }
 

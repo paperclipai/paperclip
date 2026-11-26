@@ -42,7 +42,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 
 ### `routine-editor`
 
-Automated: [routine form tests](../../ui/src/components/routine-page/routine-form.test.ts) cover schedule and responsibility sync, and [Routine service](../../server/src/__tests__/routines-service.test.ts) covers server contracts (mocked `RoutineDetail` page tests were removed; verify page redirects, History paging, status switch, save conflicts, and running a routine manually).
+Automated: [routine form tests](../../ui/src/components/routine-page/routine-form.test.ts) cover schedule and responsibility sync, and [Routine service](../../server/src/__tests__/routines-service.test.ts) covers server contracts (verify page redirects, History paging, status switch, save conflicts, and running a routine manually).
 
 Manual: Save an agent, request, project, and a required variable. Reload and inspect the saved definition. Run now with a distinguishable input, follow the resulting task, and verify its output and history entry. Check a missing required input.
 
@@ -53,7 +53,7 @@ complete the generated task or establish a useful task output.
 
 ### `trigger-history`
 
-Automated: [webhook instructions](../../ui/src/components/routine-triggers/webhook-instructions.test.ts) and [webhook fields](../../ui/src/components/routine-triggers/WebhookFields.test.tsx) are component coverage; [routine integration](../../server/src/__tests__/routines-e2e.test.ts) is server integration rather than a provider-wide browser proof.
+Automated: [webhook instructions](../../ui/src/components/routine-triggers/webhook-instructions.test.ts) and [replay masking](../../ui/src/lib/analytics/replay-masking.test.tsx) cover webhook instructions and secret-field replay blocking; [routine integration](../../server/src/__tests__/routines-e2e.test.ts) is server integration rather than a provider-wide browser proof.
 
 Manual: Set a near-term disposable schedule or authorized test webhook, verify one eligible execution and its source trigger, then disable it and confirm further invocations stop. Inspect a failed execution without losing its history. Remove the temporary trigger after testing.
 

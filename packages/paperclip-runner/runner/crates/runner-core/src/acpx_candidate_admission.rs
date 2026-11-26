@@ -23,51 +23,8 @@ fn native_host_matches(platform: &str, architecture: &str, os: &str, host_arch: 
 }
 
 /// The generated release profile that runtime qualification gates read.
-///
-/// Every gate that depends on `qualification_pending` reads it here, so tests
-/// can exercise the released state of a still-pending profile exactly as the
-/// declaration change at qualification would produce it.
 pub(crate) fn release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
-    #[allow(unused_mut)]
-    let mut profile = acpx_release_profile(agent)?;
-    #[cfg(test)]
-    if released_for_test::contains(agent) {
-        profile.qualification_pending = false;
-    }
-    Some(profile)
-}
-
-/// Test-only simulation of a profile flipped to released on this thread.
-#[cfg(test)]
-pub(crate) mod released_for_test {
-    use std::cell::RefCell;
-
-    thread_local! {
-        static RELEASED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
-    }
-
-    pub(crate) fn contains(agent: &str) -> bool {
-        RELEASED.with(|released| released.borrow().iter().any(|name| name == agent))
-    }
-
-    /// Treats `agent` as released until the guard drops.
-    pub(crate) fn release(agent: &str) -> Guard {
-        RELEASED.with(|released| released.borrow_mut().push(agent.to_owned()));
-        Guard(agent.to_owned())
-    }
-
-    pub(crate) struct Guard(String);
-
-    impl Drop for Guard {
-        fn drop(&mut self) {
-            RELEASED.with(|released| {
-                let mut released = released.borrow_mut();
-                if let Some(index) = released.iter().position(|name| *name == self.0) {
-                    released.remove(index);
-                }
-            });
-        }
-    }
+    acpx_release_profile(agent)
 }
 
 /// Operator authority supplied only through trusted process startup. Company
@@ -267,13 +224,23 @@ mod tests {
         ("linux", "arm64", "linux", "aarch64"),
     ];
 
+    fn pending_antigravity_profile() -> AcpxReleaseProfile {
+        AcpxReleaseProfile {
+            qualification_pending: true,
+            ..acpx_release_profile("antigravity").unwrap()
+        }
+    }
+
     #[test]
     fn candidate_record_is_strict_and_pinned_to_native_host_and_time() {
         assert!(antigravity_native_closure("darwin", "x64").is_none());
+        let pending = pending_antigravity_profile();
         for (platform, architecture, os, host_arch) in ANTIGRAVITY_HOSTS {
             let candidate = antigravity_admission(platform, architecture);
             let now = candidate.expires_at - 1;
-            candidate.validate_at(now, os, host_arch).unwrap();
+            candidate
+                .validate_against_profile(&pending, now, os, host_arch)
+                .unwrap();
             for (other_os, other_arch) in [
                 ("macos", "aarch64"),
                 ("macos", "x86_64"),
@@ -282,14 +249,21 @@ mod tests {
                 ("windows", "x86_64"),
             ] {
                 if (other_os, other_arch) != (os, host_arch) {
-                    assert!(candidate.validate_at(now, other_os, other_arch).is_err());
+                    assert!(candidate
+                        .validate_against_profile(&pending, now, other_os, other_arch)
+                        .is_err());
                 }
             }
             assert!(candidate
-                .validate_at(candidate.expires_at, os, host_arch)
+                .validate_against_profile(&pending, candidate.expires_at, os, host_arch)
                 .is_err());
             assert!(candidate
-                .validate_at(candidate.expires_at - MAX_LIFETIME_MS - 1, os, host_arch)
+                .validate_against_profile(
+                    &pending,
+                    candidate.expires_at - MAX_LIFETIME_MS - 1,
+                    os,
+                    host_arch,
+                )
                 .is_err());
             let other_platform = if platform == "linux" {
                 "darwin"
@@ -317,7 +291,9 @@ mod tests {
                 changed[field] = value;
                 let changed: AcpxCandidateAdmission = serde_json::from_value(changed).unwrap();
                 assert!(
-                    changed.validate_at(now, os, host_arch).is_err(),
+                    changed
+                        .validate_against_profile(&pending, now, os, host_arch)
+                        .is_err(),
                     "{platform}-{architecture}: {field}"
                 );
             }
@@ -339,9 +315,9 @@ mod tests {
     ))]
     fn candidate_binds_actual_launch_and_does_not_echo_bad_input() {
         let candidate = test_admission("run-1", "session-1");
-        candidate
+        assert!(candidate
             .validate_binding("antigravity", "explicit-model", "run-1", "session-1")
-            .unwrap();
+            .is_err());
         for expected in [
             ("copilot", "explicit-model", "run-1", "session-1"),
             ("antigravity", "another-model", "run-1", "session-1"),
@@ -356,20 +332,11 @@ mod tests {
         assert!(!error.to_string().contains("private"));
     }
 
-    /// The generated Antigravity profile with its qualification flipped to
-    /// released, exactly as the declaration change at qualification would.
-    pub(crate) fn released_antigravity_profile() -> AcpxReleaseProfile {
-        AcpxReleaseProfile {
-            qualification_pending: false,
-            ..acpx_release_profile("antigravity").unwrap()
-        }
-    }
-
     #[test]
     fn released_antigravity_rejects_candidate_records_on_every_native_platform() {
-        let pending = acpx_release_profile("antigravity").unwrap();
-        assert!(pending.qualification_pending);
-        let released = released_antigravity_profile();
+        let released = acpx_release_profile("antigravity").unwrap();
+        assert!(!released.qualification_pending);
+        let pending = pending_antigravity_profile();
         for (platform, architecture, os, host_arch) in ANTIGRAVITY_HOSTS {
             let candidate = antigravity_admission(platform, architecture);
             let now = candidate.expires_at - 1;
@@ -380,6 +347,10 @@ mod tests {
                 candidate
                     .validate_against_profile(&released, now, os, host_arch)
                     .is_err(),
+                "{platform}-{architecture}"
+            );
+            assert!(
+                candidate.validate_at(now, os, host_arch).is_err(),
                 "{platform}-{architecture}"
             );
             let mut next = candidate.clone();
@@ -399,14 +370,12 @@ mod tests {
         )
     ))]
     fn released_antigravity_rejects_startup_and_binding_records() {
-        let current = test_admission("run-1", "session-1");
-        current.validate().unwrap();
-        let _released = released_for_test::release("antigravity");
         assert!(
             !release_profile("antigravity")
                 .unwrap()
                 .qualification_pending
         );
+        let current = test_admission("run-1", "session-1");
         assert!(current.validate().is_err());
         assert!(current
             .validate_binding("antigravity", "explicit-model", "run-1", "session-1")

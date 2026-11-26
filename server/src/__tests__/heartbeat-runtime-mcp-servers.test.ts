@@ -582,6 +582,9 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
     await db.insert(toolProfileBindings).values({
       companyId: company!.id, profileId: gateway!.profileId!, targetType: "agent", targetId: gatewayReader!.id,
     });
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company!.id, connectionId: connection!.id, targetType: "agent", targetId: gatewayReader!.id,
+    });
     const effective = await toolAccessService(db).getEffectiveProfilesForAgent(company!.id, gatewayReader!.id);
     expect(effective.allowedTools.map((tool) => tool.id).sort()).toEqual(allowed.map((tool) => tool.id).sort());
     expect(effective.allowedToolNames).not.toContain("excluded");

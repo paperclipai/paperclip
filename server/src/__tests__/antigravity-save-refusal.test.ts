@@ -6,7 +6,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, agentConfigRevisions, builtInManagedResources, companies, companyMemberships, createDb, environments } from "@paperclipai/db";
+import { agents, agentConfigRevisions, builtInManagedResources, companies, companyMemberships, createDb, environments, plugins } from "@paperclipai/db";
 import { agentRoutes } from "../routes/agents.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import * as environmentTests from "../services/agent-environment-test.js";
@@ -14,6 +14,9 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { readFileSync } from "node:fs";
 import { QUALIFIED_ACPX_PROFILES } from "../vendor/paperclip-runner/index.js";
 import { ANTIGRAVITY_CANDIDATE_ADMISSION_ENV } from "../services/native-runtime/acpx-qualification.js";
+import { prepareAntigravityRunnerCredentials } from "../services/native-runtime/antigravity-runner-credentials.js";
+import { resolveHeartbeatNativeLifecyclePolicy } from "../services/heartbeat/native-lifecycle.js";
+import { resolveRunnerEnvironmentForRun } from "../services/runner-environment-lifecycle.js";
 
 const distributions = JSON.parse(readFileSync(new URL("../../../packages/paperclip-runner/antigravity-distributions.json", import.meta.url), "utf8"));
 /** The operator's pending grant for one company, model and platform. */
@@ -24,11 +27,25 @@ const grant = (companyId: string, target: string) => {
     platform, architecture, expiresAt: Date.now() + 60_000 });
 };
 
-const release = vi.hoisted(() => ({ pending: true }));
+const release = vi.hoisted(() => ({ pending: false, remoteCandidateAdmitted: false }));
 vi.mock("../services/native-runtime/antigravity-release.js", async importOriginal => ({
   ...await importOriginal<typeof import("../services/native-runtime/antigravity-release.js")>(),
   antigravityReleasePending: () => release.pending,
 }));
+vi.mock("../services/native-runtime/acpx-qualification.js", async importOriginal => {
+  const original = await importOriginal<typeof import("../services/native-runtime/acpx-qualification.js")>();
+  return {
+    ...original,
+    resolveAntigravityCandidateAdmission: (...args: Parameters<typeof original.resolveAntigravityCandidateAdmission>) =>
+      release.remoteCandidateAdmitted && args[0]?.target?.platform === "linux"
+        ? { schema: "paperclip.acpx-candidate-admission.v1", companyId: args[0].companyId ?? "", agent: "antigravity",
+          model: args[0].model ?? "gemini-3.8-flash-high", profileDigest: "", nativeClosureDigest: "",
+          platform: "linux", architecture: "x64", expiresAt: Date.now() + 60_000 }
+        : original.resolveAntigravityCandidateAdmission(...args),
+    antigravityRemoteCandidateAdmitted: (...args: Parameters<typeof original.antigravityRemoteCandidateAdmitted>) =>
+      release.remoteCandidateAdmitted || original.antigravityRemoteCandidateAdmitted(...args),
+  };
+});
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePostgres = support.supported ? describe : describe.skip;
@@ -60,7 +77,8 @@ describePostgres("Google Antigravity connection refusal at agent save", () => {
   }, 90_000);
 
   beforeEach(async () => {
-    release.pending = true;
+    release.pending = false;
+    release.remoteCandidateAdmitted = false;
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Antigravity save", issuePrefix: `AS${++fixtureNumber}` });
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
@@ -98,8 +116,32 @@ describePostgres("Google Antigravity connection refusal at agent save", () => {
     return { provider: "google", method, mode: "responsible_user" } as const;
   }
 
-  it("refuses Google sign-in on a cloud environment with the plain-language fix", async () => {
-    release.pending = false;
+  async function insertPluginTaskEnvironment() {
+    const pluginId = randomUUID();
+    const pluginKey = `fixture-tasks-${pluginId}`;
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey,
+      packageName: pluginKey,
+      version: "1.0.0",
+      status: "ready",
+      manifestJson: {
+        capabilities: ["environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "tasks", supportsTasks: true }],
+      } as never,
+    });
+    const [pluginEnv] = await db.insert(environments).values({
+      name: `Plugin tasks ${agent.companyId}`,
+      driver: "plugin",
+      config: { pluginKey, driverKey: "tasks", driverConfig: {} },
+    }).returning();
+    return pluginEnv!;
+  }
+
+  it("refuses Google sign-in on a cloud environment while pending even with a linux-x64 grant", async () => {
+    release.pending = true;
+    release.remoteCandidateAdmitted = true;
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, grant(agent.companyId, "linux-x64"));
     const binding = await saveGoogleConnection("subscription");
     const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: cloud.id, runtimeConfig: { aiConnection: binding } });
     expect(response.status, JSON.stringify(response.body)).toBe(422);
@@ -112,7 +154,19 @@ describePostgres("Google Antigravity connection refusal at agent save", () => {
     expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
   });
 
-  it("refuses any cloud environment while the release is pending", async () => {
+  it("refuses a plugin Runner-task environment while pending even with a linux-x64 grant", async () => {
+    release.pending = true;
+    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, grant(agent.companyId, "linux-x64"));
+    const pluginEnv = await insertPluginTaskEnvironment();
+    const binding = await saveGoogleConnection("api_key");
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: pluginEnv.id, runtimeConfig: { aiConnection: binding } });
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.details).toMatchObject({ code: "antigravity_remote_unavailable" });
+    expect((await readAgent()).defaultEnvironmentId).toBeNull();
+  });
+
+  it("refuses any cloud environment when releasePending is forced true", async () => {
+    release.pending = true;
     const binding = await saveGoogleConnection("api_key");
     const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: cloud.id, runtimeConfig: { aiConnection: binding } });
     expect(response.status, JSON.stringify(response.body)).toBe(422);
@@ -121,43 +175,75 @@ describePostgres("Google Antigravity connection refusal at agent save", () => {
     expect((await readAgent()).defaultEnvironmentId).toBeNull();
   });
 
-  it("saves a Gemini API key on a cloud environment while pending when the operator granted linux-x64", async () => {
-    vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, grant(agent.companyId, "linux-x64"));
-    const binding = await saveGoogleConnection("api_key");
-    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: cloud.id, runtimeConfig: { aiConnection: binding } });
-    expect(response.status, JSON.stringify(response.body)).toBe(200);
-    expect((await readAgent()).defaultEnvironmentId).toBe(cloud.id);
-    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
-  });
-
-  it("refuses a cloud environment when the grant is for another company or another platform", async () => {
-    const binding = await saveGoogleConnection("api_key");
-    for (const value of [grant(randomUUID(), "linux-x64"), grant(agent.companyId, "linux-arm64")]) {
-      vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, value);
-      const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: cloud.id, runtimeConfig: { aiConnection: binding } });
-      expect(response.status, JSON.stringify(response.body)).toBe(422);
-      expect(response.body.details).toMatchObject({ code: "antigravity_remote_unavailable" });
-    }
-    expect((await readAgent()).defaultEnvironmentId).toBeNull();
-  });
-
-  it.skipIf(process.platform === "linux" && process.arch === "x64")("refuses a host agent when the company holds only a cloud grant", async () => {
+  it("ignores stale candidate grants and saves a host agent normally once released", async () => {
     vi.stubEnv(ANTIGRAVITY_CANDIDATE_ADMISSION_ENV, grant(agent.companyId, "linux-x64"));
     const response = await request(app).patch(`/api/agents/${agent.id}`)
       .send({ adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-high" } });
-    expect(response.status, JSON.stringify(response.body)).toBe(422);
-    expect(response.body.error).toBe("Google Antigravity is enabled only for cloud environments in this company for now. Choose a cloud environment for this agent.");
-    expect(await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, agent.id))).toHaveLength(0);
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
   });
 
-  it("saves a Gemini API key on a cloud environment once released", async () => {
+  it("saves a Gemini API key and Google sign-in on a Core sandbox once released", async () => {
+    for (const method of ["api_key", "subscription"] as const) {
+      const binding = await saveGoogleConnection(method);
+      const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: cloud.id, runtimeConfig: { aiConnection: binding } });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      const saved = await readAgent();
+      expect(saved.defaultEnvironmentId).toBe(cloud.id);
+      expect(saved.runtimeConfig.aiConnection).toEqual(binding);
+    }
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("saves a Gemini API key and Google sign-in on a plugin Runner-task environment once released", async () => {
+    const pluginEnv = await insertPluginTaskEnvironment();
+    for (const method of ["api_key", "subscription"] as const) {
+      const binding = await saveGoogleConnection(method);
+      const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: pluginEnv.id, runtimeConfig: { aiConnection: binding } });
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      const saved = await readAgent();
+      expect(saved.defaultEnvironmentId).toBe(pluginEnv.id);
+      expect(saved.runtimeConfig.aiConnection).toEqual(binding);
+    }
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("creates a released Antigravity agent on a plugin Runner-task environment without enableNativeRunner", async () => {
+    const pluginEnv = await insertPluginTaskEnvironment();
+    const binding = await saveGoogleConnection("subscription");
+    const response = await request(app).post(`/api/companies/${agent.companyId}/agents`).send({
+      name: "Released Antigravity agent",
+      adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-high" },
+      defaultEnvironmentId: pluginEnv.id,
+      runtimeConfig: { aiConnection: binding },
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(response.body.defaultEnvironmentId).toBe(pluginEnv.id);
+    expect(response.body.adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-high" });
+    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("saves an agent on a warm cloud task environment that then runs every turn per-turn", async () => {
     release.pending = false;
+    const [warmTasks] = await db.insert(environments).values({ name: `Warm tasks ${agent.companyId}`, driver: "plugin",
+      config: { pluginKey: "fixture", driverKey: "tasks", driverConfig: {}, runnerLifecycleMode: "warm" } }).returning();
+    await db.update(agents).set({ adapterConfig: { ...agent.adapterConfig, lifecycleMode: "warm" } }).where(eq(agents.id, agent.id));
     const binding = await saveGoogleConnection("api_key");
-    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: cloud.id, runtimeConfig: { aiConnection: binding } });
+    const response = await request(app).patch(`/api/agents/${agent.id}`).send({ defaultEnvironmentId: warmTasks.id, runtimeConfig: { aiConnection: binding } });
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     const saved = await readAgent();
-    expect(saved.defaultEnvironmentId).toBe(cloud.id);
-    expect(saved.runtimeConfig.aiConnection).toEqual(binding);
-    expect(allocate).not.toHaveBeenCalled(); expect(probe).not.toHaveBeenCalled();
+    expect(saved.defaultEnvironmentId).toBe(warmTasks.id);
+
+    const runEnvironment = resolveRunnerEnvironmentForRun({ ...warmTasks, driver: "plugin" as const }, saved.adapterType, saved.adapterConfig, undefined, "google:api-key:1");
+    expect(runEnvironment.config.runnerLifecycleMode).toBe("per_turn");
+    const session = resolveHeartbeatNativeLifecyclePolicy({ adapterType: saved.adapterType, backend: "acpx_runtime", acpxAgent: "antigravity",
+      agentMode: saved.adapterConfig.lifecycleMode, agentIdleTimeoutMs: undefined, managedAiSelected: true, taskOwned: true,
+      environmentPolicy: runEnvironment.config.runnerLifecycleMode === "warm" ? { mode: "warm", idleTimeoutMs: 300_000 } : { mode: "per_turn", idleTimeoutMs: null } });
+    expect(session.mode).toBe("per_turn");
+    for (const lifecycleMode of [runEnvironment.config.runnerLifecycleMode as "warm" | "per_turn", session.mode]) {
+      await expect(prepareAntigravityRunnerCredentials({ environment: { GEMINI_API_KEY: "fixture-gemini-key" }, remote: true, lifecycleMode }))
+        .resolves.toMatchObject({ home: null });
+    }
   });
 });

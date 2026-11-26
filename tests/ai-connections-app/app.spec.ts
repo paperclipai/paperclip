@@ -105,9 +105,11 @@ test("personal provider defaults move the crown only after saving and survive re
   const announcement = page.getByRole("button", { name: "Dismiss announcement" });
   if (await announcement.isVisible()) await announcement.click();
   const provider = page.locator('[data-app-slug="openai"]');
+  // Installed lists plugins as tiles; the accounts are on the plugin page, always open.
   const expand = async () => {
-    const trigger = provider.getByRole("button", { name: /^\d+ connections$/ });
-    if (await trigger.getAttribute("data-state") === "closed") await trigger.click();
+    const tile = provider.locator("h3 button");
+    if (await tile.count()) await tile.click();
+    await expect(provider.getByRole("button", { name: "Your default for OpenAI" })).toBeVisible();
   };
   await expect(provider).toBeVisible();
   await expand();
@@ -176,7 +178,7 @@ test("personal provider defaults expose crown meaning on touch in both themes at
     const announcement = page.getByRole("button", { name: "Dismiss announcement" });
     if (await announcement.isVisible()) await announcement.click();
     const provider = page.locator('[data-app-slug="openai"]');
-    await provider.getByRole("button", { name: /^\d+ connections$/ }).tap();
+    await provider.locator("h3 button").tap();
     const crown = provider.getByRole("button", { name: "Your default for OpenAI" });
     await crown.scrollIntoViewIfNeeded();
     await crown.tap();

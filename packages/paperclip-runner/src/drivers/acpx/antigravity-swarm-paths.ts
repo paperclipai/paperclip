@@ -130,8 +130,25 @@ export function shellWriteTargets(command: string): string[] {
   return targets.filter(target => !/\$(?!\{?HOME\}?(?:\/|$))/.test(target));
 }
 
-/** The first path outside the task folder that a visible tool call would change, or null. */
-export function antigravityOutsideChange(update: unknown, workspace: string, home: string): string | null {
+/**
+ * The CLI's own private state directory (`--gemini-dir`) for this run, resolved
+ * through symlinks, or null when it must not be exempt: not given, relative, the
+ * filesystem root, or one that holds the home.
+ */
+function privateStateRoot(directory: string | null | undefined, home: string): string | null {
+  if (!directory || !isAbsolute(directory)) return null;
+  const real = realResolved(resolve(directory));
+  if (dirname(real) === real || !outside(realResolved(resolve(home)), real)) return null;
+  return real;
+}
+
+/**
+ * The first path outside the task folder that a visible tool call would change, or null.
+ * Changes inside `privateStateDirectory`, the `--gemini-dir` Paperclip gave the CLI for
+ * this run, are the CLI's own bookkeeping (the swarm_pane skill writes its plan there)
+ * and are not escapes. Paths are compared after resolving `..` and symlinks.
+ */
+export function antigravityOutsideChange(update: unknown, workspace: string, home: string, privateStateDirectory?: string | null): string | null {
   const value = record(update);
   if (value.sessionUpdate !== "tool_call" && value.sessionUpdate !== "tool_call_update") return null;
   const kind = String(value.kind ?? "");
@@ -149,9 +166,10 @@ export function antigravityOutsideChange(update: unknown, workspace: string, hom
   }
   let root = workspace;
   try { root = realpathSync(workspace); } catch { /* keep the given path */ }
+  const stateRoot = privateStateRoot(privateStateDirectory, home);
   for (const candidate of candidates) {
     const resolved = expand(candidate, workspace, home);
-    if (resolved && outside(resolved, root)) return candidate;
+    if (resolved && outside(resolved, root) && (stateRoot === null || outside(resolved, stateRoot))) return candidate;
   }
   return null;
 }

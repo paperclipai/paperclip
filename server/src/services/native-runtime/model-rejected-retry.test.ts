@@ -1,9 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { rejectedModelRetryRefusal } from "./model-rejected-retry.js";
+import { uniqueIssuePrefix } from "../../__tests__/helpers/issue-prefix.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const REJECTED = "openrouter/paperclip-eval/unavailable";
@@ -19,7 +19,7 @@ describe.skipIf(!support.supported)("retrying a run whose model the provider rej
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
   async function seed(input: { agentModel: string; overrideModel?: string; errorCode?: string }) {
-    const [company] = await db.insert(companies).values({ name: "Model retry", issuePrefix: `M${randomUUID().slice(0, 4)}` }).returning();
+    const [company] = await db.insert(companies).values({ name: "Model retry", issuePrefix: uniqueIssuePrefix("M") }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Morgan", adapterType: "paperclip_runner",
       adapterConfig: { provider: "opencode", model: input.agentModel } }).returning();
     const [issue] = await db.insert(issues).values({ companyId: company!.id, title: "Website task", status: "blocked", assigneeAgentId: agent!.id,

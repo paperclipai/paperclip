@@ -1,7 +1,8 @@
 import { and, eq, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, companyOnboardingSeeds, goals } from "@paperclipai/db";
-import type { ApplyOnboardingSeed } from "@paperclipai/shared";
+import { agents, companyOnboardingSeeds, goals, toolConnections } from "@paperclipai/db";
+import { resolveCloudTrialModel, type ApplyOnboardingSeed } from "@paperclipai/shared";
+import { instanceSettingsService } from "./instance-settings.js";
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { findActiveServerAdapter } from "../adapters/registry.js";
 import { agentService } from "./agents.js";
@@ -10,6 +11,7 @@ import { withDedicatedDbConnection } from "@paperclipai/db";
 import { PAPERCLIP_CORE_SKILL_KEYS } from "./company-skills.js";
 import { goalService } from "./goals.js";
 import { readBuiltInAgentMarker } from "../lib/built-in-agent-metadata.js";
+import { trackCloudPostHogEvent, trackCloudTrialExposure } from "../telemetry.js";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 
 /**
@@ -150,20 +152,52 @@ export function onboardingSeedService(db: Db) {
       if (agentId) {
         await agentSvc.update(agentId, { name: agentName, title: agentRole });
       } else {
-        const adapterType = seededAgentAdapterType();
+        const experimental = await instanceSettingsService(dbx).getExperimental();
+        const actorUserId = audit?.actorType === "user" ? audit.actorId : null;
+        trackCloudTrialExposure({
+          surface: "onboarding_seed",
+          userId: actorUserId,
+          companyId,
+          enabledOverride: experimental.enableCloudTrialInference === true,
+        });
+        const existingAiConnections = experimental.enableCloudTrialInference
+          ? await dbx
+              .select({ id: toolConnections.id })
+              .from(toolConnections)
+              .where(and(eq(toolConnections.companyId, companyId), eq(toolConnections.connectionPurpose, "ai")))
+              .limit(1)
+          : [];
+        const useCloudTrial =
+          experimental.enableCloudTrialInference && existingAiConnections.length === 0;
+        const adapterType = useCloudTrial ? "paperclip_runner" : seededAgentAdapterType();
+        const trialModel = resolveCloudTrialModel(process.env.PAPERCLIP_CLOUD_TRIAL_MODEL);
+        const adapterConfig = useCloudTrial
+          ? {
+              ...seededAgentAdapterConfig("paperclip_runner"),
+              provider: "opencode",
+              model: trialModel,
+            }
+          : seededAgentAdapterConfig(adapterType);
         const created = await createAgentLifecycle(dbx).requestHire(companyId, {
           name: agentName,
           role: SEEDED_AGENT_ROLE,
           title: agentRole,
           adapterType,
-          adapterConfig: seededAgentAdapterConfig(adapterType),
-          runtimeConfig: {},
+          adapterConfig,
+          runtimeConfig: useCloudTrial ? { cloudTrialInference: true } : {},
           permissions: {},
           status: "idle",
           spentMonthlyCents: 0,
           lastHeartbeatAt: null,
-        }, { createdByUserId: audit?.actorType === "user" ? audit.actorId : null });
+        }, { createdByUserId: actorUserId });
         agentId = created.id;
+        if (useCloudTrial) {
+          trackCloudPostHogEvent(
+            "cloud_trial.started",
+            { source: "onboarding_seed", model: trialModel },
+            { userId: actorUserId, companyId },
+          );
+        }
       }
     }
 

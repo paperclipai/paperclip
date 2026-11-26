@@ -1329,6 +1329,13 @@ export type IssueAdmissionRow = Pick<IssueRow, keyof typeof issueAdmissionFields
 export type IssueWakeContinuationInput = Omit<Parameters<typeof admitExplicitNativeContinuation>[0], "db" | "companyId" | "issueId" | "dryRun" | "onBlocked">;
 export type IssueWakeContinuationResult = NonNullable<Awaited<ReturnType<typeof admitExplicitNativeContinuation>>>;
 
+export class FreshIssueAdmissionRollbackError extends Error {
+  constructor() {
+    super("wake-queue: fresh issue admission aborted after continuation write");
+    this.name = "FreshIssueAdmissionRollbackError";
+  }
+}
+
 export function createPostgresIssueWakeAdmission(db: Db) {
   return async function withIssueAdmission(
     { companyId, issueId, durableChatRequest }: IssueAdmissionTarget,
@@ -1415,7 +1422,7 @@ export function createPostgresIssueWakeAdmission(db: Db) {
         });
       }));
     } catch (error) {
-      if (isExternalChatWaitAuthorizationContention(error)) return null;
+      if (isExternalChatWaitAuthorizationContention(error) || error instanceof FreshIssueAdmissionRollbackError) return null;
       throw error;
     }
   };
@@ -1707,7 +1714,7 @@ export function createFreshIssueRunStore(
       )).returning();
       return receipt;
     },
-    async readCommentCandidates({ issueId, agentId, handoffRunId, receiptScope, checkExecutionBlocker }) {
+    async readCommentCandidates({ issueId, agentId, handoffRunId, receiptScope, checkExecutionBlocker, conversationResetCommentId }) {
       const [handoff] = handoffRunId ? await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns).where(and(
         eq(heartbeatRuns.id, handoffRunId), eq(heartbeatRuns.companyId, companyId),
         eq(heartbeatRuns.status, "cancelled"), eq(heartbeatRuns.errorCode, "issue_reassigned"),
@@ -1729,7 +1736,11 @@ export function createFreshIssueRunStore(
             receiptScope.kind === "exact" ? eq(agentWakeupRequests.id, receiptScope.wakeId) : undefined,
           )).orderBy(asc(agentWakeupRequests.requestedAt))
         : [];
-      const blocked = candidates.length > 0 && checkExecutionBlocker && await getExecutionBlocker(tx, companyId, issueId);
+      const blocked = candidates.length > 0 && checkExecutionBlocker && await (
+        conversationResetCommentId
+          ? getExecutionBlocker(tx, companyId, issueId, { conversationResetCommentId })
+          : getExecutionBlocker(tx, companyId, issueId)
+      );
       return { handoffAgentId: handoff?.agentId ?? null, candidates: blocked ? [] : candidates };
     },
     readUndeliveredLegacyCommentIds(issueId, agentId, commentIds) {

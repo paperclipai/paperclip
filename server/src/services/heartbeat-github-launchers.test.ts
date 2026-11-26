@@ -119,6 +119,7 @@ process.stdout.write(JSON.stringify({token:process.env.GH_TOKEN || '', githubTok
     expect(await readFile(path.join(first.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"), "utf8")).not.toContain("ambient-token");
     // A still-live provider uses its first-turn environment, not the new one.
     const command = await execute({ command: path.join(first.env.PAPERCLIP_GITHUB_LAUNCHER_DIR, "gh"), env: first.env });
+    expect(command.stderr).toBe("");
     const result = JSON.parse(command.stdout);
     expect(result).toEqual({ token: "", githubToken: "", ssh: "", imageConfig: false,
       global: expect.stringMatching(/\/paperclip-github-operation-[^/]+\/gitconfig$/),
@@ -126,6 +127,7 @@ process.stdout.write(JSON.stringify({token:process.env.GH_TOKEN || '', githubTok
     await expect(readFile(result.global)).rejects.toMatchObject({ code: "ENOENT" });
     const commit = await execute({ command: "bash", args: ["--noprofile", "--norc", "-c",
       "git init -q && git commit --allow-empty -qm 'Local work' && git log -1 --format='%an <%ae>|%cn <%ce>'"], env: first.env });
+    expect(commit.stderr).toBe("");
     expect(commit.stdout.trim()).toBe("Paperclip <noreply@paperclip.ing>|Paperclip <noreply@paperclip.ing>");
     const changedPath = await prepareHeartbeatGitHubLaunchers({ ...base, runId: "run-three", env: { ...imageEnv, PATH: `${imageEnv.PATH}:/extra` } });
     expect(changedPath.env.PAPERCLIP_GITHUB_LAUNCHER_DIR).not.toBe(first.env.PAPERCLIP_GITHUB_LAUNCHER_DIR);

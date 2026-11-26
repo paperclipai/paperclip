@@ -5,7 +5,7 @@ import { environmentTaskOperationSchema, environmentTaskResultSchema, parseEnvir
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
 import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, runnerLaunchPreparationDigest, runnerLaunchRunDigest, type RunnerProcessHandle, type RunnerProcessLaunchSpec,
   type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerReleaseResumeOutcome, type RunnerLaunchPreparer, type DurableRecoveryIdentity, type PrpEvent,
-  isSettledReleasedRunnerCut } from "../../vendor/paperclip-runner/index.js";
+} from "../../vendor/paperclip-runner/index.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
 import type { NativeExecutionContext } from "./native-execution-context.js";
 
@@ -60,8 +60,6 @@ export function createPluginRunnerTaskOwner(input: {
   launchDigestVersion?: 1;
   releasedSource?: DurableRecoveryIdentity;
   sessionHandoff?: boolean;
-  onResumed?: (identity: DurableRecoveryIdentity) => Promise<void>;
-  onRetired?: (identity: DurableRecoveryIdentity) => Promise<void>;
   githubBroker?: { url: string; token: string };
   githubCredentialBrokerVersion?: 1;
   configuredEnvironmentVersion?: 1;
@@ -262,11 +260,8 @@ export function createPluginRunnerTaskOwner(input: {
           retiredBeforeClaim = state?.kind === "status" && state.executionStopped === true && state.sessionStateAvailable === true;
           throw new Error("native_runner_reuse_unavailable");
         }
-        if (!result.archivedState || !result.runner || !isSettledReleasedRunnerCut(result.archivedState, source)) {
-          throw new Error("native_runner_released_state_unsettled");
-        }
+        if (!result.runner) throw new Error("native_runner_released_state_unsettled");
         authority.acceptRelaunchedRunner(native.ticket, result.runner, relaunch.runner);
-        await input.onResumed?.(source);
         markReady();
         return;
       }
@@ -429,8 +424,6 @@ export function createPluginRunnerTaskOwner(input: {
         if (submitted) {
           await call({ kind: "complete" });
           completed = true;
-          const identity = preparedIdentity ?? launchIdentity ?? input.priorIdentity;
-          if (identity) await input.onRetired?.(identity);
         }
       },
       // The Runner is about to exit (its close suspend completed), as on release.
@@ -469,10 +462,7 @@ export function createPluginRunnerTaskOwner(input: {
           if (activeOutbound === outbound) activeOutbound = null;
         },
         resume: async (identity: DurableRecoveryIdentity, ticket: string) => {
-          const outcome = await resume(identity, ticket);
-          if (typeof outcome === "object") return { ...outcome, settled: async () => { await input.onResumed?.(identity); } };
-          if (outcome === "resumed") await input.onResumed?.(identity);
-          return outcome;
+          return await resume(identity, ticket);
         },
       };
     },
@@ -555,8 +545,6 @@ export function createPluginRunnerTaskOwner(input: {
       }
       await call({ kind: "complete" });
       completed = true;
-      const identity = preparedIdentity ?? launchIdentity ?? input.priorIdentity;
-      if (identity) await input.onRetired?.(identity);
     }
     return stoppedState?.executionStopped === true && completed && !detached;
   };
