@@ -8,6 +8,7 @@ import { resetOpenCodeModelsCacheForTests } from "@paperclipai/adapter-opencode-
 import { listAdapterModels, listServerAdapters, refreshAdapterModels, registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { resetCodexModelsCacheForTests } from "../adapters/codex-models.js";
 import { resetCursorModelsCacheForTests, setCursorModelsRunnerForTests } from "../adapters/cursor-models.js";
+import { resetGeminiModelsCacheForTests, setGeminiModelsRunnerForTests } from "../adapters/gemini-models.js";
 
 vi.mock("acpx/runtime", () => ({
   createAcpRuntime: vi.fn(),
@@ -28,6 +29,8 @@ describe("adapter model listing", () => {
     resetCodexModelsCacheForTests();
     resetCursorModelsCacheForTests();
     setCursorModelsRunnerForTests(null);
+    resetGeminiModelsCacheForTests();
+    setGeminiModelsRunnerForTests(async () => ({ status: 1, stdout: "", stderr: "", hasError: true }));
     resetOpenCodeModelsCacheForTests();
     vi.restoreAllMocks();
   });
@@ -185,7 +188,7 @@ describe("adapter model listing", () => {
   });
 
   it.each([
-    ["gemini_local", ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"]],
+    ["gemini_local", ["gemini-4-hydrogen-xhigh", "gemini-4-hydrogen-high", "gemini-3.8-flash-high", "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"]],
     ["grok_local", ["grok-build", "grok-4.7", "grok-4.6", "grok-4.5"]],
     ["kimi_local", ["kimi-code/kimi-for-coding", "kimi-code/k3", "kimi-code/k3-256k"]],
   ])("lists current %s models without a provider login", async (adapter, expectedIds) => {
@@ -390,5 +393,28 @@ describe("adapter model listing", () => {
       const models = await listAdapterModels("codex_local");
       expect(models).toEqual(codexFallbackModels);
     });
+  });
+
+  it("discovers live Antigravity CLI models for gemini_local and merges curated fallbacks", async () => {
+    setGeminiModelsRunnerForTests(async () => ({
+      status: 0,
+      stdout: [
+        "\u001b[2K⠋ Fetching available models...",
+        "gemini-4-hydrogen-xhigh   Gemini 4 Hydrogen (XHigh)",
+        "gemini-4-hydrogen-high    Gemini 4 Hydrogen (High)",
+        "claude-opus-4-6-thinking  Claude Opus 4.6 (Thinking)",
+      ].join("\n"),
+      stderr: "",
+      hasError: false,
+    }));
+
+    const models = await refreshAdapterModels("gemini_local");
+    expect(models[0]).toEqual({ id: "auto", label: "Auto" });
+    expect(models.slice(1, 4)).toEqual([
+      { id: "gemini-4-hydrogen-xhigh", label: "Gemini 4 Hydrogen (XHigh)" },
+      { id: "gemini-4-hydrogen-high", label: "Gemini 4 Hydrogen (High)" },
+      { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)" },
+    ]);
+    expect(models.some((m) => m.id === "gemini-3.8-flash")).toBe(true);
   });
 });
