@@ -1,0 +1,5664 @@
+{
+  "status": "HISTORICAL_PROVEN_EXACT_PARENT",
+  "head": "8e955181d8a3776acc86e4662de3c77933231a76",
+  "runtimeDelta": {
+    "baseline": 398,
+    "candidate": 396,
+    "removed": [
+      "heartbeat orphaned process recovery re-enqueues recovery when the latest in-progress continuation made progress but left no live path",
+      "heartbeat orphaned process recovery repairs missing disposition independently of the productive diagnostic label"
+    ],
+    "added": []
+  },
+  "model": "OpenAI gpt-6.1-sol",
+  "contextWindow": "host does not expose it",
+  "timingClaim": "None. Local recorded durations are noisy diagnostics only.",
+  "testFile": "server/src/__tests__/heartbeat-process-recovery.test.ts",
+  "retired": [
+    {
+      "number": 202,
+      "line": 13446,
+      "endLine": 13471,
+      "name": "repairs missing disposition independently of the productive diagnostic label",
+      "assertions": [
+        "expect(result.continuationRequeued).toBe(1)",
+        "expect(result.escalated).toBe(0)",
+        "expect(result.issueIds).toEqual([issueId])",
+        "expect( retryRun?.contextSnapshot as Record<string, unknown> | undefined, ).toMatchObject({ issueId, retryReason: \"issue_disposition_repair\", source: \"issue.deliberate_wait_disposition_repair\", })"
+      ]
+    },
+    {
+      "number": 207,
+      "line": 13710,
+      "endLine": 13749,
+      "name": "re-enqueues recovery when the latest in-progress continuation made progress but left no live path",
+      "assertions": [
+        "expect(result.continuationRequeued).toBe(1)",
+        "expect(result.productiveContinuationObserved).toBe(0)",
+        "expect(result.successfulContinuationObserved).toBe(0)",
+        "expect(result.escalated).toBe(0)",
+        "expect(result.issueIds).toEqual([issueId])",
+        "expect(issue?.status).toBe(\"in_progress\")",
+        "expect(comments).toHaveLength(0)",
+        "expect(runs).toHaveLength(2)",
+        "expect( retryRun?.contextSnapshot as Record<string, unknown> | undefined, ).toMatchObject({ issueId, taskId: issueId, retryReason: \"issue_disposition_repair\", retryOfRunId: runId, source: \"issue.deliberate_wait_disposition_repair\", })",
+        "expect( retryRun?.contextSnapshot as Record<string, unknown>, ).not.toHaveProperty(\"modelProfile\")",
+        "expect(wakeups).toHaveLength(2)"
+      ]
+    }
+  ],
+  "keeper": {
+    "number": 239,
+    "line": 15632,
+    "endLine": 15706,
+    "name": "does not treat a productive terminal run as healthy when in-progress work has no live path",
+    "sourceSHA256": "5c17238acb74acc2cf775abed83fd9269adfb75c6a6fc19f2c48b3264df78295",
+    "assertions": [
+      "expect(sourceIssue).toMatchObject({ status: \"in_progress\", assigneeAgentId: agentId, assigneeUserId: null, executionRunId: null, })",
+      "expect(activeRuns).toHaveLength(0)",
+      "expect(liveWakeups).toHaveLength(0)",
+      "expect(result.productiveContinuationObserved).toBe(0)",
+      "expect(result.continuationRequeued + result.escalated).toBe(1)",
+      "expect(result.issueIds).toEqual([issueId])",
+      "expect(comments).toHaveLength(0)",
+      "expect(recoveryIssues).toHaveLength(0)",
+      "expect(followupRuns).toHaveLength(2)",
+      "expect( retryRun?.contextSnapshot as Record<string, unknown> | undefined, ).toMatchObject({ issueId, taskId: issueId, retryReason: \"issue_disposition_repair\", retryOfRunId: runId, source: \"issue.deliberate_wait_disposition_repair\", })",
+      "expect( retryRun?.contextSnapshot as Record<string, unknown>, ).not.toHaveProperty(\"modelProfile\")"
+    ]
+  },
+  "coverageMap": {
+    "fixture": "seedStrandedIssueFixture({ status: \"in_progress\", runStatus: \"succeeded\", livenessState: \"advanced\" })",
+    "sharedAction": "heartbeatService(db).reconcileStrandedAssignedIssues() once",
+    "additionalKeeperPreconditions": "Pure reads verify in-progress source ownership, no active company runs, no queued/deferred company wakes before reconcile. They do not mutate fixture or authorize another run.",
+    "uniqueChecksTransferred": [
+      "successfulContinuationObserved=0",
+      "continuationRequeued=1",
+      "escalated=0",
+      "post-reconcile issue.status=in_progress",
+      "two agent wakeup rows",
+      "conditional waitForRunToSettle on exact retryRun.id",
+      "two agent runs across all companies via original selectRecoveryRunsByAgent query, alongside original keeper company+agent count"
+    ],
+    "allSharedChecksPreserved": [
+      "productiveContinuationObserved=0",
+      "exact issueIds",
+      "zero issue comments",
+      "two agent runs",
+      "context.issueId/taskId/retryReason/retryOfRunId/source",
+      "no modelProfile"
+    ],
+    "keeperExtraChecksPreserved": [
+      "no stranded recovery children",
+      "precondition in_progress/assigneeAgentId/assigneeUserId/executionRunId",
+      "no active company runs and no live company wakes",
+      "continuationRequeued+escalated=1"
+    ],
+    "diff": {
+      "added": 13,
+      "deleted": 68,
+      "netTestLOC": -55,
+      "registrationsRetired": 2,
+      "declarationsBefore": 248,
+      "declarationsAfter": 246,
+      "expectedCasesBefore": 398,
+      "expectedCasesAfter": 396
+    },
+    "hashes": {
+      "original.test.ts": "645fd53b52e513e97c83f1e074dc1bded0749be18fb086138d154c19ea18d1d6",
+      "candidate.test.ts": "b9acb0ab58861f791fd63376e7c1b0fa9fa17b2174d997fa74e946430f413de0",
+      "original.service.ts": "c414df876e7df64e701a752513db8e5cf7365589294d50da0e1396788a9207db",
+      "mutated-source.service.ts": "3eb31aa0ea1af37f0f68421873c70fb84ee188ce5959b61ce14a0c3aede05530",
+      "mutated-counter.service.ts": "f206e54f03c37667204b39eb48da1bfbb09f5e90b7b9b691a2c1a122838a017c",
+      "candidate.patch": "e5274e628a02e753b19e6a1cad0ba6341cff9262e160852540c451be69d9ea98"
+    },
+    "mutationMap": [
+      {
+        "owner": "server/src/services/recovery/service.ts:3163",
+        "kind": "wrong persisted disposition-repair context source",
+        "retiredDeclaration": 202,
+        "expectedOracle": "contextSnapshot.source toMatchObject",
+        "patch": "mutation-source.patch"
+      },
+      {
+        "owner": "server/src/services/recovery/service.ts:4513",
+        "kind": "incorrect successfulContinuationObserved increment in queued legacy disposition repair branch",
+        "retiredDeclaration": 207,
+        "expectedOracle": "result.successfulContinuationObserved toBe(0)",
+        "patch": "mutation-counter.patch"
+      }
+    ],
+    "oracleLocations": {
+      "original-source": {
+        "title": "repairs missing disposition independently of the productive diagnostic label",
+        "oracleLine": 13463,
+        "expectedLog": "issue.wrong_disposition_repair"
+      },
+      "original-counter": {
+        "title": "re-enqueues recovery when the latest in-progress continuation made progress but left no live path",
+        "oracleLine": 13721,
+        "expectedLog": "successfulContinuationObserved"
+      },
+      "candidate-source": {
+        "title": "does not treat a productive terminal run as healthy when in-progress work has no live path",
+        "oracleLine": 15635,
+        "expectedLog": "issue.wrong_disposition_repair"
+      },
+      "candidate-counter": {
+        "title": "does not treat a productive terminal run as healthy when in-progress work has no live path",
+        "oracleLine": 15608,
+        "expectedLog": "successfulContinuationObserved"
+      }
+    }
+  },
+  "controls": [
+    {
+      "phase": "baseline",
+      "exitCode": 0,
+      "tests": 398,
+      "passed": 398,
+      "failed": 0,
+      "pending": 0,
+      "hashes": {
+        "server/src/__tests__/heartbeat-process-recovery.test.ts": "645fd53b52e513e97c83f1e074dc1bded0749be18fb086138d154c19ea18d1d6",
+        "server/src/services/recovery/service.ts": "c414df876e7df64e701a752513db8e5cf7365589294d50da0e1396788a9207db"
+      }
+    },
+    {
+      "phase": "candidate",
+      "exitCode": 0,
+      "tests": 396,
+      "passed": 396,
+      "failed": 0,
+      "pending": 0,
+      "hashes": {
+        "server/src/__tests__/heartbeat-process-recovery.test.ts": "b9acb0ab58861f791fd63376e7c1b0fa9fa17b2174d997fa74e946430f413de0",
+        "server/src/services/recovery/service.ts": "c414df876e7df64e701a752513db8e5cf7365589294d50da0e1396788a9207db"
+      }
+    },
+    {
+      "phase": "revert",
+      "exitCode": 0,
+      "tests": 398,
+      "passed": 398,
+      "failed": 0,
+      "pending": 0,
+      "hashes": {
+        "server/src/__tests__/heartbeat-process-recovery.test.ts": "645fd53b52e513e97c83f1e074dc1bded0749be18fb086138d154c19ea18d1d6",
+        "server/src/services/recovery/service.ts": "c414df876e7df64e701a752513db8e5cf7365589294d50da0e1396788a9207db"
+      }
+    },
+    {
+      "phase": "mutation-source-original",
+      "exitCode": 1,
+      "tests": 398,
+      "passed": 0,
+      "failed": 1,
+      "pending": 397,
+      "hashes": {
+        "server/src/__tests__/heartbeat-process-recovery.test.ts": "645fd53b52e513e97c83f1e074dc1bded0749be18fb086138d154c19ea18d1d6",
+        "server/src/services/recovery/service.ts": "3eb31aa0ea1af37f0f68421873c70fb84ee188ce5959b61ce14a0c3aede05530"
+      }
+    },
+    {
+      "phase": "mutation-source-keeper",
+      "exitCode": 1,
+      "tests": 396,
+      "passed": 0,
+      "failed": 1,
+      "pending": 395,
+      "hashes": {
+        "server/src/__tests__/heartbeat-process-recovery.test.ts": "b9acb0ab58861f791fd63376e7c1b0fa9fa17b2174d997fa74e946430f413de0",
+        "server/src/services/recovery/service.ts": "3eb31aa0ea1af37f0f68421873c70fb84ee188ce5959b61ce14a0c3aede05530"
+      }
+    },
+    {
+      "phase": "mutation-counter-original",
+      "exitCode": 1,
+      "tests": 398,
+      "passed": 0,
+      "failed": 1,
+      "pending": 397,
+      "hashes": {
+        "server/src/__tests__/heartbeat-process-recovery.test.ts": "645fd53b52e513e97c83f1e074dc1bded0749be18fb086138d154c19ea18d1d6",
+        "server/src/services/recovery/service.ts": "f206e54f03c37667204b39eb48da1bfbb09f5e90b7b9b691a2c1a122838a017c"
+      }
+    },
+    {
+      "phase": "mutation-counter-keeper",
+      "exitCode": 1,
+      "tests": 396,
+      "passed": 0,
+      "failed": 1,
+      "pending": 395,
+      "hashes": {
+        "server/src/__tests__/heartbeat-process-recovery.test.ts": "b9acb0ab58861f791fd63376e7c1b0fa9fa17b2174d997fa74e946430f413de0",
+        "server/src/services/recovery/service.ts": "f206e54f03c37667204b39eb48da1bfbb09f5e90b7b9b691a2c1a122838a017c"
+      }
+    },
+    {
+      "phase": "restoration",
+      "exitCode": 0,
+      "tests": 396,
+      "passed": 396,
+      "failed": 0,
+      "pending": 0,
+      "hashes": {
+        "server/src/__tests__/heartbeat-process-recovery.test.ts": "b9acb0ab58861f791fd63376e7c1b0fa9fa17b2174d997fa74e946430f413de0",
+        "server/src/services/recovery/service.ts": "c414df876e7df64e701a752513db8e5cf7365589294d50da0e1396788a9207db"
+      }
+    }
+  ],
+  "cleanSourceHashes": {
+    "server/src/__tests__/heartbeat-process-recovery.test.ts": "645fd53b52e513e97c83f1e074dc1bded0749be18fb086138d154c19ea18d1d6",
+    "server/src/services/recovery/service.ts": "c414df876e7df64e701a752513db8e5cf7365589294d50da0e1396788a9207db",
+    "server/src/services/heartbeat.ts": "9ac217e97e5319c850924f083df32be43df11f33f8970ff8efb4a5f776a0c1d9",
+    "server/src/services/heartbeat/retries.ts": "9f29feb6d986f281cbfd849e0152f49cf56e18974c6df1bc801010dcce4c877a"
+  },
+  "ownerMutationKills": [
+    {
+      "phase": "mutation-source-original",
+      "failedCase": "heartbeat orphaned process recovery repairs missing disposition independently of the productive diagnostic label",
+      "expected": "issue.deliberate_wait_disposition_repair",
+      "actual": "issue.wrong_disposition_repair",
+      "note": "Source mutation changes the persisted retry source; the source oracle expects the canonical value and observes the corrupted value."
+    },
+    {
+      "phase": "mutation-source-keeper",
+      "failedCase": "heartbeat orphaned process recovery does not treat a productive terminal run as healthy when in-progress work has no live path",
+      "expected": "issue.deliberate_wait_disposition_repair",
+      "actual": "issue.wrong_disposition_repair",
+      "note": "Source mutation changes the persisted retry source; the source oracle expects the canonical value and observes the corrupted value."
+    },
+    {
+      "phase": "mutation-counter-original",
+      "failedCase": "heartbeat orphaned process recovery re-enqueues recovery when the latest in-progress continuation made progress but left no live path",
+      "expected": 0,
+      "actual": 1,
+      "note": "Counter mutation increments successfulContinuationObserved; the keeper counter oracle expects 0 and observes 1."
+    },
+    {
+      "phase": "mutation-counter-keeper",
+      "failedCase": "heartbeat orphaned process recovery does not treat a productive terminal run as healthy when in-progress work has no live path",
+      "expected": 0,
+      "actual": 1,
+      "note": "Counter mutation increments successfulContinuationObserved; the keeper counter oracle expects 0 and observes 1."
+    }
+  ],
+  "cleanup": {
+    "trackedSourceClean": true,
+    "pinnedSourceHashesMatch": true,
+    "ownedMatchingProcesses": [],
+    "globalPostgresMainProcessesAtSnapshot": [],
+    "globalVitestProcessesAtSnapshot": [
+      {
+        "pid": 11493,
+        "parentPID": 11483,
+        "executable": "node"
+      }
+    ]
+  },
+  "declarationLedger": [
+    {
+      "number": 1,
+      "sourceLines": [
+        965,
+        1044
+      ],
+      "name": "does not reap active adapter executions started by another heartbeat service instance",
+      "kind": "ordinary",
+      "sourceSHA256": "e57a2403b82378c9f5c1b7f57ba97ae61f0c1dc55c42fd6de66430a953dfc242",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not reap active adapter executions started by another heartbeat service instance",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 2,
+      "sourceLines": [
+        1601,
+        1644
+      ],
+      "name": "keeps unresolved-ref recovery and reporting while persisting only owned diagnostics: %s",
+      "kind": "each",
+      "sourceSHA256": "bdddddecb4a01f20b41b178555570bd4f5794fff5cd822e4e3cdda832d2cf52c",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "keeps unresolved-ref recovery and reporting while persisting only owned diagnostics: owned",
+          "status": "passed"
+        },
+        {
+          "title": "keeps unresolved-ref recovery and reporting while persisting only owned diagnostics: forged",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 3,
+      "sourceLines": [
+        1646,
+        1672
+      ],
+      "name": "keeps a repair notice on the latest run when an unresolved branch fails twice",
+      "kind": "ordinary",
+      "sourceSHA256": "3af5cd2dc3d38a60e54111b8385bb993d47319a98cded003f5699412c699a675",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps a repair notice on the latest run when an unresolved branch fails twice",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 4,
+      "sourceLines": [
+        1674,
+        1726
+      ],
+      "name": "preserves AI configuration recovery and reports only unexpected causes: %s",
+      "kind": "each",
+      "sourceSHA256": "572be6457e17bbcf895114aadf0bd2df92ca30ba06bcf28491ed8e9e0e69658b",
+      "runtimeCaseCount": 6,
+      "runtimeCases": [
+        {
+          "title": "preserves AI configuration recovery and reports only unexpected causes: missing_default",
+          "status": "passed"
+        },
+        {
+          "title": "preserves AI configuration recovery and reports only unexpected causes: credential_not_shared",
+          "status": "passed"
+        },
+        {
+          "title": "preserves AI configuration recovery and reports only unexpected causes: database_error",
+          "status": "passed"
+        },
+        {
+          "title": "preserves AI configuration recovery and reports only unexpected causes: unmarked_http_error",
+          "status": "passed"
+        },
+        {
+          "title": "preserves AI configuration recovery and reports only unexpected causes: unmarked_forbidden",
+          "status": "passed"
+        },
+        {
+          "title": "preserves AI configuration recovery and reports only unexpected causes: provider_error",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 5,
+      "sourceLines": [
+        1728,
+        1896
+      ],
+      "name": "settles explicit retry admission through real executor cleanup: %s",
+      "kind": "each",
+      "sourceSHA256": "6239aa8fdeb1648b2c3df940f7e0598b891e4eceb22965847f7693a62fedad62",
+      "runtimeCaseCount": 12,
+      "runtimeCases": [
+        {
+          "title": "settles explicit retry admission through real executor cleanup: timeout",
+          "status": "passed"
+        },
+        {
+          "title": "settles explicit retry admission through real executor cleanup: upstream",
+          "status": "passed"
+        },
+        {
+          "title": "settles explicit retry admission through real executor cleanup: cleanup_pending",
+          "status": "passed"
+        },
+        {
+          "title": "settles explicit retry admission through real executor cleanup: cleanup_pending_edited",
+          "status": "passed"
+        },
+        {
+          "title": "settles explicit retry admission through real executor cleanup: cleanup_pending_exhausted",
+          "status": "passed"
+        },
+        {
+          "title": "settles explicit retry admission through real executor cleanup: edited",
+          "status": "passed"
+        },
+        {
+          "title": "settles explicit retry admission through real executor cleanup: exhausted",
+          "status": "passed"
+        },
+        {
+          "title": "settles explicit retry admission through real executor cleanup: new_message",
+          "status": "passed"
+        },
+        {
+          "title": "settles explicit retry admission through real executor cleanup: no_claim",
+          "status": "passed"
+        },
+        {
+          "title": "settles explicit retry admission through real executor cleanup: reassigned",
+          "status": "passed"
+        },
+        {
+          "title": "settles explicit retry admission through real executor cleanup: superseded",
+          "status": "passed"
+        },
+        {
+          "title": "settles explicit retry admission through real executor cleanup: stopped",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 6,
+      "sourceLines": [
+        1898,
+        1927
+      ],
+      "name": "does not reuse a completed explicit turn's receipt for a missing-comment follow-up",
+      "kind": "ordinary",
+      "sourceSHA256": "b92c4ef7c39d30c16bed6bfa5da498fde89769f2f806f2465a87660b9d7fde87",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not reuse a completed explicit turn's receipt for a missing-comment follow-up",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 7,
+      "sourceLines": [
+        1929,
+        1973
+      ],
+      "name": "persists the normalized failure without permanently blocking the conversation",
+      "kind": "ordinary",
+      "sourceSHA256": "e707c43c9852c6673a3e2fba75f9c7447163525a4163e499358b9699d66e5a60",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "persists the normalized failure without permanently blocking the conversation",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 8,
+      "sourceLines": [
+        1975,
+        2001
+      ],
+      "name": "cancels obsolete continuation setup: %s",
+      "kind": "each",
+      "sourceSHA256": "f4caf6aa405e96200d446c0edec47b84043be626b34d938dd70cb2e6e6a889df",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "cancels obsolete continuation setup: continuation_task_ownership_changed",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 9,
+      "sourceLines": [
+        2003,
+        2035
+      ],
+      "name": "retains untyped continuation setup failures: %s",
+      "kind": "each",
+      "sourceSHA256": "d4430934f5fe4cebc3aff6b4ed0f0224bf635ca0887b48b5312f71cf7b3ecc27",
+      "runtimeCaseCount": 3,
+      "runtimeCases": [
+        {
+          "title": "retains untyped continuation setup failures: continuation_source_context_missing",
+          "status": "passed"
+        },
+        {
+          "title": "retains untyped continuation setup failures: continuation_user_authorization_missing",
+          "status": "passed"
+        },
+        {
+          "title": "retains untyped continuation setup failures: continuation_task_ownership_changed",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 10,
+      "sourceLines": [
+        2037,
+        2108
+      ],
+      "name": "does not immediately continue a low-trust preflight setup failure",
+      "kind": "ordinary",
+      "sourceSHA256": "aeeca6713628b9c0484a717d41c800bfe8a5d02c4cf846e424a02e27ecc7c7f0",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not immediately continue a low-trust preflight setup failure",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 11,
+      "sourceLines": [
+        2110,
+        2139
+      ],
+      "name": "does not queue immediate recovery when the failed run's issue is hidden",
+      "kind": "ordinary",
+      "sourceSHA256": "ea82af0bdb42de543b03e2fe570a7b44a0bc3a5f2b7ed9a0105791b3a11f45c2",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not queue immediate recovery when the failed run's issue is hidden",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 12,
+      "sourceLines": [
+        2141,
+        2149
+      ],
+      "name": "does not relabel a lost process run when its agent changes to a conversation adapter",
+      "kind": "ordinary",
+      "sourceSHA256": "f085754bd7bc8bf67ab5f505ef4725f72caa870e5eb591e3bd21083e9eafe68e",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not relabel a lost process run when its agent changes to a conversation adapter",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 13,
+      "sourceLines": [
+        2151,
+        2180
+      ],
+      "name": "waits for a live terminal predecessor before a new turn (historical hold: %s)",
+      "kind": "each",
+      "sourceSHA256": "b819cba7f939868aa9b3bb5f12d4624f336003c181fd63b38fd4f9434875d231",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "waits for a live terminal predecessor before a new turn (historical hold: false)",
+          "status": "passed"
+        },
+        {
+          "title": "waits for a live terminal predecessor before a new turn (historical hold: true)",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 14,
+      "sourceLines": [
+        2182,
+        2198
+      ],
+      "name": "waits for a terminal predecessor's environment lease to be released",
+      "kind": "ordinary",
+      "sourceSHA256": "ad23ec2ed42f8c36b38f3f60ace72227f715cae99810ff5f51a0e58774cb5c6e",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "waits for a terminal predecessor's environment lease to be released",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 15,
+      "sourceLines": [
+        2200,
+        2220
+      ],
+      "name": "keeps an unsafe Stop blocked when recovery sees a deferred human comment",
+      "kind": "ordinary",
+      "sourceSHA256": "fe6f24ec60e4d853cfa906818daf1708542f53d08503af286dfc98c01a85a333",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps an unsafe Stop blocked when recovery sees a deferred human comment",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 16,
+      "sourceLines": [
+        2222,
+        2236
+      ],
+      "name": "leaves hidden issues out of stranded-issue reconciliation",
+      "kind": "ordinary",
+      "sourceSHA256": "4a95510fe77d0d6b58cb0f95ae541c88558f376fb6a1b2418f6690e30e3b74a7",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "leaves hidden issues out of stranded-issue reconciliation",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 17,
+      "sourceLines": [
+        2275,
+        2320
+      ],
+      "name": "preserves native finalization source and board hold after restart with %s owner",
+      "kind": "each",
+      "sourceSHA256": "5677dbe2fa9eea6d271990da61f880d2a593ac2ff13a0e37c617cd050c2e79fb",
+      "runtimeCaseCount": 3,
+      "runtimeCases": [
+        {
+          "title": "preserves native finalization source and board hold after restart with foreign owner",
+          "status": "passed"
+        },
+        {
+          "title": "preserves native finalization source and board hold after restart with malformed owner",
+          "status": "passed"
+        },
+        {
+          "title": "preserves native finalization source and board hold after restart with expired_controller owner",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 18,
+      "sourceLines": [
+        2322,
+        2342
+      ],
+      "name": "rejects a stale orphan candidate when native finalization commits before owner acquisition",
+      "kind": "ordinary",
+      "sourceSHA256": "3a370e7a9473dd630cc843c02378dd0dd3cdb3cf3e80dd621886796ab383cbe6",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "rejects a stale orphan candidate when native finalization commits before owner acquisition",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 19,
+      "sourceLines": [
+        2344,
+        2394
+      ],
+      "name": "fences a native finalization publisher that commits while the orphan UPDATE waits on its row lock",
+      "kind": "ordinary",
+      "sourceSHA256": "043aa82f1ea321a292aef74989bc5249a167a46af55d8d8164eae753eb07bc3a",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "fences a native finalization publisher that commits while the orphan UPDATE waits on its row lock",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 20,
+      "sourceLines": [
+        2396,
+        2414
+      ],
+      "name": "does not invent native finalization authority from %s",
+      "kind": "each",
+      "sourceSHA256": "babe25914fba9d87c38673d00362aa265771f0a658ab1adea6558f91f8fa8fec",
+      "runtimeCaseCount": 4,
+      "runtimeCases": [
+        {
+          "title": "does not invent native finalization authority from phase_only",
+          "status": "passed"
+        },
+        {
+          "title": "does not invent native finalization authority from rejected_result",
+          "status": "passed"
+        },
+        {
+          "title": "does not invent native finalization authority from terminal_failure",
+          "status": "passed"
+        },
+        {
+          "title": "does not invent native finalization authority from unknown_phase",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 21,
+      "sourceLines": [
+        2416,
+        2438
+      ],
+      "name": "resolves the exact native finalization hold after verified workspace settlement without replay",
+      "kind": "ordinary",
+      "sourceSHA256": "67d1e35cf84c0b95a04030f50b8d49529b7ae7a149aa25759325cc109976ac98",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "resolves the exact native finalization hold after verified workspace settlement without replay",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 22,
+      "sourceLines": [
+        2440,
+        2452
+      ],
+      "name": "rejects foreign result, company, and issue bindings for native finalization",
+      "kind": "ordinary",
+      "sourceSHA256": "bcbb500ee7c0b767f72fefd59bfe5fb6c0211c2f3490f758a6080a6d11b5c05d",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "rejects foreign result, company, and issue bindings for native finalization",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 23,
+      "sourceLines": [
+        2454,
+        2460
+      ],
+      "name": "does not extend native finalization authority to a legacy runtime",
+      "kind": "ordinary",
+      "sourceSHA256": "4ef85999c9f679eb7f007b0b711dc3119f55611c29ab978653cb7fb4a623f259",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not extend native finalization authority to a legacy runtime",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 24,
+      "sourceLines": [
+        2462,
+        2475
+      ],
+      "name": "does not clear another run's native finalization hold on the same task",
+      "kind": "ordinary",
+      "sourceSHA256": "a51a446fcd34b7fcb86a2a06d0501ec6ae0620e182a26643c85085d0dd16ddfd",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not clear another run's native finalization hold on the same task",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 25,
+      "sourceLines": [
+        2477,
+        2489
+      ],
+      "name": "keeps existing terminal-task disposition for a native finalization hold",
+      "kind": "ordinary",
+      "sourceSHA256": "3250ef406661d80d8129f8f0cb9398fe37e3750e35bf191796ae00f47546eb7a",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps existing terminal-task disposition for a native finalization hold",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 26,
+      "sourceLines": [
+        2491,
+        2741
+      ],
+      "name": "joins startup and reap retained cleanup, keeps recovery live, and drains its %s operation",
+      "kind": "each",
+      "sourceSHA256": "ea47cc6dba980f53003c80c604e5d3e50fa789b4f2ab7d75eded136ea3d08065",
+      "runtimeCaseCount": 4,
+      "runtimeCases": [
+        {
+          "title": "joins startup and reap retained cleanup, keeps recovery live, and drains its settled operation",
+          "status": "passed"
+        },
+        {
+          "title": "joins startup and reap retained cleanup, keeps recovery live, and drains its rejected operation",
+          "status": "passed"
+        },
+        {
+          "title": "joins startup and reap retained cleanup, keeps recovery live, and drains its late_callback operation",
+          "status": "passed"
+        },
+        {
+          "title": "joins startup and reap retained cleanup, keeps recovery live, and drains its provider_transport_failed operation",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 27,
+      "sourceLines": [
+        2743,
+        2768
+      ],
+      "name": "keeps a local run active when the recorded pid is still alive",
+      "kind": "ordinary",
+      "sourceSHA256": "a3f34ca212685f45e5bee0e8feaeacf50f543f397444fffd0ccbfefb07f76f1a",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps a local run active when the recorded pid is still alive",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 28,
+      "sourceLines": [
+        2770,
+        2811
+      ],
+      "name": "keeps a native run active without granting legacy retry or signal authority",
+      "kind": "ordinary",
+      "sourceSHA256": "ab8e0983cd07d3e536287ad9dc5dcca67588e668d85fc6e4f26d1d68b6002e2a",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps a native run active without granting legacy retry or signal authority",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 29,
+      "sourceLines": [
+        2813,
+        2961
+      ],
+      "name": "retains authentication-blocked ownership after restart with coordinator phase %s",
+      "kind": "each",
+      "sourceSHA256": "da3dc2ef29358251bc532150bb5934e2c2bc6cc8a2178691ddc58065977a2778",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "retains authentication-blocked ownership after restart with coordinator phase terminal_failure",
+          "status": "passed"
+        },
+        {
+          "title": "retains authentication-blocked ownership after restart with coordinator phase retryable_failure",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 30,
+      "sourceLines": [
+        2963,
+        3003
+      ],
+      "name": "keeps a live native run owned by the current controller out of ambiguous recovery",
+      "kind": "ordinary",
+      "sourceSHA256": "2d031c5b9774f5257f83e683d8e30c9c98c6db2c4b64f2495460434378c72c92",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps a live native run owned by the current controller out of ambiguous recovery",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 31,
+      "sourceLines": [
+        3005,
+        3050
+      ],
+      "name": "does not reap a retryable native run while its same-run recovery path owns it",
+      "kind": "ordinary",
+      "sourceSHA256": "37a1897441425fd47227840b5b2de6afa75fa228f0aa2d50c728163896b6f02b",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not reap a retryable native run while its same-run recovery path owns it",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 32,
+      "sourceLines": [
+        3052,
+        3079
+      ],
+      "name": "does not grant a dead native run legacy retry authority after adapter reassignment",
+      "kind": "ordinary",
+      "sourceSHA256": "a3423bf197972fc193f7dd0ea7470dcf0a6906664e9b00f76fa7bb3bf2e92b79",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not grant a dead native run legacy retry authority after adapter reassignment",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 33,
+      "sourceLines": [
+        3081,
+        3113
+      ],
+      "name": "skips generic timer wakes without invoking an adapter when no assigned work is actionable",
+      "kind": "ordinary",
+      "sourceSHA256": "a21e1de612f12c998438e8f51ffc2982b426d202a2318e8fa4c3d3f8c06ec6f3",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "skips generic timer wakes without invoking an adapter when no assigned work is actionable",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 34,
+      "sourceLines": [
+        3115,
+        3127
+      ],
+      "name": "recovers legacy startup before adapter.invoke using the claimed adapter identity",
+      "kind": "ordinary",
+      "sourceSHA256": "95d604588811b52e3db7ef1f4ebfbea112c237c7196af01f78d6151f193cca5a",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "recovers legacy startup before adapter.invoke using the claimed adapter identity",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 35,
+      "sourceLines": [
+        3129,
+        3217
+      ],
+      "name": "schedules one conversation continuation after losing the provider",
+      "kind": "ordinary",
+      "sourceSHA256": "d00299ec60227dcaeb21234ed5b64c3b5bff4085224a3f99cea17dc8f7812209",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "schedules one conversation continuation after losing the provider",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 36,
+      "sourceLines": [
+        3219,
+        3244
+      ],
+      "name": "requires reconciliation for a lost monitor whose provider outcomes are unknown",
+      "kind": "ordinary",
+      "sourceSHA256": "1270da179a1c1a1d4ca1d242e9050f3d90d003ff8cf1750e41740b1f9fefa915",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "requires reconciliation for a lost monitor whose provider outcomes are unknown",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 37,
+      "sourceLines": [
+        3246,
+        3275
+      ],
+      "name": "does not retry a lost monitor dispatch while another monitor wake remains scheduled",
+      "kind": "ordinary",
+      "sourceSHA256": "fdb49058cbd631b9a3afc8fbb01c57df3db70094becda1526a12d6167cdd057b",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not retry a lost monitor dispatch while another monitor wake remains scheduled",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 38,
+      "sourceLines": [
+        3310,
+        3339
+      ],
+      "name": "fences native selection when cancellation wins during preparation",
+      "kind": "ordinary",
+      "sourceSHA256": "c17e6273c1b46897b12bfded1868ce6c4c792dcbf25487388b5e5d25be9a9335",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "fences native selection when cancellation wins during preparation",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 39,
+      "sourceLines": [
+        3341,
+        3371
+      ],
+      "name": "does not dispatch when cancellation wins after native selection",
+      "kind": "ordinary",
+      "sourceSHA256": "20c18bd0a5955507b7e2153011f14cb7db3197df6d05b3801e3afc3033430e61",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not dispatch when cancellation wins after native selection",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 40,
+      "sourceLines": [
+        3373,
+        3428
+      ],
+      "name": "dispatches local native external chat inside the server-selected task root",
+      "kind": "ordinary",
+      "sourceSHA256": "ad7c2d1a910089b2feeb5259e28fe4b5fc1411953ff81b0e622cecb90570caa2",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "dispatches local native external chat inside the server-selected task root",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 41,
+      "sourceLines": [
+        3430,
+        3473
+      ],
+      "name": "carries the ordinary initial description provenance through native heartbeat assembly",
+      "kind": "ordinary",
+      "sourceSHA256": "1dd6edc04a9cd916db7e401b0d30943b2125feecce656072c3fb61fa85a99382",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "carries the ordinary initial description provenance through native heartbeat assembly",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 42,
+      "sourceLines": [
+        3475,
+        3594
+      ],
+      "name": "holds admitted native chat with a legacy shared cwd without replacing input or releasing ownership",
+      "kind": "ordinary",
+      "sourceSHA256": "46c91235ae91d2cf4ca48c9042f72901d01bd6c078354e2587c39c99bb0d2784",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "holds admitted native chat with a legacy shared cwd without replacing input or releasing ownership",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 43,
+      "sourceLines": [
+        3596,
+        3603
+      ],
+      "name": "checkpoints idle warm sessions even when no hot restart was requested",
+      "kind": "ordinary",
+      "sourceSHA256": "ccdc4fdde6f0f584d1172c2ce67b0cafb0fe67b6919dbe3eab4594ed6062c9fc",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "checkpoints idle warm sessions even when no hot restart was requested",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 44,
+      "sourceLines": [
+        3605,
+        3669
+      ],
+      "name": "captures a hot-restart shutdown snapshot without interrupting running runs",
+      "kind": "ordinary",
+      "sourceSHA256": "1ade63648a871e12ae7a5cfbbbb3b3a403bd26245b590f86363ec995b44631e8",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "captures a hot-restart shutdown snapshot without interrupting running runs",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 45,
+      "sourceLines": [
+        3671,
+        3756
+      ],
+      "name": "snapshots and drains a server-stdio ACP run before embedded database shutdown",
+      "kind": "ordinary",
+      "sourceSHA256": "385241dbc58de228443b60c91f1a8efba861e589aecce13606727b0b63469347",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "snapshots and drains a server-stdio ACP run before embedded database shutdown",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 46,
+      "sourceLines": [
+        3758,
+        3815
+      ],
+      "name": "reports a selectively drained ACP run as lost when terminal persistence fails",
+      "kind": "ordinary",
+      "sourceSHA256": "48bea9460320bf4ed1c89a4890d31be9a9f3dc75fa156b99413d10daf00345d5",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "reports a selectively drained ACP run as lost when terminal persistence fails",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 47,
+      "sourceLines": [
+        3817,
+        3916
+      ],
+      "name": "drains only server-stdio runs and preserves detached CLI adoption in a mixed restart",
+      "kind": "ordinary",
+      "sourceSHA256": "81e30096dcb94125866db7069fb2df024b03e7ee1735add62038c8f237ac7956",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "drains only server-stdio runs and preserves detached CLI adoption in a mixed restart",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 48,
+      "sourceLines": [
+        3918,
+        3987
+      ],
+      "name": "adopts an old-server legacy snapshot written for a new instance-scoped marker",
+      "kind": "ordinary",
+      "sourceSHA256": "bdcc8bfda3a1704d781bce88ce2936f09e1800e0ab570f46dd2b6c384120f02b",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "adopts an old-server legacy snapshot written for a new instance-scoped marker",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 49,
+      "sourceLines": [
+        3989,
+        4024
+      ],
+      "name": "reports preflight live runs as lost when the shutdown snapshot is missing",
+      "kind": "ordinary",
+      "sourceSHA256": "1e5ea4f6885f0f353a12ff051d9636317e6b54ca807e815600e57bde106b6878",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "reports preflight live runs as lost when the shutdown snapshot is missing",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 50,
+      "sourceLines": [
+        4026,
+        4073
+      ],
+      "name": "reports a preflight run that finished before snapshot capture as finalized",
+      "kind": "ordinary",
+      "sourceSHA256": "22b93d0e1195f5fc524ba9c32078bd857847c6f7c7c92ff33562c219a39a1029",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "reports a preflight run that finished before snapshot capture as finalized",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 51,
+      "sourceLines": [
+        4075,
+        4208
+      ],
+      "name": "persists codex_local spawn identity before hot restart and never loses the live run for missing metadata",
+      "kind": "ordinary",
+      "sourceSHA256": "4a31bea8e215c098ad2ea853e13b6bb77b5301023db7f1ade7b7e302090ddd7c",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "persists codex_local spawn identity before hot restart and never loses the live run for missing metadata",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 52,
+      "sourceLines": [
+        4210,
+        4280
+      ],
+      "name": "reports adopted hot-restart runs before startup reap can mark them process_lost",
+      "kind": "ordinary",
+      "sourceSHA256": "141b74fe80c4edf294c4b8cae9f35e6f2e7478e7088ea11d48bed9f0baaf04ad",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "reports adopted hot-restart runs before startup reap can mark them process_lost",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 53,
+      "sourceLines": [
+        4282,
+        4340
+      ],
+      "name": "keeps process-group-only hot-restart adoptions out of process_lost reaping",
+      "kind": "skipIf",
+      "sourceSHA256": "e50f256fb720ad0030256447f615a5d5f5bebbc5c8ac734148ce013dac2712e0",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps process-group-only hot-restart adoptions out of process_lost reaping",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 54,
+      "sourceLines": [
+        4342,
+        4386
+      ],
+      "name": "terminalizes an unsupported legacy session on shutdown without speculative replay",
+      "kind": "ordinary",
+      "sourceSHA256": "64e6a4df6b4111cf25d0d0f82509f14c39932aafbb03ce3f2608d386196cc302",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "terminalizes an unsupported legacy session on shutdown without speculative replay",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 55,
+      "sourceLines": [
+        4388,
+        4444
+      ],
+      "name": "suspends native Paperclip Runner ownership on graceful restart without cancelling or creating a retry run",
+      "kind": "ordinary",
+      "sourceSHA256": "25aea5766be0f0cae6be0240010610349c96f7f9472b6ad3bcb1d2d50232fa93",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "suspends native Paperclip Runner ownership on graceful restart without cancelling or creating a retry run",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 56,
+      "sourceLines": [
+        4446,
+        4487
+      ],
+      "name": "does not overwrite a run that is no longer running during graceful shutdown drain",
+      "kind": "ordinary",
+      "sourceSHA256": "2a53ef98dfa994dd560062f28730ff706797830c98be6cd2e4c2b3fc31d3f83b",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not overwrite a run that is no longer running during graceful shutdown drain",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 57,
+      "sourceLines": [
+        4489,
+        4504
+      ],
+      "name": "does not duplicate a legacy reconciliation action across repeated shutdowns",
+      "kind": "ordinary",
+      "sourceSHA256": "462a23a44f9bf15755dd8214231867c1de2be676883bdbc306b85fe6df2dbc89",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not duplicate a legacy reconciliation action across repeated shutdowns",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 58,
+      "sourceLines": [
+        4506,
+        4545
+      ],
+      "name": "does not reset an exhausted incident budget on server restart",
+      "kind": "ordinary",
+      "sourceSHA256": "667d1ae7a4f05536bc464f147a728796625f6b816ef4136e8487993a03ae36ee",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not reset an exhausted incident budget on server restart",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 59,
+      "sourceLines": [
+        4547,
+        4569
+      ],
+      "name": "releases active environment leases when an orphaned run is reaped",
+      "kind": "ordinary",
+      "sourceSHA256": "d54ba1e81f61f796410ed9c6d375b00f2cbc78fc1bc7d75cd515942a5e6619be",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "releases active environment leases when an orphaned run is reaped",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 60,
+      "sourceLines": [
+        4571,
+        4603
+      ],
+      "name": "does not signal an unowned persisted process group after the tracked parent exits",
+      "kind": "skipIf",
+      "sourceSHA256": "ef3a35c36c7ccf57bee4a097cd93666a8802b8a8764fe2ee8a157af5270dc8df",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not signal an unowned persisted process group after the tracked parent exits",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 61,
+      "sourceLines": [
+        4605,
+        4627
+      ],
+      "name": "does not bypass unknown process outcomes through immediate continuation recovery",
+      "kind": "ordinary",
+      "sourceSHA256": "922793188732d925f03e3f2186ed776bf10846306b997440fd95cec4c3a7ded4",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not bypass unknown process outcomes through immediate continuation recovery",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 62,
+      "sourceLines": [
+        4629,
+        4706
+      ],
+      "name": "blocks failed recovery work in place during immediate terminal-run cleanup",
+      "kind": "ordinary",
+      "sourceSHA256": "19773eb58b2f99b210c66cdb62cda591fcc101282d3b8aa28e1f137c47d8e788",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "blocks failed recovery work in place during immediate terminal-run cleanup",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 63,
+      "sourceLines": [
+        4708,
+        4743
+      ],
+      "name": "does not block paused-tree work when immediate continuation recovery is suppressed by the hold",
+      "kind": "ordinary",
+      "sourceSHA256": "ed18a016d0147f4614d8d4e203693209cf0e4b95087eb22a212d2304ae305c41",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not block paused-tree work when immediate continuation recovery is suppressed by the hold",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 64,
+      "sourceLines": [
+        4745,
+        4780
+      ],
+      "name": "allows conversation continuation after a transient remote-compaction failure",
+      "kind": "ordinary",
+      "sourceSHA256": "9eda0fd96c117d1253192511b9a33759510b02635a321c38861e15e469f12887",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "allows conversation continuation after a transient remote-compaction failure",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 65,
+      "sourceLines": [
+        4782,
+        4962
+      ],
+      "name": "schedules bounded retries for failed accepted interaction continuation wakes",
+      "kind": "ordinary",
+      "sourceSHA256": "573e70126bc707ad7e773d3b9dfd01e5859f936d4b7ceed6829b92b1c7ded4d1",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "schedules bounded retries for failed accepted interaction continuation wakes",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 66,
+      "sourceLines": [
+        4964,
+        5137
+      ],
+      "name": "schedules an infra retry for a setup failure caused by a transient sandbox provider worker restart",
+      "kind": "ordinary",
+      "sourceSHA256": "cda9ed6e83f766d8c55983eaa7d58ed437b398f7e040b4b91597a514e6ab8003",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "schedules an infra retry for a setup failure caused by a transient sandbox provider worker restart",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 67,
+      "sourceLines": [
+        5139,
+        5172
+      ],
+      "name": "classifies only the installed-but-not-ready sandbox provider plugin message as a configuration gap",
+      "kind": "ordinary",
+      "sourceSHA256": "b35e64856a22a435231c1ec41af47ce432665d9bdcc90c464cf4f0d04a150cb7",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "classifies only the installed-but-not-ready sandbox provider plugin message as a configuration gap",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 68,
+      "sourceLines": [
+        5174,
+        5308
+      ],
+      "name": "blocks the issue instead of re-dispatching when the sandbox provider plugin is stuck in error",
+      "kind": "ordinary",
+      "sourceSHA256": "fff8a612aa1f3b89734631f8d4667adc15f2186f76190dd96de686b90e68b0d4",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "blocks the issue instead of re-dispatching when the sandbox provider plugin is stuck in error",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 69,
+      "sourceLines": [
+        5310,
+        5481
+      ],
+      "name": "escalates (does not retry) an accepted-interaction-continuation setup failure whose message matches neither retryable pattern",
+      "kind": "ordinary",
+      "sourceSHA256": "b66d1202ae1eebbb6e0e56dc5dd4b4390b0b0ee098c1be00dbdb330032fed2a3",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "escalates (does not retry) an accepted-interaction-continuation setup failure whose message matches neither retryable pattern",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 70,
+      "sourceLines": [
+        5483,
+        5600
+      ],
+      "name": "escalates exhausted plan approval resume failures with a system comment and recovery action",
+      "kind": "ordinary",
+      "sourceSHA256": "fcd524d0082212bcb7e724f4a1906c25e7c08debb7e5d29fdcc0bc567767607c",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "escalates exhausted plan approval resume failures with a system comment and recovery action",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 71,
+      "sourceLines": [
+        5604,
+        5744
+      ],
+      "name": "retries a plan-approval continuation lost as process_lost before agent start as an infrastructure failure",
+      "kind": "ordinary",
+      "sourceSHA256": "959ce379297f6271275d27ce5074deffc852fff70e8fc7bfdda1b52c3532bf97",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "retries a plan-approval continuation lost as process_lost before agent start as an infrastructure failure",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 72,
+      "sourceLines": [
+        5746,
+        5863
+      ],
+      "name": "blocks a git-sensitive local adapter before launch when a project-workspace-linked issue is missing its project id",
+      "kind": "ordinary",
+      "sourceSHA256": "3696b26df78b9e4983fa18887f4a71dc6c313af5dd946e4af0bea15d39d6be4c",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "blocks a git-sensitive local adapter before launch when a project-workspace-linked issue is missing its project id",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 73,
+      "sourceLines": [
+        5865,
+        5913
+      ],
+      "name": "keeps an explicit local-path/worktree conflict blocked with a board action and no Sentry event",
+      "kind": "ordinary",
+      "sourceSHA256": "79ae93700d32eadb7822ecdd25358e1f6398734883f6f74a302de2c08b43eb23",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps an explicit local-path/worktree conflict blocked with a board action and no Sentry event",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 74,
+      "sourceLines": [
+        5915,
+        6010
+      ],
+      "name": "preserves failed workspace recovery while classifying managed Git connections: $name",
+      "kind": "each",
+      "sourceSHA256": "3a7509ebb2f0fff4a94318a9988bf265bf6d204a6ced8df78033b8f1f791556b",
+      "runtimeCaseCount": 5,
+      "runtimeCases": [
+        {
+          "title": "preserves failed workspace recovery while classifying managed Git connections: HTTPS authentication",
+          "status": "passed"
+        },
+        {
+          "title": "preserves failed workspace recovery while classifying managed Git connections: SSH alias DNS",
+          "status": "passed"
+        },
+        {
+          "title": "preserves failed workspace recovery while classifying managed Git connections: mixed recognized and unknown candidates",
+          "status": "passed"
+        },
+        {
+          "title": "preserves failed workspace recovery while classifying managed Git connections: mixed local and authentication diagnost\u2026",
+          "status": "passed"
+        },
+        {
+          "title": "preserves failed workspace recovery while classifying managed Git connections: unknown clone failure",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 75,
+      "sourceLines": [
+        6012,
+        6086
+      ],
+      "name": "keeps a direct additional-repository connection failure visible without reporting it to Sentry",
+      "kind": "ordinary",
+      "sourceSHA256": "693146c4f6e2c904b55ca122e37e0f098c342c26a84bcf2dfa6680e785046cf6",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps a direct additional-repository connection failure visible without reporting it to Sentry",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 76,
+      "sourceLines": [
+        6088,
+        6118
+      ],
+      "name": "redacts opaque environment-bound credentials from Sentry diagnostics: %s",
+      "kind": "each",
+      "sourceSHA256": "70237ea6963af7874d471855deffa70725379b821793859c43be6fecca57a068",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "redacts opaque environment-bound credentials from Sentry diagnostics: throw",
+          "status": "passed"
+        },
+        {
+          "title": "redacts opaque environment-bound credentials from Sentry diagnostics: result",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 77,
+      "sourceLines": [
+        6120,
+        6235
+      ],
+      "name": "blocks before dispatch when a declared secret ref has no binding instead of emitting an opaque setup failure",
+      "kind": "ordinary",
+      "sourceSHA256": "1ee13a9a395cc8dd03dc1b31eb1504e38323a00ee26fc611ba308b09a0e55bc9",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "blocks before dispatch when a declared secret ref has no binding instead of emitting an opaque setup failure",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 78,
+      "sourceLines": [
+        6237,
+        6282
+      ],
+      "name": "queues one finish-handoff wake when a successful run leaves in-progress work without a next action",
+      "kind": "ordinary",
+      "sourceSHA256": "24e3deca25de6d2ce048ec00c740097856a4a41c84568c6dab2f27e9ac776da5",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "queues one finish-handoff wake when a successful run leaves in-progress work without a next action",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 79,
+      "sourceLines": [
+        6284,
+        6351
+      ],
+      "name": "requeues a missing-disposition handoff when the previous corrective wake was cancelled",
+      "kind": "ordinary",
+      "sourceSHA256": "28eec6f524297e20cc5284c2a0e282d371a5487c030e7a8ae1fc47b0764e68ce",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "requeues a missing-disposition handoff when the previous corrective wake was cancelled",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 80,
+      "sourceLines": [
+        6353,
+        6441
+      ],
+      "name": "queues one missing-disposition handoff for artifact-producing successful runs left in progress",
+      "kind": "ordinary",
+      "sourceSHA256": "a5063adf2ee3270aa5a6ab34168d7d181f5febcf99c75d7ed2826f33b1ddc515",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "queues one missing-disposition handoff for artifact-producing successful runs left in progress",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 81,
+      "sourceLines": [
+        6443,
+        6497
+      ],
+      "name": "redacts secret-bearing successful-run detected progress before handoff disclosure",
+      "kind": "ordinary",
+      "sourceSHA256": "7f471b4ff1189b909199368fb8c03ff9257c86a8f30a71f37a85fa7f681c099a",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "redacts secret-bearing successful-run detected progress before handoff disclosure",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 82,
+      "sourceLines": [
+        6499,
+        6622
+      ],
+      "name": "escalates an exhausted failed successful-run handoff without using generic continuation recovery first",
+      "kind": "ordinary",
+      "sourceSHA256": "9c1a6e4e8c0fc52a34ba1591f36c849c917a5841928a802d5b5d274b5bc20445",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "escalates an exhausted failed successful-run handoff without using generic continuation recovery first",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 83,
+      "sourceLines": [
+        6624,
+        6703
+      ],
+      "name": "retries an interrupted corrective successful-run handoff instead of escalating it",
+      "kind": "ordinary",
+      "sourceSHA256": "de33c60cd1eb76f96c329494af7b3d4bd1053a6088eb811cbe533047dce6bc4a",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "retries an interrupted corrective successful-run handoff instead of escalating it",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 84,
+      "sourceLines": [
+        6705,
+        6773
+      ],
+      "name": "escalates an interrupted corrective successful-run handoff once its transient retry budget is spent",
+      "kind": "ordinary",
+      "sourceSHA256": "5ae489cd7532719f0660df8e326da190f73f334d56daa0417a146a810e987c61",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "escalates an interrupted corrective successful-run handoff once its transient retry budget is spent",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 85,
+      "sourceLines": [
+        6775,
+        6846
+      ],
+      "name": "escalates an in_progress issue whose interrupted run has spent its transient retry budget",
+      "kind": "ordinary",
+      "sourceSHA256": "886df06108228b693f2024216fb21a43c473354739a4df424084492e77558db8",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "escalates an in_progress issue whose interrupted run has spent its transient retry budget",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 86,
+      "sourceLines": [
+        6848,
+        6890
+      ],
+      "name": "keeps retrying an interrupted run while its transient retry budget remains",
+      "kind": "ordinary",
+      "sourceSHA256": "7a01901aae32879a8186f61886a83747907d8cf4f466cc82c54ca7851375c2fe",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps retrying an interrupted run while its transient retry budget remains",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 87,
+      "sourceLines": [
+        6892,
+        6926
+      ],
+      "name": "escalates an assigned todo issue whose lost dispatch has spent its transient retry budget",
+      "kind": "ordinary",
+      "sourceSHA256": "f2d48e3ebd3436f8a4503ca9914010c1c5ca84c8f27aabf54f20c802bf4829d8",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "escalates an assigned todo issue whose lost dispatch has spent its transient retry budget",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 88,
+      "sourceLines": [
+        6928,
+        6963
+      ],
+      "name": "escalates an exhausted successful handoff run that still leaves no disposition",
+      "kind": "ordinary",
+      "sourceSHA256": "8d84e16efe472ff6f9d03f72471ab6a864745a8d970267073a9e6b1342860c7b",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "escalates an exhausted successful handoff run that still leaves no disposition",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 89,
+      "sourceLines": [
+        6965,
+        7100
+      ],
+      "name": "converts a continuation parked for review into a dependency wait on its open sub-tasks (dispatch receipt: %s)",
+      "kind": "each",
+      "sourceSHA256": "ef55d0d4603c2ad7a6a4a1d36007d1612e722ce5a1d47d498f2a31070614357b",
+      "runtimeCaseCount": 5,
+      "runtimeCases": [
+        {
+          "title": "converts a continuation parked for review into a dependency wait on its open sub-tasks (dispatch receipt: false)",
+          "status": "passed"
+        },
+        {
+          "title": "converts a continuation parked for review into a dependency wait on its open sub-tasks (dispatch receipt: receipt)",
+          "status": "passed"
+        },
+        {
+          "title": "converts a continuation parked for review into a dependency wait on its open sub-tasks (dispatch receipt: launch)",
+          "status": "passed"
+        },
+        {
+          "title": "converts a continuation parked for review into a dependency wait on its open sub-tasks (dispatch receipt: provider)",
+          "status": "passed"
+        },
+        {
+          "title": "converts a continuation parked for review into a dependency wait on its open sub-tasks (dispatch receipt: cleanup)",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 90,
+      "sourceLines": [
+        7102,
+        7179
+      ],
+      "name": "converts a continuation parked for review into a dependency wait on its existing blockers",
+      "kind": "ordinary",
+      "sourceSHA256": "516389e977e82f73cc5f63833ae8e905568e5ec5b669a9a308f0277e7d86e4f5",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "converts a continuation parked for review into a dependency wait on its existing blockers",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 91,
+      "sourceLines": [
+        7181,
+        7248
+      ],
+      "name": "repairs the PAP-16986 deliberate wait through the original owner when no target exists",
+      "kind": "ordinary",
+      "sourceSHA256": "644cb575e0600b72440a2736e7116e7258e80f194760a67b5955bfe2b06eef35",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "repairs the PAP-16986 deliberate wait through the original owner when no target exists",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 92,
+      "sourceLines": [
+        7250,
+        7323
+      ],
+      "name": "folds a persisted disposition-repair action when a current typed wait appears",
+      "kind": "ordinary",
+      "sourceSHA256": "b6c15bfd33ade4e6950ded21ce09e25a2065da6b35a3bc3a4b8efd9be9d304aa",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "folds a persisted disposition-repair action when a current typed wait appears",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 93,
+      "sourceLines": [
+        7325,
+        7409
+      ],
+      "name": "reschedules an expired persisted disposition repair without duplicating the retry",
+      "kind": "ordinary",
+      "sourceSHA256": "9983c7e62875869883025f6766300ef4dff5ced54127ceed6bf1b53f8fa7e7fc",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "reschedules an expired persisted disposition repair without duplicating the retry",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 94,
+      "sourceLines": [
+        7411,
+        7498
+      ],
+      "name": "atomically deduplicates concurrent disposition-repair reconciliation",
+      "kind": "ordinary",
+      "sourceSHA256": "09d0135c34796fa1ff1e3e0687180136e05ae6b599c8374bac6d22dd6c87005c",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "atomically deduplicates concurrent disposition-repair reconciliation",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 95,
+      "sourceLines": [
+        7500,
+        7567
+      ],
+      "name": "does not reset disposition repair for prose but does reset for durable source state",
+      "kind": "ordinary",
+      "sourceSHA256": "10b47d9628f7dc91163a7173cc253723a7a8eba8a0605779abc0874a2d27f15f",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not reset disposition repair for prose but does reset for durable source state",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 96,
+      "sourceLines": [
+        7569,
+        7667
+      ],
+      "name": "escalates exhausted source-owner repair to the board without a substitute wake",
+      "kind": "ordinary",
+      "sourceSHA256": "5fe8d6031fefa017aa95bddd855b72d5b6c7ec1321d3296aa3a88ccac55b6516",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "escalates exhausted source-owner repair to the board without a substitute wake",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 97,
+      "sourceLines": [
+        7669,
+        7702
+      ],
+      "name": "routes a non-invokable source owner to recovery without reassigning the source",
+      "kind": "ordinary",
+      "sourceSHA256": "37a6b49b53b95fa0e5b80039692dc6e5368ed68d1df97fe0924cb46f16afd995",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "routes a non-invokable source owner to recovery without reassigning the source",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 98,
+      "sourceLines": [
+        7704,
+        7759
+      ],
+      "name": "keeps a legacy agent-owned recovery action readable without scheduling another takeover wake",
+      "kind": "ordinary",
+      "sourceSHA256": "f0d2a209ca464787a91dbbeab57b0353690e29ba1c87c7dc59bc3c1dd962ea5c",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps a legacy agent-owned recovery action readable without scheduling another takeover wake",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 99,
+      "sourceLines": [
+        7761,
+        7800
+      ],
+      "name": "does not consume a disposition-repair attempt when on-demand wakes are disabled",
+      "kind": "ordinary",
+      "sourceSHA256": "22272b5de0ba13fded27a8d63a7e95276107c2b1c7d18fe6cb8350da65f6de2c",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not consume a disposition-repair attempt when on-demand wakes are disabled",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 100,
+      "sourceLines": [
+        7802,
+        7866
+      ],
+      "name": "preserves a $providerOutcome provider outcome when instruction cleanup times out ($cleanupAt, warning failure: $warningFails)",
+      "kind": "each",
+      "sourceSHA256": "010aaccad5b933b2393dfd977568c6cd48d0402f83843f39fa439571259ad09b",
+      "runtimeCaseCount": 5,
+      "runtimeCases": [
+        {
+          "title": "preserves a succeeded provider outcome when instruction cleanup times out (inner, warning failure: false)",
+          "status": "passed"
+        },
+        {
+          "title": "preserves a failed provider outcome when instruction cleanup times out (inner, warning failure: false)",
+          "status": "passed"
+        },
+        {
+          "title": "preserves a throws provider outcome when instruction cleanup times out (inner, warning failure: false)",
+          "status": "passed"
+        },
+        {
+          "title": "preserves a succeeded provider outcome when instruction cleanup times out (outer, warning failure: false)",
+          "status": "passed"
+        },
+        {
+          "title": "preserves a succeeded provider outcome when instruction cleanup times out (inner, warning failure: true)",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 101,
+      "sourceLines": [
+        7868,
+        7894
+      ],
+      "name": "persists a failed capture before heartbeat failure finalization settles an older receipt",
+      "kind": "ordinary",
+      "sourceSHA256": "266860ba691b77b9bae8be944a39d262a391b8586cca54fea4eadba7c5d5c4e7",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "persists a failed capture before heartbeat failure finalization settles an older receipt",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 102,
+      "sourceLines": [
+        7896,
+        7933
+      ],
+      "name": "stops controller renewal and releases execution controls when teardown deadline cleanup throws",
+      "kind": "ordinary",
+      "sourceSHA256": "ece3387e840470a0630ebe0ce742b928c682c156951cffbeeb105b8e9fb724d3",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "stops controller renewal and releases execution controls when teardown deadline cleanup throws",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 103,
+      "sourceLines": [
+        7935,
+        7964
+      ],
+      "name": "dispatches interrupted CLI input and cleans up early fixture exits (%s)",
+      "kind": "each",
+      "sourceSHA256": "b7ddd172af97353bad02da1e3d8a84110b29bb8f8e0b9d488b6cd7fbf62d504d",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "dispatches interrupted CLI input and cleans up early fixture exits (false)",
+          "status": "passed"
+        },
+        {
+          "title": "dispatches interrupted CLI input and cleans up early fixture exits (true)",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 104,
+      "sourceLines": [
+        7966,
+        8001
+      ],
+      "name": "retries durable queue interruption after a promotion failure on a fresh service",
+      "kind": "ordinary",
+      "sourceSHA256": "158620c28bd59a41636dbc1ae3548e21c847fde2c933ef3dd7eaf30e0497fc99",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "retries durable queue interruption after a promotion failure on a fresh service",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 105,
+      "sourceLines": [
+        8003,
+        8062
+      ],
+      "name": "resumes only the authorized %s queue after an acknowledged legacy interrupt",
+      "kind": "each",
+      "sourceSHA256": "72cf5ce024c249d37082a9a177cc753a59aa2511637b09ce0945a2e139b364b2",
+      "runtimeCaseCount": 3,
+      "runtimeCases": [
+        {
+          "title": "resumes only the authorized pending queue after an acknowledged legacy interrupt",
+          "status": "passed"
+        },
+        {
+          "title": "resumes only the authorized discarded queue after an acknowledged legacy interrupt",
+          "status": "passed"
+        },
+        {
+          "title": "resumes only the authorized wrong queue queue after an acknowledged legacy interrupt",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 106,
+      "sourceLines": [
+        8064,
+        8087
+      ],
+      "name": "preserves deferred input on a clean Stop and adopts it once on the next explicit comment",
+      "kind": "ordinary",
+      "sourceSHA256": "e9ca73c55eff541ad217d7a2132c859d28370aca10222d91a238e67f804009c9",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "preserves deferred input on a clean Stop and adopts it once on the next explicit comment",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 107,
+      "sourceLines": [
+        8089,
+        8229
+      ],
+      "name": "does not adopt unrelated queued comments for a %s after Stop",
+      "kind": "each",
+      "sourceSHA256": "9a94087a55011d4665af4add2f044e453578ae2780bad18bc57cc84469152068",
+      "runtimeCaseCount": 3,
+      "runtimeCases": [
+        {
+          "title": "does not adopt unrelated queued comments for a dedicated deferred donor after Stop",
+          "status": "passed"
+        },
+        {
+          "title": "does not adopt unrelated queued comments for a non-coalescing recipient after Stop",
+          "status": "passed"
+        },
+        {
+          "title": "does not adopt unrelated queued comments for a persistent agent conversation after Stop",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 108,
+      "sourceLines": [
+        8231,
+        8242
+      ],
+      "name": "releases holds for real process bootstrap failures: %j",
+      "kind": "each",
+      "sourceSHA256": "c293ecbb5aa37aaff3315bedc0975230139f40bc2e1f850422298276ba346ac8",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "releases holds for real process bootstrap failures: {}",
+          "status": "passed"
+        },
+        {
+          "title": "releases holds for real process bootstrap failures: {\"command\":\"/nonexistent-paperclip-bootstrap-command\"}",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 109,
+      "sourceLines": [
+        8244,
+        8259
+      ],
+      "name": "releases the dispatch reservation after a proven pre-provider adapter failure",
+      "kind": "ordinary",
+      "sourceSHA256": "3b9587d198ef6382322f211869c5d313125a43276473e0c2a697a9e06015b326",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "releases the dispatch reservation after a proven pre-provider adapter failure",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 110,
+      "sourceLines": [
+        8261,
+        8411
+      ],
+      "name": "fences adapter registration while an earlier no-owner %s waits to commit",
+      "kind": "each",
+      "sourceSHA256": "9c07ddfa64788a4e07953263e7c7e4f1df3f56f77cdf86375c2fb1398b948ab1",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "fences adapter registration while an earlier no-owner single Stop waits to commit",
+          "status": "passed"
+        },
+        {
+          "title": "fences adapter registration while an earlier no-owner agent pause waits to commit",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 111,
+      "sourceLines": [
+        8413,
+        8437
+      ],
+      "name": "signals an embedded adapter and waits for its cleanup before returning Stop",
+      "kind": "ordinary",
+      "sourceSHA256": "49fa07b38bec00d970aa836a047332d974a7987c80940114655ec870bbae80f0",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "signals an embedded adapter and waits for its cleanup before returning Stop",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 112,
+      "sourceLines": [
+        8439,
+        8494
+      ],
+      "name": "preserves a copy-back obligation recorded after Stop reads the running adapter",
+      "kind": "ordinary",
+      "sourceSHA256": "ec5efacd35e3212dd7b583cfc994ac27aceb77f070d8d1aa059a6564ecf6d63b",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "preserves a copy-back obligation recorded after Stop reads the running adapter",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 113,
+      "sourceLines": [
+        8496,
+        8512
+      ],
+      "name": "clears the detached warning when the run reports activity again",
+      "kind": "ordinary",
+      "sourceSHA256": "5af1ca124c4da0b1b9dd91c2acb35542e7cf4265d861937df22fb5d69331f6e0",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "clears the detached warning when the run reports activity again",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 114,
+      "sourceLines": [
+        8514,
+        8530
+      ],
+      "name": "tracks the first heartbeat with the agent role instead of adapter type",
+      "kind": "ordinary",
+      "sourceSHA256": "c85a3a31a94d15231273bbb93dcddb58116693ede279a87b995f84c72a9d0116",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "tracks the first heartbeat with the agent role instead of adapter type",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 115,
+      "sourceLines": [
+        8532,
+        8553
+      ],
+      "name": "preserves first-heartbeat telemetry after a timer interval claim",
+      "kind": "ordinary",
+      "sourceSHA256": "f73c786d73128179bd1910b7290c7df5292816f73c24b4a451a8e4a0cc133ab1",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "preserves first-heartbeat telemetry after a timer interval claim",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 116,
+      "sourceLines": [
+        8555,
+        8737
+      ],
+      "name": "settles an owned $adapterType Stop before classifying its $mode",
+      "kind": "each",
+      "sourceSHA256": "f76884fc418b1e11c4ea80a147edee1cacfa31e615db869d8da2662c1f49f6f6",
+      "runtimeCaseCount": 16,
+      "runtimeCases": [
+        {
+          "title": "settles an owned process Stop before classifying its signal",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned codex_local Stop before classifying its signal",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned process Stop before classifying its graceful exit",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned codex_local Stop before classifying its graceful exit",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned process Stop before classifying its adapter exception",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned codex_local Stop before classifying its adapter exception",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned process Stop before classifying its termination error",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned codex_local Stop before classifying its termination error",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned process Stop before classifying its cancellation write error",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned codex_local Stop before classifying its cancellation write error",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned process Stop before classifying its graceful termination error",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned codex_local Stop before classifying its graceful termination error",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned process Stop before classifying its graceful cancellation write error",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned codex_local Stop before classifying its graceful cancellation write error",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned process Stop before classifying its late graceful cancellation write error",
+          "status": "passed"
+        },
+        {
+          "title": "settles an owned codex_local Stop before classifying its late graceful cancellation write error",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 117,
+      "sourceLines": [
+        8739,
+        8817
+      ],
+      "name": "preserves exact restore sources through late process Stop metadata with an oversized result",
+      "kind": "ordinary",
+      "sourceSHA256": "6e46f2ee027ebf8e11f12999c7737cae4f67a1d22eabaf5808e4e6b2e7103787",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "preserves exact restore sources through late process Stop metadata with an oversized result",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 118,
+      "sourceLines": [
+        8819,
+        8868
+      ],
+      "name": "keeps an independent process $mode distinct from Stop",
+      "kind": "each",
+      "sourceSHA256": "ff99ea7f55cd808b93319f68451adb652adc6657a64f9951e83b745361a22ae1",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "keeps an independent process clean exit distinct from Stop",
+          "status": "passed"
+        },
+        {
+          "title": "keeps an independent process unrequested signal distinct from Stop",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 119,
+      "sourceLines": [
+        8870,
+        8942
+      ],
+      "name": "retries a settled failed Stop while its exact active process remains alive",
+      "kind": "ordinary",
+      "sourceSHA256": "24bae060afb4833b5e032a6af1532daec38847fd2134768eded58b382e2a6c7b",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "retries a settled failed Stop while its exact active process remains alive",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 120,
+      "sourceLines": [
+        8944,
+        8968
+      ],
+      "name": "retains the exact owned child when process Stop cannot verify termination",
+      "kind": "ordinary",
+      "sourceSHA256": "ca3ec5f52b31aeb766fd5d379522bb99bee03092e42642cc49bdfec666781868",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "retains the exact owned child when process Stop cannot verify termination",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 121,
+      "sourceLines": [
+        8970,
+        8999
+      ],
+      "name": "terminates the in-memory process before persisting cancellation status",
+      "kind": "ordinary",
+      "sourceSHA256": "d6ffb79af51d5e4da082719a4134ccb84c8065497d1c7dfbb1eec4e1428bf66f",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "terminates the in-memory process before persisting cancellation status",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 122,
+      "sourceLines": [
+        9001,
+        9029
+      ],
+      "name": "uses a bounded per-cancel process grace for an external-chat successor",
+      "kind": "ordinary",
+      "sourceSHA256": "f0e56383e86345de3ba6cba9423fe57801bb96835e4d492a127d35b795185ebe",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "uses a bounded per-cancel process grace for an external-chat successor",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 123,
+      "sourceLines": [
+        9031,
+        9068
+      ],
+      "name": "does not overwrite a run that finishes while cancellation is stopping its process",
+      "kind": "ordinary",
+      "sourceSHA256": "549cf1b05874fccf0b55a3be17651b265f52f4cd3f08c909cdb2b707b6b773fa",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not overwrite a run that finishes while cancellation is stopping its process",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 124,
+      "sourceLines": [
+        9070,
+        9082
+      ],
+      "name": "does not signal an unowned persisted process during manual cancellation",
+      "kind": "ordinary",
+      "sourceSHA256": "3609249f588354803d814b322ea68de17cd6b1b04d44fccc4a87c0b8dda0f4f7",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not signal an unowned persisted process during manual cancellation",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 125,
+      "sourceLines": [
+        9084,
+        9096
+      ],
+      "name": "does not signal an unowned persisted process during graceful shutdown",
+      "kind": "ordinary",
+      "sourceSHA256": "a7cdd1de3f24a7545d99949e98993ce362e133c9ceb57df208a295f1e58206ab",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not signal an unowned persisted process during graceful shutdown",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 126,
+      "sourceLines": [
+        9098,
+        9110
+      ],
+      "name": "does not signal an unowned persisted process during agent-wide cancellation",
+      "kind": "ordinary",
+      "sourceSHA256": "5c54f27e9af63501ac2c382b2ddafb6199f6bf50bb7d3ef811232b8178d8a167",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not signal an unowned persisted process during agent-wide cancellation",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 127,
+      "sourceLines": [
+        9112,
+        9131
+      ],
+      "name": "signals and clears an owned process during graceful shutdown",
+      "kind": "ordinary",
+      "sourceSHA256": "b5f8312936a0e0971399f6219adfdc5099ab8e8a5c097a17c6c19baae94be0e2",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "signals and clears an owned process during graceful shutdown",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 128,
+      "sourceLines": [
+        9133,
+        9152
+      ],
+      "name": "signals and clears an owned process during agent-wide cancellation",
+      "kind": "ordinary",
+      "sourceSHA256": "5e73e11a269f8c1a6374d5c49b9e1b0fc6ff6cdc55a95dc2f81440af6bac03cb",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "signals and clears an owned process during agent-wide cancellation",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 129,
+      "sourceLines": [
+        9154,
+        9169
+      ],
+      "name": "records manual cancellation stop metadata",
+      "kind": "ordinary",
+      "sourceSHA256": "5c9e6298109e48dc4ee93e2e40889628bf11cbcdc989720ed9d202cfa552579b",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "records manual cancellation stop metadata",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 130,
+      "sourceLines": [
+        9171,
+        9221
+      ],
+      "name": "records operator interrupt cancellation metadata without changing terminal status",
+      "kind": "ordinary",
+      "sourceSHA256": "7ff37a68f321a6cce8e71918c85663b1c3d7c1c7100525b896d3ff4fde07b527",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "records operator interrupt cancellation metadata without changing terminal status",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 131,
+      "sourceLines": [
+        9223,
+        9283
+      ],
+      "name": "dispatches assigned todo work with no prior run as a normal assignment wake",
+      "kind": "ordinary",
+      "sourceSHA256": "7e3b07c4e6bfa5799680ec5512042b4cafe29650fa1c187bfa781854958ef858",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "dispatches assigned todo work with no prior run as a normal assignment wake",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 132,
+      "sourceLines": [
+        9285,
+        9313
+      ],
+      "name": "leaves the onboarding first task idle until the user comments",
+      "kind": "ordinary",
+      "sourceSHA256": "553cb96e8d4712dd0c52138c701e10576fa0aadd0f77df273ec64620665574f9",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "leaves the onboarding first task idle until the user comments",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 133,
+      "sourceLines": [
+        9315,
+        9356
+      ],
+      "name": "keeps the onboarding first task idle while the seeded opening card is unanswered",
+      "kind": "ordinary",
+      "sourceSHA256": "84c2761d59534841f3e8d4160befed97f88373c3521bea9b464e8c032045dc18",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps the onboarding first task idle while the seeded opening card is unanswered",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 134,
+      "sourceLines": [
+        9358,
+        9410
+      ],
+      "name": "dispatches the onboarding first task once the user answered the opening card",
+      "kind": "ordinary",
+      "sourceSHA256": "a01f6e8e1a183f8ab1253240b51b958b4b5380872a2deffe170f5f836e1748b1",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "dispatches the onboarding first task once the user answered the opening card",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 135,
+      "sourceLines": [
+        9412,
+        9438
+      ],
+      "name": "dispatches the onboarding first task once a user comment exists",
+      "kind": "ordinary",
+      "sourceSHA256": "4d126e36c1ae7bcd74358d53241599fe94673ad14a257a08d3df260cbe5cc164",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "dispatches the onboarding first task once a user comment exists",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 136,
+      "sourceLines": [
+        9440,
+        9466
+      ],
+      "name": "does not duplicate initial assigned todo dispatch when a queued wake already exists",
+      "kind": "ordinary",
+      "sourceSHA256": "660a9a6d0619b2a4ecd2a25fdd1430544fbc28fcd254794acf4a29b492c1ef41",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not duplicate initial assigned todo dispatch when a queued wake already exists",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 137,
+      "sourceLines": [
+        9468,
+        9549
+      ],
+      "name": "does not bypass a %s durable inbound-chat wake intent with generic assignment recovery",
+      "kind": "each",
+      "sourceSHA256": "5106c3a3b5be09b87d9e6ad973ec12587c573b3a8b894c0338348b3e1933b2cb",
+      "runtimeCaseCount": 4,
+      "runtimeCases": [
+        {
+          "title": "does not bypass a preparing durable inbound-chat wake intent with generic assignment recovery",
+          "status": "passed"
+        },
+        {
+          "title": "does not bypass a issued durable inbound-chat wake intent with generic assignment recovery",
+          "status": "passed"
+        },
+        {
+          "title": "does not bypass a processing durable inbound-chat wake intent with generic assignment recovery",
+          "status": "passed"
+        },
+        {
+          "title": "does not bypass a failed durable inbound-chat wake intent with generic assignment recovery",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 138,
+      "sourceLines": [
+        9551,
+        9644
+      ],
+      "name": "creates a board recovery action for budget-blocked assigned work and continues the sweep",
+      "kind": "ordinary",
+      "sourceSHA256": "c8186df54e720a87addf5a01427c30011efa6e1290520534ee1a6f5c8176009e",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "creates a board recovery action for budget-blocked assigned work and continues the sweep",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 139,
+      "sourceLines": [
+        9646,
+        9700
+      ],
+      "name": "routes paused assigned work to the board without waking available executives",
+      "kind": "ordinary",
+      "sourceSHA256": "137c01a8dc7a5d2707e6bcf4c212922b4e8549766f986a9838066c934933eddd",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "routes paused assigned work to the board without waking available executives",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 140,
+      "sourceLines": [
+        9702,
+        9732
+      ],
+      "name": "re-enqueues assigned todo work when the last issue run died and no wake remains",
+      "kind": "ordinary",
+      "sourceSHA256": "18ec73a20a0bd03f5fbd9fd55a172045638aec9adca1c0751d83ea27b5825dfc",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "re-enqueues assigned todo work when the last issue run died and no wake remains",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 141,
+      "sourceLines": [
+        9734,
+        9786
+      ],
+      "name": "re-enqueues handed-back todo work when its resolving run succeeded but the wake was lost",
+      "kind": "ordinary",
+      "sourceSHA256": "d8af6ae61dda1766f3e9c74d077f44bd9b60f956d0919206a9ce9d3358f52d24",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "re-enqueues handed-back todo work when its resolving run succeeded but the wake was lost",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 142,
+      "sourceLines": [
+        9788,
+        9850
+      ],
+      "name": "does not let an active chat conversation suppress stranded execution-review participant recovery",
+      "kind": "ordinary",
+      "sourceSHA256": "99b754ff0504029d9a52f97ea0b11484c3785660286b371a025f3bb6e85e41be",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not let an active chat conversation suppress stranded execution-review participant recovery",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 143,
+      "sourceLines": [
+        9852,
+        9905
+      ],
+      "name": "escalates an execution-review participant whose interrupted run has spent its transient retry budget",
+      "kind": "ordinary",
+      "sourceSHA256": "998bdf38b47726132c1ba879657c65f200a660a2541a296e0c4fe79dda971cd8",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "escalates an execution-review participant whose interrupted run has spent its transient retry budget",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 144,
+      "sourceLines": [
+        9907,
+        9972
+      ],
+      "name": "does not block an issue whose review participant spent its retry budget while another agent is still working it",
+      "kind": "ordinary",
+      "sourceSHA256": "3089b7d050a1f81ad25abaa1fa7531f817a869c63478b4fb31f1375a28c04864",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not block an issue whose review participant spent its retry budget while another agent is still working it",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 145,
+      "sourceLines": [
+        9974,
+        10045
+      ],
+      "name": "re-enqueues a stranded execution-review participant when another agent has the latest issue run",
+      "kind": "ordinary",
+      "sourceSHA256": "b21cfbda2bdb9f8022b06ebf423895f4ad8d50aa30edc82aa422681905e2c5df",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "re-enqueues a stranded execution-review participant when another agent has the latest issue run",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 146,
+      "sourceLines": [
+        10047,
+        10098
+      ],
+      "name": "re-enqueues a stranded execution-review participant when another agent has a queued issue wake",
+      "kind": "ordinary",
+      "sourceSHA256": "56b2dc821acf3615bde7137e04cf52a28ab270f5e362bba0cb3f56e7318c9ca0",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "re-enqueues a stranded execution-review participant when another agent has a queued issue wake",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 147,
+      "sourceLines": [
+        10100,
+        10140
+      ],
+      "name": "retries a pending execution-review participant when another agent has an active issue run",
+      "kind": "ordinary",
+      "sourceSHA256": "4b5a41db39da0047fb37fa506953c46f21649eaa8f252a651ec82415a21d0c4b",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "retries a pending execution-review participant when another agent has an active issue run",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 148,
+      "sourceLines": [
+        10142,
+        10166
+      ],
+      "name": "does not immediately recover a generic on-demand run used for an in-review agent API update",
+      "kind": "ordinary",
+      "sourceSHA256": "f1a0d452fbe2c0f02d8be96e82107ca57245bfb4b1e66bdfed9a08199f7c0e31",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not immediately recover a generic on-demand run used for an in-review agent API update",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 149,
+      "sourceLines": [
+        10168,
+        10271
+      ],
+      "name": "retries a pending execution-review participant once before blocking with a recovery action",
+      "kind": "ordinary",
+      "sourceSHA256": "76c7289981ac8f7afbd7f61b79f66b743a07be209e31e269c1e5c2a463e0d090",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "retries a pending execution-review participant once before blocking with a recovery action",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 150,
+      "sourceLines": [
+        10273,
+        10358
+      ],
+      "name": "blocks failed execution-review recovery under the reviewer when the source assignee differs",
+      "kind": "ordinary",
+      "sourceSHA256": "891e2835ca9f8ebd12037049186254a4db8d872810193ba694b578262f45e5b2",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "blocks failed execution-review recovery under the reviewer when the source assignee differs",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 151,
+      "sourceLines": [
+        10360,
+        10409
+      ],
+      "name": "re-enqueues stranded in-progress work after a %s/%s run before escalating",
+      "kind": "each",
+      "sourceSHA256": "b9caffcd9e2873dfb34bb826aab684c1a9782434c5819657d94ffad5b760b1d7",
+      "runtimeCaseCount": 3,
+      "runtimeCases": [
+        {
+          "title": "re-enqueues stranded in-progress work after a failed/adapter_failed run before escalating",
+          "status": "passed"
+        },
+        {
+          "title": "re-enqueues stranded in-progress work after a failed/process_lost run before escalating",
+          "status": "passed"
+        },
+        {
+          "title": "re-enqueues stranded in-progress work after a timed_out/adapter_timed_out run before escalating",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 152,
+      "sourceLines": [
+        10411,
+        10439
+      ],
+      "name": "skips stranded recovery when a pending %s interaction exists",
+      "kind": "each",
+      "sourceSHA256": "112099b7e1abdbc7e071e842c2177813d5db73351258bda5a1624a61457e255a",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "skips stranded recovery when a pending wake_assignee interaction exists",
+          "status": "passed"
+        },
+        {
+          "title": "skips stranded recovery when a pending wake_assignee_on_accept interaction exists",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 153,
+      "sourceLines": [
+        10472,
+        10493
+      ],
+      "name": "recovers an answered question with its interaction-specific continuation context",
+      "kind": "ordinary",
+      "sourceSHA256": "d74456861e1cd9d9915efac303d27b1400eacbc5b8d574ed24d298acb484884c",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "recovers an answered question with its interaction-specific continuation context",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 154,
+      "sourceLines": [
+        10495,
+        10576
+      ],
+      "name": "does not requeue an answered interaction after native recovery is board-owned",
+      "kind": "ordinary",
+      "sourceSHA256": "4c74fb45a4fc9a5f2a5d3262b534c0164cc14d4435aae63f14087e3acadaccdd",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not requeue an answered interaction after native recovery is board-owned",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 155,
+      "sourceLines": [
+        10578,
+        10655
+      ],
+      "name": "counts five historical review-park cancellations against the upgraded disposition-repair ceiling",
+      "kind": "ordinary",
+      "sourceSHA256": "d0878b0c90103457bcbcaaaa67b63ad80a5d9049d15e806ac91cd76035792b3b",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "counts five historical review-park cancellations against the upgraded disposition-repair ceiling",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 156,
+      "sourceLines": [
+        10657,
+        10694
+      ],
+      "name": "skips accepted interaction recovery after its continuation succeeds",
+      "kind": "ordinary",
+      "sourceSHA256": "a4e1b6d7925f0b36d6e439cc6939359711f4e278cf6d04ad202fd37d918b4acd",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "skips accepted interaction recovery after its continuation succeeds",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 157,
+      "sourceLines": [
+        10696,
+        10740
+      ],
+      "name": "requeues accepted interaction continuations even when a later successful run is unrelated",
+      "kind": "ordinary",
+      "sourceSHA256": "5761d5d6c47e40b8e0aa5e7c20e84f2937a8d5bfe964fa7703cbd44a9e7953a5",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "requeues accepted interaction continuations even when a later successful run is unrelated",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 158,
+      "sourceLines": [
+        10747,
+        10802
+      ],
+      "name": "recovers a plan approval whose accept-time continuation wake enqueue was silently dropped",
+      "kind": "ordinary",
+      "sourceSHA256": "7bf06a9406817a958375244f95dfaa12524263a918bc654d68dc68055612141f",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "recovers a plan approval whose accept-time continuation wake enqueue was silently dropped",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 159,
+      "sourceLines": [
+        10808,
+        10898
+      ],
+      "name": "promotes a scheduled plan-approval continuation retry after a simulated server restart",
+      "kind": "ordinary",
+      "sourceSHA256": "f7edcc0a5c233f6cd4bd79dbe98426ff402ba66f49cfccf0b66e4d6e80270bae",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "promotes a scheduled plan-approval continuation retry after a simulated server restart",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 160,
+      "sourceLines": [
+        10900,
+        10938
+      ],
+      "name": "still re-enqueues stranded assigned todo recovery when an old queued wake exists",
+      "kind": "ordinary",
+      "sourceSHA256": "11ece7d43c75a00ffe3e795fafb958f5e5b6216bfab9989f034ad8d36cf84a7d",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "still re-enqueues stranded assigned todo recovery when an old queued wake exists",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 161,
+      "sourceLines": [
+        10940,
+        11012
+      ],
+      "name": "blocks assigned todo work after the one automatic dispatch recovery was already used",
+      "kind": "ordinary",
+      "sourceSHA256": "474e6ec20dfc5c2a4513059e4ed18b7c29ebbf32df2aed4cac866de524f909fa",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "blocks assigned todo work after the one automatic dispatch recovery was already used",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 162,
+      "sourceLines": [
+        11014,
+        11099
+      ],
+      "name": "blocks an already stranded recovery issue without creating a recovery child",
+      "kind": "ordinary",
+      "sourceSHA256": "7fd50c4c3c1d8d54257115c2614af8816410945ee9109f20f121e87b46b9e66c",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "blocks an already stranded recovery issue without creating a recovery child",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 163,
+      "sourceLines": [
+        11101,
+        11195
+      ],
+      "name": "assigns open unassigned blockers back to their creator agent",
+      "kind": "ordinary",
+      "sourceSHA256": "6ab0cda88531aa3a11f245900f95b63f2332cf5a39482953da85e32a5b0df043",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "assigns open unassigned blockers back to their creator agent",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 164,
+      "sourceLines": [
+        11197,
+        11228
+      ],
+      "name": "does not run generic continuation recovery for a paused unfinished session goal",
+      "kind": "ordinary",
+      "sourceSHA256": "7ad3b12d99299d8f27932ab2c8e857bae974778c3726d272b329069abd80de5a",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not run generic continuation recovery for a paused unfinished session goal",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 165,
+      "sourceLines": [
+        11230,
+        11266
+      ],
+      "name": "does not continue seeded in-progress work that has no run linkage",
+      "kind": "ordinary",
+      "sourceSHA256": "fdc7295de604df689e01a6aee52c0b0826fc70fea4dcc5be3bd6f7c6ef2bbfc2",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not continue seeded in-progress work that has no run linkage",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 166,
+      "sourceLines": [
+        11268,
+        11359
+      ],
+      "name": "enqueues one bounded plan-only continuation with legacy productivity review present: %s",
+      "kind": "each",
+      "sourceSHA256": "4717194c9b41525776332a8fc0443ac6c50bf5445a6088f83712b1f518e0f14a",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "enqueues one bounded plan-only continuation with legacy productivity review present: false",
+          "status": "passed"
+        },
+        {
+          "title": "enqueues one bounded plan-only continuation with legacy productivity review present: true",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 167,
+      "sourceLines": [
+        11361,
+        11433
+      ],
+      "name": "treats a plan document update as progress and does not enqueue liveness continuation",
+      "kind": "ordinary",
+      "sourceSHA256": "601ecf14fd24d893297e7beef3e748ad47fee82c194edad155769c2d7c273a77",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "treats a plan document update as progress and does not enqueue liveness continuation",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 168,
+      "sourceLines": [
+        11434,
+        11482
+      ],
+      "name": "blocks stranded in-progress work after the continuation retry was already used",
+      "kind": "ordinary",
+      "sourceSHA256": "a053d0aa981e563533f9ac96a3d05eabf4ef3cf1cdca67c54a91e0f28dc1d678",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "blocks stranded in-progress work after the continuation retry was already used",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 169,
+      "sourceLines": [
+        11484,
+        11524
+      ],
+      "name": "redacts error-code-only stranded recovery failures in issue copy",
+      "kind": "ordinary",
+      "sourceSHA256": "96bcff68841be1e2bbca83fe4c7157b24170d4aac3a20e60cae75bdd9af5fae7",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "redacts error-code-only stranded recovery failures in issue copy",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 170,
+      "sourceLines": [
+        11526,
+        11557
+      ],
+      "name": "keeps retrying transient adapter_failed continuation runs before the cap",
+      "kind": "ordinary",
+      "sourceSHA256": "5bab0572cabfad9a0eac00aa82ace50dccbe5ed56efb5bcb9ac3506bebbc5cc8",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps retrying transient adapter_failed continuation runs before the cap",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 171,
+      "sourceLines": [
+        11559,
+        11624
+      ],
+      "name": "escalates after repeated adapter_failed continuation retries with the cause in the comment",
+      "kind": "ordinary",
+      "sourceSHA256": "4a7b233946207541e00dd79e4b8949320c629306eccedaee3b03d160f50f1d2a",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "escalates after repeated adapter_failed continuation retries with the cause in the comment",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 172,
+      "sourceLines": [
+        11626,
+        11651
+      ],
+      "name": "counts different failure causes against the same incident budget",
+      "kind": "ordinary",
+      "sourceSHA256": "093257b06ebc554dfe76615a66d7190fd5962a403188e0d0ae5854905b6d2389",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "counts different failure causes against the same incident budget",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 173,
+      "sourceLines": [
+        11653,
+        11696
+      ],
+      "name": "escalates non-retryable continuation failures immediately without enqueuing another retry",
+      "kind": "ordinary",
+      "sourceSHA256": "5d873365c1cac7c1070c92256e215ba43b540cbafc786a16254a24a3c26cb562",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "escalates non-retryable continuation failures immediately without enqueuing another retry",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 174,
+      "sourceLines": [
+        11698,
+        11727
+      ],
+      "name": "does not recover a finished native chat while its response publication is pending",
+      "kind": "ordinary",
+      "sourceSHA256": "344d528eb00ce0c06aef33fff94a017b7916a075541b9b0b47f1b29d478ae771",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not recover a finished native chat while its response publication is pending",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 175,
+      "sourceLines": [
+        11729,
+        11764
+      ],
+      "name": "does not turn a pre-adapter setup failure into a duplicate continuation run",
+      "kind": "ordinary",
+      "sourceSHA256": "b2cb8affc130ea83c2e06f0b73ef3a0859369ab9d78031d72139adf07d652003",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not turn a pre-adapter setup failure into a duplicate continuation run",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 176,
+      "sourceLines": [
+        11766,
+        11794
+      ],
+      "name": "leaves a successful external-chat turn idle while its conversation is %s",
+      "kind": "each",
+      "sourceSHA256": "f4fbc3040240ee972fae83c96109e3385b63494dbf3ef05d84bdf955943198ef",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "leaves a successful external-chat turn idle while its conversation is active",
+          "status": "passed"
+        },
+        {
+          "title": "leaves a successful external-chat turn idle while its conversation is waiting",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 177,
+      "sourceLines": [
+        12013,
+        12039
+      ],
+      "name": "does not automatically resume a source after its committed authorized /%s receipt",
+      "kind": "each",
+      "sourceSHA256": "232101fb98a200dd87f1681850134345981e7a4e54d85ac6a1cf04d8d1b47d97",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "does not automatically resume a source after its committed authorized /close receipt",
+          "status": "passed"
+        },
+        {
+          "title": "does not automatically resume a source after its committed authorized /new receipt",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 178,
+      "sourceLines": [
+        12107,
+        12122
+      ],
+      "name": "recognizes the real generic control delivery event kind %s",
+      "kind": "each",
+      "sourceSHA256": "6f48d52381f3c419e453fd29532d68b9355afc19c122d177ad359128d8e3bdfe",
+      "runtimeCaseCount": 3,
+      "runtimeCases": [
+        {
+          "title": "recognizes the real generic control delivery event kind message",
+          "status": "passed"
+        },
+        {
+          "title": "recognizes the real generic control delivery event kind direct_message",
+          "status": "passed"
+        },
+        {
+          "title": "recognizes the real generic control delivery event kind mention",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 179,
+      "sourceLines": [
+        12124,
+        12176
+      ],
+      "name": "does not infer chat close authority from a mismatched %s receipt",
+      "kind": "each",
+      "sourceSHA256": "9102bc31b5f9471e9ec57e623b56ab00b64d2125cc7b792fbf843d8126d3d71d",
+      "runtimeCaseCount": 5,
+      "runtimeCases": [
+        {
+          "title": "does not infer chat close authority from a mismatched authorization receipt",
+          "status": "passed"
+        },
+        {
+          "title": "does not infer chat close authority from a mismatched outbound receipt",
+          "status": "passed"
+        },
+        {
+          "title": "does not infer chat close authority from a mismatched principal receipt",
+          "status": "passed"
+        },
+        {
+          "title": "does not infer chat close authority from a mismatched command receipt",
+          "status": "passed"
+        },
+        {
+          "title": "does not infer chat close authority from a mismatched generation receipt",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 180,
+      "sourceLines": [
+        12178,
+        12240
+      ],
+      "name": "orders chat close against original admitted sources, not a later failed retry action",
+      "kind": "ordinary",
+      "sourceSHA256": "e197924bf94df32c9c27cadef8696f4d6daf8cb410b1a847feacfc9f99073ade",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "orders chat close against original admitted sources, not a later failed retry action",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 181,
+      "sourceLines": [
+        12242,
+        12330
+      ],
+      "name": "preserves a genuinely later coalesced inbound source instead of selecting only the old canonical message",
+      "kind": "ordinary",
+      "sourceSHA256": "c3941e0a3724021cd033b38897131bf0bb258c1a686cd517f3bdb6ecdadbf2f8",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "preserves a genuinely later coalesced inbound source instead of selecting only the old canonical message",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 182,
+      "sourceLines": [
+        12332,
+        12366
+      ],
+      "name": "follows exact automatic ancestry despite rewritten context and stops only that unused child",
+      "kind": "ordinary",
+      "sourceSHA256": "7bb7c3737f53b2ef895a8c831a887e329b8ad53d12aff44ca9380b9edbd06c2a",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "follows exact automatic ancestry despite rewritten context and stops only that unused child",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 183,
+      "sourceLines": [
+        12368,
+        12432
+      ],
+      "name": "honors close committed at the %s boundary without a provider call",
+      "kind": "each",
+      "sourceSHA256": "bd807872585ac813343ce7a59ca290d6e4b07fe92933dc5987f7028220867b60",
+      "runtimeCaseCount": 3,
+      "runtimeCases": [
+        {
+          "title": "honors close committed at the claim boundary without a provider call",
+          "status": "passed"
+        },
+        {
+          "title": "honors close committed at the dispatch boundary without a provider call",
+          "status": "passed"
+        },
+        {
+          "title": "honors close committed at the queued_comments boundary without a provider call",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 184,
+      "sourceLines": [
+        12434,
+        12526
+      ],
+      "name": "rechecks admission after transient database contention: %s",
+      "kind": "each",
+      "sourceSHA256": "d1105eda2d5b54b7891e9b82baf0c5d18126f81285942bc60cf2ee006f3fd0dc",
+      "runtimeCaseCount": 6,
+      "runtimeCases": [
+        {
+          "title": "rechecks admission after transient database contention: issue",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks admission after transient database contention: wake",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks admission after transient database contention: run",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks admission after transient database contention: native",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks admission after transient database contention: close",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks admission after transient database contention: cancel",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 185,
+      "sourceLines": [
+        12528,
+        12580
+      ],
+      "name": "defers unresolved automatic ancestry at claim and records a distinct nonretrying failure after claim",
+      "kind": "ordinary",
+      "sourceSHA256": "1e8fd9865e1642d16de7315d4c0521f1949170c3083b10251f5114b60dd62238",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "defers unresolved automatic ancestry at claim and records a distinct nonretrying failure after claim",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 186,
+      "sourceLines": [
+        12582,
+        12624
+      ],
+      "name": "does not confuse inherited warm-runner metadata with dispatch of the new child",
+      "kind": "ordinary",
+      "sourceSHA256": "faa34bf56f93f9d31571180c62ac192a91d4bce27ab2b2a790e6ba4c036a48de",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not confuse inherited warm-runner metadata with dispatch of the new child",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 187,
+      "sourceLines": [
+        12626,
+        12699
+      ],
+      "name": "keeps the claimed admission marker through legacy preparation: %s",
+      "kind": "each",
+      "sourceSHA256": "04d5935192e31b37140a173dc7438dce8fea3dd65aea3720b9814140ba0e03e9",
+      "runtimeCaseCount": 3,
+      "runtimeCases": [
+        {
+          "title": "keeps the claimed admission marker through legacy preparation: intact",
+          "status": "passed"
+        },
+        {
+          "title": "keeps the claimed admission marker through legacy preparation: lost",
+          "status": "passed"
+        },
+        {
+          "title": "keeps the claimed admission marker through legacy preparation: copied",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 188,
+      "sourceLines": [
+        12757,
+        12797
+      ],
+      "name": "rechecks only unadmitted native bootstrap recovery after a committed close: %s",
+      "kind": "each",
+      "sourceSHA256": "0616760b3148ce7108dad2621207829c47a39acf4859c436e44dd354d93e8f58",
+      "runtimeCaseCount": 3,
+      "runtimeCases": [
+        {
+          "title": "rechecks only unadmitted native bootstrap recovery after a committed close: required",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks only unadmitted native bootstrap recovery after a committed close: admitted",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks only unadmitted native bootstrap recovery after a committed close: historical",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 189,
+      "sourceLines": [
+        12799,
+        12855
+      ],
+      "name": "does not acquire a new chat gate lock for protected native recovery: %s",
+      "kind": "each",
+      "sourceSHA256": "ba9697a09f56f477b3d2b3801f13172646195155629a3503adbb74ee5d707215",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "does not acquire a new chat gate lock for protected native recovery: admitted",
+          "status": "passed"
+        },
+        {
+          "title": "does not acquire a new chat gate lock for protected native recovery: historical",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 190,
+      "sourceLines": [
+        12857,
+        12909
+      ],
+      "name": "native preparation preserves only the current run's reserved admission evidence: %s",
+      "kind": "each",
+      "sourceSHA256": "7e0c4ea2563346d130769cb6724ea5c40f971ba07eac292b7c1d621def4caf5f",
+      "runtimeCaseCount": 3,
+      "runtimeCases": [
+        {
+          "title": "native preparation preserves only the current run's reserved admission evidence: required",
+          "status": "passed"
+        },
+        {
+          "title": "native preparation preserves only the current run's reserved admission evidence: historical",
+          "status": "passed"
+        },
+        {
+          "title": "native preparation preserves only the current run's reserved admission evidence: invalid",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 191,
+      "sourceLines": [
+        12911,
+        12972
+      ],
+      "name": "retains closed chat ancestry and current retry authority: %s",
+      "kind": "each",
+      "sourceSHA256": "a72ba392795e8dd09e2b1d92cf6c03c6825b09938d854de2a138bf416cadfc2e",
+      "runtimeCaseCount": 3,
+      "runtimeCases": [
+        {
+          "title": "retains closed chat ancestry and current retry authority: native",
+          "status": "passed"
+        },
+        {
+          "title": "retains closed chat ancestry and current retry authority: legacy_pre_provider",
+          "status": "passed"
+        },
+        {
+          "title": "retains closed chat ancestry and current retry authority: legacy_unknown",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 192,
+      "sourceLines": [
+        12974,
+        12999
+      ],
+      "name": "defers exhausted automatic ancestry without claiming a close or launching work",
+      "kind": "ordinary",
+      "sourceSHA256": "f3af55715586941940dae74b00642714402ec1ba9c27e03f94e2d35cb9bf41a1",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "defers exhausted automatic ancestry without claiming a close or launching work",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 193,
+      "sourceLines": [
+        13001,
+        13135
+      ],
+      "name": "binds a native status continuation to its applied decision and exact delivered effect (mismatch=%s)",
+      "kind": "each",
+      "sourceSHA256": "60a5491931ea965e9f49cbb4d6c4d1151155779e0eca80471d9d122e8108fe1f",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "binds a native status continuation to its applied decision and exact delivered effect (mismatch=false)",
+          "status": "passed"
+        },
+        {
+          "title": "binds a native status continuation to its applied decision and exact delivered effect (mismatch=true)",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 194,
+      "sourceLines": [
+        13137,
+        13172
+      ],
+      "name": "allows fresh Board work and coalesced user causes after a committed chat close",
+      "kind": "ordinary",
+      "sourceSHA256": "a77e829dec1808fb5b22f2868ed26fed40535b88702f2b1c9a25eb3c428a6b7c",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "allows fresh Board work and coalesced user causes after a committed chat close",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 195,
+      "sourceLines": [
+        13174,
+        13267
+      ],
+      "name": "defers a contended chat close proof without starving another queued Board task",
+      "kind": "ordinary",
+      "sourceSHA256": "b1eb96941888fa2691181c5bf661641564d1de2664e7aafbbbf546d953114327",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "defers a contended chat close proof without starving another queued Board task",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 196,
+      "sourceLines": [
+        13269,
+        13310
+      ],
+      "name": "requires the exact native close target generation (mismatch=%s)",
+      "kind": "each",
+      "sourceSHA256": "05178872fd9d55806b052e0b3ebe0d730c477cf84258bee09607b5f27cad2360",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "requires the exact native close target generation (mismatch=false)",
+          "status": "passed"
+        },
+        {
+          "title": "requires the exact native close target generation (mismatch=true)",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 197,
+      "sourceLines": [
+        13312,
+        13344
+      ],
+      "name": "does not let an old agent's closed-chat stop suppress reassigned ordinary work",
+      "kind": "ordinary",
+      "sourceSHA256": "6c2799344925c83f85ba92025c768d40ee4146fe7fb3b94e41bc0d81139d9843",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not let an old agent's closed-chat stop suppress reassigned ordinary work",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 198,
+      "sourceLines": [
+        13346,
+        13375
+      ],
+      "name": "recovers productive chat work after its conversation is completed",
+      "kind": "ordinary",
+      "sourceSHA256": "09f24b72a6b82e67517194a481d548b3d4f23851080710b04ffafdea11791421",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "recovers productive chat work after its conversation is completed",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 199,
+      "sourceLines": [
+        13377,
+        13406
+      ],
+      "name": "recovers a non-chat productive run even when its issue has an active chat conversation",
+      "kind": "ordinary",
+      "sourceSHA256": "64466e41505f28940ea8d1733de6cecd9c45cf55c8fc89b78c4efaf9ad4beab2",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "recovers a non-chat productive run even when its issue has an active chat conversation",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 200,
+      "sourceLines": [
+        13408,
+        13427
+      ],
+      "name": "lets a child waiting for the shared workspace run before recovering its lead",
+      "kind": "ordinary",
+      "sourceSHA256": "df1595325cb7581588a7fe5705920c92c9dfe1111747310b2b4aa865fe31da20",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "lets a child waiting for the shared workspace run before recovering its lead",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 201,
+      "sourceLines": [
+        13429,
+        13444
+      ],
+      "name": "resumes a shared-workspace lead when its child needs review",
+      "kind": "ordinary",
+      "sourceSHA256": "2bef91113729decb240906c0c49286f3f279aadbd65c64abc00740ba26958071",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "resumes a shared-workspace lead when its child needs review",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 202,
+      "sourceLines": [
+        13446,
+        13471
+      ],
+      "name": "repairs missing disposition independently of the productive diagnostic label",
+      "kind": "ordinary",
+      "sourceSHA256": "b9a65b8f02be55a40b3986244d684176148dec646bc47cf82575eea8736bac60",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "repairs missing disposition independently of the productive diagnostic label",
+          "status": "passed"
+        }
+      ],
+      "decision": "retire"
+    },
+    {
+      "number": 203,
+      "sourceLines": [
+        13473,
+        13504
+      ],
+      "name": "reuses the raced stranded recovery issue when duplicate active recovery creation conflicts",
+      "kind": "ordinary",
+      "sourceSHA256": "b3549fe02e26a6a4da9677316fd63a18071d61e7345db0ff924e403b86a4f722",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "reuses the raced stranded recovery issue when duplicate active recovery creation conflicts",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 204,
+      "sourceLines": [
+        13506,
+        13572
+      ],
+      "name": "blocks stranded recovery issues in place instead of creating nested recovery issues",
+      "kind": "ordinary",
+      "sourceSHA256": "f2edf1f89a009ba115b9ccd579aa1ed1b0133556c2920a60e6344e38e876e125",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "blocks stranded recovery issues in place instead of creating nested recovery issues",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 205,
+      "sourceLines": [
+        13574,
+        13666
+      ],
+      "name": "keeps repeated recovery failures on the same canonical recovery issue",
+      "kind": "ordinary",
+      "sourceSHA256": "1fd61bdc05c24375a0e8475f7922fc7104bbf04a0b2f6dec6fc3039bdb398b61",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps repeated recovery failures on the same canonical recovery issue",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 206,
+      "sourceLines": [
+        13668,
+        13708
+      ],
+      "name": "does not escalate paused-tree recovery when the automatic continuation retry was cancelled by the hold",
+      "kind": "ordinary",
+      "sourceSHA256": "d2b39f6975cb4edd260d37eba0d90ae5360df14fa6f6f93c6bfc00401691e161",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not escalate paused-tree recovery when the automatic continuation retry was cancelled by the hold",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 207,
+      "sourceLines": [
+        13710,
+        13749
+      ],
+      "name": "re-enqueues recovery when the latest in-progress continuation made progress but left no live path",
+      "kind": "ordinary",
+      "sourceSHA256": "6c44d1f55304e113cdc5a427499cfd148de628d052457d8bfacf1a185ba1d6ac",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "re-enqueues recovery when the latest in-progress continuation made progress but left no live path",
+          "status": "passed"
+        }
+      ],
+      "decision": "retire"
+    },
+    {
+      "number": 208,
+      "sourceLines": [
+        13751,
+        13787
+      ],
+      "name": "does not accept unmanaged local-background wait evidence as a live continuation path",
+      "kind": "ordinary",
+      "sourceSHA256": "fe34a43b1ae834fbcdabbd94c1859ebc0a0007902aef10442207183d9aab248f",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not accept unmanaged local-background wait evidence as a live continuation path",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 209,
+      "sourceLines": [
+        13789,
+        13830
+      ],
+      "name": "escalates repeated unmanaged local-background waits instead of retrying forever",
+      "kind": "ordinary",
+      "sourceSHA256": "1959524d6cf052a7b06c107c958ca1c7b8b124f87926b0f85166c9f5eb363fa8",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "escalates repeated unmanaged local-background waits instead of retrying forever",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 210,
+      "sourceLines": [
+        13832,
+        13860
+      ],
+      "name": "preserves a persisted issue monitor as the durable external-wait path",
+      "kind": "ordinary",
+      "sourceSHA256": "769ab8c93966108c19d6eecf6bdf249423dc78efd0730f769596cfcf009b767c",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "preserves a persisted issue monitor as the durable external-wait path",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 211,
+      "sourceLines": [
+        13862,
+        13902
+      ],
+      "name": "preserves a delegated blocker edge as the durable external-wait path",
+      "kind": "ordinary",
+      "sourceSHA256": "6f373ce024b77747957d430b267ef41cb875897943fee3bd3b0ee625c3af72cf",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "preserves a delegated blocker edge as the durable external-wait path",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 212,
+      "sourceLines": [
+        13904,
+        13939
+      ],
+      "name": "blocks stranded in-progress work after a productive continuation retry was already used",
+      "kind": "ordinary",
+      "sourceSHA256": "bb4eddebb03468043593274e6356c426d1ffc978c8751269876eb4f82782c1bf",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "blocks stranded in-progress work after a productive continuation retry was already used",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 213,
+      "sourceLines": [
+        14068,
+        14116
+      ],
+      "name": "commits a native passive Board response without manufacturing immediate work (%s)",
+      "kind": "each",
+      "sourceSHA256": "adda6caaa7ac30d59b1d64a8e889ce2b0d36d10c796f16dca3a36ce20e239e1b",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "commits a native passive Board response without manufacturing immediate work (issue_commented)",
+          "status": "passed"
+        },
+        {
+          "title": "commits a native passive Board response without manufacturing immediate work (issue_reopened_via_comment)",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 214,
+      "sourceLines": [
+        14118,
+        14127
+      ],
+      "name": "rejects an unfinished native response wait while the finish report is still correctable",
+      "kind": "ordinary",
+      "sourceSHA256": "06ee441a7b86656e67af84e148a59dd3b8939f1d5a4b960a76257394b35904d9",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "rejects an unfinished native response wait while the finish report is still correctable",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 215,
+      "sourceLines": [
+        14129,
+        14150
+      ],
+      "name": "bounds unfinished native response wait repair across repeated finalization (used=%s)",
+      "kind": "each",
+      "sourceSHA256": "649fec5a8dbfe04c1c5bef614e75924987a080f3db351192be276f20df8841ab",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "bounds unfinished native response wait repair across repeated finalization (used=false)",
+          "status": "passed"
+        },
+        {
+          "title": "bounds unfinished native response wait repair across repeated finalization (used=true)",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 216,
+      "sourceLines": [
+        14152,
+        14180
+      ],
+      "name": "preserves a real wait when an unfinished native response reports %s",
+      "kind": "each",
+      "sourceSHA256": "3c63056bfa9be8262eb800e974f0c09c117c24b6e23392747b690e08348b50a1",
+      "runtimeCaseCount": 5,
+      "runtimeCases": [
+        {
+          "title": "preserves a real wait when an unfinished native response reports question",
+          "status": "passed"
+        },
+        {
+          "title": "preserves a real wait when an unfinished native response reports approval",
+          "status": "passed"
+        },
+        {
+          "title": "preserves a real wait when an unfinished native response reports dependency",
+          "status": "passed"
+        },
+        {
+          "title": "preserves a real wait when an unfinished native response reports pause",
+          "status": "passed"
+        },
+        {
+          "title": "preserves a real wait when an unfinished native response reports conversation",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 217,
+      "sourceLines": [
+        14182,
+        14205
+      ],
+      "name": "reconsiders a legacy committed unfinished Board wait (superseded=%s)",
+      "kind": "each",
+      "sourceSHA256": "bc7662ce6d08b5cf2dccaf76fb6cdee4c9ec7ea87683ff3d43e8c41152a3a378",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "reconsiders a legacy committed unfinished Board wait (superseded=false)",
+          "status": "passed"
+        },
+        {
+          "title": "reconsiders a legacy committed unfinished Board wait (superseded=true)",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 218,
+      "sourceLines": [
+        14207,
+        14215
+      ],
+      "name": "does not repair unfinished native work after its Board comment is superseded",
+      "kind": "ordinary",
+      "sourceSHA256": "a23fa5aeef21b94e6ab2c3da0033ea5117e29cea4f2b1f2f5098de0bc558f64d",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not repair unfinished native work after its Board comment is superseded",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 219,
+      "sourceLines": [
+        14329,
+        14379
+      ],
+      "name": "preserves the exact %s passive receipt across repeated paused restart sweeps",
+      "kind": "each",
+      "sourceSHA256": "36cbfe046ef727f67ac065f796f9f4d50318e2f24b93828edfc83ec602a1bf84",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "preserves the exact board passive receipt across repeated paused restart sweeps",
+          "status": "passed"
+        },
+        {
+          "title": "preserves the exact chat passive receipt across repeated paused restart sweeps",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 220,
+      "sourceLines": [
+        14381,
+        14516
+      ],
+      "name": "keeps ordinary escalation when a paused chat wait is not current (%s)",
+      "kind": "each",
+      "sourceSHA256": "fc3b6a35c5373bb715ceed454024be13f8932d75ad9258682c285dafb33ff74a",
+      "runtimeCaseCount": 11,
+      "runtimeCases": [
+        {
+          "title": "keeps ordinary escalation when a paused chat wait is not current (uncommitted)",
+          "status": "passed"
+        },
+        {
+          "title": "keeps ordinary escalation when a paused chat wait is not current (superseded_decision)",
+          "status": "passed"
+        },
+        {
+          "title": "keeps ordinary escalation when a paused chat wait is not current (newer_request)",
+          "status": "passed"
+        },
+        {
+          "title": "keeps ordinary escalation when a paused chat wait is not current (edited_source)",
+          "status": "passed"
+        },
+        {
+          "title": "keeps ordinary escalation when a paused chat wait is not current (failed_run)",
+          "status": "passed"
+        },
+        {
+          "title": "keeps ordinary escalation when a paused chat wait is not current (terminated_agent)",
+          "status": "passed"
+        },
+        {
+          "title": "keeps ordinary escalation when a paused chat wait is not current (reassigned)",
+          "status": "passed"
+        },
+        {
+          "title": "keeps ordinary escalation when a paused chat wait is not current (revoked_destination)",
+          "status": "passed"
+        },
+        {
+          "title": "keeps ordinary escalation when a paused chat wait is not current (malformed_source)",
+          "status": "passed"
+        },
+        {
+          "title": "keeps ordinary escalation when a paused chat wait is not current (pending_interaction)",
+          "status": "passed"
+        },
+        {
+          "title": "keeps ordinary escalation when a paused chat wait is not current (pending_approval)",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 221,
+      "sourceLines": [
+        14518,
+        14534
+      ],
+      "name": "preserves existing error-agent passive wait behavior without treating it as paused",
+      "kind": "ordinary",
+      "sourceSHA256": "3c7d270821a47354acd6a6d79c3b42e37e6ba3f61231eadaaeefda7b129a764b",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "preserves existing error-agent passive wait behavior without treating it as paused",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 222,
+      "sourceLines": [
+        14536,
+        14566
+      ],
+      "name": "does not use an obsolete Board wait to suppress paused recovery (%s)",
+      "kind": "each",
+      "sourceSHA256": "aa067fbc91f1993b09ba8c91ba26fcd7edb90d0f14f3d313de4fb9808af029e6",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "does not use an obsolete Board wait to suppress paused recovery (edited_source)",
+          "status": "passed"
+        },
+        {
+          "title": "does not use an obsolete Board wait to suppress paused recovery (newer_request)",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 223,
+      "sourceLines": [
+        14569,
+        14609
+      ],
+      "name": "materializes the accepted native passive Board answer privately in the decision commit",
+      "kind": "ordinary",
+      "sourceSHA256": "537a3590c9722a43c66283f47816cd2b254da9507c626c0899399c080bd5b8a5",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "materializes the accepted native passive Board answer privately in the decision commit",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 224,
+      "sourceLines": [
+        14611,
+        14647
+      ],
+      "name": "rolls the native passive Board answer back with its rejected decision, then recovers once",
+      "kind": "ordinary",
+      "sourceSHA256": "6d9e307ad25595f3b278e31785fd5dc1d162898658d65cd5d11c81beee80c4f2",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "rolls the native passive Board answer back with its rejected decision, then recovers once",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 225,
+      "sourceLines": [
+        14649,
+        14730
+      ],
+      "name": "does not use stale native passive Board authority after %s",
+      "kind": "each",
+      "sourceSHA256": "6fdd6c4e263ab8ece2bf17f0e25c8318f954d1265ad0b3b1263e4ea70c61394d",
+      "runtimeCaseCount": 10,
+      "runtimeCases": [
+        {
+          "title": "does not use stale native passive Board authority after source_edit",
+          "status": "passed"
+        },
+        {
+          "title": "does not use stale native passive Board authority after source_delete",
+          "status": "passed"
+        },
+        {
+          "title": "does not use stale native passive Board authority after different_user",
+          "status": "passed"
+        },
+        {
+          "title": "does not use stale native passive Board authority after wake_actor",
+          "status": "passed"
+        },
+        {
+          "title": "does not use stale native passive Board authority after wake_reason",
+          "status": "passed"
+        },
+        {
+          "title": "does not use stale native passive Board authority after wake_run",
+          "status": "passed"
+        },
+        {
+          "title": "does not use stale native passive Board authority after native_issue",
+          "status": "passed"
+        },
+        {
+          "title": "does not use stale native passive Board authority after new_comment",
+          "status": "passed"
+        },
+        {
+          "title": "does not use stale native passive Board authority after reassignment",
+          "status": "passed"
+        },
+        {
+          "title": "does not use stale native passive Board authority after pending_question",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 226,
+      "sourceLines": [
+        14732,
+        14766
+      ],
+      "name": "preserves productive native Board %s continuations",
+      "kind": "each",
+      "sourceSHA256": "1a76a186dc54b862242c7110b8964784188320753ef789cf504ef736fd7d3583",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "preserves productive native Board same_agent continuations",
+          "status": "passed"
+        },
+        {
+          "title": "preserves productive native Board retry continuations",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 227,
+      "sourceLines": [
+        14768,
+        14850
+      ],
+      "name": "rechecks native Board source inside the status transaction ($reasonCode, $change)",
+      "kind": "each",
+      "sourceSHA256": "4fe91cdf41b79a783af1f141ef007bc153dd1ce577966e064ef486d96a28e5be",
+      "runtimeCaseCount": 12,
+      "runtimeCases": [
+        {
+          "title": "rechecks native Board source inside the status transaction (board_response_waiting, edited)",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks native Board source inside the status transaction (board_response_waiting, deleted)",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks native Board source inside the status transaction (board_response_waiting, newer_comment)",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks native Board source inside the status transaction (board_response_waiting, wake_actor)",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks native Board source inside the status transaction (completion_evidence_incomplete, edited)",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks native Board source inside the status transaction (completion_evidence_incomplete, deleted)",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks native Board source inside the status transaction (completion_evidence_incomplete, newer_comment)",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks native Board source inside the status transaction (completion_evidence_incomplete, wake_actor)",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks native Board source inside the status transaction (prior_status_preserved_no_live_path, edited)",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks native Board source inside the status transaction (prior_status_preserved_no_live_path, deleted)",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks native Board source inside the status transaction (prior_status_preserved_no_live_path, newer_comment)",
+          "status": "passed"
+        },
+        {
+          "title": "rechecks native Board source inside the status transaction (prior_status_preserved_no_live_path, wake_actor)",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 228,
+      "sourceLines": [
+        14852,
+        14882
+      ],
+      "name": "does not let a native passive Board wait suppress a fresh request or reassignment",
+      "kind": "ordinary",
+      "sourceSHA256": "f3883229770253d6e1c87ea5944e4410642fabc7fca26c765eea1a3bc0c31f30",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not let a native passive Board wait suppress a fresh request or reassignment",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 229,
+      "sourceLines": [
+        14884,
+        14947
+      ],
+      "name": "preserves the native passive Board origin after %s without presenting a stale answer",
+      "kind": "each",
+      "sourceSHA256": "f5b63331ee3c54bcff2db371f7b573831a0bce32896eeef2decbeb9abed3ca67",
+      "runtimeCaseCount": 3,
+      "runtimeCases": [
+        {
+          "title": "preserves the native passive Board origin after edited without presenting a stale answer",
+          "status": "passed"
+        },
+        {
+          "title": "preserves the native passive Board origin after deleted without presenting a stale answer",
+          "status": "passed"
+        },
+        {
+          "title": "preserves the native passive Board origin after newer_comment without presenting a stale answer",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 230,
+      "sourceLines": [
+        14949,
+        15026
+      ],
+      "name": "admits a genuine new Board wake for %s after a native passive Board wait",
+      "kind": "each",
+      "sourceSHA256": "d9615075ddeddf203a5781864b610d882570e6c136c13b47195d80c4b187347e",
+      "runtimeCaseCount": 2,
+      "runtimeCases": [
+        {
+          "title": "admits a genuine new Board wake for same_agent after a native passive Board wait",
+          "status": "passed"
+        },
+        {
+          "title": "admits a genuine new Board wake for reassigned_agent after a native passive Board wait",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 231,
+      "sourceLines": [
+        15028,
+        15088
+      ],
+      "name": "defers a native passive Board decision under a held source lock without partial presentation",
+      "kind": "ordinary",
+      "sourceSHA256": "cf38ae2c9c146977e7d31de0e8a4e27562f1f12c52d68d99c49e866fed0fe648",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "defers a native passive Board decision under a held source lock without partial presentation",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 232,
+      "sourceLines": [
+        15090,
+        15119
+      ],
+      "name": "recovers the native passive Board wait from its receipt, not mutable result or wake presentation",
+      "kind": "ordinary",
+      "sourceSHA256": "a7fba02bcd00c8c16a88e9e4430d3afae7d6de62b090af93b780c8902ca57a40",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "recovers the native passive Board wait from its receipt, not mutable result or wake presentation",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 233,
+      "sourceLines": [
+        15246,
+        15305
+      ],
+      "name": "preserves a native blocked Board request instead of recovering the old task title",
+      "kind": "ordinary",
+      "sourceSHA256": "a70a724b9c449e80700d3728b2edf0194bdba8a12a8b0c8ba256aa4b1826122b",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "preserves a native blocked Board request instead of recovering the old task title",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 234,
+      "sourceLines": [
+        15307,
+        15431
+      ],
+      "name": "does not clobber a newer %s while native blocker repair waits on the issue lock",
+      "kind": "each",
+      "sourceSHA256": "15bdb4a6b9dc52a337295fae534bddad99b96594e4a08a790923f45c993bf719",
+      "runtimeCaseCount": 6,
+      "runtimeCases": [
+        {
+          "title": "does not clobber a newer status while native blocker repair waits on the issue lock",
+          "status": "passed"
+        },
+        {
+          "title": "does not clobber a newer assignee while native blocker repair waits on the issue lock",
+          "status": "passed"
+        },
+        {
+          "title": "does not clobber a newer comment while native blocker repair waits on the issue lock",
+          "status": "passed"
+        },
+        {
+          "title": "does not clobber a newer wake while native blocker repair waits on the issue lock",
+          "status": "passed"
+        },
+        {
+          "title": "does not clobber a newer run while native blocker repair waits on the issue lock",
+          "status": "passed"
+        },
+        {
+          "title": "does not clobber a newer attention while native blocker repair waits on the issue lock",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 235,
+      "sourceLines": [
+        15433,
+        15501
+      ],
+      "name": "preserves a later routed native attention decision after its wake was coalesced",
+      "kind": "ordinary",
+      "sourceSHA256": "131eb214c183b45b56637ca848d0c71ad59f6a71977b308d653524c34f45b1e8",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "preserves a later routed native attention decision after its wake was coalesced",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 236,
+      "sourceLines": [
+        15503,
+        15536
+      ],
+      "name": "does not grant a legacy summary authority to bind a native blocked wait",
+      "kind": "ordinary",
+      "sourceSHA256": "d5de2751265a7455cd44533e9a0be829be41634f4bae9ed1d190bd0f7f8b4d48",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not grant a legacy summary authority to bind a native blocked wait",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 237,
+      "sourceLines": [
+        15538,
+        15599
+      ],
+      "name": "rolls back the native blocked wait when its durable notice cannot be persisted",
+      "kind": "ordinary",
+      "sourceSHA256": "45a94f2d1f316c6d267c06e99ccb92588397d666cfcfa429b41f2f00cdb31e18",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "rolls back the native blocked wait when its durable notice cannot be persisted",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 238,
+      "sourceLines": [
+        15601,
+        15630
+      ],
+      "name": "allows one productive-terminal recovery after regular continuation recovery made progress",
+      "kind": "ordinary",
+      "sourceSHA256": "8d13e7fa81d638db9dc1d3e3045d72b77900495dd78634c0f5200a9e30e62d2b",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "allows one productive-terminal recovery after regular continuation recovery made progress",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 239,
+      "sourceLines": [
+        15632,
+        15706
+      ],
+      "name": "does not treat a productive terminal run as healthy when in-progress work has no live path",
+      "kind": "ordinary",
+      "sourceSHA256": "5c17238acb74acc2cf775abed83fd9269adfb75c6a6fc19f2c48b3264df78295",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not treat a productive terminal run as healthy when in-progress work has no live path",
+          "status": "passed"
+        }
+      ],
+      "decision": "keeper"
+    },
+    {
+      "number": 240,
+      "sourceLines": [
+        15708,
+        15732
+      ],
+      "name": "does not replenish exhausted legacy repair from a recent comment",
+      "kind": "ordinary",
+      "sourceSHA256": "6adbcf29c73304e24f08a8db238d14feb48758353a40784f215aaf38a10450cb",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not replenish exhausted legacy repair from a recent comment",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 241,
+      "sourceLines": [
+        15734,
+        15761
+      ],
+      "name": "still escalates stranded-recovery work when the recent comment is older than the exemption window (GGU-809)",
+      "kind": "ordinary",
+      "sourceSHA256": "42001e22686e98dfd5032b481ef1202ec3e1642dd439411f02f54a5915a12d86",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "still escalates stranded-recovery work when the recent comment is older than the exemption window (GGU-809)",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 242,
+      "sourceLines": [
+        15763,
+        15784
+      ],
+      "name": "does not reconcile user-assigned work through the agent stranded-work recovery path",
+      "kind": "ordinary",
+      "sourceSHA256": "09b2d28707a4bf1d29a4c339e6bf5be5666b058610d7beaca8018bc4426e054d",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "does not reconcile user-assigned work through the agent stranded-work recovery path",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 243,
+      "sourceLines": [
+        15843,
+        15880
+      ],
+      "name": "keeps an accepted Cursor plan passive across restart, future configuration changes, and paused recovery",
+      "kind": "ordinary",
+      "sourceSHA256": "a3830a3dc49feb1d8d83d5a3e9e5d02ec07cc0c458e6369108f42fcd3d575ff2",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "keeps an accepted Cursor plan passive across restart, future configuration changes, and paused recovery",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 244,
+      "sourceLines": [
+        15882,
+        15941
+      ],
+      "name": "retains an exact historical Cursor6 committed wait across more than 1000 ignored progress rows without allowing new unbound admission",
+      "kind": "ordinary",
+      "sourceSHA256": "f8b7b3081188da6b61d518aac4ff8479b2b2269cf491a4b63ccf177bb4232cfa",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "retains an exact historical Cursor6 committed wait across more than 1000 ignored progress rows without allowing new unbound admission",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 245,
+      "sourceLines": [
+        15943,
+        15968
+      ],
+      "name": "admits a later ordinary user message after an accepted Cursor plan without changing Plan mode or replaying its run",
+      "kind": "ordinary",
+      "sourceSHA256": "7735971a76608aea40d1706d028d66885973646be9c01254fe84f3754589e481",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "admits a later ordinary user message after an accepted Cursor plan without changing Plan mode or replaying its run",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 246,
+      "sourceLines": [
+        15970,
+        15991
+      ],
+      "name": "revokes an accepted Cursor plan passive wait after %s changes",
+      "kind": "each",
+      "sourceSHA256": "373e109d98368bfec2e6c3d313f9ea3a32a23034960f6f285ad71587390c12c5",
+      "runtimeCaseCount": 5,
+      "runtimeCases": [
+        {
+          "title": "revokes an accepted Cursor plan passive wait after delivery changes",
+          "status": "passed"
+        },
+        {
+          "title": "revokes an accepted Cursor plan passive wait after assignment changes",
+          "status": "passed"
+        },
+        {
+          "title": "revokes an accepted Cursor plan passive wait after admission changes",
+          "status": "passed"
+        },
+        {
+          "title": "revokes an accepted Cursor plan passive wait after user_request changes",
+          "status": "passed"
+        },
+        {
+          "title": "revokes an accepted Cursor plan passive wait after result_or_decision changes",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 247,
+      "sourceLines": [
+        15993,
+        16005
+      ],
+      "name": "rechecks accepted Cursor plan delivery under the status transaction before presentation or effects",
+      "kind": "ordinary",
+      "sourceSHA256": "e32cc8d86d63f086558fb3e42855c860007992c107c62e99853458bd63522a07",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "rechecks accepted Cursor plan delivery under the status transaction before presentation or effects",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    },
+    {
+      "number": 248,
+      "sourceLines": [
+        16007,
+        16013
+      ],
+      "name": "preserves explicit semantic finish priority over accepted Cursor plan evidence",
+      "kind": "ordinary",
+      "sourceSHA256": "dec8ed05f2e1f2f1b58ef55b5049591db4af5b8bc0eebfda52eb3954c1de3194",
+      "runtimeCaseCount": 1,
+      "runtimeCases": [
+        {
+          "title": "preserves explicit semantic finish priority over accepted Cursor plan evidence",
+          "status": "passed"
+        }
+      ],
+      "decision": "retain"
+    }
+  ],
+  "helpersAndHooks": [
+    {
+      "name": "commentMetadataRows",
+      "line": 291,
+      "endLine": 299,
+      "sha256": "06b22b7bb750636eb458aaa330ecbb959d04530084e915a10feef58828a569a5"
+    },
+    {
+      "name": "spawnAliveProcess",
+      "line": 301,
+      "endLine": 305,
+      "sha256": "aadbc1ae3473817b3e2ab7c3eaee7eb6808b13d35a6f3a97a83e6af73fe94b65"
+    },
+    {
+      "name": "isPidAlive",
+      "line": 307,
+      "endLine": 316,
+      "sha256": "31aecc99b653a38bd8519722b1129fd7732a383e8b1fa92eb587796e17e4d49d"
+    },
+    {
+      "name": "waitForPidExit",
+      "line": 318,
+      "endLine": 325,
+      "sha256": "83198fce90e5869534c0876859b32ad6bc858a213f21e9e4e97a09dffcc5cacb"
+    },
+    {
+      "name": "waitForRunToSettle",
+      "line": 327,
+      "endLine": 340,
+      "sha256": "b6cc93978ab341b654fd2bb21c008ec9c6c3c497949de0646dfcdb1be1ae6a26"
+    },
+    {
+      "name": "waitForValue",
+      "line": 342,
+      "endLine": 354,
+      "sha256": "8018a75f6094e87eea687f0a3c4066e5cc4f35e7206ab2623859100ed73cde52"
+    },
+    {
+      "name": "waitForHeartbeatIdle",
+      "line": 356,
+      "endLine": 374,
+      "sha256": "dfc0b125f9fbd15d274bed22de91f70e9c6457894cef2e7c639f3bfd4030b511"
+    },
+    {
+      "name": "stopRegisteredProcessesForCleanup",
+      "line": 376,
+      "endLine": 390,
+      "sha256": "2b1c14655fda08c82578ce4b266b033609b6cdf19303d756c21379f993440f10"
+    },
+    {
+      "name": "cancelActiveRunsForCleanup",
+      "line": 392,
+      "endLine": 448,
+      "sha256": "7faae892d17b9ad59c886a8127275ee39b357ebcabf153c15c88df2dbcb289d3"
+    },
+    {
+      "name": "spawnOrphanedProcessGroup",
+      "line": 450,
+      "endLine": 490,
+      "sha256": "03ad97a27a50ae6df337c3f1062ec1294a6de4752ca6807bad604832c119f5e2"
+    },
+    {
+      "name": "recoveryCompanyRow",
+      "line": 500,
+      "endLine": 511,
+      "sha256": "e2701b5368a92fe7de4770607a4f24406ea7f9b73ea8db839944283dcf5dc4c4"
+    },
+    {
+      "name": "recoveryAgentRow",
+      "line": 513,
+      "endLine": 531,
+      "sha256": "0b8c1a235bdba36572e288aa40f68c6b4007cb7a523d18feea0407afc3d5f016"
+    },
+    {
+      "name": "selectRecoveryRunsByAgent",
+      "line": 533,
+      "endLine": 538,
+      "sha256": "8aa2f51e620520a7b89f7e8c053fadad201471535dc07f5df8ceda95612e7af9"
+    },
+    {
+      "name": "selectRecoveryIssueById",
+      "line": 540,
+      "endLine": 546,
+      "sha256": "fc099866facf1a97b80952e53cf2e654e54118d45bf5534d2010e9864b74337c"
+    },
+    {
+      "name": "selectRecoveryCommentsForIssue",
+      "line": 548,
+      "endLine": 553,
+      "sha256": "8df15af2150a247faacf3b4140073dfa833c5eacc090c4161d691172553d8b4d"
+    },
+    {
+      "name": "selectRecoveryActionForIssue",
+      "line": 555,
+      "endLine": 569,
+      "sha256": "a6f625a0c7fc538259c23b3992990e4fad0198b59c4d9eaeec99933a36d2727a"
+    },
+    {
+      "name": "selectStrandedRecoveryIssuesForCompany",
+      "line": 571,
+      "endLine": 581,
+      "sha256": "4e2398c5a97e7aea11ed206afd386f29fbd8a6adca7ea76add620b1981eedd90"
+    },
+    {
+      "name": "selectRecoveryActionsForIssue",
+      "line": 583,
+      "endLine": 588,
+      "sha256": "7dfc114ee82a56d060f0bc865d93bfa8e36dc9dd52e338b708294ca71587f2d8"
+    },
+    {
+      "name": "selectRecoveryWakesByAgent",
+      "line": 590,
+      "endLine": 595,
+      "sha256": "e83f00e10e88c5fd21aed7ebe211e3616b6b78f844d12b899f7d1a7a40615f75"
+    },
+    {
+      "name": "selectStrandedRecoveryIssuesForSource",
+      "line": 597,
+      "endLine": 611,
+      "sha256": "5f69265a40faaab735397642530faf814a0bc6d05162425907c5f59be4ca65d3"
+    },
+    {
+      "name": "beforeAll",
+      "line": 613,
+      "endLine": 631,
+      "sha256": "a396faa14dd00410f93d870fd7767f0e082d1332c6b47d7a2d6bc2a47e6d4740"
+    },
+    {
+      "name": "afterEach",
+      "line": 633,
+      "endLine": 805,
+      "sha256": "681fcdfe64c056848fb0d48b7ac0640ad0395f2a0147d42e7d5f4c6ce5d71511"
+    },
+    {
+      "name": "afterAll",
+      "line": 807,
+      "endLine": 825,
+      "sha256": "9c545b21ec1ea3078523788ce47d270d25459e17e380b42bf92d55b6ff943f03"
+    },
+    {
+      "name": "seedRunFixture",
+      "line": 827,
+      "endLine": 920,
+      "sha256": "c74a9d5d8bd4485174c270c5e6785a12eb0c68e04519427ad2a6dc6dc752d583"
+    },
+    {
+      "name": "seedEnvironmentLeaseFixture",
+      "line": 922,
+      "endLine": 963,
+      "sha256": "6e33996754f6df58c05109ae7eef312fc3dc136420bd5d234eb937bab0ff38af"
+    },
+    {
+      "name": "seedStrandedIssueFixture",
+      "line": 1046,
+      "endLine": 1194,
+      "sha256": "df0ae6435b397e1f0724200c7defa7736caaf67b94aacd3f5caa0d590bf86dfe"
+    },
+    {
+      "name": "bindChatConversation",
+      "line": 1196,
+      "endLine": 1246,
+      "sha256": "c120b8a5c75bee80474c295ecee2ad08e43799cbc4218241860dd0d3c276f5a1"
+    },
+    {
+      "name": "seedInReviewParticipantRunFixture",
+      "line": 1248,
+      "endLine": 1329,
+      "sha256": "9b184e1ba125ebbd0b030582df6b130ede774cb1134ef77f629d22b07ec8996f"
+    },
+    {
+      "name": "seedAssignedTodoNoRunFixture",
+      "line": 1331,
+      "endLine": 1367,
+      "sha256": "cb7c86a89e50f9912c32710a4a1e9ba5a93859f9f288190347717ee9f35ac4c9"
+    },
+    {
+      "name": "seedIdleTimerAgentFixture",
+      "line": 1369,
+      "endLine": 1401,
+      "sha256": "728e2a1e8e8094ce9bd94899fe632d5460a0a7e6d4c61e42db8ae326fafd1993"
+    },
+    {
+      "name": "expectSourceScopedStrandedRecoveryAction",
+      "line": 1403,
+      "endLine": 1498,
+      "sha256": "f4f92bac6261fca2d0449ba7dfdcff7eae0c1ccec3cbe6ec8b54d54a6648c57a"
+    },
+    {
+      "name": "sourceBlockerIssueIds",
+      "line": 1500,
+      "endLine": 1515,
+      "sha256": "8159db401baab08f08e11b2751e7ead225b36f45ce78fb91f3eba59b25765920"
+    },
+    {
+      "name": "seedQueuedIssueRunFixture",
+      "line": 1517,
+      "endLine": 1599,
+      "sha256": "6bd605c427351a7338ff7ba0602216b84b2a9c07b89c121c47403b9202073786"
+    },
+    {
+      "name": "seedPendingNativeFinalization",
+      "line": 2238,
+      "endLine": 2273,
+      "sha256": "8048c038f89e61c098ec11f83e34d342c292dcb1892cec22920044c1e2eee43f"
+    },
+    {
+      "name": "makePort",
+      "line": 2254,
+      "endLine": 2257,
+      "sha256": "e31c07a82fd719527c1407e4dacfcb20c0b58cc20b65b5ed79bd8f98db8aa675"
+    },
+    {
+      "name": "complete",
+      "line": 2261,
+      "endLine": 2262,
+      "sha256": "6fa3a72c0ffc6b41be0c19203e17d9cae59c8a37fdea9a5d705173e11c7795f9"
+    },
+    {
+      "name": "withTempPaperclipHome",
+      "line": 3277,
+      "endLine": 3308,
+      "sha256": "c1983186ccc78b1aa0d1adae8b949632b5c30438cad698fdad9a3dbaf1459dd4"
+    },
+    {
+      "name": "makeDirectoriesWritable",
+      "line": 3292,
+      "endLine": 3304,
+      "sha256": "56e2ab5e7617d781f92b9f66406bb015408455af42de7b03152c9f579254c303"
+    },
+    {
+      "name": "seedResolvedInteractionRecoveryFixture",
+      "line": 10442,
+      "endLine": 10470,
+      "sha256": "e87f4f2f41fed5bae85ae552a78e17487fa721f495652e34a554581db117f1b9"
+    },
+    {
+      "name": "seedCommittedChatControlStop",
+      "line": 11796,
+      "endLine": 12011,
+      "sha256": "59f1fe06690997b8701d3118c934367d82f72548bbcdfbf1aee92d2ff7849054"
+    },
+    {
+      "name": "seedChatAutomaticChild",
+      "line": 12041,
+      "endLine": 12095,
+      "sha256": "f47d9f70f74368f3d1113dd8394db03c9051769b5f9db584cd4d048400fe60f1"
+    },
+    {
+      "name": "chatStopScope",
+      "line": 12097,
+      "endLine": 12105,
+      "sha256": "9f94faea69c7cf7af88bb2e67ef7429cbdbd1f5597f6d8138d32106c128f4e22"
+    },
+    {
+      "name": "seedPreparedChatRecovery",
+      "line": 12701,
+      "endLine": 12755,
+      "sha256": "f77fec5f03f04539ec6329d9db4e92b01f7b48ce54aba229018b13e8655924c9"
+    },
+    {
+      "name": "seedNativePassiveBoardResponse",
+      "line": 13941,
+      "endLine": 14066,
+      "sha256": "29242e26d3841f673cc1d4a06f526a601f705b6199be5dc1b66bda5c895f7646"
+    },
+    {
+      "name": "seedPassive",
+      "line": 14218,
+      "endLine": 14327,
+      "sha256": "cb79438ceb55728e93d299dcb80905f936d894448543111cf1d7c09c3a5aaac7"
+    },
+    {
+      "name": "seedNativeBlockedBoardRequest",
+      "line": 15121,
+      "endLine": 15244,
+      "sha256": "b0998dfbb5ac9dc285a951089730c6874ba56025e43be336465c28570e3c40c9"
+    },
+    {
+      "name": "beforeEach",
+      "line": 15787,
+      "endLine": 15789,
+      "sha256": "067007d953738331f0371209048ba6f8db801c1ff34b4e652d81e634ae37f6ae"
+    },
+    {
+      "name": "afterEach",
+      "line": 15790,
+      "endLine": 15790,
+      "sha256": "97fa9145884474de6de5b4b3b890309bc7b4f4f3c5cfd22d6942cfe54236014b"
+    },
+    {
+      "name": "seedAcceptedCursorPlanWait",
+      "line": 15792,
+      "endLine": 15841,
+      "sha256": "276cb3b641a8f120825efeaadf1f3ce68e7f2b40f178fa6c2aef9b1a3d59ce2e"
+    }
+  ],
+  "evidenceScope": "Pre-integration controls recorded on the historical head, not current-head runtime validation."
+}

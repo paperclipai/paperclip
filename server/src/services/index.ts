@@ -40,8 +40,11 @@ export {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
   type IssueFilters,
+  type IssueListOptions,
 } from "./issues.js";
 export { issueThreadInteractionService } from "./issue-thread-interactions.js";
+export { expirePendingInteractionsOnClosedIssues } from "./closed-issue-interaction-sweep.js";
+export { githubConnectionEventService, type GitHubConnectionEventPollResult } from "./github-connection-events.js";
 export {
   assertIssueReviewVerdictActorAllowed,
   type IssueReviewVerdictActor,
@@ -71,6 +74,7 @@ export {
   type ExternalObjectResolverSnapshot,
 } from "./external-objects.js";
 export { goalService } from "./goals.js";
+export { responsibilityService } from "./responsibilities.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
 export { attentionService } from "./attention.js";
@@ -91,6 +95,12 @@ export { secretService } from "./secrets.js";
 export { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
 export { createSecretProposalsService } from "./secret-proposals.js";
 export { googleSheetsRobotEmailFromEnv, toolAccessService } from "./tool-access.js";
+export {
+  createVercelConnectClient,
+  vercelConnectIntegrationStatus,
+  VercelConnectClientError,
+  type VercelConnectClient,
+} from "./vercel-connect.js";
 export { smokeLabService } from "./smoke-lab.js";
 export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";
@@ -99,9 +109,13 @@ export { costService } from "./costs.js";
 export { financeService } from "./finance.js";
 export { heartbeatService, resolveHeartbeatSchedulingSuppression } from "./heartbeat.js";
 export {
-  productivityReviewService,
-  PRODUCTIVITY_REVIEW_ORIGIN_KIND,
-} from "./productivity-review.js";
+  runnerGoalService,
+  applyRunnerGoalPrpEvent,
+  blockRunnerGoalRecovery,
+  failRunnerGoalAction,
+  RunnerGoalActionError,
+  RunnerGoalConflictError,
+} from "./runner-goals.js";
 export { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/index.js";
 export { dashboardService } from "./dashboard.js";
 export { sidebarBadgeService } from "./sidebar-badges.js";
@@ -134,7 +148,7 @@ export {
   type ManagedInstanceConfig,
 } from "./managed-config.js";
 export { bootstrapExecutionPolicyFromEnv } from "./execution-policy-bootstrap.js";
-export { applyManagedEnvironments } from "./managed-environments.js";
+export { applyManagedEnvironments, createManagedEnvironmentRecovery } from "./managed-environments.js";
 export { buildExportFidelityReport, collectExportFidelityCounts } from "./export-fidelity.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { teamsCatalogService } from "./teams-catalog.js";
@@ -176,7 +190,10 @@ export {
   workspaceGitOperationScheduler,
   type WorkspaceGitSchedulerSnapshot,
 } from "./workspace-git-operation-scheduler.js";
-export { workProductService } from "./work-products.js";
+export {
+  enrichWorkProductMetadataWithDiff,
+  workProductService,
+} from "./work-products.js";
 export {
   logActivity,
   persistActivity,
@@ -193,3 +210,15 @@ export {
 } from "./codex-auth-reconciliation.js";
 export { reconcilePersistedRuntimeServicesOnStartup, restartDesiredRuntimeServicesOnStartup } from "./workspace-runtime.js";
 export { createStorageServiceFromConfig, getStorageService } from "../storage/index.js";
+export {
+  managedAgentProfileService,
+  CLAUDE_MANAGED_BETA_VERSION,
+  type ManagedAgentProfileInput,
+} from "./managed-agent-profiles.js";
+export {
+  remoteAgentProfileService,
+  type RemoteAgentProfileInput,
+  type RemoteAgentService,
+} from "./remote-agent-profiles.js";
+
+export { decisionModelService, defineDecisionFeature } from "./decision-models.js";

@@ -58,6 +58,11 @@ describe("isInteractionAudienceDenial", () => {
 });
 
 describe("describeInteractionResolutionFailure", () => {
+  it("does not tell a person to retry a stale tool approval", () => {
+    const message = "The connected account, credentials, or permissions changed. A new review is required.";
+    expect(describeInteractionResolutionFailure(denial(409, "approved_tool_target_changed", message)))
+      .toMatchObject({ kind: "settled", message });
+  });
   it("keeps the server denial reason and names who can respond", () => {
     const failure = describeInteractionResolutionFailure(
       denial(403, "interaction_human_only", "This issue-thread interaction is human-only"),
@@ -147,7 +152,27 @@ describe("describeInteractionResolutionFailure", () => {
   it("keeps the retry prompt for a genuinely transient failure", () => {
     expect(
       describeInteractionResolutionFailure(new ApiError("Request failed: 503", 503, null), humanOnlyAudience),
-    ).toMatchObject({ kind: "transient", message: "Request failed: 503. Try again." });
+    ).toMatchObject({
+      kind: "transient",
+      message: "Paperclip is temporarily unavailable. Please try again in a moment.",
+    });
+  });
+
+  it("never shows a raw gateway code", () => {
+    const failure = describeInteractionResolutionFailure(
+      new ApiError("tenant_app_unavailable", 503, { error: "tenant_app_unavailable" }),
+      humanOnlyAudience,
+    );
+    expect(failure.kind).toBe("transient");
+    expect(failure.code).toBeNull();
+    expect(failure.message).not.toMatch(/tenant_app_unavailable/);
+    expect(failure.message).toMatch(/try again/i);
+  });
+
+  it("does not echo a raw code for a non-transient failure", () => {
+    expect(
+      interactionResolutionErrorMessage(new ApiError("internal_error", 500, { error: "internal_error" }), null),
+    ).toBe("Couldn't submit. Try again.");
   });
 
   it("falls back to generic copy when nothing explains the failure", () => {

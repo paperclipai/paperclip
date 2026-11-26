@@ -1,3 +1,4 @@
+import { extractCompanyPrefixFromPath } from "./company-routes.js";
 type MarkdownNode = {
   type: string;
   value?: string;
@@ -6,14 +7,15 @@ type MarkdownNode = {
 };
 
 const BARE_ISSUE_IDENTIFIER_RE = /^[A-Z][A-Z0-9]*-\d+$/i;
-const ISSUE_SCHEME_RE = /^issue:\/\/:?([^?#\s]+)(?:[?#].*)?$/i;
+const ISSUE_SCHEME_RE = /^issue:\/\/:?([^?#\s]+)([?#].*)?$/i;
 const ISSUE_REFERENCE_TOKEN_RE = /issue:\/\/:?[^\s<>()]+|https?:\/\/[^\s<>()]+|\/(?:[^\s<>()/]+\/)*issues\/[A-Z][A-Z0-9]*-\d+(?=$|[\s<>)\],.;!?:])|\b[A-Z][A-Z0-9]*-\d+\b/gi;
 
 export function parseIssuePathIdFromPath(pathOrUrl: string | null | undefined): string | null {
   if (!pathOrUrl) return null;
-  const pathname = pathOrUrl.trim();
-  if (!pathname) return null;
-  if (/^https?:\/\//i.test(pathname)) return null;
+  const value = pathOrUrl.trim();
+  if (!value) return null;
+  if (/^https?:\/\//i.test(value)) return null;
+  const pathname = value.split(/[?#]/, 1)[0]!;
 
   const segments = pathname.split("/").filter(Boolean);
   const issueIndex = segments.findIndex((segment) => segment === "issues");
@@ -34,7 +36,7 @@ export function parseIssueReferenceFromHref(
     const issuePathId = decodeURIComponent(issueSchemeMatch[1]);
     return {
       issuePathId,
-      href: `/issues/${encodeURIComponent(issuePathId)}`,
+      href: issueHref(issuePathId, issueSchemeMatch[2] ?? "", null, knownPrefixes),
     };
   }
 
@@ -42,7 +44,12 @@ export function parseIssueReferenceFromHref(
   if (pathId) {
     return {
       issuePathId: pathId,
-      href: `/issues/${encodeURIComponent(pathId)}`,
+      href: issueHref(
+        pathId,
+        trimmed.match(/[?#].*$/)?.[0] ?? "",
+        extractCompanyPrefixFromPath(trimmed.split(/[?#]/, 1)[0]!),
+        knownPrefixes,
+      ),
     };
   }
 
@@ -59,8 +66,24 @@ export function parseIssueReferenceFromHref(
   }
   return {
     issuePathId: normalized,
-    href: `/issues/${encodeURIComponent(normalized)}`,
+    href: issueHref(normalized, "", null, knownPrefixes),
   };
+}
+
+function issueHref(
+  issuePathId: string,
+  suffix: string,
+  pathCompanyPrefix: string | null,
+  knownPrefixes?: Set<string>,
+): string {
+  const identifierPrefix = BARE_ISSUE_IDENTIFIER_RE.test(issuePathId)
+    ? issuePathId.split("-")[0]!.toUpperCase()
+    : null;
+  const companyPrefix =
+    pathCompanyPrefix ??
+    (identifierPrefix && knownPrefixes?.has(identifierPrefix) ? identifierPrefix : null);
+  const path = `/issues/${encodeURIComponent(issuePathId)}${suffix}`;
+  return companyPrefix ? `/${companyPrefix}${path}` : path;
 }
 
 function splitTrailingPunctuation(token: string) {

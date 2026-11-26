@@ -11,6 +11,7 @@ import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { appTabHref } from "../app-tabs";
 import type { ActivityPanelProps } from "./types";
+import { googleAccessRetrySummary } from "../../../features/connections/googleAccessRemoval";
 
 export function ActivityPanel(props: ActivityPanelProps) {
   return <RecentActivity {...props} />;
@@ -23,7 +24,7 @@ type TimelineRow = {
   dotClass: string;
   /** Secondary "while working on PAP-…" issue link, tool-call rows only. */
   issue?: { identifier: string } | null;
-  /** Deep-link rendered after the timestamp ("View in Setup"), lifecycle rows only. */
+  /** Deep-link rendered after the timestamp, lifecycle rows only. */
   link?: { to: string; label: string } | null;
 };
 
@@ -59,13 +60,13 @@ function RecentActivity({
         };
       });
 
-    const setupHref = appTabHref(connectionId, "setup");
+    const permissionsHref = appTabHref(connectionId, "permissions");
     const lifecycleRows: TimelineRow[] = lifecycleEvents.map((event) => ({
       key: `lifecycle:${event.id}`,
       createdAt: event.createdAt,
       primary: humanizeLifecycleEvent(event, appName, nameById.get(event.agentId ?? "") ?? null),
       dotClass: lifecycleDotColor(event),
-      link: { to: setupHref, label: lifecycleLinkLabel(event) },
+      link: { to: permissionsHref, label: lifecycleLinkLabel(event) },
     }));
 
     return [...callRows, ...lifecycleRows].sort(
@@ -74,9 +75,9 @@ function RecentActivity({
   }, [events, lifecycleEvents, issues, actionRequests, nameById, connectionId, appName, userLabelById]);
 
   return (
-    <section className="space-y-2">
+    <section className="space-y-5">
       <div>
-        <h2 className="text-sm font-bold text-foreground">Recent activity</h2>
+        <h2 className="text-lg font-semibold text-foreground">Recent activity</h2>
       </div>
       {loading ? (
         <div className="space-y-2 py-4">
@@ -229,6 +230,9 @@ function humanizeLifecycleEvent(
       const count = numberFrom(event.details?.count);
       return `${count} new ${count === 1 ? "action" : "actions"} need review`;
     }
+    case "google_access_ended":
+    case "google_access_not_ended":
+      return googleAccessRetrySummary(event.type, event.details);
     default:
       return `${who} updated this app`;
   }
@@ -250,7 +254,7 @@ function humanizeAllowlistChange(who: string, details: Record<string, unknown> |
 }
 
 function lifecycleLinkLabel(event: ToolConnectionLifecycleEvent): string {
-  return event.type === "actions_quarantined" ? "Review in Setup" : "View in Setup";
+  return event.type === "actions_quarantined" ? "Review permissions" : "View permissions";
 }
 
 function numberFrom(value: unknown): number {
@@ -274,5 +278,6 @@ function dotColor(event: ToolCallEvent): string {
 function lifecycleDotColor(event: ToolConnectionLifecycleEvent): string {
   if (event.type === "disconnected") return "bg-red-400";
   if (event.type === "app_paused" || event.type === "actions_quarantined") return "bg-amber-400";
+  if (event.type === "google_access_not_ended" && event.details?.result !== "other_connections_remain") return "bg-amber-400";
   return "bg-emerald-400";
 }

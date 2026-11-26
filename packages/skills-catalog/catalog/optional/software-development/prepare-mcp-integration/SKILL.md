@@ -49,6 +49,26 @@ App only after a human accepts the exact research revision and connection set.
   briefs, catalog files, issue text, plans, fixtures, screenshots, logs, branch
   names, commits, or PRs.
 
+## Default Connection Experience
+
+- Request the broadest vendor permissions and scopes the connection can
+  support by default. Operators should not have to predict every future tool
+  they may need during setup. Enforce safe use after connection through
+  Paperclip's action catalog, resource boundaries, ask-first policies,
+  quarantine, and audit controls.
+- Keep the default wizard limited to the minimum information needed to create
+  a working connection: connection identity, authentication, and any
+  unavoidable tenant or resource boundary. Put optional scope reduction,
+  feature groups, individual tool filters, response modes, transport tuning,
+  and other expert controls behind one collapsed **Advanced** disclosure.
+- Give advanced controls working broad defaults so an operator can finish
+  setup without opening them. When a provider truly requires an explicit
+  advanced choice, document the exception and explain it in plain language
+  instead of exposing protocol details by default.
+- Treat vendor permission breadth and Paperclip execution governance as
+  separate layers. Do not reduce requested vendor permissions merely to stand
+  in for missing action review, approval, quarantine, or audit policy.
+
 ## Preflight
 
 1. Load the current Paperclip skill for checkout, comments, interactions,
@@ -170,10 +190,9 @@ its commit before writing code. For each accepted connection:
    connect, catalog discovery, an allowed read, an ask-first write, a
    denied/quarantined action, revoke, and audit. Include negative company,
    actor, resource, and changed-schema cases where applicable.
-6. Use a first-class QA child issue only when real credentials, vendor consent,
-   or browser evidence cannot be completed safely by the implementing agent.
-   Link it as a blocker and give QA exact, secret-safe steps and expected
-   evidence.
+6. If real credentials, vendor consent, or browser evidence are unavailable,
+   report the missing input and required evidence on the current task. Preserve
+   any required QA review and permission controls.
 7. Run the standard PR-preparation workflow for this connector PR. Do not hand
    it back for merge until focused verification passes, all required checks are
    green, Greptile is 5/5, and every actionable comment is resolved.

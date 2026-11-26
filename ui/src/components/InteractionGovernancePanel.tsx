@@ -22,6 +22,11 @@ const INTERACTION_KIND_LABELS: Record<IssueThreadInteractionKind, string> = {
   request_confirmation: "Confirmations",
   request_checkbox_confirmation: "Checkbox confirmations",
   request_item_verdicts: "Item verdicts",
+  connection_intent: "Connection requests",
+  suggest_routine: "Routine offers",
+  propose_responsibility_bar: "Proposed bars",
+  propose_automation: "Proposed automations",
+  propose_dashboard_changes: "Proposed dashboard changes",
 };
 
 /**
@@ -221,8 +226,7 @@ function GovernanceSelect({
  *
  * The open default is the headline — interactions are resolvable by anyone in
  * the company unless a row here narrows them — so the panel only offers
- * narrowing choices and never presents an unrestricted card as board-required
- * (PAP-17280, contract in `doc/SPEC-implementation.md` §9.8.1).
+ * narrowing choices and never presents an unrestricted card as board-required.
  */
 export function InteractionGovernancePanel({
   governance,
@@ -243,7 +247,7 @@ export function InteractionGovernancePanel({
       <div className="space-y-4">
         <p className="text-sm text-muted-foreground">
           Thread interactions are open by default:{" "}
-          <span className="font-medium text-foreground">Anyone</span> in the company — the
+          <span className="font-medium text-foreground">Anyone</span> in the organization — the
           board or any agent, including the one that asked — can respond. Narrow a kind
           only when you need to.{" "}
           <span className="font-medium text-foreground">Default policy</span> is the
@@ -269,7 +273,8 @@ export function InteractionGovernancePanel({
           <div className="hidden text-xs font-medium text-muted-foreground uppercase tracking-wide sm:block">
             Cap
           </div>
-          {ISSUE_THREAD_INTERACTION_KINDS.map((kind) => {
+          {ISSUE_THREAD_INTERACTION_KINDS.filter((kind) => kind !== "suggest_routine" && kind !== "propose_responsibility_bar" && kind !== "propose_automation" && kind !== "propose_dashboard_changes").map((kind) => {
+            // Routine offers and proposed bars are always answered by a person; there is no audience to govern.
             const entry = governance[kind] ?? {};
             const kindLabel = INTERACTION_KIND_LABELS[kind];
             return (

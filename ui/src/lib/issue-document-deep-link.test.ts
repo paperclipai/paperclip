@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveIssueDocumentDeepLink } from "./issue-document-deep-link";
+import { chatSidebarDocumentHash, resolveIssueDocumentDeepLink, sameIssueDocumentHash } from "./issue-document-deep-link";
 
 describe("resolveIssueDocumentDeepLink", () => {
   it("preserves continuation-summary routing", () => {
@@ -13,14 +13,31 @@ describe("resolveIssueDocumentDeepLink", () => {
       kind: "properties-pane",
       tab: "plans",
       documentKey: "plan",
+      maximize: false,
     });
   });
 
-  it("routes ordinary and annotated documents to Artifacts", () => {
+  it("routes ordinary and annotated documents to a dedicated document tab", () => {
     expect(resolveIssueDocumentDeepLink("#document-qa%20evidence&thread=thread-1")).toEqual({
       kind: "properties-pane",
-      tab: "artifacts",
+      tab: "document",
       documentKey: "qa evidence",
+      maximize: false,
+    });
+  });
+
+  it("requests the maximized pane for viewer=full deep links", () => {
+    expect(resolveIssueDocumentDeepLink("#document-direction-package&viewer=full")).toEqual({
+      kind: "properties-pane",
+      tab: "document",
+      documentKey: "direction-package",
+      maximize: true,
+    });
+    expect(resolveIssueDocumentDeepLink("#document-plan&viewer=full")).toEqual({
+      kind: "properties-pane",
+      tab: "plans",
+      documentKey: "plan",
+      maximize: true,
     });
   });
 
@@ -28,5 +45,36 @@ describe("resolveIssueDocumentDeepLink", () => {
     expect(resolveIssueDocumentDeepLink("#document-")).toBeNull();
     expect(resolveIssueDocumentDeepLink("#work-product-1")).toBeNull();
     expect(resolveIssueDocumentDeepLink("#document-%E0%A4%A")).toBeNull();
+  });
+});
+
+describe("sameIssueDocumentHash", () => {
+  const current = new URL("https://paperclip.example/PAP/issues/PAP-1");
+  const references = ["PAP-1", "issue-uuid"];
+  it.each(["#document-plan", "/PAP/issues/PAP-1#document-plan", "/PAP/issues/issue-uuid#document-plan", "/issues/issue-uuid#document-plan"])("opens a current-task document in place: %s", (href) => {
+    expect(sameIssueDocumentHash(href, current, references)).toBe("#document-plan");
+  });
+  it.each(["https://other.example/PAP/issues/PAP-1#document-plan", "/OTHER/issues/issue-uuid#document-plan", "/PAP/issues/PAP-2#document-plan", "/PAP/issues/PAP-1?file=other#document-plan", "/PAP/issues/PAP-1#comment-1", "/PAP/issues/%E0%A4%A#document-plan"])("leaves other navigation alone: %s", (href) => {
+    expect(sameIssueDocumentHash(href, current, references)).toBeNull();
+  });
+});
+
+describe("chatSidebarDocumentHash", () => {
+  const current = new URL("https://paperclip.example/PAP/chats/codex?from=inbox");
+  const references = ["PAP-1", "issue-uuid"];
+
+  it("keeps the revision and annotation target when opening a linked task document", () => {
+    expect(chatSidebarDocumentHash("/PAP/issues/PAP-2#document-plan&thread=note&revision=rev&documentIssue=PAP-3", current, references))
+      .toBe("#document-plan&thread=note&revision=rev&documentIssue=PAP-3");
+  });
+
+  it.each([
+    "https://other.example/PAP/issues/PAP-1#document-plan",
+    "/OTHER/issues/OTHER-1#document-plan",
+    "/PAP/issues/PAP-2?file=other#document-plan",
+    "/PAP/issues/PAP-2#comment-1",
+    "/PAP/issues/%E0%A4%A#document-plan",
+  ])("preserves normal navigation to %s", (href) => {
+    expect(chatSidebarDocumentHash(href, current, references)).toBeNull();
   });
 });

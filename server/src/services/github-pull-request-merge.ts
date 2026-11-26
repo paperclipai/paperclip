@@ -1,5 +1,5 @@
 import type { Db } from "@paperclipai/db";
-import { createGitHubExternalObjectProvider } from "./github-external-object-provider.js";
+import { createGitHubExternalObjectProvider, type GitHubExternalObjectProviderOptions } from "./github-external-object-provider.js";
 
 export type GitHubPullRequestReference = {
   host: "github.com";
@@ -14,16 +14,24 @@ export type PullRequestMergeDetails = {
   state: PullRequestMergeState;
   headRef: string | null;
   headSha: string | null;
+  workProductState?: "open" | "draft" | "merged" | "closed";
+  draft?: boolean;
+  baseRef?: string | null;
+  additions?: number | null;
+  deletions?: number | null;
+  changedFiles?: number | null;
 };
 
 export type PullRequestMergeStateResolver = (
   companyId: string,
   reference: GitHubPullRequestReference,
+  signal?: AbortSignal,
 ) => Promise<PullRequestMergeState>;
 
 export type PullRequestMergeDetailsResolver = (
   companyId: string,
   reference: GitHubPullRequestReference,
+  signal?: AbortSignal,
 ) => Promise<PullRequestMergeDetails>;
 
 export const PULL_REQUEST_CACHE_MAX_ENTRIES = 1_000;
@@ -80,14 +88,15 @@ function readRecord(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeDetailsResolver {
-  const resolver = createGitHubExternalObjectProvider(db).resolvers
+export function createPullRequestMergeDetailsResolver(db: Db, options?: GitHubExternalObjectProviderOptions): PullRequestMergeDetailsResolver {
+  const resolver = createGitHubExternalObjectProvider(db, options).resolvers
     .find((candidate) => candidate.objectType === "pull_request") ?? null;
 
-  return async (companyId, reference) => {
+  return async (companyId, reference, signal) => {
     if (!resolver) return { state: "unknown", headRef: null, headSha: null };
     const result = await resolver.resolve({
       companyId,
+      signal,
       object: {
         externalId: `${reference.owner}/${reference.repo}#pull/${reference.number}`,
         sanitizedCanonicalUrl: `https://github.com/${reference.owner}/${reference.repo}/pull/${reference.number}`,
@@ -95,17 +104,29 @@ export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeD
     });
     if (!result.ok) return { state: "unknown", headRef: null, headSha: null };
     const data = readRecord(result.snapshot.data);
+    const statusKey = result.snapshot.statusKey;
+    const workProductState = statusKey === "open" || statusKey === "draft" || statusKey === "merged" || statusKey === "closed"
+      ? statusKey
+      : undefined;
     return {
-      state: result.snapshot.statusKey === "merged" || data?.merged === true
+      state: statusKey === "merged" || data?.merged === true
         ? "merged"
-        : "open",
+        : statusKey === "open" || statusKey === "draft" || statusKey === "closed"
+          ? "open"
+          : "unknown",
       headRef: typeof data?.headRef === "string" ? data.headRef : null,
       headSha: typeof data?.headSha === "string" ? data.headSha : null,
+      ...(workProductState ? { workProductState } : {}),
+      draft: data?.draft === true,
+      baseRef: typeof data?.baseRef === "string" ? data.baseRef : null,
+      additions: typeof data?.additions === "number" ? data.additions : null,
+      deletions: typeof data?.deletions === "number" ? data.deletions : null,
+      changedFiles: typeof data?.changedFiles === "number" ? data.changedFiles : null,
     };
   };
 }
 
-export function createPullRequestMergeStateResolver(db: Db): PullRequestMergeStateResolver {
-  const resolveDetails = createPullRequestMergeDetailsResolver(db);
-  return async (companyId, reference) => (await resolveDetails(companyId, reference)).state;
+export function createPullRequestMergeStateResolver(db: Db, options?: GitHubExternalObjectProviderOptions): PullRequestMergeStateResolver {
+  const resolveDetails = createPullRequestMergeDetailsResolver(db, options);
+  return async (companyId, reference, signal) => (await resolveDetails(companyId, reference, signal)).state;
 }
