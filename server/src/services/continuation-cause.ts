@@ -50,6 +50,25 @@ export const RESTART_CLASS_FAILURE_CODES = [
   "runner_remote_process_identity_unavailable", "continuation_user_authorization_missing",
 ] as const;
 
+/**
+ * Older releases recorded this as an incompatible provider pack and blocked
+ * the task. The pack was fine: the controller built a replacement Runner
+ * launch without its OpenCode inputs. A fresh run prepares them again.
+ * Releases since then report it as `runner_remote_provider_launch_unprepared`
+ * and retry it within the run.
+ */
+export const LEGACY_LAUNCH_UNPREPARED_FAILURE = {
+  code: "runner_remote_provider_artifact_incompatible",
+  /** The stable part of the message. The stored error may carry a prefix, a
+   * suffix or redaction, so match it anywhere, together with the code. */
+  marker: "OpenCode executable is missing from the provider pack",
+} as const;
+
+export function isLegacyLaunchUnpreparedFailure(cause: string | null | undefined, run: { error?: string | null }): boolean {
+  return cause === LEGACY_LAUNCH_UNPREPARED_FAILURE.code
+    && typeof run.error === "string" && run.error.includes(LEGACY_LAUNCH_UNPREPARED_FAILURE.marker);
+}
+
 const REUSABLE_SANDBOX_RESUME_FAILED = "reusable_sandbox_resume_failed";
 const TRANSIENT_SANDBOX_CAUSES = ["transport_timeout", "transport_closed", "sandbox_state_transition", "provider_rate_limited",
   "provider_unavailable"] as const;
