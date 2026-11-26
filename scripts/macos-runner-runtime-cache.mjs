@@ -27,12 +27,6 @@ export function isTrustedMacRuntimeProducer(run, repository) {
   return isTrustedMacRuntimeWorkflowRun(run, repository) && run.conclusion === "success";
 }
 
-/**
- * Even when a master docker.yml run is later cancelled or fails downstream
- * (for example, on an unrelated post-merge server test flake), its macOS
- * runtime artifact is already built and verified if both macos_runner_runtime
- * jobs completed with conclusion "success".
- */
 export function hasVerifiedMacRuntimeJobs(jobs) {
   if (!Array.isArray(jobs)) return false;
   return REQUIRED_VERIFIED_JOB_NAMES.every(name =>
