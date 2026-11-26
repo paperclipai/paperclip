@@ -2,7 +2,7 @@ import { environmentSupportsLoginPty } from "@paperclipai/shared";
 import { matchesAdapterLoginTarget, useAdapterLoginCancellation } from "./useAdapterLoginCancellation";
 import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, antigravityModelGroup, isAccountBoundAcpxAgent } from "@/lib/native-model-catalog";
 import { useConnectionModels } from "./ai-connections/useConnectionModels";
-import { agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, normalizeClaudeRunnerOptions, type AgentRunnerChoice } from "@paperclipai/shared";
+import { agentHarnessName, agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, normalizeClaudeRunnerOptions, type AgentRunnerChoice } from "@paperclipai/shared";
 import { adaptersApi } from "../api/adapters";
 import { canQualifyRunnerEnvironment, qualifyRunnerEnvironment } from "../lib/qualify-claude-setup";
 import { aiRoutingHarness } from "@paperclipai/shared";
@@ -31,6 +31,7 @@ import type {
   SecretVersionSelector,
 } from "@paperclipai/shared";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter, isValidBrowserCode, ADAPTER_AUTH_MISSING_CHECK_CODE } from "@paperclipai/shared";
+import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
 import type { AdapterModel } from "../api/agents";
 import { agentsApi } from "../api/agents";
 import { ApiError } from "../api/client";
@@ -440,15 +441,20 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
   const adapterPickerDisabledTypes = useMemo(() => {
-    const next = new Set(disabledTypes);
+    const raw = new Set(disabledTypes);
+    const next = new Set(raw);
     // Fail closed while settings load. Existing native agents still render
     // their current value in edit mode, but the picker does not offer a fresh
     // native selection until the explicit experimental opt-in is known true.
     if (experimentalSettings?.enableNativeRunner !== true) {
       next.add("paperclip_runner");
     }
-    if (experimentalSettings?.enableOpenAiDot !== true || disabledTypes.has("paperclip_runner")) {
+    if (experimentalSettings?.enableOpenAiDot !== true || raw.has("paperclip_runner")) {
       next.add("openai_dot");
+    }
+    if (raw.has("paperclip_runner")) {
+      next.add("antigravity_runtime");
+      next.add("copilot_runtime");
     }
     return next;
   }, [disabledTypes, experimentalSettings?.enableNativeRunner, experimentalSettings?.enableOpenAiDot]);
@@ -815,6 +821,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const isDotRunner = runnerProvider === "openai_dot";
   const isGrokBotRunner = runnerProvider === "grok_bot";
   const isMuseRunner = runnerProvider === "muse";
+  const productHarnessName = agentHarnessName(adapterType, effectiveConfig);
+  const isAntigravityRunner = adapterType === "paperclip_runner" && productHarnessName === "antigravity_runtime";
+  const isCopilotRunner = adapterType === "paperclip_runner" && productHarnessName === "copilot_runtime";
+  const isDedicatedAcpxRunner = isAntigravityRunner || isCopilotRunner;
   const isExternalRunner = isDotRunner || isGrokBotRunner || isMuseRunner;
   const showAdapterTestEnvironmentButton = !isGrokBotRunner && (props.showAdapterTestEnvironmentButton ?? true);
   const showInlineAdapterTestEnvironmentButton =
@@ -1273,7 +1283,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     mode,
     isCreate,
     adapterType: fieldsAdapterType,
-    hideRunnerHarness: isRunnerHarness,
+    hideRunnerHarness: isRunnerHarness || isDedicatedAcpxRunner,
     values: isCreate ? { ...props.values, ...(runnerProfile && fieldsAdapterType === "paperclip_runner" ? { adapterSchemaValues: { ...props.values.adapterSchemaValues, ...runnerProfile } } : {}) } : null,
     set: isCreate ? (patch: Partial<CreateConfigValues>) => props.onChange(patch) : null,
     config: runnerProfile && fieldsAdapterType === "paperclip_runner" ? { ...config, ...runnerProfile } : config,
@@ -2056,19 +2066,36 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               </div>
             </Field>
           )}
-          {showAdapterTypeField && !isGrokBotRunner && (
+          {showAdapterTypeField && !isGrokBotRunner && (() => {
+            const currentHarnessChoice = isDotRunner
+              ? "openai_dot"
+              : isMuseRunner
+                ? "muse"
+                : isAntigravityRunner
+                  ? "antigravity_runtime"
+                  : isCopilotRunner
+                    ? "copilot_runtime"
+                    : isRunnerHarness
+                      ? harnessType
+                      : adapterType;
+            return (
             <Field label="Harness" hint={help.adapterType}>
               <AdapterTypeDropdown
-                value={isDotRunner ? "openai_dot" : isMuseRunner ? "muse" : isRunnerHarness ? harnessType : adapterType}
+                value={currentHarnessChoice}
                 disabledTypes={adapterPickerDisabledTypes}
                 openAiDotEnabled={experimentalSettings?.enableOpenAiDot === true}
                 nativeRunnerEnabled={experimentalSettings?.enableNativeRunner === true}
+                nativeAcpxHarnessesEnabled
                 museEnabled={experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true}
                 onChange={(choice) => {
+                  if (choice === currentHarnessChoice) return;
                   const dot = choice === "openai_dot";
                   const muse = choice === "muse";
+                  const antigravity = choice === "antigravity_runtime";
+                  const copilot = choice === "copilot_runtime";
                   const external = dot || muse;
-                  const t = external ? "paperclip_runner" : choice;
+                  const dedicatedAcpx = antigravity || copilot;
+                  const t = external || dedicatedAcpx ? "paperclip_runner" : choice;
                   if (isCreate) {
                     // Reset all adapter-specific fields to defaults when switching adapter type
                     const { adapterType: _at, ...defaults } = defaultCreateValues;
@@ -2090,6 +2117,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                     if (external) {
                       nextValues.model = "";
                       nextValues.adapterSchemaValues = { provider: muse ? "muse" : "openai_dot" };
+                    } else if (dedicatedAcpx) {
+                      nextValues.model = "";
+                      nextValues.adapterSchemaValues = {
+                        provider: "acpx",
+                        acpxAgent: antigravity ? "antigravity" : "copilot",
+                        lifecycleMode: "per_turn",
+                      };
                     }
                     set!(nextValues);
                   } else {
@@ -2109,16 +2143,18 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               ? DEFAULT_OPENCODE_LOCAL_MODEL
                             : t === "cursor"
                               ? DEFAULT_CURSOR_LOCAL_MODEL
-                            : external ? ""
+                            : external || dedicatedAcpx ? ""
                             : t === "paperclip_runner"
                               ? resolvePaperclipRunnerTransitionModel(adapterType, config.model)
                               : "",
-                        effort: "",
-                        modelReasoningEffort: "",
-                        variant: "",
-                        mode: "",
+                        effort: dedicatedAcpx ? undefined : "",
+                        modelReasoningEffort: dedicatedAcpx ? undefined : "",
+                        variant: dedicatedAcpx ? undefined : "",
+                        mode: dedicatedAcpx ? undefined : "",
                         ...(external
                             ? { provider: muse ? "muse" : "openai_dot", lifecycleMode: "per_turn", allowUnmeteredProvider: false, ...(dot ? { dotAttachmentAccess: false, dotWorkspaceAccess: false } : {}) }
+                          : dedicatedAcpx
+                            ? { provider: "acpx", acpxAgent: antigravity ? "antigravity" : "copilot", lifecycleMode: "per_turn" }
                           : t === "paperclip_runner"
                             ? {
                                 ...paperclipRunnerTransitionConfig(adapterType, eff("adapterConfig", "model", config.model)),
@@ -2130,7 +2166,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 }}
               />
             </Field>
-          )}
+            );
+          })()}
 
           {isRunnerHarness && runnerDiscoveryView.kind === "error" && (
             <QueryErrorState size="inline" error={runnerDiscoveryView.error}
@@ -4311,6 +4348,7 @@ export function AdapterTypeDropdown({
   openAiDotEnabled = false,
   museEnabled = false,
   nativeRunnerEnabled = false,
+  nativeAcpxHarnessesEnabled = false,
 }: {
   value: string;
   onChange: (type: string) => void;
@@ -4318,17 +4356,22 @@ export function AdapterTypeDropdown({
   openAiDotEnabled?: boolean;
   museEnabled?: boolean;
   nativeRunnerEnabled?: boolean;
+  nativeAcpxHarnessesEnabled?: boolean;
 }) {
   const cloud = Boolean(useCloudInstance());
   const harnessPolicy = useCloudHarnessPolicy();
   const selectedDisplay = getAdapterDisplay(value);
+  const antigravityQualified = nativeAcpxHarnessesEnabled && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "antigravity" && profile.qualified);
+  const copilotQualified = nativeAcpxHarnessesEnabled && PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "copilot" && profile.qualified);
   const adapterList = useMemo(() =>
     [...listAdapterOptions(type => adapterLabels[type] ?? getAdapterLabel(type)),
+      ...(antigravityQualified ? [{ value: "antigravity_runtime", label: adapterLabels.antigravity_runtime ?? getAdapterLabel("antigravity_runtime"), experimental: false, comingSoon: false }] : []),
+      ...(copilotQualified ? [{ value: "copilot_runtime", label: adapterLabels.copilot_runtime ?? getAdapterLabel("copilot_runtime"), experimental: false, comingSoon: false }] : []),
       ...(openAiDotEnabled ? [{ value: "openai_dot", label: "OpenAI Dot", experimental: true, comingSoon: false }] : []),
       ...(museEnabled ? [{ value: "muse", label: "Muse — Personal agent", experimental: true, comingSoon: false }] : []),
     ].filter(item => (!cloud || harnessPolicy.isCloudHarnessAllowed(item.value)) && !item.comingSoon && (item.value !== "paperclip_runner" || nativeRunnerEnabled) && !disabledTypes.has(item.value))
       .sort((a, b) => Number(a.value === "paperclip_runner") - Number(b.value === "paperclip_runner")),
-    [cloud, harnessPolicy, disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled]);
+    [cloud, harnessPolicy, disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled, antigravityQualified, copilotQualified]);
   return <SelectPopover aria-label="Harness" value={value} onValueChange={onChange}
     displayValue={<span className="inline-flex min-w-0 items-center gap-1.5">
       <span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={value} className="size-4" /></span>
