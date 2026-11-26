@@ -8,6 +8,7 @@ import { migrateLocalSkillPackageObjects } from "./skill-package-storage-migrati
 import {
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
+import { uniqueIssuePrefix } from "../__tests__/helpers/issue-prefix.js";
 
 vi.mock("./skill-package-store.js", () => ({ skillPackageStore: () => ({ verifyDurable: async () => true }) }));
 
@@ -56,7 +57,7 @@ describe.skipIf(!support.supported)("online skill object copy against PostgreSQL
   });
 
   async function snapshot(upload: Record<string, unknown> | null = null) {
-    const [company] = await db.insert(companies).values({ name: "Skills", issuePrefix: `S${randomUUID().slice(0, 4).toUpperCase()}` }).returning();
+    const [company] = await db.insert(companies).values({ name: "Skills", issuePrefix: uniqueIssuePrefix("S") }).returning();
     const receipt = localReceipt();
     const [row] = await db.insert(snapshots).values({ companyId: company!.id, contentHash: randomUUID(), storage: receipt as never,
       upload: upload as never }).returning();
