@@ -4,11 +4,17 @@ import { createHash } from "node:crypto";
 // Gateway punctuation is normalized one-for-one by the MCP client.
 export const ASSIGNED_MCP_SERVER_NAME = "paperclip-assigned";
 export const MAX_GATEWAY_TOOL_NAME_LENGTH = 128 - `mcp__${ASSIGNED_MCP_SERVER_NAME}__`.length;
+const BOUNDED_NAME_HASH_LENGTH = 16;
+const BOUNDED_NAME_SUFFIX = new RegExp(`-[a-f0-9]{${BOUNDED_NAME_HASH_LENGTH}}$`);
+
+export function mayBeBoundedMcpToolName(name: string): boolean {
+  return BOUNDED_NAME_SUFFIX.test(name);
+}
 
 /** Preserve existing short names; aliases still resolve through gateway metadata. */
 export function boundedMcpToolName(name: string, identity: readonly string[]): string {
   if (name.length <= MAX_GATEWAY_TOOL_NAME_LENGTH) return name;
-  const hash = createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, 16);
+  const hash = createHash("sha256").update(JSON.stringify(identity)).digest("hex").slice(0, BOUNDED_NAME_HASH_LENGTH);
   const separator = name.indexOf(":");
   const namespace = name.slice(0, separator < 0 ? name.length : separator).slice(0, 32);
   const tool = separator < 0 ? "tool" : name.slice(separator + 1);

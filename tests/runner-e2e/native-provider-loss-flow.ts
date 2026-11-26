@@ -46,12 +46,13 @@ export async function runNativeProviderLossFlow(input: {
   evidence(name: string, value: unknown): Promise<void>;
 }) {
   const { api, page, fixtures, execution, nonce } = input;
-  if (execution.profile.qualificationCandidate !== "cursor" || execution.task.id !== "pending-permission-provider-loss") throw new Error("Unknown provider-loss case");
+  const provider = execution.profile.qualificationCandidate;
+  if ((provider !== "cursor" && provider !== "antigravity") || execution.task.id !== "pending-permission-provider-loss") throw new Error("Unknown provider-loss case");
   const remote = execution.environment.id === "daytona";
   if (remote && !input.remoteBootstrap) throw new Error("Provider loss requires its admitted remote observer");
   const local = remote ? undefined : await createDeniedTargetFixture(input.workspacePath, `provider-loss-${nonce}.txt`);
   const target = local?.targetRelativePath ?? `provider-loss-${nonce}.txt`;
-  let command = local ? cursorDeniedCommand(local.targetPath) : undefined;
+  let command = provider === "cursor" && local ? cursorDeniedCommand(local.targetPath) : undefined;
   const observer = remote ? undefined : observeRunProcesses();
   let issue: Row = {}, runs: Row[] = [], events: Row[] = [];
   let fixture: NativeRemoteFixture | undefined, baseline: NativeRemoteSnapshot | undefined, sealed: NativeRemoteSnapshot | undefined;
@@ -59,7 +60,7 @@ export async function runNativeProviderLossFlow(input: {
   let pending: ActiveStopPending | undefined, settled = false;
   const checks: Check[] = [], samples: Array<{ phase: string; absent: boolean }> = [];
   const check = (id: string, ok: boolean, detail: string) => { checks.push({ id, passed: ok, detail }); expect(ok, detail).toBe(true); };
-  const scope = (): ActiveStopScope => ({ provider: "cursor", companyId: fixtures.company.id, issueId: issue.id, runId: runs[0]!.id, target, commandSha256: command!.commandSha256 });
+  const scope = (): ActiveStopScope => ({ provider, companyId: fixtures.company.id, issueId: issue.id, runId: runs[0]!.id, target, ...(command ? { commandSha256: command.commandSha256 } : {}) });
   const bootstrap = (): BootstrapReadProof | undefined => fixture ? { actionFile: fixture.actionFile, events } : undefined;
   const authority = () => { const run = runs[0]!; return { pid: run.processPid, groupId: run.processGroupId, startedAt: run.processStartedAt, runId: run.id }; };
   const load = async () => {
@@ -97,11 +98,14 @@ export async function runNativeProviderLossFlow(input: {
     }
   };
   (remote ? input.registerBeforeEnvironmentTeardownAssertion : input.registerCleanupAssertion)(cleanup);
-  const prompt = () => `${execution.task.buildPrompt(nonce)}\nUse this exact native shell command once:\n${command!.command}`;
+  // Antigravity has no command-digest notice; its oracle is the exact native edit target.
+  const prompt = () => provider === "cursor"
+    ? `${execution.task.buildPrompt(nonce)}\nUse this exact native shell command once:\n${command!.command}`
+    : `${execution.task.buildPrompt(nonce)}\nInstead of a shell command, use the native file edit tool once to create exactly ${target} with content MUST_NOT_EXIST.`;
   try {
     const caller = readActiveStopCaller(await api.get("/api/health"), await api.get("/api/auth/get-session"));
     const agent = await api.get<Row>(`/api/agents/${fixtures.agent.id}`);
-    await api.patch(`/api/agents/${fixtures.agent.id}`, { adapterConfig: { ...agent.adapterConfig, acpxPermissionMode: "approve-reads", acpxSessionMode: "agent", timeoutSec: 120, lifecycleMode: "per_turn" } });
+    await api.patch(`/api/agents/${fixtures.agent.id}`, { adapterConfig: { ...agent.adapterConfig, acpxPermissionMode: "approve-reads", ...(provider === "cursor" ? { acpxSessionMode: "agent" } : {}), timeoutSec: 120, lifecycleMode: "per_turn" } });
     const project = await api.post<Row>(`/api/companies/${fixtures.company.id}/projects`, { name: `Native provider loss ${nonce}`, executionWorkspacePolicy: { enabled: true, defaultMode: "shared_workspace", sharedWorkspaceConcurrency: "serialize", allowIssueOverride: false, environmentId: fixtures.environment.id, workspaceStrategy: { type: "project_primary" } }, workspace: { name: "Primary", sourceType: "local_path", cwd: input.workspacePath, isPrimary: true } });
     if (!remote) await sample("before-request");
     const createdTask = await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name, title: execution.task.buildTitle(nonce), prompt: remote ? input.remoteBootstrap!.prompt(nonce) : prompt(), workMode: "standard", projectName: project.name, requireExplicitTitle: true });
@@ -110,7 +114,7 @@ export async function runNativeProviderLossFlow(input: {
     if (remote) {
       await pollUntil({ label: "provider-loss bootstrap", deadlineAt: input.deadlineAt, load, accept: value => value.run.status === "running" });
       fixture = await input.remoteBootstrap!.bindAndRelease({ issueId: issue.id, runId: runs[0]!.id, targets: [target], actionPrompt: async value => {
-        fixture = value; command = cursorDeniedCommand(join(value.remoteCwd, target));
+        fixture = value; if (provider === "cursor") command = cursorDeniedCommand(join(value.remoteCwd, target));
         const prepared = await prepareNativeRemoteAction({ fixture: value, companyId: fixtures.company.id, environmentId: fixtures.environment.id, runId: runs[0]!.id, target, prompt: prompt() });
         baseline = prepared.baseline; await input.evidence("provider-loss-baseline.json", baseline); return prepared.prompt;
       } });

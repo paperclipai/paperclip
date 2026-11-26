@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "allowJs": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "paths": {
+      "@/*": ["../../ui/src/*"],
+      "@paperclipai/shared": ["../../packages/shared/src/index.ts"]
+    },
+    "rootDir": "../..",
+    "types": ["node"],
+    "typeRoots": ["../../server/node_modules/@types"]
+  },
+  "include": ["./**/*.ts", "./**/*.tsx", "../../ui/src/vite-env.d.ts", "../../server/src/types/express.d.ts"]
+}

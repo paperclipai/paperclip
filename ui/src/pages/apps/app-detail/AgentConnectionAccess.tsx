@@ -1,11 +1,13 @@
-import { useState } from "react";
-import type { Agent, ToolCatalogEntry, ToolPolicy, ToolProfileWithDetails } from "@paperclipai/shared";
+import { useMemo, useState } from "react";
+import type { Agent, ToolCatalogEntry, ToolPolicy, ToolProfileConfiguration } from "@paperclipai/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Button } from "@/components/ui/button";
+import { describeError } from "@/api/errors";
+import { actionLabel } from "./action-permissions";
 
 export function AgentConnectionAccess({ connectionId, profiles, policies, catalog, agents, canManage, onRemove }: {
   connectionId: string;
-  profiles: ToolProfileWithDetails[];
+  profiles: ToolProfileConfiguration[];
   policies: ToolPolicy[];
   catalog: ToolCatalogEntry[];
   agents: Agent[];
@@ -14,7 +16,7 @@ export function AgentConnectionAccess({ connectionId, profiles, policies, catalo
 }) {
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const grants = profiles.filter(profile => {
+  const grants = useMemo(() => profiles.filter(profile => {
     const agentId = profile.metadata?.agentId;
     return profile.status === "active"
       && profile.metadata?.source === "connection_intent"
@@ -22,7 +24,29 @@ export function AgentConnectionAccess({ connectionId, profiles, policies, catalo
       && typeof agentId === "string"
       && profile.profileKey === `connection-intent:${connectionId}:${agentId}`
       && profile.bindings.some(binding => binding.targetType === "agent" && binding.targetId === agentId);
-  });
+  }), [profiles, connectionId]);
+  const agentsById = useMemo(() => new Map(agents.map(agent => [agent.id, agent])), [agents]);
+  const approvalKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const policy of policies) {
+      if (policy.enabled && policy.policyType === "require_approval"
+        && policy.config?.source === "connection_intent" && policy.config.connectionId === connectionId) {
+        keys.add(`${policy.config.agentId}:${policy.selectors?.catalogEntryId}`);
+      }
+    }
+    return keys;
+  }, [policies, connectionId]);
+  const toolsByProfileId = useMemo(() => {
+    const byId = new Map(catalog.map((tool, index) => [tool.id, { tool, index }]));
+    return new Map(grants.map(profile => {
+      const ids = new Set(profile.entries.filter(entry => entry.effect === "include").map(entry => entry.catalogEntryId));
+      const tools = [...ids].flatMap(id => {
+        const entry = id ? byId.get(id) : undefined;
+        return entry ? [entry] : [];
+      }).sort((a, b) => a.index - b.index).map(entry => entry.tool);
+      return [profile.id, tools];
+    }));
+  }, [grants, catalog]);
   if (grants.length === 0) return null;
 
   async function remove(profileId: string) {
@@ -31,7 +55,7 @@ export function AgentConnectionAccess({ connectionId, profiles, policies, catalo
     try {
       await onRemove(profileId);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Couldn't remove this access grant. Please try again.");
+      setError(describeError(cause).body);
     } finally {
       setPending(null);
     }
@@ -44,8 +68,8 @@ export function AgentConnectionAccess({ connectionId, profiles, policies, catalo
     </div>
     {grants.map(profile => {
       const agentId = profile.metadata!.agentId as string;
-      const agent = agents.find(candidate => candidate.id === agentId);
-      const tools = catalog.filter(tool => profile.entries.some(entry => entry.effect === "include" && entry.catalogEntryId === tool.id));
+      const agent = agentsById.get(agentId);
+      const tools = toolsByProfileId.get(profile.id) ?? [];
       return <div key={profile.id} className="space-y-3 rounded-lg border border-border p-4">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -58,12 +82,9 @@ export function AgentConnectionAccess({ connectionId, profiles, policies, catalo
         </div>
         <ul className="space-y-2">
           {tools.map(tool => {
-            const askFirst = policies.some(policy => policy.enabled && policy.policyType === "require_approval"
-              && policy.config?.source === "connection_intent"
-              && policy.config.connectionId === connectionId && policy.config.agentId === agentId
-              && policy.selectors?.catalogEntryId === tool.id);
+            const askFirst = approvalKeys.has(`${agentId}:${tool.id}`);
             return <li key={tool.id} className="flex items-center justify-between gap-4 text-sm">
-              <span className="min-w-0 break-all">{tool.title || tool.toolName}</span>
+              <span className="min-w-0 break-all">{actionLabel(tool)}</span>
               <span className="shrink-0 text-muted-foreground">{askFirst ? "Ask first" : "Allowed"}</span>
             </li>;
           })}
