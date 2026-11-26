@@ -1,0 +1,2 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_company_native_issue_created_idx" ON "heartbeat_runs" USING btree ("company_id","native_issue_id","created_at","id");--> statement-breakpoint
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "heartbeat_runs_company_agent_issue_settled_idx" ON "heartbeat_runs" USING btree ("company_id","agent_id",coalesce("native_issue_id"::text, "context_snapshot"->>'issueId'),"created_at" DESC NULLS FIRST,"id") WHERE "heartbeat_runs"."status" in ('succeeded', 'failed', 'cancelled', 'timed_out');

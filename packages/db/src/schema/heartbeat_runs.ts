@@ -228,6 +228,19 @@ export const heartbeatRuns = pgTable(
       table.issueId,
       table.createdAt,
     ),
+    companyNativeIssueCreatedIdx: index("heartbeat_runs_company_native_issue_created_idx")
+      .on(table.companyId, table.nativeIssueId, table.createdAt, table.id)
+      .concurrently(),
+    companyAgentIssueSettledIdx: index("heartbeat_runs_company_agent_issue_settled_idx")
+      .on(
+        table.companyId,
+        table.agentId,
+        sql`coalesce(${table.nativeIssueId}::text, ${table.contextSnapshot}->>'issueId')`,
+        table.createdAt.desc().nullsFirst(),
+        table.id,
+      )
+      .where(sql`${table.status} in ('succeeded', 'failed', 'cancelled', 'timed_out')`)
+      .concurrently(),
     companyResponsibleUserIdx: index("heartbeat_runs_company_responsible_user_idx").on(
       table.companyId,
       table.responsibleUserId,
