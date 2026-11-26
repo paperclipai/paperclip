@@ -179,5 +179,13 @@ describe("Git physical source roots", () => {
     await fs.writeFile(path.join(invalidDir, ".git", "unknown"), "content");
     await expect(readWorkspaceGitSourceRoots(invalidDir)).rejects.toThrow("workspace_git_source_unproven");
     await expect(readNestedWorkspaceGitSourceRoots(invalidDir)).rejects.toThrow("workspace_git_source_unproven");
+
+    const symlinkGit = path.join(root, "symlink-git");
+    const emptyTarget = path.join(root, "empty-target");
+    await fs.mkdir(symlinkGit, { recursive: true });
+    await fs.mkdir(emptyTarget, { recursive: true });
+    await fs.symlink(emptyTarget, path.join(symlinkGit, ".git"));
+    await expect(readWorkspaceGitSourceRoots(symlinkGit)).rejects.toThrow("workspace_git_source_unproven");
+    await expect(readNestedWorkspaceGitSourceRoots(symlinkGit)).rejects.toThrow("workspace_git_source_unproven");
   });
 });

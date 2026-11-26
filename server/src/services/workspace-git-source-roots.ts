@@ -57,12 +57,24 @@ async function onlyEntry(directory: string, name: string): Promise<boolean> {
   return found;
 }
 
-async function emptyDirectory(directory: string): Promise<boolean> {
+async function emptyDirectory(target: string, expected?: Awaited<ReturnType<typeof entry>>): Promise<boolean> {
+  const before = expected ?? await entry(target);
+  if (!before?.isDirectory() || before.isSymbolicLink()) return false;
+  const handle = await fs.open(target, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW).catch(() => null);
+  if (!handle) return false;
   try {
-    for await (const _ of await fs.opendir(directory)) return false;
+    const opened = await handle.stat({ bigint: true });
+    if (opened.dev !== before.dev || opened.ino !== before.ino || !opened.isDirectory()) throw invalid();
+    for await (const _ of await fs.opendir(target)) return false;
+    const after = await handle.stat({ bigint: true }), current = await entry(target);
+    if (!current || !current.isDirectory() || current.isSymbolicLink()
+      || [opened, after, current].some(stat => stat.dev !== before.dev || stat.ino !== before.ino)) throw invalid();
     return true;
-  } catch {
+  } catch (error) {
+    if ((error as Error).message === "workspace_git_source_unproven") throw error;
     return false;
+  } finally {
+    await handle.close();
   }
 }
 
@@ -75,7 +87,7 @@ export async function readWorkspaceGitSourceRoots(cwd: string, options: { ancest
     if (!source.isDirectory() || source.isSymbolicLink()) throw invalid();
     root = await fs.realpath(root);
     marker = path.join(root, ".git"); markerEntry = await entry(marker);
-    if (markerEntry?.isDirectory() && !markerEntry.isSymbolicLink() && await emptyDirectory(marker)) markerEntry = null;
+    if (markerEntry?.isDirectory() && !markerEntry.isSymbolicLink() && await emptyDirectory(marker, markerEntry)) markerEntry = null;
     if (markerEntry) break;
     if (await entry(path.join(root, "objects")) && await entry(path.join(root, "HEAD"))) throw invalid();
     if (!options.ancestors || path.dirname(root) === root) return null;
