@@ -129,6 +129,13 @@ impl LineageState {
         state
     }
 
+    /// Adds processes as members, each with the identity this read reported.
+    pub(crate) fn track_roots(&mut self, roots: &[ProcessEntry]) {
+        for root in roots.iter().filter(|root| !root.zombie) {
+            self.members.insert(root.pid, root.started);
+        }
+    }
+
     /// Updates membership from one table read and returns the live members.
     /// Callers must apply reads in the order they were taken; an older read
     /// would forget members that a newer one recorded.
