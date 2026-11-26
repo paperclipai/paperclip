@@ -30,7 +30,8 @@ import { readRunCancellation } from "./run-cancellation.js";
 import { activeIssueInteractionCondition } from "./issue-question-context.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { readWorkspaceProviderFailure } from "./workspace-provider-failure.js";
-import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, isPersonOwnedFailureCode } from "./continuation-cause.js";
+import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, isLegacyLaunchUnpreparedFailure, isPersonOwnedFailureCode }
+  from "./continuation-cause.js";
 import { sharedContinuationAttempts } from "./recovery/continuation-ledger.js";
 import { BACKLOG_CONTINUATION_MAX_AGE_MS, failureOwnsBlock, heldExecutionWhere, heldRunIdSql, interruptionEligibility,
   liveDispositionHoldSql, recentInterruptionSourceSql, sourceRunKey } from "./fresh-continuation-eligibility.js";
@@ -306,9 +307,11 @@ const blocksExecution = (hold: typeof issueRecoveryActions.$inferSelect) =>
   ["active", "escalated"].includes(hold.status) || object(hold.evidence.automaticRecovery).replay === "blocked";
 
 /** A reconciliation hold that blocks the task and that this decision settles. */
-function isOwnedReconciliationHold(hold: typeof issueRecoveryActions.$inferSelect) {
+function isOwnedReconciliationHold(hold: typeof issueRecoveryActions.$inferSelect, run: { error?: string | null }) {
   if (hold.kind === "stranded_assigned_issue") return false;
-  const interruption = hold.kind === "active_run_watchdog" && (RESTART_CLASS_FAILURE_CODES as readonly string[]).includes(hold.cause);
+  const interruption = hold.kind === "active_run_watchdog" && ((RESTART_CLASS_FAILURE_CODES as readonly string[]).includes(hold.cause)
+    // An older release held this controller launch gap as a pack incompatibility.
+    || isLegacyLaunchUnpreparedFailure(hold.cause, run));
   if ((!(EXECUTION_RECONCILIATION_CAUSES as readonly string[]).includes(hold.cause) && !interruption) || !blocksExecution(hold)) return false;
   if (isHumanGate(hold)) return false;
   // A restore hold is owned only once its saved-work recovery completed.
@@ -414,13 +417,13 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     .orderBy(asc(issueRecoveryActions.createdAt), asc(issueRecoveryActions.id)).for("update");
   const prior = holds.find(hold => object(hold.evidence.freshContinuation).sourceRunId === run.id);
   if (prior) {
-    await settleLateHolds(tx, { companyId, issue, run, prior, holds: holds.filter(isOwnedReconciliationHold), now });
+    await settleLateHolds(tx, { companyId, issue, run, prior, holds: holds.filter(hold => isOwnedReconciliationHold(hold, run)), now });
     return { kind: "already_continued", recoveryActionId: prior.id };
   }
   // The holds this decision owns: reconciliation holds that still block the
   // task. Workspace restore/repair holds stay with workspace recovery, and
   // resolved history is never rewritten.
-  const ownedHolds = holds.filter(isOwnedReconciliationHold);
+  const ownedHolds = holds.filter(hold => isOwnedReconciliationHold(hold, run));
 
   const [refused] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.id} <> ${run.id}`,
@@ -510,7 +513,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     if (recovery && EXACT_RECOVERY_STATES.includes(recovery.state))
       waits.push(pending("saved_work_recovery_running",
         new Date(Math.max(recheck.getTime(), recovery.nextAttemptAt ?? 0))));
-    if (!isOwnedReconciliationHold(hold) && isRestoreHold(hold) && blocksExecution(hold) && recovery?.state !== "complete")
+    if (!isOwnedReconciliationHold(hold, run) && isRestoreHold(hold) && blocksExecution(hold) && recovery?.state !== "complete")
       waits.push(pending("workspace_recovery_owns_restore", recheck));
     const retainedCheck = object(hold.evidence.retainedSourceFallbackCheck);
     if (recovery?.state === "exhausted" && typeof retainedCheck.nextCheckAt === "number" && retainedCheck.nextCheckAt > now.getTime())
@@ -520,7 +523,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   if (firstWait) return firstWait;
   // Past the bound, a hold that workspace recovery still owns is settled too:
   // the continuation never uses that workspace (isolation below).
-  const owned = pastBound() ? holds.filter(hold => isOwnedReconciliationHold(hold)
+  const owned = pastBound() ? holds.filter(hold => isOwnedReconciliationHold(hold, run)
     || (isRestoreHold(hold) && blocksExecution(hold) && !isHumanGate(hold))) : ownedHolds;
 
   // (b) Causes that are the person's.

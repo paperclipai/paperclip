@@ -201,8 +201,16 @@ suite("fresh-continuation fallback", () => {
     const f = await unfinishedRun({ runtime: "native", errorCode: "runner_remote_provider_artifact_incompatible",
       error, holdCause: "runner_remote_provider_artifact_incompatible" });
     await settleUnrecoverableExecutions(db);
+    // The continuation settles the hold it started from, so a second pass
+    // neither selects it again nor starts another run.
+    expect(await evidenceOf(f.actionId!)).toMatchObject({ status: "resolved" });
+    await settleUnrecoverableExecutions(db);
     const next = await deliverOneSuccessor(f);
     expect(next.contextSnapshot).toMatchObject({ issueId: f.issueId, previousRunId: f.runId, forceFreshSession: true });
+    await settleUnrecoverableExecutions(db);
+    await deliver();
+    expect(await successors(f.runId)).toHaveLength(1);
+    expect(await evidenceOf(f.actionId!)).toMatchObject({ status: "resolved" });
   }, 60_000);
 
   it("leaves a task blocked by a genuinely incompatible provider pack for a person", async () => {
