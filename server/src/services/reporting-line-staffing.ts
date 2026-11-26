@@ -81,15 +81,14 @@ export async function assertStaffingPolicyChange(db: Db, companyId: string, poli
 
 export async function assertStaffingActor(db: Db, companyId: string, actor: AuthorizationActor) {
   if (actor.type !== "agent" || !actor.agentId) throw forbidden("Agent authentication required");
-  if (await staffingPolicyFor(db, companyId)) {
-    const [member] = await db.select({ id: agents.id }).from(agents).innerJoin(companyMemberships, and(
-      eq(companyMemberships.companyId, agents.companyId), eq(companyMemberships.principalId, actor.agentId),
-      eq(companyMemberships.principalType, "agent"), eq(companyMemberships.status, "active"),
-    )).where(and(eq(agents.id, actor.agentId), eq(agents.companyId, companyId), eq(agents.lifecycleState, "ready")));
-    if (!member) throw forbidden("Staffing requires a ready agent with active company membership");
-  }
+  const [member] = await db.select({ id: agents.id, bounded: agents.hiredThroughStaffing }).from(agents).innerJoin(companyMemberships, and(
+    eq(companyMemberships.companyId, agents.companyId), eq(companyMemberships.principalId, actor.agentId),
+    eq(companyMemberships.principalType, "agent"), eq(companyMemberships.status, "active"),
+  )).where(and(eq(agents.id, actor.agentId), eq(agents.companyId, companyId), eq(agents.lifecycleState, "ready")));
+  if (!member) throw forbidden("Staffing requires a ready agent with active company membership");
   const decision = await authorizationService(db).decide({
-    actor, action: "agents:create", resource: { type: "company", companyId }, scope: { reportingLineStaffing: true },
+    actor, action: "agents:create", resource: { type: "company", companyId },
+    ...(member.bounded ? { scope: { reportingLineStaffing: true } } : {}),
   });
   if (!decision.allowed) throw forbidden(decision.explanation);
   return actor as AgentActor;
@@ -187,7 +186,12 @@ export async function prepareStaffingHire(db: Db, companyId: string, id: string,
     : undefined);
   if (!policy) {
     if (options?.requiresStaffing) throw forbidden("Reporting-line staffing is disabled");
-    if (actor?.type === "agent") await assertStaffingActor(db, companyId, actor);
+    if (actor?.type === "agent" && actor.agentId) {
+      const [record] = await db.select({ bounded: agents.hiredThroughStaffing }).from(agents).where(and(
+        eq(agents.companyId, companyId), eq(agents.id, actor.agentId),
+      ));
+      if (record?.bounded) throw forbidden("Reporting-line staffing is disabled");
+    }
     return { reportsTo: data.reportsTo, bounded: false };
   }
   const graph = await companyGraph(db, companyId);
@@ -318,6 +322,11 @@ export async function assertStaffingLifecycle(db: Db, target: AgentConfiguration
   const policy = await staffingPolicyFor(db, target.companyId);
   if (!policy) {
     if (command === "pause" || command === "terminate" || target.hiredThroughStaffing) throw forbidden("Reporting-line staffing is disabled");
+    const decision = await authorizationService(db).decide({
+      actor, action: "agent_config:update", resource: { type: "agent", companyId: target.companyId, agentId: target.id },
+      scope: { requiresChangeGrant: true },
+    });
+    if (!decision.allowed) throw forbidden(decision.explanation);
     return;
   }
   const manager = await assertStaffingActor(db, target.companyId, actor);

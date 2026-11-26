@@ -1480,7 +1480,6 @@ export function agentRoutes(
       actor: req.actor,
       action: "agents:create",
       resource: { type: "company", companyId },
-      ...(options?.hiring ? { scope: { reportingLineStaffing: true } } : {}),
     });
     if (!decision.allowed) {
       // An agent denied hiring otherwise searches other routes for an override.
@@ -4797,9 +4796,7 @@ export function agentRoutes(
         },
         {
           ...(setupAgentId ? { setupAgentId } : {}),
-          staffingActor: req.actor,
-          requiresStaffing: delegated,
-          staffingInput: req.body,
+          ...(req.actor.type === "agent" ? { staffingActor: req.actor, requiresStaffing: delegated, staffingInput: req.body } : {}),
           createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
           createdByAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
           interactionTexts: [JSON.stringify(req.body)],
@@ -5105,9 +5102,7 @@ export function agentRoutes(
       },
       {
         ...(setupId ? { setupOnly: true } : {}),
-        staffingActor: req.actor,
-        requiresStaffing: delegated,
-        staffingInput: req.body,
+        ...(req.actor.type === "agent" ? { staffingActor: req.actor, requiresStaffing: delegated, staffingInput: req.body } : {}),
         createdByUserId: req.actor.type === "board" ? req.actor.userId : null,
         createdByAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
         interactionTexts: [JSON.stringify(req.body)],
@@ -6214,7 +6209,7 @@ export function agentRoutes(
     if (existing.status === "pending_approval") assertBoard(req);
     const agent = existing.status === "pending_approval"
       ? (await approvalsSvc.rejectHire(id, req.actor.userId ?? "board"))?.agent
-      : await svcLifecycle.terminateAgent(id, req.actor);
+      : req.actor.type === "agent" ? await svcLifecycle.terminateAgent(id, req.actor) : await svcLifecycle.terminateAgent(id);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;

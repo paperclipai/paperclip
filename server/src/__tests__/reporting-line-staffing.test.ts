@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { agents, approvals, companies, companyMemberships, environments, heartbeatRuns, issues, principalPermissionGrants, createDb, type Db } from "@paperclipai/db";
+import { agentConfigRevisions, agents, approvals, authUsers, companies, companyMemberships, environments, heartbeatRuns, issues, principalPermissionGrants, createDb, type Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
 import express from "express";
 import request from "supertest";
@@ -52,11 +52,16 @@ describePostgres("reporting-line staffing", () => {
       { ...runtime, id: manager, companyId, name: "Manager", permissions: { canCreateAgents: true } },
       { ...runtime, id: peer, companyId, name: "Peer", permissions: { canCreateAgents: true } },
     ]);
+    await db.insert(authUsers).values({ id: ownerId, name: "Owner", email: `${ownerId}@fixture.invalid`, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companyMemberships).values([
       { id: memberId, companyId, principalType: "agent", principalId: manager, membershipRole: "member", status: "active" },
       { companyId, principalType: "agent", principalId: peer, membershipRole: "member", status: "active" },
       { companyId, principalType: "user", principalId: ownerId, membershipRole: "owner", status: "active" },
     ]);
+
+    await db.insert(principalPermissionGrants).values(["agents:create", "agents:read"].map(permissionKey => ({
+      companyId, principalType: "user", principalId: ownerId, permissionKey,
+    })));
 
     function session(actor: Express.Request["actor"]) {
       const app = express();
@@ -93,7 +98,7 @@ describePostgres("reporting-line staffing", () => {
       expect(row).toMatchObject({ lifecycleState: "ready", hiredThroughStaffing: true });
       return id;
     };
-    return { companyId, environmentId, manager, peer, memberId, board, agentActor, agentSession, grant, hire, ready };
+    return { companyId, environmentId, manager, peer, memberId, ownerId, board, agentActor, agentSession, grant, hire, ready };
   }
 
   it("requires explicit resource delegation and lets an approved branch hire recursively", async () => {
@@ -108,8 +113,13 @@ describePostgres("reporting-line staffing", () => {
     await f.agentSession(f.manager).patch(`/api/agents/${child}`).send({ defaultEnvironmentId: f.environmentId }).expect(403);
     expect((await f.grant(true)).status).toBe(200);
     const briefPath = `/api/agents/${child}/instructions-bundle/file`;
-    const brief = await f.agentSession(f.manager).get(briefPath).query({ path: "AGENTS.md" }).expect(200);
-    await f.agentSession(f.manager).put(briefPath).send({
+    const [instructionRun] = await db.insert(heartbeatRuns).values({
+      companyId: f.companyId, agentId: f.manager, responsibleUserId: f.ownerId, status: "running", invocationSource: "on_demand",
+    }).returning();
+    const instructionSession = f.agentSession(f.manager, instructionRun!.id);
+    const brief = await instructionSession.get(briefPath).query({ path: "AGENTS.md" });
+    expect(brief.status, JSON.stringify(brief.body)).toBe(200);
+    await instructionSession.put(briefPath).send({
       path: "AGENTS.md", content: "Review the assigned task and record the result.",
       baseRevisionId: brief.body.revision?.id ?? null,
     }).expect(200);
@@ -132,6 +142,10 @@ describePostgres("reporting-line staffing", () => {
     expect((await f.agentSession(f.manager).patch(`/api/agents/${child}`).send({ reportsTo: f.peer })).status).toBe(403);
     expect((await f.agentSession(f.manager).patch(`/api/agents/${f.peer}`).send({ reportsTo: child })).status).toBe(403);
     expect((await f.agentSession(f.peer).patch(`/api/agents/${child}`).send({ status: "terminated" })).status).toBe(403);
+    await f.board.patch(`/api/agents/${child}`).send({ title: "Revision for rollback" }).expect(200);
+    const [revision] = await db.select().from(agentConfigRevisions).where(eq(agentConfigRevisions.agentId, child));
+    const rollback = await f.agentSession(f.peer).post(`/api/agents/${child}/config-revisions/${revision!.id}/rollback`);
+    expect(rollback.status, JSON.stringify(rollback.body)).toBe(403);
     expect((await f.agentSession(f.manager).delete(`/api/agents/${child}`)).status).toBe(403);
   });
 
