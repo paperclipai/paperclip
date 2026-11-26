@@ -10,6 +10,7 @@ import { listInvalidOrgChainDescendantIds } from "./agent-invokability.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { LifecycleDriver } from "../modules/agent-lifecycle/index.js";
 import { agentHarnessVerificationService } from "./agent-harness-verification.js";
+import { reconcileManagedHermesGateway } from "./hermes-gateway-lifecycle.js";
 import { agentInstanceSecretService } from "./agent-instance-secrets.js";
 import { AGENT_LIFECYCLE_STOP_REASON, COMPANY_ARCHIVED_STOP_REASON } from "./governance-pause-stop.js";
 
@@ -96,7 +97,7 @@ export function createLifecycleDriver(db: Db, manager: PluginWorkerManager): Lif
             ...(agent.lifecycleOperation?.id ? { trigger: `lifecycle:${agent.lifecycleOperation.id}` } : {}) });
         if (blocker) return { pending: blocker };
       }
-      return "complete";
+      return reconcileManagedHermesGateway(db, agent);
     },
   };
 }

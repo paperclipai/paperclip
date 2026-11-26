@@ -11,7 +11,7 @@ Paperclip ships both Hermes adapters as built-ins:
 
 - `hermes_local` runs the local `hermes` CLI as a child process on the
   Paperclip host.
-- `hermes_gateway` calls an already-running Hermes API server over HTTP/SSE.
+- `hermes_gateway` calls a Hermes API server over HTTP/SSE.
 
 No Adapter manager installation is required for normal use. Adapter manager is
 only needed when you intentionally install an external
@@ -55,9 +55,9 @@ Paperclip server process.
 
 If a run reports a loopback connection refusal, check the listener from the
 Paperclip server's host or container. Its loopback address does not refer to
-your browser's machine or an agent sandbox. `hermes_gateway` does not start
-Hermes: start the API server at the configured address, or set `apiBaseUrl`
-to its reachable address. Choose `hermes_local` when Paperclip should launch
+your browser's machine or an agent sandbox. For a manually bound agent, start
+the API server at the configured address or set `apiBaseUrl` to its reachable
+address. Choose `hermes_local` when Paperclip should launch
 the Hermes CLI itself. Connection guidance does not prove whether a remote
 run was accepted before a redirect failed; the task remains failed and the
 normal failure reporting and retry rules still apply.
@@ -67,6 +67,36 @@ the join flow; use HTTPS for real remote gateways. For private local
 development only, the join payload can set
 `dangerouslyAllowInsecureRemoteHttp: true`, and the smoke scripts expose the
 same escape hatch as `HERMES_GATEWAY_ALLOW_INSECURE_HTTP=1`.
+
+## Hire With a Managed Hermes Profile
+
+Self-hosted operators can set `PAPERCLIP_HERMES_PROFILE_POLICY_FILE` to the path
+of a private JSON policy. The policy requires these fields:
+
+- `companyId` and `projectId` for the company that can hire managed agents
+  and the project their task-bridge keys can access.
+- `adminUrl` and `adminTokenFile` for the native Hermes dashboard and its
+  management credential.
+- `gatewayHost` and `ports` for the operator's reserved Hermes gateway pool.
+  Profiles listen on IPv4 loopback. Put Paperclip on the same network
+  namespace, or use private HTTPS forwarding that preserves `/p/<profile>`.
+- `paperclipApiUrl` reachable by Hermes and the trusted `profileConfig` passed to
+  native Hermes configuration. Specify the model and tool access here.
+
+Set `adapterType: "hermes_gateway"` and `adapterConfig.managedProfile: true` in
+a native hire request. Paperclip creates the saved gateway binding and the
+project-scoped reporting key during `preparing`. Hermes creates and supervises
+the profile. Paperclip uses the named native readiness check before dispatch.
+
+Use a dedicated Hermes root with no shared login store, inherited provider
+credentials, or unmanaged profiles in the reserved port pool. Keep the
+management credential with the dashboard and Paperclip service. Use the
+existing Paperclip task helper with an operator-selected reporting toolset.
+
+Terminate managed agents while idle. Paperclip revokes each agent's reporting
+key and its lifecycle stops the Hermes gateway and removes the assigned
+credentials. Hermes retains the profile's memory and sessions. Keep its
+management policy available until cleanup has settled.
 
 ## Invite From Paperclip
 
