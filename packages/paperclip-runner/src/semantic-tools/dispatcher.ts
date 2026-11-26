@@ -1,3 +1,4 @@
+import { toolInputVariantError } from "../contracts/tool-input-variants.js";
 import { Ajv2020, type ValidateFunction } from "ajv/dist/2020.js";
 import type {
   CapabilityCommandOutcome,
@@ -16,7 +17,7 @@ import {
   DEFAULT_CAPABILITY_SCENARIO_POLICY,
 } from "./policy.js";
 import {
-  containsProtectedSemanticData,
+  isPaperclipSemanticValueWithinBounds,
   redactSemanticValue,
 } from "./redaction.js";
 import { discoverCapabilityDefinitions } from "./discovery.js";
@@ -121,11 +122,11 @@ export class CapabilitySemanticDispatcher {
       return result;
     }
 
-    if (containsProtectedSemanticData(call.input)) {
+    if (!isPaperclipSemanticValueWithinBounds(call.input)) {
       const decision = deniedDecision(
         invocation,
-        "protected_data_denied",
-        "Protected data is not accepted by semantic tools.",
+        "input_invalid",
+        "Tool input exceeds safe bounds.",
       );
       const result = this.#denial(call, descriptor.operationId, denialCode(decision), decision.reason);
       this.#record(policyContext, decision, call.callId, call.input, result);
@@ -133,11 +134,13 @@ export class CapabilitySemanticDispatcher {
     }
 
     const validator = this.#validators.get(descriptor.operationId);
-    if (validator === undefined || !validator(call.input)) {
+    const schemaValid = validator !== undefined && validator(call.input);
+    const variantError = schemaValid ? toolInputVariantError(descriptor.operationId, call.input) : null;
+    if (!schemaValid || variantError !== null) {
       const decision = deniedDecision(
         invocation,
         "input_invalid",
-        formatValidationError(validator),
+        variantError ?? formatValidationError(validator),
       );
       const result = this.#denial(call, descriptor.operationId, denialCode(decision), decision.reason);
       this.#record(policyContext, decision, call.callId, call.input, result);
@@ -183,14 +186,39 @@ export class CapabilitySemanticDispatcher {
         context,
         {
           ...scenario,
-          // These descriptors belong to the server's authenticated project
-          // authority. This mock command port has no project/repository binding;
+          // These descriptors belong to the server's authenticated authority.
+          // This mock command port has no project, repository, or case binding;
           // it must neither advertise nor accept them merely for lacking claims.
           denyOperations: [...new Set([
             ...(scenario.denyOperations ?? []),
+            "get_workspace" as const,
+            "list_workspaces" as const,
+            "select_workspace" as const,
+            "prepare_repository" as const,
             "create_project" as const,
             "list_project_repositories" as const,
             "list_projects" as const,
+            "list_responsibilities" as const,
+            "get_responsibility" as const,
+            "find_responsibilities_for" as const,
+            "create_area" as const,
+            "update_area" as const,
+            "delete_area" as const,
+            "create_responsibility" as const,
+            "update_responsibility" as const,
+            "delete_responsibility" as const,
+            "file_under_responsibility" as const,
+            "remove_from_responsibility" as const,
+            "update_routine" as const,
+            "update_skill_details" as const,
+            "handoff_case" as const,
+            "read_case" as const,
+            "update_case" as const,
+            "create_case" as const,
+            "list_workflows" as const,
+            "read_workflow" as const,
+            "create_workflow" as const,
+            "update_workflow" as const,
           ])],
         },
         this.options.explicitClaims ?? context.capabilities,
@@ -331,6 +359,10 @@ export class CapabilitySemanticDispatcher {
           slug: typeof input.slug === "string" ? input.slug : undefined,
           description: requiredString(input.description), markdown: requiredString(input.markdown) };
         break;
+      case "update_skill":
+        command = { kind: "update_skill", taskId, skillId: requiredString(input.skillId),
+          expectedVersionId: requiredString(input.expectedVersionId), markdown: requiredString(input.markdown) };
+        break;
       case "write_document":
         command = {
           kind: "write_document",
@@ -418,6 +450,13 @@ export class CapabilitySemanticDispatcher {
       if (skill) return readSuccess(outcome.result.stateRevision, {
         id: skill.id, name: skill.name, slug: skill.slug, description: skill.description,
         versionId: skill.versionId, studioPath: `/skills/studio/${skill.id}`,
+      });
+    }
+    if (operationId === "update_skill" && outcome.ok) {
+      const id = outcome.result.entityRefs.find(ref => ref.startsWith("skill:"))?.slice(6);
+      const skill = this.port.snapshot().skills?.find(candidate => candidate.id === id);
+      if (skill) return readSuccess(outcome.result.stateRevision, {
+        skillId: skill.id, path: "SKILL.md", versionId: skill.versionId, studioPath: `/skills/studio/${skill.id}`,
       });
     }
     return commandOutcome(outcome);
@@ -601,7 +640,9 @@ function optionalStringArray(value: unknown): string[] {
 }
 
 function optionalJson(value: unknown): CapabilityJsonValue {
-  return value === undefined ? {} : redactSemanticValue(value);
+  // Admission already validated JSON shape and bounds. Redaction is for
+  // audit copies, never for arguments sent to the control plane.
+  return value === undefined ? {} : value as CapabilityJsonValue;
 }
 
 function deepFreeze<T>(value: T): T {

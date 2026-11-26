@@ -2,7 +2,7 @@ import type { ToolCatalogEntry } from "@paperclipai/shared";
 
 export type ToolPermission = "allowed" | "ask_first" | "off";
 export type SetupStep = "access" | "connect" | "permissions" | "management" | "draft";
-export type ConnectStatus = "idle" | "connecting" | "sign_in" | "returned" | "cancelled" | "invalid_url" | "rejected" | "unreachable";
+export type ConnectStatus = "idle" | "connecting" | "sign_in" | "returned" | "cancelled" | "oauth_failed" | "invalid_url" | "rejected" | "unreachable";
 export interface RemoteMcpTool extends ToolCatalogEntry {
   broad?: boolean;
 }
@@ -12,10 +12,10 @@ export interface RemoteMcpSetupState {
   grantKind: "user" | "organization";
   setupComplete: boolean;
   url: string;
+  managementUrl?: string;
   auth: "auto" | "bearer" | "headers" | "none";
   token: string;
   headers: { id: string; name: string; value: string }[];
-  advanced: boolean;
   connectStatus: ConnectStatus;
   connected: boolean;
   identity: string | null;

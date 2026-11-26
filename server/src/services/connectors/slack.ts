@@ -2,8 +2,11 @@ import { authorizeSlackDocument } from "./slack-document.js";
 import { slackDelivery } from "./slack-delivery.js";
 import { slackMessage } from "./slack-message.js";
 import { executeSlackWrite } from "./slack-writes.js";
-import { syncSlackBotTools } from "./slack-catalog.js";
+import { slackBotCatalogIsCurrent, syncSlackBotTools } from "./slack-catalog.js";
 import { SLACK_TOOLS } from "@paperclipai/shared";
+import { measureRunPhase } from "../execution-preparation-timing.js";
+import { measureRunTransaction } from "../execution-transaction-timing.js";
+import { prepareSlackEndpoints } from "./slack-endpoint-preparation.js";
 import {
   toolProfiles,
   toolProfileBindings,
@@ -14,6 +17,7 @@ import { and, eq } from "drizzle-orm";
 import { badRequest, forbidden } from "../../errors.js";
 import {
   resolveSlackTaskAuthority,
+  slackEndpointCandidates,
   type SlackTaskBinding,
 } from "./slack-authority.js";
 import {
@@ -28,32 +32,28 @@ import {
   recordSlackReadBoundary,
 } from "./slack-access.js";
 
-export async function slackAssignedResource(
+async function slackAssignedEndpoint(
   db: Db,
   binding: Partial<SlackTaskBinding> & { companyId: string; agentId: string },
+  endpoint: { id: string; connectionId: string },
 ) {
   if (!binding.runId || !binding.issueId) return [];
-  let authority: Awaited<ReturnType<typeof resolveSlackTaskAuthority>>;
-  try {
-    authority = await resolveSlackTaskAuthority(
-      db,
-      binding as SlackTaskBinding,
+  const authorize = async () => {
+    try {
+      return await measureRunPhase("connectors.slack.authority", () => resolveSlackTaskAuthority(db, binding as SlackTaskBinding));
+    } catch (error) {
+      if (error && typeof error === "object" && "status" in error && error.status === 403) return null;
+      throw error;
+    }
+  };
+  if (!await slackBotCatalogIsCurrent(db, { ...endpoint, companyId: binding.companyId })) {
+    const authority = await authorize();
+    if (!authority || authority.endpoint.connectionId !== endpoint.connectionId) return [];
+    await measureRunTransaction(db, "connectors.slack.catalog", (tx) =>
+      syncSlackBotTools(tx, authority.endpoint, authority.userId, true),
     );
-  } catch (error) {
-    if (
-      error &&
-      typeof error === "object" &&
-      "status" in error &&
-      error.status === 403
-    )
-      return [];
-    throw error;
   }
-  // Catalog updates are idempotent and preserve configured policies.
-  await db.transaction((tx) =>
-    syncSlackBotTools(tx, authority.endpoint, authority.userId, true),
-  );
-  const [enabledProfile] = await db
+  const [enabledProfile] = await measureRunPhase("connectors.slack.profile", () => db
     .select({ id: toolProfiles.id })
     .from(toolProfiles)
     .innerJoin(
@@ -69,20 +69,21 @@ export async function slackAssignedResource(
       toolProfileEntries,
       and(
         eq(toolProfileEntries.profileId, toolProfiles.id),
-        eq(toolProfileEntries.connectionId, authority.endpoint.connectionId),
+        eq(toolProfileEntries.connectionId, endpoint.connectionId),
         eq(toolProfileEntries.effect, "include"),
       ),
     )
     .where(
       and(
         eq(toolProfiles.companyId, binding.companyId),
-        eq(toolProfiles.profileKey, `slack-bot:${authority.endpoint.id}`),
+        eq(toolProfiles.profileKey, `slack-bot:${endpoint.id}`),
         eq(toolProfiles.status, "active"),
       ),
     )
-    .limit(1);
+    .limit(1));
   if (!enabledProfile) return [];
-  authority = await resolveSlackTaskAuthority(db, binding as SlackTaskBinding);
+  const authority = await authorize();
+  if (!authority || authority.endpoint.connectionId !== endpoint.connectionId) return [];
   return [
     {
       id: authority.endpoint.id,
@@ -90,7 +91,7 @@ export async function slackAssignedResource(
       label: authority.endpoint.botDisplayName ?? "Slack",
       metadata: {
         workspaceId: authority.endpoint.providerAccountId,
-        channelId: authority.conversation.externalConversationId.replace(
+        channelId: authority.conversation?.externalConversationId.replace(
           /^slack:/,
           "",
         ),
@@ -100,6 +101,17 @@ export async function slackAssignedResource(
     },
   ];
 }
+export async function slackAssignedResource(
+  db: Db,
+  binding: Partial<SlackTaskBinding> & { companyId: string; agentId: string },
+) {
+  const endpoints = await measureRunPhase("connectors.slack.candidates", () => slackEndpointCandidates(db, binding));
+  return prepareSlackEndpoints(endpoints, endpoint => slackAssignedEndpoint(db, {
+    ...binding,
+    endpointId: endpoint.id,
+  }, endpoint));
+}
+
 const messageView = (message: SlackObject, team: string, channel: string) => ({
   ts: message.ts,
   threadTs: message.thread_ts,
@@ -129,8 +141,14 @@ export async function executeSlackTool(
 ) {
   const tool = SLACK_TOOLS.find((entry) => entry.name === name);
   if (!tool) throw forbidden("Unknown Slack tool");
-  const args = tool.schema.parse(value) as SlackObject;
+  const { endpointId, ...args } = tool.schema.parse(value) as SlackObject;
+  if (endpointId !== undefined) {
+    if (binding.endpointId && binding.endpointId !== endpointId)
+      throw forbidden("Slack connection selector does not match this tool");
+    binding = { ...binding, endpointId: String(endpointId) };
+  }
   const authority = await resolveSlackTaskAuthority(db, binding);
+  binding = { ...binding, endpointId: authority.endpoint.id };
   const upstream = slackClient(authority.botToken, fetchImpl);
   const users = new Map<string, Promise<SlackObject>>();
   const api: typeof upstream = (method, args = {}) => {
@@ -171,6 +189,7 @@ export async function executeSlackTool(
           authorized.is_im === true
         ) {
           if (
+            authority.conversation &&
             !authority.conversation.isDirectMessage &&
             authorized.id !==
               authority.conversation.externalConversationId.replace(
@@ -190,14 +209,12 @@ export async function executeSlackTool(
       } catch (error) {
         // Access denials omit inaccessible channels; provider outages/rate limits
         // must remain visible rather than masquerading as an empty directory.
-        if (
-          !(
-            error &&
-            typeof error === "object" &&
-            "status" in error &&
-            error.status === 403
-          )
-        )
+        if (!(
+          error &&
+          typeof error === "object" &&
+          "status" in error &&
+          error.status === 403
+        ))
           throw error;
       }
     }
@@ -469,10 +486,16 @@ export async function executeGovernedSlackTool(
   name: string,
   value: unknown,
 ) {
-  const authority = await resolveSlackTaskAuthority(db, binding);
   const tool = SLACK_TOOLS.find((t) => t.name === name);
   if (!tool) throw forbidden("Unknown Slack tool");
-  const args = tool.schema.parse(value) as SlackObject;
+  const { endpointId, ...args } = tool.schema.parse(value) as SlackObject;
+  if (endpointId !== undefined) {
+    if (binding.endpointId && binding.endpointId !== endpointId)
+      throw forbidden("Slack connection selector does not match this task");
+    binding = { ...binding, endpointId: String(endpointId) };
+  }
+  const authority = await resolveSlackTaskAuthority(db, binding);
+  binding = { ...binding, endpointId: authority.endpoint.id };
   if (
     binding.workMode &&
     binding.workMode !== "standard" &&

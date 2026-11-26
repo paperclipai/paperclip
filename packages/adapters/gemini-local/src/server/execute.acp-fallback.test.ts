@@ -71,6 +71,7 @@ vi.mock("@paperclipai/adapter-utils/server-utils", async () => {
 });
 
 import { execute } from "./execute.js";
+import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 
 function buildContext(config: Record<string, unknown> = {}) {
   return {
@@ -150,4 +151,33 @@ describe("gemini_local ACP startup fallback", () => {
       }
     },
   );
+
+  it("rebuilds the full assignment when a resume falls back to a fresh CLI attempt", async () => {
+    const cwd = await mkdtemp(path.join(tmpdir(), "gemini-context-fallback-"));
+    const prompts: string[] = [];
+    try {
+      runAdapterExecutionTargetProcess
+        .mockResolvedValueOnce({
+          exitCode: 1, signal: null, timedOut: false, stdout: "",
+          stderr: "Unknown session 'previous'", pid: 123, startedAt: new Date().toISOString(),
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0, signal: null, timedOut: false,
+          stdout: JSON.stringify({ type: "message", role: "assistant", content: "done" }),
+          stderr: "", pid: 123, startedAt: new Date().toISOString(),
+        });
+      const ctx = buildContext({ engine: "cli", cwd });
+      await execute({
+        ...ctx,
+        runtime: { ...ctx.runtime, sessionId: "previous" },
+        context: createPromptContextFixture(),
+        onMeta: async (meta) => { prompts.push(meta.prompt ?? ""); },
+      });
+      expect(prompts).toHaveLength(2);
+      expect(prompts[0]).toContain("## Compact assignment");
+      expect(prompts[1]).toContain("## Owned assignment");
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
 });

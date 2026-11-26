@@ -1,11 +1,15 @@
-import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { createHash, randomUUID } from "node:crypto";
+import { and, eq, sql } from "drizzle-orm";
+import express from "express";
+import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
   agents,
   companies,
+  companyMemberships,
   companySecrets,
+  connectionGrants,
   createDb,
   heartbeatRuns,
   issues,
@@ -16,8 +20,10 @@ import {
   toolApplications,
   toolCatalogEntries,
   toolCallEvents,
+  toolConnectionInstalls,
   toolConnections,
   toolInvocations,
+  toolMcpGateways,
   toolPolicies,
   toolProfileBindings,
   toolProfileEntries,
@@ -31,9 +37,24 @@ import {
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { createToolGatewayService, ToolGatewayHttpError } from "../services/tool-gateway.js";
+import { canonicalToolArguments, signToolArguments } from "../services/tool-content-guards.js";
+import { toolAccessRoutes } from "../routes/tool-access.js";
+import { errorHandler } from "../middleware/index.js";
+import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS, newStandardAgentGrantScope } from "../lib/agent-permissions.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TOOL_POLICY_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+function legacySideEffectKey(invocation: typeof toolInvocations.$inferSelect, argumentsHash: string) {
+  const scope = { companyId: invocation.companyId, runId: invocation.runId, issueId: invocation.issueId,
+    applicationId: invocation.applicationId, connectionId: invocation.connectionId,
+    catalogEntryId: invocation.catalogEntryId, toolName: invocation.toolName, argumentsHash };
+  return `side_effect:${createHash("sha256").update(JSON.stringify(Object.fromEntries(
+    Object.entries(scope).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0),
+  ))).digest("hex")}`;
+}
 
 async function createCompany(db: ReturnType<typeof createDb>) {
   return db.insert(companies).values({
@@ -149,13 +170,66 @@ async function createApprovedToolAction(input: {
   return { decisionInput, invocation: recorded.invocation, actionRequest: updated };
 }
 
+type IdRef = { id: string };
+
+function sendEmailGrantRow(company: IdRef, agent: IdRef): typeof principalPermissionGrants.$inferInsert {
+  return {
+    companyId: company.id,
+    principalType: "agent",
+    principalId: agent.id,
+    permissionKey: "tools:use",
+    scope: { toolName: "send_email" },
+  };
+}
+
+function agentProfileBindingRow(company: IdRef, profile: IdRef, agent: IdRef): typeof toolProfileBindings.$inferInsert {
+  return {
+    companyId: company.id,
+    profileId: profile.id,
+    targetType: "agent",
+    targetId: agent.id,
+  };
+}
+
+function sendEmailDecisionInput(company: IdRef, agent: IdRef, connection: IdRef, catalogEntry: IdRef): Parameters<ReturnType<typeof toolAccessPolicyService>["decide"]>[0] {
+  return {
+    companyId: company.id,
+    actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
+    request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
+  };
+}
+
+function reviewSendPolicyRow(company: IdRef, name: string): typeof toolPolicies.$inferInsert {
+  return {
+    companyId: company.id,
+    name: name,
+    policyType: "require_approval",
+    selectors: { toolName: "send_email" },
+  };
+}
+
+function executedActionInput(db: ReturnType<typeof createDb>, company: IdRef, agent: IdRef, connection: IdRef, catalogEntry: IdRef, args: Record<string, unknown>): Parameters<typeof createApprovedToolAction>[0] {
+  return {
+    db,
+    companyId: company.id,
+    agentId: agent.id,
+    connectionId: connection.id,
+    catalogEntryId: catalogEntry.id,
+    argumentsValue: args,
+    status: "executed",
+  };
+}
+
 describeEmbeddedPostgres("tool access policy service", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-access-policy-");
-    db = createDb(tempDb.connectionString);
+    if (externalDatabaseUrl) db = createDb(externalDatabaseUrl);
+    else {
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-tool-access-policy-");
+      db = createDb(tempDb.connectionString);
+    }
   }, 20_000);
 
   afterEach(async () => {
@@ -167,12 +241,16 @@ describeEmbeddedPostgres("tool access policy service", () => {
     await db.delete(toolPolicies);
     await db.delete(toolProfileEntries);
     await db.delete(toolProfileBindings);
+    await db.delete(toolMcpGateways);
     await db.delete(toolProfiles);
     await db.delete(toolCatalogEntries);
+    await db.delete(toolConnectionInstalls);
+    await db.delete(connectionGrants);
     await db.delete(toolConnections);
     await db.delete(toolApplications);
     await db.delete(companySecrets);
     await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(issues);
     await db.delete(projects);
     await db.delete(activityLog);
@@ -182,6 +260,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -190,11 +269,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const agent = await createAgent(db, company.id);
     const { connection, catalogEntry } = await createTool(db, company.id);
 
-    const result = await toolAccessPolicyService(db).decide({
-      companyId: company.id,
-      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
-      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
-    });
+    const result = await toolAccessPolicyService(db).decide(sendEmailDecisionInput(company, agent, connection, catalogEntry));
 
     expect(result).toMatchObject({
       allowed: false,
@@ -213,12 +288,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       name: "Write tools",
       defaultAction: "deny",
     }).returning().then((rows) => rows[0]!);
-    await db.insert(toolProfileBindings).values({
-      companyId: company.id,
-      profileId: profile.id,
-      targetType: "agent",
-      targetId: agent.id,
-    });
+    await db.insert(toolProfileBindings).values(agentProfileBindingRow(company, profile, agent));
     await db.insert(toolProfileEntries).values({
       companyId: company.id,
       profileId: profile.id,
@@ -227,11 +297,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       toolName: "send_email",
     });
 
-    const result = await toolAccessPolicyService(db).decide({
-      companyId: company.id,
-      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
-      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
-    });
+    const result = await toolAccessPolicyService(db).decide(sendEmailDecisionInput(company, agent, connection, catalogEntry));
 
     expect(result).toMatchObject({
       allowed: true,
@@ -468,11 +534,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     ]);
 
     for (const agent of [draftAgent, archivedAgent]) {
-      const result = await toolAccessPolicyService(db).decide({
-        companyId: company.id,
-        actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
-        request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
-      });
+      const result = await toolAccessPolicyService(db).decide(sendEmailDecisionInput(company, agent, connection, catalogEntry));
       expect(result).toMatchObject({
         allowed: false,
         decision: "deny",
@@ -486,13 +548,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { application, connection, catalogEntry } = await createTool(db, company.id);
-    await db.insert(principalPermissionGrants).values({
-      companyId: company.id,
-      principalType: "agent",
-      principalId: agent.id,
-      permissionKey: "tools:use",
-      scope: { toolName: "send_email" },
-    });
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
     const input = {
       companyId: company.id,
       actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
@@ -615,12 +671,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       name: "Write tools",
       defaultAction: "allow",
     }).returning().then((rows) => rows[0]!);
-    await db.insert(toolProfileBindings).values({
-      companyId: company.id,
-      profileId: profile.id,
-      targetType: "agent",
-      targetId: agent.id,
-    });
+    await db.insert(toolProfileBindings).values(agentProfileBindingRow(company, profile, agent));
     const wildcardPolicy = await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "Review wildcard-looking sends",
@@ -825,13 +876,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection } = await createTool(db, company.id);
-    await db.insert(principalPermissionGrants).values({
-      companyId: company.id,
-      principalType: "agent",
-      principalId: agent.id,
-      permissionKey: "tools:use",
-      scope: { toolName: "send_email" },
-    });
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
     const input = {
       companyId: company.id,
       actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
@@ -857,13 +902,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection } = await createTool(db, company.id);
-    await db.insert(principalPermissionGrants).values({
-      companyId: company.id,
-      principalType: "agent",
-      principalId: agent.id,
-      permissionKey: "tools:use",
-      scope: { toolName: "send_email" },
-    });
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
     const input = {
       companyId: company.id,
       actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
@@ -880,22 +919,124 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const replay = await toolAccessPolicyService(db).recordInvocation(input, decision);
 
     expect(first.replayed).toBe(false);
-    expect(first.invocation.idempotencyKey).toMatch(/^side_effect:/);
+    expect(first.invocation.idempotencyKey).toMatch(/^side_effect:v2:/);
     expect(replay.replayed).toBe(true);
     expect(replay.invocation.id).toBe(first.invocation.id);
+  });
+
+  it.each([
+    [{ password: "old-value" }, { password: "new-value" }],
+    [{ body: `${"x".repeat(500)}old` }, { body: `${"x".repeat(500)}new` }],
+    [{ items: [...Array.from({ length: 50 }, (_, index) => index), "old"] }, { items: [...Array.from({ length: 50 }, (_, index) => index), "new"] }],
+  ])("blocks unverifiable legacy default-key writes until an explicit new operation is requested (%#)", async (original, replacement) => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
+    const svc = toolAccessPolicyService(db, { toolActionSigningSecret: "legacy-identity-fixture-key" });
+    const input = { companyId: company.id, actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: { connectionId: connection.id, toolName: "send_email", arguments: original, sideEffecting: true } };
+    const decision = await svc.decide(input);
+    const first = await svc.recordInvocation(input, decision);
+    const oldHash = first.invocation.argumentsSummary!.sha256!;
+    await db.update(toolInvocations).set({ argumentsHash: oldHash,
+      idempotencyKey: legacySideEffectKey(first.invocation, oldHash), status: "succeeded" })
+      .where(eq(toolInvocations.id, first.invocation.id));
+    // A complete new request can equal the old shortened preview verbatim.
+    // That must not bypass the legacy verifier through the current-key lookup.
+    const previewArguments = JSON.parse(first.invocation.argumentsSummary!.summary);
+    for (const args of [original, replacement, previewArguments]) {
+      await expect(svc.recordInvocation({ ...input, request: { ...input.request, arguments: args } }, decision))
+        .rejects.toMatchObject({ status: 409, details: {
+          reasonCode: "legacy_tool_idempotency_unverifiable", invocationId: first.invocation.id,
+        } });
+    }
+    expect(await db.select().from(toolInvocations)).toHaveLength(1);
+    const explicit = await svc.recordInvocation({ ...input, request: { ...input.request, arguments: replacement,
+      idempotencyKey: "intentional-new-operation" } }, decision);
+    expect(explicit.replayed).toBe(false);
+    expect(explicit.invocation.id).not.toBe(first.invocation.id);
+  });
+
+  it.each(["preview", "complete"])("replays a legacy default-key result when its %s identity proves an exact match", async (identityKind) => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
+    const svc = toolAccessPolicyService(db, { toolActionSigningSecret: "legacy-identity-fixture-key" });
+    // Historical sorting was ordinal; the new canonical serializer uses locale order.
+    const input = { companyId: company.id, actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: { connectionId: connection.id, toolName: "send_email", arguments: identityKind === "preview"
+        ? { Z: "last", a: "first" } : { password: "saved-secret" }, sideEffecting: true } };
+    const decision = await svc.decide(input);
+    const first = await svc.recordInvocation(input, decision);
+    expect(first.invocation.argumentsHash).not.toBe(first.invocation.argumentsSummary!.sha256);
+    const oldHash = identityKind === "preview" ? first.invocation.argumentsSummary!.sha256! : first.invocation.argumentsHash!;
+    const resultSummary = { summary: "saved result" };
+    await db.update(toolInvocations).set({ argumentsHash: oldHash, resultSummary,
+      idempotencyKey: legacySideEffectKey(first.invocation, oldHash), status: "succeeded" })
+      .where(eq(toolInvocations.id, first.invocation.id));
+    expect(await svc.recordInvocation(input, decision)).toMatchObject({ replayed: true,
+      invocation: { id: first.invocation.id, resultSummary } });
+    expect(await db.select().from(toolInvocations)).toHaveLength(1);
+  });
+
+  it("uses authenticated legacy arguments to distinguish an exact retry from a new secret operation", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
+    const signingSecret = "legacy-identity-fixture-key";
+    const svc = toolAccessPolicyService(db, { toolActionSigningSecret: signingSecret });
+    const input = { companyId: company.id, actor: { actorType: "agent" as const, actorId: agent.id, agentId: agent.id },
+      request: { connectionId: connection.id, toolName: "send_email", arguments: { password: "old-value" }, sideEffecting: true } };
+    const decision = await svc.decide(input);
+    const first = await svc.recordInvocation(input, decision);
+    const oldHash = first.invocation.argumentsSummary!.sha256!;
+    await db.update(toolInvocations).set({ argumentsHash: oldHash,
+      idempotencyKey: legacySideEffectKey(first.invocation, oldHash), status: "succeeded" })
+      .where(eq(toolInvocations.id, first.invocation.id));
+    await db.insert(toolActionRequests).values({ companyId: company.id, invocationId: first.invocation.id,
+      status: "executed", canonicalArgumentsHash: oldHash, canonicalArgumentsSummary: first.invocation.argumentsSummary!, signedArguments: signToolArguments({
+        invocationId: first.invocation.id, toolName: "send_email", canonicalArguments: canonicalToolArguments(input.request.arguments), signingSecret,
+      }) });
+    expect(await svc.recordInvocation(input, decision)).toMatchObject({ replayed: true, invocation: { id: first.invocation.id } });
+    const replacement = await svc.recordInvocation({ ...input, request: { ...input.request, arguments: { password: "new-value" } } }, decision);
+    expect(replacement.replayed).toBe(false);
+    expect(await db.select().from(toolInvocations)).toHaveLength(2);
+  });
+
+  it("separates no-run default keys by actor and never exposes another actor's legacy result", async () => {
+    const company = await createCompany(db);
+    const firstAgent = await createAgent(db, company.id);
+    const secondAgent = await createAgent(db, company.id);
+    const { connection } = await createTool(db, company.id);
+    await db.insert(principalPermissionGrants).values([sendEmailGrantRow(company, firstAgent), sendEmailGrantRow(company, secondAgent)]);
+    const svc = toolAccessPolicyService(db);
+    const input = { companyId: company.id, actor: { actorType: "agent" as const, actorId: firstAgent.id, agentId: firstAgent.id },
+      request: { connectionId: connection.id, toolName: "send_email", arguments: { body: "same request" }, sideEffecting: true } };
+    const secondInput = { ...input, actor: { actorType: "agent" as const, actorId: secondAgent.id, agentId: secondAgent.id } };
+    const first = await svc.recordInvocation(input, await svc.decide(input));
+    const second = await svc.recordInvocation(secondInput, await svc.decide(secondInput));
+    expect(second.replayed).toBe(false);
+    expect(second.invocation.idempotencyKey).not.toBe(first.invocation.idempotencyKey);
+    const oldHash = first.invocation.argumentsSummary!.sha256!;
+    await db.update(toolInvocations).set({ argumentsHash: oldHash, resultSummary: { summary: "first actor's result" },
+      idempotencyKey: legacySideEffectKey(first.invocation, oldHash), status: "succeeded" })
+      .where(eq(toolInvocations.id, first.invocation.id));
+    await db.delete(toolInvocations).where(eq(toolInvocations.id, second.invocation.id));
+    const error = await svc.recordInvocation(secondInput, await svc.decide(secondInput)).then(() => null, failure => failure);
+    expect(error).toMatchObject({ status: 409 });
+    expect(error.details).toEqual({ reasonCode: "legacy_tool_idempotency_unverifiable" });
+    expect(JSON.stringify(error)).not.toContain(first.invocation.id);
+    expect(await db.select().from(toolInvocations)).toHaveLength(1);
   });
 
   it("enforces rate-limit policies before explicit grants", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection } = await createTool(db, company.id);
-    await db.insert(principalPermissionGrants).values({
-      companyId: company.id,
-      principalType: "agent",
-      principalId: agent.id,
-      permissionKey: "tools:use",
-      scope: { toolName: "send_email" },
-    });
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
     await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "One send per minute",
@@ -925,13 +1066,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection } = await createTool(db, company.id);
-    await db.insert(principalPermissionGrants).values({
-      companyId: company.id,
-      principalType: "agent",
-      principalId: agent.id,
-      permissionKey: "tools:use",
-      scope: { toolName: "send_email" },
-    });
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
     await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "One concurrent send per minute",
@@ -955,42 +1090,258 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(decisions.filter((decision) => decision.reasonCode === "rate_limited")).toHaveLength(1);
   });
 
+  async function admittedRateLimitedInvocation(limit = 1) {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const issue = await createIssue(db, company.id);
+    const run = await createRun(db, company.id, agent.id);
+    const { connection, catalogEntry } = await createTool(db, company.id);
+    const [profile] = await db.insert(toolProfiles).values({ companyId: company.id,
+      profileKey: "admitted-gateway", name: "Admitted gateway", defaultAction: "deny" }).returning();
+    const [gateway] = await db.insert(toolMcpGateways).values({ companyId: company.id,
+      name: "Admitted gateway", slug: "admitted-gateway", profileId: profile.id }).returning();
+    await db.insert(principalPermissionGrants).values(sendEmailGrantRow(company, agent));
+    const [ratePolicy] = await db.insert(toolPolicies).values({ companyId: company.id, name: "One admitted send",
+      policyType: "rate_limit", selectors: { toolName: "send_email" }, priority: 1,
+      config: { limit, windowSeconds: 3600, keyBy: ["agent", "tool"] } }).returning();
+    const input = { ...sendEmailDecisionInput(company, agent, connection, catalogEntry),
+      runContext: { heartbeatRunId: run.id, issueId: issue.id, gatewayId: gateway.id }, consumeRateLimit: true,
+      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email", arguments: { to: "recipient@example.test" } } };
+    const svc = toolAccessPolicyService(db);
+    const initial = await svc.decide(input);
+    expect(initial.allowed).toBe(true);
+    const { invocation } = await svc.recordInvocation(input, initial);
+    expect(invocation.gatewayId).toBe(gateway.id);
+    await db.update(toolInvocations).set({ status: "executing" }).where(eq(toolInvocations.id, invocation.id));
+    return { company, agent, input: { ...input, consumeRateLimit: false }, invocation, ratePolicy, svc };
+  }
+
+  it.each(["allow", "approved"] as const)("retains the consumed final rate-limit slot for the same executing %s invocation", async authorization => {
+    const { input, invocation, ratePolicy, svc } = await admittedRateLimitedInvocation();
+    if (authorization === "approved") await db.update(toolInvocations).set({ policyDecision: "require_approval", approvalState: "approved" })
+      .where(eq(toolInvocations.id, invocation.id));
+    expect(await svc.decide(input)).toMatchObject({ decision: "rate_limited" });
+    expect(invocation.policyExplanation?.consumedRateAdmissions).toEqual([
+      { policyId: ratePolicy.id, versionHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        bucketKey: `${ratePolicy.id}:agent:${input.actor.agentId}|tool:send_email` },
+    ]);
+    const counters = await db.select().from(toolRateLimitCounters);
+    expect(await svc.decide(input, { admittedInvocationId: invocation.id })).toMatchObject({ allowed: true });
+    expect(await svc.decide(input, { admittedInvocationId: invocation.id })).toMatchObject({ allowed: true });
+    expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+    expect((await db.select().from(toolRateLimitCounters))[0].remaining).toBe(0);
+    // A fresh invocation cannot borrow another invocation's already-spent slot.
+    // Execution revalidation retains its own durable admission.
+    expect(await svc.decide(input, { admittedInvocationId: randomUUID() })).toMatchObject({ decision: "rate_limited" });
+    expect(await svc.admitInvocation(input, invocation.id)).toMatchObject({ allowed: true });
+    expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+  });
+
+  it("atomically charges a new rule once across concurrent retries of the same invocation", async () => {
+    const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
+    const added = await svc.createPolicy(company.id, { name: "New admission", policyType: "rate_limit", enabled: true, priority: 0,
+      selectors: { toolName: "send_email" }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
+    const oldCounters = await db.select().from(toolRateLimitCounters);
+    expect(await svc.decide(input, { admittedInvocationId: invocation.id })).toMatchObject({ allowed: true });
+    expect(await db.select().from(toolRateLimitCounters)).toEqual(oldCounters);
+    const results = await Promise.all(Array.from({ length: 4 }, () => svc.admitInvocation(input, invocation.id)));
+    expect(results.every(result => result.allowed)).toBe(true);
+    expect(await db.select().from(toolRateLimitCounters).where(eq(toolRateLimitCounters.policyId, added.id)))
+      .toMatchObject([{ limit: 1, remaining: 0 }]);
+    const [saved] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, invocation.id));
+    expect(saved.policyExplanation?.consumedRateAdmissions).toHaveLength(2);
+    const { consumedRateAdmissions: oldAdmissions, ...oldExplanation } = invocation.policyExplanation!;
+    expect(saved.policyExplanation).toMatchObject(oldExplanation);
+    expect(saved.policyExplanation?.consumedRateAdmissions).toEqual(expect.arrayContaining(oldAdmissions as unknown[]));
+  });
+
+  it("allows only one of two admitted invocations to spend a newly added final slot", async () => {
+    const { company, input, invocation, svc } = await admittedRateLimitedInvocation(2);
+    const initial = await svc.decide({ ...input, consumeRateLimit: true });
+    expect(initial.allowed).toBe(true);
+    const { invocation: second } = await svc.recordInvocation(input, initial);
+    await db.update(toolInvocations).set({ status: "executing" }).where(eq(toolInvocations.id, second.id));
+    const added = await svc.createPolicy(company.id, { name: "One competing slot", policyType: "rate_limit", enabled: true, priority: 0,
+      selectors: { toolName: "send_email" }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
+    const results = await Promise.all([invocation.id, second.id].map(id => svc.admitInvocation(input, id)));
+    expect(results.filter(result => result.allowed)).toHaveLength(1);
+    expect(results.filter(result => result.decision === "rate_limited")).toHaveLength(1);
+    expect(await db.select().from(toolRateLimitCounters).where(eq(toolRateLimitCounters.policyId, added.id)))
+      .toMatchObject([{ limit: 1, remaining: 0 }]);
+  });
+
+  it("rolls back new rate charges when a later policy rejects the invocation", async () => {
+    const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
+    await svc.createPolicy(company.id, { name: "Before rejection", policyType: "rate_limit", enabled: true, priority: 0,
+      selectors: { toolName: "send_email" }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
+    await svc.createPolicy(company.id, { name: "Later rejection", policyType: "block", enabled: true, priority: 10,
+      selectors: { toolName: "send_email" } });
+    const counters = await db.select().from(toolRateLimitCounters);
+    expect(await svc.admitInvocation(input, invocation.id)).toMatchObject({ decision: "deny" });
+    expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+    expect((await db.select().from(toolInvocations).where(eq(toolInvocations.id, invocation.id)))[0].policyExplanation)
+      .toEqual(invocation.policyExplanation);
+  });
+
+  it("rolls back rate charges when saving the admission receipt fails and admits a retry once", async () => {
+    const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
+    const added = await svc.createPolicy(company.id, { name: "Receipt failure", policyType: "rate_limit", enabled: true, priority: 0,
+      selectors: { toolName: "send_email" }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
+    await db.execute(sql`create function sleep_admission_fail() returns trigger language plpgsql as $$ begin
+      raise exception 'receipt write unavailable'; end $$`);
+    await db.execute(sql`create trigger sleep_admission_fail before update of policy_explanation on tool_invocations
+      for each row execute function sleep_admission_fail()`);
+    try {
+      await expect(svc.admitInvocation(input, invocation.id)).rejects.toThrow();
+      expect(await db.select().from(toolRateLimitCounters).where(eq(toolRateLimitCounters.policyId, added.id))).toEqual([]);
+      expect((await db.select().from(toolInvocations).where(eq(toolInvocations.id, invocation.id)))[0].policyExplanation)
+        .toEqual(invocation.policyExplanation);
+    } finally {
+      await db.execute(sql`drop trigger sleep_admission_fail on tool_invocations`);
+      await db.execute(sql`drop function sleep_admission_fail()`);
+    }
+    expect(await svc.admitInvocation(input, invocation.id)).toMatchObject({ allowed: true });
+    expect(await svc.admitInvocation(input, invocation.id)).toMatchObject({ allowed: true });
+    expect(await db.select().from(toolRateLimitCounters).where(eq(toolRateLimitCounters.policyId, added.id)))
+      .toMatchObject([{ limit: 1, remaining: 0 }]);
+  });
+
+  it.each([2, 4])("preserves spent slots when a rate limit changes from three to %s", async limit => {
+    const { company, input, ratePolicy, svc } = await admittedRateLimitedInvocation(3);
+    await svc.updatePolicy({ companyId: company.id, policyId: ratePolicy.id,
+      body: { config: { limit, windowSeconds: 3600, keyBy: ["agent", "tool"] } } });
+    const results = await Promise.all(Array.from({ length: limit }, () => svc.decide({ ...input, consumeRateLimit: true })));
+    expect(results.filter(result => result.allowed)).toHaveLength(limit - 1);
+    expect(results.filter(result => result.decision === "rate_limited")).toHaveLength(1);
+    expect(await db.select().from(toolRateLimitCounters)).toMatchObject([{ limit, remaining: 0 }]);
+  });
+
+  it.each(["pending", "approved"] as const)("retains a waiting invocation's consumed slot without bypassing %s approval policy", async approvalState => {
+    const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
+    await db.update(toolInvocations).set({ status: "awaiting_approval", policyDecision: "require_approval", approvalState })
+      .where(eq(toolInvocations.id, invocation.id));
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Review admitted sends",
+      policyType: "require_approval", priority: 2, selectors: { toolName: "send_email" } });
+    const counters = await db.select().from(toolRateLimitCounters);
+    expect(await svc.decide(input, { admittedInvocationId: invocation.id }))
+      .toMatchObject({ allowed: false, decision: "require_approval" });
+    expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+    expect(await svc.decide(input)).toMatchObject({ decision: "rate_limited" });
+  });
+
+  it("rechecks a newly added rate policy rather than borrowing an older policy's consumed slot", async () => {
+    const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
+    await svc.createPolicy(company.id, { name: "New send limit", policyType: "rate_limit", enabled: true, priority: 0,
+      selectors: { toolName: "send_email" }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
+    // Consume the new rule through normal admission; the exhausted original
+    // rule then denies this separate request before any provider dispatch.
+    expect(await svc.decide({ ...input, consumeRateLimit: true })).toMatchObject({ decision: "rate_limited" });
+    const counters = await db.select().from(toolRateLimitCounters);
+    expect(counters).toHaveLength(2);
+    expect(await svc.decide(input, { admittedInvocationId: invocation.id })).toMatchObject({ decision: "rate_limited" });
+    expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+  });
+
+  it("rechecks an edited rate-policy generation without consuming another slot", async () => {
+    const { company, input, invocation, ratePolicy, svc } = await admittedRateLimitedInvocation(2);
+    expect(await svc.decide({ ...input, consumeRateLimit: true })).toMatchObject({ allowed: true });
+    await svc.updatePolicy({ companyId: company.id, policyId: ratePolicy.id,
+      body: { config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } } });
+    const counters = await db.select().from(toolRateLimitCounters);
+    expect(await svc.decide(input, { admittedInvocationId: invocation.id })).toMatchObject({ decision: "rate_limited" });
+    expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
+  });
+
+  it("rechecks rate limits for historical executing invocations without durable consumption proof", async () => {
+    const { input, invocation, svc } = await admittedRateLimitedInvocation();
+    await db.update(toolInvocations).set({ policyExplanation: null }).where(eq(toolInvocations.id, invocation.id));
+    expect(await svc.decide(input, { admittedInvocationId: invocation.id })).toMatchObject({ decision: "rate_limited" });
+  });
+
+  it("reevaluates current blocks, grants, and approval policies for admitted work", async () => {
+    const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
+    const options = { admittedInvocationId: invocation.id };
+    const [block] = await db.insert(toolPolicies).values({ companyId: company.id, name: "Block admitted sends",
+      policyType: "block", priority: 0, selectors: { toolName: "send_email" } }).returning();
+    expect(await svc.decide(input, options)).toMatchObject({ decision: "deny", reasonCode: "deny_policy_block" });
+    await db.delete(toolPolicies).where(eq(toolPolicies.id, block.id));
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, company.id));
+    expect(await svc.decide(input, options)).toMatchObject({ decision: "deny", reasonCode: "deny_default" });
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Require new review",
+      policyType: "require_approval", priority: 2, selectors: { toolName: "send_email" } });
+    expect(await svc.decide(input, options)).toMatchObject({ decision: "require_approval" });
+  });
+
+  it("does not retain rate admission for a mismatched or no-longer-authorized invocation", async () => {
+    const { input, invocation, svc } = await admittedRateLimitedInvocation();
+    const options = { admittedInvocationId: invocation.id };
+    const mutations: Partial<typeof toolInvocations.$inferInsert>[] = [
+      { actorType: "system" }, { actorId: randomUUID() }, { agentId: null }, { runId: null }, { issueId: null }, { gatewayId: null },
+      { applicationId: null }, { connectionId: null }, { catalogEntryId: null }, { toolName: "different_tool" },
+      { providerType: null }, { applicationKey: null }, { upstreamToolName: null }, { argumentsHash: "different" },
+      { status: "authorized" }, { status: "succeeded" }, { status: "awaiting_approval" },
+      { status: "awaiting_approval", policyDecision: "require_approval", approvalState: "rejected" }, { policyDecision: "deny" }, { policyDecision: "require_approval", approvalState: "pending" },
+    ];
+    for (const mutation of mutations) {
+      await db.update(toolInvocations).set(mutation).where(eq(toolInvocations.id, invocation.id));
+      expect(await svc.decide(input, options), JSON.stringify(mutation)).toMatchObject({ decision: "rate_limited" });
+      expect(await svc.admitInvocation(input, invocation.id), JSON.stringify(mutation)).toMatchObject({ decision: "deny" });
+      await db.update(toolInvocations).set({ ...invocation, status: "executing" }).where(eq(toolInvocations.id, invocation.id));
+    }
+    expect(await svc.decide({ ...input, request: { ...input.request, arguments: { to: "another@example.test" } } }, options))
+      .toMatchObject({ decision: "rate_limited" });
+    expect(await svc.admitInvocation({ ...input, request: { ...input.request, arguments: { to: "another@example.test" } } }, invocation.id))
+      .toMatchObject({ decision: "deny" });
+  });
+
   it("rejects unsupported policy semantics at create and update time", async () => {
     const company = await createCompany(db);
     const svc = toolAccessPolicyService(db);
     const policy = await svc.createPolicy(company.id, {
       name: "Require review",
       policyType: "require_approval",
+      priority: 100,
+      enabled: true,
       selectors: { toolName: "send_email" },
     });
 
     await expect(svc.createPolicy(company.id, {
       name: "Dead redact policy",
       policyType: "redact" as never,
+      priority: 100,
+      enabled: true,
       selectors: { toolName: "send_email" },
       config: { redact: { fields: ["to", "body"] } },
     })).rejects.toThrow("Tool policy type 'redact' is not supported at runtime");
     await expect(svc.createPolicy(company.id, {
       name: "Dead custom check",
       policyType: "validate" as never,
+      priority: 100,
+      enabled: true,
       selectors: { toolName: "send_email" },
       config: { schema: { required: ["body"] } },
     })).rejects.toThrow("Tool policy type 'validate' is not supported at runtime");
     await expect(svc.createPolicy(company.id, {
       name: "Malformed conditional policy",
       policyType: "allow",
+      priority: 100,
+      enabled: true,
       selectors: { toolName: "send_email" },
       conditions: { args: { body: "safe" } } as never,
     })).rejects.toThrow("Tool policy conditions include unsupported runtime semantics");
     await expect(svc.createPolicy(company.id, {
       name: "Ignored approval config",
       policyType: "require_approval",
+      priority: 100,
+      enabled: true,
       selectors: { toolName: "send_email" },
       config: { validate: { required: ["body"] } },
     })).rejects.toThrow("Tool policy type 'require_approval' does not support config");
     await expect(svc.createPolicy(company.id, {
       name: "Invalid rate limit",
       policyType: "rate_limit",
+      priority: 100,
+      enabled: true,
       selectors: { toolName: "send_email" },
       config: { rateLimit: { limit: 0, windowSeconds: 60 } },
     })).rejects.toThrow("Rate-limit policy config requires positive numeric limit and windowSeconds");
@@ -1008,6 +1359,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     await expect(svc.createPolicy(company.id, {
       name: "Unsafe regex",
       policyType: "allow",
+      enabled: true,
       priority: 10,
       selectors: { toolName: "send_email" },
       conditions: {
@@ -1023,6 +1375,9 @@ describeEmbeddedPostgres("tool access policy service", () => {
     await expect(svc.createPolicy(company.id, {
       name: "Unsafe alternation",
       policyType: "allow",
+      priority: 100,
+      enabled: true,
+      selectors: {},
       conditions: {
         arguments: { fieldMatches: { body: "^(a|aa)*b$" } },
       },
@@ -1037,6 +1392,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const allowPolicy = await svc.createPolicy(company.id, {
       name: "Allow safe destination",
       policyType: "allow",
+      enabled: true,
       priority: 10,
       selectors: { toolName: "send_email" },
       conditions: {
@@ -1050,6 +1406,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const blockPolicy = await svc.createPolicy(company.id, {
       name: "Block external destination",
       policyType: "block",
+      enabled: true,
       priority: 5,
       selectors: { toolName: "send_email" },
       conditions: {
@@ -1105,12 +1462,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       name: "Fallback allow",
       defaultAction: "allow",
     }).returning().then((rows) => rows[0]!);
-    await db.insert(toolProfileBindings).values({
-      companyId: company.id,
-      profileId: profile.id,
-      targetType: "agent",
-      targetId: agent.id,
-    });
+    await db.insert(toolProfileBindings).values(agentProfileBindingRow(company, profile, agent));
     const [redactPolicy] = await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "Legacy redact",
@@ -1128,17 +1480,9 @@ describeEmbeddedPostgres("tool access policy service", () => {
       priority: 2,
     }).returning();
 
-    const redactDecision = await toolAccessPolicyService(db).decide({
-      companyId: company.id,
-      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
-      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
-    });
+    const redactDecision = await toolAccessPolicyService(db).decide(sendEmailDecisionInput(company, agent, connection, catalogEntry));
     await db.update(toolPolicies).set({ enabled: false }).where(eq(toolPolicies.id, redactPolicy!.id));
-    const validateDecision = await toolAccessPolicyService(db).decide({
-      companyId: company.id,
-      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
-      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
-    });
+    const validateDecision = await toolAccessPolicyService(db).decide(sendEmailDecisionInput(company, agent, connection, catalogEntry));
 
     expect(redactDecision).toMatchObject({
       allowed: false,
@@ -1164,12 +1508,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       name: "Fallback allow",
       defaultAction: "allow",
     }).returning().then((rows) => rows[0]!);
-    await db.insert(toolProfileBindings).values({
-      companyId: company.id,
-      profileId: profile.id,
-      targetType: "agent",
-      targetId: agent.id,
-    });
+    await db.insert(toolProfileBindings).values(agentProfileBindingRow(company, profile, agent));
     const [policy] = await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "Legacy conditional allow",
@@ -1179,11 +1518,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       priority: 1,
     }).returning();
 
-    const result = await toolAccessPolicyService(db).decide({
-      companyId: company.id,
-      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
-      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
-    });
+    const result = await toolAccessPolicyService(db).decide(sendEmailDecisionInput(company, agent, connection, catalogEntry));
 
     expect(result).toMatchObject({
       allowed: false,
@@ -1203,12 +1538,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       name: "Fallback allow",
       defaultAction: "allow",
     }).returning().then((rows) => rows[0]!);
-    await db.insert(toolProfileBindings).values({
-      companyId: company.id,
-      profileId: profile.id,
-      targetType: "agent",
-      targetId: agent.id,
-    });
+    await db.insert(toolProfileBindings).values(agentProfileBindingRow(company, profile, agent));
     const [policy] = await db.insert(toolPolicies).values({
       companyId: company.id,
       name: "Broken rate limit",
@@ -1218,11 +1548,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
       priority: 1,
     }).returning();
 
-    const result = await toolAccessPolicyService(db).decide({
-      companyId: company.id,
-      actor: { actorType: "agent", actorId: agent.id, agentId: agent.id },
-      request: { connectionId: connection.id, catalogEntryId: catalogEntry.id, toolName: "send_email" },
-    });
+    const result = await toolAccessPolicyService(db).decide(sendEmailDecisionInput(company, agent, connection, catalogEntry));
 
     expect(result).toMatchObject({
       allowed: false,
@@ -1311,12 +1637,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const agentA = await createAgent(db, company.id);
     const agentB = await createAgent(db, company.id);
     const { connection, catalogEntry } = await createTool(db, company.id);
-    await db.insert(toolPolicies).values({
-      companyId: company.id,
-      name: "Review scoped sends",
-      policyType: "require_approval",
-      selectors: { toolName: "send_email" },
-    });
+    await db.insert(toolPolicies).values(reviewSendPolicyRow(company, "Review scoped sends"));
     const args = { to: "ops@example.com", body: "same reviewed payload" };
     await createApprovedToolAction({
       db,
@@ -1348,35 +1669,14 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection, catalogEntry } = await createTool(db, company.id);
-    await db.insert(toolPolicies).values({
-      companyId: company.id,
-      name: "Review versioned sends",
-      policyType: "require_approval",
-      selectors: { toolName: "send_email" },
-    });
+    await db.insert(toolPolicies).values(reviewSendPolicyRow(company, "Review versioned sends"));
     const args = { to: "ops@example.com", body: "same payload after tool change" };
-    await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
+    await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
     await db
       .update(toolCatalogEntries)
       .set({ versionHash: randomUUID(), schemaHash: randomUUID(), updatedAt: new Date() })
       .where(eq(toolCatalogEntries.id, catalogEntry.id));
-    const currentVersionAction = await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
+    const currentVersionAction = await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
 
     await expect(toolAccessPolicyService(db).createTrustRuleFromActionRequest({
       companyId: company.id,
@@ -1389,31 +1689,10 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection, catalogEntry } = await createTool(db, company.id);
-    await db.insert(toolPolicies).values({
-      companyId: company.id,
-      name: "Review scoped sends",
-      policyType: "require_approval",
-      selectors: { toolName: "send_email" },
-    });
+    await db.insert(toolPolicies).values(reviewSendPolicyRow(company, "Review scoped sends"));
     const args = { to: "ops@example.com", body: "same reviewed payload" };
-    const first = await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
-    await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
+    const first = await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
+    await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
 
     await expect(toolAccessPolicyService(db).createTrustRuleFromActionRequest({
       companyId: company.id,
@@ -1435,31 +1714,10 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection, catalogEntry } = await createTool(db, company.id);
-    await db.insert(toolPolicies).values({
-      companyId: company.id,
-      name: "Review exact payload sends",
-      policyType: "require_approval",
-      selectors: { toolName: "send_email" },
-    });
+    await db.insert(toolPolicies).values(reviewSendPolicyRow(company, "Review exact payload sends"));
     const args = { to: "ops@example.com", body: "same reviewed payload" };
-    const first = await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
-    await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
+    const first = await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
+    await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
 
     await expect(toolAccessPolicyService(db).createTrustRuleFromActionRequest({
       companyId: company.id,
@@ -1475,22 +1733,9 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection, catalogEntry } = await createTool(db, company.id);
-    await db.insert(toolPolicies).values({
-      companyId: company.id,
-      name: "Review changed sends",
-      policyType: "require_approval",
-      selectors: { toolName: "send_email" },
-    });
+    await db.insert(toolPolicies).values(reviewSendPolicyRow(company, "Review changed sends"));
     const args = { to: "ops@example.com", body: "repeatable" };
-    const first = await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
+    const first = await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
     await createApprovedToolAction({
       db,
       companyId: company.id,
@@ -1523,22 +1768,9 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
     const { connection, catalogEntry } = await createTool(db, company.id);
-    await db.insert(toolPolicies).values({
-      companyId: company.id,
-      name: "Review revocable sends",
-      policyType: "require_approval",
-      selectors: { toolName: "send_email" },
-    });
+    await db.insert(toolPolicies).values(reviewSendPolicyRow(company, "Review revocable sends"));
     const args = { to: "ops@example.com", body: "revocable" };
-    const first = await createApprovedToolAction({
-      db,
-      companyId: company.id,
-      agentId: agent.id,
-      connectionId: connection.id,
-      catalogEntryId: catalogEntry.id,
-      argumentsValue: args,
-      status: "executed",
-    });
+    const first = await createApprovedToolAction(executedActionInput(db, company, agent, connection, catalogEntry, args));
     await createApprovedToolAction({
       db,
       companyId: company.id,
@@ -1660,11 +1892,576 @@ describeEmbeddedPostgres("tool access policy service", () => {
     await expect(svc.createConnection(company.id, {
       name: "Wrong secret",
       transport: "mcp_remote",
+      connectionPurpose: "tool",
+      authKind: "none",
+      ownership: "customer",
+      connectionKind: "managed",
       transportConfig: { url: "https://8.8.8.8/mcp" },
       credentialSecretRefs: [{
         secretId: otherSecret.id,
         configPath: "headers.Authorization",
       }],
     })).rejects.toThrow(/same company/);
+  });
+
+  async function grantStandardAgentDefaults(companyId: string, agentId: string) {
+    await db.insert(principalPermissionGrants).values(
+      NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
+        companyId,
+        principalType: "agent" as const,
+        principalId: agentId,
+        permissionKey,
+        scope: newStandardAgentGrantScope(permissionKey, agentId),
+      })),
+    );
+  }
+
+  it.each([
+    { label: "remote MCP", transport: "mcp_remote" as const, appType: "mcp_http" as const },
+    { label: "OAuth REST API", transport: "rest_api" as const, appType: "rest_api" as const },
+    { label: "local stdio", transport: "local_stdio" as const, appType: "mcp_stdio" as const },
+  ])("denies uninstalled agents with default tools:use on an agent-scoped $label connection while allowing the installed agent", async ({ transport, appType }) => {
+    const company = await createCompany(db);
+    const agentA = await createAgent(db, company.id);
+    const agentB = await createAgent(db, company.id);
+    await grantStandardAgentDefaults(company.id, agentA.id);
+    await grantStandardAgentDefaults(company.id, agentB.id);
+
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `isolated-${randomUUID()}`,
+      name: `Isolated ${transport}`,
+      type: appType,
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: `Agent A ${transport}`,
+      uid: `test/${randomUUID()}`,
+      transport,
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      config: transport === "local_stdio" ? { templateId: "fixture" } : { url: "https://8.8.8.8/mcp" },
+    }).returning();
+    const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      connectionId: connection!.id,
+      name: "read_mailbox",
+      toolName: "read_mailbox",
+      riskLevel: "read",
+      versionHash: randomUUID(),
+      schemaHash: randomUUID(),
+    }).returning();
+
+    const accessSvc = toolAccessService(db);
+    await accessSvc.finishGalleryAppConnection(company.id, connection!.id, {
+      enabledCatalogEntryIds: [catalogEntry!.id],
+      askFirstCatalogEntryIds: [],
+      access: { agentIds: [agentA.id] },
+    });
+
+    const policySvc = toolAccessPolicyService(db);
+    const decideFor = (agentId: string) => policySvc.decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agentId, agentId },
+      request: { connectionId: connection!.id, catalogEntryId: catalogEntry!.id, toolName: "read_mailbox" },
+    });
+
+    expect(await decideFor(agentA.id)).toMatchObject({
+      allowed: true,
+      decision: "allow",
+      reasonCode: "allow_profile",
+    });
+    expect(await decideFor(agentB.id)).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_connection_not_installed",
+    });
+
+    // An agent created after the connection was installed for Agent A must also be denied.
+    const agentC = await createAgent(db, company.id);
+    await grantStandardAgentDefaults(company.id, agentC.id);
+    expect(await decideFor(agentC.id)).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_connection_not_installed",
+    });
+
+    // Simulate a pre-marker connection whose wizard-authored app_gallery_finish
+    // binding exists without config markers, then remove the final install
+    // through putConnectionInstalls. The installs writer must persist the
+    // explicit marker and immediately deny the removed agent in policy and
+    // Effective Access.
+    const [beforeStrip] = await db
+      .select({ config: toolConnections.config })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connection!.id));
+    const strippedConfig = { ...((beforeStrip?.config as Record<string, unknown> | null) ?? {}) };
+    delete strippedConfig.agentAccessConfigured;
+    delete strippedConfig.mcpAgentAccessConfigured;
+    await db
+      .update(toolConnections)
+      .set({ config: strippedConfig })
+      .where(eq(toolConnections.id, connection!.id));
+
+    await accessSvc.putConnectionInstalls(connection!.id, { installs: [] });
+    const [afterUninstall] = await db
+      .select({ config: toolConnections.config })
+      .from(toolConnections)
+      .where(eq(toolConnections.id, connection!.id));
+    expect((afterUninstall?.config as Record<string, unknown> | null)?.agentAccessConfigured).toBe(true);
+    expect(await decideFor(agentA.id)).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_connection_not_installed",
+    });
+    const effectiveAfterUninstall = await accessSvc.getEffectiveProfilesForAgent(company.id, agentA.id);
+    expect(effectiveAfterUninstall.allowedTools).toEqual([]);
+    expect(effectiveAfterUninstall.profiles.every((profile) => profile.summary.allowedToolCount === 0)).toBe(true);
+
+    // Re-installing for Agent A restores access, and clearing via finish denies everyone.
+    await accessSvc.putConnectionInstalls(connection!.id, { installs: [{ targetType: "agent", targetId: agentA.id }] });
+    expect(await decideFor(agentA.id)).toMatchObject({
+      allowed: true,
+      decision: "allow",
+      reasonCode: "allow_profile",
+    });
+    await accessSvc.finishGalleryAppConnection(company.id, connection!.id, {
+      enabledCatalogEntryIds: [catalogEntry!.id],
+      askFirstCatalogEntryIds: [],
+      access: { agentIds: [] },
+    });
+    expect(await decideFor(agentA.id)).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_connection_not_installed",
+    });
+
+    // Company-wide install allows existing and newly created agents.
+    await accessSvc.finishGalleryAppConnection(company.id, connection!.id, {
+      enabledCatalogEntryIds: [catalogEntry!.id],
+      askFirstCatalogEntryIds: [],
+      access: "all_agents",
+    });
+    for (const agent of [agentA, agentB, agentC]) {
+      expect(await decideFor(agent.id)).toMatchObject({
+        allowed: true,
+        decision: "allow",
+        reasonCode: "allow_profile",
+      });
+    }
+  });
+
+  it("aligns policy/test route, live gateway execution, and Effective Access for agent-installed connections and newly created agents", async () => {
+    const company = await createCompany(db);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: "board-user",
+      status: "active",
+      membershipRole: "admin",
+    });
+    const agentA = await createAgent(db, company.id);
+    const agentB = await createAgent(db, company.id);
+    await grantStandardAgentDefaults(company.id, agentA.id);
+    await grantStandardAgentDefaults(company.id, agentB.id);
+
+    // Give Agent B a general allow-by-default profile to ensure Effective Access
+    // still respects connection installation boundaries and agrees with policy/test.
+    const [generalProfile] = await db.insert(toolProfiles).values({
+      companyId: company.id,
+      profileKey: `general-allow-${randomUUID()}`,
+      name: "General Allow",
+      status: "active",
+      defaultAction: "allow",
+    }).returning();
+    await db.insert(toolProfileBindings).values({
+      companyId: company.id,
+      profileId: generalProfile!.id,
+      targetType: "agent",
+      targetId: agentB.id,
+      priority: 100,
+    });
+
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `mailbox-${randomUUID()}`,
+      name: "Mailbox MCP",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: "Agent A Mailbox",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      credentialPolicy: "shared",
+      config: { url: "https://8.8.8.8/mcp" },
+    }).returning();
+    await db.insert(connectionGrants).values({
+      companyId: company.id,
+      connectionId: connection!.id,
+      kind: "organization",
+      status: "active",
+      isDefault: true,
+    });
+    const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      connectionId: connection!.id,
+      name: "list_messages",
+      toolName: "list_messages",
+      riskLevel: "read",
+      status: "active",
+      versionHash: randomUUID(),
+      schemaHash: randomUUID(),
+    }).returning();
+
+    const accessSvc = toolAccessService(db);
+    await accessSvc.finishGalleryAppConnection(company.id, connection!.id, {
+      enabledCatalogEntryIds: [catalogEntry!.id],
+      askFirstCatalogEntryIds: [],
+      access: { agentIds: [agentA.id] },
+    });
+
+    const remoteCalls: string[] = [];
+    const gateway = createToolGatewayService(db, {
+      toolActionSigningSecret: "conn-install-e2e-secret",
+      remoteHttpRequest: async (_url, init) => {
+        const body = JSON.parse(String(init.body));
+        if (body.method === "tools/call") remoteCalls.push(body.params.name);
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: body.method === "initialize"
+              ? { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "mailbox", version: "1" } }
+              : { content: [{ type: "text", text: "secret-mail" }] },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      },
+    });
+
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = {
+        type: "board",
+        userId: "board-user",
+        userName: "Board User",
+        userEmail: null,
+        isInstanceAdmin: true,
+        source: "local_implicit",
+      };
+      next();
+    });
+    app.use("/api", toolAccessRoutes(db, { toolGateway: gateway }));
+    app.use(errorHandler);
+
+    const agentC = await createAgent(db, company.id);
+    await grantStandardAgentDefaults(company.id, agentC.id);
+
+    const policyTest = (agentId: string) =>
+      request(app)
+        .post(`/api/companies/${company.id}/tools/policy/test`)
+        .send({
+          companyId: company.id,
+          actor: { actorType: "agent", actorId: agentId, agentId },
+          request: { connectionId: connection!.id, catalogEntryId: catalogEntry!.id, toolName: "list_messages", arguments: {} },
+        });
+    const effectiveAccess = (agentId: string) =>
+      request(app).get(`/api/companies/${company.id}/tools/profiles/effective/agents/${agentId}`);
+
+    // 1. POST /companies/:companyId/tools/policy/test
+    const testA = await policyTest(agentA.id).expect(200);
+    expect(testA.body.decision).toMatchObject({ allowed: true, decision: "allow", reasonCode: "allow_profile" });
+    const testB = await policyTest(agentB.id).expect(200);
+    expect(testB.body.decision).toMatchObject({ allowed: false, decision: "deny", reasonCode: "deny_connection_not_installed" });
+    const testC = await policyTest(agentC.id).expect(200);
+    expect(testC.body.decision).toMatchObject({ allowed: false, decision: "deny", reasonCode: "deny_connection_not_installed" });
+
+    // 2. Effective Access view agrees with policy/test for all three agents
+    const effA = await effectiveAccess(agentA.id).expect(200);
+    expect(effA.body.allowedTools.map((t: { id: string }) => t.id)).toContain(catalogEntry!.id);
+    const effB = await effectiveAccess(agentB.id).expect(200);
+    expect(effB.body.allowedTools.map((t: { id: string }) => t.id)).not.toContain(catalogEntry!.id);
+    expect(effB.body.profiles[0].summary.allowedToolCount).toBe(0);
+    const effC = await effectiveAccess(agentC.id).expect(200);
+    expect(effC.body.allowedTools.map((t: { id: string }) => t.id)).not.toContain(catalogEntry!.id);
+
+    // 3. Live gateway listing + tool execution
+    const runA = await createRun(db, company.id, agentA.id);
+    const runB = await createRun(db, company.id, agentB.id);
+    const runC = await createRun(db, company.id, agentC.id);
+    const sessionA = await gateway.createSession({ companyId: company.id, agentId: agentA.id, runId: runA.id });
+    const sessionB = await gateway.createSession({ companyId: company.id, agentId: agentB.id, runId: runB.id });
+    const sessionC = await gateway.createSession({ companyId: company.id, agentId: agentC.id, runId: runC.id });
+
+    const toolA = (await gateway.listToolsForSession(sessionA.token)).find((t) => t.connectionId === connection!.id);
+    expect(toolA).toBeDefined();
+    expect((await gateway.listToolsForSession(sessionB.token)).filter((t) => t.connectionId === connection!.id)).toEqual([]);
+    expect((await gateway.listToolsForSession(sessionC.token)).filter((t) => t.connectionId === connection!.id)).toEqual([]);
+
+    const execA = await gateway.executeTool({ sessionToken: sessionA.token, tool: toolA!.name, parameters: {} });
+    expect(execA.status).toBe("completed");
+    expect(remoteCalls).toEqual(["list_messages"]);
+
+    await expect(gateway.executeTool({ sessionToken: sessionB.token, tool: toolA!.name, parameters: {} }))
+      .rejects.toMatchObject({ reasonCode: "deny_connection_not_installed" });
+    await expect(gateway.executeTool({ sessionToken: sessionC.token, tool: toolA!.name, parameters: {} }))
+      .rejects.toMatchObject({ reasonCode: "deny_connection_not_installed" });
+    expect(remoteCalls).toEqual(["list_messages"]);
+  });
+
+  it("does not widen agent-scoped connection installs when catalog default access rebuilds the app profile on reconnect", async () => {
+    const company = await createCompany(db);
+    const agentA = await createAgent(db, company.id);
+    const agentB = await createAgent(db, company.id);
+    await grantStandardAgentDefaults(company.id, agentA.id);
+    await grantStandardAgentDefaults(company.id, agentB.id);
+
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `reconnect-${randomUUID()}`,
+      name: "Reconnect MCP",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: "Reconnect Connection",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      config: { url: "https://8.8.8.8/mcp" },
+    }).returning();
+    const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      connectionId: connection!.id,
+      name: "read_record",
+      toolName: "read_record",
+      riskLevel: "read",
+      status: "active",
+      versionHash: randomUUID(),
+      schemaHash: randomUUID(),
+    }).returning();
+
+    const accessSvc = toolAccessService(db, {
+      remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }],
+      remoteHttpRequest: async (_url, init) => {
+        const body = JSON.parse(String(init.body));
+        if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+        return Response.json({
+          jsonrpc: "2.0",
+          id: body.id,
+          result: body.method === "initialize"
+            ? { protocolVersion: "2025-03-26", capabilities: {}, serverInfo: { name: "reconnect", version: "1" } }
+            : { tools: [{ name: "read_record", description: "Read", inputSchema: { type: "object" } }] },
+        });
+      },
+    });
+    await accessSvc.finishGalleryAppConnection(company.id, connection!.id, {
+      enabledCatalogEntryIds: [catalogEntry!.id],
+      askFirstCatalogEntryIds: [],
+      access: { agentIds: [agentA.id] },
+    });
+
+    // Archive the app profile to simulate a retained/revived profile rebuild during reconnect refresh.
+    await db
+      .update(toolProfiles)
+      .set({ status: "archived" })
+      .where(eq(toolProfiles.profileKey, `app:${connection!.id}`));
+
+    await accessSvc.refreshCatalog(connection!.id, undefined, { enableAllByDefault: true, restoreDraftDefaults: true });
+
+    const [rebuiltProfile] = await db
+      .select()
+      .from(toolProfiles)
+      .where(eq(toolProfiles.profileKey, `app:${connection!.id}`));
+    const rebuiltBindings = await db
+      .select()
+      .from(toolProfileBindings)
+      .where(eq(toolProfileBindings.profileId, rebuiltProfile!.id));
+    expect(rebuiltBindings.map((b) => ({ targetType: b.targetType, targetId: b.targetId }))).toEqual([
+      { targetType: "agent", targetId: agentA.id },
+    ]);
+
+    const policySvc = toolAccessPolicyService(db);
+    expect(await policySvc.decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agentA.id, agentId: agentA.id },
+      request: { connectionId: connection!.id, catalogEntryId: catalogEntry!.id, toolName: "read_record" },
+    })).toMatchObject({ allowed: true, decision: "allow" });
+    expect(await policySvc.decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agentB.id, agentId: agentB.id },
+      request: { connectionId: connection!.id, catalogEntryId: catalogEntry!.id, toolName: "read_record" },
+    })).toMatchObject({ allowed: false, decision: "deny", reasonCode: "deny_connection_not_installed" });
+  });
+
+  it("denies generic require_approval for uninstalled or removed agents while preserving explicit allow policies and tool-targeted grants", async () => {
+    const company = await createCompany(db);
+    const agentA = await createAgent(db, company.id);
+    const agentB = await createAgent(db, company.id);
+    await grantStandardAgentDefaults(company.id, agentA.id);
+    await grantStandardAgentDefaults(company.id, agentB.id);
+
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `approval-precedence-${randomUUID().slice(0, 8)}`,
+      name: "Approval Precedence App",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      name: "Approval Precedence Connection",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      healthStatus: "ok",
+      config: { url: "https://8.8.8.8/mcp" },
+    }).returning();
+    const [catalogEntry] = await db.insert(toolCatalogEntries).values({
+      companyId: company.id,
+      applicationId: application!.id,
+      connectionId: connection!.id,
+      name: "read_record",
+      toolName: "read_record",
+      riskLevel: "read",
+      status: "active",
+      versionHash: randomUUID(),
+      schemaHash: randomUUID(),
+    }).returning();
+
+    const accessSvc = toolAccessService(db);
+    await accessSvc.finishGalleryAppConnection(company.id, connection!.id, {
+      enabledCatalogEntryIds: [catalogEntry!.id],
+      askFirstCatalogEntryIds: [],
+      access: { agentIds: [agentA.id] },
+    });
+
+    const [approvalPolicy] = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Require approval on reads",
+      policyType: "require_approval",
+      priority: 10,
+      selectors: { connectionId: connection!.id },
+      config: {},
+      enabled: true,
+    }).returning();
+
+    const policySvc = toolAccessPolicyService(db);
+    const decideFor = (agentId: string) => policySvc.decide({
+      companyId: company.id,
+      actor: { actorType: "agent", actorId: agentId, agentId },
+      request: { connectionId: connection!.id, catalogEntryId: catalogEntry!.id, toolName: "read_record" },
+    });
+
+    // Installed Agent A hits require_approval; uninstalled Agent B is denied outright.
+    expect(await decideFor(agentA.id)).toMatchObject({
+      allowed: false,
+      decision: "require_approval",
+      reasonCode: "requires_approval_policy",
+    });
+    expect(await decideFor(agentB.id)).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_connection_not_installed",
+    });
+
+    // Removing Agent A's final install immediately denies instead of returning
+    // require_approval, so a previously pending approval cannot execute.
+    await accessSvc.putConnectionInstalls(connection!.id, { installs: [] });
+    expect(await decideFor(agentA.id)).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_connection_not_installed",
+    });
+
+    // A lower-priority allow policy must not bypass a higher-priority require_approval
+    // on an uninstalled agent.
+    await accessSvc.putConnectionInstalls(connection!.id, { installs: [{ targetType: "agent", targetId: agentA.id }] });
+    const [allowPolicy] = await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Explicit allow for Agent B",
+      policyType: "allow",
+      priority: 20,
+      selectors: { connectionId: connection!.id, agentId: agentB.id },
+      config: {},
+      enabled: true,
+    }).returning();
+    expect(await decideFor(agentB.id)).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_connection_not_installed",
+    });
+
+    // Without the higher-priority require_approval policy, an explicit operator
+    // allow policy or tool-targeted tools:use grant authorizes Agent B.
+    await db.delete(toolPolicies).where(eq(toolPolicies.id, approvalPolicy!.id));
+    expect(await decideFor(agentB.id)).toMatchObject({
+      allowed: true,
+      decision: "allow",
+      reasonCode: "allow_policy",
+    });
+
+    await db.delete(toolPolicies).where(eq(toolPolicies.id, allowPolicy!.id));
+    await db
+      .update(principalPermissionGrants)
+      .set({ scope: { connectionId: connection!.id } })
+      .where(and(
+        eq(principalPermissionGrants.companyId, company.id),
+        eq(principalPermissionGrants.principalId, agentB.id),
+        eq(principalPermissionGrants.permissionKey, "tools:use"),
+      ));
+    expect(await decideFor(agentB.id)).toMatchObject({
+      allowed: true,
+      decision: "allow",
+      reasonCode: "allow_explicit_grant",
+    });
+
+    await db
+      .update(principalPermissionGrants)
+      .set({ scope: { allow: ["tool:read_record"] } })
+      .where(and(
+        eq(principalPermissionGrants.companyId, company.id),
+        eq(principalPermissionGrants.principalId, agentB.id),
+        eq(principalPermissionGrants.permissionKey, "tools:use"),
+      ));
+    expect(await decideFor(agentB.id)).toMatchObject({
+      allowed: true,
+      decision: "allow",
+      reasonCode: "allow_explicit_grant",
+    });
+
+    // Reverting Agent B to default unscoped tools:use restores denial.
+    await db
+      .update(principalPermissionGrants)
+      .set({ scope: null })
+      .where(and(
+        eq(principalPermissionGrants.companyId, company.id),
+        eq(principalPermissionGrants.principalId, agentB.id),
+        eq(principalPermissionGrants.permissionKey, "tools:use"),
+      ));
+    expect(await decideFor(agentB.id)).toMatchObject({
+      allowed: false,
+      decision: "deny",
+      reasonCode: "deny_connection_not_installed",
+    });
   });
 });

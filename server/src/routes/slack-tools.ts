@@ -157,6 +157,7 @@ export function slackToolRoutes(db: Db, publicBaseUrl?: string) {
             issueId,
             runId: req.actor.runId,
             agentId: req.actor.agentId,
+            endpointId: call.endpointId,
           },
           call.tool,
           call.arguments,

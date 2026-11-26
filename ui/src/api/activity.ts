@@ -7,6 +7,8 @@ export interface RunForIssue {
   runId: string;
   execution?: ExecutionProjection | null;
   runtimeMode?: "legacy" | "native";
+  wakeupRequestId?: string | null;
+  queuedCommentSourceWakeIds?: string[] | null;
   status: string;
   agentId: string;
   adapterType: string;
@@ -16,6 +18,10 @@ export interface RunForIssue {
   invocationSource: string;
   responsibleUserId?: string | null;
   errorCode?: string | null;
+  /** Bounded model rejection or the fixed credential-sharing denial message. */
+  error?: string | null;
+  /** Bounded code naming why a generic failure (such as `adapter_failed`) failed, e.g. `40001`. */
+  failureCause?: string | null;
   usageJson: Record<string, unknown> | null;
   resultJson: Record<string, unknown> | null;
   logBytes?: number | null;
@@ -24,12 +30,16 @@ export interface RunForIssue {
   scheduledRetryAttempt?: number;
   scheduledRetryReason?: string | null;
   retryExhaustedReason?: string | null;
+  /** Who started a retry run: a named person who pressed Retry, or automatic recovery. */
+  retriedBy?: { kind: "person"; personName: string; summary: string } | { kind: "automatic"; summary: string } | null;
   livenessState?: RunLivenessState | null;
   livenessReason?: string | null;
   continuationAttempt?: number;
   lastUsefulActionAt?: string | null;
   nextAction?: string | null;
   wakeCommentIds?: string[] | null;
+  /** Queued messages this run's first provider turn took while it was starting. */
+  firstTurnCommentIds?: string[] | null;
   wakeCommentId?: string | null;
   contextCommentId?: string | null;
   contextIssueId?: string | null;
@@ -76,7 +86,23 @@ export const activityApi = {
     const qs = params.toString();
     return api.get<ActivityEvent[]>(`/companies/${companyId}/activity${qs ? `?${qs}` : ""}`, options);
   },
+  recentForIssue: (issueId: string) => api.get<ActivityEvent[]>(`/issues/${issueId}/activity?view=recent`),
+  inputFactsForIssue: async (issueId: string, commentIds: string[]) => {
+    const batches: Promise<ActivityEvent[]>[] = [];
+    for (let start = 0; start < commentIds.length; start += 100) {
+      const params = new URLSearchParams({ view: "comment-inputs", commentIds: commentIds.slice(start, start + 100).join(",") });
+      batches.push(api.get<ActivityEvent[]>(`/issues/${issueId}/activity?${params}`));
+    }
+    return (await Promise.all(batches)).flat();
+  },
   forIssue: (issueId: string) => api.get<ActivityEvent[]>(`/issues/${issueId}/activity`),
+  recentRunsForIssue: (issueId: string) => api.get<RunForIssue[]>(`/issues/${issueId}/runs?view=recent`),
   runsForIssue: (issueId: string) => api.get<RunForIssue[]>(`/issues/${issueId}/runs`),
+  runsByIdsForIssue: (issueId: string, runIds: string[]) => {
+    const ids = [...new Set(runIds)];
+    return Promise.all(Array.from({ length: Math.ceil(ids.length / 100) }, (_, index) =>
+      api.get<RunForIssue[]>(`/issues/${issueId}/runs?runIds=${ids.slice(index * 100, (index + 1) * 100).join(",")}`),
+    )).then(pages => pages.flat());
+  },
   issuesForRun: (runId: string) => api.get<IssueForRun[]>(`/heartbeat-runs/${runId}/issues`),
 };

@@ -46,4 +46,22 @@ describe("native SSH deliverable output budget", () => {
     const result = await createRunner().execute({ command: "node", args: ["unused"], timeoutMs: 10_000 });
     expect(result.exitCode).not.toBe(0);
   });
+
+  it.each([0, 23])("rejects a large upload after an early SSH exit with code %i", async (exitCode) => {
+    await writeFile(join(root, "ssh"), `#!${process.execPath}\nprocess.exit(${exitCode});\n`);
+    const result = await createRunner().execute({
+      command: "node", args: ["unused"], timeoutMs: 5000,
+      stdin: "A".repeat(4 * Math.ceil(MAX_REMOTE_DELIVERABLE_BYTES / 3)),
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.timedOut).toBe(false);
+  });
+
+  it("still delivers every byte when SSH consumes the upload", async () => {
+    await writeFile(join(root, "ssh"), `#!${process.execPath}\nconst chunks = [];\nprocess.stdin.on('data', chunk => chunks.push(chunk));\nprocess.stdin.on('end', () => { const wire = Buffer.concat(chunks); const end = wire.indexOf(10); if (end < 0) process.exit(1); process.stdout.write(require('node:crypto').createHash('sha256').update(wire.subarray(end + 1)).digest('hex')); });\n`);
+    const stdin = "synthetic upload bytes\0".repeat(32_768);
+    const result = await createRunner().execute({ command: "node", args: ["unused"], stdin, timeoutMs: 5000 });
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(createHash("sha256").update(stdin).digest("hex"));
+  });
 });

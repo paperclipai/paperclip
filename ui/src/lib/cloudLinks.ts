@@ -25,22 +25,42 @@ export function cloudAppUrl(cloudBaseUrl: string | null | undefined, path: strin
   }
 }
 
-/**
- * Entry-code handoff for another stack: cloud authenticates the user for that
- * stack and wakes it if it is asleep before redirecting to its tenant host.
- */
-export function cloudStackEnterUrl(
+/** Cloud's own create-a-stack flow, which replaces the in-app company wizard. */
+export function cloudStackCreateUrl(cloudBaseUrl: string | null | undefined): string | null {
+  return cloudAppUrl(cloudBaseUrl, "/stacks/new");
+}
+
+/** Keep auth return targets inside the tenant, and never return to the login form. */
+export function tenantSignInReturnPath(path: string): string {
+  if (!path.startsWith("/") || path.startsWith("//") || /[\\\x00-\x20]/.test(path)) return "/";
+  const url = new URL(path, "https://tenant.invalid");
+  if (url.pathname.replace(/\/+$/, "") === "/auth") return "/";
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+/** Cloud renews a tenant session here, or starts its own sign-in flow. */
+export function cloudStackEntryUrl(
+  cloudBaseUrl: string | null | undefined,
+  stackSlug: string | null | undefined,
+  returnTo: string,
+): string | null {
+  const slug = stackSlug?.trim();
+  if (!slug) return null;
+  const entry = cloudAppUrl(cloudBaseUrl, `/v1/stacks/${encodeURIComponent(slug)}/entry-redirect`);
+  if (!entry) return null;
+  const url = new URL(entry);
+  url.searchParams.set("returnTo", tenantSignInReturnPath(returnTo));
+  return url.toString();
+}
+
+/** Cloud manages human invitations in the current stack's People settings. */
+export function cloudStackInviteUrl(
   cloudBaseUrl: string | null | undefined,
   stackSlug: string | null | undefined,
 ): string | null {
   const slug = stackSlug?.trim();
   if (!slug) return null;
-  return cloudAppUrl(cloudBaseUrl, `/stacks/${encodeURIComponent(slug)}/enter`);
-}
-
-/** Cloud's own create-a-stack flow, which replaces the in-app company wizard. */
-export function cloudStackCreateUrl(cloudBaseUrl: string | null | undefined): string | null {
-  return cloudAppUrl(cloudBaseUrl, "/stacks/new");
+  return cloudAppUrl(cloudBaseUrl, `/workspaces/${encodeURIComponent(slug)}/settings?section=people`);
 }
 
 /**
