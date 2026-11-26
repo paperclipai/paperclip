@@ -6556,6 +6556,7 @@ async function migrateRunnerdStateRootForExecution(input: {
   runnerExecutionTarget?: AdapterExecutionTarget | null;
   bootstrapRetryLeaseOwner?: string;
   pluginCheckpointUnavailableConfirmed?: boolean;
+  onPluginCheckpointRetired?: () => void;
 }): Promise<VerifiedWarmTransitionBinding | undefined> {
   const scoped = scopedRunnerdStateRoot(input.execution);
   await restoreWarmRunnerdController(input);
@@ -6728,7 +6729,10 @@ async function migrateRunnerdStateRootForExecution(input: {
       if (verification === "terminal_state_indeterminate" && !input.retainedWarmOwnerRunId
         && (!input.restartRecovery || input.restartRecovery.kind === "bootstrap_incomplete")) {
         const retirement = await retireFinishedPerTurnRunnerdOwner({ ...input, root: scoped, identity, pluginCheckpointUnavailableConfirmed });
-        if (retirement.retired) return;
+        if (retirement.retired) {
+          if (pluginCheckpointUnavailableConfirmed) input.onPluginCheckpointRetired?.();
+          return;
+        }
         if (retirement.refused !== "lifecycle_not_per_turn") retirementRefusal = `; retirement_refused=${retirement.refused}`;
       }
       if (
@@ -8973,6 +8977,15 @@ function loadWarmNativeCheckpoint(
     persistWarmNativeCheckpoint(execution, configDigest, resumed);
   }
   return resumed;
+}
+
+function allowReplacementAfterConfirmedStateLoss(
+  checkpoint: PersistedNativeSession,
+  execution: NativeExecutionInput,
+): PersistedNativeSession {
+  if (antigravityForcesSameSessionRecovery(execution.provider)) return checkpoint;
+  if (checkpoint.goal != null && checkpoint.goal.status !== "complete") return checkpoint;
+  return { ...checkpoint, providerRecoveryPolicy: "allow_replacement_after_resume_failure" };
 }
 
 async function releaseWarmNativeSession(
@@ -11276,6 +11289,7 @@ async function executePaperclipNativeSessionAttempt(
     } else releasedWarmSource(input, cachedReleasedOwner.pluginTaskId ?? null);
   }
   let pluginCheckpointUnavailableConfirmed = false;
+  let pluginCheckpointRetired = false;
   if (input.useRunnerd && canRecoverWarmOwner && !input.backend &&
       input.runnerExecutionTarget?.kind === "remote" &&
       input.execution.session.lifecyclePolicy.mode === "warm" &&
@@ -11351,6 +11365,7 @@ async function executePaperclipNativeSessionAttempt(
       runnerExecutionTarget: input.runnerExecutionTarget,
       bootstrapRetryLeaseOwner: input.leaseOwner,
       pluginCheckpointUnavailableConfirmed,
+      onPluginCheckpointRetired: () => { pluginCheckpointRetired = true; },
     }));
   }
   const durableRunnerBinding = input.useRunnerd
@@ -12910,7 +12925,9 @@ async function executePaperclipNativeSessionAttempt(
               });
             },
             existingSession: existingWarmSession,
-            persistedSession: persistedWarmSession,
+            persistedSession: pluginCheckpointRetired && persistedWarmSession
+              ? allowReplacementAfterConfirmedStateLoss(persistedWarmSession, input.execution)
+              : persistedWarmSession,
             keepSessionOpen: warmSessionId !== null,
             sessionGoalControl: input.sessionGoalControl,
             resumeSessionGoalHeartbeat: input.resumeSessionGoalHeartbeat,
