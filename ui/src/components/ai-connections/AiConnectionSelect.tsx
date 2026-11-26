@@ -89,6 +89,9 @@ export function AiConnectionSelect({
   );
   const incompatible =
     selected && !compatible.some((c) => c.id === selected.id);
+  const isDisabled = (connection: (typeof connections)[number]) =>
+    Boolean(aiConnectionProblem(connection)) &&
+    (!explicitAccount || Boolean(connection.unavailableReason) || connection.status === "revoked");
   const change = (id: string) => {
     if (id === "connect") return onConnect();
     if (id === "harness_auth") return onUseHarnessAuth?.();
@@ -99,7 +102,7 @@ export function AiConnectionSelect({
         mode: "responsible_user",
       });
     const connection = compatible.find((c) => c.id === id);
-    if (!connection || aiConnectionProblem(connection)) return;
+    if (!connection || isDisabled(connection)) return;
     onChange({
       provider: connection.provider,
       method: connection.method,
@@ -146,7 +149,7 @@ export function AiConnectionSelect({
             <SelectItem
               key={c.id}
               value={c.id}
-              disabled={Boolean(aiConnectionProblem(c)) && (!explicitAccount || Boolean(c.unavailableReason) || c.status === "revoked")}
+              disabled={isDisabled(c)}
             >
               <ConnectionLabel connection={c} label={`${aiConnectionDisplayLabel(c)}${c.status !== "connected" ? " · Reconnect" : ""}`} wrap />
             </SelectItem>

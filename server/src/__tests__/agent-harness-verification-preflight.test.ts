@@ -211,7 +211,7 @@ describePostgres("saved harness account preflight", () => {
 
   it.each([["local", "paperclip"], ["ssh", "paperclip"], ["local", "legacy"]] as const)(
     "selects the supported lifecycle pool member before probing the inherited %s environment with %s profiles", async (driver, runner) => {
-      vi.spyOn(localRunnerPlatform, "localAgentRunnerTarget").mockReturnValue({ driver: "local", platform: "win32", architecture: "x64" });
+      vi.spyOn(localRunnerPlatform, "localAgentRunnerTarget").mockReturnValue({ driver: "local", platform: runner === "legacy" ? "linux" : "win32", architecture: "x64" });
       const envs = environmentService(db);
       const environment = driver === "local" ? await envs.ensureLocalEnvironment(agent.companyId)
         : await envs.create(agent.companyId, { name: randomUUID(), driver: "ssh", status: "active", envVars: {}, config: { host: "verification-fixture.invalid", username: "fixture" } });
@@ -238,21 +238,21 @@ describePostgres("saved harness account preflight", () => {
         ],
       } }, userId);
       [agent] = await db.update(agents).set({ adapterType: "paperclip_runner", adapterConfig: {
-        ...(runner === "legacy" ? { provider: "acpx", acpxAgent: "claude" } : { provider: "codex" }),
+        ...(runner === "legacy" ? { provider: "codex" } : { provider: "acpx", acpxAgent: "claude" }),
         cwd: home, instructionsFilePath: "/fixture/AGENTS.md", env: { FIXTURE_AUTHORITY: "retained" },
       }, defaultEnvironmentId: null, runtimeConfig: { harnessPool: { poolId: pool.id } },
         lifecycleOperation: { id: randomUUID(), hostComplete: false, completedPluginIds: [], attempts: 0 },
       }).where(eq(agents.id, agent.id)).returning();
       try {
         await expect(verify()).resolves.toBe("complete");
-        const nativeWindows = driver === "local" && runner === "paperclip";
-        const expectedAdapter = runner === "legacy" ? "claude_local" : "paperclip_runner";
+        const expectsCodex = driver === "local";
+        const expectedAdapter = runner === "legacy" ? "codex_local" : "paperclip_runner";
         expect(probe).toHaveBeenCalledOnce();
         expect(probe.mock.calls[0][0]).toBe(expectedAdapter);
         expect(probe.mock.calls[0][1].config).toMatchObject({
-          provider: nativeWindows ? "codex" : "acpx", model: nativeWindows ? "gpt-6.1-sol" : "claude-sonnet-5",
+          provider: expectsCodex ? "codex" : "acpx", model: expectsCodex ? "gpt-6.1-sol" : "claude-sonnet-5",
           cwd: home, instructionsFilePath: "/fixture/AGENTS.md", env: { FIXTURE_AUTHORITY: "retained",
-            [nativeWindows ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY"]: nativeWindows ? "fixture-codex-key" : "fixture-claude-key" },
+            [expectsCodex ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY"]: expectsCodex ? "fixture-codex-key" : "fixture-claude-key" },
           ...(runner === "legacy" ? { engine: "cli", timeoutSec: 42 } : { lifecycleMode: "per_turn" }),
         });
         expect(allocate).toHaveBeenCalledWith(expect.objectContaining({ environmentId: environment.id, adapterType: expectedAdapter }));

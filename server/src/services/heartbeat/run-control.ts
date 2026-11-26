@@ -198,6 +198,7 @@ export interface HeartbeatRunControlDependencies extends Pick<ReturnType<typeof 
   Pick<ReturnType<typeof createHeartbeatLifecycle>,
     "mergeRunStopMetadataForAgent" | "setRunStatusFromLive" | "setRunStatus" | "setWakeupStatus" | "appendRunEvent">,
   Pick<HeartbeatRetryDependencies, "finalizeAgentStatus"> {
+  cancelNativeRun?: Parameters<typeof cancelHeartbeatNativeRun>[0]["cancel"];
   verifyStartupCleanup?: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>;
   options: {
     closeWarmNativeSessionsForRun?: (input: {
@@ -1639,6 +1640,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
                   runId: run.id,
                   reason,
                   runtimeMode: run.runtimeMode,
+                  cancel: dependencies.cancelNativeRun,
                   ...(options.cancellationRequestId ? { cancellationRequestId: options.cancellationRequestId } : {}),
                 });
               } catch (error) {

@@ -6,6 +6,7 @@ import { harnessPoolsApi } from "@/api/harness-pools";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { aiConnectionPoolsApi } from "@/api/ai-connection-pools";
 import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { Button } from "@/components/ui/button";
 import { ConfigSaveBar } from "@/components/ConfigSaveBar";
 import { Input } from "@/components/ui/input";
@@ -134,7 +135,7 @@ export function HarnessPoolSettings({ companyId }: { companyId: string }) {
     </>}
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
     <Dialog open={Boolean(pendingSelection)} onOpenChange={open => { if (!open) setPendingSelection(undefined); }}>
-      <DialogContent>
+      <DialogContent className={ANALYTICS_MASK_CLASS}>
         <DialogHeader>
           <DialogTitle>Discard unsaved pool changes?</DialogTitle>
           <DialogDescription>Your changes to this pool will be lost if you continue.</DialogDescription>
