@@ -29,9 +29,11 @@ export function productionStoryProfile(
 
 export const SLUGIFY_REQUIREMENTS = `Build a small dependency-free Python command-line tool in slugify.py. It accepts one positional string and prints its slug: trim whitespace, lowercase, replace each sequence outside ASCII a-z and 0-9 with one hyphen, then trim hyphens. Expose slugify(text) for reuse. Include a README and automated tests. Deliver the source and tests as a downloadable ZIP. Work in the project workspace.`;
 export const SLUGIFY_REVISION = `Add an optional --separator argument that accepts either - or _. Keep - as the default and preserve the earlier behavior. Deliver an updated ZIP, keeping the previous download available.`;
+export const SLUGIFY_DEPLOYMENT_SOAK = `Before editing, run a short command that prints the current workspace path. After implementing the revision, run a foreground reliability soak for a full 180 seconds: repeatedly invoke the CLI on varied inputs and check its output, sleeping briefly between iterations to avoid excessive CPU use. Wait for that command to finish; do not background it or shorten the duration. Include a small soak report with measured elapsed time and check count in the updated ZIP. Finish only after the soak and the regular tests pass.`;
 export const LATE_REQUIREMENT = `Also support --max-length as a positive integer. Truncate the final slug to that length, then remove any trailing separator. In particular, input "  Queue--Ready!!  " with --max-length 7 must print "queue-r". Preserve the default behavior.`;
 
 const definitions = [
+  ["agentmail-setup", "Request an AgentMail inbox in the thread", "I'd like you to acquire an email address with AgentMail and tell me the address once it exists. If I choose Not now, explain that no inbox was created and finish without connecting.", 2],
   ["provider-decline", "Decline external providers", "Connect HubSpot so you can read my recent contacts. If I choose None for now, explain that you could not retrieve the contacts and finish without connecting.", 2],
   ["provider-second", "Choose and reuse the second external provider", "Connect HubSpot and read my recent contacts. Report the contact names and verification code returned by the service.", 2],
   ["provider-native", "Prefer a built-in connection over external providers", "Connect Jira so you can read my recent issues. If I choose Not now, explain that you could not retrieve the issues and finish without connecting.", 2],
@@ -62,13 +64,13 @@ const definitions = [
   [
     "service-approve",
     "Use a connection after approval",
-    `Use the connected page service to find recent pages and create a short Markdown briefing document on this task. Include the titles and verification code returned by the service.`,
+    `Use the connected page service to find recent pages and create a short Markdown briefing document on this task. Put the returned page titles and service receipt code in the document. When complete, give me the document link.`,
     2,
   ],
   [
     "service-decline",
     "Respect a declined tool action",
-    `Use the connected page service to find recent pages and create a short Markdown briefing document on this task. Include the titles and verification code returned by the service. If I decline the action, do not try again or request another connection. Instead, give me a brief explanation that you could not retrieve the data. That explanation is the complete allowed fallback; no briefing is required after a decline.`,
+    `Use the connected page service to find recent pages and create a short Markdown briefing document on this task. Put the returned page titles and service receipt code in the document. When complete, give me the document link. If I decline the action, do not try again or request another connection. Instead, give me a brief explanation that you could not retrieve the data. That explanation is the complete allowed fallback; no briefing is required after a decline.`,
     2,
   ],
   [

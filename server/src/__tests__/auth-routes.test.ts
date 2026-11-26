@@ -51,7 +51,7 @@ function createApp(actor: Express.Request["actor"], row: Record<string, unknown>
   return app;
 }
 
-describe.sequential("auth routes", () => {
+describe("auth routes", () => {
   const baseUser = {
     id: "user-1",
     name: "Jane Example",
@@ -95,7 +95,60 @@ describe.sequential("auth routes", () => {
       user: baseUser,
       sentryDsn: null,
       sentryEnvironment: null,
+      browserTracing: null,
+      browserAnalytics: null,
     });
+  });
+
+  it("returns the authenticated actor's user id verbatim, the id browser analytics identifies with", async () => {
+    const actorId = "paperclip-id:uf2X8Ha4H9hNdAMnc1rOy91VIRos5pch";
+    const actor = { type: "board", userId: actorId, source: "cloud_tenant" } as Express.Request["actor"];
+    const res = await request(createApp(actor, { ...baseUser, id: actorId })).get("/api/auth/get-session");
+    expect(res.status).toBe(200);
+    // ProductAnalyticsGate calls identify(session.userId); server events use the actor id as distinct_id.
+    expect(res.body.session.userId).toBe(actorId);
+  });
+
+  it("sends browserAnalytics only on Cloud with a PostHog token and the browser switch", async () => {
+    const actor = { type: "board", userId: "user-1", source: "session" } as Express.Request["actor"];
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "tenant-token");
+    vi.stubEnv("PAPERCLIP_CLOUD_STACK_ID", "stack-1");
+    vi.stubEnv("PAPERCLIP_POSTHOG_PROJECT_TOKEN", "phc_test");
+    vi.stubEnv("PAPERCLIP_POSTHOG_BROWSER_ENABLED", undefined);
+
+    const off = await request(createApp(actor, baseUser)).get("/api/auth/get-session");
+    expect(off.status).toBe(200);
+    expect(off.body.browserAnalytics).toBeNull();
+
+    vi.stubEnv("PAPERCLIP_POSTHOG_BROWSER_ENABLED", "1");
+    vi.stubEnv("PAPERCLIP_POSTHOG_ENVIRONMENT", "staging");
+    const on = await request(createApp(actor, baseUser)).get("/api/auth/get-session");
+    expect(on.status).toBe(200);
+    expect(on.body.browserAnalytics).toEqual({
+      token: "phc_test",
+      apiHost: "/_ph",
+      uiHost: "https://us.posthog.com",
+      environment: "staging",
+      stackId: "stack-1",
+      replayEnabled: true,
+      consentRequired: null,
+      cloudTrialInferenceEnabled: false,
+    });
+
+    vi.stubEnv("PAPERCLIP_POSTHOG_COUNTRY_HEADER", "cf-ipcountry");
+    const eu = await request(createApp(actor, baseUser)).get("/api/auth/get-session").set("CF-IPCountry", "FR");
+    expect(eu.body.browserAnalytics.consentRequired).toBe(true);
+    const us = await request(createApp(actor, baseUser)).get("/api/auth/get-session").set("CF-IPCountry", "US");
+    expect(us.body.browserAnalytics.consentRequired).toBe(false);
+  });
+
+  it("preserves the session when optional navigation bootstrap cannot load", async () => {
+    const app = createApp({ type: "board", userId: "user-1", source: "session", companyIds: [] }, baseUser);
+    // This profile-only database cannot execute the bootstrap's company join.
+    const response = await request(app).get("/api/auth/get-session");
+    expect(response.status).toBe(200);
+    expect(response.body.user.id).toBe("user-1");
+    expect(response.body.boardBootstrap).toBeUndefined();
   });
 
   it("sends sentryDsn for a board actor when SENTRY_DSN is set", async () => {
@@ -113,23 +166,6 @@ describe.sequential("auth routes", () => {
 
     expect(res.status).toBe(200);
     expect(res.body.sentryDsn).toBe("https://public@o0.ingest.sentry.io/1");
-  });
-
-  it("sends a null sentryDsn when SENTRY_DSN is unset", async () => {
-    delete process.env.SENTRY_DSN;
-    const app = await createApp(
-      {
-        type: "board",
-        userId: "user-1",
-        source: "session",
-      },
-      baseUser,
-    );
-
-    const res = await request(app).get("/api/auth/get-session");
-
-    expect(res.status).toBe(200);
-    expect(res.body.sentryDsn).toBe(null);
   });
 
   it("sends sentryDsn for a board actor when only SENTRY_DSN_FRONTEND is set", async () => {

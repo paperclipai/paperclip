@@ -1,8 +1,12 @@
+import { isAcpxCanonicalInputMethod } from "../acpx/profile-extensions.js";
+import { resolveCompletionContinuation } from "../completion-continuation.js";
+import { isSemanticToolOutcomeUnknownError } from "../../contracts/native-session-backend.js";
 import type { HarnessRuntimeRequest, PaperclipQuestionSet } from "../../contracts/harness-driver.js";
 import {
   CODEX_BLOCK_TOOL_NAME,
 } from "../../contracts/codex.js";
 import { validatePrpStructuredRunResult } from "../../protocol/replay-contract.js";
+import { prpSemanticResultConflictMessage } from "../../contracts/completion-result.js";
 import type { CodexRpcServerRequest } from "./app-server-transport.js";
 import {
   boundedCodexValue,
@@ -28,11 +32,12 @@ import { boundedText, dynamicToolResponse, record, text } from "./codex-driver-v
 export async function handleServerRequest(
   state: CodexSessionState,
     request: CodexRpcServerRequest,
+    options: { restored?: true } = {},
   ): Promise<Record<string, unknown>> {
     const sourceSequenceBefore = state.sourceSequence;
     let rejected = false;
     try {
-      const response = await handleServerRequestBody(state, request);
+      const response = await handleServerRequestBody(state, request, options.restored === true);
       rejected = response.success === false;
       return response;
     } catch (error) {
@@ -78,6 +83,7 @@ export async function handleServerRequest(
 async function handleServerRequestBody(
   state: CodexSessionState,
     request: CodexRpcServerRequest,
+    restored: boolean,
   ): Promise<Record<string, unknown>> {
     if (request.method === "item/tool/call") {
       // Provider requests and turn/start responses have independent delivery
@@ -146,6 +152,10 @@ async function handleServerRequestBody(
             );
             return dynamicToolResponse(result);
           } catch (error) {
+            // Preserve uncertain effects for the durable controller. A normal
+            // failed tool response would falsely settle this call and permit
+            // the provider to continue as if the write had not happened.
+            if (isSemanticToolOutcomeUnknownError(error)) throw error;
             const message = boundedText(
               error instanceof Error ? error.message : error,
             );
@@ -177,9 +187,19 @@ async function handleServerRequestBody(
           "Semantic result exceeded the retained payload limit.",
         );
       }
-      const validation = validatePrpStructuredRunResult(
-        request.params.arguments,
-      );
+      let completionInput: unknown;
+      try {
+        completionInput = await resolveCompletionContinuation(request.params.arguments, state.runId,
+          state.dynamicToolHandler ? () => state.dynamicToolHandler!({
+            tool: "get_task_context", callId: `${callId}:continuation`, threadId, turnId, arguments: {},
+          }) : undefined);
+      } catch (error) {
+        return rejectedToolCall(boundedText(error instanceof Error ? error.message : error));
+      }
+      if (state.terminal || state.activeTurnId !== turnId) {
+        return rejectedToolCall("The turn ended while resolving completion. The result was not accepted.");
+      }
+      const validation = validatePrpStructuredRunResult(completionInput);
       if (!validation.ok) {
         return {
           success: false,
@@ -189,7 +209,7 @@ async function handleServerRequestBody(
         };
       }
       if (
-        !toolAcceptsResult(tool, validation.result)
+        !toolAcceptsResult(tool, validation.result, completionInput !== request.params.arguments)
       ) {
         return {
           success: false,
@@ -199,7 +219,7 @@ async function handleServerRequestBody(
               text:
                 tool === CODEX_BLOCK_TOOL_NAME
                   ? "paperclip_block requires reportedWorkDisposition=blocked."
-                  : "paperclip_finish accepts done, needs_review, or yielded with a response_wake continuation.",
+                  : "paperclip_finish accepts done, needs_review, or yielded with a response, monitor, handoff, or server-resolved workspace continuation.",
             },
           ],
         };
@@ -216,9 +236,7 @@ async function handleServerRequestBody(
       }
       const admission = admitResult(state, validation.result, callId, turnId);
       if (admission === "conflict") {
-        return rejectedToolCall(
-          "A different semantic result was already committed.",
-        );
+        return rejectedToolCall(prpSemanticResultConflictMessage(state.result));
       }
       return {
         success: true,
@@ -228,7 +246,7 @@ async function handleServerRequestBody(
       };
     }
 
-    const requestKind = runtimeRequestKind(request.method);
+    const requestKind = runtimeRequestKind(request.method, request.params);
     if (requestKind === null) return safeRequestResponse(request.method);
     const requestTurnId = text(request.params.turnId);
     if (
@@ -292,7 +310,7 @@ async function handleServerRequestBody(
       prompt: runtimeRequestPrompt(requestKind, request.params),
       details: record(redactCodexValue(boundedCodexValue(request.params))),
       ...(input !== null ? { input } : {}),
-      origin: request.method === "elicitation/create" ? {
+      origin: isAcpxCanonicalInputMethod(request.method) || request.method === "session/request_permission" ? {
         adapter: "acpx-runtime-sidecar",
         provider: text(record(request.params.origin).provider, "acpx"),
         method: request.method,
@@ -302,7 +320,9 @@ async function handleServerRequestBody(
         method: request.method,
       },
     };
-    state.emit(
+    // Recovery rebinds an already durable callback. Its creation event is
+    // retained in the original run; emitting it again duplicates authority.
+    if (!restored) state.emit(
       "runtime_request.created",
       {
         request: runtimeRequestProtocolPayload(runtimeRequest),
