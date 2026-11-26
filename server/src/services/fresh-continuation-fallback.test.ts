@@ -15,6 +15,7 @@ import {
   continueFreshInTransaction, expediteFreshContinuationChecks, freshContinuationNote, heldExecutionsAwaitingFreshContinuation, runsAwaitingSystemContinuation, nextFreshContinuationCheckAt, recordFreshContinuationCheck, FRESH_CONTINUATION_PENDING_BOUND_MS, FRESH_CONTINUATION_PROGRESS_BOUND_MS, FRESH_CONTINUATION_SAVED_WORK_BOUND_MS,
 } from "./fresh-continuation-fallback.js";
 import { heartbeatService } from "./heartbeat.js";
+import { heldExecutionWhere, recentInterruptionSourceSql } from "./fresh-continuation-eligibility.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { currentProcessSpaceHash, observedProcessStartedAt } from "./controller-process-identity.js";
 import { executionControlSchedule } from "./execution-control-work.js";
@@ -1651,4 +1652,23 @@ suite("fresh-continuation fallback", () => {
     expect(decided).toMatchObject({ kind: "continued", isolation: "writer_ended", delivery: "recorded" });
     expect(await issue(f.issueId)).toMatchObject({ executionWorkspaceId: workspace!.id, workspaceBindingRevision: 1 });
   }, 60_000);
+
+  it("looks up each held record's source run by key instead of joining every failed run", async () => {
+    type PlanNode = { "Alias"?: string; "Parent Relationship"?: string; "Plans"?: PlanNode[] };
+    const sourceRunScans = (node: PlanNode, underSubPlan = false): boolean[] => {
+      const inSubPlan = underSubPlan || node["Parent Relationship"] === "SubPlan";
+      return [...(node["Alias"] === "source" ? [inSubPlan] : []),
+        ...(node["Plans"] ?? []).flatMap(child => sourceRunScans(child, inSubPlan))];
+    };
+    for (const where of [and(heldExecutionWhere(), sql`not ${recentInterruptionSourceSql(new Date())}`),
+      heldExecutionWhere({ includeActive: true })]) {
+      const query = db.select({ count: sql<number>`count(*)::int` }).from(issueRecoveryActions)
+        .innerJoin(issues, and(eq(issues.id, issueRecoveryActions.sourceIssueId), eq(issues.companyId, issueRecoveryActions.companyId)))
+        .where(where);
+      const [row] = await db.execute<{ "QUERY PLAN": [{ Plan: PlanNode }] }>(sql`explain (format json) ${query}`);
+      const scans = sourceRunScans(row["QUERY PLAN"][0].Plan);
+      expect(scans.length).toBeGreaterThan(0);
+      expect(scans.every(Boolean)).toBe(true);
+    }
+  });
 });
