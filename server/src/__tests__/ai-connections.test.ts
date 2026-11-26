@@ -891,7 +891,6 @@ describe("managed AI connections", () => {
   });
 
   it("requires sign-in after the receiver process dies with an exchanged but unsaved token", async () => {
-    // A unique owner keeps a retried attempt from colliding with the first attempt's membership.
     const owner = `quota-receiver-process-loss-${randomUUID()}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const original = JSON.stringify({ tokens: { access_token: "expired-process", refresh_token: "single-use-process" } });
@@ -925,7 +924,6 @@ describe("managed AI connections", () => {
     let ready = false, output = "";
     child.stdout!.setEncoding("utf8").on("data", (chunk: string) => { output += chunk; ready ||= output.includes("ready\n"); });
     try {
-      // tsx startup is not part of the lock-wait budget: wait for the child's imports first.
       const startup = Date.now() + 150_000;
       while (!ready && Date.now() < startup && child.exitCode === null) await new Promise(resolve => setTimeout(resolve, 25));
       expect(ready).toBe(true);

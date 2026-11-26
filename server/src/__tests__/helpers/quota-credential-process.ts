@@ -10,8 +10,6 @@ globalThis.fetch = (url, init) => {
   if (String(url) !== "https://auth.openai.com/oauth/token") throw new Error("Unexpected fixture network request");
   return request(provider, init);
 };
-// Module loading through tsx can take tens of seconds on a cold CI runner, so
-// tell the parent when imports are done; its lock-wait deadline starts here.
 process.stdout.write("ready\n");
 try {
   const service = aiConnectionService(db);
