@@ -1722,6 +1722,38 @@ describe("durable, authorized connection routing", () => {
     }
   }, 30_000);
 
+  it("rechecks parked pool verification when a pool credential rotates", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableAiConnectionRouters: true });
+    const account = await aiConnectionService(db).save(companyId, "alice", {
+      provider: "openai", method: "api_key", ownership: "personal", name: "Verification rotation fixture",
+      apiKey: "initial-fixture-key", agentIds: [], allAgents: true,
+    }, randomUUID());
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, account.grantId));
+    const credential = grant!.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")!;
+    const pool = await makePool({ members: [{
+      ...members[0]!, id: randomUUID(),
+      binding: { mode: "delegated", provider: "openai", method: "api_key", ...account },
+    }] });
+    const retryAt = new Date(Date.now() + 3_600_000).toISOString();
+    const [agent] = await db.insert(agents).values({
+      companyId, name: "Pool verification waiting for quota", adapterType: "paperclip_runner", status: "paused",
+      runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } },
+      lifecycleState: "verifying",
+      lifecycleOperation: { id: randomUUID(), hostComplete: false, attempts: 1, completedPluginIds: [], retryAt },
+    }).returning();
+
+    await secretService(db).rotate(credential.secretId, {
+      value: "refreshed-fixture-key", preserveAiSessionEpoch: true,
+    }, { userId: "alice" });
+    const [stillWaiting] = await db.select().from(agents).where(eq(agents.id, agent!.id));
+    expect(stillWaiting!.lifecycleOperation?.retryAt).toBe(retryAt);
+
+    await secretService(db).rotate(credential.secretId, { value: "replaced-fixture-key" }, { userId: "alice" });
+    const [reopened] = await db.select().from(agents).where(eq(agents.id, agent!.id));
+    expect(reopened).toMatchObject({ lifecycleState: "verifying", status: "paused" });
+    expect(reopened!.lifecycleOperation).not.toHaveProperty("retryAt");
+  });
+
   it("keeps session identity and fingerprints stable on authenticated refresh, but changes them on manual replacement", async () => {
     const input = { companyId, agentId, responsibleUserId: "alice", adapterType: "paperclip_runner", binding: members[0]!.binding, config: { provider: "codex", model: "gpt-5.6-sol" } };
     const first = await prepareManagedAiRuntime(db, input);

@@ -695,25 +695,5 @@ before shutdown. This lets PostgreSQL flush and retire its workers before a
 development preflight or restart releases the port. An ownership mismatch or
 failed shutdown is reported instead of forcing termination of a process tree.
 
-
-
-### Pool harness host admission
-
-`heartbeat/harness-pool-admission.ts` resolves a virtual Pool selection before
-claim, through the existing authorized router and the member's explicit runner
-and validated adapter settings. Native selections use the provider-profile
-builders; Legacy selections use the existing direct adapter.
-`effective-run-adapter.ts` reads the frozen concrete target; native execution
-receives its normal concrete driver input. `harness-pool-environment.ts`
-reads placement policy for scoped cooldown identity. Fresh environment admission
-checks that placement still matches; retained native recovery uses its admitted
-execution input. Pool management is the facade in `services/harness-pools.ts`.
-Company-scoped Pool runs use `heartbeat/company-pool-execution.ts` to project
-the unchanged agent policy into the selected member's direct adapter. This
-supports manual runs and unscoped timers without inventing a task or a native
-completion contract. The admitted dispatch records this path; persisted native
-task runs never enter it. Account grants, environment placement, cooldowns,
-budget checks, Stop and successor settlement retain their existing owners.
-It does not add another scheduler, provider transport, idle timer or state store.
 See [central harness pools](connections/AI-CONNECTION-ROUTERS.md#central-harness-pools)
-for operator setup, conversion and continuation limits.
+for pool setup and verification.

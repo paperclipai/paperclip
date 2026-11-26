@@ -1,4 +1,4 @@
-import { reopenNativeQuotaPoolWaits } from "./native-runtime/native-quota-wake.js";
+import { reopenAiPoolWaits } from "./ai-pool-wake.js";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -1017,7 +1017,7 @@ export function secretService(db: Db | DbTransaction) {
       .innerJoin(toolConnections, and(eq(toolConnections.id, connectionGrants.connectionId), eq(toolConnections.companyId, connectionGrants.companyId)))
       .where(and(eq(connectionGrants.companyId, companyId), eq(toolConnections.connectionPurpose, "ai"),
         sql`${connectionGrants.credentialSecretRefs} @> ${JSON.stringify([{ secretId }])}::jsonb`)).limit(1);
-    if (referenced) await reopenNativeQuotaPoolWaits(tx, { companyId, connectionId: referenced.id });
+    if (referenced) await reopenAiPoolWaits(tx, { companyId, connectionId: referenced.id });
   }
   const authorization = authorizationService(db);
 
