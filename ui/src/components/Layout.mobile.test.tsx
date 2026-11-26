@@ -202,7 +202,6 @@ describe("Layout mobile drawer & contextual navigation", () => {
     expect(container.querySelector('[data-testid="agent-contextual-mobile-nav"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="global-workspace-sidebar"]')).not.toBeNull();
 
-    // Drawer switcher lets the user toggle between Workspace and Agent sidebar
     const switcher = container.querySelector('[data-slot="mobile-drawer-switcher"]');
     expect(switcher).not.toBeNull();
     const buttons = Array.from(switcher!.querySelectorAll("button"));
@@ -218,7 +217,6 @@ describe("Layout mobile drawer & contextual navigation", () => {
     });
     expect(container.querySelector('[data-testid="global-workspace-sidebar"]')).not.toBeNull();
 
-    // MobileBottomNav is hidden while drawer is open and sits BEFORE backdrop/drawer in DOM order
     const bottomNav = container.querySelector('[data-testid="mobile-bottom-nav"]');
     const backdrop = container.querySelector('[data-slot="mobile-drawer-backdrop"]');
     const drawer = container.querySelector('[data-mobile-drawer="true"]');
@@ -235,10 +233,8 @@ describe("Layout mobile drawer & contextual navigation", () => {
     });
     renderAt("/PAP/custom-plugin");
 
-    // Defaults to plugin sidebar because there is no inline mobile nav bar for arbitrary plugin sidebars
     expect(container.querySelector('[data-testid="plugin-sidebar-slot"]')).not.toBeNull();
 
-    // Clicking Workspace switches immediately to global Workspace sidebar
     const workspaceBtn = Array.from(
       container.querySelectorAll('[data-slot="mobile-drawer-switcher"] button'),
     ).find((b) => b.textContent?.includes("Workspace")) as HTMLButtonElement;

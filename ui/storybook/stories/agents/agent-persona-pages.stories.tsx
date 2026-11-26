@@ -63,7 +63,7 @@ function installPageFixtures() {
     }
     if (path.endsWith("/budgets/overview")) return json({ companyId, policies: [], activeIncidents: [], pausedAgentCount: 0, pausedProjectCount: 0, pendingApprovalCount: 0 });
     if (path.includes("/heartbeat-runs/") && path.endsWith("/events")) return json([]);
-    // Reuse the preview's auth, company, adapter, ai-connection, secret, issue-list and environment fixtures.
+    // Reuse the preview's auth, company, adapter, issue-list and environment fixtures.
     if (path === "/api/companies" || path.startsWith("/api/auth/") || path.includes("/adapters") || path.includes("/environments") || path.includes("/ai-connections") || path.endsWith("/secrets") || path.endsWith("/user-secrets") || path.endsWith("/issues") || path.endsWith("/projects") || path.endsWith("/approvals") || path.endsWith("/sidebar-badges") || path.endsWith("/user-directory")) return previous(input, init);
     if (path.includes("/settings")) return json({});
     return json([]);

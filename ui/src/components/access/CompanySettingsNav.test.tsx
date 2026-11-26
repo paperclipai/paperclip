@@ -103,7 +103,7 @@ describe("CompanySettingsNav", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/company/export");
   });
 
-  it("resolves plugin settings routes to the matching plugin tab", () => {
+  it("resolves plugin settings routes to the matching plugin tab without built-in prefix collisions", () => {
     const slots = [
       {
         id: "billing-settings",
@@ -111,10 +111,20 @@ describe("CompanySettingsNav", () => {
         displayName: "Billing",
         routePath: "billing",
       },
+      {
+        id: "secrets-manager",
+        pluginKey: "acme.vault",
+        displayName: "Secrets Manager",
+        routePath: "secrets-manager",
+      },
     ];
     expect(getCompanySettingsTab("/PAP/company/settings/billing", slots)).toBe(
       "plugin:paperclip.billing:billing-settings",
     );
+    expect(getCompanySettingsTab("/PAP/company/settings/secrets-manager", slots)).toBe(
+      "plugin:acme.vault:secrets-manager",
+    );
+    expect(getCompanySettingsTab("/PAP/company/settings/secrets", slots)).toBe("secrets");
     expect(getCompanySettingsTab("/PAP/company/export/files/agent.md", slots)).toBe("export");
   });
 });

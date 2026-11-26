@@ -60,74 +60,80 @@ function normalizePluginRoutePath(routePath: string | null | undefined): string 
   return routePath?.replace(/^\/+|\/+$/g, "") ?? "";
 }
 
+function matchesSettingsPath(normalizedPath: string, suffix: string): boolean {
+  return normalizedPath.endsWith(suffix) || normalizedPath.includes(`${suffix}/`);
+}
+
 export function getCompanySettingsTab(
   pathname: string,
   pluginSlots?: readonly CompanySettingsPluginSlotLike[],
 ): CompanySettingsTab {
-  if (pathname.includes("/company/settings/connections")) {
+  const normalizedPath = pathname.replace(/\/+$/, "");
+
+  if (matchesSettingsPath(normalizedPath, "/company/settings/connections")) {
     return "connections";
   }
 
-  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/profile`)) {
+  if (matchesSettingsPath(normalizedPath, `${INSTANCE_SETTINGS_PATH_PREFIX}/profile`)) {
     return "instance-profile";
   }
 
-  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/environments`)) {
+  if (matchesSettingsPath(normalizedPath, `${INSTANCE_SETTINGS_PATH_PREFIX}/environments`)) {
     return "instance-environments";
   }
 
-  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/access`)) {
+  if (matchesSettingsPath(normalizedPath, `${INSTANCE_SETTINGS_PATH_PREFIX}/access`)) {
     return "instance-access";
   }
 
-  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`)) {
+  if (matchesSettingsPath(normalizedPath, `${INSTANCE_SETTINGS_PATH_PREFIX}/experimental`)) {
     return "instance-experimental";
   }
 
-  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`)) {
+  if (matchesSettingsPath(normalizedPath, `${INSTANCE_SETTINGS_PATH_PREFIX}/plugins`)) {
     return "instance-plugins";
   }
 
-  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`)) {
+  if (matchesSettingsPath(normalizedPath, `${INSTANCE_SETTINGS_PATH_PREFIX}/adapters`)) {
     return "instance-adapters";
   }
 
-  if (pathname.includes(`${INSTANCE_SETTINGS_PATH_PREFIX}/general`)) {
+  if (matchesSettingsPath(normalizedPath, `${INSTANCE_SETTINGS_PATH_PREFIX}/general`)) {
     return "general";
   }
 
-  if (pathname.includes("/company/settings/environments")) {
+  if (matchesSettingsPath(normalizedPath, "/company/settings/environments")) {
     return "instance-environments";
   }
 
-  if (pathname.includes("/company/export")) {
+  if (matchesSettingsPath(normalizedPath, "/company/export")) {
     return "export";
   }
 
-  if (pathname.includes("/company/import")) {
+  if (matchesSettingsPath(normalizedPath, "/company/import")) {
     return "import";
   }
 
-  if (pathname.includes("/company/settings/members") || pathname.includes("/company/settings/access")) {
+  if (
+    matchesSettingsPath(normalizedPath, "/company/settings/members")
+    || matchesSettingsPath(normalizedPath, "/company/settings/access")
+  ) {
     return "members";
   }
 
-  if (pathname.includes("/company/settings/invites")) {
-    // Invites live on the Members page now; the old URL redirects there.
+  if (matchesSettingsPath(normalizedPath, "/company/settings/invites")) {
     return "members";
   }
 
-  if (pathname.includes("/company/settings/secrets")) {
+  if (matchesSettingsPath(normalizedPath, "/company/settings/secrets")) {
     return "secrets";
   }
 
   if (pluginSlots && pluginSlots.length > 0) {
-    const normalizedPath = pathname.replace(/\/+$/, "");
     for (const slot of pluginSlots) {
       const routePath = normalizePluginRoutePath(slot.routePath);
       if (!routePath) continue;
-      const suffix = `/company/settings/${routePath}`;
-      if (normalizedPath.endsWith(suffix) || normalizedPath.includes(`${suffix}/`)) {
+      if (matchesSettingsPath(normalizedPath, `/company/settings/${routePath}`)) {
         return `plugin:${slot.pluginKey}:${slot.id}`;
       }
     }

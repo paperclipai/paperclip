@@ -10,6 +10,7 @@ import { AppDetailMobileNav } from "./AppConnectionSidebar";
 import { AppsMobileNav } from "./AppsSidebar";
 import { ChatDetailMobileNav } from "./chat/ChatDetailSidebar";
 import { AgentConversationSidebar } from "./AgentConversationSidebar";
+import { MobileContextualNav } from "./MobileContextualNav";
 import { queryKeys } from "@/lib/queryKeys";
 
 const mockUsePluginSlots = vi.fn();
@@ -225,5 +226,102 @@ describe("Mobile contextual section switchers", () => {
     expect(trigger?.getAttribute("aria-label")).toBe("Browse chats");
     expect(trigger?.textContent).toContain("Chief of Staff");
     expect(trigger?.textContent).toContain("5");
+  });
+
+  it("renders chat history error and retry button in AgentConversationSidebar mobileSwitcher mode", () => {
+    const onRetryHistory = vi.fn();
+    const agents = [
+      { id: "a1", name: "Chief of Staff", role: "ceo", status: "active", companyId: "company-1" },
+    ] as Parameters<typeof AgentConversationSidebar>[0]["agents"];
+
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(
+        <MemoryRouter initialEntries={["/PAP/chats/chief-of-staff"]}>
+          <AgentConversationSidebar
+            agents={agents}
+            activeId="a1"
+            historyError={new Error("network failed")}
+            onRetryHistory={onRetryHistory}
+            mobileSwitcher
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain("Some chat history couldn’t load.");
+    const retryBtn = Array.from(alert!.querySelectorAll("button")).find((btn) =>
+      btn.textContent?.includes("Retry chat history"),
+    ) as HTMLButtonElement;
+    expect(retryBtn).toBeDefined();
+    flushSync(() => {
+      retryBtn.click();
+    });
+    expect(onRetryHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it("scrolls newly loaded active tabs into view when items arrive within an existing group", () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+      configurable: true,
+      value: scrollIntoView,
+    });
+
+    root = createRoot(container);
+    flushSync(() => {
+      root!.render(
+        <MemoryRouter initialEntries={["/PAP/apps/chat/ep-1/reviews"]}>
+          <Routes>
+            <Route
+              path="/:companyPrefix/apps/chat/:endpointId/:tab"
+              element={
+                <MobileContextualNav
+                  surface="chat-detail"
+                  ariaLabel="Chat connection"
+                  groups={[
+                    {
+                      key: "chat-detail",
+                      items: [
+                        { key: "settings", to: "/apps/chat/ep-1/settings", label: "Settings", end: true },
+                      ],
+                    },
+                  ]}
+                />
+              }
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    flushSync(() => {
+      root!.render(
+        <MemoryRouter initialEntries={["/PAP/apps/chat/ep-1/reviews"]}>
+          <Routes>
+            <Route
+              path="/:companyPrefix/apps/chat/:endpointId/:tab"
+              element={
+                <MobileContextualNav
+                  surface="chat-detail"
+                  ariaLabel="Chat connection"
+                  groups={[
+                    {
+                      key: "chat-detail",
+                      items: [
+                        { key: "settings", to: "/apps/chat/ep-1/settings", label: "Settings", end: true },
+                        { key: "reviews", to: "/apps/chat/ep-1/reviews", label: "Reviews" },
+                      ],
+                    },
+                  ]}
+                />
+              }
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+    });
+    expect(scrollIntoView).toHaveBeenCalledWith({ inline: "nearest", block: "nearest" });
   });
 });

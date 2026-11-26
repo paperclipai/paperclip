@@ -109,8 +109,18 @@ export function AgentConversationSidebar({ agents, compact = false, mobileSwitch
   if (compact) return picker;
   if (mobileSwitcher) {
     return (
-      <div className="border-b border-border bg-background px-3 py-1.5">
+      <div className="flex flex-col gap-1.5 border-b border-border bg-background px-3 py-1.5">
         {picker}
+        {historyError ? (
+          <div role="alert" className="flex flex-wrap items-center justify-between gap-2 px-2 py-1">
+            <p className="text-xs text-muted-foreground">Some chat history couldn’t load.</p>
+            {onRetryHistory ? (
+              <Button variant="outline" size="sm" onClick={onRetryHistory}>
+                Retry chat history
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     );
   }

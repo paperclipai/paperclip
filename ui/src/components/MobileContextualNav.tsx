@@ -35,6 +35,9 @@ export function MobileContextualNav({
   const location = useLocation();
   const navRef = useRef<HTMLElement | null>(null);
   const visibleGroups = groups.filter((group) => group.items.length > 0);
+  const itemSignature = visibleGroups
+    .flatMap((group) => group.items.map((item) => item.to))
+    .join("|");
 
   useEffect(() => {
     const nav = navRef.current;
@@ -43,7 +46,7 @@ export function MobileContextualNav({
     if (typeof active?.scrollIntoView === "function") {
       active.scrollIntoView({ inline: "nearest", block: "nearest" });
     }
-  }, [location.pathname, visibleGroups.length]);
+  }, [location.pathname, itemSignature]);
 
   if (visibleGroups.length === 0) return null;
 
