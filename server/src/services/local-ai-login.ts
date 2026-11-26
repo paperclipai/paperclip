@@ -430,8 +430,15 @@ export function localAiLoginService(db: Db) {
     });
     // Failed cleanup can be retried by the same completed attempt or reaper.
     await stopBrowserLogin(id);
-    await rm(loginHome(id), { recursive: true, force: true });
-    deferredRetirements.delete(id);
+    try {
+      // Windows keeps a folder locked while the just-stopped CLI still has it
+      // as its working directory; retry briefly, then leave it to the reaper.
+      await rm(loginHome(id), { recursive: true, force: true, maxRetries: 10, retryDelay: 300 });
+      deferredRetirements.delete(id);
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      if (process.platform !== "win32" || (code !== "EBUSY" && code !== "EPERM" && code !== "ENOTEMPTY")) throw error;
+    }
     return result;
   }
 
