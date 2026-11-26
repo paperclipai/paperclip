@@ -390,7 +390,7 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
       vi.unstubAllEnvs();
     });
 
-    it("rolls back when new history appears after capture without changing files", async () => {
+    it.each(Array.from({ length: 40 }, (_, i) => i))("rolls back when new history appears after capture without changing files %i", async () => {
       vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "31".repeat(32));
       const f = await nestedFixture(false);
       await unpushedNestedWork(f.nested.cwd);
@@ -398,6 +398,7 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
         git(f.nested.cwd, "commit", "--allow-empty", "-q", "-m", "Made after capture");
         git(f.nested.cwd, "reset", "-q", "--soft", "HEAD~1");
       } });
+      if (result.skipReason !== "restore_point_contents_changed") throw new Error(`DEBUGFAIL ${JSON.stringify(result)}`);
       expect(result).toMatchObject({ expired: false, skipReason: "restore_point_contents_changed" });
       expect(await exists(f.cwd)).toBe(true);
       vi.unstubAllEnvs();
