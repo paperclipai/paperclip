@@ -76,9 +76,20 @@ function invalidAgentTokenMessage(token: string) {
 }
 
 const agentAuthenticationFields = {
+  id: agents.id,
   companyId: agents.companyId,
   status: agents.status,
   lifecycleHolds: agents.lifecycleHolds,
+  adapterType: agents.adapterType,
+  adapterConfig: sql<Record<string, unknown>>`case
+    when (${agents.adapterConfig} -> 'watchdogService') is not null then jsonb_build_object(
+      'fixedCommand', ${agents.adapterConfig}->'fixedCommand',
+      'watchdogService', true
+    )
+    else jsonb_build_object(
+      'fixedCommand', ${agents.adapterConfig}->'fixedCommand'
+    )
+  end`,
 };
 
 type Bound<Value> = Value | Placeholder;
