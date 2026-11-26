@@ -833,6 +833,7 @@ describe("plugin tool and bridge authz", () => {
         agentId: null,
         runId: null,
         companyId: null,
+        authenticationSource: "session",
       },
       renderEnvironment: null,
     });
@@ -870,9 +871,33 @@ describe("plugin tool and bridge authz", () => {
         agentId: null,
         runId: runA,
         companyId: companyA,
+        authenticationSource: "session",
       },
       renderEnvironment: null,
     });
+  });
+
+  it("passes the board API key authentication source to plugin actions", async () => {
+    readyPlugin();
+    const call = vi.fn().mockResolvedValue({ ok: true });
+    const { app } = await createApp(boardActor({ source: "board_key" }), {}, {
+      bridgeDeps: {
+        workerManager: { call },
+      },
+    });
+
+    const res = await request(app)
+      .post(`/api/plugins/${pluginId}/actions/sync`)
+      .send({ companyId: companyA });
+
+    expect(res.status).toBe(200);
+    expect(call).toHaveBeenCalledWith(pluginId, "performAction", expect.objectContaining({
+      actorContext: expect.objectContaining({
+        type: "user",
+        userId: "user-1",
+        authenticationSource: "board_key",
+      }),
+    }));
   });
 
   it("uses null for board actor userId when no authenticated user id is present", async () => {
@@ -930,6 +955,7 @@ describe("plugin tool and bridge authz", () => {
         agentId: agentA,
         runId: runA,
         companyId: companyA,
+        authenticationSource: "agent_jwt",
       },
       renderEnvironment: null,
     });
@@ -959,6 +985,7 @@ describe("plugin tool and bridge authz", () => {
         agentId: agentA,
         runId: runA,
         companyId: companyA,
+        authenticationSource: "agent_jwt",
       },
       renderEnvironment: null,
     });

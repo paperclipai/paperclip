@@ -813,6 +813,7 @@ export function pluginRoutes(
         agentId: req.actor.agentId ?? null,
         runId: req.actor.runId ?? null,
         companyId: scopedCompanyId,
+        authenticationSource: req.actor.source ?? null,
       };
     }
     if (req.actor.type === "board") {
@@ -822,6 +823,7 @@ export function pluginRoutes(
         agentId: null,
         runId: req.actor.runId ?? null,
         companyId: scopedCompanyId,
+        authenticationSource: req.actor.source ?? null,
       };
     }
     return {
@@ -830,6 +832,7 @@ export function pluginRoutes(
       agentId: null,
       runId: req.actor.runId ?? null,
       companyId: scopedCompanyId,
+      authenticationSource: req.actor.source ?? null,
     };
   }
 
