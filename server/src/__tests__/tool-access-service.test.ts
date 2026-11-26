@@ -8716,6 +8716,122 @@ describeEmbeddedPostgres("tool access service", () => {
     },
   );
 
+  it.each(["agent-install", "no-agent"])(
+    "resumes an unfinished dedicated GitHub connection without naming its agent (%s)",
+    async (resumeCase) => {
+      const company = await createCompany(db);
+      const userId = `github-resume-${randomUUID()}`;
+      await grantBoardUser(db, company.id, userId, [], "owner");
+      const agent = await createAgent(db, company.id);
+      const connector = fakeGitHubConnector(company.id, `agent:${agent.id}`);
+      const service = createTestToolAccessService(db, {
+        paperclipCloudConnector: connector,
+      });
+      const actor = { actorType: "user" as const, actorId: userId };
+      const githubDefinition = getConnectableAppDefinition("github")!;
+      const previousOwnershipAvailability =
+        githubDefinition.ownershipAvailability;
+      githubDefinition.ownershipAvailability = {
+        ...previousOwnershipAvailability,
+        platform_shared: true,
+      };
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
+        const href = String(url);
+        if (href === "https://api.github.com/user") {
+          return mcpHttpResponse({ id: 42, login: "octocat" });
+        }
+        if (href.includes("https://api.github.com/user/installations?")) {
+          return mcpHttpResponse({
+            installations: [
+              {
+                id: 101,
+                repository_selection: "selected",
+                html_url: "https://github.com/settings/installations/101",
+                account: { login: "paperclipai" },
+              },
+            ],
+          });
+        }
+        if (href.includes("https://api.github.com/user/installations/101/repositories?")) {
+          return mcpHttpResponse({
+            total_count: 1,
+            repositories: [{ id: 1, full_name: "paperclipai/repo-1" }],
+          });
+        }
+        if (href === GITHUB_CONNECTOR_PROFILES["github.code"].serverUrl) {
+          return mcpHttpResponse(catalogResponse([
+            { name: "get_pull_request", annotations: { readOnlyHint: true } },
+          ]));
+        }
+        throw new Error(`unexpected fetch ${href}`);
+      });
+
+      try {
+        const connected = await service.connectGalleryApp(
+          company.id,
+          {
+            galleryKey: "github",
+            connectionMethodKey: "managed",
+            grantKind: "agent",
+            subjectAgentId: agent.id,
+            name: "Agent GitHub",
+          },
+          actor,
+        );
+        if (resumeCase === "agent-install") {
+          await db.insert(toolConnectionInstalls).values({
+            companyId: company.id,
+            connectionId: connected.connectionId,
+            targetType: "agent",
+            targetId: agent.id,
+            createdByUserId: userId,
+          });
+        }
+        const resume = () => service.startOAuth(company.id, connected.connectionId, {
+          redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback",
+          actor,
+        });
+        if (resumeCase === "no-agent") {
+          await expect(resume()).rejects.toMatchObject({
+            status: 409,
+            details: { code: "connection_subject_agent_required" },
+          });
+          expect(connector.startAuthorization).not.toHaveBeenCalled();
+          return;
+        }
+        const started = await resume();
+        const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+        const [stateRow] = await db
+          .select()
+          .from(toolOauthStates)
+          .where(eq(toolOauthStates.state, state));
+        expect(stateRow).toMatchObject({ subjectAgentId: agent.id, subjectUserId: null });
+        expect(connector.startAuthorization).toHaveBeenCalledWith(
+          expect.objectContaining({ subject: `agent:${agent.id}` }),
+        );
+        await service.completePaperclipCloudConnectorCallback({
+          state,
+          claimId: "github-agent-resume",
+          actor,
+        });
+        await expect(
+          db
+            .select()
+            .from(connectionGrants)
+            .where(
+              and(
+                eq(connectionGrants.connectionId, connected.connectionId),
+                eq(connectionGrants.kind, "agent"),
+                eq(connectionGrants.subjectAgentId, agent.id),
+              ),
+            ),
+        ).resolves.toHaveLength(1);
+      } finally {
+        githubDefinition.ownershipAvailability = previousOwnershipAvailability;
+      }
+    },
+  );
+
   it("replaces an archived dedicated GitHub identity with an explicitly selected personal identity", async () => {
     const company = await createCompany(db);
     const userId = `github-personal-revival-${randomUUID()}`;
