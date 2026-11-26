@@ -25,9 +25,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
-use super::{
-    read_process_table, signal_member, LineageState, LiveProcessTable, ProcessEntry, ProcessTable,
-};
+use super::{read_process_table, signal_member, LineageState, ProcessEntry, ProcessTable};
 
 impl LineageState {
     fn journal_record(&self, writer: ProcessIdentity, sampled_through: u64) -> JournalRecord {
@@ -282,11 +280,36 @@ impl ReapReport {
 /// directory are reaped too; a live writer's journals are never touched. Each
 /// process is signalled only while its PID and start time still match a
 /// recorded identity: TERM first, KILL after `grace`.
+///
+/// A live orphan of this user that started after the dead runnerd's last
+/// sample cannot be attributed and is never signalled. A process whose parent
+/// is not alive in the same table read counts as an orphan too, because a
+/// table read is not atomic and its parent may have exited during the read.
+/// The reap waits for such orphans to exit and refuses with
+/// `unattributed_orphan` only if one still lives at `deadline`.
 pub fn reap_journals(
     state_dir: &Path,
     runner_pid: i32,
     grace: Duration,
     deadline: Duration,
+) -> ReapReport {
+    reap_journals_from(
+        state_dir,
+        runner_pid,
+        grace,
+        deadline,
+        read_process_table,
+        owned_by_this_user,
+    )
+}
+
+fn reap_journals_from<T: ProcessTable>(
+    state_dir: &Path,
+    runner_pid: i32,
+    grace: Duration,
+    deadline: Duration,
+    mut read_table: impl FnMut() -> Option<T>,
+    owned: impl Fn(i32) -> bool,
 ) -> ReapReport {
     let directory = state_dir.join(JOURNAL_DIRECTORY_NAME);
     let marker_path = directory.join(format!("writer-{runner_pid}.json"));
@@ -339,9 +362,12 @@ pub fn reap_journals(
     let count = journals.len();
     let started = Instant::now();
     let mut signalled: HashSet<(i32, u64)> = HashSet::new();
+    let mut unattributed_tree = LineageState::default();
+    let mut consecutive_clean_reads = 0;
     loop {
         let elapsed = started.elapsed();
-        let Some(table) = read_process_table() else {
+        let Some(table) = read_table() else {
+            consecutive_clean_reads = 0;
             if elapsed >= deadline {
                 return ReapReport {
                     journals: count,
@@ -367,14 +393,40 @@ pub fn reap_journals(
             // cannot be proven either way, so it is never signalled, and the
             // proof is refused.
             if let Some(since) = unsampled_since {
-                let escaped = unattributed_orphans(&table, since, &journals);
-                if !escaped.is_empty() {
-                    return ReapReport {
-                        journals: count,
-                        signalled: signalled.len(),
-                        remaining: escaped,
-                        ..ReapReport::refused("unattributed_orphan")
-                    };
+                let escaped = unattributed_orphans(&table, since, &journals, &owned);
+                let roots: Vec<ProcessEntry> = table
+                    .entries()
+                    .iter()
+                    .filter(|entry| escaped.contains(&entry.pid))
+                    .copied()
+                    .collect();
+                unattributed_tree.track_roots(&roots);
+                let observation = unattributed_tree.observe(&table);
+                let mut remaining: Vec<i32> = observation
+                    .live
+                    .iter()
+                    .map(|entry| entry.pid)
+                    .chain(observation.unresolved)
+                    .collect();
+                remaining.sort_unstable();
+                remaining.dedup();
+                if !remaining.is_empty() {
+                    consecutive_clean_reads = 0;
+                    if elapsed >= deadline {
+                        return ReapReport {
+                            journals: count,
+                            signalled: signalled.len(),
+                            remaining,
+                            ..ReapReport::refused("unattributed_orphan")
+                        };
+                    }
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
+                }
+                consecutive_clean_reads += 1;
+                if consecutive_clean_reads < CLEAN_READS_REQUIRED_FOR_A_PROOF {
+                    thread::sleep(Duration::from_millis(10));
+                    continue;
                 }
             }
             for (path, _) in &journals {
@@ -390,6 +442,7 @@ pub fn reap_journals(
                 remaining: Vec::new(),
             };
         }
+        consecutive_clean_reads = 0;
         if elapsed >= deadline {
             let mut remaining: Vec<i32> = live
                 .iter()
@@ -417,25 +470,42 @@ pub fn reap_journals(
     }
 }
 
-/// Live orphans (parent PID 1) of this user that started no earlier than
-/// `since` and belong to no journal. An orphan of a subreaper other than init
-/// is not seen here; such a host keeps the in-process teardown only.
+const CLEAN_READS_REQUIRED_FOR_A_PROOF: usize = 2;
+
+/// Live orphans (parent PID 1, or a parent not alive in this read) of this
+/// user that started no earlier than `since` and belong to no journal. An
+/// orphan of a subreaper other than init is not seen here; such a host keeps
+/// the in-process teardown only.
 fn unattributed_orphans(
-    table: &LiveProcessTable,
+    table: &dyn ProcessTable,
     since: u64,
     journals: &[(PathBuf, LineageState)],
+    owned: &dyn Fn(i32) -> bool,
 ) -> Vec<i32> {
+    let alive: HashMap<i32, u64> = table
+        .entries()
+        .iter()
+        .filter(|entry| !entry.zombie)
+        .map(|entry| (entry.pid, entry.started))
+        .collect();
+    let unreadable: HashSet<i32> = table.unreadable().iter().copied().collect();
+    let parent_alive = |entry: &ProcessEntry| {
+        unreadable.contains(&entry.ppid)
+            || alive
+                .get(&entry.ppid)
+                .is_some_and(|started| *started <= entry.started)
+    };
     let mut pids: Vec<i32> = table
         .entries()
         .iter()
         .filter(|entry| {
             !entry.zombie
-                && entry.ppid == 1
+                && (entry.ppid == 1 || !parent_alive(entry))
                 && entry.started >= since
                 && !journals
                     .iter()
                     .any(|(_, state)| state.members.get(&entry.pid) == Some(&entry.started))
-                && owned_by_this_user(entry.pid)
+                && owned(entry.pid)
         })
         .map(|entry| entry.pid)
         .collect();
@@ -457,340 +527,4 @@ fn owned_by_this_user(_pid: i32) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::tests::{entry, pids, table};
-    use super::super::SAMPLE_INTERVAL;
-    use super::*;
-
-    #[test]
-    fn a_journalled_record_restores_the_same_lineage() {
-        let mut state = LineageState::new(100);
-        state.observe(&table(vec![
-            (entry(100, 10, 100, 10), 1),
-            (entry(200, 100, 200, 20), 200),
-            (entry(201, 200, 200, 21), 200),
-        ]));
-        let writer = ProcessIdentity {
-            pid: 10,
-            started: 5,
-        };
-        let record = state.journal_record(writer, 0);
-        let json = serde_json::to_string(&record).unwrap();
-        let restored: JournalRecord = serde_json::from_str(&json).unwrap();
-        assert_eq!(restored.writer, writer);
-        let mut restored = LineageState::from_journal_record(&restored);
-        // runnerd (10) is gone and the wrapper exited: provider 100 and job
-        // 201 are re-parented to init, and a later job 202 was started.
-        let after = table(vec![
-            (entry(1, 0, 1, 1), 1),
-            (entry(100, 1, 100, 10), 1),
-            (entry(201, 1, 200, 21), 200),
-            (entry(202, 201, 200, 30), 200),
-            (entry(300, 1, 300, 40), 300),
-        ]);
-        assert_eq!(pids(&restored.observe_live(&after)), vec![100, 201, 202]);
-    }
-
-    #[test]
-    fn an_unknown_root_start_is_never_journalled_as_an_identity() {
-        let state = LineageState::new(100);
-        let record = state.journal_record(
-            ProcessIdentity {
-                pid: 10,
-                started: 5,
-            },
-            0,
-        );
-        assert_eq!(record.root, None);
-    }
-
-    fn temporary_directory(name: &str) -> PathBuf {
-        let directory = std::env::temp_dir().join(format!(
-            "paperclip-lineage-{name}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(directory.join(JOURNAL_DIRECTORY_NAME)).unwrap();
-        directory
-    }
-
-    fn write_marker(state_dir: &Path, writer: ProcessIdentity) {
-        let marker = WriterMarker {
-            schema: WRITER_SCHEMA.to_owned(),
-            writer,
-        };
-        fs::write(
-            state_dir
-                .join(JOURNAL_DIRECTORY_NAME)
-                .join(format!("writer-{}.json", writer.pid)),
-            serde_json::to_vec(&marker).unwrap(),
-        )
-        .unwrap();
-    }
-
-    /// A process that existed and has exited, so its identity is dead.
-    fn exited_writer() -> ProcessIdentity {
-        let mut child = std::process::Command::new("/bin/sleep")
-            .arg("5")
-            .spawn()
-            .unwrap();
-        let pid = i32::try_from(child.id()).unwrap();
-        let started = paperclip_process_table::read(pid).entry().unwrap().started;
-        child.kill().unwrap();
-        child.wait().unwrap();
-        ProcessIdentity { pid, started }
-    }
-
-    #[test]
-    fn reaping_refuses_without_a_marker_or_while_the_writer_lives() {
-        let directory = temporary_directory("refuse");
-        let report = reap_journals(&directory, 4242, Duration::ZERO, Duration::ZERO);
-        assert_eq!(report.reason, Some("journal_unavailable"));
-        assert!(!report.verified);
-
-        let alive = ProcessIdentity::current().unwrap();
-        write_marker(&directory, alive);
-        let report = reap_journals(&directory, alive.pid, Duration::ZERO, Duration::ZERO);
-        assert_eq!(report.reason, Some("runner_alive"));
-        assert!(!report.verified);
-        let _ = fs::remove_dir_all(&directory);
-    }
-
-    #[test]
-    fn reaping_refuses_an_unreadable_journal() {
-        let directory = temporary_directory("unreadable");
-        let writer = exited_writer();
-        write_marker(&directory, writer);
-        fs::write(
-            directory
-                .join(JOURNAL_DIRECTORY_NAME)
-                .join("lineage-1-0.json"),
-            b"{",
-        )
-        .unwrap();
-        let report = reap_journals(&directory, writer.pid, Duration::ZERO, Duration::ZERO);
-        assert_eq!(report.reason, Some("journal_unreadable"));
-        let _ = fs::remove_dir_all(&directory);
-    }
-
-    /// runnerd is SIGKILLed mid-tool: its provider and a tool job that left
-    /// the provider's session outlive it. The journal alone finds and stops
-    /// both, and proves them gone.
-    #[test]
-    fn reaping_stops_a_dead_runners_provider_and_its_escaped_tool_job() {
-        use std::os::unix::process::CommandExt;
-        // The proof refuses while any orphan of this user started after the
-        // journal was written, including one that another test left.
-        let _no_foreign_orphans = super::super::host_orphans::no_foreign_orphans();
-        let directory = temporary_directory("reap");
-        let pid_file = directory.join("job.pid");
-        // The wrapper lives past several samples, as a real tool wrapper does.
-        let tool = r#"sleep 0.3; nohup /bin/sh -c 'while :; do sleep 1; done' >/dev/null 2>&1 & echo $! > "$0.tmp"; mv "$0.tmp" "$0"; exit 0"#;
-        let wrapper = format!(
-            "use POSIX (); POSIX::setsid() or die; exec '/bin/sh', '-c', q{{{tool}}}, $ARGV[0];"
-        );
-        let mut provider = std::process::Command::new("/bin/sh")
-            .args([
-                "-c",
-                r#"sleep 0.2; perl -e "$1" "$2"; while :; do sleep 1; done"#,
-                "provider",
-                &wrapper,
-                &pid_file.display().to_string(),
-            ])
-            .process_group(0)
-            .spawn()
-            .unwrap();
-        let provider_pid = i32::try_from(provider.id()).unwrap();
-        let root = paperclip_process_table::read(provider_pid).entry().unwrap();
-        let mut state = LineageState::with_known_root(root);
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let job = loop {
-            let live = state.observe(&read_process_table().unwrap()).live;
-            if let Some(pid) = fs::read_to_string(&pid_file)
-                .ok()
-                .and_then(|text| text.trim().parse::<i32>().ok())
-            {
-                if let Some(job) = live.iter().find(|entry| entry.pid == pid) {
-                    break *job;
-                }
-            }
-            assert!(Instant::now() < deadline, "tool job was not recorded");
-            thread::sleep(SAMPLE_INTERVAL);
-        };
-        assert_ne!(job.pgid, provider_pid);
-
-        let writer = exited_writer();
-        write_marker(&directory, writer);
-        let journal = directory
-            .join(JOURNAL_DIRECTORY_NAME)
-            .join(format!("lineage-{}-0.json", writer.pid));
-        fs::write(
-            &journal,
-            serde_json::to_vec(&state.journal_record(writer, newest_start())).unwrap(),
-        )
-        .unwrap();
-
-        let report = reap_journals(
-            &directory,
-            writer.pid,
-            Duration::from_millis(500),
-            Duration::from_secs(10),
-        );
-        let _ = provider.wait();
-        let job_alive = paperclip_process_table::read(job.pid)
-            .entry()
-            .is_some_and(|current| current.started == job.started && !current.zombie);
-        if job_alive {
-            if let Some(group) = rustix::process::Pid::from_raw(job.pgid) {
-                let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
-            }
-        }
-        assert!(!job_alive, "tool job {} outlived the reap", job.pid);
-        assert!(report.verified, "{report:?}");
-        assert_eq!(report.journals, 1);
-        assert!(report.signalled >= 2, "{report:?}");
-        assert!(!journal.exists(), "a proven journal is retired");
-        assert!(!directory
-            .join(JOURNAL_DIRECTORY_NAME)
-            .join(format!("writer-{}.json", writer.pid))
-            .exists());
-        let _ = fs::remove_dir_all(&directory);
-    }
-
-    /// The newest start time a table read lists now, as the sampler records.
-    fn newest_start() -> u64 {
-        read_process_table()
-            .unwrap()
-            .entries()
-            .iter()
-            .map(|entry| entry.started)
-            .max()
-            .unwrap()
-    }
-
-    /// A tool forked and left its session after the dead runnerd's last
-    /// read, and its parents are gone: nothing recorded leads to it. The reap
-    /// must not claim proof, and must not signal a process it cannot
-    /// attribute.
-    #[test]
-    fn reaping_refuses_an_orphan_born_after_the_last_sample() {
-        let orphans = super::super::host_orphans::may_orphan();
-        let directory = temporary_directory("escape");
-        let writer = exited_writer();
-        write_marker(&directory, writer);
-        let provider = exited_writer();
-        let mut state = LineageState::default();
-        state.root = Some((provider.pid, provider.started));
-        let journal = directory
-            .join(JOURNAL_DIRECTORY_NAME)
-            .join(format!("lineage-{}-0.json", writer.pid));
-        fs::write(
-            &journal,
-            serde_json::to_vec(&state.journal_record(writer, newest_start())).unwrap(),
-        )
-        .unwrap();
-        // runnerd died right after the tool started, before any read saw it.
-        // The tool starts a new session, starts a job and exits, so the job
-        // is re-parented to init and leads neither its group nor its session.
-        let pid_file = directory.join("orphan.pid");
-        let status = std::process::Command::new("perl")
-            .args([
-                "-e",
-                "use POSIX (); exit 0 if fork(); POSIX::setsid() or die; exit 0 if fork(); sleep 1 while getppid() != 1; open(my $f, '>', \"$ARGV[0].tmp\") or die; print $f $$; close $f; rename(\"$ARGV[0].tmp\", $ARGV[0]) or die; open(STDIN, '<', '/dev/null'); open(STDOUT, '>', '/dev/null'); open(STDERR, '>', '/dev/null'); exec '/bin/sh', '-c', 'while :; do sleep 1; done'",
-                &pid_file.display().to_string(),
-            ])
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let deadline = Instant::now() + Duration::from_secs(10);
-        let orphan = loop {
-            if let Some(entry) = fs::read_to_string(&pid_file)
-                .ok()
-                .and_then(|text| text.trim().parse::<i32>().ok())
-                .and_then(|pid| paperclip_process_table::read(pid).entry())
-                .filter(|entry| entry.ppid == 1 && entry.pgid != entry.pid)
-            {
-                break entry;
-            }
-            assert!(Instant::now() < deadline, "orphan job did not start");
-            thread::sleep(Duration::from_millis(20));
-        };
-        let report = reap_journals(
-            &directory,
-            writer.pid,
-            Duration::ZERO,
-            Duration::from_secs(5),
-        );
-        let alive = ProcessIdentity {
-            pid: orphan.pid,
-            started: orphan.started,
-        }
-        .is_alive();
-        if let Some(group) = rustix::process::Pid::from_raw(orphan.pgid) {
-            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
-        }
-        super::super::host_orphans::wait_until_group_gone(orphan.pgid);
-        drop(orphans);
-        let _ = fs::remove_dir_all(&directory);
-        assert_eq!(report.reason, Some("unattributed_orphan"), "{report:?}");
-        assert!(!report.verified);
-        assert!(report.remaining.contains(&orphan.pid), "{report:?}");
-        assert!(alive, "an unattributed process is never signalled");
-    }
-
-    /// A record that could not be written may be missing a member. The
-    /// failure withdraws the writer marker, so no reap can verify.
-    #[test]
-    fn a_failed_journal_write_withdraws_the_writer_marker() {
-        let directory = temporary_directory("write-failure");
-        let writer = exited_writer();
-        write_marker(&directory, writer);
-        let marker = directory
-            .join(JOURNAL_DIRECTORY_NAME)
-            .join(format!("writer-{}.json", writer.pid));
-        let journal = Journal {
-            path: directory.join("missing").join("lineage.json"),
-            marker: marker.clone(),
-            writer,
-            last: Mutex::new(JournalWrite::default()),
-        };
-        assert!(journal.write(&LineageState::new(100), 1).is_err());
-        assert!(!marker.exists());
-        let report = reap_journals(&directory, writer.pid, Duration::ZERO, Duration::ZERO);
-        assert_eq!(report.reason, Some("journal_unavailable"));
-        let _ = fs::remove_dir_all(&directory);
-    }
-
-    #[test]
-    fn an_unchanged_record_is_rewritten_only_to_advance_sampled_through() {
-        let directory = temporary_directory("refresh");
-        let path = directory.join(JOURNAL_DIRECTORY_NAME).join("lineage.json");
-        let journal = Journal {
-            path: path.clone(),
-            marker: directory.join("marker"),
-            writer: ProcessIdentity {
-                pid: 10,
-                started: 5,
-            },
-            last: Mutex::new(JournalWrite::default()),
-        };
-        let state = LineageState::new(100);
-        let read = || {
-            serde_json::from_slice::<JournalRecord>(&fs::read(&path).unwrap())
-                .unwrap()
-                .sampled_through
-        };
-        journal.write(&state, 7).unwrap();
-        assert_eq!(read(), 7);
-        // Within the refresh interval an advance alone is not written.
-        journal.write(&state, 9).unwrap();
-        assert_eq!(read(), 7);
-        journal.last.lock().unwrap().at = Some(Instant::now() - SAMPLED_THROUGH_REFRESH);
-        journal.write(&state, 9).unwrap();
-        assert_eq!(read(), 9);
-        let _ = fs::remove_dir_all(&directory);
-    }
-}
+mod tests;
