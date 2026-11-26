@@ -2315,6 +2315,15 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(sent.firstMessage).not.toContain("sk-ant-api03");
     expect(sent.systemPrompt).not.toContain("sk-ant-api03");
     expect(sent.systemPrompt).toContain("Always use answer_question");
+
+    // A max-length message whose sanitization expands characters (e.g. @here) stays <= 2000 and succeeds cleanly.
+    const f2 = await phoneToolFixture();
+    const expanded = `@here ${"a".repeat(1994)}`;
+    expect(expanded.length).toBe(2000);
+    await executeSpekoVoiceTool(db, f2.gatewaySession, f2.endpointId, { message: expanded }, randomUUID());
+    const sent2 = f2.transport.createPhoneSession.mock.calls[0]![0] as unknown as { firstMessage?: string };
+    expect(sent2.firstMessage).toBeDefined();
+    expect(sent2.firstMessage!.length).toBeLessThanOrEqual(2000);
   });
   it("does not restore an agent's removed tool binding when callback settings are saved again", async () => {
     const f = await phoneToolFixture();
