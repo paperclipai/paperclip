@@ -241,11 +241,11 @@ describe("native provider capacity failure persistence", () => {
       await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
       const accounts = aiConnectionService(db);
       const saved = await Promise.all(["First", "Backup"].map(name => accounts.save(companyId, userId, {
-        provider: poolHarness && name === "Backup" ? "anthropic" : "openai", method: "api_key", ownership: "personal", name, apiKey: `fixture-${name}`, agentIds: [], allAgents: true,
+        provider: "openai", method: "api_key", ownership: "personal", name, apiKey: `fixture-${name}`, agentIds: [], allAgents: true,
       }, `fixture-${name}`)));
-      const members: AiConnectionPoolMember[] = saved.map((account, index) => ({ id: randomUUID(), binding: {
-        mode: "delegated" as const, provider: poolHarness && index === 1 ? "anthropic" as const : "openai" as const, method: "api_key" as const, ...account,
-      }, profile: poolHarness && index === 1 ? { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-5" } : { provider: "codex", model: "gpt-5" } }));
+      const members: AiConnectionPoolMember[] = saved.map(account => ({ id: randomUUID(), binding: {
+        mode: "delegated" as const, provider: "openai" as const, method: "api_key" as const, ...account,
+      }, profile: { provider: "codex", model: "gpt-5" } }));
       const router = aiConnectionRouterService(db);
       const pool = await router.save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId,
         config: { ...(poolHarness ? { schemaVersion: 2 as const, kind: "harness_pool" as const } : {}), name: "Capacity pool", enabled: true, mode: "failover", thresholdPercent: 90, members } }, userId);
@@ -533,21 +533,20 @@ describe("native provider capacity failure persistence", () => {
         const backupInput = poolHarness ? buildNativeExecutionInput({ companyId, runId: successor.id, agentId,
           issue: { id: issueId, title: issue.title, description: issue.description, identifier: issueId, workMode: "standard" },
           taskPrompt: "Continue remaining work; preserve the receipted output.", workspace: { id: runId, ...execution.workspace },
-          normalizedSessionId: prepared.normalizedSessionId, provider: "acpx", acpxAgent: "claude", model: String(pin.selection.runtimeConfig.model),
+          normalizedSessionId: prepared.normalizedSessionId, provider: "codex", model: String(pin.selection.runtimeConfig.model),
           completionContract: execution.completionContract, runtimeContext: nativeRuntimeContextFixture(),
         }) : null;
-        if (backupInput && backupInput.provider.kind !== "acpx") throw new Error("Expected the selected Claude driver");
         const nextExecution: NativeExecutionInputV10 = { ...execution,
           binding: { ...execution.binding, runId: successor.id },
-          provider: backupInput?.provider.kind === "acpx" ? backupInput.provider : { kind: "codex", model: String(pin.selection.runtimeConfig.model), approvalPolicy: "never" },
-          session: { ...execution.session, driverKind: poolHarness ? "acpx_runtime" : "codex_app_server", normalizedSessionId: prepared.normalizedSessionId } };
+          provider: backupInput?.provider ?? { kind: "codex", model: String(pin.selection.runtimeConfig.model), approvalPolicy: "never" },
+          session: { ...execution.session, driverKind: "codex_app_server", normalizedSessionId: prepared.normalizedSessionId } };
         provider.execute.mockImplementationOnce(async (options: { controlPlane: ControlPlanePort }) => {
           expect(await readFile(savedFile, "utf8")).toBe(savedWork);
           await options.controlPlane.openRun({ ...openInput,
             identity: { ...openInput.identity, runId: successor.id, sessionId: prepared.normalizedSessionId }, sourceInstanceId: prepared.runnerInstanceId });
           return { result: { summary: "Finished remaining work without replay" }, terminal: { runTerminalState: "succeeded" },
             turnId: prepared.turnId, normalizedSessionId: prepared.normalizedSessionId, providerSessionId: "backup-provider",
-            driverKind: poolHarness ? "acpx_runtime" : "codex_app_server", driverVersion: "1", nativeEventCount: 0, highestContiguousSourceSeq: 0, usage: null };
+            driverKind: "codex_app_server", driverVersion: "1", nativeEventCount: 0, highestContiguousSourceSeq: 0, usage: null };
         });
         const executeBackup = () => executePaperclipNativeSession({ db, execution: nextExecution, runnerInstanceId: prepared.runnerInstanceId,
           backend: { descriptor: async () => { throw new Error("unexpected descriptor"); }, openSession: async () => { throw new Error("unexpected session"); } } });

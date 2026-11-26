@@ -585,6 +585,72 @@ describe("durable, authorized connection routing", () => {
     })).rejects.toMatchObject({ details: { code: "pool_execution_policy_incompatible" } });
   });
 
+  it.each([
+    { name: "CLI sandbox restriction", memberConfig: { engine: "cli", dangerouslySkipPermissions: false } },
+    { name: "ACP deny-all policy", memberConfig: { engine: "acp", permissionMode: "deny-all" } },
+  ] as const)("keeps the native Claude sandbox when a Legacy pool member offers $name", async ({ memberConfig }) => {
+    await dispatchClaudePolicyFixture(memberConfig, { provider: "acpx", acpxAgent: "claude" });
+  }, 90000);
+
+  it("still refuses a selected member that conflicts with the saved native source policy", async () => {
+    await dispatchClaudePolicyFixture({ engine: "cli", dangerouslySkipPermissions: true }, { provider: "acpx", acpxAgent: "claude", dangerouslySkipPermissions: false });
+  }, 90000);
+
+  it.each(["cli", "acp"] as const)("keeps Legacy Claude %s outside a native Codex task sandbox", async engine => {
+    await dispatchClaudePolicyFixture({ engine }, { provider: "codex" });
+  }, 90000);
+
+  it.each([
+    { engine: "cli", dangerouslySkipPermissions: false },
+    { engine: "acp", permissionMode: "deny-all" },
+  ] as const)("dispatches a protected Legacy Claude member through a Legacy source (%j)", async memberConfig => {
+    await dispatchClaudePolicyFixture(memberConfig, {}, "claude_local");
+  }, 90000);
+
+  async function dispatchClaudePolicyFixture(memberConfig: { engine: "cli" | "acp"; dangerouslySkipPermissions?: boolean; permissionMode?: "deny-all" }, sourcePolicy: Record<string, unknown>, sourceAdapter: "paperclip_runner" | "claude_local" = "paperclip_runner") {
+    const { harnessPoolService } = await import("../services/harness-pools.js");
+    const account = await aiConnectionService(db).save(companyId, "alice", {
+      provider: "anthropic", method: "api_key", ownership: "personal", name: randomUUID(),
+      apiKey: "pool-policy-fixture", agentIds: [], allAgents: true,
+    }, randomUUID());
+    const pool = await harnessPoolService(db).save(companyId, { config: {
+      schemaVersion: 2, kind: "harness_pool", name: randomUUID(), enabled: true, mode: "failover", members: [{
+        id: randomUUID(), runner: "legacy", harness: { type: "claude_code" }, adapterConfig: memberConfig,
+        connection: { mode: "delegated", provider: "anthropic", method: "api_key", ...account }, model: "claude-sonnet-5",
+      }],
+    } }, "alice");
+    const [agent] = await db.insert(agents).values({ companyId, name: "Source policy fixture", adapterType: sourceAdapter, adapterConfig: { cwd: home, ...sourcePolicy },
+      runtimeConfig: { ...(sourceAdapter === "paperclip_runner"
+        ? { harnessPool: { poolId: pool.id } }
+        : { aiConnection: { mode: "router", connectionId: pool.id } }), heartbeat: { enabled: false } } }).returning();
+    const [issue] = await db.insert(issues).values({ companyId, title: "Dispatch restricted pool member", status: "todo", assigneeAgentId: agent.id, responsibleUserId: "alice", createdByUserId: "alice" }).returning();
+    const execute = vi.fn(async (_input: AdapterExecutionContext) => { throw new Error("pool policy fixture reached provider dispatch"); });
+    registerServerAdapter({ ...getServerAdapter("claude_local"), execute });
+    const original = await instanceSettingsService(db).getExperimental();
+    await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true });
+    const heartbeat = heartbeatService(db, { runtimeEnv: {} });
+    try {
+      const run = await heartbeat.wakeup(agent.id, { source: "assignment", reason: "issue_assigned", payload: { issueId: issue.id },
+        contextSnapshot: { issueId: issue.id, responsibleUserId: "alice" }, triggerDetail: "system" });
+      await expect.poll(async () => (await heartbeat.getRun(run!.id))?.status, { timeout: 30000 }).toBe("failed");
+      const settled = await heartbeat.getRun(run!.id);
+      if (sourceAdapter === "claude_local") {
+        expect(execute).toHaveBeenCalledOnce();
+        expect(execute.mock.calls[0]?.[0].config).toMatchObject(memberConfig);
+        expect(settled?.error).toContain("pool policy fixture reached provider dispatch");
+      } else {
+        expect(execute).not.toHaveBeenCalled();
+        expect(settled?.runnerProfileJson).toMatchObject({
+          adapterDispatch: { poolPreparationFailure: { kind: "configuration", code: "pool_execution_policy_incompatible" } },
+        });
+      }
+    } finally {
+      await heartbeat.drainActiveRunExecutions();
+      unregisterServerAdapter("claude_local");
+      await instanceSettingsService(db).updateExperimental(original);
+    }
+  }
+
   it("refuses cross-provider execution when source CLI policy cannot be preserved", () => {
     const target = { poolId: randomUUID(), memberId: members[1]!.id, binding: members[1]!.binding,
       adapterType: "claude_local", runtimeConfig: poolMemberRuntimeConfig(members[1]!, "codex_local").config, notes: [] };
