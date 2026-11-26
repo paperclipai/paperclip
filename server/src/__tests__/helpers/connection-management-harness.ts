@@ -56,7 +56,6 @@ export function createConnectionManagementHarness(
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", join(server.root, "master.key"));
     await instanceSettingsService(server.db).updateExperimental({
       enableChatConnectors: true,
-      enableGitHubReviewBots: true,
       enableGoogleWorkspaceConnector: true,
     });
   }, 90_000);

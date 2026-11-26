@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
-  archiveImageDigest, assertPipelineUnchanged, changedSince, createRecord, repositoryId, selectArtifact, selectVerifiedRun, verifyRecord, workflowPath,
+  archiveImageDigest, assertPipelineUnchanged, changedSince, createRecord, repositoryId, resolveFindWaitMs, selectArtifact, selectVerifiedRun, verifyRecord, workflowPath,
 } from "./merge-group-image.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -96,10 +96,16 @@ test("reads a real tar archive through the system tar", () => {
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("promotion proves commit, tree, architecture and archive digest", () => {
+test("promotion proves commit, tree, architecture, Runner inputs digest and archive digest", () => {
   const digest = `sha256:${"e".repeat(64)}`;
+  const runnerInputsDigest = "1".repeat(64);
   const record = createRecord({ sha, tree, arch: "amd64", digest });
   assert.equal(verifyRecord({ record, sha, tree, arch: "amd64", archiveDigest: digest }), digest);
+  const publishedRecord = createRecord({ sha, tree, arch: "amd64", digest, runnerInputsDigest });
+  assert.equal(verifyRecord({ record: publishedRecord, sha, tree, arch: "amd64", archiveDigest: digest, runnerInputsDigest }), digest);
+  assert.throws(() => verifyRecord({ record: publishedRecord, sha, tree, arch: "amd64", archiveDigest: digest, runnerInputsDigest: "" }), /different Runner image/);
+  assert.throws(() => verifyRecord({ record, sha, tree, arch: "amd64", archiveDigest: digest, runnerInputsDigest }), /different Runner image/);
+  assert.throws(() => verifyRecord({ record: publishedRecord, sha, tree, arch: "amd64", archiveDigest: digest, runnerInputsDigest: "2".repeat(64) }), /different Runner image/);
   for (const [change, pattern] of [
     [{ sha: "f".repeat(40) }, /different commit/],
     [{ tree: "f".repeat(40) }, /different tree/],
@@ -113,8 +119,19 @@ test("promotion proves commit, tree, architecture and archive digest", () => {
 
 test("a push that changes the merge-group pipeline is built from source, not promoted", () => {
   assert.doesNotThrow(() => assertPipelineUnchanged([]));
-  assert.doesNotThrow(() => assertPipelineUnchanged(["Dockerfile", "server/src/index.ts", "scripts/standard-image-contract.mjs"]));
-  for (const file of [".github/workflows/docker-merge-group.yml", ".github/workflows/docker.yml", "scripts/merge-group-image.mjs", "scripts/assert-orphan-reaping.sh"]) {
+  assert.doesNotThrow(() => assertPipelineUnchanged(["Dockerfile", "server/src/index.ts"]));
+  for (const file of [
+    ".github/workflows/docker-merge-group.yml",
+    ".github/workflows/docker.yml",
+    "scripts/runner-image-resolve.mjs",
+    "scripts/runner-image-publish.mjs",
+    "scripts/runner-image-identity.mjs",
+    "scripts/runner-image-layout.mjs",
+    "scripts/runner-image-oci.mjs",
+    "scripts/standard-image-contract.mjs",
+    "scripts/merge-group-image.mjs",
+    "scripts/assert-orphan-reaping.sh",
+  ]) {
     assert.throws(() => assertPipelineUnchanged(["server/src/index.ts", file]), /changes the merge-group image pipeline/, file);
   }
 });
@@ -162,7 +179,7 @@ test("the CLI refuses to record outside a merge group or promote outside a canon
   ]) for (const command of ["find", "verify"]) assert.match(run(command, env), /only for canonical master pushes/);
 });
 
-test("the merge-queue build has no publishing credentials or paid infrastructure", () => {
+test("the merge-queue build has no publishing credentials or AWS release fleet access", () => {
   const workflow = readFileSync(path.join(root, ".github", "workflows", "docker-merge-group.yml"), "utf8");
   const triggers = workflow.split("\non:\n")[1].split("\n\n")[0];
   assert.equal(triggers.trim(), "merge_group:", "only the merge queue triggers this build");
@@ -170,9 +187,9 @@ test("the merge-queue build has no publishing credentials or paid infrastructure
   const permissions = [...workflow.matchAll(/^    permissions:\n((?: {6}.+\n)+)/gm)].map(match => match[1].trim());
   assert.ok(permissions.length > 0);
   for (const block of permissions) {
-    assert.ok(block.split("\n").map(line => line.trim()).every(line => /^(contents|actions): read$/.test(line)));
+    assert.ok(block.split("\n").map(line => line.trim()).every(line => /^(contents|actions|attestations): read$/.test(line)));
   }
-  assert.doesNotMatch(workflow, /secrets\.|packages: write|id-token|attestations|docker\/login-action|cache-to:|push: true|environment:|runs-on\//);
+  assert.doesNotMatch(workflow, /secrets\.|packages: write|id-token|attestations: write|docker\/login-action|cache-to:|push: true|environment:|runs-on\//);
   assert.doesNotMatch(workflow, /pull_request_target|workflow_run|workflow_dispatch/);
   assert.match(workflow, /persist-credentials: false/);
   assert.match(workflow, /github\.event\.merge_group\.base_ref == 'refs\/heads\/master'/);
@@ -190,7 +207,15 @@ test("master promotes only after proof and otherwise builds exactly as before", 
   const step = name => { const found = steps.find(item => item.startsWith(`      - name: ${name}\n`)); assert.ok(found, name); return found; };
   const order = name => steps.indexOf(step(name));
   assert.match(step("Find the merge-queue build of this commit"),
-    /if: needs.runner_image.outputs.mode != 'published' && github.repository == 'paperclipai\/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs\/heads\/master'/);
+    /if: github.repository == 'paperclipai\/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs\/heads\/master'/);
+  assert.match(step("Find the merge-queue build of this commit"),
+    /MERGE_GROUP_FIND_WAIT_MS: \$\{\{ vars\.CORE_RELEASE_AWS_ENABLED == 'true' && '0' \|\| '180000' \}\}/);
+  assert.equal(resolveFindWaitMs({}), 180_000);
+  assert.equal(resolveFindWaitMs({ MERGE_GROUP_FIND_WAIT_MS: "0" }), 0);
+  assert.equal(resolveFindWaitMs({ MERGE_GROUP_FIND_WAIT_MS: "45000" }), 45_000);
+  assert.equal(resolveFindWaitMs({ MERGE_GROUP_FIND_WAIT_MS: "999999" }), 180_000);
+  assert.equal(resolveFindWaitMs({ MERGE_GROUP_FIND_WAIT_MS: "-1" }), 180_000);
+  assert.equal(resolveFindWaitMs({ MERGE_GROUP_FIND_WAIT_MS: "invalid" }), 180_000);
   for (const name of ["Find the merge-queue build of this commit", "Download the merge-queue image", "Promote the merge-queue image"]) {
     assert.match(step(name), /continue-on-error: true/, `${name} must fall back to the build`);
   }
@@ -202,7 +227,7 @@ test("master promotes only after proof and otherwise builds exactly as before", 
     assert.match(step(name), /git show "\$BEFORE:scripts\/merge-group-image.mjs" > "\$trusted"/);
     assert.doesNotMatch(step(name), /node scripts\/merge-group-image\.mjs/);
   }
-  assert.match(promote, /node "\$trusted" verify --arch "\$ARCH" --dir "\$DIRECTORY" --since "\$BEFORE"/);
+  assert.match(promote, /node "\$trusted" verify --arch "\$ARCH" --dir "\$DIRECTORY" --since "\$BEFORE" --runner-inputs-digest "\$RUNNER_INPUTS_DIGEST"/);
   assert.ok(promote.indexOf('"$trusted" verify') < promote.indexOf("skopeo copy"));
   assert.ok(promote.indexOf("skopeo copy --all --preserve-digests") < promote.indexOf('echo "digest=$digest" >> "$GITHUB_OUTPUT"'),
     "the promoted digest becomes an output only after the exact bytes are pushed");

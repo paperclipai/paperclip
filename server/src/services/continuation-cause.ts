@@ -16,7 +16,7 @@ export const PERSON_OWNED_FAILURE_CODES = [
   // A credential, secret or access the person must share.
   "configuration_incomplete", "slack_configuration_incomplete", "signing_secret_unconfigured",
   "user_secret_missing", "user_secret_definition_missing", "user_secret_definition_inactive",
-  "github_access_denied", "github_repo_not_accessible", "github_auth_required", "project_access_denied",
+  "github_access_denied", "github_app_installation_suspended", "github_repo_outside_app_installations", "github_repo_not_accessible", "github_auth_required", "project_access_denied",
   "permission_denied", "responsible_user_unauthorized", "oauth_access_projection_disabled",
   "acpx_auth_required", "codex_auth_required", "claude_auth_required", "provider_auth_failed", "hermes_gateway_auth_failed",
   // A configuration choice the person must change.

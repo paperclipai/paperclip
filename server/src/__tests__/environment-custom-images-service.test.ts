@@ -35,6 +35,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { uniqueIssuePrefix } from "./helpers/issue-prefix.js";
 
 const externalTestDatabase = resolveExternalTestDatabaseUrl("PAPERCLIP_CUSTOM_IMAGE_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalTestDatabase ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
@@ -189,7 +190,7 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     const companyId = randomUUID();
     const environmentId = randomUUID();
     await db.insert(companies).values(
-      { id: companyId, name: "Acme", issuePrefix: `A${companyId.slice(0, 4)}` },
+      { id: companyId, name: "Acme", issuePrefix: uniqueIssuePrefix("A") },
     );
     await db.insert(environments).values({
       id: environmentId,
@@ -1101,7 +1102,7 @@ describeEmbeddedPostgres("environmentCustomImageService reconciliation", () => {
     const companyId = randomUUID();
     const environmentId = randomUUID();
     await db.insert(companies).values(
-      { id: companyId, name: "Acme", issuePrefix: `A${companyId.slice(0, 4)}` },
+      { id: companyId, name: "Acme", issuePrefix: uniqueIssuePrefix("A") },
     );
     await db.insert(environments).values({
       id: environmentId,
@@ -1422,7 +1423,7 @@ describeEmbeddedPostgres("environmentCustomImageService relink", () => {
     const companyId = randomUUID();
     const environmentId = randomUUID();
     await db.insert(companies).values(
-      { id: companyId, name: "Acme", issuePrefix: `A${companyId.slice(0, 4)}` },
+      { id: companyId, name: "Acme", issuePrefix: uniqueIssuePrefix("A") },
     );
     await db.insert(environments).values({
       id: environmentId,

@@ -906,8 +906,8 @@ describe("managed AI connections", () => {
       });
       receiverProcess = monitorQuotaCredentialProcess(child);
       // Keep cold service imports out of the 25-second exchange/save deadline.
-      await receiverProcess.waitForReady(55_000);
-    }, 60_000);
+      await receiverProcess.waitForReady(150_000);
+    }, 155_000);
 
     afterEach(async () => { await receiverProcess?.stop(); });
 

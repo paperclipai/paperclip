@@ -1562,4 +1562,47 @@ suite("fresh-continuation fallback", () => {
     expect(await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "held_recovery" }))
       .toEqual({ kind: "person_owned", reason: "retry_needed" });
   }, 60_000);
+
+  it("starts a fresh isolated workspace on auto-continuation after a non-retryable workspace binding_mismatch instead of reusing the broken workspace", async () => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "setup_failed",
+      error: "Saved workspace storage no longer matches this workspace; retrying the same workspace will not help" });
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: f.issueId, mode: "isolated",
+      strategyType: "git_worktree", name: "Broken task workspace", providerType: "local_fs", cwd: "/tmp/broken-binding-workspace" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace!.id, workspaceBindingRevision: 1 }).where(eq(issues.id, f.issueId));
+    await db.update(heartbeatRuns).set({
+      resultJson: { workspaceProviderFailure: { kind: "provider", reason: "binding_mismatch", retryable: false } },
+    }).where(eq(heartbeatRuns.id, f.runId));
+
+    const decided = await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" });
+    expect(decided).toMatchObject({ kind: "continued", isolation: "fresh_isolated_workspace", delivery: "recorded" });
+    expect(await issue(f.issueId)).toMatchObject({ executionWorkspaceId: null, workspaceBindingRevision: 2, status: "todo" });
+
+    await occupySlot();
+    await deliver();
+    const [next] = await successors(f.runId);
+    expect(next).toBeDefined();
+    expect(next!.contextSnapshot).toMatchObject({ freshContinuationIsolation: f.actionId, forceFreshSession: true });
+    expect(await readFreshWorkspaceReadiness(db, next!)).toMatchObject({
+      mode: "fresh_isolated_workspace",
+      retryIntentId: f.actionId,
+      sourceRunId: f.runId,
+    });
+  }, 60_000);
+
+  it.each([
+    { reason: "storage_pending", retryable: true, error: "Project storage is still being prepared; retry the same workspace shortly" },
+    { reason: "credential_unavailable", retryable: false, error: "Workspace storage provider cannot use the project's Git credential; reconnect it before retrying" },
+  ])("keeps writer_ended isolation for non-binding workspaceProviderFailure ($reason)", async ({ reason, retryable, error }) => {
+    const f = await unfinishedRun({ runtime: "legacy", errorCode: "setup_failed", error });
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId, sourceIssueId: f.issueId, mode: "isolated",
+      strategyType: "git_worktree", name: "Reusable task workspace", providerType: "local_fs", cwd: "/tmp/reusable-workspace" }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace!.id, workspaceBindingRevision: 1 }).where(eq(issues.id, f.issueId));
+    await db.update(heartbeatRuns).set({
+      resultJson: { workspaceProviderFailure: { kind: "provider", reason, retryable } },
+    }).where(eq(heartbeatRuns.id, f.runId));
+
+    const decided = await ensureFreshContinuation(db, { companyId, runId: f.runId, trigger: "recovery_refused" });
+    expect(decided).toMatchObject({ kind: "continued", isolation: "writer_ended", delivery: "recorded" });
+    expect(await issue(f.issueId)).toMatchObject({ executionWorkspaceId: workspace!.id, workspaceBindingRevision: 1 });
+  }, 60_000);
 });

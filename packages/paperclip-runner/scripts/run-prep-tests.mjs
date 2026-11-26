@@ -46,6 +46,8 @@ export const PREP_TEST_FILES = [
   "scripts/install-copilot-assets.test.mjs",
   "scripts/probe-copilot-acp.test.mjs",
   "scripts/qualify-copilot-acp.test.mjs",
+  "scripts/run-build.test.mjs",
+  "scripts/run-check-runner.test.mjs",
   "scripts/run-check-static.test.mjs",
 ];
 

@@ -140,6 +140,8 @@ import * as providerArtifactStorage from "./native-provider-artifacts.js";
 import * as providerArtifactCapture from "./native-provider-artifact-capture.js";
 import * as nativeCredentialEvents from "./native-credential-updates.js";
 import * as nativeCredentialStores from "./native-credential-store.js";
+import * as antigravityRelease from "./antigravity-release.js";
+import { ANTIGRAVITY_PATCHED_CLOSURE_SHA256 } from "./remote-provider-pack.js";
 import * as managedCredentialWriteback from "../managed-ai-credential-writeback.js";
 import { completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
 import * as nativeExecutionDriver from "./native-runner-execution-driver.js";
@@ -342,11 +344,11 @@ vi.mock("../../vendor/paperclip-runner/index.js", async (importOriginal) => {
   const original = await importOriginal<
     typeof import("../../vendor/paperclip-runner/index.js")
   >();
-  // Antigravity's release state is stubbed per test (pending today, qualified after the flip).
-  const { qualificationStatus: _antigravityPending, ...antigravityReleased } = original.QUALIFIED_ACPX_PROFILES.antigravity;
+  // Antigravity's release state is stubbed per test (qualified by default, pending for historical checks).
+  const antigravityPending = { ...original.QUALIFIED_ACPX_PROFILES.antigravity, qualificationStatus: "pending" as const };
   const profiles = { ...original.QUALIFIED_ACPX_PROFILES };
   Object.defineProperty(profiles, "antigravity", { enumerable: true,
-    get: () => antigravityPack.released ? antigravityReleased : original.QUALIFIED_ACPX_PROFILES.antigravity });
+    get: () => antigravityPack.released ? original.QUALIFIED_ACPX_PROFILES.antigravity : antigravityPending });
   return {
     ...original,
     QUALIFIED_ACPX_PROFILES: profiles,
@@ -543,6 +545,7 @@ import {
   verifyNativeHarnessBackupStreamed,
   shouldRestoreNativeHarnessBackupIntoSandbox,
   remoteProviderStateNeverOpened,
+  providerSessionReplaceableAfterStateLoss,
 } from "./native-session-executor.js";
 import { onNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
 
@@ -5308,18 +5311,21 @@ describe("split durable provider checkpoint identity", () => {
 });
 
 describe("remote provider checkpoint snapshots", () => {
-  it.each(["codex", "grok"] as const)("excludes %s credentials and handoffs from real checkpoint copies while retaining sessions", async provider => {
+  it.each(["codex", "grok", "antigravity"] as const)("excludes %s credentials and handoffs from real checkpoint copies while retaining sessions", async provider => {
     const root = await mkdtemp(join(tmpdir(), `${provider}-checkpoint-`));
     try {
       const source = join(root, "source");
       const target = join(root, "backup");
       const sessionDirectory = acpxRuntimeSessionDirectoryName("session");
-      const relativeHome = join("acpx", sessionDirectory, `${provider}-home`);
+      const relativeHome = provider === "antigravity"
+        ? join("acpx", sessionDirectory, "antigravity-home", "antigravity-acp")
+        : join("acpx", sessionDirectory, `${provider}-home`);
+      const primaryToken = provider === "antigravity" ? "acp_token.json" : "auth.json";
       const home = join(source, relativeHome);
       await mkdir(join(home, "logs"), { recursive: true });
       await mkdir(join(home, "sessions"));
       await writeFile(join(home, "logs", "unified.jsonl"), "AUTH_SENTINEL");
-      await writeFile(join(home, "auth.json"), "AUTH_SENTINEL");
+      await writeFile(join(home, primaryToken), "AUTH_SENTINEL");
       await writeFile(join(home, "auth-refresh.json"), "AUTH_SENTINEL");
       await writeFile(join(home, "auth-refresh.json.tmp"), "AUTH_SENTINEL");
       await writeFile(join(home, "sessions", "session.json"), "resume-state");
@@ -5337,7 +5343,7 @@ describe("remote provider checkpoint snapshots", () => {
       await syncRemoteRunnerDirectoryOut({ runner: { execute, syncOut } as never,
         sourcePath: source, targetPath: target, mode: 0o700,
         excludeEntries: profile.directories.find(directory => directory.name === "acpx")!.excludeEntries });
-      for (const entry of ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp", ...(provider === "grok" ? ["logs"] : [])])
+      for (const entry of [primaryToken, "auth-refresh.json", "auth-refresh.json.tmp", ...(provider === "grok" || provider === "antigravity" ? ["logs"] : [])])
         await expect(access(join(target, relativeHome, entry))).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(join(target, relativeHome, "sessions", "session.json"), "utf8")).toBe("resume-state");
       expect(await readFile(join(home, "logs", "unified.jsonl"), "utf8")).toBe("AUTH_SENTINEL");
@@ -18605,6 +18611,110 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
+  it("projects the selected Antigravity subscription onto a Core remote sandbox and writes back rotated refreshes over the remote store", async () => {
+    const priorHome = process.env.PAPERCLIP_HOME;
+    const privateRoot = await realpath(isolatedStateDirectory);
+    process.env.PAPERCLIP_HOME = privateRoot;
+    const managedHome = join(privateRoot, "antigravity-remote-managed-home");
+    await mkdir(join(managedHome, "antigravity-acp"), { recursive: true, mode: 0o700 });
+    const credential = (project?: string) => JSON.stringify({
+      client_id: "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com", client_secret: "fixture-client-secret",
+      refresh_token: "fixture-google-refresh", token_uri: "https://oauth2.googleapis.com/token", scopes: ["https://www.googleapis.com/auth/cloud-platform", "https://www.googleapis.com/auth/userinfo.email", "https://www.googleapis.com/auth/aicode"],
+      ...(project ? { project_id: project } : {}),
+    });
+    const managedToken = join(managedHome, "antigravity-acp", "acp_token.json");
+    await writeFile(managedToken, credential(), { mode: 0o600 });
+    const current = { ...execution,
+      provider: { kind: "acpx", agent: "antigravity", model: "caller-selected-model", permissionMode: "deny-all" },
+      session: { ...execution.session, driverKind: "acpx_runtime" },
+    } as unknown as NativeExecutionInputV1;
+    const order: string[] = [];
+    const transportClose = vi.fn(async () => { order.push("transport-close"); });
+    const nativeTransport = { close: transportClose };
+    state.createTransport.mockReturnValueOnce({ transport: nativeTransport } as never);
+    const close = vi.fn(async () => { order.push("session-close"); await nativeTransport.close(); });
+    state.createBackend.mockReturnValueOnce({ kind: "test", openSession: async () => ({ close }) } as never);
+    const remoteStore = {
+      read: vi.fn(async () => { order.push("remote-read"); return credential("rotated-remote-project"); }),
+      remove: vi.fn(async () => { order.push("remote-remove"); }),
+    };
+    const releaseSpy = vi.spyOn(antigravityRelease, "antigravityReleasePending").mockReturnValue(false);
+    const storeSpy = vi.spyOn(nativeCredentialStores, "createNativeCredentialStore").mockReturnValueOnce(remoteStore);
+    const prepareRemoteSpy = vi.spyOn(nativeExecutionDriver, "prepareNativeRemoteRunner").mockResolvedValueOnce(undefined);
+    const execute = vi.fn(async () => ({ exitCode: 0, timedOut: false, stdout: "", stderr: "", signal: null, pid: null, startedAt: null }));
+    const packRoot = join(privateRoot, "antigravity-remote-pack");
+    await mkdir(packRoot, { recursive: true, mode: 0o700 });
+    const digest = "sha256:" + "a".repeat(64);
+    const canonical = (value: unknown): string => Array.isArray(value)
+      ? `[${value.map(canonical).join(",")}]`
+      : value && typeof value === "object"
+        ? `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => `${JSON.stringify(k)}:${canonical(v)}`).join(",")}}`
+        : JSON.stringify(value);
+    const artifacts = Object.fromEntries(Object.entries({
+      grokLauncher: "dist/providers/grok/launcher.cjs", nodeCommand: "node_modules/node/bin/node",
+      productionLock: "pnpm-lock.yaml", opencodeCommand: "node_modules/.bin/opencode",
+      opencodeExecutable: "node_modules/opencode-ai/bin/opencode.exe",
+      opencodeProxy: "dist/cli/opencode-app-server-proxy.cjs", acpxSidecar: "dist/cli/acpx-runtime-sidecar.cjs",
+    }).map(([key, path]) => [key, { path, sha256: digest }]));
+    const payload = {
+      compatibility: { opencode: 1, acpx: 1 }, contractDigest: digest,
+      target: { platform: "linux", architecture: "x64" }, runnerSourceRevision: "a".repeat(40),
+      pins: { nodeMinimum: "24.11.0", codex: QUALIFIED_ACPX_PROFILES.codex.agentRuntimeVersion,
+        opencode: "1.18.34", acpx: "0.22.0", grok: QUALIFIED_ACPX_PROFILES.grok.agentRuntimeVersion,
+        claudeAcp: QUALIFIED_ACPX_PROFILES.claude.agentServerVersion, codexAcp: QUALIFIED_ACPX_PROFILES.codex.agentServerVersion },
+      acpxProfileDigests: Object.fromEntries(["grok", "claude", "codex"].map(agent =>
+        [agent, QUALIFIED_ACPX_PROFILES[agent as "grok" | "claude" | "codex"].commandDigest])),
+      distDigest: digest, artifacts,
+      bridgeDigest: "sha256:" + createHash("sha256").update(digest + "\n" + digest + "\n" + digest).digest("hex"),
+      providers: {
+        antigravity: {
+          version: QUALIFIED_ACPX_PROFILES.antigravity.agentServerVersion,
+          profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest,
+          closureDigest: `sha256:${ANTIGRAVITY_PATCHED_CLOSURE_SHA256["linux-x64"]}`,
+          qualification: "qualified",
+          path: "provider-assets/antigravity/linux-x64",
+          sha256: digest,
+        },
+      },
+    };
+    const manifest = { schema: "paperclip-runner/remote-provider-pack/v1", payload,
+      digest: "sha256:" + createHash("sha256").update(canonical(payload)).digest("hex") };
+    const previousPackPath = state.bundledPackManifestPath;
+    const previousRunnerBinary = state.bundledRunnerBinary;
+    state.bundledPackManifestPath = join(packRoot, "provider-pack.json");
+    state.bundledRunnerBinary = join(packRoot, "linux-paperclip-runnerd");
+    await writeFile(state.bundledPackManifestPath, JSON.stringify(manifest));
+    const daemon = Buffer.alloc(64); daemon.set([0x7f, 0x45, 0x4c, 0x46, 2, 1]); daemon.writeUInt16LE(62, 18);
+    await writeFile(state.bundledRunnerBinary, daemon);
+    try {
+      const backend = await createRunnerdBackend({ db: leaseDb(current), execution: current,
+        runnerInstanceId: "antigravity-remote-credential-close", managedAiCredentialHome: managedHome,
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", runner: { execute } },
+        runnerEnvironment: { GEMINI_HOME: "/ambient", GOOGLE_API_KEY: "ambient-key", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "spoofed" } });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const transport = state.createTransport.mock.calls.at(-1)![0];
+      expect(transport.environment!.PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET).toBe(credential());
+      expect(transport.environment?.GEMINI_HOME).toBeUndefined();
+      expect(transport.environment?.GOOGLE_API_KEY).toBeUndefined();
+      const session = await backend.openSession({} as never);
+      expect(storeSpy).toHaveBeenCalledWith(expect.objectContaining({
+        provider: "antigravity",
+        remoteHome: expect.stringMatching(/\/acpx\/acpx\/[^/]+\/antigravity-home\/antigravity-acp$/),
+      }));
+      await session.close({ reason: "completed" });
+      expect(order).toEqual(["session-close", "transport-close", "remote-read", "remote-remove"]);
+      expect(await readFile(managedToken, "utf8")).toBe(credential("rotated-remote-project"));
+    } finally {
+      state.bundledPackManifestPath = previousPackPath;
+      state.bundledRunnerBinary = previousRunnerBinary;
+      releaseSpy.mockRestore();
+      storeSpy.mockRestore();
+      prepareRemoteSpy.mockRestore();
+      if (priorHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = priorHome;
+    }
+  });
+
   it("still cleans up managed Codex credentials after an owned session closes", async () => {
     const close = vi.fn(async () => undefined);
     state.copyBackCodexAuth.mockClear();
@@ -19877,6 +19987,163 @@ describe("runnerd provider runtime wiring", () => {
         }
       } finally { owner.mockRestore(); resume.mockRestore(); }
     });
+
+  it("keeps same-session recovery for an unfinished goal or Antigravity after a confirmed lost plugin checkpoint", () => {
+    const codex = { provider: { kind: "codex", model: null, approvalPolicy: "never" } } as unknown as NativeExecutionInput;
+    const goal = (status: string) => ({ threadId: "thread", objective: "ship", status, tokenBudget: null, tokensUsed: 0, timeUsedSeconds: 0 }) as never;
+    expect(providerSessionReplaceableAfterStateLoss({}, codex)).toBe(true);
+    expect(providerSessionReplaceableAfterStateLoss({ goal: null }, codex)).toBe(true);
+    expect(providerSessionReplaceableAfterStateLoss({ goal: goal("complete") }, codex)).toBe(true);
+    for (const status of ["active", "paused", "blocked", "limited", "usageLimited", "budgetLimited"]) {
+      expect(providerSessionReplaceableAfterStateLoss({ goal: goal(status) }, codex), status).toBe(false);
+    }
+    const antigravity = { provider: { kind: "acpx", agent: "antigravity" } } as unknown as NativeExecutionInput;
+    expect(providerSessionReplaceableAfterStateLoss({}, antigravity))
+      .toBe(!antigravityRelease.antigravityForcesSameSessionRecovery(antigravity.provider));
+  });
+
+  it.each([
+    "stopped-state-unavailable",
+    "stopped-availability-omitted",
+    "stop-unconfirmed",
+    "stopped-lease-unreleased",
+  ] as const)(
+    "handles unconfirmed plugin checkpoint status on replacement lease: %s",
+    async mode => {
+      const first = {
+        ...scopedNativeExecution(`plugin-checkpoint-unconfirmed-${mode}`),
+        schema: "paperclip.native-execution-input.v5", executionMode: "default", planningContext: null, runtimeContext: nativeRuntimeContextFixture(),
+        provider: { kind: "codex", model: null, approvalPolicy: "never" },
+        session: { ...execution.session, driverKind: "codex_app_server",
+          normalizedSessionId: `plugin-checkpoint-unconfirmed-${mode}`, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } },
+      } as NativeExecutionInput;
+      parseNativeExecutionInput(first);
+      const next = { ...first, binding: { ...first.binding, runId: `${first.binding.runId}-followup` } };
+      const identity = {
+        runId: first.binding.runId, normalizedSessionId: first.session.normalizedSessionId!,
+        runnerInstanceId: "plugin-runner", environmentLeaseId: "old-lease", turnId: "old-turn", itemId: "old-item",
+      };
+      const scoped = await initializeScopedRunnerRoot(first, identity.runnerInstanceId);
+      await mkdir(join(scoped, "control-plane"), { recursive: true });
+      const journal = JSON.stringify({
+        ...durableControlPlaneState(identity),
+        commands: [{ type: "turn.start", status: "completed" }],
+        committedEvents: [{ eventType: "run.terminal", envelope: { ...identity, payload: { reportedWorkDisposition: "done" } } }],
+      });
+      await writeFile(join(scoped, "control-plane/control-plane-state.json"), journal);
+
+      const db = leaseDb(next);
+      const ordinarySelect = db.select.bind(db);
+      const { currentNativeControllerIdentity } = await import("./native-restart-recovery.js");
+      const controller = await currentNativeControllerIdentity();
+      const committedPrior = {
+        run: {
+          id: first.binding.runId, companyId: first.binding.companyId, agentId: first.binding.agentId,
+          nativeIssueId: first.binding.issueId, runtimeMode: "native", status: "succeeded",
+          runnerProfileJson: { nativeExecutionInput: first },
+          processPid: null, processGroupId: null, processStartedAt: null,
+        },
+        owner: {
+          runId: first.binding.runId, companyId: first.binding.companyId, issueId: first.binding.issueId,
+          phase: "committed", resultId: "result-1", leaseOwner: null, recoveryState: null,
+          controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt,
+          controllerBootId: controller.bootId,
+        },
+      };
+      const priorEndedLease = {
+        id: "old-lease", companyId: first.binding.companyId, heartbeatRunId: first.binding.runId,
+        status: mode === "stopped-lease-unreleased" ? "active" : "released",
+        releasedAt: mode === "stopped-lease-unreleased" ? null : new Date(),
+        cleanupStatus: mode === "stopped-lease-unreleased" ? null : "success",
+        provider: "plugin:test:tasks", providerLeaseId: "old-task",
+        metadata: {
+          driver: "plugin",
+          runnerTaskExecutionStopped: true,
+          runnerTaskSessionRetained: false,
+          remoteExecutionTermination: {
+            schema: "paperclip.remote-termination.v1",
+            companyId: first.binding.companyId,
+            runId: first.binding.runId,
+            leaseId: "old-lease",
+            provider: "plugin:test:tasks",
+            providerLeaseId: "old-task",
+            state: "stopped",
+            confirmedAt: new Date().toISOString(),
+          },
+        },
+      };
+      db.select = ((fields?: Record<string, unknown>) => {
+        if (fields?.status === heartbeatRuns.status && fields?.runnerProfileJson === heartbeatRuns.runnerProfileJson) {
+          return priorNativeRunDb(first, "succeeded").select(fields as never);
+        }
+        if (fields && "run" in fields && "owner" in fields) {
+          return {
+            from: () => ({
+              innerJoin: () => ({
+                where: () => ({ limit: async () => [committedPrior] }),
+              }),
+            }),
+          };
+        }
+        if (fields && "providerLeaseId" in fields && "status" in fields) {
+          return { from: () => ({ where: async () => [priorEndedLease] }) };
+        }
+        if (fields === undefined) {
+          return {
+            from: (table: unknown) => table === environmentLeases
+              ? { where: async () => [priorEndedLease] }
+              : ordinarySelect().from(table as never),
+          };
+        }
+        return ordinarySelect(fields as never);
+      }) as Db["select"];
+
+      const resume = vi.spyOn(environmentTaskRuntime, "resolvePluginTaskResume").mockResolvedValue("old-task");
+      const task = vi.fn(async (operation: any) => {
+        environmentTaskOperationSchema.parse(operation);
+        if (operation.kind === "read_state") {
+          throw environmentTaskRuntime.createUnconfirmedPluginCheckpointError({
+            executionStopped: mode !== "stop-unconfirmed",
+            ...(mode === "stopped-availability-omitted" ? {} : { sessionStateAvailable: false }),
+          });
+        }
+        return {
+          kind: "description", taskId: "replacement-task", launchPreparationVersion: 1, projectAuthCheckVersion: 1, warmTaskVersion: 1,
+          runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` },
+        };
+      });
+      state.createBackend.mockClear();
+      const home = join(isolatedStateDirectory, `checkpoint-unconfirmed-${mode}`);
+      await mkdir(home, { recursive: true });
+      await writeFile(join(home, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "synthetic-fixture" }), { mode: 0o600 });
+      try {
+        const launch = {
+          db, execution: next, runnerInstanceId: "replacement-runner", runnerIngressAuthorized: true,
+          managedAiCredentialHome: home, managedAiCredentialIdentity: "revision", managedAiAccountIdentity: "account",
+          runnerEnvironment: { ANTHROPIC_API_KEY: "synthetic-fixture" },
+          runnerExecutionTarget: {
+            kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "replacement-lease", runnerTask: task,
+            sandboxLeaseAcquisition: { outcome: "replacement", providerLeaseId: "replacement-task" },
+          } as never,
+        };
+        if (mode === "stopped-state-unavailable") {
+          await expect(createRunnerdBackend(launch)).resolves.toBeDefined();
+          expect(state.createBackend).toHaveBeenCalledOnce();
+          expect(existsSync(join(scoped, "continuity-breaks"))).toBe(true);
+        } else if (mode === "stopped-lease-unreleased") {
+          await expect(createRunnerdBackend(launch)).rejects.toThrow("retirement_refused=prior_lease_active");
+          expect(state.createBackend).not.toHaveBeenCalled();
+          expect(existsSync(join(scoped, "continuity-breaks"))).toBe(false);
+        } else {
+          await expect(createRunnerdBackend(launch)).rejects.toThrow("checkpoint_status_unconfirmed");
+          expect(state.createBackend).not.toHaveBeenCalled();
+          expect(existsSync(join(scoped, "continuity-breaks"))).toBe(false);
+        }
+      } finally {
+        resume.mockRestore();
+      }
+    },
+  );
 
   it.each(["verified", "wrong-state", "no-stop-proof", "disposition-retry", "disposition-wrong-state", "disposition-no-stop-proof"] as const)("admits only an authorized same-run plugin checkpoint: %s", async mode => {
     const current = scopedNativeExecution(`plugin-crash-${mode}`);

@@ -58,4 +58,23 @@ describe("renderNativeSessionHandoff", () => {
       preset: "low_trust_review", disposition: "quarantined", sourceIssueId: "issue-48", sourceAgentId: "agent-1",
     });
   });
+
+  it("preserves other_agent author labels alongside agent and user entries", () => {
+    const packet = renderNativeSessionHandoff({
+      issueId: "chat-1",
+      generation: 0,
+      omittedEntriesAtLeast: 0,
+      entries: [
+        { kind: "original_request", id: "c-user", body: "Plan the launch", author: "user" },
+        { kind: "message", id: "c-peer", body: "PEER NOTE", author: "other_agent", authorAgentId: "agent-peer" },
+        { kind: "message", id: "c-own", body: "OWN REPLY", author: "agent", authorAgentId: "agent-self" },
+      ],
+    });
+    const entries = JSON.parse(packet.split("\n").at(-1)!).entries as Array<Record<string, unknown>>;
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "c-user", author: "user", body: "Plan the launch" }),
+      expect.objectContaining({ id: "c-peer", author: "other_agent", authorAgentId: "agent-peer", body: "PEER NOTE" }),
+      expect.objectContaining({ id: "c-own", author: "agent", authorAgentId: "agent-self", body: "OWN REPLY" }),
+    ]));
+  });
 });

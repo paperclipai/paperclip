@@ -22,6 +22,7 @@ import { authApi } from "../api/auth";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
+import { useIssueUpdatedFilterNow } from "../hooks/useIssueUpdatedFilterNow";
 import {
   shouldBlurPageSearchOnEnter,
   shouldBlurPageSearchOnEscape,
@@ -47,7 +48,10 @@ import {
   resolveIssueFilterWorkspaceId,
   shouldIncludeIssueFilterWorkspaceOption,
   issueStatusOrder,
+  issueUpdatedServerBefore,
+  issueUpdatedTime,
   type IssueFilterState,
+  type IssueUpdatedFilter,
 } from "../lib/issue-filters";
 import {
   DEFAULT_INBOX_ISSUE_COLUMNS,
@@ -459,6 +463,11 @@ interface IssuesListProps {
   /** URL sorting overrides the saved collection preference when supplied. */
   sort?: IssueSort;
   onSortChange?: (sort: IssueSort) => void;
+  /** Reports the server `updatedBefore` bound for the Updated filter's custom range end. */
+  onUpdatedBeforeChange?: (updatedBefore: string | undefined) => void;
+  /** URL Updated filter; when supplied it overrides the saved collection preference. */
+  updatedFilter?: IssueUpdatedFilter;
+  onUpdatedFilterChange?: (filter: IssueUpdatedFilter) => void;
   initialSearch?: string;
   searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions" | "sortField" | "sortDir">;
   searchWithinLoadedIssues?: boolean;
@@ -683,6 +692,9 @@ export function IssuesList({
   onRoutineTasksOnlyChange,
   sort,
   onSortChange,
+  onUpdatedBeforeChange,
+  updatedFilter,
+  onUpdatedFilterChange,
   initialSearch,
   searchFilters,
   searchWithinLoadedIssues = false,
@@ -762,7 +774,12 @@ export function IssuesList({
     ...savedViewState,
     ...sort,
     ...(routineTasksOnly === undefined ? {} : { routineTasksOnly }),
-  }), [savedViewState, sort, routineTasksOnly]);
+    ...updatedFilter,
+  }), [savedViewState, sort, routineTasksOnly, updatedFilter]);
+  const updatedBefore = issueUpdatedServerBefore(viewState);
+  useEffect(() => {
+    onUpdatedBeforeChange?.(updatedBefore);
+  }, [onUpdatedBeforeChange, updatedBefore]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, viewStateKey);
   useEffect(() => {
     if (!enableAgentCreatedVisibilityFilter) return;
@@ -804,6 +821,13 @@ export function IssuesList({
 
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     if (patch.routineTasksOnly !== undefined) onRoutineTasksOnlyChange?.(patch.routineTasksOnly);
+    if (patch.updatedWithin !== undefined || patch.updatedFrom !== undefined || patch.updatedTo !== undefined) {
+      onUpdatedFilterChange?.({
+        updatedWithin: patch.updatedWithin !== undefined ? patch.updatedWithin : viewState.updatedWithin,
+        updatedFrom: patch.updatedFrom !== undefined ? patch.updatedFrom : viewState.updatedFrom,
+        updatedTo: patch.updatedTo !== undefined ? patch.updatedTo : viewState.updatedTo,
+      });
+    }
     if (patch.sortField !== undefined || patch.sortDir !== undefined) {
       onSortChange?.({
         sortField: patch.sortField ?? viewState.sortField,
@@ -818,7 +842,7 @@ export function IssuesList({
       }, { viewState: next, columns: visibleIssueColumns });
       return next;
     });
-  }, [scopedKey, selectedCompanyId, viewStateKey, visibleIssueColumns, onRoutineTasksOnlyChange, onSortChange, sort, viewState.sortField, viewState.sortDir]);
+  }, [scopedKey, selectedCompanyId, viewStateKey, visibleIssueColumns, onRoutineTasksOnlyChange, onSortChange, onUpdatedFilterChange, sort, viewState.sortField, viewState.sortDir, viewState.updatedWithin, viewState.updatedFrom, viewState.updatedTo]);
 
   useEffect(() => {
     if (!experimentalSettingsLoaded || externalObjectsEnabled || viewState.externalObjectStatuses.length === 0) return;
@@ -1131,6 +1155,7 @@ export function IssuesList({
     && externalObjectSummariesLoading
     && !externalObjectSummariesReady;
 
+  const updatedFilterNow = useIssueUpdatedFilterNow(searchScopedIssues, viewState.updatedWithin);
   const filtered = useMemo(() => {
     const filteredByControls = applyIssueFilters(
       searchScopedIssues,
@@ -1139,6 +1164,7 @@ export function IssuesList({
       enableAgentCreatedVisibilityFilter,
       liveIssueIds,
       issueFilterContext,
+      updatedFilterNow,
     );
     const byId = new Map(searchScopedIssues.map(issue => [issue.id, issue]));
     return sortIssues(filteredByControls, viewState, issue => {
@@ -1148,6 +1174,7 @@ export function IssuesList({
         assignee: issue.assigneeAgentId ? agentName(issue.assigneeAgentId) ?? "Unknown agent" : companyUserLabelMap.get(issue.assigneeUserId ?? "") ?? null,
         project: projectById.get(issue.projectId ?? "")?.name,
         parentTask: parent ? `${parent.identifier} ${parent.title}` : null,
+        updated: issueUpdatedTime(issue),
       };
     });
   }, [
@@ -1157,6 +1184,7 @@ export function IssuesList({
     enableAgentCreatedVisibilityFilter,
     liveIssueIds,
     issueFilterContext,
+    updatedFilterNow,
     agentName,
     companyUserLabelMap,
     projectById,
@@ -2388,7 +2416,8 @@ export function IssuesList({
                   // dangle above an unrendered (or absent) row.
                   if (node === null) return;
                   if (separatorField) {
-                    const bucket = issueAgeBucket(issue[separatorField], separatorNow);
+                    const separatorTimestamp = separatorField === "updatedAt" ? issueUpdatedTime(issue) : issue.createdAt;
+                    const bucket = issueAgeBucket(separatorTimestamp, separatorNow);
                     for (const crossedBucket of prevBucket === null
                       ? []
                       : issueAgeBucketsCrossed(prevBucket, bucket)) {

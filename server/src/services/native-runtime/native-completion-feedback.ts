@@ -8,6 +8,8 @@ import { publishedTaskDocuments, validateNativeDeliverableEvidence } from "./nat
 import { findAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
 import { findSupersededExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
+import { resolveNativeBlockerOwner } from "./blocker-owner.js";
+import { evaluateBlockerAgentHandoff } from "./blocker-owner-handoff.js";
 import { issueService } from "../issues.js";
 import { isConversation } from "../agent-conversations.js";
 import { completionReviewStageEntry } from "../issue-execution-policy.js";
@@ -171,6 +173,28 @@ export async function nativeCompletionFeedback(
     if (issue.workMode !== "standard" || issue.executionRunId !== run.id ||
         !eligibleIssueMonitorWait(issue, run.agentId)) {
       throw new Error("A monitor wait requires a persisted, eligible monitor on this task. Call set_task_monitor for the current task, confirm its schedule, then report yielded with continuation.kind monitor.");
+    }
+  }
+  if (result.reportedWorkDisposition === "blocked" && result.blocker?.owner.kind === "agent") {
+    // The saved owner must be the agent the report named, so it can be woken.
+    const owner = await resolveNativeBlockerOwner(db, { companyId: run.companyId, owner: result.blocker.owner });
+    if (owner.kind !== "agent") {
+      throw new Error(`blocker.owner names agent ${JSON.stringify(result.blocker.owner.name)}, which ${owner.kind === "unresolved" && owner.ambiguous ? "matches more than one agent" : "matches no agent"} in this company. Set blocker.owner.name to the owner's exact agent ID or full agent name, or use kind "user" for a person.`);
+    }
+    if (owner.agentId !== run.agentId) {
+      const handoff = await evaluateBlockerAgentHandoff(db, {
+        companyId: run.companyId,
+        issue,
+        runId: run.id,
+        actorAgentId: run.agentId,
+        responsibleUserId: run.responsibleUserId,
+        driverKind: run.driverKind,
+        contextSnapshot: run.contextSnapshot,
+        runnerProfileJson: run.runnerProfileJson,
+        targetAgentId: owner.agentId,
+        unblockAction: result.blocker.unblockAction,
+      });
+      if (!handoff.allowed) throw new Error(handoff.message);
     }
   }
   const signals = normalizePrpResultSignals(result);

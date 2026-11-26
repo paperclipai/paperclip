@@ -499,8 +499,14 @@ mod tests {
         let candidate = profile.canonical_digest().unwrap();
         assert_ne!(ordinary, candidate);
         let mut config = config();
-        config.acpx_launch_profile = Some(profile.clone());
+        config.acpx_launch_profile = Some(AcpxLaunchProfile {
+            candidate_admission: None,
+            ..profile.clone()
+        });
         config.validate().unwrap();
+        // Released Antigravity rejects any candidate grant attached to config.
+        config.acpx_launch_profile = Some(profile.clone());
+        assert!(config.validate().is_err());
         config.run_id = "wrong-run".to_owned();
         assert!(config.validate().is_err());
         profile.candidate_admission.as_mut().unwrap().company_id = "company-2".to_owned();

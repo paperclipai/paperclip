@@ -1048,9 +1048,9 @@ describe("native workspace finalization recovery", () => {
   });
   it("preserves a live copyback owner across the configured idle transaction timeout", async () => {
     const seeded = await seedRun({ executionWorkspaceId: randomUUID(), title: "Idle copyback lock" });
-    const rows = await db.execute(sql`select current_user as name`);
-    const role = String(rows[0].name);
-    await db.execute(sql`alter role ${sql.identifier(role)} set idle_in_transaction_session_timeout = '1s'`);
+    const rows = await db.execute(sql`select current_database() as name`);
+    const database = sql.identifier(String(rows[0].name));
+    await db.execute(sql`alter database ${database} set idle_in_transaction_session_timeout = '1s'`);
     await closeDedicatedDbConnections(db, 1);
     try {
       const result = await withNativeWorkspaceFinalizationOwnership({ db, companyId, runId: seeded.runId }, async ownership => {
@@ -1060,7 +1060,7 @@ describe("native workspace finalization recovery", () => {
       });
       expect(result).toEqual({ acquired: true, value: "copied" });
     } finally {
-      await db.execute(sql`alter role ${sql.identifier(role)} reset idle_in_transaction_session_timeout`);
+      await db.execute(sql`alter database ${database} reset idle_in_transaction_session_timeout`);
     }
   });
 
