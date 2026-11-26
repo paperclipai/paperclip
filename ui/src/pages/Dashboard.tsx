@@ -410,7 +410,7 @@ export function Dashboard() {
             </div>
           ) : null}
 
-          <div className={cn("grid grid-cols-2 xl:grid-cols-4", designSandbox ? "gap-4" : "gap-1 sm:gap-2")}>
+          <div className={cn("grid auto-rows-fr grid-cols-2 items-stretch xl:grid-cols-4", designSandbox ? "gap-4" : "gap-1 sm:gap-2")}>
             <MetricCard
               appearance={designSandbox ? "card" : "plain"}
               icon={Bot}
@@ -470,7 +470,7 @@ export function Dashboard() {
 
           <SmokeLabDashboardCard companyId={selectedCompanyId!} />
 
-          <div className={cn("grid grid-cols-2 gap-4", SHOW_TASK_PRIORITY_UI ? "lg:grid-cols-4" : "lg:grid-cols-3")}>
+          <div className={cn("grid grid-cols-1 gap-4 sm:grid-cols-2", SHOW_TASK_PRIORITY_UI ? "lg:grid-cols-4" : "lg:grid-cols-3")}>
             <ChartCard title="Run Activity" subtitle="Last 14 days">
               <RunActivityChart activity={data.runActivity} />
             </ChartCard>

@@ -30,7 +30,13 @@ const meta = {
   },
   beforeEach: ({ parameters }) =>
     prepareFixtureApi(
-      routedRoutineFixtureRoutes(parameters.routineScenario as RoutineScenarioKey),
+      [
+        ...routedRoutineFixtureRoutes(parameters.routineScenario as RoutineScenarioKey),
+        {
+          path: "/api/companies/company-storybook/folders",
+          read: () => ({ folders: [], allCount: 1, unfiledCount: 1 }),
+        },
+      ],
       parameters.fixtureState as FixtureState,
     ).cleanup,
 } satisfies Meta<typeof RoutedRoutinePage>;
@@ -121,4 +127,32 @@ export const Failed: Story = { parameters: { fixtureState: "failure" } };
 /** Matches Page › Phone: actions sit above the page instead of the breadcrumb toolbar. */
 export const Phone: Story = {
   globals: { viewport: { value: "mobile1", isRotated: false } },
+};
+
+/** Full Routines list at 390×844 mobile viewport verifying horizontal table scroll containment. */
+export const RoutinesListMobile: Story = {
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: {
+    layout: "fullscreen",
+    waitForViewport: true,
+    initialEntries: ["/PAP/routines"],
+  },
+  play: async () => {
+    await expect(await page().findByText("Send the weekly product digest")).toBeVisible();
+    await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth));
+  },
+};
+
+/** Routine detail page at 390×844 mobile viewport. */
+export const RoutineDetailMobile: Story = {
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: {
+    layout: "fullscreen",
+    waitForViewport: true,
+    initialEntries: [routinePath()],
+  },
+  play: async () => {
+    await expect(await page().findByRole("heading", { name: "Send the weekly product digest" })).toBeVisible();
+    await waitFor(() => expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth));
+  },
 };

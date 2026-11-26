@@ -108,24 +108,29 @@ export function AuditHub({ section }: { section: AuditSection }) {
     }, { replace: true });
   }, [setSearchParams]);
 
+  const handleSectionChange = useCallback(
+    (value: string) => {
+      const next = value as AuditSection;
+      navigate(auditSectionHref(next, scope));
+    },
+    [navigate, scope],
+  );
+
   if (!selectedCompanyId) {
     return <EmptyState icon={History} message="Select an organization to view Audit." />;
   }
 
   return (
-    <div className="space-y-6">
+    <div className="min-w-0 max-w-full space-y-6">
       <div>
         <h1 className="text-3xl font-semibold tracking-tight text-foreground">Audit</h1>
       </div>
 
       <Tabs
         value={section}
-        onValueChange={(value) => {
-          const next = value as AuditSection;
-          navigate(auditSectionHref(next, scope));
-        }}
+        onValueChange={handleSectionChange}
       >
-        <PageTabBar items={AUDIT_SECTIONS} value={section} align="start" />
+        <PageTabBar items={AUDIT_SECTIONS} value={section} onValueChange={handleSectionChange} align="start" />
       </Tabs>
 
       {section === "commentary" ? (
