@@ -310,9 +310,10 @@ describe("session replay", () => {
     expect(link).not.toBeNull();
     expect(link!.getAttribute("target")).toBe("_blank");
     expect(link!.getAttribute("rel")).toBe("noreferrer noopener");
+    expect(container.textContent).toContain("Sign in to Antigravity");
     expect(container.textContent).toContain("127.0.0.1");
 
-    const input = container.querySelector('input[aria-label="Google redirect URL"]') as HTMLInputElement | null;
+    const input = container.querySelector('input[aria-label="Antigravity redirect URL"]') as HTMLInputElement | null;
     expect(input).not.toBeNull();
     expect(input!.getAttribute("autocomplete")).toBe("off");
     expect(input!.getAttribute("spellcheck")).toBe("false");
@@ -328,7 +329,7 @@ describe("session replay", () => {
     await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("does not match"));
     expect(submitCode).toHaveBeenCalledWith("http://127.0.0.1:41234/?state=bad&code=abc");
     // Input stays open after a retryable bad paste.
-    const retryInput = container.querySelector('input[aria-label="Google redirect URL"]') as HTMLInputElement | null;
+    const retryInput = container.querySelector('input[aria-label="Antigravity redirect URL"]') as HTMLInputElement | null;
     expect(retryInput).not.toBeNull();
 
     await act(async () => {
@@ -341,7 +342,7 @@ describe("session replay", () => {
     expect(submitCode).toHaveBeenCalledWith("http://127.0.0.1:41234/?state=good&code=xyz");
   });
 
-  it("keeps the direct local Google prompt without a paste field when hostedRedirect is false", async () => {
+  it("keeps the direct local Antigravity prompt without a paste field when hostedRedirect is false", async () => {
     const container = await render(
       <LocalProviderLoginInstructions
         adapterType="antigravity_runtime"
@@ -352,7 +353,7 @@ describe("session replay", () => {
         }}
       />,
     );
-    expect(container.querySelector('input[aria-label="Google redirect URL"]')).toBeNull();
-    expect(container.textContent).toContain("Finish signing in in the Google browser window");
+    expect(container.querySelector('input[aria-label="Antigravity redirect URL"]')).toBeNull();
+    expect(container.textContent).toContain("Finish signing in in the Antigravity browser window");
   });
 });
