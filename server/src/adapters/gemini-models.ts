@@ -13,6 +13,7 @@ const GEMINI_MODELS_CACHE_TTL_MS = 60_000;
 const ANSI_ESCAPE_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;
 
 let cached: { expiresAt: number; models: AdapterModel[] } | null = null;
+let discoveryGeneration = 0;
 
 type ModelsCommandResult = {
   status: number | null;
@@ -99,6 +100,7 @@ export async function listGeminiModels(): Promise<AdapterModel[]> {
     return cached.models;
   }
 
+  const generation = discoveryGeneration;
   const res = await runAgyModelsCommand();
   const discovered = !res.hasError && res.status === 0
     ? parseAgyModelsOutput(res.stdout)
@@ -112,11 +114,15 @@ export async function listGeminiModels(): Promise<AdapterModel[]> {
       ])
     : [...geminiFallbackModels];
 
-  cached = { expiresAt: now + GEMINI_MODELS_CACHE_TTL_MS, models: merged };
-  return merged;
+  if (generation === discoveryGeneration) {
+    cached = { expiresAt: Date.now() + GEMINI_MODELS_CACHE_TTL_MS, models: merged };
+    return merged;
+  }
+  return cached ? cached.models : merged;
 }
 
 export async function refreshGeminiModels(): Promise<AdapterModel[]> {
+  discoveryGeneration += 1;
   cached = null;
   return listGeminiModels();
 }
@@ -140,6 +146,7 @@ export async function detectGeminiModel(): Promise<{
         candidate.id.toLowerCase() === normalized ||
         candidate.label.toLowerCase() === normalized,
     );
+    if (!matched && !configured.startsWith("gemini-")) return null;
     const modelId = matched?.id ?? configured;
     return {
       model: modelId,
@@ -157,5 +164,6 @@ export function setGeminiModelsRunnerForTests(runner: ModelsRunner | null): void
 }
 
 export function resetGeminiModelsCacheForTests(): void {
+  discoveryGeneration += 1;
   cached = null;
 }

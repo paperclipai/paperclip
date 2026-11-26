@@ -188,7 +188,7 @@ describe("adapter model listing", () => {
   });
 
   it.each([
-    ["gemini_local", ["gemini-4-hydrogen-xhigh", "gemini-4-hydrogen-high", "gemini-3.8-flash-high", "claude-sonnet-4-6", "claude-opus-4-6-thinking", "gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"]],
+    ["gemini_local", ["gemini-3.8-flash", "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-3-flash-preview"]],
     ["grok_local", ["grok-build", "grok-4.7", "grok-4.6", "grok-4.5"]],
     ["kimi_local", ["kimi-code/kimi-for-coding", "kimi-code/k3", "kimi-code/k3-256k"]],
   ])("lists current %s models without a provider login", async (adapter, expectedIds) => {
@@ -197,6 +197,7 @@ describe("adapter model listing", () => {
     expect(new Set(models.map((model) => model.id)).size).toBe(models.length);
     if (adapter === "gemini_local") {
       expect(models.some((model) => model.id.startsWith("gemini-2.0-"))).toBe(false);
+      expect(models.some((model) => model.id === "claude-sonnet-4-6" || model.id === "gpt-oss-120b-medium")).toBe(false);
     }
     if (adapter === "kimi_local") {
       expect(models).toContainEqual({ id: "kimi-code/kimi-for-coding", label: "K2.8 Preview" });
@@ -416,5 +417,34 @@ describe("adapter model listing", () => {
       { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)" },
     ]);
     expect(models.some((m) => m.id === "gemini-3.8-flash")).toBe(true);
+  });
+
+  it("does not allow an older slow discovery request to overwrite a newer refresh", async () => {
+    let resolveSlow!: (value: { status: number | null; stdout: string; stderr: string; hasError: boolean }) => void;
+    const slowPromise = new Promise<{ status: number | null; stdout: string; stderr: string; hasError: boolean }>((resolve) => {
+      resolveSlow = resolve;
+    });
+
+    let call = 0;
+    setGeminiModelsRunnerForTests(async () => {
+      call += 1;
+      if (call === 1) return slowPromise;
+      return {
+        status: 0,
+        stdout: "gemini-4-hydrogen-xhigh   Gemini 4 Hydrogen (XHigh)\n",
+        stderr: "",
+        hasError: false,
+      };
+    });
+
+    const staleRequest = listAdapterModels("gemini_local");
+    const refreshed = await refreshAdapterModels("gemini_local");
+    expect(refreshed.some((m) => m.id === "gemini-4-hydrogen-xhigh")).toBe(true);
+
+    resolveSlow({ status: 1, stdout: "", stderr: "", hasError: true });
+    await staleRequest;
+
+    const cachedAfterStale = await listAdapterModels("gemini_local");
+    expect(cachedAfterStale.some((m) => m.id === "gemini-4-hydrogen-xhigh")).toBe(true);
   });
 });

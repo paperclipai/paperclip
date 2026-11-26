@@ -11,16 +11,6 @@ export const DEFAULT_GEMINI_LOCAL_MODEL = "auto";
 
 export const models = [
   { id: DEFAULT_GEMINI_LOCAL_MODEL, label: "Auto" },
-  { id: "gemini-4-hydrogen-xhigh", label: "Gemini 4 Hydrogen (XHigh)" },
-  { id: "gemini-4-hydrogen-high", label: "Gemini 4 Hydrogen (High)" },
-  { id: "gemini-4-hydrogen-medium", label: "Gemini 4 Hydrogen (Medium)" },
-  { id: "gemini-4-hydrogen-low", label: "Gemini 4 Hydrogen (Low)" },
-  { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)" },
-  { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)" },
-  { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)" },
-  { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)" },
-  { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)" },
-  { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)" },
   { id: "gemini-3.1-pro-preview", label: "Gemini 3.1 Pro Preview" },
   { id: "gemini-3.1-pro-preview-customtools", label: "Gemini 3.1 Pro Preview (Custom Tools)" },
   { id: "gemini-3.8-flash", label: "Gemini 3.8 Flash" },
