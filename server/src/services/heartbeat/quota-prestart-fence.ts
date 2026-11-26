@@ -107,7 +107,7 @@ export async function switchUnstartedLegacyQuotaPin(tx: Db, input: { companyId: 
 type Run = typeof heartbeatRuns.$inferSelect;
 type HistoricalQuotaHandoff = { selection: AiConnectionRouterSelection; sourceRunId: string; predecessorRunId: string };
 
-function isPoolPreDispatchCancellation(run: Run): boolean {
+export function isPoolPreDispatchCancellation(run: Run): boolean {
   const recovery = parseObject(run.resultJson?.executionRecovery);
   const cancellation = parseObject(run.resultJson?.cancellation);
   return run.status === "cancelled" && run.errorCode === "ai_connection_pool_exhausted" && run.scopeKind === "issue" &&
