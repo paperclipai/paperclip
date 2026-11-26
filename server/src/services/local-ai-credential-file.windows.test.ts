@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { readLocalAiCredentialFile } from "./local-ai-credential-file.js";
@@ -29,5 +29,16 @@ describe("readLocalAiCredentialFile on native Windows", () => {
     await writeFile(target, "{}");
     try { await symlink(target, link); } catch { return; }
     await expect(readLocalAiCredentialFile(link)).rejects.toThrow();
+  });
+
+  it("refuses a credential file reached through a junction directory", async () => {
+    if (initialPlatform.value !== "win32") return;
+    dir = await mkdtemp(path.join(os.tmpdir(), "paperclip-cred-"));
+    const real = path.join(dir, "real");
+    const junction = path.join(dir, "junction");
+    await mkdir(real);
+    await writeFile(path.join(real, ".credentials.json"), "{}");
+    try { await symlink(real, junction, "junction"); } catch { return; }
+    await expect(readLocalAiCredentialFile(path.join(junction, ".credentials.json"))).rejects.toThrow("Invalid credential file");
   });
 });
