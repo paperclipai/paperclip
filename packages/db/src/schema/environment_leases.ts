@@ -1,4 +1,5 @@
 import { index, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { environments } from "./environments.js";
 import { executionWorkspaces } from "./execution_workspaces.js";
@@ -10,7 +11,14 @@ export const environmentLeases = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
-    environmentId: uuid("environment_id").notNull().references(() => environments.id, { onDelete: "cascade" }),
+    // A lease-less orphan sandbox is recorded here as a `pending_cleanup` row.
+    // That row is the only durable teardown reference the cleanup sweep has for
+    // the remote sandbox. So the environment reference must survive an
+    // environment delete: `on delete set null` keeps the row, and the sweep
+    // tears the orphan down from the row's immutable provider metadata. The
+    // column is nullable so an orphan the acquire records after a concurrent
+    // environment delete still persists with a null reference.
+    environmentId: uuid("environment_id").references(() => environments.id, { onDelete: "set null" }),
     executionWorkspaceId: uuid("execution_workspace_id").references(() => executionWorkspaces.id, { onDelete: "set null" }),
     issueId: uuid("issue_id").references(() => issues.id, { onDelete: "set null" }),
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id, { onDelete: "set null" }),
@@ -29,6 +37,10 @@ export const environmentLeases = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => ({
+    retainedRecoveryAdoptionIdx: index("environment_leases_retained_recovery_adoption_idx")
+      .on(table.heartbeatRunId).concurrently().where(sql`${table.leasePolicy} = 'retain_on_failure'
+        and ${table.heartbeatRunId} is not null
+        and not (coalesce(${table.metadata}, '{}'::jsonb) ? 'systemRecoveryAdoption')`),
     companyEnvironmentStatusIdx: index("environment_leases_company_environment_status_idx").on(
       table.companyId,
       table.environmentId,
@@ -42,5 +54,12 @@ export const environmentLeases = pgTable(
     heartbeatRunIdx: index("environment_leases_heartbeat_run_idx").on(table.heartbeatRunId),
     companyLastUsedIdx: index("environment_leases_company_last_used_idx").on(table.companyId, table.lastUsedAt),
     providerLeaseIdx: index("environment_leases_provider_lease_idx").on(table.providerLeaseId),
+    // Leases that reference one native harness backup root by its scope digest
+    // (backup expiration, retention and session retention checks). Partial:
+    // most leases carry no backup stamp.
+    nativeBackupScopeIdx: index("environment_leases_native_backup_scope_idx")
+      .on(sql`(${table.metadata}->'nativeHarnessBackup'->>'sessionScopeSha256')`)
+      .where(sql`(${table.metadata}->'nativeHarnessBackup'->>'sessionScopeSha256') is not null`)
+      .concurrently(),
   }),
 );

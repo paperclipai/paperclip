@@ -2,12 +2,15 @@ import { useMemo } from "react";
 import type { CostByBiller, CostByProviderModel } from "@paperclipai/shared";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { QuotaBar } from "./QuotaBar";
+import { CostAmount } from "./CostAmount";
 import { billingTypeDisplayName, formatCents, formatTokens, providerDisplayName } from "@/lib/utils";
 
 interface BillerSpendCardProps {
   row: CostByBiller;
   weekSpendCents: number;
   budgetMonthlyCents: number;
+  /** Only compare a current-month report with the monthly budget. */
+  showBudgetUtilization?: boolean;
   totalCompanySpendCents: number;
   providerRows: CostByProviderModel[];
 }
@@ -16,6 +19,7 @@ export function BillerSpendCard({
   row,
   weekSpendCents,
   budgetMonthlyCents,
+  showBudgetUtilization = true,
   totalCompanySpendCents,
   providerRows,
 }: BillerSpendCardProps) {
@@ -44,10 +48,7 @@ export function BillerSpendCard({
     return Array.from(map.entries()).sort((a, b) => b[1] - a[1]);
   }, [providerRows]);
 
-  const providerBudgetShare =
-    budgetMonthlyCents > 0 && totalCompanySpendCents > 0
-      ? (row.costCents / totalCompanySpendCents) * budgetMonthlyCents
-      : budgetMonthlyCents;
+  const providerBudgetShare = budgetMonthlyCents;
   const budgetPct =
     providerBudgetShare > 0
       ? Math.min(100, (row.costCents / providerBudgetShare) * 100)
@@ -71,19 +72,20 @@ export function BillerSpendCard({
               {row.modelCount} model{row.modelCount === 1 ? "" : "s"}
             </CardDescription>
           </div>
-          <span className="text-xl font-bold tabular-nums shrink-0">
-            {formatCents(row.costCents)}
-          </span>
+          <div className="text-xl shrink-0">
+            <CostAmount costCents={row.costCents} eventCount={row.eventCount}
+              estimatedEventCount={row.estimatedEventCount} unpricedEventCount={row.unpricedEventCount} showUnavailableCount />
+          </div>
         </div>
       </CardHeader>
 
       <CardContent className="px-4 pb-4 pt-3 space-y-4">
-        {budgetMonthlyCents > 0 && (
+        {showBudgetUtilization && budgetMonthlyCents > 0 && (
           <QuotaBar
             label="Period spend"
             percentUsed={budgetPct}
             leftLabel={formatCents(row.costCents)}
-            rightLabel={`${Math.round(budgetPct)}% of allocation`}
+            rightLabel={`${Math.round(budgetPct)}% of company budget`}
           />
         )}
 

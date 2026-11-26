@@ -1,7 +1,11 @@
 import { useEffect } from "react";
+import { ArrowLeft } from "lucide-react";
+import { Link } from "@/lib/router";
+import { Button } from "@/components/ui/button";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { ReviewQueueCard } from "./ReviewQueueCard";
+import { useReviewQueue } from "./useReviewCount";
 
 /**
  * Review — the "decisions waiting on you" inbox (PAP-12371, Finding B).
@@ -14,32 +18,41 @@ import { ReviewQueueCard } from "./ReviewQueueCard";
  * "Needs attention"; decisions live here.
  */
 export function AppsReview() {
-  const { selectedCompany, selectedCompanyId } = useCompany();
+  const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
+  const queue = useReviewQueue();
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
-      { label: "Apps", href: "/apps" },
-      { label: "Review" },
+      { label: "Plugins", href: "/apps" },
+      { label: "Reviews" },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, selectedCompany?.name]);
+  }, [setBreadcrumbs]);
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select a company to review approvals.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">Select an organization to review approvals.</div>;
   }
 
   return (
-    <div className="max-w-3xl space-y-6 pb-12">
-      <header>
-        <h1 className="text-2xl font-bold tracking-tight">Review</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Actions your agents want to run that need your OK first. Approve, always-allow, or decline.
-        </p>
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 pb-16">
+      <header className="flex flex-col gap-3">
+        <Button asChild variant="ghost" size="sm" className="-ml-3 h-8 self-start text-muted-foreground">
+          <Link to="/apps"><ArrowLeft className="size-4" aria-hidden />Plugins</Link>
+        </Button>
+        <div className="flex flex-col gap-1">
+          <h1 className="text-2xl leading-8 font-semibold tracking-tight text-foreground">Reviews</h1>
+          {queue.loaded ? (
+            <p className="text-sm leading-5 text-muted-foreground">
+              {queue.count === 0
+                ? "Nothing is waiting on you."
+                : `${queue.count} ${queue.count === 1 ? "request" : "requests"} from your plugins ${queue.count === 1 ? "is" : "are"} waiting on you.`}
+            </p>
+          ) : null}
+        </div>
       </header>
 
-      <ReviewQueueCard emptyState="reassure" heading="Waiting for your OK" />
+      <ReviewQueueCard layout="decisions" />
     </div>
   );
 }

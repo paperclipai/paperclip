@@ -2,11 +2,13 @@ import { z } from "zod";
 import {
   DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES,
   DOCUMENT_ANNOTATION_ANCHOR_STATES,
+  DOCUMENT_ANNOTATION_COMMENT_REACTIONS,
   DOCUMENT_ANNOTATION_THREAD_STATUSES,
 } from "../constants.js";
 import { multilineTextSchema } from "./text.js";
 
 export const documentAnnotationThreadStatusSchema = z.enum(DOCUMENT_ANNOTATION_THREAD_STATUSES);
+export const documentAnnotationCommentReactionSchema = z.enum(DOCUMENT_ANNOTATION_COMMENT_REACTIONS);
 export const documentAnnotationAnchorStateSchema = z.enum(DOCUMENT_ANNOTATION_ANCHOR_STATES);
 export const documentAnnotationAnchorConfidenceSchema = z.enum(DOCUMENT_ANNOTATION_ANCHOR_CONFIDENCES);
 
@@ -44,16 +46,16 @@ export const documentAnnotationAnchorSelectorSchema = z.object({
 }).strict();
 
 export const createDocumentAnnotationThreadSchema = z.object({
-  baseRevisionId: z.string().uuid(),
+  baseRevisionId: z.string().guid(),
   baseRevisionNumber: z.number().int().positive(),
   selector: documentAnnotationAnchorSelectorSchema,
   body: multilineTextSchema.pipe(z.string().min(1).max(20_000)),
-  issueCommentId: z.string().uuid().nullable().optional(),
+  issueCommentId: z.string().guid().nullable().optional(),
 }).strict();
 
 export const createDocumentAnnotationCommentSchema = z.object({
   body: multilineTextSchema.pipe(z.string().min(1).max(20_000)),
-  issueCommentId: z.string().uuid().nullable().optional(),
+  issueCommentId: z.string().guid().nullable().optional(),
 }).strict();
 
 export const updateDocumentAnnotationThreadSchema = z.object({

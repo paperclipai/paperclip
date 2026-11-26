@@ -1,6 +1,6 @@
 /**
  * @fileoverview Classifies a failed skill mutation into the four visual states
- * from the Phase 3 UX spec (PAP-13865 / §9.10 Company Skill Policy Contract).
+ * from the Phase 3 UX spec (PAP-13865 / `doc/company-skill-policy.md`).
  *
  * The contract inverts the old model: **skill permissions are opt-in
  * restrictions, not opt-in capabilities.** Under the open default there is no
@@ -22,7 +22,7 @@ import { ApiError } from "../api/client";
 export const SKILL_POLICY_DENIAL_CODE = "skill_policy_denied";
 
 /**
- * Non-configurable platform-invariant failure codes (§9.10). Policy can never
+ * Non-configurable platform-invariant failure codes (`doc/company-skill-policy.md`). Policy can never
  * loosen these — the remediation is always to fix the artifact/source/input,
  * never to change a permission.
  */
@@ -50,7 +50,7 @@ export interface SkillDenial {
   state: SkillDenialState;
   /** Machine-readable error code from the server, when present. */
   code: string | null;
-  /** §9.10 decision `reason`, when the server surfaced the decision shape. */
+  /** Skill-policy decision `reason`, when the server surfaced the decision shape. */
   reason: string | null;
   /** Plain-language title for the banner. */
   title: string;
@@ -59,14 +59,14 @@ export interface SkillDenial {
 }
 
 const DEFAULT_POLICY_REMEDIATION =
-  "A company administrator can change the skill policy to allow this.";
+  "An organization administrator can change the skill policy to allow this.";
 const DEFAULT_ADMIN_REMEDIATION =
-  "This requires company administration access. Ask an administrator to make this change.";
+  "This requires organization administration access. Ask an administrator to make this change.";
 
 /** Human-readable titles for the platform-invariant codes (State C). */
 const PLATFORM_TITLES: Record<string, string> = {
   skill_authentication_required: "Sign in to manage skills.",
-  skill_company_boundary_denied: "This skill belongs to another company.",
+  skill_company_boundary_denied: "This skill belongs to another organization.",
   skill_workspace_boundary_denied: "This skill source is outside an allowed workspace.",
   skill_source_validation_failed: "This skill source failed validation.",
   skill_unsafe_content_blocked: "This skill contains unsafe content.",
@@ -77,9 +77,9 @@ const PLATFORM_TITLES: Record<string, string> = {
 /** Default remediation copy per platform-invariant code — framed as a fix, never a grant. */
 const PLATFORM_REMEDIATIONS: Record<string, string> = {
   skill_authentication_required: "Sign in and try again.",
-  skill_company_boundary_denied: "Open the skill from the company that owns it.",
+  skill_company_boundary_denied: "Open the skill from the organization that owns it.",
   skill_workspace_boundary_denied:
-    "Import from a configured Paperclip workspace or the company managed-skill directory.",
+    "Import from a configured Paperclip workspace or the organization managed-skill directory.",
   skill_source_validation_failed: "Fix the flagged source and retry.",
   skill_unsafe_content_blocked:
     "Remove the fetch-and-execute or unsafe pattern before saving.",
@@ -119,8 +119,8 @@ export function classifySkillDenial(
     || reason === "policy_default";
   if (isPolicyDenial) {
     const title = actionLabel
-      ? `${actionLabel} is restricted by your company policy.`
-      : "This action is restricted by your company policy.";
+      ? `${actionLabel} is restricted by your organization policy.`
+      : "This action is restricted by your organization policy.";
     return {
       state: "policy",
       code,

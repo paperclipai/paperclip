@@ -42,15 +42,15 @@ export const storybookCompanies: Company[] = [
     issueCounter: 1641,
     budgetMonthlyCents: 250_000,
     spentMonthlyCents: 67_500,
-    attachmentMaxBytes: 10 * 1024 * 1024,
     defaultResponsibleUserId: "user-board",
+    defaultDecisionOwnerUserId: null,
+    budgetOwnerUserId: null,
     requireBoardApprovalForNewAgents: true,
     interactionResolverGovernance: {},
     feedbackDataSharingEnabled: true,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
-    brandColor: "#0f766e",
     logoAssetId: null,
     logoUrl: null,
     createdAt: new Date("2026-04-01T09:00:00.000Z"),
@@ -67,15 +67,15 @@ export const storybookCompanies: Company[] = [
     issueCounter: 88,
     budgetMonthlyCents: 180_000,
     spentMonthlyCents: 39_500,
-    attachmentMaxBytes: 10 * 1024 * 1024,
     defaultResponsibleUserId: "user-board",
+    defaultDecisionOwnerUserId: null,
+    budgetOwnerUserId: null,
     requireBoardApprovalForNewAgents: false,
     interactionResolverGovernance: {},
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
-    brandColor: "#4f46e5",
     logoAssetId: null,
     logoUrl: null,
     createdAt: new Date("2026-04-03T09:00:00.000Z"),
@@ -92,15 +92,15 @@ export const storybookCompanies: Company[] = [
     issueCounter: 204,
     budgetMonthlyCents: 90_000,
     spentMonthlyCents: 91_200,
-    attachmentMaxBytes: 10 * 1024 * 1024,
     defaultResponsibleUserId: "user-board",
+    defaultDecisionOwnerUserId: null,
+    budgetOwnerUserId: null,
     requireBoardApprovalForNewAgents: true,
     interactionResolverGovernance: {},
     feedbackDataSharingEnabled: false,
     feedbackDataSharingConsentAt: null,
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
-    brandColor: "#c2410c",
     logoAssetId: null,
     logoUrl: null,
     createdAt: new Date("2026-04-05T09:00:00.000Z"),
@@ -119,6 +119,7 @@ export const storybookAuthSession: AuthSession = {
     email: "riley@paperclip.local",
     image: null,
   },
+  sentryDsn: null,
 };
 
 export const storybookAgents: Agent[] = [
@@ -197,6 +198,39 @@ export const storybookAgents: Agent[] = [
 ];
 
 export const storybookAgentMap = new Map(storybookAgents.map((agent) => [agent.id, agent]));
+
+/**
+ * The agent the onboarding hire returns.
+ *
+ * Kept out of `storybookAgents` deliberately: that list is what the company
+ * already has, and this one does not exist until the wizard's Connect step
+ * creates it. Putting it in the list would give the review step an agent it had
+ * not yet hired.
+ */
+export const storybookHiredAgent: Agent = {
+  id: "agent-storybook",
+  companyId: "company-storybook",
+  name: "Darnold",
+  urlKey: "darnold",
+  role: "general",
+  title: "Chief of Staff",
+  icon: "sparkles",
+  status: "idle",
+  reportsTo: null,
+  capabilities: "Runs the company's first workflows and hires the team behind them.",
+  adapterType: "claude_local",
+  adapterConfig: {},
+  runtimeConfig: {},
+  budgetMonthlyCents: 100_000,
+  spentMonthlyCents: 0,
+  pauseReason: null,
+  pausedAt: null,
+  permissions: { canCreateAgents: true },
+  lastHeartbeatAt: null,
+  metadata: null,
+  createdAt: recent(0),
+  updatedAt: recent(0),
+};
 
 export const storybookIssueLabels: IssueLabel[] = [
   {
@@ -982,7 +1016,7 @@ export const storybookContinuationHandoff: IssueDocument = {
     "",
     "Next action: run the Storybook build, inspect the issue management story, then request QA visual review if the build passes.",
     "",
-    "Important files: `ui/storybook/stories/issue-management.stories.tsx` and `ui/storybook/fixtures/paperclipData.ts`.",
+    "Important files: `ui/storybook/stories/tasks/issue-management.stories.tsx` and `ui/storybook/fixtures/paperclipData.ts`.",
   ].join("\n"),
   latestRevisionId: "revision-continuation-1",
   latestRevisionNumber: 1,
@@ -1052,6 +1086,26 @@ export const storybookIssueRuns: RunForIssue[] = [
     lastUsefulActionAt: null,
     nextAction: "Implement issue-management stories in the next heartbeat.",
   },
+  {
+    runId: "run-storybook-adapter-cause",
+    status: "failed",
+    agentId: "agent-codex",
+    adapterType: "codex_local",
+    startedAt: recent(260).toISOString(),
+    finishedAt: recent(255).toISOString(),
+    createdAt: recent(260).toISOString(),
+    invocationSource: "scheduler",
+    errorCode: "adapter_failed",
+    failureCause: "40001",
+    usageJson: { costCents: 6, inputTokens: 2100, outputTokens: 140 },
+    resultJson: { stopReason: "adapter_failed" },
+    logBytes: 2400,
+    livenessState: "failed",
+    livenessReason: "The run failed before it produced concrete action evidence.",
+    continuationAttempt: 0,
+    lastUsefulActionAt: null,
+    nextAction: "Retry after the database conflict clears.",
+  },
 ];
 
 export const storybookApprovals: Approval[] = [
@@ -1090,6 +1144,8 @@ export const storybookApprovals: Approval[] = [
       windowKind: "calendar_month_utc",
       metric: "billed_cents",
       budgetAmount: 120_000,
+      unpricedEventCount: 0, pendingRunCount: 0,
+      unpricedUsagePolicy: "block",
       observedAmount: 131_400,
       guidance: "Raise the project budget only after current release smoke checks are green.",
     },
@@ -1134,6 +1190,8 @@ export const storybookBudgetSummaries: BudgetPolicySummary[] = [
     metric: "billed_cents",
     windowKind: "calendar_month_utc",
     amount: 250_000,
+    unpricedEventCount: 0, pendingRunCount: 0,
+    unpricedUsagePolicy: "block",
     observedAmount: 67_500,
     remainingAmount: 182_500,
     utilizationPercent: 27,
@@ -1156,6 +1214,8 @@ export const storybookBudgetSummaries: BudgetPolicySummary[] = [
     metric: "billed_cents",
     windowKind: "calendar_month_utc",
     amount: 120_000,
+    unpricedEventCount: 0, pendingRunCount: 0,
+    unpricedUsagePolicy: "block",
     observedAmount: 103_100,
     remainingAmount: 16_900,
     utilizationPercent: 86,
@@ -1178,6 +1238,8 @@ export const storybookBudgetSummaries: BudgetPolicySummary[] = [
     metric: "billed_cents",
     windowKind: "calendar_month_utc",
     amount: 40_000,
+    unpricedEventCount: 0, pendingRunCount: 0,
+    unpricedUsagePolicy: "block",
     observedAmount: 43_200,
     remainingAmount: 0,
     utilizationPercent: 108,

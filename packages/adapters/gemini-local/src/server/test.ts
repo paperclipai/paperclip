@@ -16,6 +16,7 @@ import {
   ensureAdapterExecutionTargetCommandResolvable,
   maybeRunSandboxInstallCommand,
   ensureAdapterExecutionTargetDirectory,
+  isAdapterExecutionTargetUnavailableError,
   runAdapterExecutionTargetProcess,
   describeAdapterExecutionTarget,
   resolveAdapterExecutionTargetCwd,
@@ -58,20 +59,23 @@ export async function testEnvironment(
     config: parseObject(ctx.config),
     executionTarget: ctx.executionTarget,
   });
+  if (engineSelection.unavailableReason) {
+    return {
+      adapterType: "gemini_local",
+      status: "fail",
+      checks: [{
+        code: "adapter_engine_unavailable",
+        level: "error",
+        message: engineSelection.unavailableReason,
+      }],
+      testedAt: new Date().toISOString(),
+    };
+  }
   if (engineSelection.engine === "acp") {
     return testGeminiAcpEnvironment(ctx);
   }
 
   const checks: AdapterEnvironmentCheck[] = [];
-  if (!engineSelection.explicit && engineSelection.fallbackReason) {
-    checks.push({
-      code: "gemini_acp_default_fallback",
-      level: "warn",
-      message: "Gemini ACP default is unavailable; testing the Gemini CLI fallback lane.",
-      detail: engineSelection.fallbackReason,
-      hint: "Fix the ACP prerequisite to use the default ACP lane, or set engine=cli to pin the CLI lane.",
-    });
-  }
   const config = parseObject(ctx.config);
   const command = asString(config.command, "gemini");
   const target = ctx.executionTarget ?? null;
@@ -104,6 +108,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "gemini_cwd_invalid",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Invalid working directory",
       detail: cwd,
@@ -138,6 +143,7 @@ export async function testEnvironment(
   } catch (err) {
     checks.push({
       code: "gemini_command_unresolvable",
+      ...(isAdapterExecutionTargetUnavailableError(err) ? { retryable: true } : {}),
       level: "error",
       message: err instanceof Error ? err.message : "Command is not executable",
       detail: command,
@@ -189,7 +195,7 @@ export async function testEnvironment(
       });
     } else {
       const model = asString(config.model, DEFAULT_GEMINI_LOCAL_MODEL).trim();
-      const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, false) ? "yolo" : "default");
+      const approvalMode = asString(config.approvalMode, asBoolean(config.yolo, true) ? "yolo" : "default");
       const sandbox = asBoolean(config.sandbox, false);
       const helloProbeTimeoutSec = Math.max(1, asNumber(config.helloProbeTimeoutSec, 60));
       const extraArgs = (() => {

@@ -8,7 +8,7 @@ export interface IssueReviewVerdictActor {
   id: string;
 }
 
-interface IssueReviewRequester extends IssueReviewVerdictActor {
+export interface IssueReviewRequester extends IssueReviewVerdictActor {
   reviewInteractionId: string | null;
 }
 
@@ -20,7 +20,7 @@ interface ReviewPolicyIssue {
   createdByUserId?: string | null;
 }
 
-async function findReviewRequester(
+export async function resolveIssueReviewRequester(
   db: Db,
   issue: ReviewPolicyIssue,
 ): Promise<IssueReviewRequester | null> {
@@ -80,8 +80,18 @@ export async function isIssueReviewVerdictInteraction(
     };
   },
 ): Promise<boolean> {
-  const requester = await findReviewRequester(db, input.issue);
-  if (!requester?.reviewInteractionId || requester.reviewInteractionId !== input.interaction.id) return false;
+  const requester = await resolveIssueReviewRequester(db, input.issue);
+  if (!requester) return false;
+  if (requester.reviewInteractionId && requester.reviewInteractionId !== input.interaction.id) return false;
+  // Older review transitions did not persist the interaction binding. In that
+  // case, an unattributed confirmation is ambiguous and must fail closed.
+  // Confirmations attributed to an unrelated writer remain independently
+  // resolvable, while requester-created confirmations inherit the issue policy.
+  if (!requester.reviewInteractionId
+    && !input.interaction.createdByAgentId
+    && !input.interaction.createdByUserId) {
+    return true;
+  }
   return requester.type === "agent"
     ? input.interaction.createdByAgentId === requester.id
     : input.interaction.createdByUserId === requester.id;
@@ -101,37 +111,37 @@ export async function assertIssueReviewVerdictActorAllowed(
   if (policy === "human_only") {
     if (input.actor.type === "user") return;
     throw forbidden(
-      "Review policy `human_only` allows only an authenticated user to approve or reject this review.",
+      "Only a signed-in person can approve or reject this review; an agent cannot submit the verdict.",
       {
         code: "review_policy_denied",
         policy,
         allowedActor: "authenticated_user_with_issue_write_access",
-        remediation: "Have an authenticated user with issue write access submit the verdict, or change reviewPolicy to `anyone`.",
+        remediation: "Ask a person with access to this task to approve or reject it in Paperclip.",
       },
     );
   }
 
-  const requester = await findReviewRequester(db, input.issue);
+  const requester = await resolveIssueReviewRequester(db, input.issue);
   if (!requester) {
     throw forbidden(
-      "Review policy `not_creator` requires a different writer, but the review requester could not be determined.",
+      "Someone other than whoever sent this task for review must decide it, and Paperclip could not tell who sent it.",
       {
         code: "review_policy_denied",
         policy,
         allowedActor: "writer_other_than_review_requester",
-        remediation: "Change reviewPolicy to `anyone`, or move the issue out of and back into `in_review` to record a requester before another writer submits the verdict.",
+        remediation: "Move the task out of review and back into review so Paperclip records who sent it, then have someone else submit the verdict.",
       },
     );
   }
   if (requester.type !== input.actor.type || requester.id !== input.actor.id) return;
 
   throw forbidden(
-    "Review policy `not_creator` requires someone other than the writer who moved the issue into `in_review` to approve or reject it.",
+    "Whoever sent this task for review cannot also approve or reject it; someone else must submit the verdict.",
     {
       code: "review_policy_denied",
       policy,
       allowedActor: "writer_other_than_review_requester",
-      remediation: "Have another writer with issue write access submit the verdict, or change reviewPolicy to `anyone`.",
+      remediation: "Have someone else with access to this task submit the verdict.",
     },
   );
 }

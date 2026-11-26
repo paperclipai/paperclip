@@ -7,6 +7,7 @@ import {
   type InstallStorePaths,
 } from "../install-store.js";
 import type { CheckResult } from "./index.js";
+import { isSupportedNodeVersion, MINIMUM_NODE_VERSION } from "@paperclipai/shared/node-version";
 
 function pathContains(directory: string): boolean {
   const normalized = path.resolve(directory);
@@ -33,14 +34,13 @@ function hasManagedArtifacts(paths: InstallStorePaths): boolean {
 }
 
 export function nodeRuntimeCheck(): CheckResult {
-  const major = Number.parseInt(process.versions.node.split(".")[0] ?? "0", 10);
-  return major >= 20
+  return isSupportedNodeVersion(process.versions.node)
     ? { name: "Node.js runtime", status: "pass", message: `Node.js ${process.versions.node}` }
     : {
         name: "Node.js runtime",
         status: "fail",
         message: `Node.js ${process.versions.node} is unsupported`,
-        repairHint: "Install Node.js 20 or newer before installing or running Paperclip",
+        repairHint: `Install Node.js ${MINIMUM_NODE_VERSION} or newer before installing or running Paperclip`,
       };
 }
 

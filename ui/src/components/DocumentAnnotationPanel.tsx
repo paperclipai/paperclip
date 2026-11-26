@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type {
-  DocumentAnnotationComment,
-  DocumentAnnotationThreadStatus,
-  DocumentAnnotationThreadWithComments,
+import { AgentAvatar } from "./AgentAvatar";
+import { useCallback, useMemo, useRef, useState, useEffect } from "react";
+import {
+  DOCUMENT_ANNOTATION_COMMENT_REACTIONS,
+  type DocumentAnnotationComment,
+  type DocumentAnnotationCommentReactionName,
+  type DocumentAnnotationCommentReactionSummary,
+  type DocumentAnnotationThreadWithComments,
 } from "@paperclipai/shared";
 import {
   Check,
@@ -23,16 +25,14 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { cn, relativeTime } from "@/lib/utils";
-import { documentAnnotationsApi, type DocumentAnnotationTarget } from "@/api/document-annotations";
-import { authApi } from "@/api/auth";
-import { queryKeys } from "@/lib/queryKeys";
-import { copyTextToClipboard } from "@/lib/clipboard";
-import { AgentIcon } from "./AgentIconPicker";
+import type { DocumentAnnotationTarget } from "@/api/document-annotations";
+import { useCopyToast } from "@/lib/use-copy-action";
 import { deriveInitials } from "./Identity";
 import { MarkdownBody } from "./MarkdownBody";
 import type { PendingAnchor } from "./DocumentAnnotationLayer";
 import type { Agent } from "@paperclipai/shared";
 import type { CompanyUserProfile } from "@/lib/company-members";
+import { useDocumentAnnotationMutations } from "@/hooks/useDocumentAnnotationMutations";
 
 export interface AnnotationPanelProps {
   open: boolean;
@@ -62,7 +62,7 @@ export interface AnnotationPanelProps {
   inline?: boolean;
   className?: string;
   /** Resolve `<authorAgentId>` to a display name. */
-  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
   /** Resolve `<authorUserId>` to a display name. */
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
 }
@@ -105,11 +105,10 @@ export function DocumentAnnotationPanel(props: AnnotationPanelProps) {
   );
 }
 
-function AnnotationPanelBody(props: AnnotationPanelProps) {
-  const queryClient = useQueryClient();
+export function AnnotationPanelBody(props: AnnotationPanelProps) {
+  const copyAnnotationLink = useCopyAnnotationLink();
   const [composerValue, setComposerValue] = useState("");
   const [replyDrafts, setReplyDrafts] = useState<Record<string, string>>({});
-  const [mutationError, setMutationError] = useState<string | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const bodyTestId = props.isMobile ? "document-annotation-panel" : undefined;
   const annotationTarget = useMemo<DocumentAnnotationTarget>(() => {
@@ -118,193 +117,32 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
     return { kind: "issue", issueId: props.issueId, documentKey: props.documentKey };
   }, [props.documentKey, props.issueId, props.target]);
 
-  const { data: session } = useQuery({
-    queryKey: queryKeys.auth.session,
-    queryFn: () => authApi.getSession(),
-    staleTime: 5 * 60_000,
+  const { createThread, addReply, updateStatus, toggleReaction, mutationError, currentUser } = useDocumentAnnotationMutations({
+    target: annotationTarget,
+    baseRevisionId: props.baseRevisionId,
+    baseRevisionNumber: props.baseRevisionNumber,
+    pendingAnchor: props.pendingAnchor,
+    onFocusThread: props.onFocusThread,
+    onThreadCreated: () => {
+      props.onClearPendingAnchor();
+      setComposerValue("");
+    },
+    onReplyAdded: (threadId) => setReplyDrafts((current) => ({ ...current, [threadId]: "" })),
   });
-  const currentUser = useMemo(() => {
-    const user = session?.user;
-    return {
-      id: user?.id ?? null,
-      name: user?.name?.trim() || user?.email?.trim() || "You",
-      image: user?.image ?? null,
-    };
-  }, [session]);
 
-  // Show every thread that can be anchored in the document (orphaned threads have
-  // lost their anchor). Filters were removed in favour of a single simple list.
   // Sort in document order (top-to-bottom) — not by recency — so the comment list
   // stays congruent with the highlights as you scroll the document.
   const visibleThreads = useMemo(
     () =>
       props.threads
-        .filter((thread) => thread.anchorState !== "orphaned")
+        .filter((thread) => thread.anchorState !== "orphaned" || thread.id === props.focusedThreadId)
         .sort((a, b) =>
           (a.normalizedStart - b.normalizedStart)
           || (a.markdownStart - b.markdownStart)
           || (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())),
-    [props.threads],
+    [props.threads, props.focusedThreadId],
   );
 
-  const annotationsQueryKey = useMemo(
-    () => annotationTarget.kind === "routine"
-      ? queryKeys.routines.documentAnnotations(annotationTarget.routineId, annotationTarget.documentKey, "all")
-      : annotationTarget.kind === "case"
-        ? queryKeys.cases.documentAnnotations(annotationTarget.caseId, annotationTarget.documentKey, "all")
-      : queryKeys.issues.documentAnnotations(annotationTarget.issueId, annotationTarget.documentKey, "all"),
-    [annotationTarget],
-  );
-
-  const invalidateAll = useCallback(() => {
-    queryClient.invalidateQueries({
-      predicate: (query) => {
-        if (!Array.isArray(query.queryKey)) return false;
-        if (annotationTarget.kind === "routine") {
-          return query.queryKey[0] === "routines"
-            && query.queryKey[1] === "document-annotations"
-            && query.queryKey[2] === annotationTarget.routineId
-            && query.queryKey[3] === annotationTarget.documentKey;
-        }
-        if (annotationTarget.kind === "case") {
-          return query.queryKey[0] === "cases"
-            && query.queryKey[1] === "document-annotations"
-            && query.queryKey[2] === annotationTarget.caseId
-            && query.queryKey[3] === annotationTarget.documentKey;
-        }
-        return query.queryKey[0] === "issues"
-          && query.queryKey[1] === "document-annotations"
-          && query.queryKey[2] === annotationTarget.issueId
-          && query.queryKey[3] === annotationTarget.documentKey;
-      },
-    });
-  }, [annotationTarget, queryClient]);
-
-  const createThread = useMutation({
-    mutationFn: async (body: string) => {
-      if (!props.pendingAnchor) throw new Error("No selection to anchor to.");
-      if (!props.baseRevisionId) throw new Error("Document has no revision yet.");
-      return documentAnnotationsApi.createForTarget(annotationTarget, {
-        baseRevisionId: props.baseRevisionId,
-        baseRevisionNumber: props.baseRevisionNumber,
-        selector: props.pendingAnchor.selector,
-        body,
-      });
-    },
-    // Optimistically drop the new thread into the cache so submission feels instant.
-    onMutate: async (body: string) => {
-      const anchor = props.pendingAnchor;
-      if (!anchor || !props.baseRevisionId) return undefined;
-      setMutationError(null);
-      await queryClient.cancelQueries({ queryKey: annotationsQueryKey });
-      const previous = queryClient.getQueryData<DocumentAnnotationThreadWithComments[]>(annotationsQueryKey);
-      const optimisticThread = buildOptimisticThread({
-        body,
-        selectedText: anchor.selectedText,
-        target: annotationTarget,
-        documentKey: annotationTarget.documentKey,
-        baseRevisionId: props.baseRevisionId,
-        baseRevisionNumber: props.baseRevisionNumber,
-        normalizedStart: anchor.selector.position.normalizedStart,
-        markdownStart: anchor.selector.position.markdownStart,
-        author: currentUser,
-      });
-      queryClient.setQueryData<DocumentAnnotationThreadWithComments[]>(
-        annotationsQueryKey,
-        (current) => [...(current ?? []), optimisticThread],
-      );
-      props.onFocusThread(optimisticThread.id);
-      return { previous, optimisticId: optimisticThread.id };
-    },
-    onError: (error, _body, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(annotationsQueryKey, context.previous);
-      }
-      setMutationError(error instanceof Error && error.message
-        ? error.message
-        : "Failed to create comment.");
-    },
-    onSuccess: (thread, _body, context) => {
-      // Swap the optimistic placeholder for the real thread before refetch settles.
-      queryClient.setQueryData<DocumentAnnotationThreadWithComments[]>(
-        annotationsQueryKey,
-        (current) => (current ?? []).map((entry) =>
-          entry.id === context?.optimisticId ? thread : entry,
-        ),
-      );
-      props.onClearPendingAnchor();
-      setComposerValue("");
-      setMutationError(null);
-      props.onFocusThread(thread.id);
-    },
-    onSettled: () => invalidateAll(),
-  });
-
-  const addReply = useMutation({
-    mutationFn: ({ threadId, body }: { threadId: string; body: string }) =>
-      documentAnnotationsApi.addCommentForTarget(annotationTarget, threadId, { body }),
-    // Optimistically append the reply so it stays on screen through the round-trip.
-    onMutate: async ({ threadId, body }) => {
-      setMutationError(null);
-      await queryClient.cancelQueries({ queryKey: annotationsQueryKey });
-      const previous = queryClient.getQueryData<DocumentAnnotationThreadWithComments[]>(annotationsQueryKey);
-      const optimisticComment = buildOptimisticComment({
-        body,
-        threadId,
-        target: annotationTarget,
-        author: currentUser,
-      });
-      queryClient.setQueryData<DocumentAnnotationThreadWithComments[]>(
-        annotationsQueryKey,
-        (current) => (current ?? []).map((thread) =>
-          thread.id === threadId
-            ? { ...thread, comments: [...thread.comments, optimisticComment], updatedAt: optimisticComment.createdAt }
-            : thread,
-        ),
-      );
-      return { previous };
-    },
-    onError: (error, _variables, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(annotationsQueryKey, context.previous);
-      }
-      setMutationError(error instanceof Error && error.message
-        ? error.message
-        : "Failed to add reply.");
-    },
-    onSuccess: (_comment, variables) => {
-      setReplyDrafts((current) => ({ ...current, [variables.threadId]: "" }));
-      setMutationError(null);
-    },
-    onSettled: () => invalidateAll(),
-  });
-
-  const updateStatus = useMutation({
-    mutationFn: ({ threadId, status }: { threadId: string; status: DocumentAnnotationThreadStatus }) =>
-      documentAnnotationsApi.updateStatusForTarget(annotationTarget, threadId, status),
-    onMutate: async ({ threadId, status }) => {
-      setMutationError(null);
-      await queryClient.cancelQueries({ queryKey: annotationsQueryKey });
-      const previous = queryClient.getQueryData<DocumentAnnotationThreadWithComments[]>(annotationsQueryKey);
-      queryClient.setQueryData<DocumentAnnotationThreadWithComments[]>(
-        annotationsQueryKey,
-        (current) => (current ?? []).map((thread) =>
-          thread.id === threadId ? { ...thread, status } : thread,
-        ),
-      );
-      return { previous };
-    },
-    onError: (error, _variables, context) => {
-      if (context?.previous) {
-        queryClient.setQueryData(annotationsQueryKey, context.previous);
-      }
-      setMutationError(error instanceof Error && error.message
-        ? error.message
-        : "Failed to update comment status.");
-    },
-    onSuccess: () => setMutationError(null),
-    onSettled: () => invalidateAll(),
-  });
 
   useEffect(() => {
     if (!props.open) {
@@ -403,6 +241,9 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
                 onCopyLink={() => copyAnnotationLink(props.documentKey, thread.id)}
                 pendingReply={addReply.isPending && addReply.variables?.threadId === thread.id}
                 pendingStatus={updateStatus.isPending && updateStatus.variables?.threadId === thread.id}
+                onToggleReaction={(commentId, reaction, present) =>
+                  toggleReaction.mutate({ threadId: thread.id, commentId, reaction, present })
+                }
                 agentMap={props.agentMap}
                 userProfileMap={props.userProfileMap}
               />
@@ -478,7 +319,7 @@ function AnnotationPanelBody(props: AnnotationPanelProps) {
   );
 }
 
-function ThreadCard(props: {
+export function ThreadCard(props: {
   thread: DocumentAnnotationThreadWithComments;
   expanded: boolean;
   focusedCommentId: string | null;
@@ -490,7 +331,12 @@ function ThreadCard(props: {
   onCopyLink: () => void;
   pendingReply: boolean;
   pendingStatus: boolean;
-  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+  onToggleReaction?: (
+    commentId: string,
+    reaction: DocumentAnnotationCommentReactionName,
+    present: boolean,
+  ) => void;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
 }) {
   const { thread } = props;
@@ -529,6 +375,7 @@ function ThreadCard(props: {
                 key={comment.id}
                 comment={comment}
                 focused={props.focusedCommentId === comment.id}
+                onToggleReaction={props.onToggleReaction}
                 agentMap={props.agentMap}
                 userProfileMap={props.userProfileMap}
               />
@@ -620,12 +467,18 @@ function ThreadCard(props: {
 function CommentRow({
   comment,
   focused,
+  onToggleReaction,
   agentMap,
   userProfileMap,
 }: {
   comment: DocumentAnnotationComment;
   focused: boolean;
-  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+  onToggleReaction?: (
+    commentId: string,
+    reaction: DocumentAnnotationCommentReactionName,
+    present: boolean,
+  ) => void;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
   userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
 }) {
   const author = resolveAuthor(comment, { agentMap, userProfileMap });
@@ -640,18 +493,11 @@ function CommentRow({
     >
       <div className="mb-0.5 flex items-center justify-between gap-2 text-(length:--text-micro)">
         <span className="flex min-w-0 items-center gap-1.5">
+          {author.role === "agent" ? <AgentAvatar agent={author.agent} size={20} /> : (
           <Avatar size="xs" className="shrink-0">
-            {author.role === "agent" ? (
-              <AvatarFallback>
-                <AgentIcon icon={author.agentIcon} className="h-3 w-3" />
-              </AvatarFallback>
-            ) : (
-              <>
-                {author.imageUrl ? <AvatarImage src={author.imageUrl} alt={author.name} /> : null}
-                <AvatarFallback>{deriveInitials(author.name)}</AvatarFallback>
-              </>
-            )}
-          </Avatar>
+            {author.imageUrl ? <AvatarImage src={author.imageUrl} alt={author.name} /> : null}
+            <AvatarFallback>{deriveInitials(author.name)}</AvatarFallback>
+          </Avatar>)}
           <span className="truncate font-medium text-foreground">{author.name}</span>
           {author.role === "agent" ? (
             <span className="text-muted-foreground">· agent</span>
@@ -660,8 +506,88 @@ function CommentRow({
         <span className="shrink-0 text-muted-foreground">{relativeTime(comment.createdAt)}</span>
       </div>
       <MarkdownBody className="text-sm leading-6">{comment.body}</MarkdownBody>
+      {onToggleReaction && !comment.id.startsWith("optimistic-") ? (
+        <CommentReactions
+          comment={comment}
+          onToggle={(reaction, present) => onToggleReaction(comment.id, reaction, present)}
+          agentMap={agentMap}
+          userProfileMap={userProfileMap}
+        />
+      ) : null}
     </div>
   );
+}
+
+const REACTION_DISPLAY: Record<DocumentAnnotationCommentReactionName, { emoji: string; label: string }> = {
+  done: { emoji: "✅", label: "Done" },
+  check: { emoji: "✔️", label: "Check" },
+  thumbs_up: { emoji: "👍", label: "Thumbs up" },
+  question: { emoji: "❓", label: "Question" },
+};
+
+function CommentReactions({
+  comment,
+  onToggle,
+  agentMap,
+  userProfileMap,
+}: {
+  comment: DocumentAnnotationComment;
+  onToggle: (reaction: DocumentAnnotationCommentReactionName, present: boolean) => void;
+  agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
+  userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
+}) {
+  const byName = new Map((comment.reactions ?? []).map((entry) => [entry.reaction, entry]));
+  return (
+    <div
+      role="group"
+      aria-label="Reactions"
+      data-testid={`document-annotation-reactions-${comment.id}`}
+      className="mt-1 flex flex-wrap items-center gap-1"
+      onClick={(event) => event.stopPropagation()}
+    >
+      {DOCUMENT_ANNOTATION_COMMENT_REACTIONS.map((reaction) => {
+        const summary = byName.get(reaction);
+        const display = REACTION_DISPLAY[reaction];
+        const reacted = summary?.reactedByMe === true;
+        const count = summary?.count ?? 0;
+        const who = summary ? reactionActorNames(summary, { agentMap, userProfileMap }) : [];
+        return (
+          <Button
+            key={reaction}
+            type="button"
+            size="xs"
+            variant={reacted ? "secondary" : "ghost"}
+            aria-pressed={reacted}
+            aria-label={`${display.label}${count > 0 ? `, ${count}` : ""}`}
+            title={who.length > 0 ? `${display.label}: ${who.join(", ")}` : display.label}
+            data-reaction={reaction}
+            className={cn(
+              "px-1.5 tabular-nums",
+              reacted ? "text-foreground" : "text-muted-foreground",
+            )}
+            onClick={() => onToggle(reaction, !reacted)}
+          >
+            <span aria-hidden="true">{display.emoji}</span>
+            {count > 0 ? <span>{count}</span> : null}
+          </Button>
+        );
+      })}
+    </div>
+  );
+}
+
+function reactionActorNames(
+  summary: DocumentAnnotationCommentReactionSummary,
+  maps: {
+    agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
+    userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
+  },
+): string[] {
+  return summary.actors.map((actor) => {
+    if (actor.agentId) return maps.agentMap?.get(actor.agentId)?.name ?? actor.agentId.slice(0, 8);
+    if (actor.userId) return maps.userProfileMap?.get(actor.userId)?.label ?? actor.userId.slice(0, 8);
+    return actor.actorType === "agent" ? "Agent" : "Board";
+  });
 }
 
 /** ⌘/Ctrl + Enter submits the composer or reply. */
@@ -672,16 +598,17 @@ function isSubmitShortcut(event: React.KeyboardEvent<HTMLTextAreaElement>): bool
 function resolveAuthor(
   comment: DocumentAnnotationComment,
   maps: {
-    agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon">>>;
+    agentMap?: ReadonlyMap<string, Pick<Agent, "id" | "name"> & Partial<Pick<Agent, "icon" | "appearance">>>;
     userProfileMap?: ReadonlyMap<string, CompanyUserProfile>;
   },
-): { name: string; role: "board" | "agent"; agentIcon?: Agent["icon"]; imageUrl?: string | null } {
+): { name: string; role: "board" | "agent"; agentIcon?: Agent["icon"]; agent?: import("./AgentAvatar").AvatarAgent; imageUrl?: string | null } {
   if (comment.authorAgentId) {
     const agent = maps.agentMap?.get(comment.authorAgentId);
     return {
       name: agent?.name ?? comment.authorAgentId.slice(0, 8),
       role: "agent",
       agentIcon: agent?.icon,
+      agent: agent ?? { id: comment.authorAgentId },
     };
   }
   if (comment.authorUserId) {
@@ -695,101 +622,26 @@ function resolveAuthor(
   return { name: comment.authorType === "agent" ? "Agent" : "Board", role: comment.authorType === "agent" ? "agent" : "board" };
 }
 
-interface OptimisticAuthor {
-  id: string | null;
-  name: string;
-  image: string | null;
-}
-
-function optimisticId(prefix: string): string {
-  const random = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-    ? crypto.randomUUID()
-    : `${Date.now()}-${Math.floor(Math.random() * 1e9)}`;
-  return `${prefix}-${random}`;
-}
-
-function buildOptimisticComment(input: {
-  body: string;
-  threadId: string;
-  target: DocumentAnnotationTarget;
-  author: OptimisticAuthor;
-}): DocumentAnnotationComment {
-  const now = new Date();
-  return {
-    id: optimisticId("optimistic-comment"),
-    companyId: "",
-    threadId: input.threadId,
-    issueId: input.target.kind === "issue" ? input.target.issueId : null,
-    routineId: input.target.kind === "routine" ? input.target.routineId : null,
-    caseId: input.target.kind === "case" ? input.target.caseId : null,
-    documentId: "",
-    body: input.body,
-    authorType: "user",
-    authorAgentId: null,
-    authorUserId: input.author.id,
-    createdByRunId: null,
-    issueCommentId: null,
-    createdAt: now,
-    updatedAt: now,
-  };
-}
-
-function buildOptimisticThread(input: {
-  body: string;
-  selectedText: string;
-  target: DocumentAnnotationTarget;
-  documentKey: string;
-  baseRevisionId: string;
-  baseRevisionNumber: number;
-  normalizedStart: number;
-  markdownStart: number;
-  author: OptimisticAuthor;
-}): DocumentAnnotationThreadWithComments {
-  const id = optimisticId("optimistic-thread");
-  const now = new Date();
-  const comment = buildOptimisticComment({
-    body: input.body,
-    threadId: id,
-    target: input.target,
-    author: input.author,
-  });
-  // Only the fields the panel + overlay read need to be accurate; the optimistic
-  // thread is swapped for the server copy on success. Cast through unknown so we
-  // don't have to fabricate every backend-only column.
-  return {
-    id,
-    issueId: input.target.kind === "issue" ? input.target.issueId : null,
-    routineId: input.target.kind === "routine" ? input.target.routineId : null,
-    caseId: input.target.kind === "case" ? input.target.caseId : null,
-    documentKey: input.documentKey,
-    status: "open",
-    anchorState: "active",
-    selectedText: input.selectedText,
-    normalizedStart: input.normalizedStart,
-    markdownStart: input.markdownStart,
-    originalRevisionId: input.baseRevisionId,
-    originalRevisionNumber: input.baseRevisionNumber,
-    currentRevisionId: input.baseRevisionId,
-    currentRevisionNumber: input.baseRevisionNumber,
-    createdByUserId: input.author.id,
-    createdAt: now,
-    updatedAt: now,
-    comments: [comment],
-  } as unknown as DocumentAnnotationThreadWithComments;
-}
-
-function truncate(value: string, limit: number) {
+export function truncate(value: string, limit: number) {
   if (value.length <= limit) return value;
   return `${value.slice(0, limit - 1)}…`;
 }
 
-async function copyAnnotationLink(documentKey: string, threadId: string) {
-  if (typeof window === "undefined") return;
-  const { pathname } = window.location;
-  const hash = `#document-${encodeURIComponent(documentKey)}&thread=${encodeURIComponent(threadId)}`;
-  try {
-    await copyTextToClipboard(`${window.location.origin}${pathname}${hash}`);
-  } catch {
-    /* swallow */
-  }
+/**
+ * Copy a deep link to an annotation thread, and say whether it landed.
+ *
+ * The trigger is a menu item that closes on click, so the confirmation is a
+ * toast rather than an inline state nobody would still be looking at.
+ */
+export function useCopyAnnotationLink() {
+  const copyWithToast = useCopyToast();
+  return useCallback(
+    (documentKey: string, threadId: string) => {
+      if (typeof window === "undefined") return;
+      const { pathname } = window.location;
+      const hash = `#document-${encodeURIComponent(documentKey)}&thread=${encodeURIComponent(threadId)}`;
+      void copyWithToast(`${window.location.origin}${pathname}${hash}`, "Link copied");
+    },
+    [copyWithToast],
+  );
 }

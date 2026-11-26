@@ -324,6 +324,44 @@ async function createHostTarball(input: {
 }
 
 /**
+ * Parse one `tar -tvf` verbose listing line into its leading type flag and the
+ * trailing name-and-link-target field. The listing dialect depends on which tar
+ * the host ships: GNU/busybox emit
+ * `<perms> <owner>/<group> <size> <date> <time> <rest>`, while bsdtar
+ * (libarchive — the system tar on macOS) emits the ls-style
+ * `<perms> <links> <user> <group> <size> <Mon> <day> <time|year> <rest>`.
+ * The second field disambiguates: GNU always slash-joins owner/group, bsdtar
+ * puts a pure-digit link count there, so no line satisfies both shapes — the
+ * slash requirement is load-bearing, since a bsdtar line with numeric uid/gid
+ * would otherwise match the GNU shape shifted, hiding traversal in `<rest>`.
+ * Entries whose size column is not a plain byte count (e.g. a device node's
+ * `major,minor`) match neither shape. Returns null when nothing matches so
+ * callers can fail closed.
+ */
+export function parseTarVerboseListingLine(line: string): { typeFlag: string; rest: string } | null {
+  const gnu = line.match(/^(\S+)\s+\S+\/\S+\s+\d+\s+\S+\s+\S+\s+(.*)$/);
+  if (gnu) return { typeFlag: gnu[1][0], rest: gnu[2] };
+  const bsd = line.match(/^(\S+)\s+\d+\s+\S+\s+\S+\s+\d+\s+\S+\s+\d{1,2}\s+(?:\d{4}|\d{1,2}:\d{2}(?::\d{2})?)\s+(.*)$/);
+  if (bsd) return { typeFlag: bsd[1][0], rest: bsd[2] };
+  return null;
+}
+
+/**
+ * Split a verbose-listing link field (`<name><delimiter><target>`) exactly
+ * once. The sandbox controls both halves, so a field with zero or multiple
+ * delimiter occurrences is unresolvable: a link name that itself contains the
+ * delimiter shifts the split point, and taking the first (or last) occurrence
+ * would let a crafted name or target hide an escaping link target from the
+ * confinement check. Returns null so callers fail closed.
+ */
+export function splitLinkEntryOnce(field: string, delimiter: string): { name: string; target: string } | null {
+  const first = field.indexOf(delimiter);
+  if (first === -1) return null;
+  if (field.indexOf(delimiter, first + delimiter.length) !== -1) return null;
+  return { name: field.slice(0, first), target: field.slice(first + delimiter.length) };
+}
+
+/**
  * Reject a sandbox-authored tarball before extraction if any member would land
  * outside the extraction dir. The archive is produced by the (untrusted) sandbox,
  * so host-side `tar -xf` must never be handed an archive whose entries carry
@@ -331,31 +369,38 @@ async function createHostTarball(input: {
  * escapes the tree. Legitimate in-tree relative links are preserved. Parses the
  * `-tvf` verbose listing; any unparseable line fails closed.
  */
-async function assertTarballEntriesConfined(archivePath: string): Promise<void> {
-  const { stdout } = await execFileAsync("tar", ["-tvf", archivePath], {
+async function assertTarballEntriesConfined(archivePath: string, rejectSpecialModes = false): Promise<void> {
+  // Validate the same raw `._*` members the preserving extractor will write.
+  const rawMacEntries = rejectSpecialModes && process.platform === "darwin"
+    && (await execFileAsync("tar", ["--version"])).stdout.includes("bsdtar");
+  const { stdout } = await execFileAsync("tar", ["-tvf", archivePath, ...(rawMacEntries ? ["--options=!mac-ext"] : [])], {
     env: { ...process.env, COPYFILE_DISABLE: "1" },
     maxBuffer: 64 * 1024 * 1024,
   });
   const lines = stdout.split("\n").filter((line) => line.trim().length > 0);
   for (const line of lines) {
-    // GNU tar -tvf: "<perms> <owner>/<group> <size> <date> <time> <name>[ -> target]".
-    const match = line.match(/^(\S+)\s+\S+\s+\d+\s+\S+\s+\S+\s+(.*)$/);
-    if (!match) {
+    const parsed = parseTarVerboseListingLine(line);
+    if (!parsed) {
       throw new Error(`Kubernetes syncOut refusing tarball with an unparseable entry listing: ${line}`);
     }
-    const typeFlag = match[1][0];
-    let name = match[2];
+    // Source preservation promises 0777 modes only. Refuse special execution
+    // bits before the host extractor can apply them, retaining every source file.
+    if (rejectSpecialModes && /[sStT]/.test(line.trimStart().slice(0, 10))) {
+      throw new Error("Kubernetes syncOut source preservation does not support special mode bits");
+    }
+    const typeFlag = parsed.typeFlag;
+    let name = parsed.rest;
     let linkTarget: string | null = null;
     if (typeFlag === "l") {
-      const idx = name.indexOf(" -> ");
-      if (idx === -1) throw new Error(`Kubernetes syncOut refusing unparseable symlink entry: ${line}`);
-      linkTarget = name.slice(idx + " -> ".length);
-      name = name.slice(0, idx);
+      const split = splitLinkEntryOnce(name, " -> ");
+      if (!split) throw new Error(`Kubernetes syncOut refusing unparseable or ambiguous symlink entry: ${line}`);
+      name = split.name;
+      linkTarget = split.target;
     } else if (typeFlag === "h") {
-      const idx = name.indexOf(" link to ");
-      if (idx === -1) throw new Error(`Kubernetes syncOut refusing unparseable hardlink entry: ${line}`);
-      linkTarget = name.slice(idx + " link to ".length);
-      name = name.slice(0, idx);
+      const split = splitLinkEntryOnce(name, " link to ");
+      if (!split) throw new Error(`Kubernetes syncOut refusing unparseable or ambiguous hardlink entry: ${line}`);
+      name = split.name;
+      linkTarget = split.target;
     }
     const cleanName = name.replace(/\/+$/, "");
     if (cleanName.length > 0 && posixPathEscapes(cleanName)) {
@@ -372,12 +417,21 @@ async function assertTarballEntriesConfined(archivePath: string): Promise<void> 
   }
 }
 
-async function extractHostTarball(input: { archivePath: string; localDir: string }): Promise<void> {
+async function extractHostTarball(input: { archivePath: string; localDir: string; preserveSourceEntries?: boolean }): Promise<void> {
   // The archive is sandbox-authored and untrusted: validate every member (and
   // link target) is confined before letting host-side tar write a single byte.
-  await assertTarballEntriesConfined(input.archivePath);
+  await assertTarballEntriesConfined(input.archivePath, input.preserveSourceEntries);
   await fs.mkdir(input.localDir, { recursive: true });
-  await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir], {
+  // macOS tar otherwise consumes source files named `._*` as AppleDouble
+  // metadata instead of writing their bytes. These are ordinary user entries.
+  // Preserve mode also ignores the host umask without adopting archive owners,
+  // ACLs, attributes or file flags from the sandbox.
+  const hostTarIsBsd = input.preserveSourceEntries
+    && (await execFileAsync("tar", ["--version"])).stdout.includes("bsdtar");
+  await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir,
+    ...(input.preserveSourceEntries ? ["-p", "--no-same-owner", "--no-acls", "--no-xattrs"] : []),
+    ...(hostTarIsBsd ? ["--no-fflags"] : []),
+    ...(hostTarIsBsd && process.platform === "darwin" ? ["--no-mac-metadata", "--options=!mac-ext"] : [])], {
     env: { ...process.env, COPYFILE_DISABLE: "1" },
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -798,9 +852,13 @@ async function syncOutDirectoryMapping(input: {
   const { exec, mapping, remoteDir, timeoutMs, maxOutputBytes } = input;
   assertConfinedSandboxPath(remoteDir, mapping.sourcePath, "source");
   return withHostTempDir(async (tmp) => {
-    const excludeFlags = ["._*", ...(mapping.exclude ?? [])]
-      .map((entry) => `--exclude ${shQuote(entry)}`)
-      .join(" ");
+    // Preservation exclusions name literal source-relative paths. GNU tar's
+    // default basename/glob matching could silently omit unrelated user files.
+    const excludes = [...(mapping.preserveSourceEntries ? [] : ["._*"]), ...(mapping.exclude ?? [])];
+    const excludeFlags = (mapping.preserveSourceEntries ? "--anchored --no-wildcards " : "") +
+      (mapping.preserveSourceEntries
+        ? [...new Set(excludes.map(entry => entry.replace(/^(?:\.\/)+/, "").replace(/\/+$/, "")))].flatMap(entry => [entry, `./${entry}`])
+        : excludes).map(entry => `--exclude ${shQuote(entry)}`).join(" ");
     const script = [
       ...canonicalizerPreamble(shQuote(remoteDir)),
       // Confine the source dir through an open-then-verify pinned fd before taring.
@@ -830,8 +888,8 @@ async function syncOutDirectoryMapping(input: {
       label: "syncOut directory transfer",
     });
     const bytesTransferred = (await fs.stat(localTar)).size;
-    await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath });
-    const filesTransferred = await countHostFiles(mapping.targetPath, mapping.exclude);
+    await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath, preserveSourceEntries: mapping.preserveSourceEntries });
+    const filesTransferred = await countHostFiles(mapping.targetPath, mapping.preserveSourceEntries ? undefined : mapping.exclude);
     return { filesTransferred, bytesTransferred };
   });
 }
