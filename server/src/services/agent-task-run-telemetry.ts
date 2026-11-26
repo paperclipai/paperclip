@@ -2,7 +2,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { agents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { agentHarnessName, requiresExecutionReconciliation } from "@paperclipai/shared";
 import { PERMANENT_FAILURE_CODES, RESTART_CLASS_FAILURE_CODES, SETUP_FAILURE_CODES } from "./continuation-cause.js";
-import { trackAgentTaskRun } from "@paperclipai/shared/telemetry";
+import { trackAgentTaskCompleted, trackAgentTaskRun } from "@paperclipai/shared/telemetry";
 import { parseObject } from "../adapters/utils.js";
 import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
@@ -53,6 +53,8 @@ const FAILURE_CAUSE_BY_ERROR_CODE: Record<string, AgentRunFailureCause> = {
   user_secret_definition_missing: "missing_access",
   user_secret_definition_inactive: "missing_access",
   github_access_denied: "missing_access",
+  github_app_installation_suspended: "missing_access",
+  github_repo_outside_app_installations: "missing_access",
   github_repo_not_accessible: "missing_access",
   github_auth_required: "missing_access",
   project_access_denied: "missing_access",
@@ -316,5 +318,53 @@ export async function emitAgentTaskRunById(
     if (run) await emitAgentTaskRun(db, run);
   } catch (err) {
     logger.warn({ err, runId: input.runId }, "failed to load run for agent.task_run telemetry");
+  }
+}
+
+export async function emitAgentTaskCompleted(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    taskCreatedByUserId?: string | null;
+    taskAssignedByUserId?: string | null;
+    runOwnerUserId?: string | null;
+  },
+): Promise<void> {
+  try {
+    const client = getTelemetryClient();
+    if (!client) return;
+
+    const agent = await db
+      .select({
+        id: agents.id,
+        role: agents.role,
+        adapterType: agents.adapterType,
+        adapterConfig: agents.adapterConfig,
+      })
+      .from(agents)
+      .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!agent) return;
+
+    const model = readNonEmptyString(parseObject(agent.adapterConfig).model) ?? undefined;
+    const person = resolveTelemetryPerson({
+      taskCreatedByUserId: input.taskCreatedByUserId,
+      taskAssignedByUserId: input.taskAssignedByUserId,
+      runOwnerUserId: input.runOwnerUserId,
+    });
+    withTelemetryActor({ companyId: input.companyId, person }, () => trackAgentTaskCompleted(client, {
+      agentRole: agent.role,
+      agentId: agent.id,
+      adapterType: telemetryAdapterType(agent),
+      ...(model ? { model } : {}),
+      taskId: input.issueId,
+    }));
+  } catch (err) {
+    logger.warn(
+      { err, issueId: input.issueId },
+      "failed to emit agent.task_completed telemetry",
+    );
   }
 }

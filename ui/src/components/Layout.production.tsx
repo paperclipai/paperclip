@@ -1,6 +1,7 @@
 import { useDesignSandbox } from "@/context/DesignSandboxContext";
 import { DesignSandboxSidebar } from "./DesignSandboxSidebar";
 import { BoardDialogs } from "./BoardDialogs";
+import { CloudTrialGate } from "./CloudTrialGate";
 import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { PluginAppShellOverlays } from "./PluginAppShellOverlays";
 import {
@@ -24,6 +25,7 @@ import { Sidebar } from "./Sidebar.production";
 import { CompanySettingsSidebar } from "./CompanySettingsSidebar.production";
 import { CompanySettingsNav } from "./access/CompanySettingsNav";
 import { AppsSidebar } from "./AppsSidebar.production";
+import { appsRouteHasRail } from "../pages/apps/apps-rail";
 import { AppDetailSidebar } from "./AppConnectionSidebar.production";
 import { BreadcrumbBar } from "./BreadcrumbBar.production";
 import { PropertiesPanel } from "./PropertiesPanel";
@@ -91,6 +93,8 @@ function getCompanyPathSegments(
 }
 
 const RESERVED_APP_SUBPATHS = new Set([
+  "plugin",
+  "category",
   "browse",
   "connections",
   "connect",
@@ -208,7 +212,7 @@ export function Layout() {
       kind="application"
       applicationId={appDetailApplicationId}
     />
-  ) : isAppsRoute || isToolsRoute ? (
+  ) : appsRouteHasRail(companyPathSegments, true) ? (
     <AppsSidebar />
   ) : routeSidebarSlot ? (
     <PluginSlotMount
@@ -605,6 +609,7 @@ export function Layout() {
         {isMobile && <MobileBottomNav visible={mobileNavVisible} />}
         <CommandPalette />
         <BoardDialogs />
+        <CloudTrialGate />
         <KeyboardShortcutsCheatsheet
           open={shortcutsOpen}
           onOpenChange={setShortcutsOpen}

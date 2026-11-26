@@ -8,6 +8,7 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { uniqueIssuePrefix } from "./helpers/issue-prefix.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const USER = "swarm-user";
@@ -31,7 +32,7 @@ describe.skipIf(!support.supported)("the /swarm request path to the CLI", () => 
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
   it("sends byte for byte the recorded comment (the request the composer sent), never a merged wake's agent comment or the description", async () => {
-    const [company] = await db.insert(companies).values({ name: "Swarm", issuePrefix: `P${randomUUID().slice(0, 4)}` }).returning();
+    const [company] = await db.insert(companies).values({ name: "Swarm", issuePrefix: uniqueIssuePrefix("P") }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Gemma", adapterType: "paperclip_runner",
       adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-low" } }).returning();
     const [issue] = await db.insert(issues).values({ companyId: company!.id, title: "Write two files", description: DESCRIPTION,
@@ -82,7 +83,7 @@ describe.skipIf(!support.supported)("the /swarm request path to the CLI", () => 
   });
 
   it("marks only the user's recorded request as a swarm, never from the comment's own text or metadata", async () => {
-    const [company] = await db.insert(companies).values({ name: "Swarm marker", issuePrefix: `M${randomUUID().slice(0, 4)}` }).returning();
+    const [company] = await db.insert(companies).values({ name: "Swarm marker", issuePrefix: uniqueIssuePrefix("M") }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Gemma", adapterType: "paperclip_runner",
       adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-low" } }).returning();
     const [issue] = await db.insert(issues).values({ companyId: company!.id, title: "Swarm", status: "todo", assigneeAgentId: agent!.id }).returning();

@@ -4,6 +4,7 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { stableHash } from "./tool-catalog-hash.js";
 import {
   callGoogleWorkspaceRest,
+  googleWorkspacePaperclipToolTitle,
   googleWorkspaceRestShippedSchemaHashes,
   googleWorkspaceRestToolDefinition,
   googleWorkspaceCatalogToolTitle,
@@ -107,6 +108,15 @@ describe("googleWorkspaceCatalogToolTitle", () => {
   it("leaves other connections' titles alone", () => {
     expect(googleWorkspaceCatalogToolTitle("github", "gmail__get_message", null)).toBeNull();
     expect(googleWorkspaceCatalogToolTitle(undefined, "create_issue", "Create issue")).toBe("Create issue");
+  });
+
+  it("identifies Paperclip-authored titles only for the six REST-defined services", () => {
+    expect(googleWorkspacePaperclipToolTitle("gmail__get_message")).toBe("Gmail: Read a message");
+    expect(googleWorkspacePaperclipToolTitle("gmail__search_threads")).toBe("Gmail: Search threads");
+    expect(googleWorkspacePaperclipToolTitle("calendar__list_events")).toBe("Calendar: List events");
+    expect(googleWorkspacePaperclipToolTitle("chat__send_message")).toBeNull();
+    expect(googleWorkspacePaperclipToolTitle("gmail__send_message")).toBeNull();
+    expect(googleWorkspacePaperclipToolTitle("get_message")).toBeNull();
   });
 });
 

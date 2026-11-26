@@ -9,6 +9,8 @@ import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/com
 import { readProviderPackArchive, stageProviderPackArchive } from "./provider-pack-archive.js";
 import { uploadVerifiedProviderPack } from "./provider-pack-upload.js";
 import { providerPackReusePlan } from "./provider-pack-layers.js";
+import { requiredProviderAssetNames, toPackProvider } from "./provider-pack-compatibility.js";
+import { canonicalProviderPackJson, verifyRemoteProviderPack } from "./remote-provider-pack-verification.js";
 // @ts-expect-error Build-time script has no TypeScript declaration.
 import { createProviderPackArchive, createProviderPackLayers } from "../../../../scripts/create-provider-pack-archive.mjs";
 
@@ -57,7 +59,16 @@ async function runner(root: string, corrupt = false, toolPath?: string) {
       const result = await exec(input.command, input.args ?? [], { env: { ...process.env, PATH: toolPath ?? `${bin}:${process.env.PATH}` } });
       return { exitCode: 0, signal: null, pid: null, startedAt: null, timedOut: false, stdout: result.stdout, stderr: result.stderr };
     } catch (error) {
-      return { exitCode: 1, signal: null, pid: null, startedAt: null, timedOut: false, stdout: "", stderr: String(error) };
+      const failed = error as { code?: unknown; stdout?: unknown; stderr?: unknown };
+      return {
+        exitCode: typeof failed.code === "number" ? failed.code : 1,
+        signal: null,
+        pid: null,
+        startedAt: null,
+        timedOut: false,
+        stdout: typeof failed.stdout === "string" ? failed.stdout : "",
+        stderr: typeof failed.stderr === "string" && failed.stderr.length > 0 ? failed.stderr : String(error),
+      };
     }
   });
   return { syncIn, execute };
@@ -523,4 +534,317 @@ it.skipIf(!tar || !hasZstd).each([
   expect(remote.execute).toHaveBeenCalledOnce();
   expect(remote.syncIn).not.toHaveBeenCalled();
   await expect(fs.lstat(targetPath)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("produces byte-identical layered archives and receipts across serial and parallel compression", async () => {
+  const fixedTime = new Date("2026-01-01T00:00:00.000Z");
+  const makeDeterministicPack = async (prefix: string) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+    roots.push(root);
+    const pack = path.join(root, "provider-pack");
+    const distDir = path.join(pack, "dist");
+    const nodeModulesDir = path.join(pack, "node_modules");
+    const pkgDir = path.join(nodeModulesDir, "pkg");
+    await fs.mkdir(distDir, { recursive: true });
+    await fs.mkdir(pkgDir, { recursive: true });
+
+    const files: Array<[string, string | Buffer]> = [
+      [path.join(pack, "provider-pack.json"), JSON.stringify({ schema: "paperclip-runner/remote-provider-pack/v1", digest })],
+      [path.join(pkgDir, "dep-a.bin"), Buffer.alloc(1024 * 1024 + 17, 11)],
+      [path.join(pkgDir, "dep-b.bin"), Buffer.alloc(1024 * 1024 + 29, 22)],
+      [path.join(pkgDir, "dep-c.bin"), Buffer.alloc(1024 * 1024 + 41, 33)],
+      [path.join(distDir, "runner.bin"), Buffer.alloc(1024 * 1024 + 53, 44)],
+      [path.join(distDir, "small.js"), "export const ok = true;\n"],
+    ];
+    for (const [filePath, content] of files) {
+      await fs.writeFile(filePath, content);
+      await fs.utimes(filePath, fixedTime, fixedTime);
+    }
+    const linkPath = path.join(distDir, "link.js");
+    await fs.symlink("small.js", linkPath);
+    await fs.lutimes(linkPath, fixedTime, fixedTime);
+    for (const dirPath of [pkgDir, nodeModulesDir, distDir, pack]) {
+      await fs.utimes(dirPath, fixedTime, fixedTime);
+    }
+    return pack;
+  };
+
+  const packSerial = await makeDeterministicPack("provider-archive-serial-");
+  const packParallel = await makeDeterministicPack("provider-archive-parallel-");
+  const serial = await createProviderPackLayers(packSerial, { concurrency: 1 });
+  const parallel = await createProviderPackLayers(packParallel, { concurrency: 4 });
+
+  expect(parallel).toEqual(serial);
+  expect(parallel.files.map((file: { path: string }) => file.path)).toEqual([
+    "node_modules/pkg/dep-a.bin",
+    "node_modules/pkg/dep-b.bin",
+    "node_modules/pkg/dep-c.bin",
+    "dist/runner.bin",
+  ]);
+  expect(await fs.readFile(`${packParallel}.archive.json`, "utf8")).toBe(
+    await fs.readFile(`${packSerial}.archive.json`, "utf8"),
+  );
+  for (const name of ["overlay.tar.zst", "0.tar.zst", "1.tar.zst", "2.tar.zst", "3.tar.zst"]) {
+    const bytesSerial = await fs.readFile(path.join(`${packSerial}.archives`, name));
+    const bytesParallel = await fs.readFile(path.join(`${packParallel}.archives`, name));
+    expect(bytesParallel.equals(bytesSerial), `${name} bytes must match`).toBe(true);
+  }
+});
+
+async function multiProviderFixture() {
+  const { root, pack } = await fixture();
+  const large = (fill: number) => Buffer.alloc(1024 * 1024, fill);
+  const coreLarge = "node_modules/node/bin/node";
+  const cursorLarge = "provider-assets/cursor/linux-x64/cursor-bin";
+  const kimiLarge = "provider-assets/kimi/linux-x64/runtime/node/bin/node";
+  const piLarge = "provider-assets/pi/linux-x64/pi-bin";
+  const smallFiles = [
+    ["provider-assets/cursor/linux-x64/manifest.txt", "cursor-small"],
+    ["provider-assets/kimi/linux-x64/manifest.txt", "kimi-small"],
+    ["provider-assets/pi/linux-x64/manifest.txt", "pi-small"],
+  ] as const;
+  for (const [relative, content] of [
+    [coreLarge, large(1)],
+    [cursorLarge, large(2)],
+    [kimiLarge, large(1)], // Same bytes as coreLarge to verify cross-provider image-twin reuse.
+    [piLarge, large(3)],
+  ] as const) {
+    await fs.mkdir(path.dirname(path.join(pack, relative)), { recursive: true });
+    await fs.writeFile(path.join(pack, relative), content, { mode: 0o755 });
+  }
+  for (const [relative, content] of smallFiles) {
+    await fs.mkdir(path.dirname(path.join(pack, relative)), { recursive: true });
+    await fs.writeFile(path.join(pack, relative), content, { mode: 0o644 });
+  }
+  await createProviderPackLayers(pack);
+  const archive = (await readProviderPackArchive(pack, digest))!;
+  if (!("kind" in archive)) throw Error("Expected layered archive");
+  return { root, pack, archive, coreLarge, cursorLarge, kimiLarge, piLarge };
+}
+
+it.skipIf(!tar || !hasZstd)("omits all provider-assets when staging a layered pack for Claude or OpenCode", async () => {
+  const { root, archive, coreLarge } = await multiProviderFixture();
+  const fullLayers = archive.files.reduce((sum, file) => sum + file.archive.bytes, 0);
+  const remote = await runner(root);
+  for (const provider of [{ kind: "acpx" as const, agent: "claude" }, { kind: "opencode" as const }] as const) {
+    remote.syncIn.mockClear();
+    const targetPath = path.join(root, `staged-${provider.kind}-${"agent" in provider ? provider.agent : "oc"}`);
+    expect(await stageProviderPackArchive({ archive, runner: remote, targetPath, provider })).toBe(true);
+    expect(await fs.readFile(path.join(targetPath, "bin/tool"), "utf8")).toBe("#!/bin/sh\necho fixture\n");
+    expect((await fs.stat(path.join(targetPath, coreLarge))).size).toBe(1024 * 1024);
+    await expect(fs.lstat(path.join(targetPath, "provider-assets"))).rejects.toMatchObject({ code: "ENOENT" });
+    const transferred = (await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred;
+    expect(transferred).toBeLessThan(archive.overlay.bytes + fullLayers);
+    expect(transferred).toBe(archive.overlay.bytes + archive.files.find(f => f.path === coreLarge)!.archive.bytes);
+  }
+}, 60_000);
+
+it.skipIf(!tar || !hasZstd)("omits unused provider-assets when extracting a v1 single archive", async () => {
+  const { root, pack } = await multiProviderFixture();
+  await createProviderPackArchive(pack);
+  const v1 = (await readProviderPackArchive(pack, digest))!;
+  expect("kind" in v1).toBe(false);
+  const remote = await runner(root);
+  const claudeTarget = path.join(root, "v1-claude");
+  expect(await stageProviderPackArchive({ archive: v1, runner: remote, targetPath: claudeTarget, provider: { kind: "acpx", agent: "claude" } })).toBe(true);
+  await expect(fs.lstat(path.join(claudeTarget, "provider-assets"))).rejects.toMatchObject({ code: "ENOENT" });
+  const cursorTarget = path.join(root, "v1-cursor");
+  expect(await stageProviderPackArchive({ archive: v1, runner: remote, targetPath: cursorTarget, provider: { kind: "acpx", agent: "cursor" } })).toBe(true);
+  expect(await fs.readFile(path.join(cursorTarget, "provider-assets/cursor/linux-x64/manifest.txt"), "utf8")).toBe("cursor-small");
+  await expect(fs.lstat(path.join(cursorTarget, "provider-assets/kimi"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(fs.lstat(path.join(cursorTarget, "provider-assets/pi"))).rejects.toMatchObject({ code: "ENOENT" });
+}, 60_000);
+
+it.skipIf(!tar || !hasZstd)("stages only the selected provider's assets and still reuses image twins across excluded providers", async () => {
+  const { root, pack, archive, coreLarge, cursorLarge, kimiLarge } = await multiProviderFixture();
+  // Image has kimiLarge (same bytes as coreLarge) but lacks coreLarge itself.
+  const image = path.join(root, "image");
+  await fs.cp(pack, image, { recursive: true, verbatimSymlinks: true });
+  await fs.rm(path.join(image, coreLarge));
+  await fs.rm(path.join(image, cursorLarge));
+  const remote = await runner(root);
+  const targetPath = path.join(root, "staged-cursor");
+  expect(await stageProviderPackArchive({
+    archive,
+    runner: remote,
+    targetPath,
+    reuseRoots: [image],
+    provider: { kind: "acpx", agent: "cursor" },
+  })).toBe(true);
+  // Core file reused from image's kimi twin without writing kimi into the workspace.
+  expect((await fs.stat(path.join(targetPath, coreLarge))).size).toBe(1024 * 1024);
+  expect((await fs.stat(path.join(targetPath, cursorLarge))).size).toBe(1024 * 1024);
+  expect(await fs.readFile(path.join(targetPath, "provider-assets/cursor/linux-x64/manifest.txt"), "utf8")).toBe("cursor-small");
+  await expect(fs.lstat(path.join(targetPath, "provider-assets/kimi"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(fs.lstat(path.join(targetPath, "provider-assets/pi"))).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await fs.lstat(path.join(image, kimiLarge))).toBeTruthy();
+  const transferred = (await remote.syncIn.mock.results[0]!.value).operations[0]!.bytesTransferred;
+  expect(transferred).toBe(archive.overlay.bytes + archive.files.find(f => f.path === cursorLarge)!.archive.bytes);
+}, 60_000);
+
+async function directoryBytes(dir: string): Promise<number> {
+  let total = 0;
+  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) total += await directoryBytes(full);
+    else if (entry.isFile()) total += (await fs.lstat(full)).size;
+  }
+  return total;
+}
+
+it.skipIf(!tar || !hasZstd)("e2e: uploads and verifies a provider-scoped pack, cuts workspace disk footprint, and re-stages when switching providers", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "provider-e2e-"));
+  roots.push(root);
+  const pack = path.join(root, "pack");
+  const write = async (relative: string, content: string | Buffer, mode = 0o644) => {
+    const full = path.join(pack, relative);
+    await fs.mkdir(path.dirname(full), { recursive: true });
+    await fs.writeFile(full, content, { mode });
+  };
+  const shaBytes = (content: string | Buffer) => `sha256:${createHash("sha256").update(content).digest("hex")}`;
+  const treeSha = (fileName: string, content: Buffer) =>
+    `sha256:${createHash("sha256").update(`file\0${fileName}\0${shaBytes(content)}\n`).digest("hex")}`;
+  await fs.mkdir(path.join(pack, "node_modules/node/bin"), { recursive: true });
+  await fs.symlink(process.execPath, path.join(pack, "node_modules/node/bin/node"));
+  const nodeSha = shaBytes(await fs.readFile(process.execPath));
+  const opencodeScript = "#!/bin/sh\necho 1.18.34\n";
+  await write("node_modules/.bin/opencode", opencodeScript, 0o755);
+  await write("pnpm-lock.yaml", "lock");
+  await write("node_modules/opencode-ai/bin/opencode.exe", "bin");
+  await write("dist/cli/opencode-app-server-proxy.cjs", "proxy");
+  await write("dist/cli/acpx-runtime-sidecar.cjs", "sidecar");
+  await write("dist/providers/grok/launcher.cjs", "grok");
+  for (const [pkg, version] of [
+    ["acpx", "1.0.0"],
+    ["@agentclientprotocol/claude-agent-acp", "1.0.0"],
+    ["@agentclientprotocol/codex-acp", "1.0.0"],
+    ["opencode-ai", "1.18.34"],
+  ] as const) {
+    await write(`node_modules/${pkg}/package.json`, JSON.stringify({ version }));
+  }
+  const cursorPayload = Buffer.alloc(2 * 1024 * 1024, 11);
+  const kimiPayload = Buffer.alloc(2 * 1024 * 1024, 22);
+  const piPayload = Buffer.alloc(2 * 1024 * 1024, 33);
+  const cursorPath = `provider-assets/cursor/${process.platform}-${process.arch}`;
+  const kimiPath = `provider-assets/kimi/${process.platform}-${process.arch}`;
+  const piPath = `provider-assets/pi/${process.platform}-${process.arch}`;
+  await write(`${cursorPath}/agent`, cursorPayload, 0o755);
+  await write(`${kimiPath}/agent`, kimiPayload, 0o755);
+  await write(`${piPath}/agent`, piPayload, 0o755);
+  const distDigest = `sha256:${createHash("sha256").update([
+    "directory\0cli\n",
+    `file\0cli/acpx-runtime-sidecar.cjs\0${shaBytes("sidecar")}\n`,
+    `file\0cli/opencode-app-server-proxy.cjs\0${shaBytes("proxy")}\n`,
+    "directory\0providers\n",
+    "directory\0providers/grok\n",
+    `file\0providers/grok/launcher.cjs\0${shaBytes("grok")}\n`,
+  ].join("")).digest("hex")}`;
+  const payload = {
+    compatibility: { opencode: 1, acpx: 1 },
+    contractDigest: shaBytes("contracts"),
+    pins: { opencode: "1.18.34", nodeMinimum: "20.0.0", acpx: "1.0.0", claudeAcp: "1.0.0", codexAcp: "1.0.0" },
+    target: { platform: process.platform, architecture: process.arch },
+    runnerSourceRevision: "a".repeat(40),
+    distDigest,
+    providers: {
+      cursor: { path: cursorPath, sha256: treeSha("agent", cursorPayload) },
+      kimi: { path: kimiPath, sha256: treeSha("agent", kimiPayload) },
+      pi: { path: piPath, sha256: treeSha("agent", piPayload) },
+    },
+    artifacts: {
+      nodeCommand: { path: "node_modules/node/bin/node", sha256: nodeSha },
+      productionLock: { path: "pnpm-lock.yaml", sha256: shaBytes("lock") },
+      opencodeCommand: { path: "node_modules/.bin/opencode", sha256: shaBytes(opencodeScript) },
+      opencodeExecutable: { path: "node_modules/opencode-ai/bin/opencode.exe", sha256: shaBytes("bin") },
+      opencodeProxy: { path: "dist/cli/opencode-app-server-proxy.cjs", sha256: shaBytes("proxy") },
+      acpxSidecar: { path: "dist/cli/acpx-runtime-sidecar.cjs", sha256: shaBytes("sidecar") },
+      grokLauncher: { path: "dist/providers/grok/launcher.cjs", sha256: shaBytes("grok") },
+    },
+  };
+  const manifest = {
+    schema: "paperclip-runner/remote-provider-pack/v1",
+    payload,
+    digest: shaBytes(canonicalProviderPackJson(payload)),
+  };
+  await write("provider-pack.json", JSON.stringify(manifest));
+  await createProviderPackLayers(pack);
+  const remote = await runner(root);
+  const targetPath = path.join(root, "workspace-pack");
+  const seal = { targetKey: "sandbox:env-e2e:lease-1" };
+
+  // 1. Unfiltered upload baseline (all 3 provider asset closures = 6 MiB).
+  const fullTarget = path.join(root, "workspace-full");
+  await uploadVerifiedProviderPack({
+    root: pack, sourceDigest: manifest.digest, expectedDigest: manifest.digest, manifest,
+    runner: remote, cwd: root, targetPath: fullTarget, reuseRoots: [],
+    verifyDirectory: () => {}, stageDirectory: async () => { throw Error("unexpected_dir_fallback"); },
+    verifyUploaded: async () => { await verifyRemoteProviderPack({ runner: remote, cwd: root, packRoot: fullTarget, manifest, seal }); },
+  });
+  const fullBytes = await directoryBytes(fullTarget);
+  expect(fullBytes).toBeGreaterThanOrEqual(6 * 1024 * 1024);
+
+  // 2. Claude upload omits all 6 MiB of unused provider-assets/* and verifies cleanly.
+  const claude = { kind: "acpx" as const, agent: "claude" };
+  await uploadVerifiedProviderPack({
+    root: pack, sourceDigest: manifest.digest, expectedDigest: manifest.digest, manifest, provider: claude,
+    runner: remote, cwd: root, targetPath, reuseRoots: [],
+    verifyDirectory: () => {}, stageDirectory: async () => { throw Error("unexpected_dir_fallback"); },
+    verifyUploaded: async () => { await verifyRemoteProviderPack({ runner: remote, cwd: root, packRoot: targetPath, manifest, provider: claude, seal }); },
+  });
+  const claudeBytes = await directoryBytes(targetPath);
+  expect(claudeBytes).toBeLessThan(256 * 1024);
+  expect(fullBytes - claudeBytes).toBeGreaterThanOrEqual(6 * 1024 * 1024);
+
+  // 3. Switching to Cursor on the same workspace supplements ONLY Cursor in place without removing core files.
+  const verifyStagedCore = async () => {
+    const stat = await fs.lstat(targetPath).catch(() => null);
+    if (!stat || stat.isSymbolicLink() || !stat.isDirectory()) return false;
+    try {
+      await verifyRemoteProviderPack({ runner: remote, cwd: root, packRoot: targetPath, manifest, provider: { kind: "opencode" }, seal });
+      return true;
+    } catch { return false; }
+  };
+  const sidecarBefore = (await fs.lstat(path.join(targetPath, "dist/cli/acpx-runtime-sidecar.cjs"))).ino;
+  const cursor = { kind: "acpx" as const, agent: "cursor" };
+  await expect(verifyRemoteProviderPack({ runner: remote, cwd: root, packRoot: targetPath, manifest, provider: cursor, seal }))
+    .rejects.toMatchObject({ failureCheck: "candidate_digest" });
+  await uploadVerifiedProviderPack({
+    root: pack, sourceDigest: manifest.digest, expectedDigest: manifest.digest, manifest, provider: cursor,
+    runner: remote, cwd: root, targetPath, reuseRoots: [],
+    verifyDirectory: () => {}, stageDirectory: async () => { throw Error("unexpected_dir_fallback"); },
+    verifyStagedCore,
+    verifyUploaded: async () => { await verifyRemoteProviderPack({ runner: remote, cwd: root, packRoot: targetPath, manifest, provider: cursor, seal }); },
+  });
+  const cursorBytes = await directoryBytes(targetPath);
+  expect(cursorBytes).toBeGreaterThanOrEqual(2 * 1024 * 1024);
+  expect(cursorBytes).toBeLessThan(3 * 1024 * 1024);
+  expect((await fs.lstat(path.join(targetPath, "dist/cli/acpx-runtime-sidecar.cjs"))).ino).toBe(sidecarBefore);
+  await expect(fs.lstat(path.join(targetPath, "provider-assets/kimi"))).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(fs.lstat(path.join(targetPath, "provider-assets/pi"))).rejects.toMatchObject({ code: "ENOENT" });
+
+  // 4. Adding Kimi on the same workspace preserves Cursor's files and inodes so both providers remain usable concurrently.
+  const cursorAgentIno = (await fs.lstat(path.join(targetPath, `${cursorPath}/agent`))).ino;
+  const kimi = { kind: "acpx" as const, agent: "kimi" };
+  await uploadVerifiedProviderPack({
+    root: pack, sourceDigest: manifest.digest, expectedDigest: manifest.digest, manifest, provider: kimi,
+    runner: remote, cwd: root, targetPath, reuseRoots: [],
+    verifyDirectory: () => {}, stageDirectory: async () => { throw Error("unexpected_dir_fallback"); },
+    verifyStagedCore,
+    verifyUploaded: async () => { await verifyRemoteProviderPack({ runner: remote, cwd: root, packRoot: targetPath, manifest, provider: kimi, seal }); },
+  });
+  expect((await fs.lstat(path.join(targetPath, "dist/cli/acpx-runtime-sidecar.cjs"))).ino).toBe(sidecarBefore);
+  expect((await fs.lstat(path.join(targetPath, `${cursorPath}/agent`))).ino).toBe(cursorAgentIno);
+  await expect(verifyRemoteProviderPack({ runner: remote, cwd: root, packRoot: targetPath, manifest, provider: cursor, seal })).resolves.toEqual(manifest);
+  await expect(verifyRemoteProviderPack({ runner: remote, cwd: root, packRoot: targetPath, manifest, provider: kimi, seal })).resolves.toEqual(manifest);
+  await expect(fs.lstat(path.join(targetPath, "provider-assets/pi"))).rejects.toMatchObject({ code: "ENOENT" });
+}, 60_000);
+
+it("narrows native execution providers safely and fails open when manifest is absent for an unknown agent", () => {
+  expect(toPackProvider({ kind: "opencode" })).toEqual({ kind: "opencode" });
+  expect(toPackProvider({ kind: "acpx", agent: "cursor" })).toEqual({ kind: "acpx", agent: "cursor" });
+  expect(toPackProvider({ kind: "codex" })).toBeUndefined();
+  expect(toPackProvider({ kind: "claude_managed" })).toBeUndefined();
+  expect(requiredProviderAssetNames({ kind: "acpx", agent: "claude" })).toEqual([]);
+  expect(requiredProviderAssetNames({ kind: "acpx", agent: "cursor" })).toEqual(["cursor"]);
+  expect(requiredProviderAssetNames({ kind: "acpx", agent: "future-provider" })).toBeNull();
 });

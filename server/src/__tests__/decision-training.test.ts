@@ -29,6 +29,7 @@ import { errorHandler } from "../middleware/index.js";
 import { decisionTrainingRoutes } from "../routes/decision-training.js";
 import { attentionService } from "../services/attention.js";
 import { captureDecisionSnapshot, decisionTrainingService, withoutGoogleWorkspaceContent } from "../services/decision-training.js";
+import { uniqueIssuePrefix } from "./helpers/issue-prefix.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -76,7 +77,7 @@ describeEmbeddedPostgres("decision training", () => {
     const atCutoffId = randomUUID();
     const afterId = randomUUID();
 
-    await db.insert(companies).values({ id: companyId, name: "Decision Co", issuePrefix: `D${companyId.slice(0, 4)}` });
+    await db.insert(companies).values({ id: companyId, name: "Decision Co", issuePrefix: uniqueIssuePrefix("D") });
     await db.insert(projects).values({ id: projectId, companyId, name: "Decisions" });
     await db.insert(issues).values({
       id: issueId,

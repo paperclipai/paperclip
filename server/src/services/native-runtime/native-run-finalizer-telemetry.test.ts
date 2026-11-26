@@ -57,6 +57,12 @@ function agentTaskRunCalls(fromIndex: number) {
     .filter((call) => call[0] === "agent.task_run");
 }
 
+function agentTaskCompletedCalls(fromIndex: number) {
+  return mockTelemetryClient.track.mock.calls
+    .slice(fromIndex)
+    .filter((call) => call[0] === "agent.task_completed");
+}
+
 function captureRunFailureCallsFrom(fromIndex: number) {
   return mockCaptureRunFailure.mock.calls.slice(fromIndex);
 }
@@ -260,6 +266,46 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     expect(run?.status).toBe("succeeded");
     // "succeeded" is not a failure status, so it never reports to Sentry.
     expect(captureRunFailureCallsFrom(captureCallsBefore)).toHaveLength(0);
+  });
+
+  it("emits exactly one agent.task_completed event when finalizeNativeRun closes a task, and none on replay", async () => {
+    const fixture = await seedNativeRun();
+    await db.update(completionContracts).set({
+      risk: "low",
+      completionAuthority: "agent_claim_policy",
+      contractJson: {
+        revision: CONTROL_PLANE_CONFORMANCE_RESULT.completionClaim.contractRevision,
+        objective: "Emit task completion telemetry",
+        criteria: [{ id: "objective", requirement: "Complete the task" }],
+      },
+    }).where(eq(completionContracts.id, fixture.contractId));
+    await driveToCompleteResult(fixture);
+
+    const callsBefore = mockTelemetryClient.track.mock.calls.length;
+    await finalizeNativeRun({
+      db,
+      runId: fixture.runId,
+      workspaceFinalizeStatus: "succeeded",
+      projectRunStatus: true,
+    });
+
+    const [closedIssue] = await db.select().from(issues).where(eq(issues.id, fixture.issueId));
+    expect(closedIssue?.status).toBe("done");
+    await vi.waitFor(() => expect(agentTaskCompletedCalls(callsBefore)).toHaveLength(1));
+    expect(agentTaskCompletedCalls(callsBefore)[0]?.[1]).toMatchObject({
+      agent_id: agentId,
+      adapter_type: "codex_local",
+      task_id: `hashed:${fixture.issueId}`,
+    });
+
+    await finalizeNativeRun({
+      db,
+      runId: fixture.runId,
+      workspaceFinalizeStatus: "succeeded",
+      projectRunStatus: true,
+    });
+    await reconcileNativeFinalizations(db, [fixture.runId]);
+    expect(agentTaskCompletedCalls(callsBefore)).toHaveLength(1);
   });
 
   it("emits zero events when a repeat finalize call preserves the succeeded terminal state", async () => {

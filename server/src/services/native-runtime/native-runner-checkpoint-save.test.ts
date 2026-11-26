@@ -6,6 +6,7 @@ import { agents, checkpointDb, closeCheckpointDb, companies, createDb, heartbeat
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { uniqueIssuePrefix } from "../../__tests__/helpers/issue-prefix.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 
@@ -27,7 +28,7 @@ const support = await getEmbeddedPostgresTestSupport();
   });
 
   const fixture = async (leaseExpiresAt: Date) => {
-    const [company] = await db.insert(companies).values({ name: "Checkpoint save", issuePrefix: `CS${randomUUID().slice(0, 4)}` }).returning();
+    const [company] = await db.insert(companies).values({ name: "Checkpoint save", issuePrefix: uniqueIssuePrefix("CS") }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Checkpoint agent", adapterType: "process" }).returning();
     const [issue] = await db.insert(issues).values({ companyId: company!.id, title: "Checkpoint task" }).returning();
     const runId = randomUUID(), leaseOwner = randomUUID(), bootId = randomUUID();

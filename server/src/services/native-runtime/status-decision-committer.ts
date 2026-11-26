@@ -8,6 +8,7 @@ import { agentInteractionDeliveryDenial, agentWakeInteractionTexts, INTERACTION_
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { lockCurrentNativeWorkAssessmentEvidence } from "./work-assessments.js";
 import { nativeBlockerUserId } from "./native-blocker-owner.js";
+import { evaluateBlockerAgentHandoff } from "./blocker-owner-handoff.js";
 import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { lockCurrentNativeCompletionContract } from "./completion-contracts.js";
@@ -89,7 +90,7 @@ import {
   publishActivity,
   type ActivityPublication,
 } from "../activity-log.js";
-import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
+import { emitAgentTaskCompleted, emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { materializeNativeAgentBlockerContinuation, materializeNativeEnvironmentBlockerRetry, materializeNativeProviderCapacityRetry,
   materializeNativeToolReceiptLimitContinuation } from "./native-provider-capacity-retry.js";
 import { NATIVE_ENVIRONMENT_BLOCKER_CODE, NATIVE_ENVIRONMENT_BLOCKER_EXHAUSTED_CODE } from "./native-environment-blocker.js";
@@ -1742,6 +1743,7 @@ export async function commitNativeStatusDecision(input: {
   }
   const publications: ActivityPublication[] = [];
   const terminalRunsToEmit: (typeof heartbeatRuns.$inferSelect)[] = [];
+  let completedTask: Parameters<typeof emitAgentTaskCompleted>[1] | null = null;
   const committed = await input.db.transaction(async (tx) => {
     const retiredReview = input.requireReassessmentSource?.retiredAutomaticReview;
     if (retiredReview && !await lockCurrentNativeCompletionContract(tx as unknown as Db, {
@@ -1780,7 +1782,14 @@ export async function commitNativeStatusDecision(input: {
       .limit(1)
       .then((rows) => rows[0] ?? null);
     if (!issue) throw new NativeStatusRaceError();
-    const [originRun] = await tx.select({ agentId: heartbeatRuns.agentId }).from(heartbeatRuns)
+    completedTask = null;
+    const [originRun] = await tx.select({
+      agentId: heartbeatRuns.agentId,
+      responsibleUserId: heartbeatRuns.responsibleUserId,
+      driverKind: heartbeatRuns.driverKind,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+      runnerProfileJson: heartbeatRuns.runnerProfileJson,
+    }).from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.id, input.runId), eq(heartbeatRuns.companyId, input.companyId)));
     if (input.requireReassessmentSource) {
       const expected = input.requireReassessmentSource;
@@ -1908,6 +1917,30 @@ export async function commitNativeStatusDecision(input: {
           assigneeUserId: assessedUserId, texts: [input.decision.unblockDescriptor!.action], lock: true });
       } catch (error) {
         if (record(error).code === "55P03" || record(record(error).cause).code === "55P03") throw new NativeStatusRaceError();
+        throw error;
+      }
+    }
+    if (input.decision.handoffAgentId) {
+      try {
+        const handoff = await evaluateBlockerAgentHandoff(tx as unknown as Db, {
+          companyId: input.companyId,
+          issue,
+          runId: input.runId,
+          actorAgentId: originRun?.agentId ?? null,
+          responsibleUserId: originRun?.responsibleUserId ?? null,
+          driverKind: originRun?.driverKind ?? null,
+          contextSnapshot: originRun?.contextSnapshot,
+          runnerProfileJson: originRun?.runnerProfileJson,
+          targetAgentId: input.decision.handoffAgentId,
+          unblockAction: input.decision.unblockDescriptor?.action ?? "",
+          requireTaskOwner: true,
+          lockSources: true,
+        });
+        if (!handoff.allowed) throw new NativeStatusRaceError();
+      } catch (error) {
+        if (error instanceof NativeStatusRaceError || record(error).code === "55P03" || record(record(error).cause).code === "55P03") {
+          throw new NativeStatusRaceError();
+        }
         throw error;
       }
     }
@@ -2439,6 +2472,11 @@ export async function commitNativeStatusDecision(input: {
           statusVersion: input.priorStatusVersion + 1,
           lastStatusDecisionId: decisionRow.id,
           unblockDescriptor: input.decision.unblockDescriptor,
+          // A blocker naming another agent hands it the task, so its blocker
+          // wake is delivered. Only the reporting assignee can hand it off.
+          ...(input.decision.handoffAgentId && !issue.assigneeUserId &&
+            originRun?.agentId && issue.assigneeAgentId === originRun.agentId
+            ? { assigneeAgentId: input.decision.handoffAgentId } : {}),
           actorAgentId: originRun?.agentId ?? null,
           actorUserId: null,
         },
@@ -2464,6 +2502,16 @@ export async function commitNativeStatusDecision(input: {
       }
       if (updated.originKind === "routine_execution") {
         await syncRoutineRunStatusForIssue(tx as unknown as Db, input.issueId);
+      }
+      if (issue.status !== "done" && updated.status === "done" && originRun?.agentId) {
+        completedTask = {
+          companyId: input.companyId,
+          agentId: originRun.agentId,
+          issueId: input.issueId,
+          taskCreatedByUserId: updated.createdByUserId,
+          taskAssignedByUserId: updated.responsibleUserId,
+          runOwnerUserId: originRun.responsibleUserId,
+        };
       }
       // Native task completion bypasses the REST issue route. Commit the Studio
       // output with the authoritative task status so restart cannot lose it.
@@ -2744,5 +2792,7 @@ export async function commitNativeStatusDecision(input: {
   for (const publication of publications) publishActivity(publication);
   for (const terminalRun of terminalRunsToEmit)
     await emitAgentTaskRun(input.db, terminalRun);
+  if (completedTask && !committed.replayed)
+    void emitAgentTaskCompleted(input.db, completedTask);
   return committed;
 }

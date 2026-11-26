@@ -757,9 +757,9 @@ describe("Daytona sandbox provider plugin", () => {
 
   it("bumps the plugin version so the server reconciles the stored manifest", () => {
     // The bundled-plugin boot reconcile refreshes the stored manifest for an
-    // existing install only when the version changes. The acquisition budget needs
-    // the bump to reach an existing install.
-    expect(manifest.version).toBe("0.1.10");
+    // existing install only when the version changes. The acquisition budget and
+    // default disk size need the bump to reach an existing install.
+    expect(manifest.version).toBe("0.1.11");
   });
 
   it.each([false, true])("closes duplex routes on lease release even when bridge drain hangs: %s", async (hangDrain) => {
@@ -7884,8 +7884,49 @@ describe("daytona manifest form defaults", () => {
   it("pre-fills sizing and image fields for the environment form", () => {
     expect(properties.cpu?.default).toBe(4);
     expect(properties.memory?.default).toBe(4);
-    expect(properties.disk?.default).toBe(10);
+    expect(properties.disk?.default).toBe(20);
     expect(properties.image?.default).toBe("daytonaio/sandbox:0.8.0");
+  });
+
+  it("validates and passes the default 20 GiB disk size through image-backed sandbox creation", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockCreate.mockResolvedValue(sandbox);
+    const defaultConfig = {
+      image: properties.image?.default,
+      cpu: properties.cpu?.default,
+      memory: properties.memory?.default,
+      disk: properties.disk?.default,
+      timeoutMs: 300000,
+      reuseLease: false,
+    };
+
+    const validation = await plugin.definition.onEnvironmentValidateConfig?.({
+      driverKey: "daytona",
+      config: defaultConfig,
+    });
+    expect(validation).toMatchObject({
+      ok: true,
+      normalizedConfig: { image: "daytonaio/sandbox:0.8.0", cpu: 4, memory: 4, disk: 20 },
+    });
+
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      runId: "run-default-disk",
+      agentId: "agent-1",
+      executionWorkspaceId: "workspace-1",
+      adapterType: "paperclip_runner",
+      config: defaultConfig,
+    });
+    expect(mockCreate).toHaveBeenCalledTimes(1);
+    const [createParams] = mockCreate.mock.calls[0] as [Record<string, unknown>];
+    expect(createParams).toMatchObject({
+      image: "daytonaio/sandbox:0.8.0",
+      resources: { cpu: 4, memory: 4, disk: 20, gpu: undefined },
+    });
+    expect(lease?.metadata).toMatchObject({ disk: 20 });
   });
 
   it("keeps each default within its own schema constraints", () => {

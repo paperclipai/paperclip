@@ -2758,6 +2758,63 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     },
   );
 
+  it("reports a reconciled continuation with an unrunnable workspace once instead of retrying every sweep", async () => {
+    const { action, companyId, coderId, heartbeat, sourceIssueId } = await seedReconciledDelivery();
+    const [coalesced] = await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId,
+      kind: "active_run_watchdog",
+      status: "resolved",
+      outcome: "restored",
+      ownerType: "board",
+      returnOwnerAgentId: coderId,
+      cause: "uncertain_external_action",
+      fingerprint: `coalesced:${action.id}`,
+      nextAction: "Follow primary continuation.",
+      evidence: {
+        continuationDelivery: "coalesced",
+        coalescedIntoRecoveryActionId: action.id,
+      },
+    }).returning();
+    await db.update(issues).set({
+      projectId: null,
+      executionWorkspaceId: null,
+      executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree" } },
+    }).where(eq(issues.id, sourceIssueId));
+    const settings = instanceSettingsService(db);
+    const prior = (await settings.getExperimental()).enableIsolatedWorkspaces;
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    try {
+      for (let sweep = 0; sweep < 3; sweep += 1)
+        await deliverReconciledExecutions(db, heartbeat.wakeup);
+    } finally {
+      await settings.updateExperimental({ enableIsolatedWorkspaces: prior });
+    }
+    const comments = await db.select({ body: issueComments.body }).from(issueComments)
+      .where(eq(issueComments.issueId, sourceIssueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!.body).toContain("before dispatch because its workspace settings are not runnable");
+    expect(await db.select().from(activityLog).where(and(
+      eq(activityLog.entityId, sourceIssueId),
+      eq(activityLog.action, "issue.workspace_preflight_blocked"),
+    ))).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests).where(
+      eq(agentWakeupRequests.idempotencyKey, `execution-reconciliation:${action.id}`),
+    )).toHaveLength(1);
+    const [task] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, sourceIssueId));
+    expect(task!.status).toBe("blocked");
+    const [receipt] = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, action.id));
+    expect(receipt!.evidence).toMatchObject({
+      continuationDelivery: "invalidated",
+      continuationInvalidatedReason: "workspace_worktree_requires_project",
+    });
+    const [settledCoalesced] = await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.id, coalesced!.id));
+    expect(settledCoalesced!.evidence.continuationDelivery).toBe("invalidated");
+  });
+
   it("keeps reconciliation pending behind unrelated issue work without creating a second deferred outbox", async () => {
     const { action, heartbeat, sourceIssueId, companyId, coderId } =
       await seedReconciledDelivery();

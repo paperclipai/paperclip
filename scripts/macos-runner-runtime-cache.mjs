@@ -12,10 +12,26 @@ export function macRuntimeInputsDigest(root) {
   return `sha256:${hash.digest("hex")}`;
 }
 
-export function isTrustedMacRuntimeProducer(run, repository) {
+const REQUIRED_VERIFIED_JOB_NAMES = [
+  "macos_runner_runtime / build",
+  "macos_runner_runtime / verify_linux_controller",
+];
+
+export function isTrustedMacRuntimeWorkflowRun(run, repository) {
   return run?.repository?.full_name === repository && run.path === ".github/workflows/docker.yml"
-    && run.event === "push" && run.head_branch === "master" && run.conclusion === "success"
+    && run.event === "push" && run.head_branch === "master"
     && /^[a-f0-9]{40}$/.test(run.head_sha ?? "");
+}
+
+export function isTrustedMacRuntimeProducer(run, repository) {
+  return isTrustedMacRuntimeWorkflowRun(run, repository) && run.conclusion === "success";
+}
+
+export function hasVerifiedMacRuntimeJobs(jobs) {
+  if (!Array.isArray(jobs)) return false;
+  return REQUIRED_VERIFIED_JOB_NAMES.every(name =>
+    jobs.some(job => job?.name === name && job.status === "completed" && job.conclusion === "success"),
+  );
 }
 
 export async function findMacRuntimeArtifact({ digest, repository, token, fetchImpl = fetch }) {
@@ -30,10 +46,13 @@ export async function findMacRuntimeArtifact({ digest, repository, token, fetchI
     return response.json();
   };
   const result = await get(`actions/artifacts?name=${name}&per_page=20`);
-  for (const artifact of (result.artifacts ?? []).filter(item => item.name === name && !item.expired).slice(0, 4)) {
+  for (const artifact of (result.artifacts ?? []).filter(item => item.name === name && !item.expired).slice(0, 10)) {
     if (!Number.isSafeInteger(artifact.workflow_run?.id) || !/^sha256:[a-f0-9]{64}$/.test(artifact.digest ?? "")) continue;
     const run = await get(`actions/runs/${artifact.workflow_run.id}`);
-    if (isTrustedMacRuntimeProducer(run, repository)) return { runId: run.id, name };
+    if (!isTrustedMacRuntimeWorkflowRun(run, repository)) continue;
+    if (run.conclusion === "success") return { runId: run.id, name };
+    const jobsResult = await get(`actions/runs/${artifact.workflow_run.id}/jobs?per_page=100`);
+    if (hasVerifiedMacRuntimeJobs(jobsResult?.jobs)) return { runId: run.id, name };
   }
   return null;
 }

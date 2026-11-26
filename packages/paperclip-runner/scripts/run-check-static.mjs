@@ -175,7 +175,23 @@ function forwardSignal(signal) {
   });
 }
 
-export function runCommand(step, { bufferOutput = false } = {}) {
+export function installSignalHandlers() {
+  process.on("SIGINT", forwardSignal);
+  process.on("SIGTERM", forwardSignal);
+  process.on("SIGHUP", forwardSignal);
+}
+
+export function uninstallSignalHandlers() {
+  process.removeListener("SIGINT", forwardSignal);
+  process.removeListener("SIGTERM", forwardSignal);
+  process.removeListener("SIGHUP", forwardSignal);
+}
+
+export function getShutdownPromise() {
+  return shutdownPromise;
+}
+
+export function runCommand(step, { bufferOutput = false, env = process.env, shell = false } = {}) {
   if (cancelSignal) {
     return Promise.resolve({
       label: step.label,
@@ -189,7 +205,8 @@ export function runCommand(step, { bufferOutput = false } = {}) {
   return new Promise((resolvePromise) => {
     const child = spawn(step.command, step.args, {
       cwd: step.cwd,
-      env: process.env,
+      env,
+      shell,
       detached,
       stdio: bufferOutput ? ["ignore", "pipe", "pipe"] : "inherit",
     });
@@ -240,33 +257,33 @@ export function runCommand(step, { bufferOutput = false } = {}) {
   });
 }
 
-function flushResult(result) {
+function flushResult(result, prefix) {
   for (const { stream, chunk } of result.chunks) {
     process[stream].write(chunk);
   }
   if (result.error) {
-    console.error(`[check:static] ${result.label} failed to spawn: ${result.error.message}`);
+    console.error(`${prefix} ${result.label} failed to spawn: ${result.error.message}`);
   }
 }
 
-async function runChain(chain, { bufferOutput = true } = {}) {
+async function runChain(chain, { bufferOutput = true, prefix = "[check:static]", verbosePhases = true } = {}) {
   const results = [];
   for (const step of chain.steps) {
-    const result = await runCommand(step, { bufferOutput });
+    const result = await runCommand(step, { bufferOutput, env: step.env ?? process.env, shell: Boolean(step.shell) });
     results.push(result);
     if (result.code !== 0) break;
   }
   const totalMs = results.reduce((sum, result) => sum + result.durationMs, 0);
   const failed = results.find((result) => result.code !== 0);
-  console.log(`[check:static] --- chain:${chain.name} (${(totalMs / 1000).toFixed(1)}s, exit=${failed?.code ?? 0}) ---`);
-  for (const result of results) flushResult(result);
+  if (verbosePhases) {
+    console.log(`${prefix} --- chain:${chain.name} (${(totalMs / 1000).toFixed(1)}s, exit=${failed?.code ?? 0}) ---`);
+  }
+  for (const result of results) flushResult(result, prefix);
   return { name: chain.name, results, failed };
 }
 
-async function executePlan(phases) {
-  process.on("SIGINT", forwardSignal);
-  process.on("SIGTERM", forwardSignal);
-  process.on("SIGHUP", forwardSignal);
+export async function executePhases(phases, { prefix = "[check:static]", verbosePhases = true } = {}) {
+  installSignalHandlers();
   try {
     for (const phase of phases) {
       if (shutdownPromise) {
@@ -274,16 +291,16 @@ async function executePlan(phases) {
         return;
       }
       const phaseStart = Date.now();
-      console.log(`[check:static] phase=${phase.name} mode=${phase.mode}`);
+      if (verbosePhases) console.log(`${prefix} phase=${phase.name} mode=${phase.mode}`);
       if (phase.mode === "serial") {
         for (const step of phase.steps) {
-          const result = await runCommand(step, { bufferOutput: false });
+          const result = await runCommand(step, { bufferOutput: false, env: step.env ?? process.env, shell: Boolean(step.shell) });
           if (shutdownPromise) {
             await shutdownPromise;
             return;
           }
           if (result.code !== 0) {
-            console.error(`[check:static] FAILED ${result.label} (exit=${result.code})`);
+            console.error(`${prefix} FAILED ${result.label} (exit=${result.code})`);
             process.exit(result.code);
           }
         }
@@ -291,10 +308,12 @@ async function executePlan(phases) {
         const bufferOutput = phase.steps.length > 1;
         const results = await Promise.all(
           phase.steps.map(async (step) => {
-            const result = await runCommand(step, { bufferOutput });
+            const result = await runCommand(step, { bufferOutput, env: step.env ?? process.env, shell: Boolean(step.shell) });
             if (bufferOutput) {
-              console.log(`[check:static] --- ${result.label} (${(result.durationMs / 1000).toFixed(1)}s, exit=${result.code}) ---`);
-              flushResult(result);
+              if (verbosePhases) {
+                console.log(`${prefix} --- ${result.label} (${(result.durationMs / 1000).toFixed(1)}s, exit=${result.code}) ---`);
+              }
+              flushResult(result, prefix);
             }
             return result;
           }),
@@ -305,28 +324,30 @@ async function executePlan(phases) {
         }
         const failed = results.find((result) => result.code !== 0);
         if (failed) {
-          console.error(`[check:static] FAILED ${failed.label} (exit=${failed.code})`);
+          console.error(`${prefix} FAILED ${failed.label} (exit=${failed.code})`);
           process.exit(failed.code);
         }
       } else if (phase.mode === "parallel-chains") {
-        const chains = await Promise.all(phase.chains.map((chain) => runChain(chain, { bufferOutput: true })));
+        const chains = await Promise.all(phase.chains.map((chain) => runChain(chain, { bufferOutput: true, prefix, verbosePhases })));
         if (shutdownPromise) {
           await shutdownPromise;
           return;
         }
         const firstFailure = chains.find((chain) => chain.failed)?.failed ?? null;
         if (firstFailure) {
-          console.error(`[check:static] FAILED ${firstFailure.label} (exit=${firstFailure.code})`);
+          console.error(`${prefix} FAILED ${firstFailure.label} (exit=${firstFailure.code})`);
           process.exit(firstFailure.code);
         }
       }
-      console.log(`[check:static] phase=${phase.name} done (${((Date.now() - phaseStart) / 1000).toFixed(1)}s)`);
+      if (verbosePhases) console.log(`${prefix} phase=${phase.name} done (${((Date.now() - phaseStart) / 1000).toFixed(1)}s)`);
     }
   } finally {
-    process.removeListener("SIGINT", forwardSignal);
-    process.removeListener("SIGTERM", forwardSignal);
-    process.removeListener("SIGHUP", forwardSignal);
+    uninstallSignalHandlers();
   }
+}
+
+async function executePlan(phases) {
+  await executePhases(phases, { prefix: "[check:static]", verbosePhases: true });
 }
 
 async function main() {

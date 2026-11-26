@@ -898,6 +898,244 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     } finally { await remote.close(); }
   });
 
+  it("blocks approval cards for managed GitHub writes outside installed orgs and distinguishes external-org vs installed-org 403s", async () => {
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { run } = await createIssueAndRun(db, company.id, agent.id);
+    const remote = await startFakeRemoteMcpServer(({ body }) => {
+      const args = (body?.params as { arguments?: { owner?: string; repo?: string; issueRef?: string } } | undefined)?.arguments;
+      const owner = args?.owner ?? (args?.issueRef === "external-org-issue-42" ? "external-org" : "unknown");
+      const repo = args?.repo ?? (args?.issueRef === "external-org-issue-42" ? "public-repo" : "unknown");
+      const url = `https://api.github.com/repos/${owner}/${repo}/issues`;
+      return { body: {
+        jsonrpc: "2.0", id: body?.id, result: {
+          content: [{ type: "text", text: `failed to create issue: POST ${url}: 403 Resource not accessible by integration []` }],
+          isError: true,
+        },
+      } };
+    });
+    try {
+      const { application, connection, catalogEntry } = await createRemoteMcpTool(db, company.id, {
+        url: remote.url, applicationKey: "github", toolName: "create_issue", riskLevel: "write",
+        connectionConfig: { sourceTemplateKey: "github", connectionMethodKey: "managed" },
+      });
+      await db.update(toolCatalogEntries).set({ inputSchema: {
+        type: "object",
+        properties: { owner: { type: "string" }, repo: { type: "string" }, title: { type: "string" }, issueRef: { type: "string" } },
+        required: ["title"],
+        additionalProperties: false,
+      } }).where(eq(toolCatalogEntries.id, catalogEntry.id));
+      await db.update(connectionGrants).set({
+        providerTenant: {
+          github: {
+            userId: "1",
+            login: "octocat",
+            installationCount: 1,
+            repositoryCount: 1,
+            repositorySelection: "selected",
+            installationIds: ["9"],
+            installationOwnerLogins: ["acme"],
+            repositories: [{ id: "10", fullName: "acme/site", installationId: "9" }],
+          },
+        },
+      }).where(eq(connectionGrants.connectionId, connection.id));
+      const toolName = expectedConnectedToolName({
+        applicationKey: application.applicationKey,
+        connectionId: connection.id,
+        toolName: catalogEntry.toolName,
+      });
+      await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "Review GitHub writes",
+        policyType: "require_approval",
+        selectors: { connectionId: connection.id },
+        priority: 10,
+      });
+      const gateway = createTestToolGatewayService(db);
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+
+      // 1. Pre-check before posting an approval card: external org fails cleanly without wasting an approval.
+      const precheckError = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: { owner: "external-org", repo: "public-repo", title: "Bug report" },
+      }).catch((err) => err);
+      expect(precheckError).toMatchObject({ reasonCode: "github_repo_outside_app_installations" });
+      expect(precheckError.message).toMatch(/not installed/i);
+      expect(precheckError.message).not.toMatch(/select Refresh access|Add More Repos on GitHub/i);
+      expect(remote.requests).toHaveLength(0);
+      expect(await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id))).toHaveLength(0);
+      expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.companyId, company.id))).toHaveLength(0);
+      const [deniedInvocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
+      expect(deniedInvocation).toMatchObject({
+        status: "denied",
+        errorCode: "github_repo_outside_app_installations",
+        idempotencyKey: null,
+      });
+
+      // 2. Installed org missing a repo grant STILL creates an approval card and classifies 403 as github_access_denied.
+      const installedOrgParams = { owner: "acme", repo: "unselected-repo", title: "Internal issue" };
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: installedOrgParams,
+      })).rejects.toMatchObject({ reasonCode: "approval_required" });
+      const [installedAction] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id));
+      expect(installedAction).toBeDefined();
+      await db.update(issueThreadInteractions).set({ status: "accepted", resolvedAt: new Date() })
+        .where(eq(issueThreadInteractions.id, installedAction!.interactionId!));
+      await db.update(toolActionRequests).set({ status: "approved", resolvedAt: new Date() })
+        .where(eq(toolActionRequests.id, installedAction!.id));
+      const installedFailure = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: installedOrgParams,
+        approvedActionRequestId: installedAction!.id,
+      }).catch((err) => err);
+      expect(installedFailure).toMatchObject({ reasonCode: "github_access_denied" });
+      expect(installedFailure.message).toContain("Refresh access");
+      const [installedCard] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, installedAction!.interactionId!));
+      expect(installedCard!.result).toMatchObject({ toolAction: { status: "failed", errorCode: "github_access_denied" } });
+
+      // 3. Direct runtime 403 on an external org (e.g. without require_approval policy) classifies as github_repo_outside_app_installations
+      //    for both direct gateway execution and MCP HTTP protocol callers.
+      await db.delete(toolPolicies).where(eq(toolPolicies.companyId, company.id));
+      const directExternalFailure = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: { owner: "external-org", repo: "public-repo", title: "Direct bug" },
+      }).catch((err) => err);
+      expect(directExternalFailure).toMatchObject({ reasonCode: "github_repo_outside_app_installations" });
+      expect(directExternalFailure.message).toMatch(/not installed/i);
+      expect(directExternalFailure.message).not.toMatch(/select Refresh access|Add More Repos on GitHub/i);
+
+      const profile = await allowToolsForAgent(db, company.id, agent.id, [toolName]);
+      const named = await gateway.createNamedGateway({ companyId: company.id,
+        body: { name: "GitHub external org", profileId: profile.id } });
+      const token = await gateway.createNamedGatewayToken({ companyId: company.id, gatewayId: named.id,
+        body: { name: "Test", clientLabel: "Test", ownerNote: "" } });
+      const mcpResponse = await request(createGatewayRouteApp(db, gateway)).post(named.endpointPath)
+        .set("authorization", `Bearer ${token.token}`)
+        .send({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: toolName, arguments: { owner: "external-org", repo: "public-repo", title: "MCP bug" } } })
+        .expect(200);
+      expect(mcpResponse.body.result.isError).toBe(true);
+      expect(mcpResponse.body.result.content[0].text).toMatch(/not installed/i);
+      expect(mcpResponse.body.result.content[0].text).not.toMatch(/select Refresh access|Add More Repos on GitHub/i);
+
+      // 4. If an approval card executes when the target owner only becomes visible in GitHub's 403 URL,
+      //    approveActionRequest classifies and persists github_repo_outside_app_installations onto the card.
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "Review GitHub writes again",
+        policyType: "require_approval",
+        selectors: { connectionId: connection.id },
+        priority: 10,
+      });
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: { title: "Opaque ref bug", issueRef: "external-org-issue-42" },
+      })).rejects.toMatchObject({ reasonCode: "approval_required" });
+      const actionsBeforeRefresh = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id));
+      const externalAction = actionsBeforeRefresh.find((row) => row.id !== installedAction!.id);
+      expect(externalAction).toBeDefined();
+      await expect(gateway.approveActionRequest({
+        companyId: company.id,
+        actionRequestId: externalAction!.id,
+        actor: { userId: "reviewer" },
+      })).resolves.toMatchObject({ status: "failed" });
+      const [externalCard] = await db.select().from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, externalAction!.interactionId!));
+      expect(externalCard!.result).toMatchObject({
+        toolAction: { status: "failed", errorCode: "github_repo_outside_app_installations" },
+      });
+
+      // 5. After an org admin installs the App on external-org and access refreshes, retrying the previously
+      //    pre-checked write posts an approval card cleanly (no stale idempotency replay from step 1).
+      await db.update(connectionGrants).set({
+        providerTenant: {
+          github: {
+            userId: "1",
+            login: "octocat",
+            installationCount: 2,
+            repositoryCount: 2,
+            repositorySelection: "selected",
+            installationIds: ["9", "11"],
+            installationOwnerLogins: ["acme", "external-org"],
+            repositories: [
+              { id: "10", fullName: "acme/site", installationId: "9" },
+              { id: "12", fullName: "external-org/public-repo", installationId: "11" },
+            ],
+          },
+        },
+      }).where(eq(connectionGrants.connectionId, connection.id));
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: { owner: "external-org", repo: "public-repo", title: "Bug report" },
+      })).rejects.toMatchObject({ reasonCode: "approval_required" });
+
+      // 6. A suspended installation owner (one active + one suspended) is NOT treated as outside installations
+      //    and delivers unsuspend guidance on runtime 403.
+      await db.delete(toolPolicies).where(eq(toolPolicies.companyId, company.id));
+      await db.update(connectionGrants).set({
+        providerTenant: {
+          github: {
+            userId: "1",
+            login: "octocat",
+            installationCount: 1,
+            repositoryCount: 1,
+            repositorySelection: "selected",
+            installationIds: ["9"],
+            installationOwnerLogins: ["acme"],
+            suspendedInstallationOwnerLogins: ["suspended-org"],
+            repositories: [{ id: "10", fullName: "acme/site", installationId: "9" }],
+          },
+        },
+      }).where(eq(connectionGrants.connectionId, connection.id));
+      const suspendedFailure = await gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: { owner: "suspended-org", repo: "app", title: "Suspended write" },
+      }).catch((err) => err);
+      expect(suspendedFailure).toMatchObject({ reasonCode: "github_app_installation_suspended" });
+      expect(suspendedFailure.message).toMatch(/unsuspend/i);
+      expect(suspendedFailure.message).toContain("suspended-org");
+      expect(suspendedFailure.message).toContain("Refresh access");
+
+      // 7. A webhook-invalidated snapshot (bindingSync present) skips the stale pre-check so a newly
+      //    installed org is not blocked before Refresh access.
+      await db.insert(toolPolicies).values({
+        companyId: company.id,
+        name: "Review GitHub writes after webhook",
+        policyType: "require_approval",
+        selectors: { connectionId: connection.id },
+        priority: 10,
+      });
+      await db.update(connectionGrants).set({
+        providerTenant: {
+          github: {
+            userId: "1",
+            login: "octocat",
+            installationCount: 2,
+            repositoryCount: 1,
+            repositorySelection: "selected",
+            installationIds: ["9", "11"],
+            installationOwnerLogins: ["acme"],
+            bindingSync: { id: "00000000-0000-4000-8000-000000000001", removeInstallationIds: [] },
+          },
+        },
+      }).where(eq(connectionGrants.connectionId, connection.id));
+      await expect(gateway.executeTool({
+        sessionToken: session.token,
+        tool: toolName,
+        parameters: { owner: "newly-installed-org", repo: "public-repo", title: "Post-install bug" },
+      })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    } finally { await remote.close(); }
+  });
+
   it("returns a JSON-RPC reconciliation error instead of repeating an unverifiable legacy write", async () => {
     const company = await createCompany(db);
     const remote = await startFakeRemoteMcpServer(({ body }) => ({

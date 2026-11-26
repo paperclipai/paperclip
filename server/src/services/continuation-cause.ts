@@ -16,7 +16,7 @@ export const PERSON_OWNED_FAILURE_CODES = [
   // A credential, secret or access the person must share.
   "configuration_incomplete", "slack_configuration_incomplete", "signing_secret_unconfigured",
   "user_secret_missing", "user_secret_definition_missing", "user_secret_definition_inactive",
-  "github_access_denied", "github_repo_not_accessible", "github_auth_required", "project_access_denied",
+  "github_access_denied", "github_app_installation_suspended", "github_repo_outside_app_installations", "github_repo_not_accessible", "github_auth_required", "project_access_denied",
   "permission_denied", "responsible_user_unauthorized", "oauth_access_projection_disabled",
   "acpx_auth_required", "codex_auth_required", "claude_auth_required", "provider_auth_failed", "hermes_gateway_auth_failed",
   // A configuration choice the person must change.
@@ -49,6 +49,25 @@ export const RESTART_CLASS_FAILURE_CODES = [
   "execution_finalization_deadline_exceeded", "local_runtime_api_listener_unavailable",
   "runner_remote_process_identity_unavailable", "continuation_user_authorization_missing",
 ] as const;
+
+/**
+ * Older releases recorded this as an incompatible provider pack and blocked
+ * the task. The pack was fine: the controller built a replacement Runner
+ * launch without its OpenCode inputs. A fresh run prepares them again.
+ * Releases since then report it as `runner_remote_provider_launch_unprepared`
+ * and retry it within the run.
+ */
+export const LEGACY_LAUNCH_UNPREPARED_FAILURE = {
+  code: "runner_remote_provider_artifact_incompatible",
+  /** The stable part of the message. The stored error may carry a prefix, a
+   * suffix or redaction, so match it anywhere, together with the code. */
+  marker: "OpenCode executable is missing from the provider pack",
+} as const;
+
+export function isLegacyLaunchUnpreparedFailure(cause: string | null | undefined, run: { error?: string | null }): boolean {
+  return cause === LEGACY_LAUNCH_UNPREPARED_FAILURE.code
+    && typeof run.error === "string" && run.error.includes(LEGACY_LAUNCH_UNPREPARED_FAILURE.marker);
+}
 
 const REUSABLE_SANDBOX_RESUME_FAILED = "reusable_sandbox_resume_failed";
 const TRANSIENT_SANDBOX_CAUSES = ["transport_timeout", "transport_closed", "sandbox_state_transition", "provider_rate_limited",
@@ -95,11 +114,23 @@ export function canContinueRecoveryRunAutomatically(run: ClassifiedRun): boolean
   return continuationCauseIsSystemOwned(run) && isRecoveryRun(run);
 }
 
-function firstRunFailureContinues(run: Pick<ClassifiedRun, "errorCode" | "resultJson">): boolean {
-  if (isRestartClassFailureCode(run.errorCode)) return true;
+/**
+ * A setup failure the run recorded as ending before any provider work started
+ * (`executionRecovery` bootstrap, `providerWorkStarted: false`): an environment
+ * lease, sandbox qualification, provider or workspace preparation step failed,
+ * so the task never began and running it again repeats nothing. The generic
+ * `setup_failed` belongs here too; person-owned causes have their own codes
+ * and never reach it. Repetition is bounded by the per-task continuation
+ * allowance and the company-wide automatic run brake, not by this test.
+ */
+export function isSetupFailureBeforeProviderWork(run: Pick<ClassifiedRun, "errorCode" | "resultJson">): boolean {
   const recovery = object(object(run.resultJson).executionRecovery);
-  return (TRANSIENT_SETUP_FAILURE_CODES as readonly unknown[]).includes(run.errorCode)
+  return (SETUP_FAILURE_CODES as readonly unknown[]).includes(run.errorCode)
     && recovery.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
+function firstRunFailureContinues(run: Pick<ClassifiedRun, "errorCode" | "resultJson">): boolean {
+  return isRestartClassFailureCode(run.errorCode) || isSetupFailureBeforeProviderWork(run);
 }
 
 export function continuesAutomatically(run: ClassifiedRun): boolean {
@@ -132,11 +163,17 @@ export function recoveryRunSql(alias: string): SQL {
       or ${context}->>'wakeReason' in (${list(AUTOMATIC_CONTINUATION_WAKE_REASONS)})))`;
 }
 
+/** SQL twin of `isSetupFailureBeforeProviderWork`. */
+export function setupFailureBeforeProviderWorkSql(alias: string): SQL {
+  const column = (name: string) => sql.raw(`${alias}.${name}`);
+  return sql`(${column("error_code")} in (${list(SETUP_FAILURE_CODES)})
+    and ${column("result_json")}#>>'{executionRecovery,kind}' = 'bootstrap'
+    and ${column("result_json")}#>>'{executionRecovery,providerWorkStarted}' = 'false')`;
+}
+
 export function continuesAutomaticallySql(alias: string): SQL {
   const column = (name: string) => sql.raw(`${alias}.${name}`);
   return sql`(${continuationCauseIsSystemOwnedSql(alias)} and (${recoveryRunSql(alias)}
     or ${column("error_code")} in (${list(RESTART_CLASS_FAILURE_CODES)})
-    or (${column("error_code")} in (${list(TRANSIENT_SETUP_FAILURE_CODES)})
-      and ${column("result_json")}#>>'{executionRecovery,kind}' = 'bootstrap'
-      and ${column("result_json")}#>>'{executionRecovery,providerWorkStarted}' = 'false')))`;
+    or ${setupFailureBeforeProviderWorkSql(alias)}))`;
 }

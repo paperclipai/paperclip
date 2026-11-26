@@ -891,7 +891,7 @@ describe("managed AI connections", () => {
   });
 
   it("requires sign-in after the receiver process dies with an exchanged but unsaved token", async () => {
-    const owner = "quota-receiver-process-loss";
+    const owner = `quota-receiver-process-loss-${randomUUID()}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const original = JSON.stringify({ tokens: { access_token: "expired-process", refresh_token: "single-use-process" } });
     await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, original);
@@ -918,10 +918,15 @@ describe("managed AI connections", () => {
     const child = spawn(process.execPath, ["--import", createRequire(import.meta.url).resolve("tsx"), new URL("./helpers/quota-credential-process.ts", import.meta.url).pathname], {
       env: { ...process.env, CREDENTIAL_TEST_DATABASE_URL: database.connectionString,
         CREDENTIAL_TEST_PROVIDER_URL: `http://127.0.0.1:${address.port}`, CREDENTIAL_TEST_COMPANY_ID: companyId, CREDENTIAL_TEST_OWNER: owner },
-      stdio: "ignore",
+      stdio: ["ignore", "pipe", "ignore"],
     });
     const exited = once(child, "exit");
+    let ready = false, output = "";
+    child.stdout!.setEncoding("utf8").on("data", (chunk: string) => { output += chunk; ready ||= output.includes("ready\n"); });
     try {
+      const startup = Date.now() + 150_000;
+      while (!ready && Date.now() < startup && child.exitCode === null) await new Promise(resolve => setTimeout(resolve, 25));
+      expect(ready).toBe(true);
       let blocked = false;
       const deadline = Date.now() + 25_000;
       while (!blocked && Date.now() < deadline && child.exitCode === null) {
@@ -952,7 +957,7 @@ describe("managed AI connections", () => {
     await receiver.save(companyId, owner, { connectionId: row.connection.id, provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, signedIn);
     const [current] = await receiver.quotaAccounts(companyId, owner);
     expect(await receiver.runtimeCredential(current)).toBe(signedIn);
-  }, 40_000);
+  }, 200_000);
 
   it("does not exchange a token when a required database transaction fails", async () => {
     const owner = "quota-db-prerequisite";

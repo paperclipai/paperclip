@@ -142,16 +142,8 @@ for (const journey of [
       let connectionId: string;
       if (fullUiSetup) {
         await page.goto(`/${seed.prefix}/apps`);
-        const connector = page
-          .getByRole("list", { name: "Connector list" })
-          .getByRole("listitem")
-          .filter({ hasText: "Connect your own tool" });
-        await connector
-          .getByRole("button", { name: "Connect", exact: true })
-          .click();
-        await connector
-          .getByRole("button", { name: "Connect your own MCP server" })
-          .click();
+        await page.getByRole("button", { name: "Add", exact: true }).click();
+        await page.getByRole("menuitem", { name: /MCP server URL/ }).click();
         await page
           .getByPlaceholder("https://example.com/actions")
           .fill(provider.url);
@@ -262,7 +254,7 @@ for (const journey of [
         queue = await context.newPage();
         await queue.goto(`/${seed.prefix}/apps/review`);
         await expect(
-          queue.getByRole("button", { name: "Decline", exact: true }),
+          queue.getByRole("button", { name: "Deny", exact: true }),
         ).toBeVisible({ timeout: 20_000 });
       }
       if (journey === "restart") {
@@ -298,7 +290,7 @@ for (const journey of [
       if (journey === "decline") {
         // Resolve from Connections and observe the still-open task tab update.
         await queue!
-          .getByRole("button", { name: "Decline", exact: true })
+          .getByRole("button", { name: "Deny", exact: true })
           .click();
 
       } else {
@@ -347,7 +339,7 @@ for (const journey of [
       ).not.toBeVisible();
       if (queue) {
         await expect(
-          queue.getByRole("button", { name: "Decline", exact: true }),
+          queue.getByRole("button", { name: "Deny", exact: true }),
         ).not.toBeVisible({ timeout: 20_000 });
       }
       await page.bringToFront();

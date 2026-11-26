@@ -51,7 +51,10 @@ test("Docker Hub mirrors apply to both image builders without widening publicati
   assert.match(docker, /platform: linux\/arm64/);
   assert.match(docker, /permissions:\n\s+contents: read\n\s+packages: write/);
   assert.match(docker, /outputs: type=image,name=ghcr\.io\/\$\{\{ github\.repository \}\},push-by-digest=true,name-canonical=true,push=true/);
-  assert.match(docker, /cache-to: type=registry,ref=ghcr\.io\/\$\{\{ github\.repository \}\}:buildcache-\$\{\{ matrix\.arch \}\},mode=max/);
+  assert.match(docker, /cache-from: type=registry,ref=ghcr\.io\/\$\{\{ github\.repository \}\}:buildcache-\$\{\{ matrix\.arch \}\}/);
+  assert.match(docker, /CACHE_REF: ghcr\.io\/\$\{\{ github\.repository \}\}:buildcache-\$\{\{ matrix\.arch \}\}/);
+  assert.match(docker, /run: node scripts\/docker-cache-export-policy\.mjs/);
+  assert.match(docker, /cache-to: \$\{\{ steps\.cache-policy\.outputs\.cache_to \}\}/);
   assert.match(preview, /permissions:\n\s+contents: read\n\s+steps:/);
   assert.match(preview, /platforms: linux\/amd64\n\s+push: false/);
   assert.match(preview, /outputs: type=docker,dest=\$\{\{ runner\.temp \}\}\/preview-image\.tar/);
@@ -552,9 +555,16 @@ test("release verify workflow covers the same split test surface as stable PR ve
     assert.deepEqual(rows.map((row) => [Number(row[1]), Number(row[2])]),
       Array.from({ length: count }, (_, index) => [index, count]));
   }
-  for (const shardIndex of [0, 1, 2, 3, 4]) {
-    assert.match(verifyWorkflow, new RegExp(`shard_index: ${shardIndex}[\\s\\S]*?shard_count: 5`));
-  }
+  const serializedJob = verifyWorkflow.match(/  serialized_tests:\n[\s\S]*?(?=\n  [A-Za-z0-9_-]+:|$)/)?.[0] ?? "";
+  const serializedRows = [
+    ...serializedJob.matchAll(
+      /shard_index: (\d+)\n\s+shard_count: (\d+)\n\s+shard_label: ([^\n]+)/g,
+    ),
+  ];
+  assert.deepEqual(
+    serializedRows.map((row) => [Number(row[1]), Number(row[2]), row[3].trim()]),
+    Array.from({ length: 9 }, (_, index) => [index, 9, `${index + 1}/9`]),
+  );
 
   // workspaces-a splits with Vitest native --shard in pr.yml; release
   // verification must keep the same two-shard coverage.

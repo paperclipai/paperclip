@@ -13,6 +13,7 @@ import {
   claimFirstTurnQueuedInput, deferredWakeJoinsFirstTurn, firstTurnClaimedCommentIds, firstTurnQueuedCommentIds, firstTurnTakesAllQueuedComments,
   firstTurnWakeColumns, firstTurnWakeContextFields, firstTurnWakePayloadFields, runAcceptsFirstTurnQueuedInput,
 } from "./first-turn-queued-input.js";
+import { uniqueIssuePrefix } from "../../__tests__/helpers/issue-prefix.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const USER = "first-turn-user";
@@ -27,7 +28,7 @@ describe.skipIf(!support.supported)("first-turn queued input", () => {
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
   async function seed() {
-    const [company] = await db.insert(companies).values({ name: "First turn", issuePrefix: `F${randomUUID().slice(0, 4)}` }).returning();
+    const [company] = await db.insert(companies).values({ name: "First turn", issuePrefix: uniqueIssuePrefix("F") }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Codie", adapterType: "paperclip_runner" }).returning();
     const issueId = randomUUID();
     const runId = await startRun(company!.id, agent!.id, issueId);

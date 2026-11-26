@@ -690,6 +690,28 @@ describe("plugin-provided Runner execution", () => {
     workers.call.mockRejectedValue(new Error("The installed Runner does not match the expected revision"));
     expect(readEnvironmentTaskErrorCode(await executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: submit }).catch(caught => caught))).toBeNull();
   });
+  it("preserves closed plugin operation and RPC error codes through worker error sanitization without leaking worker text", async () => {
+    const workers = worker();
+    workers.call.mockRejectedValueOnce(new JsonRpcCallError({ code: -32003, message: "secret-provider-token-123" }));
+    const timeoutError = await executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: submit }).catch(caught => caught);
+    expect(timeoutError.message).toBe("Plugin-provided Runner execution operation unavailable; reconcile the same task before retrying");
+    expect(timeoutError.pluginTaskError).toEqual({ operation: "submit", rpcErrorCode: "timeout" });
+    expect(JSON.stringify({ ...timeoutError, message: timeoutError.message })).not.toContain("secret-provider-token-123");
+    expect(timeoutError.cause).toBeUndefined();
+
+    workers.call.mockRejectedValueOnce(new JsonRpcCallError({
+      code: -32002,
+      message: "secret-revision-token-456",
+      data: environmentTaskErrorCodeData(new PluginEnvironmentTaskError("runner_revision_mismatch")),
+    }));
+    const mismatchError = await executeEnvironmentTask(database().db, workers as never, { companyId: "company", leaseId, operation: submit }).catch(caught => caught);
+    expect(mismatchError.pluginTaskError).toEqual({
+      operation: "submit",
+      errorCode: "runner_revision_mismatch",
+      rpcErrorCode: "worker_error",
+    });
+    expect(JSON.stringify({ ...mismatchError, message: mismatchError.message })).not.toContain("secret-revision-token-456");
+  });
   it("accepts PRP identity characters and length limits", () => {
     for (const field of ["runnerId", "leaseId", "runId", "sessionId", "turnId", "itemId"]) {
       for (const value of ["session:part.1", "a".repeat(160)]) {
