@@ -53,7 +53,7 @@ export const CONNECT_SOURCE_NAMES: Record<string, string> = {
   claude_local: "Claude",
   codex_local: "OpenAI",
   grok_local: "Grok",
-  antigravity_runtime: "Google",
+  antigravity_runtime: "Antigravity",
 };
 
 /** The provider name for a source, falling back to the type when unlisted. */
@@ -524,7 +524,7 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
     setCodeSubmitted(false);
     setSubmitError(null);
   }, [login?.authorizationUrl, login?.preparing]);
-  const provider = adapterType === "antigravity_runtime" ? "Google Antigravity" : adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
+  const provider = adapterType === "antigravity_runtime" ? "Antigravity" : adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
   const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local");
   const command = login?.command;
   const browserLogin = adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "antigravity_runtime";
@@ -591,11 +591,11 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
       </div> : hostedGoogleRedirect ? <div className="flex flex-col gap-2">
         <p className="px-2 text-xs text-muted-foreground">
           {optionalHostedGoogleRedirect
-            ? <>Finish signing in in the Google browser window, then return here. If your browser is on another machine and the <code className="font-mono">127.0.0.1</code> redirect page won’t load, copy the full URL from your address bar and paste it below.</>
-            : <>After signing in with Google, your browser will redirect to a <code className="font-mono">127.0.0.1</code> page that won’t load. Copy the full URL from your browser’s address bar and paste it below.</>}
+            ? <>Finish signing in in the Antigravity browser window, then return here. If your browser is on another machine and the <code className="font-mono">127.0.0.1</code> redirect page won’t load, copy the full URL from your address bar and paste it below.</>
+            : <>After signing in to Antigravity, your browser will redirect to a <code className="font-mono">127.0.0.1</code> page that won’t load. Copy the full URL from your browser’s address bar and paste it below.</>}
         </p>
         <OnboardingCardField
-          label="Google redirect URL"
+          label="Antigravity redirect URL"
           placeholder="Paste http://127.0.0.1:... URL here"
           className={cn(ANALYTICS_MASK_CLASS, ANALYTICS_NO_CAPTURE_CLASS)}
           value={browserCode}
@@ -609,7 +609,7 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
         />
         <Button type="button" disabled={!browserCode.trim() || submitting} onClick={() => void submitBrowserCode()}>Submit redirect URL</Button>
         {submitError && <p role="alert" className="px-2 text-xs text-destructive">{submitError}</p>}
-      </div> : adapterType === "antigravity_runtime" ? <p>Finish signing in in the Google browser window, then return here.</p> : <OnboardingLoginCodeRow code={login.code ?? ""} />}
+      </div> : adapterType === "antigravity_runtime" ? <p>Finish signing in in the Antigravity browser window, then return here.</p> : <OnboardingLoginCodeRow code={login.code ?? ""} />}
     </ProviderSubscriptionCard>}
     {!browserLogin && (!ready || showCommand) && !login?.error && <>
       <p>Run this in a terminal on that machine and finish signing in in your browser. We’ll check automatically when you return.</p>

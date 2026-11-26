@@ -110,12 +110,15 @@ describe("AgentProviderConnection hosted Google sign-in gating", () => {
     renderConnection("antigravity_runtime", false);
 
     await vi.waitFor(() => expect(mocks.startLocalLogin).toHaveBeenCalledTimes(1));
-    await vi.waitFor(() => expect(host.querySelector('input[aria-label="Google redirect URL"]')).not.toBeNull());
+    await vi.waitFor(() => expect(host.querySelector('input[aria-label="Antigravity redirect URL"]')).not.toBeNull());
     expect(host.querySelector('a[href="https://accounts.google.com/o/oauth2/v2/auth?state=hosted-ui-state"]')).not.toBeNull();
+    expect(host.querySelector('img[src="/brands/apps/antigravity.svg"]')).not.toBeNull();
+    expect(host.textContent).toContain("Antigravity");
+    expect(host.textContent).toContain("Sign in to Antigravity");
     expect(host.textContent).toContain("127.0.0.1");
   });
 
-  it("still exposes the Google redirect paste field when local login is also supported (remote private/trusted host)", async () => {
+  it("still exposes the Antigravity redirect paste field when local login is also supported (remote private/trusted host)", async () => {
     mocks.healthGet.mockResolvedValue({
       status: "ok",
       deploymentMode: "authenticated",
@@ -126,7 +129,7 @@ describe("AgentProviderConnection hosted Google sign-in gating", () => {
     renderConnection("antigravity_runtime", true);
 
     await vi.waitFor(() => expect(mocks.startLocalLogin).toHaveBeenCalledTimes(1));
-    await vi.waitFor(() => expect(host.querySelector('input[aria-label="Google redirect URL"]')).not.toBeNull());
+    await vi.waitFor(() => expect(host.querySelector('input[aria-label="Antigravity redirect URL"]')).not.toBeNull());
     expect(host.textContent).toContain("another machine");
     expect(host.textContent).toContain("127.0.0.1");
   });
