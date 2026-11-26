@@ -70,7 +70,7 @@ test("native catalog setup, account edits, conflicts and removal persist through
     const saved = async () => (await listPools(request)).find(pool => pool.id === poolId)!;
     expect(await saved()).toMatchObject({ enabled: false, mode: "round_robin", thresholdPercent: 90 });
     expect((await saved()).members.map(member => member.binding.connectionId)).toEqual([accounts[1]!.id, accounts[0]!.id]);
-    await expect(page.getByRole("link", { name: "Settings", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Back to Plugins", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Review", exact: true })).toHaveCount(0);
     await expect(page.getByRole("checkbox", { name: "Enable this pool", exact: true })).not.toBeChecked();
     await expect(page.getByRole("region", { name: "Used by", exact: true })).toContainText("No agents yet.");

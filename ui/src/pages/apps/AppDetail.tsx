@@ -814,17 +814,15 @@ export function AppDetailHeader({
   const hint = connectionDisplaySecondaryHint(connection);
   return (
     <header className="flex flex-wrap items-center gap-4">
-      <span className="grid size-16 shrink-0 place-items-center rounded-2xl bg-foreground/5">
-        <AppLogo
-          name={appName}
-          brandKey={brandKey}
-          logoUrl={appDefinitionLogoUrl(logoEntry)}
-          darkLogoUrl={appDefinitionDarkLogoUrl(logoEntry)}
-          allowRemoteFallback={allowRemoteLogo}
-          size={40}
-          className="bg-transparent"
-        />
-      </span>
+      <AppLogo
+        name={appName}
+        brandKey={brandKey}
+        logoUrl={appDefinitionLogoUrl(logoEntry)}
+        darkLogoUrl={appDefinitionDarkLogoUrl(logoEntry)}
+        allowRemoteFallback={allowRemoteLogo}
+        size={64}
+        className="rounded-2xl"
+      />
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         {renaming ? (
           <form
