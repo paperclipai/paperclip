@@ -3240,7 +3240,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         presentationDecision: { schema: "paperclip.run_presentation_decision.v1", chosenSource: "none",
           commentAction: "none", reasonCodes: ["yielded_control_plane_wait"] },
       } }).where(eq(heartbeatRuns.id, f.run.id));
-      await githubResponseCommentService(db, f.providerFetch).processPending();
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      await responses.processPending();
+      // Canonical non-main requests remain waiting while the task is active.
+      expect([...f.responseComments.values()][0].body).toContain("Working on this");
+      // Only task completion permits the terminal fallback, as in the canonical suite.
+      await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.conversation.issueId!));
+      await responses.processPending();
       expect([...f.responseComments.values()][0].body).toContain("without publishing a final response");
     });
     it.each(["same_head", "new_head"] as const)("reuses one main GitHub PR comment across review requests: %s", async headCase => {
