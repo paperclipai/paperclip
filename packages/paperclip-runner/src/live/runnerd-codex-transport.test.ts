@@ -2585,6 +2585,25 @@ it.each([
   } finally { vi.useRealTimers(); }
 });
 
+it.each([
+  { configured: undefined, closeGraceMs: undefined, expected: 10_000 },
+  { configured: "60000", closeGraceMs: undefined, expected: 60_000 },
+  { configured: "60000", closeGraceMs: 400, expected: 400 },
+  { configured: "5000", closeGraceMs: undefined, expected: 10_000 },
+  { configured: "not-a-number", closeGraceMs: undefined, expected: 10_000 },
+  { configured: "900000", closeGraceMs: undefined, expected: 120_000 },
+])("raises the close budget from PAPERCLIP_RUNNER_CLOSE_GRACE_MS only above the default ($configured, $closeGraceMs)", ({ configured, closeGraceMs, expected }) => {
+  const previous = process.env.PAPERCLIP_RUNNER_CLOSE_GRACE_MS;
+  try {
+    if (configured === undefined) delete process.env.PAPERCLIP_RUNNER_CLOSE_GRACE_MS;
+    else process.env.PAPERCLIP_RUNNER_CLOSE_GRACE_MS = configured;
+    expect(runnerdRecoveryInternals.runnerCloseGraceMs({ provider: "codex", acpxAgent: undefined, closeGraceMs })).toBe(expected);
+  } finally {
+    if (previous === undefined) delete process.env.PAPERCLIP_RUNNER_CLOSE_GRACE_MS;
+    else process.env.PAPERCLIP_RUNNER_CLOSE_GRACE_MS = previous;
+  }
+});
+
 it("joins an already-completed suspension without queuing a command to an exited runner", async () => {
   const commands = [
     { commandId: "exact-suspend", type: "runner.suspend", status: "completed" },
