@@ -3941,6 +3941,27 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             return { kind: "skipped" as const };
           }
 
+          // Save independently addressed input behind another agent's execution.
+          // Promotion and dispatch still require the real assignee and current intent.
+          if (!durableRequest && reason === "issue_commented" && wakeCommentId &&
+              opts.requestedByActorType === "user" && issue.executionRunId &&
+              issue.assigneeAgentId !== agent.id && enrichedContextSnapshot.resumeIntent !== true) {
+            const [addressed] = await tx.select().from(issueComments).where(and(
+              eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id),
+              eq(issueComments.id, wakeCommentId), isNull(issueComments.deletedAt)));
+            if (addressed && !addressed.authorAgentId && addressed.authorUserId === opts.requestedByActorId &&
+                canNotifyIssueCommentAssignee(addressed.body, agent.id, issue.status,
+                  hasActionableCommentIntent(addressed, agent.id))) {
+              await tx.insert(agentWakeupRequests).values({ ...durableReceiptFields,
+                companyId: agent.companyId, agentId, source, triggerDetail, reason,
+                payload: { ...payload, issueId: issue.id, [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot },
+                status: "deferred_issue_execution", requestedByActorType: "user",
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null });
+              return { kind: "deferred" as const };
+            }
+          }
+
           // The branded durable request has already reauthorized its exact chat receipt above.
           // Its source is independent of ordinary task-composer intent.
           if (!durableRequest && !await ordinaryCommentWakeAllowed(tx as unknown as Db, { companyId: issue.companyId,

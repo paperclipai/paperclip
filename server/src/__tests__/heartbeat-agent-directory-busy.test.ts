@@ -282,7 +282,7 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     ]);
     await db.insert(issueRelations).values({ companyId, issueId: blockerId, relatedIssueId: issueId, type: "blocks" });
     await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorType: "user", authorUserId: "busy-directory-user",
-      body: "What is this waiting on?" });
+      ...deliberateInput(companyId, issueId, agentId, "busy-directory-user", "What is this waiting on?") });
     busyPrepares.remaining = 1;
     busyPrepares.calls = 0;
 

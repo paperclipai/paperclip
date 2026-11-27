@@ -801,11 +801,11 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     await db.update(issues).set({ status: "done", executionRunId: null }).where(eq(issues.id, f.issue.id));
     // A person's message wake carries the comment it answers.
     const wakeCommentId = wakeReason === "issue_commented"
-      ? (await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id, authorAgentId: f.agent.id,
+      ? (await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id, authorType: "user", authorUserId: "queue-test-user",
         body: "One more thing" }).returning())[0].id
       : undefined;
     const [queued] = await db.update(heartbeatRuns).set({ responsibleUserId: "queue-test-user",
-      contextSnapshot: { issueId: f.issue.id, wakeReason, ...(wakeCommentId ? { wakeCommentId } : {}) } })
+      contextSnapshot: { issueId: f.issue.id, wakeReason, ...(wakeCommentId ? { wakeCommentId, resumeIntent: true } : {}) } })
       .where(eq(heartbeatRuns.id, f.run.id)).returning();
     const deps = callbacks(db);
     deps.getAgent.mockResolvedValue(f.agent);
@@ -1050,11 +1050,11 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(f.source.id);
   });
 
-  it.each((["process", "paperclip_runner"] as const).flatMap(adapterType => (["coalesced", "missing-execution-key", "stale-execution-key", "claimed-primary", "legacy-envelope", "delete-old", "delete-new", "stopped", "running", "system-primary", "foreign-primary", "same-named-agent", "mixed-author"] as const).map(scenario => ({ adapterType, scenario }))))("protects a queued comment batch across $adapterType/$scenario", async ({ adapterType, scenario }) => {
+  it.each((["process", "paperclip_runner"] as const).flatMap(adapterType => (["coalesced", "missing-execution-key", "stale-execution-key", "claimed-primary", "legacy-envelope", "delete-old", "delete-new", "stopped", "running", "system-primary", "foreign-primary", "same-named-agent", "same-named-annotation", "same-named-forged-author", "same-named-deleted", "mixed-author"] as const).map(scenario => ({ adapterType, scenario }))))("protects a queued comment batch across $adapterType/$scenario", async ({ adapterType, scenario }) => {
     const f = await fixture("queued");
     let admissionAgent: typeof agents.$inferSelect = { ...f.agent, adapterType, adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {} };
     await db.update(agents).set({ adapterType, adapterConfig: admissionAgent.adapterConfig }).where(eq(agents.id, f.agent.id));
-    if (scenario === "same-named-agent") [admissionAgent] = await db.insert(agents).values({ companyId: f.company.id,
+    if (scenario.startsWith("same-named-")) [admissionAgent] = await db.insert(agents).values({ companyId: f.company.id,
       name: f.agent.name.toUpperCase(), role: "engineer", status: "idle", adapterType, adapterConfig: admissionAgent.adapterConfig,
     }).returning();
     const userId = `source-user-${f.company.id}`;
@@ -1070,6 +1070,9 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       authorType: "user", authorUserId: userId, ...actionableInput(f.company.id, f.issue.id, f.agent.id, userId, "Review source A") }).returning();
     const [newComment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
       authorType: "user", authorUserId: incomingActorId, ...actionableInput(f.company.id, f.issue.id, admissionAgent.id, incomingActorId, "Review source B") }).returning();
+    if (scenario === "same-named-annotation") await db.update(issueComments).set({ metadata: null }).where(eq(issueComments.id, newComment.id));
+    if (scenario === "same-named-forged-author") await db.update(issueComments).set({ authorUserId: "different-user" }).where(eq(issueComments.id, newComment.id));
+    if (scenario === "same-named-deleted") await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, newComment.id));
     await db.update(agentWakeupRequests).set({ status: scenario === "claimed-primary" ? "claimed" : "queued", runId: f.run.id, claimedAt: null,
       requestedByActorType: scenario === "system-primary" ? "system" : "user", requestedByActorId: scenario === "system-primary" ? null : userId,
       payload: scenario === "legacy-envelope" ? { issueId: f.issue.id, commentId: oldComment.id }
@@ -1129,6 +1132,14 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     const coalesced = await queue.enqueueWakeup(admissionAgent.id, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       payload: { issueId: f.issue.id, commentId: newComment.id }, contextSnapshot: { issueId: f.issue.id, wakeCommentId: newComment.id },
       requestedByActorType: "user", requestedByActorId: incomingActorId });
+    if (["same-named-annotation", "same-named-forged-author", "same-named-deleted"].includes(scenario)) {
+      expect(coalesced).toBeNull();
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.company.id))).toEqual([originalPrimary]);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.company.id))).toEqual([scanned]);
+      expect(resolveSession).not.toHaveBeenCalled();
+      expect(deps.executeRun).not.toHaveBeenCalled();
+      return;
+    }
     if (["running", "foreign-primary", "same-named-agent"].includes(scenario)) {
       expect(coalesced).toBeNull();
       const [preserved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
