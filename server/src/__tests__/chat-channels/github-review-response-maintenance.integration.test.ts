@@ -179,6 +179,33 @@ describeEmbeddedPostgres("chat channels: github review response maintenance", ()
       await responses.processPending();
       expect(f.responseComments.get(firstId)?.body).toContain("stopped before completing");
     });
+    it("links a request awaiting a continuation to a later response without waiting for the deadline", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native",
+          errorCode: "native_continuation_requires_reconciliation", updatedAt: new Date(Date.now() - 60_000) })
+          .where(eq(heartbeatRuns.id, f.run.id));
+        const [main] = await db.insert(chatConversations).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+          issueId: f.conversation.issueId, externalConversationId: "github:paperclipai/paperclip",
+          externalLabel: "paperclipai/paperclip", externalThreadId: "github:paperclipai/paperclip:418" }).returning();
+        await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: main.id,
+          kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`, status: "processed",
+          payload: { operation: "assessment", session: { companyId: f.companyId, issueId: f.conversation.issueId,
+            runId: randomUUID(), agentId: f.assignedAgentId } },
+          result: { summaryUrl: "https://github.com/paperclipai/paperclip/pull/418#issuecomment-5" } });
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await vi.waitFor(() => expect(f.responseComments.get(firstId)?.body).toContain("See the [latest response]"),
+          { timeout: 10_000 });
+        expect(errors).toEqual([]);
+      } finally {
+        await coordinator.stop();
+        vi.useRealTimers();
+      }
+    });
     it("settles a request still waiting for a continuation once the wait expires, through the registered worker", async () => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
       const [firstId] = [...f.responseComments.keys()];

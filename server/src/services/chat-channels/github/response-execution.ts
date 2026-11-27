@@ -86,7 +86,7 @@ export async function githubResponseExecution(db: Db, input: GitHubResponseExecu
     : outcome === "link" ? `See the [latest response](${latestResponse}).` : STATUS_TEXT[outcome];
   return {
     body, outcome, paused, reply, running: requestRunning, presentationPending, passiveResponseWait, awaitingContinuation,
-    continuationDeadline: awaitingContinuation && latestRun ? latestRun.updatedAt.getTime() + GITHUB_CONTINUATION_WAIT_MS : undefined,
+    continuationDeadline: outcome === "waiting" && awaitingContinuation && latestRun ? latestRun.updatedAt.getTime() + GITHUB_CONTINUATION_WAIT_MS : undefined,
     versionAt: run ? new Date(Math.max(run.updatedAt.getTime(), input.deliveryCreatedAt.getTime()))
       : paused ? input.deliveryCreatedAt : undefined,
     version: JSON.stringify([latestRun?.id ?? null, latestRun?.status ?? null,
