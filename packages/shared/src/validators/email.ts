@@ -2,6 +2,12 @@ import { z } from "zod";
 
 const address = z.string().trim().email().max(320);
 const addresses = z.array(address).max(50);
+export const emailAddressCheckSchema = z.object({
+  username: z.string().trim().toLowerCase().regex(/^[a-z0-9][a-z0-9._-]*$/).max(64),
+  domain: z.string().trim().toLowerCase().max(253).regex(/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}$/),
+}).strict();
+export type EmailAddressCheckInput = z.infer<typeof emailAddressCheckSchema>;
+
 export const emailEndpointSetupSchema = z
   .object({
     assignedAgentId: z.string().uuid(),

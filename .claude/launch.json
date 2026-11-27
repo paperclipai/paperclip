@@ -23,6 +23,24 @@
         "cd /Users/tonio/Projects/paperclip-cloud/.worktrees/deploy-stack-master/web && npx vite --port 4173 --strictPort"
       ],
       "port": 4173
+    },
+    {
+      "name": "artifact-directions-dev",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": [
+        "-c",
+        "cd ui && npx vite --config vite.artifact-directions.config.mjs --port 5180 --strictPort"
+      ],
+      "port": 5180
+    },
+    {
+      "name": "artifact-directions",
+      "runtimeExecutable": "/bin/sh",
+      "runtimeArgs": [
+        "-c",
+        "cd ui && export ARTIFACT_DIRECTIONS_OUT_DIR=node_modules/.artifact-directions-dist && npx vite build --config vite.artifact-directions.config.mjs && npx vite preview --config vite.artifact-directions.config.mjs --port 5190 --strictPort"
+      ],
+      "port": 5190
     }
   ]
 }

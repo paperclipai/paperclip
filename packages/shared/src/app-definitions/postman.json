@@ -115,7 +115,8 @@
           "type": "password",
           "required": true,
           "placeholder": "PMAK-...",
-          "secret": true
+          "secret": true,
+          "helperMd": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {
@@ -157,7 +158,8 @@
           "type": "password",
           "required": true,
           "placeholder": "PMAK-...",
-          "secret": true
+          "secret": true,
+          "helperMd": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {
@@ -199,7 +201,8 @@
           "type": "password",
           "required": true,
           "placeholder": "PMAK-...",
-          "secret": true
+          "secret": true,
+          "helperMd": "Collection/workspace/API actions supported by the selected minimal/code/full endpoint and account role. Create a key with read and write permissions for these actions; Paperclip cannot increase an existing key’s permissions."
         }
       ],
       "keyPlacement": {

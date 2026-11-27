@@ -1,3 +1,25 @@
+import { notifyLiveRunRecovery, notifyLiveResourceRecovery } from "./live-run-recovery-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyStatusCardEvaluation } from "./status-card-notifications.js";
+import { notifySkillVersionRetentionReconstruction } from "./skill-version-retention-notifications.js";
+import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
+import { notifyMuseContactVerification, notifyExternalAgentSettlement } from "../modules/external-agents/index.js";
+import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
+import { notifyNativeRecoveryNotices } from "./native-recovery-notice-notifications.js";
+import { notifyNativeRunProjection } from "./native-run-projection-notifications.js";
+import { notifyNativeResultCommit } from "./native-result-commit-notifications.js";
+import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "./cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "./instruction-collection-notifications.js";
+import { notifyDirectoryCleanup } from "./directory-cleanup-notifications.js";
+import { notifyInstructionCommit } from "./instruction-commit-notifications.js";
+import { notifyScheduledRetryCancellation } from "./scheduled-retry-cancellation-notifications.js";
+import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
+import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
+import { notifyExternalObjectRefresh } from "./external-object-refresh-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
+import { setResolvedCloudTrialInferenceEnabled } from "./cloud-posthog-cohort.js";
 import type { Db } from "@paperclipai/db";
 import { companies, instanceSettings } from "@paperclipai/db";
 
@@ -35,6 +57,9 @@ import {
 import { eq } from "drizzle-orm";
 import { getManagedInstanceConfig, type ManagedInstanceConfig } from "./managed-config.js";
 import { getOperatorSettingDefaults } from "./setting-defaults.js";
+import { isCloudStagingExperimentalSetting, isCloudStagingInstance } from "./cloud-instance.js";
+import { forbidden } from "../errors.js";
+import { announceInstanceSettingsChange, readThroughInstanceSettings } from "./instance-settings-cache.js";
 
 const DEFAULT_SINGLETON_KEY = "default";
 const instanceGeneralSettingsStorageSchema = instanceGeneralSettingsSchema.strip();
@@ -203,7 +228,6 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   if (parsed.success) {
     return {
       censorUsernameInLogs: parsed.data.censorUsernameInLogs ?? false,
-      keyboardShortcuts: parsed.data.keyboardShortcuts ?? false,
       feedbackDataSharingPreference:
         parsed.data.feedbackDataSharingPreference ?? DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
       backupRetention: parsed.data.backupRetention ?? DEFAULT_BACKUP_RETENTION,
@@ -213,7 +237,6 @@ function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   }
   return {
     censorUsernameInLogs: false,
-    keyboardShortcuts: false,
     feedbackDataSharingPreference: DEFAULT_FEEDBACK_DATA_SHARING_PREFERENCE,
     backupRetention: DEFAULT_BACKUP_RETENTION,
   };
@@ -225,8 +248,10 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     return {
       enableEnvironments: parsed.data.enableEnvironments ?? false,
       enableNativeRunner: parsed.data.enableNativeRunner ?? true,
+      enableAiConnectionRouters: parsed.data.enableAiConnectionRouters ?? false,
       enableManagedSandboxOnly: parsed.data.enableManagedSandboxOnly ?? false,
       enableIsolatedWorkspaces: parsed.data.enableIsolatedWorkspaces ?? false,
+      remoteWorkspaceStorageEnabled: parsed.data.remoteWorkspaceStorageEnabled ?? true,
       enableIsolatedWorkspacesByDefault: parsed.data.enableIsolatedWorkspacesByDefault ?? false,
       enableStreamlinedLeftNavigation: parsed.data.enableStreamlinedLeftNavigation ?? true,
       enableStreamlinedUi: parsed.data.enableStreamlinedUi ?? true,
@@ -234,13 +259,26 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       // continuing to accept the compatibility key in stored settings.
       enableApps: true,
       enableMcpAggregators: true,
+      // Assistant connections (MCP) graduated from Experimental; ignore historical off values.
+      enablePublicMcp: true,
+      // The AWS connector graduated from Experimental; ignore historical off values.
+      enableAwsConnector: true,
+      enableOpenAiDot: parsed.data.enableOpenAiDot ?? false,
+      enableMuse: parsed.data.enableMuse ?? false,
+      enableGrokBot: parsed.data.enableGrokBot ?? false,
       enableChatConnectors: parsed.data.enableChatConnectors ?? false,
+      // GitHub review bots graduated from Experimental; ignore historical off values.
+      enableGitHubReviewBots: true,
       enableMemoryConnectors: parsed.data.enableMemoryConnectors ?? false,
-      enablePipelines: parsed.data.enablePipelines ?? false,
+      enablePaperclipNotebook: parsed.data.enablePaperclipNotebook ?? false,
+      enableGoogleWorkspaceConnector: parsed.data.enableGoogleWorkspaceConnector ?? false,
       enableCases: parsed.data.enableCases ?? false,
-      enableAgentChat: parsed.data.enableAgentChat ?? false,
+      enableAgentChat: true,
+      enableCombinedInboxTasks: parsed.data.enableCombinedInboxTasks ?? false,
+      enableArtifactsV1: parsed.data.enableArtifactsV1 ?? true,
       enableConferenceRoomChat: parsed.data.enableConferenceRoomChat ?? false,
       enableClassicTaskInterface: parsed.data.enableClassicTaskInterface ?? false,
+      enableLegacyComposerSubmit: parsed.data.enableLegacyComposerSubmit ?? false,
       enableIssuePlanDecompositions: parsed.data.enableIssuePlanDecompositions ?? false,
       enableExperimentalFileViewer: parsed.data.enableExperimentalFileViewer ?? false,
       enableExternalObjects: parsed.data.enableExternalObjects ?? false,
@@ -249,17 +287,22 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
       enableBetaSkills: parsed.data.enableBetaSkills ?? false,
       enableSummaries: parsed.data.enableSummaries ?? false,
       enableStatusCards: parsed.data.enableStatusCards ?? false,
+      enableResponsibilities: parsed.data.enableResponsibilities ?? false,
       enableDecisions: parsed.data.enableDecisions ?? false,
+      enableFastResponses: parsed.data.enableFastResponses ?? false,
       enableGoalsSidebarLink: parsed.data.enableGoalsSidebarLink ?? false,
       enableServerInfoDebugView: parsed.data.enableServerInfoDebugView ?? false,
       enablePaperclipDeveloperMode: parsed.data.enablePaperclipDeveloperMode ?? false,
       enableSimplifiedEnglishInteractions: parsed.data.enableSimplifiedEnglishInteractions ?? false,
       enableFirstTaskPlanProposal: parsed.data.enableFirstTaskPlanProposal ?? false,
+      enableCloudTrialInference: parsed.data.enableCloudTrialInference ?? false,
       autoRestartDevServerWhenIdle: parsed.data.autoRestartDevServerWhenIdle ?? false,
       enableWorkspaceBranchReconcileForward: parsed.data.enableWorkspaceBranchReconcileForward ?? true,
       enableWorkspaceDirtyQuarantineRepair: parsed.data.enableWorkspaceDirtyQuarantineRepair ?? true,
       enableOwnerInstanceAdmin: parsed.data.enableOwnerInstanceAdmin ?? false,
       enableSandboxDuplexBridge: parsed.data.enableSandboxDuplexBridge ?? false,
+      enableMcpTasks: parsed.data.enableMcpTasks ?? false,
+      enableAntigravitySwarm: parsed.data.enableAntigravitySwarm ?? false,
       enableRunnerPreviewIngress: parsed.data.enableRunnerPreviewIngress ?? false,
       enableWorktreeRunExecution: parsed.data.enableWorktreeRunExecution ?? false,
       worktreeRunExecutionActivatedAt: parsed.data.worktreeRunExecutionActivatedAt ?? null,
@@ -270,20 +313,36 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
   return {
     enableEnvironments: false,
     enableNativeRunner: true,
+    enableAiConnectionRouters: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,
+    // An unrelated malformed field must not erase an explicit enrollment opt-out.
+    remoteWorkspaceStorageEnabled: !(
+      raw !== null && typeof raw === "object" && !Array.isArray(raw)
+      && "remoteWorkspaceStorageEnabled" in raw && raw.remoteWorkspaceStorageEnabled === false
+    ),
     enableIsolatedWorkspacesByDefault: false,
     enableStreamlinedLeftNavigation: true,
     enableStreamlinedUi: true,
     enableApps: true,
     enableMcpAggregators: true,
+    enablePublicMcp: true,
+    enableOpenAiDot: false,
+    enableMuse: false,
+    enableGrokBot: false,
     enableChatConnectors: false,
+    enableGitHubReviewBots: true,
     enableMemoryConnectors: false,
-    enablePipelines: false,
+    enablePaperclipNotebook: false,
+    enableGoogleWorkspaceConnector: false,
+    enableAwsConnector: true,
     enableCases: false,
-    enableAgentChat: false,
+    enableAgentChat: true,
+    enableCombinedInboxTasks: false,
+    enableArtifactsV1: true,
     enableConferenceRoomChat: false,
     enableClassicTaskInterface: false,
+    enableLegacyComposerSubmit: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
@@ -292,17 +351,22 @@ export function normalizeExperimentalSettings(raw: unknown): InstanceExperimenta
     enableBetaSkills: false,
     enableSummaries: false,
     enableStatusCards: false,
+    enableResponsibilities: false,
     enableDecisions: false,
+    enableFastResponses: false,
     enableGoalsSidebarLink: false,
     enableServerInfoDebugView: false,
     enablePaperclipDeveloperMode: false,
     enableSimplifiedEnglishInteractions: false,
     enableFirstTaskPlanProposal: false,
+    enableCloudTrialInference: false,
     autoRestartDevServerWhenIdle: false,
     enableWorkspaceBranchReconcileForward: true,
     enableWorkspaceDirtyQuarantineRepair: true,
     enableOwnerInstanceAdmin: false,
     enableSandboxDuplexBridge: false,
+    enableMcpTasks: false,
+    enableAntigravitySwarm: false,
     enableRunnerPreviewIngress: false,
     enableWorktreeRunExecution: false,
     worktreeRunExecutionActivatedAt: null,
@@ -335,8 +399,16 @@ export function applyManagedExperimentalOverlay(
     [ManagedExperimentalFeatureKey, boolean]
   >) {
     // Existing Cloud stack configs may still carry retired flags. Accept the
-    // document during rollout, but never let retired flags disable Apps or MCP aggregators.
-    if (key === "enableApps" || key === "enableMcpAggregators") continue;
+    // document during rollout, but never let retired flags disable Apps, Agent Chat, MCP aggregators,
+    // Assistant connections (MCP), the AWS connector, or GitHub review bots.
+    if (
+      key === "enableApps"
+      || key === "enableAgentChat"
+      || key === "enableMcpAggregators"
+      || key === "enablePublicMcp"
+      || key === "enableAwsConnector"
+      || key === "enableGitHubReviewBots"
+    ) continue;
     next[key] = value;
     managedKeys[key] = { managed: true, managedBy: PAPERCLIP_CLOUD_MANAGED_BY };
   }
@@ -379,7 +451,7 @@ export function applyCloudCatalogDefaults(
  *
  * `updateExperimental` persists the whole normalized object, and the schema
  * normalizes an omitted flag to its self-hosted default. Without this step an
- * unrelated experimental write (say, turning on pipelines) would store
+ * unrelated experimental write (say, turning on Cases) would store
  * `enableNativeRunner: true` on a managed instance whose tenant row had never
  * mentioned the flag; every later read would then treat the stored boolean as
  * an explicit tenant choice and stop re-asserting the Cloud default.
@@ -423,6 +495,14 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   // Fail closed: a malformed PAPERCLIP_MANAGED_CONFIG throws here (and at
   // boot in index.ts) rather than silently running without the overlay.
   const managedConfig = getManagedInstanceConfig(options.runtimeEnv ?? process.env);
+  const staging = isCloudStagingInstance(options.runtimeEnv ?? process.env);
+  const enforcedManagedConfig = staging && managedConfig
+    ? {
+      ...managedConfig,
+      features: Object.fromEntries(Object.entries(managedConfig.features)
+        .filter(([key, enabled]) => enabled || !isCloudStagingExperimentalSetting(key))),
+    }
+    : managedConfig;
   // Same posture for PAPERCLIP_SETTING_DEFAULTS: parsed once, applied per
   // read, never persisted (see applyOperatorGeneralDefaults) — including on
   // the write path, where a full-GET echo of the overlaid value is stripped
@@ -434,10 +514,15 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
   }
 
   function toExperimentalView(raw: unknown): InstanceExperimentalSettingsWithManaged {
+    const stored = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const defaults = staging ? { ...managedConfig?.features, ...stored } : raw;
     const { experimental, managedKeys } = applyManagedExperimentalOverlay(
-      applyCloudCatalogDefaults(normalizeExperimentalSettings(raw), raw, managedConfig),
-      managedConfig,
+      applyCloudCatalogDefaults(normalizeExperimentalSettings(defaults), defaults, managedConfig),
+      enforcedManagedConfig,
     );
+    if (!options.runtimeEnv) {
+      setResolvedCloudTrialInferenceEnabled(experimental.enableCloudTrialInference === true);
+    }
     // Self-hosted responses stay byte-identical: no managedKeys field at all.
     return managedConfig ? { ...experimental, managedKeys } : experimental;
   }
@@ -490,8 +575,12 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
     throw new Error("Failed to initialize instance settings row");
   }
 
+  function getCachedRow(runner: InstanceSettingsWriteDb = db) {
+    return readThroughInstanceSettings(runner, () => getOrCreateRow(runner));
+  }
+
   return {
-    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getOrCreateRow()),
+    get: async (): Promise<InstanceSettings> => toInstanceSettings(await getCachedRow()),
 
     update: async (
       patch: PatchInstanceSettings,
@@ -514,18 +603,25 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
+      await announceInstanceSettingsChange(runner);
       return toInstanceSettings(updated ?? current);
     },
 
     getGeneral: async (
       readOptions?: { db?: InstanceSettingsWriteDb },
     ): Promise<InstanceGeneralSettings> => {
-      const row = await getOrCreateRow(readOptions?.db);
+      const row = await getCachedRow(readOptions?.db);
       return toGeneralView(row.general);
     },
 
+    getExperimentalReadOnly: async (runner: Pick<Db, "select"> = db): Promise<InstanceExperimentalSettingsWithManaged> => {
+      const [row] = await runner.select({ experimental: instanceSettings.experimental }).from(instanceSettings)
+        .where(eq(instanceSettings.singletonKey, DEFAULT_SINGLETON_KEY));
+      return toExperimentalView(row?.experimental);
+    },
+
     getExperimental: async (): Promise<InstanceExperimentalSettingsWithManaged> => {
-      const row = await getOrCreateRow();
+      const row = await getCachedRow();
       return toExperimentalView(row.experimental);
     },
 
@@ -549,28 +645,83 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
         })
         .where(eq(instanceSettings.id, current.id))
         .returning();
+      await announceInstanceSettingsChange(db);
       return toInstanceSettings(updated ?? current);
     },
 
     updateExperimental: async (patch: PatchInstanceExperimentalSettings): Promise<InstanceSettings> => {
+      for (const [key, enabled] of Object.entries(managedConfig?.features ?? {})) {
+        // Retired always-on keys are ignored on read, so an old client's write must not be rejected.
+        if (key === "enablePublicMcp" || key === "enableAwsConnector" || key === "enableGitHubReviewBots") continue;
+        if (enabled && patch[key as ManagedExperimentalFeatureKey] === false) {
+          throw forbidden(`${key} is enabled by Paperclip Cloud and cannot be disabled on this instance`, {
+            code: "settings_operator_managed",
+          });
+        }
+      }
       const current = await getOrCreateRow();
       // Guarded Cloud flags stay absent from the row unless chosen, so the
       // read-time catalog default keeps applying (see stripCloudCatalogDefaultEchoes).
-      const nextExperimental = stripCloudCatalogDefaultEchoes(
-        current.experimental,
-        patch,
-        applyExperimentalSettingsPatch(current.experimental, patch, options),
-        managedConfig,
-      );
+      const nextExperimental = staging
+        ? applyExperimentalSettingsPatch(toExperimentalView(current.experimental), patch, options)
+        : stripCloudCatalogDefaultEchoes(
+          current.experimental,
+          patch,
+          applyExperimentalSettingsPatch(current.experimental, patch, options),
+          managedConfig,
+        );
+      if (staging) {
+        const stored = current.experimental as Record<string, unknown> | null;
+        for (const key of Object.keys(INSTANCE_FEATURE_CATALOG) as ManagedExperimentalFeatureKey[]) {
+          if (typeof stored?.[key] !== "boolean" && !Object.prototype.hasOwnProperty.call(patch, key)) {
+            delete nextExperimental[key];
+          }
+        }
+      }
       const now = new Date();
-      const [updated] = await db
-        .update(instanceSettings)
-        .set({
-          experimental: { ...nextExperimental },
-          updatedAt: now,
-        })
-        .where(eq(instanceSettings.id, current.id))
-        .returning();
+      const [updated] = await db.transaction(async tx => {
+        await announceInstanceSettingsChange(tx);
+        if (patch.enableStatusCards !== undefined) await notifyStatusCardEvaluation(tx);
+        if (patch.enableMcpTasks !== undefined) await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpTasks);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpIngressHandoffs);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpClientMirror);
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpRevocationIndex, "*");
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.mcpEvents, "*");
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.dotEvents, "*");
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.grokDispatch);
+        if (toExperimentalView(current.experimental).enableMuse !== toExperimentalView(nextExperimental).enableMuse || toExperimentalView(current.experimental).enableNativeRunner !== toExperimentalView(nextExperimental).enableNativeRunner) await notifyMuseContactVerification(tx);
+        if (patch.enableExternalObjects !== undefined) await notifyExternalObjectRefresh(tx);
+        if (patch.enableWorktreeRunExecution !== undefined) await notifyScheduledRetryCancellation(tx);
+        if (patch.enableWorktreeRunExecution !== undefined) {
+          await notifyRunDispatch(tx);
+          await notifyDeferredExecutionEligibility(tx);
+          await notifyLiveRunRecovery(tx);
+          await notifyLiveResourceRecovery(tx);
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+          await notifyExternalAgentSettlement(tx);
+          await notifyInstructionCommit(tx);
+          await notifyDirectoryCleanup(tx);
+          await notifySkillVersionRetentionReconstruction(tx);
+          await notifyInstructionCollection(tx);
+          await notifyCancelledWorkspacePreservation(tx);
+          await notifyExternalConversationSettlement(tx);
+          await notifyNativeRecoveryNotices(tx);
+          await notifyNativeRunProjection(tx);
+          await notifyNativeEnvironmentSettlement(tx);
+          await notifyNativeResultCommit(tx);
+          await notifyNativeWorkspaceFinalization(tx);
+        }
+        if (patch.enableChatConnectors !== undefined) await notifyVoiceChange(tx);
+        await notifyToolConnectionHealth(tx, "*");
+        return tx
+          .update(instanceSettings)
+          .set({
+            experimental: { ...nextExperimental },
+            updatedAt: now,
+          })
+          .where(eq(instanceSettings.id, current.id))
+          .returning();
+      });
       return toInstanceSettings(updated ?? current);
     },
 

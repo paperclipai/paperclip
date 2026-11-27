@@ -1,13 +1,12 @@
 import { useLocation } from "@/lib/router";
 import { ChatDetailSidebar } from "./chat/ChatDetailSidebar";
 import { ChatSetupSidebar } from "./chat/ChatSetupNavigation";
-import { ChevronLeft, AppWindow, Store, ShieldQuestion } from "lucide-react";
+import { ChevronLeft, AppWindow, Store } from "lucide-react";
 import { Link } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useSidebar } from "@/context/SidebarContext";
 import { DEVELOPER_TABS, advancedTabHref, isExperimentalToolTab } from "@/pages/tools/tool-tabs";
 import { useSmokeLabEnabled } from "@/hooks/useSmokeLabEnabled";
-import { useReviewCount } from "@/pages/apps/useReviewCount";
 import { SidebarNavItem } from "./SidebarNavItem.production";
 
 /**
@@ -32,14 +31,13 @@ export function AppsSidebar() {
   const { selectedCompany } = useCompany();
   const { isMobile, setSidebarOpen } = useSidebar();
 
-  const reviewCount = useReviewCount();
   const { enabled: smokeLabEnabled } = useSmokeLabEnabled();
   const developerTabs = DEVELOPER_TABS.filter(
     (tab) => !isExperimentalToolTab(tab.key) || smokeLabEnabled,
   );
 
-  if (pathname.endsWith("/apps/chat/connect")) return <ChatSetupSidebar />;
-  const chatDetail = pathname.match(/\/apps\/chat\/([^/]+)(?:\/(?:settings|access|reviews|conversations|activity))?\/?$/);
+  if (pathname.endsWith("/apps/chat/connect")) return <ChatSetupSidebar NavItem={SidebarNavItem} />;
+  const chatDetail = pathname.match(/\/apps\/chat\/([^/]+)(?:\/(?:settings|access|conversations|activity)|\/reviews(?:\/[^/]+)?)?\/?$/);
   if (chatDetail) return <ChatDetailSidebar endpointId={chatDetail[1]} NavItem={SidebarNavItem} />;
 
   return (
@@ -57,7 +55,7 @@ export function AppsSidebar() {
         </Link>
         <div className="flex items-center gap-2 px-2 py-1">
           <AppWindow className="h-4 w-4 text-muted-foreground shrink-0" />
-          <span className="flex-1 truncate text-sm font-bold text-foreground">Connectors</span>
+          <span className="flex-1 truncate text-sm font-bold text-foreground">Plugins</span>
         </div>
       </div>
 
@@ -66,15 +64,7 @@ export function AppsSidebar() {
           Connectors
         </div>
         <div className="flex flex-col gap-0.5">
-          <SidebarNavItem to="/apps" label="Browse" icon={Store} end />
-          <SidebarNavItem
-            to="/apps/review"
-            label="Review"
-            icon={ShieldQuestion}
-            badge={reviewCount > 0 ? reviewCount : undefined}
-            badgeTone="warning"
-            badgeLabel="waiting for your OK"
-          />
+          <SidebarNavItem to="/apps" label="All plugins" icon={Store} end />
         </div>
         <div className="px-3 pb-1 pt-4 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
           Developer
