@@ -14,6 +14,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueRecoveryActions,
+  issues,
   nativeRunFinalizations,
 } from "@paperclipai/db";
 // Opt-in private physical candidate; normal CI uses the staged pinned package.
@@ -27,6 +28,7 @@ import { createSystemRecovery } from "../../services/system-recovery-state.js";
 import { remoteTerminationReceipt } from "../../services/remote-execution-termination.js";
 import { createDeliveryWorkCoordinator } from "../../services/delivery-work-coordinator.js";
 import { githubReviewCheckService } from "../../services/chat-github-checks.js";
+import { githubAutomaticReviewEvent } from "../../services/chat-github-events.js";
 import { extractWakeCommentIds, heartbeatService } from "../../services/heartbeat.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { type TestDb, describeEmbeddedPostgres, FakeChatSdkRuntime, makeThread, makeMessage } from "./providers.js";
@@ -43,11 +45,13 @@ describeEmbeddedPostgres("chat channels: github review workflow", () => {
   const {
     readIssueCommentsByIssueId,
     readHeartbeatRunsByCompanyId,
+    readChatEndpointsById,
     createService,
     deliverMessage,
   } = h;
   const {
     subscribedGitHubFixture,
+    reviewBotFixture,
     reviewCheckWorkerFixture,
     reviewProjectionFixture,
   } = rev;
@@ -103,6 +107,121 @@ describeEmbeddedPostgres("chat channels: github review workflow", () => {
       } finally { await coordinator.stop(); vi.useRealTimers(); }
     });
 
+    it("completes the superseded head's open Paperclip Review check when the pull head moves", async () => {
+      const f = await reviewBotFixture();
+      const oldHead = "b".repeat(40), newHead = "c".repeat(40);
+      const event = githubAutomaticReviewEvent({
+        action: "synchronize", installation: { id: 2468 },
+        repository: { id: 97531, full_name: "paperclipai/paperclip", name: "paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 42, login: "octocat" },
+        pull_request: {
+          number: 84, title: "Stale check", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: oldHead },
+          user: { id: 42, login: "octocat", type: "User" }, labels: [],
+        },
+      }, randomUUID())!;
+      const config = await f.management.configuration(f.endpoint.id, "owner-user");
+      const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Reviewed task", status: "in_progress" }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({
+        id: randomUUID(), companyId: f.companyId, agentId: f.assignedAgentId, status: "running",
+      }).returning();
+      const [review] = await db.insert(chatGitHubReviews).values({
+        companyId: f.companyId, endpointId: f.endpoint.id, issueId: issue.id, runId: run.id,
+        repositoryId: String(event.repositoryId), repository: event.repository, pullNumber: 84, headSha: oldHead,
+        deliveryId: event.deliveryId, configurationRevision: config.revision + 1,
+        policySnapshot: config.configuration.defaults, event, state: "running",
+      }).returning();
+      const externalId = `${f.endpoint.id}:84:${oldHead}`;
+      const patches: { id: number; body: Record<string, unknown> }[] = [];
+      f.setSupplementalProviderFetch(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/pulls/84")) return Response.json({ head: { sha: newHead } });
+        if (url.includes(`/commits/${oldHead}/check-runs?`))
+          return Response.json({ check_runs: [
+            { id: 841, status: "in_progress", external_id: externalId, app: { id: Number(f.endpoint.botExternalId) } },
+            { id: 842, status: "completed", external_id: externalId, app: { id: Number(f.endpoint.botExternalId) } },
+            { id: 843, status: "in_progress", external_id: externalId, app: { id: 9999 } },
+          ] });
+        const match = url.match(/\/check-runs\/(\d+)$/);
+        if (match && init?.method === "PATCH") {
+          patches.push({ id: Number(match[1]), body: JSON.parse(String(init.body)) });
+          return Response.json({ id: Number(match[1]) });
+        }
+        return undefined;
+      });
+      const checks = githubReviewCheckService(db, f.providerFetch);
+      const [activeEndpoint] = await readChatEndpointsById(f.endpoint.id);
+      await checks.enqueue(activeEndpoint, event, true, "authorized");
+      await checks.processPending();
+      const [action] = await db.select().from(chatActions).where(and(
+        eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_review_check"),
+      ));
+      expect(action).toMatchObject({ status: "cancelled", result: { code: "stale_head" } });
+      expect(patches).toEqual([expect.objectContaining({
+        id: 841,
+        body: expect.objectContaining({
+          status: "completed", conclusion: "neutral",
+          output: expect.objectContaining({ title: "Superseded by a newer commit" }),
+        }),
+      })]);
+      expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, review.id)))[0].state).toBe("superseded");
+    });
+    it("leaves a superseded head's open check alone when an assessment lands during the head read", async () => {
+      const f = await reviewBotFixture();
+      const oldHead = "b".repeat(40), newHead = "c".repeat(40);
+      const event = githubAutomaticReviewEvent({
+        action: "synchronize", installation: { id: 2468 },
+        repository: { id: 97531, full_name: "paperclipai/paperclip", name: "paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 42, login: "octocat" },
+        pull_request: {
+          number: 85, title: "Assessment race", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: oldHead },
+          user: { id: 42, login: "octocat", type: "User" }, labels: [],
+        },
+      }, randomUUID())!;
+      const config = await f.management.configuration(f.endpoint.id, "owner-user");
+      const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Reviewed task", status: "in_progress" }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({
+        id: randomUUID(), companyId: f.companyId, agentId: f.assignedAgentId, status: "running",
+      }).returning();
+      const [review] = await db.insert(chatGitHubReviews).values({
+        companyId: f.companyId, endpointId: f.endpoint.id, issueId: issue.id, runId: run.id,
+        repositoryId: String(event.repositoryId), repository: event.repository, pullNumber: 85, headSha: oldHead,
+        deliveryId: event.deliveryId, configurationRevision: config.revision + 1,
+        policySnapshot: config.configuration.defaults, event, state: "running",
+      }).returning();
+      let patches = 0;
+      f.setSupplementalProviderFetch(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/pulls/85")) {
+          await db.update(chatGitHubReviews).set({ assessment: {
+            reviewedCommit: oldHead, score: 4, complete: true, summary: "Reviewed",
+            rationale: "Covered changes", coverage: { reviewedPaths: ["src/a.ts"], omittedPaths: [], limitations: [] }, findings: [],
+          } }).where(eq(chatGitHubReviews.id, review.id));
+          return Response.json({ head: { sha: newHead } });
+        }
+        if (url.includes(`/commits/${oldHead}/check-runs?`))
+          return Response.json({ check_runs: [
+            { id: 851, status: "in_progress", external_id: `${f.endpoint.id}:85:${oldHead}`, app: { id: Number(f.endpoint.botExternalId) } },
+          ] });
+        const match = url.match(/\/check-runs\/(\d+)$/);
+        if (match && init?.method === "PATCH") {
+          patches++;
+          return Response.json({ id: Number(match[1]) });
+        }
+        return undefined;
+      });
+      const checks = githubReviewCheckService(db, f.providerFetch);
+      const [activeEndpoint] = await readChatEndpointsById(f.endpoint.id);
+      await checks.enqueue(activeEndpoint, event, true, "authorized");
+      await checks.processPending();
+      expect(patches).toBe(0);
+      const [action] = await db.select().from(chatActions).where(and(
+        eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_review_check"),
+      ));
+      expect(action).toMatchObject({ status: "cancelled", result: { code: "stale_head" } });
+      expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, review.id)))[0].state).toBe("running");
+    });
     it.each(["snapshot_callback", "snapshot_restart", "snapshot_race", "snapshot_unknown_stop", "snapshot_wrong_allocation", "snapshot_revoked_principal", "snapshot_changed_generation", "snapshot_changed_source", "callback", "restart", "race", "unknown_stop", "wrong_allocation", "paused_endpoint", "revoked_principal", "deleted_comment", "changed_generation", "foreign_scope", "changed_source", "revoked_before_valid"])(
       "reconsiders the same GitHub reply after stopped native workspace cleanup (%s)", async scenario => {
         const snapshotScenario = scenario.startsWith("snapshot_");

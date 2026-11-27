@@ -371,11 +371,13 @@ export function createGitHubReviewHarness(h: ChatChannelHarness, gh: GitHubHarne
         labels: [],
       },
     };
-    f.setSupplementalProviderFetch(async (input) =>
-      String(input).endsWith("/pulls/82")
-        ? Response.json({ ...payload.pull_request, head: { sha: "c".repeat(40) } })
-        : undefined,
-    );
+    f.setSupplementalProviderFetch(async (input) => {
+      const url = String(input);
+      if (url.endsWith("/pulls/82"))
+        return Response.json({ ...payload.pull_request, head: { sha: "c".repeat(40) } });
+      if (url.includes("/check-runs?")) return Response.json({ check_runs: [] });
+      return undefined;
+    });
     const checks = githubReviewCheckService(db, f.providerFetch);
     const [endpoint] = await readChatEndpointsById(f.endpoint.id);
     const event = githubAutomaticReviewEvent(payload, deliveryId)!;
