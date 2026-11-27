@@ -102,8 +102,15 @@ reconciliation for the same task.
 
 ## Credentials and tools
 
-Core can transfer a selected Codex account or a direct Claude credential.
+Core can transfer a selected Codex account, a direct Claude credential, the
+API credential of a Grok, Copilot, OpenCode or Google Antigravity connection,
+or the Google sign-in of a Google Antigravity connection. See
+[typed credentials](PLUGIN_ENVIRONMENT_TASKS.md#typed-credentials).
+Codex and Google sign-in refreshes come back through the `credentials`
+snapshot. See [credential writeback](PLUGIN_ENVIRONMENT_TASKS.md#credential-writeback).
 Other managed routes fail closed until they have a typed credential contract.
+A Grok subscription login, Claude provider routing, and an OpenCode gateway
+without a key also fail closed.
 Do not put credentials in task metadata, journals, logs, or errors.
 
 Assigned MCP tools run through the Core gateway over PRP.

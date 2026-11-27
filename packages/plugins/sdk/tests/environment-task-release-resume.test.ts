@@ -36,6 +36,36 @@ const credentials: [string, unknown, boolean][] = [
   ["an oversized value", { type: "codex-auth-json", authJson: "x".repeat(65_537) }, false],
   ["an unknown type", { type: "gemini-env", environment: { GEMINI_API_KEY: "fixture" } }, false],
   ["an extra field", { type: "codex-auth-json", authJson: "{}", path: "/home/agent/.codex" }, false],
+  ["an xAI API key for Grok", { type: "provider-env", provider: "grok", environment: { XAI_API_KEY: "fixture-xai" } }, true],
+  ["a Copilot token", { type: "provider-env", provider: "copilot", environment: { COPILOT_GITHUB_TOKEN: "fixture-copilot" } }, true],
+  ["an OpenRouter key for OpenCode", { type: "provider-env", provider: "opencode", environment: { OPENROUTER_API_KEY: "fixture-openrouter" } }, true],
+  ["an OpenCode gateway", { type: "provider-env", provider: "opencode",
+    environment: { PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example.test/v1", PAPERCLIP_AI_PROVIDER_KEY: "fixture-gateway" } }, true],
+  ["half of an OpenCode gateway", { type: "provider-env", provider: "opencode", environment: { PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example.test/v1" } }, false],
+  ["a mixed OpenCode set", { type: "provider-env", provider: "opencode",
+    environment: { OPENROUTER_API_KEY: "fixture-openrouter", PAPERCLIP_AI_PROVIDER_KEY: "fixture-gateway" } }, false],
+  ["two OpenCode sets", { type: "provider-env", provider: "opencode", environment: { OPENROUTER_API_KEY: "fixture-openrouter",
+    PAPERCLIP_AI_PROVIDER_URL: "https://gateway.example.test/v1", PAPERCLIP_AI_PROVIDER_KEY: "fixture-gateway" } }, false],
+  ["another provider's variable", { type: "provider-env", provider: "grok", environment: { COPILOT_GITHUB_TOKEN: "fixture-copilot" } }, false],
+  ["an extra provider variable", { type: "provider-env", provider: "grok", environment: { XAI_API_KEY: "fixture-xai", XAI_BASE_URL: "https://router.example.test" } }, false],
+  ["no provider variable", { type: "provider-env", provider: "copilot", environment: {} }, false],
+  ["an empty provider value", { type: "provider-env", provider: "copilot", environment: { COPILOT_GITHUB_TOKEN: "" } }, false],
+  ["a NUL byte in a provider value", { type: "provider-env", provider: "grok", environment: { XAI_API_KEY: "a\0b" } }, false],
+  ["an oversized provider value", { type: "provider-env", provider: "grok", environment: { XAI_API_KEY: "x".repeat(65_537) } }, false],
+  ["an unsupported provider", { type: "provider-env", provider: "gemini", environment: { GEMINI_API_KEY: "fixture-gemini" } }, false],
+  ["a provider credential without a provider", { type: "provider-env", environment: { XAI_API_KEY: "fixture-xai" } }, false],
+  ["an extra provider credential field", { type: "provider-env", provider: "grok", environment: { XAI_API_KEY: "fixture-xai" }, home: "/home/agent" }, false],
+  ["a Gemini API key for Antigravity", { type: "provider-env", provider: "antigravity", environment: { GEMINI_API_KEY: "fixture-gemini" } }, true],
+  ["an Antigravity sign-in document", { type: "provider-env", provider: "antigravity",
+    environment: { PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "{\"refresh_token\":\"fixture\"}" } }, true],
+  ["a Gemini API key mixed with a sign-in document", { type: "provider-env", provider: "antigravity",
+    environment: { GEMINI_API_KEY: "fixture-gemini", PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET: "{\"refresh_token\":\"fixture\"}" } }, false],
+  ["a Google API key for Antigravity", { type: "provider-env", provider: "antigravity", environment: { GOOGLE_API_KEY: "fixture-google" } }, false],
+  ["a Gemini API key with Google routing", { type: "provider-env", provider: "antigravity",
+    environment: { GEMINI_API_KEY: "fixture-gemini", GOOGLE_GEMINI_BASE_URL: "https://router.example.test" } }, false],
+  ["no Antigravity variable", { type: "provider-env", provider: "antigravity", environment: {} }, false],
+  ["an empty Gemini API key", { type: "provider-env", provider: "antigravity", environment: { GEMINI_API_KEY: "" } }, false],
+  ["a Gemini API key for another provider", { type: "provider-env", provider: "copilot", environment: { GEMINI_API_KEY: "fixture-gemini" } }, false],
 ];
 
 async function invoke(operation: unknown, handler: (params: PluginEnvironmentTaskParams) => Promise<PluginEnvironmentTaskResult>) {
@@ -75,7 +105,7 @@ describe("release and resume task contract", () => {
     expect(environmentTaskResultSchema.safeParse({ ...result, runner: { ...runner, extra: true } }).success).toBe(false);
   });
 
-  it("relaunches as the claimant's identity only when asked, and reports the archived state", () => {
+  it("relaunches as the claimant's identity only when asked, and reports the build", () => {
     expect(environmentTaskResultSchema.parse({ ...description, resumeIdentityVersion: 1 })).toEqual({ ...description, resumeIdentityVersion: 1 });
     expect(environmentTaskResultSchema.safeParse({ ...description, resumeIdentityVersion: 2 }).success).toBe(false);
     const runner = { runId: "claimant-run", turnId: "turn-claimant-run", itemId: "item-claimant-run" };
@@ -85,12 +115,11 @@ describe("release and resume task contract", () => {
       expect(environmentTaskOperationSchema.safeParse({ ...resume, runner: changed }).success).toBe(false);
     }
     const build = { version: "0.4.1", digest: `sha256:${"b".repeat(64)}` };
-    const archivedState = { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "ready" };
-    const resumed = { kind: "resume", taskId: "task", outcome: "resumed", runner: build, archivedState };
+    const resumed = { kind: "resume", taskId: "task", outcome: "resumed", runner: build };
     expect(parseEnvironmentTaskResult(relaunch, "task", resumed)).toEqual(resumed);
-    expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, archivedState: undefined })).toThrow();
+    const archivedState = { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "ready" };
+    expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, archivedState })).toThrow();
     expect(() => parseEnvironmentTaskResult(relaunch, "task", { ...resumed, runner: undefined })).toThrow();
-    expect(() => parseEnvironmentTaskResult(resume, "task", resumed)).toThrow();
     expect(parseEnvironmentTaskResult(relaunch, "task", { kind: "resume", taskId: "task", outcome: "unavailable" }))
       .toEqual({ kind: "resume", taskId: "task", outcome: "unavailable" });
   });

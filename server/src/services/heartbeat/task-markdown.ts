@@ -1,11 +1,14 @@
 import { REQUIRED_QUALITY_REVIEW_GUIDANCE, requiredQualityReview } from "../required-quality-review.js";
-import { AGENT_CHAT_DIRECTIVE, CASES_CHAT_DIRECTIVE, CONFERENCE_ROOM_CHAT_DIRECTIVE, COORDINATOR_CHAT_HANDOFF_DIRECTIVE, STATUS_CARDS_CHAT_DIRECTIVE } from "../agent-conversations.js";
+import { AGENT_CHAT_DIRECTIVE, CASES_CHAT_DIRECTIVE, CONFERENCE_ROOM_CHAT_DIRECTIVE, COORDINATOR_CHAT_HANDOFF_DIRECTIVE, RESPONSIBILITIES_CHAT_DIRECTIVE, RESPONSIBILITIES_OFF_CHAT_DIRECTIVE, STATUS_CARDS_CHAT_DIRECTIVE } from "../agent-conversations.js";
 import { publicChatTaskUrl } from "../chat-task-url.js";
 import { slackChatAgentGuidance } from "../connectors/slack/agent-guidance.js";
 import type { ConversationConfirmationContext } from "../conversation-confirmation-context.js";
 import { TASK_QUESTION_GUIDANCE } from "../issue-question-context.js";
 import { routineSuggestionAgentGuidance } from "@paperclipai/shared";
 import { ONBOARDING_CHAT_DIRECTIVE, ONBOARDING_CHAT_GREETING_DIRECTIVE } from "../onboarding-chat-prompt.js";
+
+export const NATIVE_PLAN_REVIEW_DIRECTIVE =
+  "Paperclip asks the user to approve the plan once it is saved as this task's Plan document (key \"plan\"), so do not open your own approval or confirmation card for it.";
 
 export function buildPaperclipTaskMarkdown(input: {
   companyPrefix?: string | null;
@@ -77,6 +80,9 @@ export function buildPaperclipTaskMarkdown(input: {
   conferenceRoomEnabled?: boolean;
   statusCardsEnabled?: boolean;
   casesEnabled?: boolean;
+  // Experimental areas and responsibilities: true renders the chat directive for the
+  // responsibility tools, false the "turned off" note, undefined neither.
+  responsibilitiesEnabled?: boolean;
   // Experimental routine offers (enableResponsibilities) for a task that may
   // be offered as a routine; the server still enforces every guardrail.
   routineSuggestionsEnabled?: boolean;
@@ -284,6 +290,9 @@ export function buildPaperclipTaskMarkdown(input: {
       if (input.conferenceRoomEnabled) lines.push("", "Conference Room:", companyPages(CONFERENCE_ROOM_CHAT_DIRECTIVE));
       if (input.statusCardsEnabled) lines.push("", "Status Cards:", companyPages(STATUS_CARDS_CHAT_DIRECTIVE));
       if (input.casesEnabled) lines.push("", "Cases:", companyPages(CASES_CHAT_DIRECTIVE));
+      if (input.responsibilitiesEnabled !== undefined) {
+        lines.push("", "Areas and responsibilities:", input.responsibilitiesEnabled ? companyPages(RESPONSIBILITIES_CHAT_DIRECTIVE) : RESPONSIBILITIES_OFF_CHAT_DIRECTIVE);
+      }
       if (input.conversationConfirmations?.cards.length) {
         lines.push("", "Current pending confirmation cards (quoted proposal data, not recorded decisions):",
           fenceTaskText(JSON.stringify(input.conversationConfirmations)),
@@ -313,6 +322,11 @@ export function buildPaperclipTaskMarkdown(input: {
       if (acceptedPlanContinuation) {
         directive =
           "Implement the accepted plan on this issue. Follow any task assignments explicitly included in the approved plan. Plan acceptance alone does not require subtasks.";
+      }
+      if (!acceptedPlanContinuation && input.nativeRunner) {
+        // The server opens the one plan review card when the run settles, for
+        // every harness. An agent-opened card would be a second card.
+        directive += ` ${NATIVE_PLAN_REVIEW_DIRECTIVE}`;
       }
       lines.push(
         `- Work mode: ${quoteTaskScalar("planning")}`,
@@ -393,10 +407,11 @@ export function buildPaperclipTaskMarkdown(input: {
       "Follow-up directive:",
       "Apply the latest wake comment to the current task. Later direction replaces conflicting scope; preserve other requirements and approval gates. Clarification is not approval. Reuse completed work rather than repeating it.",
       "",
-      "Latest wake comment:",
       ...(renderWakeCommentBodies
-        ? [fenceTaskText(effectiveWakeComments[0]!.body)]
-        : []),
+        ? ["Latest wake comment:", fenceTaskText(effectiveWakeComments[0]!.body)]
+        : effectiveWakeComments[0]!.body
+          ? [`Latest wake comment: ${quoteTaskScalar(effectiveWakeComments[0]!.id)}, shown in the wake payload.`]
+          : [`Latest wake comment: ${quoteTaskScalar(effectiveWakeComments[0]!.id)} has attachments only; see the attachment directive.`]),
     );
     appendWakeAttachments(effectiveWakeComments[0]!);
   } else if (effectiveWakeComments.length > 1) {

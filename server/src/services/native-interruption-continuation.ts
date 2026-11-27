@@ -1,13 +1,16 @@
-import { and, eq, inArray, isNull, not, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, not, or, sql } from "drizzle-orm";
 import { heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
-import { RESTART_CLASS_FAILURE_CODES, isRestartClassFailureCode } from "./continuation-cause.js";
+import { LEGACY_LAUNCH_UNPREPARED_FAILURE, RESTART_CLASS_FAILURE_CODES, isLegacyLaunchUnpreparedFailure,
+  isRestartClassFailureCode } from "./continuation-cause.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { continueFreshInTransaction, recordFreshContinuationCheck } from "./fresh-continuation-fallback.js";
 import { nativeReplacementPending } from "./native-runtime/native-safe-replacement.js";
 
 export function nativeInterruptionHold() {
   return and(
-    inArray(issueRecoveryActions.cause, [...RESTART_CLASS_FAILURE_CODES]),
+    or(inArray(issueRecoveryActions.cause, [...RESTART_CLASS_FAILURE_CODES]),
+      and(eq(issueRecoveryActions.cause, LEGACY_LAUNCH_UNPREPARED_FAILURE.code),
+        sql`strpos(coalesce(${heartbeatRuns.error}, ''), ${LEGACY_LAUNCH_UNPREPARED_FAILURE.marker}) > 0`)),
     eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.nativePhase, "terminal_failure"),
     eq(nativeRunFinalizations.phase, "terminal_failure"), isNull(nativeRunFinalizations.nextAttemptAt),
     not(nativeReplacementPending()!),
@@ -21,7 +24,7 @@ export async function continueNativeInterruption(tx: Db, input: {
   now: Date;
 }): Promise<boolean> {
   const { action, run, coordinator, now } = input;
-  if (!isRestartClassFailureCode(action.cause) || run.runtimeMode !== "native" || run.nativePhase !== "terminal_failure"
+  if ((!isRestartClassFailureCode(action.cause) && !isLegacyLaunchUnpreparedFailure(action.cause, run)) || run.runtimeMode !== "native" || run.nativePhase !== "terminal_failure"
     || coordinator?.phase !== "terminal_failure" || coordinator.nextAttemptAt || coordinator.leaseOwner || coordinator.resultId)
     return false;
   const fresh = await continueFreshInTransaction(tx, { companyId: action.companyId, runId: run.id, trigger: "recovery_refused", now });

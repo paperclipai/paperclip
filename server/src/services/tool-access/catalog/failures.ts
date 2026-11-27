@@ -43,7 +43,12 @@ export function healthFailureHttpStatus(failure: {
   if (failure.code === "tool_connection_transport_unsupported") return 422;
   if (failure.code === "cognee_access_unverified" || failure.code === "memory_api_key_rejected") return 422;
   if (failure.code.endsWith("_endpoint_rejected")) return 422;
+  if (isAwsConfigurationFailureCode(failure.code)) return 422;
   return 502;
+}
+
+function isAwsConfigurationFailureCode(code: string): boolean {
+  return code.startsWith("aws_") && code !== "aws_unavailable";
 }
 
 export function unsupportedToolConnectionTransport() {
@@ -102,11 +107,11 @@ export function sanitizeHttpFailure(error: unknown): {
     if (code === "oauth_reauthorization_required") {
       return {
         status: "error",
-        message: "OAuth authorization expired. Reconnect this app to continue.",
+        message: "Access to this app ended. Reconnect to continue.",
         code: "oauth_reauthorization_required",
       };
     }
-    if (typeof code === "string" && code.startsWith("aws_") && code !== "aws_unavailable") {
+    if (typeof code === "string" && isAwsConfigurationFailureCode(code)) {
       return { status: "error", message: error.message, code };
     }
     if (code === "aws_unavailable") return { status: "degraded", message: error.message, code };

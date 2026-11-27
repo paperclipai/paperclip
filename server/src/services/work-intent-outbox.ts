@@ -1,8 +1,9 @@
-import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
-import { agentWakeupRequests, budgetPolicies, issueComments, issues, type Db } from "@paperclipai/db";
+import { and, desc, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { agents, agentWakeupRequests, budgetPolicies, issueComments, issues, type Db } from "@paperclipai/db";
+import { isAntigravityAgent } from "./antigravity-swarm-refusal.js";
 import { notifyDeferredExecutionEligibility, notifyDeferredExecutionWork, notifyDeferredWakesForIssue } from "./deferred-execution-notifications.js";
 import { withQueuedCommentIdsInWakePayload } from "./issue-queued-comment-queue.js";
-import { deliveredQueuedCommentIds } from "./queued-comment-delivery.js";
+import { deliveredQueuedCommentIds, recordedSwarmRequestSql } from "./queued-comment-delivery.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
 import { persistActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
@@ -161,6 +162,17 @@ export async function saveUndeliveredUserComments(db: Db, input: {
     const resumingAgentId = live.find(row => row.id === latest)?.authorAgentId ?? null;
     const agentResume = resumingAgentId !== null && remaining.every(id => live.find(row => row.id === id)?.authorAgentId);
     const resumeIntent = agentResume ? { resumeIntent: true, followUpRequested: true } : {};
+    // A recorded /swarm request keeps its marker, so the receipt's run selects
+    // that swarm (services/antigravity-swarm.ts) instead of sending it as
+    // ordinary text. A request a later /swarm replaced already counts delivered.
+    // A task reassigned to another kind of agent gets the comment as text.
+    const [assignee] = await tx.select({ adapterType: agents.adapterType, adapterConfig: agents.adapterConfig }).from(agents)
+      .where(and(eq(agents.companyId, input.companyId), eq(agents.id, input.agentId)));
+    const [swarmRequest] = !isAntigravityAgent(assignee ?? null) ? [] : await tx.select({ id: issueComments.id }).from(issueComments).where(and(
+      eq(issueComments.companyId, input.companyId), eq(issueComments.issueId, input.issueId),
+      inArray(issueComments.id, remaining), recordedSwarmRequestSql(input.companyId, sql`${issueComments}`)))
+      .orderBy(desc(issueComments.createdAt), desc(issueComments.id)).limit(1);
+    const swarmMarker = swarmRequest ? { antigravitySwarmCommentId: swarmRequest.id } : {};
     await notifyDeferredExecutionWork(tx, { companyId: input.companyId });
     await notifyDeferredWakesForIssue(tx, { companyId: input.companyId, issueId: input.issueId });
     const [saved] = await tx.insert(agentWakeupRequests).values({
@@ -173,7 +185,7 @@ export async function saveUndeliveredUserComments(db: Db, input: {
         ...resumeIntent,
         ...(input.executionWait ? { executionWait: input.executionWait } : {}),
         [DEFERRED_WAKE_CONTEXT_KEY]: { issueId: input.issueId, taskId: input.issueId, wakeReason: "issue_commented",
-          source: "issue.comment", wakeCommentIds: remaining, wakeCommentId: latest, ...resumeIntent } }, remaining),
+          source: "issue.comment", wakeCommentIds: remaining, wakeCommentId: latest, ...resumeIntent, ...swarmMarker } }, remaining),
     }).returning({ id: agentWakeupRequests.id });
     if (saved && issue.status === "done" && input.reopenAgentClosedDone) {
       const { issueService } = await import("./issues.js");

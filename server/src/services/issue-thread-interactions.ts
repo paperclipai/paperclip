@@ -14,7 +14,7 @@ import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { projectGitHubInteractionErrors } from "./tool-access/github-action-error-projection.js";
 import { normalizeEscapedLineBreaks } from "@paperclipai/shared/validators/text";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
-import { historicalQuestionCondition } from "./issue-question-context.js";
+import { hasGovernedPayload, historicalQuestionCondition } from "./issue-question-context.js";
 import {
   currentContinuationOrigins,
   deliveredContinuationCommentIds,
@@ -230,6 +230,8 @@ type CreateInteractionOptions = {
   requireAcceptedReplay?: boolean;
   /** Runs before an ownerless issue is assigned to the creating agent. Throw to deny. */
   authorizeWakeTargetAdoption?: () => Promise<void>;
+  /** Runs once, in the insert transaction, only when this call created the card (never on an idempotent replay). */
+  afterInsertInTransaction?: (tx: Db, row: IssueThreadInteractionRow) => Promise<void>;
 };
 
 type InteractionWakeup = (
@@ -695,7 +697,7 @@ async function isEquivalentAcceptedReplay(
   if (
     !replayAcceptedInteractionIds.includes(row.id)
     || !isRequestConfirmationLikeKind(row.kind)
-    || ["toolAction", "secretProposal", "connectionAuthorization", "qualityReview"].some(key => Object.hasOwn(row.payload, key))
+    || hasGovernedPayload(row.payload)
     || row.status !== "accepted"
     || row.result?.outcome !== "accepted"
     || !row.resolvedAt
@@ -5394,6 +5396,7 @@ export function issueThreadInteractionService(
             })
             .returning();
 
+          await options.afterInsertInTransaction?.(tx as unknown as Db, row);
           if (row.addresseeAgentId || row.addresseeUserId) {
             const [privacyIssue] = await tx.select().from(issues).where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)));
             await ensureAssignmentIssueAccessGrant(tx, { ...privacyIssue!,

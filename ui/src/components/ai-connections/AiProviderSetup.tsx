@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Network, Monitor } from "lucide-react";
 import {
+  aiConnectionCatalogSlug,
   aiProviderRoutingSchema,
   createAiConnectionSchema,
   type AiProvider,
@@ -40,7 +41,7 @@ const providers = [
     name: "Anthropic",
     description: "Claude subscription or API key",
   },
-  { id: "google", name: "Google", description: "Antigravity sign-in or Gemini API key" },
+  { id: "google", name: "Antigravity", description: "Antigravity sign-in or Gemini API key" },
   { id: "xai", name: "xAI", description: "Grok subscription or API key" },
   {
     id: "openrouter",
@@ -77,6 +78,8 @@ export function AiProviderSetup({
   initialProtocol,
   providerLabel,
   advancedOnly = false,
+  hideCancel = false,
+  hideProviderHeading = false,
   submitLabel,
   reconnect,
   onCancel,
@@ -89,6 +92,8 @@ export function AiProviderSetup({
   initialProtocol?: AiProviderRouting["protocol"];
   providerLabel?: string;
   advancedOnly?: boolean;
+  hideCancel?: boolean;
+  hideProviderHeading?: boolean;
   submitLabel?: string;
   reconnect?: AiManagedConnectionSummary;
   onCancel: () => void;
@@ -231,7 +236,7 @@ export function AiProviderSetup({
                 )}
               </span>
             ) : (
-              <AppLogo name={p.name} brandKey={p.id} />
+              <AppLogo name={p.name} brandKey={aiConnectionCatalogSlug(p.id)} />
             ),
         }))}
       onSelect={(id) => {
@@ -282,13 +287,15 @@ export function AiProviderSetup({
   if (!reconnect && accountsView.kind === "error") return <QueryErrorState error={accounts.error} action="load connection permissions" onRetry={accountsView.retry} retrying={accountsView.isFetching} />;
   return (
     <div className="mx-auto w-full max-w-2xl space-y-6" onSubmit={(event) => event.stopPropagation()}>
-      <div className="space-y-2">
-        <h2 className="text-xl font-semibold">
-          {step === "provider"
-            ? "Connect a model provider"
-            : `${reconnect ? "Reconnect" : "Connect"} ${label}`}
-        </h2>
-      </div>
+      {!(step === "provider" && hideProviderHeading) && (
+        <div className="space-y-2">
+          <h2 className="text-xl font-semibold">
+            {step === "provider"
+              ? "Connect a model provider"
+              : `${reconnect ? "Reconnect" : "Connect"} ${label}`}
+          </h2>
+        </div>
+      )}
       {agentsView.kind === "error" && <QueryErrorState size="inline" error={agents.error} action="load agents" onRetry={agentsView.retry} retrying={agentsView.isFetching} />}
       {step === "provider" ? (
         <>
@@ -301,9 +308,11 @@ export function AiProviderSetup({
             <div className="pt-4">{choices(true)}</div>
           </details>
           </>}
-          <Button type="button" variant="ghost" onClick={onCancel}>
-            Cancel
-          </Button>
+          {!hideCancel && (
+            <Button type="button" variant="ghost" onClick={onCancel}>
+              Cancel
+            </Button>
+          )}
         </>
       ) : !advanced ? (
         <AiConnectionCredentialStep

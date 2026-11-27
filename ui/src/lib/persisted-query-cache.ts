@@ -13,11 +13,11 @@ export const QUERY_CACHE_MAX_ISSUES = 20;
 const MAX_LINK_PREVIEWS = 100;
 const MAX_RECORD_BYTES = 2 * 1024 * 1024;
 const REVISION_PREFIX = "paperclip:query-cache-revision:";
-const controllers = new WeakMap<QueryClient, { clear: () => void }>();
+const controllers = new WeakMap<QueryClient, { clear: () => void; open?: (issueId: string) => void }>();
 /** Per client: each restored query's hash and the read time it was restored with. */
 const restoredReads = new WeakMap<QueryClient, Map<string, number>>();
 type CacheStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
-type Envelope = { version: 1; userId: string; companyId: string | null; buildId: string; revision: string | null; savedAt: number; state: DehydratedState };
+type Envelope = { version: 1; userId: string; companyId: string | null; buildId: string; revision: string | null; savedAt: number; state: DehydratedState; visits?: Record<string, number> };
 const object = (value: unknown): Record<string, unknown> | null => value != null && typeof value === "object" ? value as Record<string, unknown> : null;
 const userIdOf = (value: unknown) => {
   const id = object(object(value)?.user)?.id;
@@ -145,6 +145,11 @@ export function isRestoredSavedRead(client: QueryClient, key: readonly unknown[]
   return restoredReads.get(client)?.get(hashKey(key)) === state.dataUpdatedAt;
 }
 
+/** Records that the task page opened this task, which ranks it for the saved recent tasks. */
+export function recordTaskOpen(client: QueryClient, issue: { id: string }) {
+  controllers.get(client)?.open?.(issue.id);
+}
+
 export function clearPersistedQueryCache(client: QueryClient) {
   controllers.get(client)?.clear();
 }
@@ -247,6 +252,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
   const cancelTimer = () => { if (timer !== undefined) clearTimeout(timer); timer = undefined; };
   const clear = () => {
     detachInflightGets();
+    visits.clear();
     sessionEpoch += 1;
     cancelTimer();
     const previous = owner ?? userIdOf(client.getQueryData(queryKeys.auth.session));
@@ -277,6 +283,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
   }
   const suspendAccount = () => {
     sessionEpoch += 1;
+    visits.clear();
     removeUser(owner, true);
     suspended = true;
     cancelTimer();
@@ -382,6 +389,13 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       catch { try { storage.removeItem(key); } catch {} }
     }
   };
+  const rememberVisits = (entry: Envelope) => {
+    const saved = object(entry.visits);
+    if (!saved) return;
+    for (const [hash, at] of Object.entries(saved)) {
+      if (typeof at === "number" && fresh(at) && at > (visits.get(hash) ?? -Infinity)) visits.set(hash, at);
+    }
+  };
   const restoreState = (entry: Envelope, companyIds: string[]) => {
     const queries = savedQueries(entry, companyIds).filter(allowedIssue)
       .map(query => ({ queryKey: query.queryKey, queryHash: hashKey(query.queryKey), state: {
@@ -392,6 +406,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
         fetchMeta: null, isInvalidated: query.queryKey[0] !== "link-preview", status: "success" as const, fetchStatus: "idle" as const,
       } }));
     hydrate(client, { mutations: [], queries });
+    rememberVisits(entry);
     let restored = restoredReads.get(client);
     if (!restored) restoredReads.set(client, restored = new Map());
     for (const query of queries) restored.set(query.queryHash, query.state.dataUpdatedAt);
@@ -438,6 +453,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     // reads, prefer newer data, and apply the same limits to the merged set.
     const merged = new Map<string, SavedQuery>();
     for (const entry of entries) for (const query of savedQueries(entry, companies)) merged.set(hashKey(query.queryKey), query);
+    for (const entry of entries) rememberVisits(entry);
     for (const query of client.getQueryCache().getAll()) {
       if (query.state.status === "error" && !isTransientError(query.state.error)) merged.delete(hashKey(query.queryKey));
     }
@@ -446,8 +462,12 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       const key = hashKey(query.queryKey);
       if (!merged.has(key) || merged.get(key)!.state.dataUpdatedAt <= query.state.dataUpdatedAt) merged.set(key, query);
     }
+    const rank = (query: SavedQuery) => {
+      const visit = visits.get(issueIdentity(query));
+      return visit === undefined ? [0, query.state.dataUpdatedAt] : [1, visit];
+    };
     const recent = [...merged.values()].filter(query => query.queryKey[0] === "issues" && query.queryKey[1] === "detail" && allowedIssue(query))
-      .sort((a, b) => (visits.get(hashKey(b.queryKey)) ?? b.state.dataUpdatedAt) - (visits.get(hashKey(a.queryKey)) ?? a.state.dataUpdatedAt));
+      .sort((a, b) => { const [openedA, atA] = rank(a); const [openedB, atB] = rank(b); return openedB - openedA || atB - atA; });
     const issueIds = new Set<string>();
     for (const query of recent) if (issueIds.size < QUERY_CACHE_MAX_ISSUES) issueIds.add(issueIdentity(query));
     const previews = new Set([...merged.values()].filter(query => query.queryKey[0] === "link-preview")
@@ -490,8 +510,14 @@ export function startPersistedQueryCache(client: QueryClient, options: {
         expected.add(key);
         const scoped = queries.filter(query => persistedQueryScope(query.queryKey, query.state.data, userId, companies, taskCompanies) === companyId);
         const write = (records: SavedQuery[]) => {
+          const savedVisits = Object.fromEntries(records.flatMap(query => {
+            if (query.queryKey[0] !== "issues" || query.queryKey[1] !== "detail") return [];
+            const identity = issueIdentity(query);
+            const at = visits.get(identity);
+            return at === undefined ? [] : [[identity, at]];
+          }));
           const serialized = JSON.stringify({ version: 1, userId, companyId, buildId, revision: ownerRevision, savedAt: now(),
-            state: { mutations: [], queries: records } } satisfies Envelope);
+            state: { mutations: [], queries: records }, visits: savedVisits } satisfies Envelope);
           if (serialized.length > MAX_RECORD_BYTES) return false;
           try { storage.setItem(key, serialized); return true; } catch { return false; }
         };
@@ -545,6 +571,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       if (!event.action.manual) { observedClear = completedRead ? completedRead.clear : clearToken(); verifyCachedSession(client); }
       const next = userIdOf(event.query.state.data);
       if (owner && next !== owner) {
+        visits.clear();
         if (next) removeUser(owner);
         clearAccountData(client);
       }
@@ -553,7 +580,6 @@ export function startPersistedQueryCache(client: QueryClient, options: {
         ? completedRead.revisions.get(revisionKey(next)) ?? null : revisionFor(next);
       owner = next;
     }
-    if (event.type === "observerAdded" && event.query.queryKey[0] === "issues" && event.query.queryKey[1] === "detail") visits.set(event.query.queryHash, now());
     const issueDetail = event.query.queryKey[0] === "issues" && event.query.queryKey[1] === "detail";
     const chatRef = taskChatFirstFrameRef(event.query.queryKey);
     if (event.type === "updated" && event.action.type === "success" && !event.action.manual) {
@@ -580,7 +606,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
         for (const query of [...client.getQueryCache().getAll(), ...saved.flatMap(entry => entry.state.queries)].filter(query => Array.isArray(query?.queryKey) && query.queryKey[0] === "issues" && query.queryKey[1] === "detail" && issueRefs(query).some(id => ids.has(id)))) {
           for (const id of issueRefs(query)) ids.add(id);
         }
-        for (const id of ids) deniedIssues.add(id);
+        for (const id of ids) { deniedIssues.add(id); visits.delete(id); }
         // Chat keys of the task's other refs (an id when it was read by identifier).
         for (const query of client.getQueryCache().getAll()) {
           const ref = taskChatFirstFrameRef(query.queryKey);
@@ -616,6 +642,10 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     target?.removeEventListener("pagehide", onPageHide);
     controllers.delete(client);
   };
-  controllers.set(client, { clear });
+  const open = (issueId: string) => {
+    const at = now();
+    visits.set(issueId.toLowerCase(), at);
+  };
+  controllers.set(client, { clear, open });
   return { flush, clear, dispose };
 }

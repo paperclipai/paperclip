@@ -65,12 +65,27 @@ export async function syncRemoteWorkspaceRecoveryDirectory(input: {
 export const REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE = "remote_workspace_sandbox_disk_full";
 export const REMOTE_WORKSPACE_SANDBOX_DISK_FULL =
   `${REMOTE_WORKSPACE_SANDBOX_DISK_FULL_CODE}: the sandbox disk is full; free space in the sandbox before saving the workspace`;
-// Node reports ENOSPC or EDQUOT. Git and tar child processes report the text.
-const DISK_FULL_CHECK = String.raw`const diskFull=e=>['ENOSPC','EDQUOT'].includes(e?.code)||/No space left on device|Disk quota exceeded/i.test(String(e?.stderr??'')+String(e?.message??''));`;
+
+const SANDBOX_PREPARE_DISK_FULL =
+  /(?:^|; )remote_workspace_(?:prepare|repository)_failed: stage=[a-z_]{1,32}(?: (?:reason|archive|disk|git|code|exit|signal|syscall|killed|program|name)=[A-Za-z0-9_]{1,64}){0,16}? disk=full(?: |$)/;
+
+export function isRemoteWorkspaceSandboxDiskFullError(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 5 && current instanceof Error; depth++) {
+    if (current.message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL) return true;
+    if (current instanceof RemoteWorkspaceOperationError && SANDBOX_PREPARE_DISK_FULL.test(current.message)) return true;
+    current = current.cause;
+  }
+  return false;
+}
+// Node reports ENOSPC or EDQUOT. Git, tar, and sandbox Git storage-guard child processes report the text.
+const DISK_FULL_CHECK = String.raw`const diskFull=e=>['ENOSPC','EDQUOT'].includes(e?.code)||/No space left on device|Disk quota exceeded|paperclip_git_storage_limit:[^\n]*(?:too little free disk space|too few free inodes|stopped at its storage budget)/i.test(String(e?.stderr??'')+String(e?.message??''));`;
 const CAPTURE_FAILURE_CHECK = `const captureFailure=${remoteWorkspaceCaptureFailureMessage.toString()};const failureDetail=${remoteWorkspaceFailureDetail.toString()};`;
 // The only sandbox text a capture failure may add: a fixed stage plus bounded
 // structured fields from remoteWorkspaceFailureDetail. Anything else is dropped.
 const SANDBOX_CAPTURE_CAUSE = /^remote_workspace_capture_failed: stage=(?:helper|archive|publish)(?: (?:helper_)?(?:code|exit|signal|syscall|killed|program|name|reason)=[A-Za-z0-9_]{1,64}){0,16}$/;
+// The sandbox inventory script's own refusal: a fixed token or an errno code.
+const READONLY_INVENTORY_FAILURE = /^remote_workspace_readonly_capture_(?:unsafe|budget|fs_e[a-z0-9]{2,15})$/;
 // Setup scripts name the step they were in plus closed, structured fields. A
 // reason is only a script's own snake_case refusal code; Git output selects a
 // fixed label and is never copied. The server drops anything outside this grammar.
@@ -84,9 +99,11 @@ const SETUP_FAILURE_CHECK = String.raw`const setupFailure=(prefix,stage,error)=>
   const git=[[/Authentication failed|could not read Username|Permission denied \(publickey\)|terminal prompts disabled|returned error: 40[13]/i,'auth_failed'],
    [/Repository not found|does not appear to be a git repository|returned error: 404/i,'repository_not_found'],
    [/Could not resolve host|Connection (?:timed out|refused|reset)|Failed to connect|unable to access/i,'network'],
-   [/unknown revision|not a valid ref|Needed a single revision|invalid reference|did not match any|couldn't find remote ref/i,'ref_not_found']]
+   [/unknown revision|not a valid ref|Needed a single revision|invalid reference|did not match any|couldn't find remote ref/i,'ref_not_found'],
+   [/paperclip_git_storage_limit:[^\n]*(?:too little free disk space|too few free inodes|stopped at its storage budget)/i,'storage_limit'],
+   [/paperclip_git_storage_limit:/i,'storage_guard_unavailable']]
    .find(([pattern])=>pattern.test(stderr))?.[1];if(git)fields.push('git='+git);}
- for(const field of failureDetail(error).split(' ').filter(Boolean))if(!fields.some(value=>value.startsWith(field.split('=')[0]+'=')))fields.push(field);
+ for(const field of failureDetail(error).split(' ').filter(Boolean))if(!fields.some(value=>value.startsWith(field.split('=')[0]+'='))&&!(field==='reason=git_storage_guard_unavailable'&&fields.includes('git=storage_guard_unavailable')))fields.push(field);
  return prefix+': '+fields.join(' ');};`;
 const SANDBOX_SETUP_CAUSE = /^remote_workspace_(prepare|repository|restore)_failed: stage=[a-z_]{1,32}(?: (?:reason|archive|disk|git|code|exit|signal|syscall|killed|program|name)=[A-Za-z0-9_]{1,64}){0,16}$/;
 
@@ -115,13 +132,19 @@ export class RemoteWorkspaceOperationError extends Error {
  * error text is not one of these redacted forms and must stay off the record.
  */
 const READONLY_CAPTURE_FAILURE_CAUSE =
-  /^remote_workspace_readonly_capture_failed: stage=(?:inspect|transfer|verify|archive) reason=[a-z_]{1,32} transport=[a-z_]{1,48}(?: code=[A-Z][A-Z0-9_]{1,31})?$/;
+  /^remote_workspace_readonly_capture_failed: stage=(?:inspect|transfer|verify|archive) reason=[a-z0-9_]{1,32} transport=[a-z_]{1,48}(?: code=[A-Z][A-Z0-9_]{1,31})?$/;
 
 export function remoteWorkspaceFailureCause(error: unknown): string | null {
   if (error instanceof RemoteWorkspaceOperationError || error instanceof RemoteWorkspaceOperationTimeoutError
     || error instanceof RemoteWorkspaceRestoreError) return error.message;
   if (!(error instanceof Error)) return null;
-  if (remoteWorkspaceCaptureFailureMessage({ message: error.message }) === error.message) return error.message;
+  if (remoteWorkspaceCaptureFailureMessage({ message: error.message }) === error.message) {
+    // A full disk keeps its exact message for retry and cache reclaim; the
+    // record also names where the read-only fallback stopped.
+    const fallback = error.message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL && error.cause instanceof Error
+      && READONLY_CAPTURE_FAILURE_CAUSE.test(error.cause.message) ? error.cause.message : null;
+    return fallback ? `${error.message}; ${fallback}` : error.message;
+  }
   // A read-only capture failure is server-built from closed fields.
   if (READONLY_CAPTURE_FAILURE_CAUSE.test(error.message)) return error.message;
   const operation = providerRefusals.get(error);
@@ -170,6 +193,14 @@ function remoteWorkspaceRestoreFailureDetail(step: RemoteWorkspaceRestoreStep, c
   if (cause instanceof Error && /^remote_workspace_[a-z_]{3,64}$/.test(cause.message)) return cause.message;
   const { label, code, status } = sandboxProviderFailureLabel(cause);
   return `${step === "snapshot_download" ? "storage" : "transport"}=${label}${code ? ` code=${code}` : ""}${status ? ` status=${status}` : ""}`;
+}
+
+// A restore stage that reports a full sandbox disk, in the grammar of SANDBOX_SETUP_CAUSE.
+const RESTORE_DISK_FULL = /(?:^|; )remote_workspace_restore_failed: stage=[a-z_]{1,32}(?: [a-z_]+=[A-Za-z0-9_]{1,64}){0,16}? reason=sandbox_disk_full(?: |$)/;
+
+/** A sandbox restore refused because the sandbox disk is full, at any restore stage. */
+export function isRemoteWorkspaceRestoreDiskFull(error: unknown): boolean {
+  return error instanceof Error && RESTORE_DISK_FULL.test(error.message);
 }
 
 /** The restore failure carried by a setup error, through at most four causes. */
@@ -257,7 +288,8 @@ async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspace
     const output = [result.stderr.trim(), result.stdout.trim()];
     const reported = output.find(value => [gitOperation, REMOTE_WORKSPACE_SANDBOX_DISK_FULL].includes(value))
       ?? (operation === "capture" || operation === "archive_helper"
-        ? output.find(value => remoteWorkspaceCaptureFailureMessage({ message: value }) === value) : undefined);
+        ? output.find(value => remoteWorkspaceCaptureFailureMessage({ message: value }) === value || READONLY_INVENTORY_FAILURE.test(value))
+        : undefined);
     if (reported) throw new Error(reported);
     const cause = operation === "capture" || operation === "archive_helper"
       ? output.find(value => value.length <= 1024 && SANDBOX_CAPTURE_CAUSE.test(value))
@@ -348,7 +380,8 @@ ${DISK_FULL_CHECK}${CAPTURE_FAILURE_CHECK}${SETUP_FAILURE_CHECK}let stage='valid
   process.stdout.write(JSON.stringify({cwd:root}));return;
  }
  if(input.probeOnly){process.stdout.write(JSON.stringify({cloneRequired:true}));return;}
- stage='stage';const staged=await fs.mkdtemp(root+'.preparing-');
+ stage='stage';const staged=await fs.mkdtemp(root+'.preparing-');let published=false;
+ try{
  if(input.kind==='git'){
   stage='clone';await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,staged],{env:cloneEnv});
   const git=async args=>exec('git',['-c','core.hooksPath=/dev/null','-C',staged,...args],{env:localEnv});
@@ -373,8 +406,9 @@ ${DISK_FULL_CHECK}${CAPTURE_FAILURE_CHECK}${SETUP_FAILURE_CHECK}let stage='valid
  const runtimeStat=await fs.lstat(runtime);if(!runtimeStat.isDirectory()||runtimeStat.isSymbolicLink())throw Error('unsafe_receipt');
  await fs.writeFile(path.join(runtime,'workspace-ready.json'),JSON.stringify({preparationIdentity:input.preparationIdentity}),{flag:'wx',mode:0o600});
  stage='publish';if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');
- await fs.rename(staged,root);
+ await fs.rename(staged,root);published=true;
  process.stdout.write(JSON.stringify({cwd:await fs.realpath(root)}));
+ }finally{if(!published)await fs.rm(staged,{recursive:true,force:true}).catch(()=>{});}
 })().catch(error=>{process.stderr.write(setupFailure('remote_workspace_prepare_failed',stage,error));process.exitCode=1});`;
 
 export async function prepareRemoteWorkspaceDirectory(input: {
@@ -584,9 +618,13 @@ export async function captureReadOnlyWorkspaceArchive(input: {
     return { ...receipt, archivePath, cleanup: () => removeTaskDirectoryTree(savedRoot) };
   } catch (error) {
     if (root) await removeTaskDirectoryTree(root);
-    const reason = error instanceof Error && error.message === "remote_workspace_readonly_capture_unsafe" ? "unsafe_source"
-      : error instanceof Error && error.message === "remote_workspace_readonly_capture_changed" ? "source_changed"
-        : error instanceof Error && error.message === "remote_workspace_readonly_capture_budget" ? "budget_exceeded" : "operation_failed";
+    const message = error instanceof Error ? error.message : "";
+    const reason = message === "remote_workspace_readonly_capture_unsafe" ? "unsafe_source"
+      : message === "remote_workspace_readonly_capture_changed" ? "source_changed"
+        : message === "remote_workspace_readonly_capture_budget" ? "budget_exceeded"
+          : message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL ? "disk_full"
+            : /^remote_workspace_(?:readonly_capture|archive)_(fs_e[a-z0-9]{2,15})$/.exec(message)?.[1]
+              ?? (error instanceof RemoteWorkspaceOperationTimeoutError ? "timed_out" : "operation_failed");
     const { label, code } = sandboxProviderFailureLabel(error);
     throw new Error(`remote_workspace_readonly_capture_failed: stage=${stage} reason=${reason} transport=${label}${code ? ` code=${code}` : ""}`);
   }

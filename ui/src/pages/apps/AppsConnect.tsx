@@ -56,6 +56,16 @@ export function AppsConnect({ byoOnly = false, credentialSource = "paperclip_vau
   useEffect(() => {
     if (hasSavedComposio) navigate(`/apps?source=composio&targetToolkit=${encodeURIComponent(toolkit!)}`, { replace: true });
   }, [hasSavedComposio, toolkit, navigate]);
+  const legacyCopilotLink = source === "github" && searchParams.get("method") === "copilot-token";
+  const legacyAntigravityLink = source === "google" || source === "google-ai";
+  useEffect(() => {
+    if (!legacyCopilotLink && !legacyAntigravityLink) return;
+    const params = new URLSearchParams(searchParams);
+    params.delete("appKey");
+    params.set("source", legacyCopilotLink ? "github-copilot" : "antigravity");
+    navigate(`/apps/connect?${params.toString()}`, { replace: true });
+  }, [legacyCopilotLink, legacyAntigravityLink, searchParams, navigate]);
+  if (legacyCopilotLink || legacyAntigravityLink) return null;
   if (reuseComposio && selectedCompanyId && (saved.isPending || savedView.kind === "reconnecting" || hasSavedComposio)) return <p role="status" className="text-sm text-muted-foreground">Checking saved Composio accounts…</p>;
   if (reuseComposio && savedView.kind === "error") return <div className="space-y-3">
     <QueryErrorState error={saved.error} action="load your Composio accounts" onRetry={savedView.retry} retrying={savedView.isFetching} />

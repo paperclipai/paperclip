@@ -47,8 +47,11 @@ run and atomically resolves the same per-agent/human conversation. This operatio
 is available independently of generic API tools, only to active standard task
 runs with standard credentials. Skill-test and task-bridge credentials, persisted
 skill-test runs, Ask/planning/review/watchdog, stale/stopped runs, revoked recipients and
-restricted source tasks are denied. The shared comment boundary rejects other
-agents and execution-task writes that bypass this path. Comment/audit persistence
+restricted source tasks are denied. The shared comment boundary rejects execution-task
+writes by the chat's own agent that bypass this path. Another agent may post in the
+chat through the ordinary comment route only from its own running, task-bound run while
+that run and its credential act for the chat's person and its source task has no private restriction;
+agent comment permissions apply and the chat's agent wakes to answer in its chat. Comment/audit persistence
 retains real agent/run attribution and server-owned source provenance.
 Credential scope, responsible human and external authorizer remain part of access
 checks. API keys are rechecked under a row lock before the delivery commits.
@@ -143,8 +146,9 @@ New chat handoffs default to the conversation agent when no agent or person is s
 tasks; nested execution tasks retain normal parent/child rules. Source participant,
 session generation, task assignment and private-source inheritance are checked;
 quality confirmations remain separate from task completion and publication.
-[Focused regression coverage](../../server/src/__tests__/coordinator-handoff.test.ts)
-does not claim live model/tool selection or external delivery verification.
+Canonical conversation coverage lives in
+[agent conversations](../../server/src/__tests__/agent-conversations.test.ts) and does not claim
+live model/tool selection or external delivery verification.
 Additional coverage: the explicit [chat feature evals](../../tests/runner-e2e/CHAT-FEATURES.md)
 exercise native task creation and completion delivery through the real chat UI.
 The [chat directive](../../server/src/services/agent-conversations.ts) tells agents

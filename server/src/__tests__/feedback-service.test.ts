@@ -22,6 +22,9 @@ import {
   issueComments,
   issueDocuments,
   issues,
+  toolApplications,
+  toolConnections,
+  toolInvocations,
 } from "@paperclipai/db";
 import { feedbackService } from "../services/feedback.ts";
 import { getRunLogStore } from "../services/run-log-store.js";
@@ -834,6 +837,51 @@ describeEmbeddedPostgres("feedbackService.saveIssueVote", () => {
     expect(rawAdapterTrace?.projectSessionFound).toBe(true);
     expect(rawAdapterTrace?.projectArtifactsCount).toBe(1);
     expect(rawAdapterTrace?.debugLogFound).toBe(true);
+  });
+
+  it("leaves the run and harness session out of a shared trace when the session used Google Workspace", async () => {
+    const claudeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-feedback-google-"));
+    tempDirs.push(claudeRoot);
+    const sessionId = randomUUID();
+    const projectDir = path.join(claudeRoot, "projects", "workspace-1");
+    fs.mkdirSync(projectDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDir, `${sessionId}.jsonl`),
+      `${JSON.stringify({ type: "user", sessionId, message: { role: "user", content: "Email from Gmail: quarterly numbers" } })}\n`,
+      "utf8",
+    );
+    vi.stubEnv("CLAUDE_CONFIG_DIR", claudeRoot);
+    const uploadTraceBundle = vi.fn().mockResolvedValue({ objectKey: "feedback-traces/test.json" });
+    const flushingSvc = feedbackService(db, { shareClient: { uploadTraceBundle } });
+    const { companyId, issueId, commentId } = await seedIssueWithAdapterRunComment({ adapterType: "claude_local", sessionId });
+    const [sourceRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    const [earlierRun] = await db.insert(heartbeatRuns).values({
+      companyId, agentId: sourceRun!.agentId, invocationSource: "manual", status: "succeeded", sessionIdAfter: sessionId,
+      startedAt: new Date("2026-04-01T09:00:00.000Z"), finishedAt: new Date("2026-04-01T09:05:00.000Z"),
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({ companyId, name: "Google Workspace", type: "mcp_http" }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId, applicationId: application!.id, name: "Google Workspace", uid: randomUUID(), transport: "mcp_remote",
+      status: "active", config: { sourceTemplateKey: "google-workspace" },
+    }).returning();
+    await db.insert(toolInvocations).values({ companyId, connectionId: connection!.id, runId: earlierRun!.id, toolName: "get_message", status: "succeeded" });
+
+    await flushingSvc.saveIssueVote({
+      issueId,
+      targetType: "issue_comment",
+      targetId: commentId,
+      vote: "up",
+      authorUserId: "user-1",
+      allowSharing: true,
+    });
+    await flushingSvc.flushPendingFeedbackTraces();
+
+    expect(uploadTraceBundle).toHaveBeenCalledTimes(1);
+    const bundle = uploadTraceBundle.mock.calls[0]?.[0] as Record<string, unknown> | undefined;
+    const files = Array.isArray(bundle?.files) ? (bundle.files as Array<Record<string, unknown>>) : [];
+    expect(files.map((file) => String(file.path))).toEqual(["paperclip/run.json"]);
+    expect(bundle?.notes).toContain("google_workspace_content_excluded");
+    expect(JSON.stringify(bundle)).not.toContain("quarterly numbers");
   });
 
   it("captures OpenCode message and part files as full traces", async () => {

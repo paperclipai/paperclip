@@ -1,14 +1,22 @@
 import type { Db } from "@paperclipai/db";
-import type { AiConnectionBinding } from "@paperclipai/shared";
-import { AntigravityModelDiscoveryCleanupError, discoverAntigravityModels } from "../vendor/paperclip-runner/index.js";
+import { antigravityApiKeyModels, type AiConnectionBinding } from "@paperclipai/shared";
+import { AntigravityModelDiscoveryCleanupError, AntigravityRuntimeUnavailableError, discoverAntigravityModels } from "../vendor/paperclip-runner/index.js";
 import { unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { prepareManagedAiRuntime } from "./ai-connection-runtime.js";
 import { RetiredCredentialRecoveryError } from "./quota-credential-recovery.js";
 import { retainGoogleCredentialCleanup } from "./retained-google-credential-cleanup.js";
 
-/** Metadata uses the selected connection's ordinary authority and encrypted
- * refresh writeback. The native client cannot create a session or send a prompt.
+/** A Google API key's catalog does not depend on the key or the environment:
+ * the pinned runtime builds it locally. Suggestions only; an explicit model id
+ * stays accepted and native admission decides. */
+export function antigravityApiKeyModelCatalog() {
+  return antigravityApiKeyModels();
+}
+
+/** Account metadata uses the selected connection's ordinary authority and
+ * encrypted refresh writeback. The native client cannot create a session or
+ * send a prompt. An API-key connection never starts a process here.
  */
 export async function antigravityConnectionModels(db: Db, input: {
   companyId: string;
@@ -18,6 +26,7 @@ export async function antigravityConnectionModels(db: Db, input: {
   allowUninstalledShared: boolean;
 }) {
   if (input.binding.provider !== "google") throw unprocessable("Select a Google runtime connection");
+  if (input.binding.method === "api_key") return antigravityApiKeyModelCatalog();
   const runtime = await prepareManagedAiRuntime(db, {
     companyId: input.companyId, responsibleUserId: input.userId,
     agentId: input.agentId ?? "00000000-0000-0000-0000-000000000000",
@@ -28,13 +37,16 @@ export async function antigravityConnectionModels(db: Db, input: {
   });
   let retained = false;
   try {
-    if (runtime.attribution.method !== "subscription") throw unprocessable(
-      "Sign in to Google Antigravity to discover account models. With an API key, enter the exact model identifier.",
-    );
+    // The binding named sign-in but the selected connection holds a Gemini API key.
+    if (runtime.attribution.method !== "subscription") return antigravityApiKeyModelCatalog();
     const home = runtime.config.env.GEMINI_HOME;
     if (typeof home !== "string" || !home) throw unprocessable("The selected Google runtime account is unavailable.");
     try { return (await discoverAntigravityModels(home)).models; }
     catch (error) {
+      if (error instanceof AntigravityRuntimeUnavailableError) {
+        logger.warn({ companyId: input.companyId, code: error.code }, "Antigravity model discovery runtime is unavailable");
+        throw unprocessable("This server does not have the current Google Antigravity runtime, so Google account models cannot load. Use a Google API key instead, or update Paperclip on this server.", { code: error.code });
+      }
       if (error instanceof AntigravityModelDiscoveryCleanupError) {
         // The native owner retains the live child and immutable command lease.
         // Keep this selected credential home until that owner proves retirement.

@@ -7,6 +7,7 @@ import {
 } from "@paperclipai/db";
 import { registerGitHubTerminalResponseWork } from "./chat-channels/github/terminal-response-work.js";
 import { githubResponseExecution, githubResponseRunColumns as responseRunColumns } from "./chat-channels/github/response-execution.js";
+import { FINISHED_RUN_STATUSES, finishedRunStatusSql, runBoundToIssue, runWokeForComment } from "./chat-channels/github/response-run-state.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { registerGitHubAcknowledgementWork } from "./chat-channels/github/acknowledgement-work.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -33,6 +34,20 @@ type Comment = { id: number; body?: string; html_url: string; user?: { login?: s
 const generation = (endpoint: Source["endpoint"]) => (endpoint.setup as { runtimeGeneration?: number }).runtimeGeneration ?? 0;
 const stoppedAcknowledgement = Symbol("stopped GitHub acknowledgement");
 const actionKey = (deliveryId: string) => `github_response:${deliveryId}`;
+const statusMarker = "<!-- paperclip-response-kind:status -->";
+// The complete status notices posted before the kind marker existed.
+const legacyStatusBodies = new Set(["Work is paused. Your request is saved. See the Paperclip task for details.",
+  "This turn ended without publishing a final response. See the Paperclip task for details.",
+  "This turn stopped before completing. See the Paperclip task for details.",
+  "This request has been handled. See the response in this conversation."]);
+/** A reply or review the agent published, as opposed to a placeholder or a Paperclip status notice. */
+export const holdsPublishedResponse = (body: string | undefined) => !!body?.includes("<!-- paperclip-response-state:final -->") &&
+  !body.includes(statusMarker) && !legacyStatusBodies.has(body.split("\n\n<!-- paperclip-")[0]!.trim());
+/** A 404 when reading the request's own posted comment: it was deleted on GitHub. */
+const responseCommentDeleted = (error: unknown) => {
+  const details = error instanceof HttpError ? error.details as { code?: string; providerStatus?: number } | undefined : undefined;
+  return details?.code === "github_response_deleted";
+};
 const responseMarker = (source: Source) => isMainPullResponse(source) ? pullResponseMarker(source) : requestResponseMarker(source);
 
 async function findResponseComment(source: Source, api: Api, legacyMarkers: string[] = []): Promise<Comment | null> {
@@ -79,7 +94,9 @@ async function stageResponse(db: Db, source: Source) {
 
 export async function writeGitHubResponseComment(
   db: Db, source: Source, api: Api, lease: Lease,
-  input: { body: string; final: boolean; versionAt?: Date; acknowledgement?: boolean; preserveFinal?: boolean; pausedVersion?: string },
+  input: { body: string; final: boolean; versionAt?: Date; acknowledgement?: boolean; preserveFinal?: boolean; pausedVersion?: string;
+    /** A Paperclip status notice (paused, stopped, no reply), not the agent's own words. */
+    status?: boolean },
   assertCurrent: () => Promise<void>,
 ) {
   await assertCurrent();
@@ -87,7 +104,20 @@ export async function writeGitHubResponseComment(
   const shared = isMainPullResponse(source);
   const target = shared ? await stagePullResponse(db, source) : response;
   const versionAt = input.versionAt ?? source.delivery.createdAt;
+  // The main PR comment is shared by every request. A status notice for one
+  // request never replaces a newer response or a published review: it settles
+  // that request against the comment as it stands, so nothing retries it later.
+  const settleStatus = async (current: { id: string; url: string }, code: string) => {
+    if (shared) await retireLegacyResponsePlaceholder(source, response.result, current, api, assertCurrent);
+    await lease.commit(async tx => { await tx.update(chatActions).set({ status: "processed", result: {
+      ...current, final: true, code, versionAt: versionAt.toISOString(),
+    }, updatedAt: new Date() }).where(and(eq(chatActions.id, response.id),
+      sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`)); });
+    return current;
+  };
   if (target.result?.id && Date.parse(String(target.result.versionAt)) > versionAt.getTime()) {
+    if (shared && input.status)
+      return settleStatus({ id: String(target.result.id), url: String(target.result.url) }, "status_superseded");
     if (!input.acknowledgement) throw conflict("A newer GitHub response has already been published");
     if (shared) await retireLegacyResponsePlaceholder(source, response.result,
       { id: String(target.result.id), url: String(target.result.url) }, api, assertCurrent);
@@ -118,7 +148,15 @@ export async function writeGitHubResponseComment(
   if (target.result?.id) {
     // Never recreate a deleted comment or edit an arbitrary caller-selected ID.
     if (!/^[1-9][0-9]*$/.test(String(target.result.id))) throw forbidden("Invalid GitHub response receipt");
-    previous = await api.request<Comment>(`${item}/${target.result.id}`);
+    try {
+      previous = await api.request<Comment>(`${item}/${target.result.id}`);
+    } catch (error) {
+      const details = error instanceof HttpError ? error.details as { providerStatus?: number } | undefined : undefined;
+      // Only a 404 for this exact comment proves it was deleted; a token or
+      // repository-access failure is not.
+      if (details?.providerStatus === 404) throw conflict("GitHub response comment was deleted", { code: "github_response_deleted" });
+      throw error;
+    }
     if (!previous.body?.includes(marker) || previous.user?.login !== source.endpoint.botUsername)
       throw forbidden("GitHub response is no longer owned by this App");
   } else {
@@ -126,10 +164,13 @@ export async function writeGitHubResponseComment(
   }
   await assertCurrent();
   const providerVersion = previous?.body?.match(/<!-- paperclip-response-version:([^ ]+) -->/)?.[1];
+  const keepsResponse = holdsPublishedResponse(previous?.body);
+  if (shared && input.status && previous && (keepsResponse || (providerVersion && Date.parse(providerVersion) > versionAt.getTime())))
+    return settleStatus({ id: String(previous.id), url: previous.html_url }, keepsResponse ? "published_response_kept" : "status_superseded");
   if (providerVersion && Date.parse(providerVersion) > versionAt.getTime()) throw conflict("A newer GitHub response has already been published");
   const sameRequest = !shared || previous?.body?.includes(requestResponseMarker(source)) === true;
   const alreadyFinal = sameRequest && previous?.body?.includes("<!-- paperclip-response-state:final -->") === true;
-  const body = `${projectSafeChatPublicationText(input.body)}\n\n${marker}${shared ? `\n${requestResponseMarker(source)}` : ""}\n<!-- paperclip-response-version:${versionAt.toISOString()} -->${input.final ? "\n<!-- paperclip-response-state:final -->" : ""}`;
+  const body = `${projectSafeChatPublicationText(input.body)}\n\n${marker}${shared ? `\n${requestResponseMarker(source)}` : ""}\n<!-- paperclip-response-version:${versionAt.toISOString()} -->${input.status ? `\n${statusMarker}` : ""}${input.final ? "\n<!-- paperclip-response-state:final -->" : ""}`;
   const preserved = previous && (previous.body === body || (input.acknowledgement && (sameRequest || (shared && previous.body?.includes("<!-- paperclip-response-state:final -->")))) || (alreadyFinal && !input.final) ||
     (input.preserveFinal && previous.body?.includes("<!-- paperclip-response-state:final -->"))) ? previous : null;
   const posted = preserved && (!shared || preserved.body?.includes(marker)) ? preserved : await api.request<Comment>(
@@ -218,9 +259,14 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
           companyId: source.endpoint.companyId, endpointId: source.endpoint.id,
           agentId: source.endpoint.assignedAgentId!, issueId: source.conversation.issueId!, deliveryId,
           sourceMessageId: source.sourceMessageId, issueStatus: source.issueStatus,
-          deliveryCreatedAt: source.delivery.createdAt,
+          deliveryCreatedAt: source.delivery.createdAt, threadId: source.conversation.externalThreadId,
         });
-        if (execution.reply === "unsettled") throw conflict("GitHub reply is still being resolved");
+        if (execution.reply === "unsettled") {
+          // An acknowledged request waits for its reply to settle without
+          // spending delivery retries; the terminal sweep reads it again.
+          if (existing.status === "processed" && existing.result?.id) return { id: String(existing.result.id), url: String(existing.result.url) };
+          throw conflict("GitHub reply is still being resolved");
+        }
         if (execution.presentationPending) return;
         if (isMainPullResponse(source) && execution.passiveResponseWait) {
           // Preserve the shared assessment when this exact run intentionally waits
@@ -286,7 +332,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       }
       return writeGitHubResponseComment(db, source, api, lease,
         { body: finalBody ?? (isMainPullResponse(source) && !requestRunning ? "Review queued…" : "Working on this…"), final: finalBody !== undefined && !requestPaused,
-          acknowledgement: finalBody === undefined, preserveFinal, pausedVersion,
+          acknowledgement: finalBody === undefined, status: finalBody !== undefined, preserveFinal, pausedVersion,
           ...(finalBody !== undefined ? { versionAt: finalVersionAt ?? new Date() } : {}) }, assertCurrent);
     });
   }
@@ -339,7 +385,8 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         }, async () => { await assertCurrent(); await context(link.deliveryId!); });
       } catch (error) {
         const details = error instanceof HttpError ? error.details as { code?: string; providerStatus?: number } | undefined : undefined;
-        if (!response.result?.id || details?.code !== "github_bot_operation_failed" || details.providerStatus !== 404) throw error;
+        const deleted = responseCommentDeleted(error) || (details?.code === "github_bot_operation_failed" && details.providerStatus === 404);
+        if (!response.result?.id || !deleted) throw error;
         // A human can delete an earlier working comment while the coalesced
         // review runs. Settle that exact receipt without recreating the comment
         // or blocking the current response and check publication.
@@ -366,7 +413,7 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         const source = await context(link.deliveryId!);
         const [current] = await db.select(responseRunColumns).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, input.companyId)));
         if (!current || current.agentId !== source.endpoint.assignedAgentId ||
-            !["succeeded", "failed", "interrupted", "timed_out", "cancelled"].includes(current.status) ||
+            !(FINISHED_RUN_STATUSES as readonly string[]).includes(current.status) ||
             source.endpoint.id !== input.endpointId || source.conversation.issueId !== input.issueId ||
             boundRunIssueId(current) !== input.issueId)
           throw forbidden("GitHub failure authority changed");
@@ -414,16 +461,19 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         sql`exists (select 1 from ${heartbeatRuns} r where r.company_id = ${chatActions.companyId}
           and r.agent_id = ${chatEndpoints.assignedAgentId}
           and coalesce(r.native_issue_id::text, r.context_snapshot->>'issueId') = ${chatConversations.issueId}::text
-          and r.status in ('succeeded', 'failed', 'interrupted', 'timed_out', 'cancelled')
+          and ${finishedRunStatusSql(sql`r.status`)}
           and not exists (select 1 from ${heartbeatRuns} newer where newer.company_id = r.company_id
             and newer.agent_id = r.agent_id
             and coalesce(newer.native_issue_id::text, newer.context_snapshot->>'issueId') = ${chatConversations.issueId}::text
             and (newer.created_at, newer.id) > (r.created_at, r.id))
           and (${issues.status} = 'blocked' or r.active_identity_context_id is not null or exists (select 1 from ${chatMessageLinks} l
+            join ${heartbeatRuns} q on q.company_id = r.company_id and q.agent_id = r.agent_id
+              and ${runBoundToIssue(sql`q`, sql`${chatConversations.issueId}`)}
+              and ${finishedRunStatusSql(sql`q.status`)}
             where l.company_id = ${chatActions.companyId} and l.endpoint_id = ${chatActions.endpointId}
               and l.delivery_id = ${chatActions.deliveryId} and l.direction = 'inbound'
-              and (l.comment_id::text = r.context_snapshot->>'wakeCommentId'
-                or coalesce(r.context_snapshot->'wakeCommentIds', '[]'::jsonb) ? l.comment_id::text))))`,
+              -- The run that woke for this request; a newer run may follow it.
+              and ${runWokeForComment(sql`q`, sql`l.comment_id`)})))`,
       )).orderBy(asc(chatActions.updatedAt)).limit(limit);
     for (const row of stopped) if (row.deliveryId) await tryAcknowledge(row.deliveryId);
     return stopped.length;
@@ -436,11 +486,25 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
       if (!row || row.result?.final === true) return;
       const attempts = Number(row.result?.attempts ?? 0) + 1;
       const denied = error instanceof Error && "status" in error && error.status === 403;
+      const details = error instanceof HttpError ? error.details as { code?: string; retryable?: boolean } | undefined : undefined;
+      if (row.result?.id && responseCommentDeleted(error)) {
+        // Someone deleted the posted comment. Settle the request without
+        // recreating it, as finishRun does for coalesced requests.
+        await db.transaction(async tx => {
+          await notifyChatResponseAvailability(tx, { companyId: row.companyId, deliveryId });
+          await tx.update(chatActions).set({ status: "cancelled", result: { ...row.result, final: true, code: "response_deleted" },
+            updatedAt: new Date() }).where(and(eq(chatActions.id, row.id), sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`));
+        });
+        return;
+      }
       await db.transaction(async tx => {
         await notifyChatResponseAvailability(tx, { companyId: row.companyId, deliveryId });
         await tx.update(chatActions).set({ status: denied ? "cancelled" : "failed", result: {
-          ...row.result, attempts, retryable: !denied && attempts < 8,
-          retryAt: new Date(Date.now() + Math.min(300000, 1000 * 2 ** attempts)).toISOString(),
+          // Temporary failures (network, rate limit, 5xx) keep retrying with
+          // backoff up to 5 minutes, then hourly. An error GitHub calls
+          // permanent stops after 8 attempts, since retrying cannot fix it.
+          ...row.result, attempts, retryable: !denied && (details?.retryable !== false || attempts < 8),
+          retryAt: new Date(Date.now() + (attempts < 8 ? Math.min(300000, 1000 * 2 ** attempts) : 3_600_000)).toISOString(),
           code: denied ? "authorization_changed" : "acknowledgement_unconfirmed",
         }, updatedAt: new Date() }).where(and(eq(chatActions.id, row.id), sql`coalesce(${chatActions.result}->>'final', 'false') <> 'true'`));
       });

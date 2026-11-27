@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns, plugins, sandboxCreationOperations } from "@paperclipai/db";
-import { resolvePluginTaskResume } from "../services/environment-task-runtime.js";
+import { isConfirmedStoppedUnavailablePluginCheckpoint, resolvePluginTaskResume } from "../services/environment-task-runtime.js";
 import type { PluginTaskResumeRefusal } from "../services/plugin-task-resume.js";
 import { hasBoundRemoteStopReceipt, hasRemoteTerminationReceipt, remoteExecutionHasReleased, remoteExecutionHasStopped,
   remoteTerminationReceipt } from "../services/remote-execution-termination.js";
@@ -255,13 +255,16 @@ databaseSuite("environment task lease authority", () => {
     await db.update(environmentLeases).set({ cleanupStatus: "failed" }).where(eq(environmentLeases.id, oldLeaseId));
     await expect(authorize()).rejects.toThrow(refused("predecessor_not_stopped"));
     await db.update(environmentLeases).set({ cleanupStatus: "success" }).where(eq(environmentLeases.id, oldLeaseId));
-    let sessionStateAvailable = false;
+    let sessionStateAvailable: boolean | undefined = false;
     const operations: string[] = [];
     const call = vi.fn(async (_id: string, _method: string, params: any) => ["read_state", "archive_state"].includes(params.operation.kind)
         ? { kind: "state", taskId: params.taskId, state: { schema: "paperclip.runner.durable.state.v1", lifecycle: "suspended",
             ...(params.operation.identity ?? params.operation.priorIdentity) } }
         : params.operation.kind === "status"
-          ? (operations.push("status"), { kind: "status", taskId: params.taskId, phase: "completed", executionStopped: true, sessionStateAvailable })
+          ? (operations.push("status"), {
+              kind: "status", taskId: params.taskId, phase: "completed", executionStopped: true,
+              ...(sessionStateAvailable !== undefined ? { sessionStateAvailable } : {}),
+            })
         : { kind: "accepted", taskId: params.taskId });
     const workers = { getWorker: () => ({ supportedMethods: ["environmentTask"] }), call } as unknown as PluginWorkerManager;
     const runtime = environmentRuntimeService(db, { pluginWorkerManager: workers });
@@ -290,7 +293,18 @@ databaseSuite("environment task lease authority", () => {
     const inspect = () => runtime.task({ companyId, leaseId: nextLeaseId, operation: {
       kind: "read_state", identity: checkpointIdentity, resumeFrom: "old-task",
     } });
-    await expect(inspect()).rejects.toThrow(refused("checkpoint_status_unconfirmed"));
+    const unconfirmed = await inspect().catch(caught => caught);
+    expect(unconfirmed).toBeInstanceOf(Error);
+    expect(unconfirmed.message).toContain(refused("checkpoint_status_unconfirmed"));
+    expect(unconfirmed.pluginTaskCheckpointStatus).toEqual({ executionStopped: true, sessionStateAvailable: false });
+    expect(isConfirmedStoppedUnavailablePluginCheckpoint(unconfirmed)).toBe(true);
+    sessionStateAvailable = undefined;
+    const unknownAvailability = await inspect().catch(caught => caught);
+    expect(unknownAvailability).toBeInstanceOf(Error);
+    expect(unknownAvailability.message).toContain(refused("checkpoint_status_unconfirmed"));
+    expect(unknownAvailability.pluginTaskCheckpointStatus).toEqual({ executionStopped: true });
+    expect(isConfirmedStoppedUnavailablePluginCheckpoint(unknownAvailability)).toBe(false);
+    sessionStateAvailable = false;
     await expect(authorize()).rejects.toThrow(refused("predecessor_candidate_missing"));
     // Discovery cannot launch, and cannot bypass the original termination receipt.
     await expect(runtime.task({ companyId, leaseId: nextLeaseId, operation: {
@@ -298,11 +312,11 @@ databaseSuite("environment task lease authority", () => {
     } })).rejects.toThrow("resume identity mismatch");
     await db.update(environmentLeases).set({ cleanupStatus: "failed" }).where(eq(environmentLeases.id, oldLeaseId));
     await expect(inspect()).rejects.toThrow(refused("predecessor_not_stopped"));
-    expect(operations).toEqual(["status"]);
+    expect(operations).toEqual(["status", "status"]);
     await db.update(environmentLeases).set({ cleanupStatus: "success" }).where(eq(environmentLeases.id, oldLeaseId));
     sessionStateAvailable = true;
     await expect(inspect()).resolves.toMatchObject({ kind: "state" });
-    expect(operations).toEqual(["status", "status"]);
+    expect(operations).toEqual(["status", "status", "status"]);
     await expect(authorize()).resolves.toBe("old-task");
     for (const operation of [
       { kind: "read_state" as const, identity: checkpointIdentity, resumeFrom: "old-task" },

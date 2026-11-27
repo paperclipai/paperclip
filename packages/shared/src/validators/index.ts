@@ -409,6 +409,7 @@ export {
 
 export {
   createDocumentAnnotationCommentSchema,
+  documentAnnotationCommentReactionSchema,
   createDocumentAnnotationThreadSchema,
   documentAnnotationAnchorConfidenceSchema,
   documentAnnotationAnchorSelectorSchema,
@@ -464,6 +465,7 @@ export {
   issueCommentMetadataSectionSchema,
   issueCommentMetadataSchema,
   addIssueCommentSchema,
+  addIssueSwarmCommentSchema,
   sendChatMessageSchema,
   markIssueReadSchema,
   issueThreadInteractionStatusSchema,
@@ -660,6 +662,14 @@ export {
   updateResponsibilityAreaSchema,
   listResponsibilityAreasQuerySchema,
   responsibilityLinkLookupQuerySchema,
+  fileResponsibilityItemsSchema,
+  unfileResponsibilityItemsSchema,
+  deleteResponsibilityQuerySchema,
+  deleteResponsibilityAreaQuerySchema,
+  RESPONSIBILITY_FILE_ITEM_KINDS,
+  type ResponsibilityFileItemKind,
+  type FileResponsibilityItems,
+  type UnfileResponsibilityItems,
   type CreateResponsibilityArea,
   type UpdateResponsibilityArea,
   type ListResponsibilityAreasQuery,
@@ -700,6 +710,10 @@ export {
 } from "./attention.js";
 
 export {
+  ENV_VAR_NAME_RE,
+  looksLikeCredentialToken,
+  SECRET_SHAPED_ENV_NAME_ERROR,
+  SECRET_SHAPED_ACCESS_ALIAS_ERROR,
   envBindingPlainSchema,
   envBindingSecretRefSchema,
   envBindingUserSecretRefSchema,

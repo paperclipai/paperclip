@@ -70,7 +70,7 @@ export async function runRepositoryContinuation(context: JourneyContext, session
         && run.nativePhase === "committed" && run.resultJson?.finalizationPhase === "committed")
       && state.interactions.every(row => row.status !== "pending"), "repository_task_not_completed");
     // Use the attached target's origin for the common registration/download oracle.
-    const artifactApi = { get: <T>(route: string) => readObserved<T>(route), request: { get: (route: string) => api.response(route) } };
+    const artifactApi = { get: <T>(route: string) => readObserved<T>(route), request: { get: (route: string) => api.response(route, "GET", undefined, { retry: false }) } };
     const bundle = async (name: string, runId: string) => {
       const [artifact] = await readRegisteredArtifacts(artifactApi, created.issueId, runId, [name]);
       const bytes = await api.bytes(`/api/attachments/${artifact!.attachmentId}/content?download=1`);

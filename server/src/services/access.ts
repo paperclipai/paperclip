@@ -30,6 +30,7 @@ import { conflict } from "../errors.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService, type AuthorizationActor, type AuthorizationResource } from "./authorization.js";
 import { ensureHumanRoleDefaultGrants } from "./principal-access-compatibility.js";
+import { deleteGoogleContentWhenAccessEnds } from "./tool-access/connections/google-content-retention.js";
 
 type MembershipRow = typeof companyMemberships.$inferSelect;
 type GrantInput = {
@@ -97,6 +98,7 @@ export function accessService(db: Db) {
     const ownedGrants = await tx.select({
       id: connectionGrants.id,
       connectionId: connectionGrants.connectionId,
+      status: connectionGrants.status,
       credentialSecretRefs: connectionGrants.credentialSecretRefs,
     }).from(connectionGrants).where(and(
       eq(connectionGrants.companyId, companyId),
@@ -293,6 +295,15 @@ export function accessService(db: Db) {
         eq(connectionGrants.companyId, companyId),
         inArray(connectionGrants.id, grantIds),
       ));
+    }
+    const endedConnectionIds = [...new Set(ownedGrants.filter((grant) => grant.status !== "revoked").map((grant) => grant.connectionId))];
+    if (endedConnectionIds.length > 0) {
+      const ended = await tx.select({ id: toolConnections.id, companyId: toolConnections.companyId, config: toolConnections.config })
+        .from(toolConnections)
+        .where(and(eq(toolConnections.companyId, companyId), inArray(toolConnections.id, endedConnectionIds)));
+      for (const connection of ended) {
+        await deleteGoogleContentWhenAccessEnds(tx as unknown as Db, connection, "member_removed");
+      }
     }
     if (ownedSecretIds.length > 0) {
       for (const grant of grantRefs) {

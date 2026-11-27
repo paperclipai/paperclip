@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { constants, createReadStream, createWriteStream, promises as fs } from "node:fs";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
+import { setTimeout as delay } from "node:timers/promises";
 import { and, eq, getTableColumns, inArray, sql } from "drizzle-orm";
 import { companySkillRepositorySnapshots as snapshots, companySkillVersions, companySkillSources, withDedicatedDbConnection, type Db, type SkillPackageFileMapping, type SkillPackageStorageReceipt, type SkillPackageRestoreRecipe } from "@paperclipai/db";
 import type { CompanySkillVersionFileInventoryEntry } from "@paperclipai/shared";
@@ -104,23 +105,29 @@ const inventoryIo: PackageIoQueue = { active: 0, waiting: [] };
 export function skillPackageStorageIoDepth() {
   return { active: storageIo.active, waiting: storageIo.waiting.length };
 }
-async function withPackageIo<T>(action: () => Promise<T>, signal: AbortSignal, queue = storageIo): Promise<T> {
-  signal.throwIfAborted();
+const PACKAGE_IO_DEADLINE_MS = 180_000;
+async function withPackageIo<T>(action: (signal: AbortSignal) => Promise<T>, cancellation: AbortSignal | undefined,
+  queue = storageIo, deadlineMs: number | null = null): Promise<T> {
+  cancellation?.throwIfAborted();
   if (queue.active >= 2) {
     if (queue.waiting.length >= 32) throw conflict("Skill package storage is busy; retry shortly.");
     await new Promise<void>((resolve, reject) => {
-      const ready = () => { signal.removeEventListener("abort", aborted); resolve(); };
+      const ready = () => { cancellation?.removeEventListener("abort", aborted); resolve(); };
       const aborted = () => {
         const index = queue.waiting.indexOf(ready);
         if (index >= 0) queue.waiting.splice(index, 1);
-        reject(signal.reason);
+        reject(cancellation!.reason);
       };
       queue.waiting.push(ready);
-      signal.addEventListener("abort", aborted, { once: true });
+      cancellation?.addEventListener("abort", aborted, { once: true });
     });
   } else queue.active++;
-  try { signal.throwIfAborted(); return await action(); }
-  finally { const next = queue.waiting.shift(); if (next) next(); else queue.active--; }
+  try {
+    cancellation?.throwIfAborted();
+    const deadline = deadlineMs === null ? null : AbortSignal.timeout(deadlineMs);
+    const signal = deadline && cancellation ? AbortSignal.any([cancellation, deadline]) : deadline ?? cancellation ?? new AbortController().signal;
+    return await action(signal);
+  } finally { const next = queue.waiting.shift(); if (next) next(); else queue.active--; }
 }
 const manifests = new Map<string, { manifest: SkillPackageManifest; bytes: number }>();
 let manifestBytes = 0;
@@ -249,8 +256,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     const key = `${paths.manifest}:${row.storage?.manifestSha256 ?? row.contentHash}`;
     const cached = manifests.get(key);
     if (cached) return cached.manifest;
-    const load = async (sharedSignal: AbortSignal) => {
-      const signal = AbortSignal.any([sharedSignal, AbortSignal.timeout(180_000)]);
+    const load = async (signal: AbortSignal) => {
       await ensureSkillCacheDirectory(paths.parent, true);
       // Legacy manifests have no independently stored checksum. Derive them once
       // per process from the authoritative row until the operator migrates it.
@@ -270,8 +276,8 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
         if (!bytes || packageSha256(bytes) !== row.storage.manifestSha256) {
           try {
             if (row.storage.provider !== storage().provider) throw new Error("Skill package storage provider changed");
-            bytes = await withPackageIo(() => readBoundedObject(storage(), row.companyId, row.storage!.manifestKey,
-              row.storage!.manifestBytes, row.storage!.manifestSha256, signal), signal);
+            bytes = await withPackageIo(io => readBoundedObject(storage(), row.companyId, row.storage!.manifestKey,
+              row.storage!.manifestBytes, row.storage!.manifestSha256, io), signal, storageIo, PACKAGE_IO_DEADLINE_MS);
           } catch (error) {
             signal.throwIfAborted();
             const saved = await withPackageIo(() => withDedicatedDbConnection(cacheOwner, async database => {
@@ -348,29 +354,29 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
   // Archive reads and verification own private scratch space outside the warm
   // preparation lock. Administrative reads briefly try that lock to publish.
   async function withIsolatedPackage<T>(companyId: string, id: string,
-    consume: (root: string, manifest: SkillPackageManifest) => Promise<T>, allowRecovery = true, cancellation?: AbortSignal, cacheRead = false) {
-    const signal = cancellation ? AbortSignal.any([cancellation, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000);
-    signal.throwIfAborted();
+    consume: (root: string, manifest: SkillPackageManifest, signal: AbortSignal) => Promise<T>, allowRecovery = true, cancellation?: AbortSignal, cacheRead = false) {
+    cancellation?.throwIfAborted();
     // Preserve the caller's transaction view before taking an I/O permit. All
     // later SQL uses a private connection, so a queued transaction cannot hold
     // the ordinary pool connection needed by an active cold response.
     const row = await descriptor(companyId, id);
-    const manifest = await manifestFor(row, signal);
-    const read = () => readIsolatedPackage(row, manifest, consume, allowRecovery, signal, cacheRead);
-    return cacheRead ? withPackageIo(read, signal, coldResponses) : read();
+    const manifest = await manifestFor(row, cancellation);
+    const read = () => readIsolatedPackage(row, manifest, consume, allowRecovery, cancellation, cacheRead);
+    return cacheRead ? withPackageIo(read, cancellation, coldResponses) : read();
   }
   async function readIsolatedPackage<T>(row: Descriptor, manifest: SkillPackageManifest,
-    consume: (root: string, manifest: SkillPackageManifest) => Promise<T>, allowRecovery: boolean, signal: AbortSignal, cacheRead: boolean) {
+    consume: (root: string, manifest: SkillPackageManifest, signal: AbortSignal) => Promise<T>, allowRecovery: boolean,
+    cancellation: AbortSignal | undefined, cacheRead: boolean) {
     const { companyId, id } = row;
     let published = false;
-    const result = await withPackageIo(() => withDedicatedDbConnection(cacheOwner, async database => {
+    const result = await withPackageIo(signal => withDedicatedDbConnection(cacheOwner, async database => {
       const parent = skillPackagePaths(companyId, id).parent;
       await ensureSkillCacheDirectory(parent, true);
       const staging = await fs.mkdtemp(path.join(parent, ".verify-"));
       const archive = `${staging}.tar.gz`;
       try {
         await restoreInto(row, manifest, staging, archive, signal, allowRecovery, database);
-        const result = await consume(staging, manifest);
+        const result = await consume(staging, manifest, signal);
         if (cacheRead) {
           // Network, extraction, hashing and response reads all happen before
           // this short publication lock. Busy preparation keeps its priority.
@@ -392,7 +398,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
         }
         return result;
       } finally { await fs.rm(staging, { recursive: true, force: true }); await fs.rm(archive, { force: true }); }
-    }, { admitWithoutWaiting: true }), signal);
+    }, { admitWithoutWaiting: true }), cancellation, storageIo, PACKAGE_IO_DEADLINE_MS);
     if (published) await withDedicatedDbConnection(cacheOwner, async database => {
       // Verify possible eviction candidates outside both the preparation lock
       // and the storage slot used for this fill; take the lock only to remove.
@@ -402,9 +408,9 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
         async remove => {
           try { await withSkillVersionCacheLock(cacheOwner, companyId, remove, true); }
           catch (error) { if (!(error instanceof SkillCacheBusy)) throw error; }
-        }, signal);
+        }, cancellation);
     }, { admitWithoutWaiting: cacheRead });
-    signal.throwIfAborted();
+    cancellation?.throwIfAborted();
     return result;
   }
   async function materialize(row: Descriptor, manifest: SkillPackageManifest) {
@@ -412,8 +418,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     return flight(db, `files:${paths.directory}`, async () => {
       await ensureSkillCacheDirectory(paths.parent, true);
       if (await verifySkillPackageDirectory(paths.directory, manifest.files)) return { directory: paths.directory, created: false };
-      const signal = AbortSignal.timeout(180_000);
-      return withPackageIo(async () => {
+      return withPackageIo(async signal => {
         const staging = await fs.mkdtemp(path.join(paths.parent, ".package-"));
         const archivePath = `${staging}.tar.gz`;
         try {
@@ -424,7 +429,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
           relocateSkillPackageVerification(staging, paths.directory, manifest.files);
           return { directory: paths.directory, created: true };
         } finally { await fs.rm(staging, { recursive: true, force: true }); await fs.rm(archivePath, { force: true }); }
-      }, signal);
+      }, undefined, storageIo, PACKAGE_IO_DEADLINE_MS);
     });
   }
   async function withPackage<T>(companyId: string, id: string, consume: (root: string, manifest: SkillPackageManifest) => Promise<T>) {
@@ -446,6 +451,24 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
       return result;
     });
   }
+  async function expireFailedUpload(companyId: string, id: string, token: string) {
+    const deadline = performance.now() + 1_000;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        db.transaction(async tx => {
+          if (performance.now() >= deadline) return;
+          const remainingMs = Math.max(1, Math.floor(deadline - performance.now()));
+          await tx.execute(sql`select set_config('statement_timeout', ${`${remainingMs}ms`}, true)`);
+          if (performance.now() >= deadline) return;
+          await tx.update(snapshots).set({ upload: sql`jsonb_set(${snapshots.upload}, '{expiresAt}', to_jsonb(now()))` })
+            .where(and(scope(companyId, id), sql`${snapshots.storage} is null`, sql`${snapshots.upload}->>'token' = ${token}`));
+        }),
+        new Promise<void>(resolve => { timer = setTimeout(resolve, 1_000); }),
+      ]);
+    } catch {
+    } finally { clearTimeout(timer); }
+  }
   async function prepare(companyId: string, files: CompanySkillVersionFileInventoryEntry[], migrateLegacy = false, cancellation?: AbortSignal, restore?: SkillPackageRestoreRecipe): Promise<string> {
     cancellation?.throwIfAborted();
     const manifest = skillPackageManifest(files);
@@ -461,7 +484,8 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
           migrationAt: null, maintenanceAt: new Date(Date.now() + 24 * 60 * 60_000) }).onConflictDoNothing().returning(descriptorColumns);
       });
       let existing = created ?? (await db.select(descriptorColumns).from(snapshots).where(and(eq(snapshots.companyId, companyId), eq(snapshots.contentHash, manifest.contentHash))))[0]!;
-      if (!created) {
+      while (!created) {
+        signal.throwIfAborted();
         if (existing.storage || (!existing.upload && !migrateLegacy && !existing.restorable)) {
           // Content deduplication must not attach a recipe with different kind or
           // encoding metadata to an already published manifest.
@@ -476,8 +500,12 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
         const [claimed] = await db.update(snapshots).set({ upload }).where(and(scope(companyId, existing.id),
           sql`${snapshots.storage} is null`,
           sql`(${snapshots.upload} is null or (${snapshots.upload}->>'expiresAt')::timestamptz <= now())`)).returning(descriptorColumns);
-        if (!claimed) throw conflict("This skill package is being saved. Retry after its upload settles.");
-        existing = claimed;
+        if (claimed) { existing = claimed; break; }
+        try { await delay(250, undefined, { signal }); }
+        catch (error) { signal.throwIfAborted(); throw error; }
+        const [current] = await db.select(descriptorColumns).from(snapshots).where(scope(companyId, existing.id));
+        if (!current) throw notFound("Skill package was removed during preparation");
+        existing = current;
       }
       return withPackageIo(async () => {
         const root = skillPackagePaths(companyId, existing.id).parent;
@@ -490,7 +518,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
         try {
           const archive = await writeSkillPackageArchive(archivePath, files, signal);
           await backend.putFile({ companyId, namespace: "skill-packages", objectKey: upload.archiveKey, originalFilename: "files.tar.gz",
-            contentType: "application/gzip", body: createReadStream(archivePath), byteSize: archive.bytes, sha256: archive.sha256, signal });
+            contentType: "application/gzip", body: createReadStream(archivePath), byteSize: archive.bytes, sha256: archive.sha256, sourceFile: archivePath, signal });
           await backend.putFile({ companyId, namespace: "skill-packages", objectKey: upload.manifestKey, originalFilename: "manifest.json",
             contentType: "application/json", body: manifestBuffer, signal });
           const receipt: SkillPackageStorageReceipt = { format: "tar-gzip-v1", provider: backend.provider, ...(!restore ? { durable: true } : {}),
@@ -517,11 +545,12 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
           if (!saved) throw conflict("Skill package upload ownership changed");
           return saved.id;
         } finally {
-          // Failed/ambiguous uploads retain their durable claim. Maintenance reconciles
-          // exact owned keys; never delete a successful object on an uncertain SQL result.
           await fs.rm(staging, { recursive: true, force: true });
         }
-      }, signal);
+      }, signal).catch(async error => {
+        await expireFailedUpload(companyId, existing.id, token);
+        throw error;
+      });
     });
     {
       const [retained] = await db.update(snapshots).set({ maintenanceAt: new Date(Date.now() + 24 * 60 * 60_000),
@@ -553,8 +582,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
         if (!row.storage) return validate ? withIsolatedPackage(companyId, id, validate, false, cancellation) : true;
       }
       if (row.storage.provider !== storage().provider) throw new Error("Skill package storage provider changed; migrate its objects before switching storage");
-      const signal = cancellation ? AbortSignal.any([cancellation, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000);
-      return withPackageIo(async () => {
+      return withPackageIo(async signal => {
         const receipt = row.storage!;
         const bytes = await readBoundedObject(storage(), companyId, receipt.manifestKey, receipt.manifestBytes, receipt.manifestSha256, signal);
         const manifest = validateSkillPackageManifest(JSON.parse(bytes.toString("utf8")));
@@ -574,7 +602,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
           await extractSkillPackageArchive(archive, restored, manifest, signal);
           return validate ? await validate(restored, manifest) : true;
         } finally { await fs.rm(staging, { recursive: true, force: true }); }
-      }, signal);
+      }, cancellation, storageIo, PACKAGE_IO_DEADLINE_MS);
     };
     const context = readScope.getStore();
     const key = `${companyId}:${id}`;
@@ -603,17 +631,16 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     } finally { await handle.close(); }
   }
   async function versionFiles(version: StoredSkillVersion, allowRecovery = true, cancellation?: AbortSignal): Promise<CompanySkillVersionFileInventoryEntry[]> {
-    const signal = cancellation ? AbortSignal.any([cancellation, AbortSignal.timeout(180_000)]) : AbortSignal.timeout(180_000);
-    signal.throwIfAborted();
+    cancellation?.throwIfAborted();
     if (!version.packageSnapshotId) {
       const [row] = await db.select({ ...skillVersionMetadataColumns, files: companySkillVersions.fileInventory }).from(companySkillVersions).where(and(
         eq(companySkillVersions.companyId, version.companyId), eq(companySkillVersions.id, version.id)));
-      if (row?.packageSnapshotId) return versionFiles(row, allowRecovery, signal);
+      if (row?.packageSnapshotId) return versionFiles(row, allowRecovery, cancellation);
       return row?.files ?? [];
     }
     const id = version.packageSnapshotId;
-    const manifest = await manifestFor(await descriptor(version.companyId, id), signal);
-    const read = async (root: string) => {
+    const manifest = await manifestFor(await descriptor(version.companyId, id), cancellation);
+    const read = async (root: string, signal: AbortSignal) => {
       const byPath = new Map(manifest.files.map(file => [file.path, file]));
       const result: CompanySkillVersionFileInventoryEntry[] = [];
       for (const mapping of version.packageFileMap ?? manifest.files.map(file => ({ ...file, sourcePath: file.path }))) {
@@ -631,15 +658,15 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     // Verify bytes as they are read, without holding the warm preparation lock.
     // A descriptor survives eviction; a missing/racing file falls back to storage.
     const root = skillPackagePaths(version.companyId, id).directory;
-    const result = await withPackageIo(() => read(root).catch(() => null), signal, inventoryIo);
+    const result = await withPackageIo(signal => read(root, signal).catch(() => null), cancellation, inventoryIo, PACKAGE_IO_DEADLINE_MS);
     if (result) {
       touchSkillPackage(root);
       return result;
     }
-    signal.throwIfAborted();
+    cancellation?.throwIfAborted();
     const acquire = async () => {
-      const cached = await withPackageIo(() => read(root).catch(() => null), signal, inventoryIo);
-      return cached ?? withIsolatedPackage(version.companyId, id, read, allowRecovery, signal, true);
+      const cached = await withPackageIo(signal => read(root, signal).catch(() => null), cancellation, inventoryIo, PACKAGE_IO_DEADLINE_MS);
+      return cached ?? withIsolatedPackage(version.companyId, id, (root, _manifest, signal) => read(root, signal), allowRecovery, cancellation, true);
     };
     return cancellation ? acquire() : flight(db, `version-read:${version.companyId}:${version.id}:${allowRecovery}`, acquire);
   }
@@ -664,8 +691,7 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     const entry = manifest.files.find(file => file.path === (mapping?.sourcePath ?? relativePath));
     if (!entry) return undefined;
     assertSkillPackageFileSize(entry.size, maxBytes);
-    const signal = AbortSignal.timeout(180_000);
-    const read = async (root: string) => {
+    const read = async (root: string, signal: AbortSignal) => {
       const bytes = await readPackageFile(root, entry, signal);
       const encoding = mapping?.encoding ?? entry.encoding;
       return { path: relativePath, kind: mapping?.kind ?? entry.kind, content: bytes.toString(encoding),
@@ -673,13 +699,13 @@ export function skillPackageStore(db: Db, suppliedStorage?: StorageService, cach
     };
     // Immutable cache files can be read without the preparation lock. An open
     // descriptor survives eviction; missing/racing files fall back to storage.
-    const cached = await withPackageIo(() => read(skillPackagePaths(version.companyId, id).directory).catch(() => null), signal, inventoryIo);
+    const directory = skillPackagePaths(version.companyId, id).directory;
+    const cached = await withPackageIo(signal => read(directory, signal).catch(() => null), undefined, inventoryIo, PACKAGE_IO_DEADLINE_MS);
     if (cached) return cached;
-    signal.throwIfAborted();
     return flight(db, `file-read:${version.companyId}:${version.id}:${relativePath}:${allowRecovery}`,
       async () => {
-        const cached = await withPackageIo(() => read(skillPackagePaths(version.companyId, id).directory).catch(() => null), signal, inventoryIo);
-        return cached ?? withIsolatedPackage(version.companyId, id, read, allowRecovery, signal, true);
+        const cached = await withPackageIo(signal => read(directory, signal).catch(() => null), undefined, inventoryIo, PACKAGE_IO_DEADLINE_MS);
+        return cached ?? withIsolatedPackage(version.companyId, id, (root, _manifest, signal) => read(root, signal), allowRecovery, undefined, true);
       });
   }
   async function versionInventory(version: StoredSkillVersion): Promise<Array<{ path: string; kind: CompanySkillVersionFileInventoryEntry["kind"] }>> {

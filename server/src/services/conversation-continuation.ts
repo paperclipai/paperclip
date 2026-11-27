@@ -1,3 +1,4 @@
+import { hasHermesGatewayTerminalStopProof } from "@paperclipai/hermes-paperclip-adapter/gateway/server";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { and, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, type Db } from "@paperclipai/db";
@@ -5,15 +6,30 @@ import { canonicalExecutionUuid } from "./execution-identity.js";
 import { readProcessStartedAt } from "./hot-restart.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 
-// These adapters accept a conversation turn. Retrying a process or webhook can
-// replay the action itself, so those adapters retain their recovery contract.
-export const CONVERSATION_ADAPTER_TYPES = [
+const LOCAL_CONVERSATION_ADAPTER_TYPES = [
   "claude_local", "codex_local", "cursor", "gemini_local", "opencode_local",
   "pi_local", "grok_local", "kimi_local", "hermes_local",
 ] as const;
 
+// These adapters accept a conversation turn. Retrying a process or webhook can
+// replay the action itself, so those adapters retain their recovery contract.
+export const CONVERSATION_ADAPTER_TYPES = [
+  ...LOCAL_CONVERSATION_ADAPTER_TYPES,
+  "hermes_gateway",
+] as const;
+
 export function isConversationAdapter(adapterType: string): boolean {
   return (CONVERSATION_ADAPTER_TYPES as readonly string[]).includes(adapterType);
+}
+
+/** Remote hermes_gateway runs have no local host PID; require adapter-confirmed stop proof. */
+export function isConversationContinuationEligible(
+  adapterType: string,
+  resultJson: Record<string, unknown> | null | undefined,
+): boolean {
+  if (!isConversationAdapter(adapterType)) return false;
+  if (adapterType === "hermes_gateway") return hasHermesGatewayTerminalStopProof(resultJson);
+  return true;
 }
 
 export const CONVERSATION_CONTINUATION_POLICY = "continue_conversation_v1";
@@ -30,14 +46,14 @@ export function claimedAdapterType(run: Pick<typeof heartbeatRuns.$inferSelect, 
 
 function conversationRunPredicate() {
   return or(
-    inArray(sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType'`, [...CONVERSATION_ADAPTER_TYPES]),
+    inArray(sql`${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType'`, [...LOCAL_CONVERSATION_ADAPTER_TYPES]),
     sql`${heartbeatRuns.resultJson}->>'conversationContinuation' = ${CONVERSATION_CONTINUATION_POLICY}`,
     sql`exists (
       select 1 from ${heartbeatRunEvents}
       where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId}
         and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id}
         and ${heartbeatRunEvents.eventType} = 'adapter.invoke'
-        and ${inArray(sql`${heartbeatRunEvents.payload}->>'adapterType'`, [...CONVERSATION_ADAPTER_TYPES])}
+        and ${inArray(sql`${heartbeatRunEvents.payload}->>'adapterType'`, [...LOCAL_CONVERSATION_ADAPTER_TYPES])}
     )`,
   );
 }
@@ -57,8 +73,9 @@ export async function historicalAdapterType(db: Db, run: Pick<typeof heartbeatRu
 
 export async function runUsedConversationAdapter(db: Db, run: typeof heartbeatRuns.$inferSelect): Promise<boolean> {
   if (run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive" || hasRequiredWorkspaceRecovery(run.resultJson)) return false;
-  if (hasConversationContinuationPolicy(run.resultJson)) return true;
   const adapterType = await historicalAdapterType(db, run);
+  if (adapterType === "hermes_gateway") return hasHermesGatewayTerminalStopProof(run.resultJson);
+  if (hasConversationContinuationPolicy(run.resultJson)) return true;
   return adapterType !== null && isConversationAdapter(adapterType);
 }
 

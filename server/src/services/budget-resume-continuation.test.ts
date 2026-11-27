@@ -13,6 +13,7 @@ import {
 import {
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase,
 } from "../__tests__/helpers/embedded-postgres.js";
+import { uniqueIssuePrefix } from "../__tests__/helpers/issue-prefix.js";
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
 vi.mock("./activity-log.js", async (importOriginal) => ({
@@ -41,7 +42,7 @@ describe.skipIf(!support.supported)("resuming after a budget hard stop", () => {
 
   async function seedScope(label: string, scopeType: "company" | "agent" = "company") {
     const [company] = await db.insert(companies).values({ name: `Budget ${label}`,
-      issuePrefix: `B${randomUUID().slice(0, 4).toUpperCase()}` }).returning();
+      issuePrefix: uniqueIssuePrefix("B") }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Worker" }).returning();
     const scopeId = scopeType === "agent" ? agent.id : company.id;
     const [policy] = await db.insert(budgetPolicies).values({ companyId: company.id, scopeType,

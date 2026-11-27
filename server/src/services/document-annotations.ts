@@ -1,29 +1,42 @@
-import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
+import { and, asc, desc, eq, gte, inArray, isNull, sql } from "drizzle-orm";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import type { Db } from "@paperclipai/db";
 import {
+  agentWakeupRequests,
   documentAnnotationAnchorSnapshots,
+  documentAnnotationCommentReactions,
   documentAnnotationComments,
   documentAnnotationThreads,
   documents,
   caseDocuments,
   issueComments,
   issueDocuments,
+  issues,
   routineDocuments,
 } from "@paperclipai/db";
+import { notifyDeferredExecutionWork } from "./deferred-execution-notifications.js";
+import { deferredWorkIntentWait } from "./work-intent-outbox.js";
 import {
   anchorSnapshotToSelector,
   remapDocumentAnchor,
   selectorToAnchorSnapshot,
   verifyDocumentAnchorSelector,
   type DocumentAnnotationAnchorSnapshot,
+  DOCUMENT_ANNOTATION_COMMENT_REACTIONS,
   type DocumentAnnotationComment,
+  type DocumentAnnotationCommentReactionName,
+  type DocumentAnnotationCommentReactionSummary,
   type DocumentAnnotationThread,
   CreateDocumentAnnotationComment,
   CreateDocumentAnnotationThread,
   UpdateDocumentAnnotationThread,
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+
+const ANNOTATION_QUESTION_WAKE_WINDOW_MS = 10 * 60 * 1000;
+const ANNOTATION_QUESTION_WAKE_MAX_PER_WINDOW = 3;
+const ANNOTATION_QUESTION_REACTION_KEY_PREFIX = "annotation-question-reaction:";
 
 type ActorInput = {
   actorType: "agent" | "user";
@@ -32,6 +45,19 @@ type ActorInput = {
   userId?: string | null;
   runId?: string | null;
 };
+
+type ReactionViewer = { actorType: "agent" | "user"; actorId: string } | null | undefined;
+
+type ListThreadOptions = {
+  status?: "open" | "resolved" | "all";
+  includeComments?: boolean;
+  viewer?: ReactionViewer;
+};
+
+export type DocumentAnnotationReactionTarget =
+  | { kind: "issue"; issueId: string; key: string }
+  | { kind: "routine"; routineId: string; key: string }
+  | { kind: "case"; caseId: string; key: string };
 
 type IssueDocumentRow = {
   issueId: string;
@@ -252,13 +278,91 @@ export function documentAnnotationService(db: Db) {
       .then((rows: DocumentAnnotationThread[]) => rows[0] ?? null);
   }
 
-  async function commentsForThreads(threadIds: string[], dbOrTx: any = db): Promise<DocumentAnnotationComment[]> {
+  async function reactionsForComments(
+    commentIds: string[],
+    viewer: ReactionViewer,
+    dbOrTx: any = db,
+  ): Promise<Map<string, DocumentAnnotationCommentReactionSummary[]>> {
+    const byComment = new Map<string, DocumentAnnotationCommentReactionSummary[]>();
+    if (commentIds.length === 0) return byComment;
+    const rows: Array<{
+      commentId: string;
+      reaction: DocumentAnnotationCommentReactionName;
+      actorType: "agent" | "user";
+      actorId: string;
+    }> = await dbOrTx
+      .select({
+        commentId: documentAnnotationCommentReactions.commentId,
+        reaction: documentAnnotationCommentReactions.reaction,
+        actorType: documentAnnotationCommentReactions.actorType,
+        actorId: documentAnnotationCommentReactions.actorId,
+      })
+      .from(documentAnnotationCommentReactions)
+      .where(and(
+        inArray(documentAnnotationCommentReactions.commentId, commentIds),
+        isNull(documentAnnotationCommentReactions.removedAt),
+      ))
+      .orderBy(asc(documentAnnotationCommentReactions.createdAt), asc(documentAnnotationCommentReactions.id));
+    const grouped = new Map<string, Map<DocumentAnnotationCommentReactionName, DocumentAnnotationCommentReactionSummary>>();
+    for (const row of rows) {
+      const perComment = grouped.get(row.commentId) ?? new Map();
+      grouped.set(row.commentId, perComment);
+      const summary = perComment.get(row.reaction) ?? { reaction: row.reaction, count: 0, reactedByMe: false, actors: [] };
+      perComment.set(row.reaction, summary);
+      summary.count += 1;
+      summary.actors.push({
+        actorType: row.actorType,
+        agentId: row.actorType === "agent" ? row.actorId : null,
+        userId: row.actorType === "user" ? row.actorId : null,
+      });
+      if (viewer && viewer.actorType === row.actorType && viewer.actorId === row.actorId) summary.reactedByMe = true;
+    }
+    for (const [commentId, perComment] of grouped) {
+      byComment.set(
+        commentId,
+        DOCUMENT_ANNOTATION_COMMENT_REACTIONS.flatMap((reaction) => perComment.get(reaction) ?? []),
+      );
+    }
+    return byComment;
+  }
+
+  async function withReactions(
+    comments: DocumentAnnotationComment[],
+    viewer: ReactionViewer,
+    dbOrTx: any = db,
+  ): Promise<DocumentAnnotationComment[]> {
+    const reactions = await reactionsForComments(comments.map((comment) => comment.id), viewer, dbOrTx);
+    return comments.map((comment) => ({ ...comment, reactions: reactions.get(comment.id) ?? [] }));
+  }
+
+  async function commentsForThreads(
+    threadIds: string[],
+    dbOrTx: any = db,
+    viewer?: ReactionViewer,
+  ): Promise<DocumentAnnotationComment[]> {
     if (threadIds.length === 0) return [];
-    return dbOrTx
+    const comments: DocumentAnnotationComment[] = await dbOrTx
       .select(commentSelect)
       .from(documentAnnotationComments)
       .where(inArray(documentAnnotationComments.threadId, threadIds))
       .orderBy(asc(documentAnnotationComments.createdAt), asc(documentAnnotationComments.id));
+    return withReactions(comments, viewer, dbOrTx);
+  }
+
+  async function getThreadForReactionTarget(
+    target: DocumentAnnotationReactionTarget,
+    threadId: string,
+    dbOrTx: any,
+  ): Promise<DocumentAnnotationThread | null> {
+    if (target.kind === "issue") return getThreadForIssue(target.issueId, target.key, threadId, dbOrTx);
+    if (target.kind === "routine") {
+      const doc = await getRoutineDocument(target.routineId, target.key, dbOrTx);
+      if (!doc) throw notFound("Document not found");
+      return getThreadForRoutine(target.routineId, target.key, threadId, doc.companyId, doc.documentId, dbOrTx);
+    }
+    const doc = await getCaseDocument(target.caseId, target.key, dbOrTx);
+    if (!doc) throw notFound("Document not found");
+    return getThreadForCase(target.caseId, target.key, threadId, doc.companyId, doc.documentId, dbOrTx);
   }
 
   async function assertLinkedIssueComment(
@@ -286,7 +390,7 @@ export function documentAnnotationService(db: Db) {
     listThreadsForIssueDocument: async (
       issueId: string,
       key: string,
-      options: { status?: "open" | "resolved" | "all"; includeComments?: boolean } = {},
+      options: ListThreadOptions = {},
     ) => {
       const doc = await getIssueDocument(issueId, key);
       if (!doc) throw notFound("Document not found");
@@ -303,7 +407,7 @@ export function documentAnnotationService(db: Db) {
         .where(and(...conditions))
         .orderBy(desc(documentAnnotationThreads.updatedAt), desc(documentAnnotationThreads.id));
       if (!options.includeComments) return threads;
-      const comments = await commentsForThreads(threads.map((thread) => thread.id));
+      const comments = await commentsForThreads(threads.map((thread) => thread.id), db, options.viewer);
       const commentsByThread = new Map<string, DocumentAnnotationComment[]>();
       for (const comment of comments) {
         const existing = commentsByThread.get(comment.threadId) ?? [];
@@ -319,7 +423,7 @@ export function documentAnnotationService(db: Db) {
     listThreadsForRoutineDocument: async (
       routineId: string,
       key: string,
-      options: { status?: "open" | "resolved" | "all"; includeComments?: boolean } = {},
+      options: ListThreadOptions = {},
     ) => {
       const doc = await getRoutineDocument(routineId, key);
       if (!doc) throw notFound("Document not found");
@@ -337,7 +441,7 @@ export function documentAnnotationService(db: Db) {
         .where(and(...conditions))
         .orderBy(desc(documentAnnotationThreads.updatedAt), desc(documentAnnotationThreads.id));
       if (!options.includeComments) return threads;
-      const comments = await commentsForThreads(threads.map((thread) => thread.id));
+      const comments = await commentsForThreads(threads.map((thread) => thread.id), db, options.viewer);
       const commentsByThread = new Map<string, DocumentAnnotationComment[]>();
       for (const comment of comments) {
         const existing = commentsByThread.get(comment.threadId) ?? [];
@@ -353,7 +457,7 @@ export function documentAnnotationService(db: Db) {
     listThreadsForCaseDocument: async (
       caseId: string,
       key: string,
-      options: { status?: "open" | "resolved" | "all"; includeComments?: boolean } = {},
+      options: ListThreadOptions = {},
     ) => {
       const doc = await getCaseDocument(caseId, key);
       if (!doc) throw notFound("Document not found");
@@ -371,7 +475,7 @@ export function documentAnnotationService(db: Db) {
         .where(and(...conditions))
         .orderBy(desc(documentAnnotationThreads.updatedAt), desc(documentAnnotationThreads.id));
       if (!options.includeComments) return threads;
-      const comments = await commentsForThreads(threads.map((thread) => thread.id));
+      const comments = await commentsForThreads(threads.map((thread) => thread.id), db, options.viewer);
       const commentsByThread = new Map<string, DocumentAnnotationComment[]>();
       for (const comment of comments) {
         const existing = commentsByThread.get(comment.threadId) ?? [];
@@ -384,28 +488,28 @@ export function documentAnnotationService(db: Db) {
       }));
     },
 
-    getThreadForIssueDocument: async (issueId: string, key: string, threadId: string) => {
+    getThreadForIssueDocument: async (issueId: string, key: string, threadId: string, viewer?: ReactionViewer) => {
       const thread = await getThreadForIssue(issueId, key, threadId);
       if (!thread) return null;
-      const comments = await commentsForThreads([thread.id]);
+      const comments = await commentsForThreads([thread.id], db, viewer);
       return { ...thread, comments };
     },
 
-    getThreadForRoutineDocument: async (routineId: string, key: string, threadId: string) => {
+    getThreadForRoutineDocument: async (routineId: string, key: string, threadId: string, viewer?: ReactionViewer) => {
       const doc = await getRoutineDocument(routineId, key);
       if (!doc) return null;
       const thread = await getThreadForRoutine(routineId, key, threadId, doc.companyId, doc.documentId);
       if (!thread) return null;
-      const comments = await commentsForThreads([thread.id]);
+      const comments = await commentsForThreads([thread.id], db, viewer);
       return { ...thread, comments };
     },
 
-    getThreadForCaseDocument: async (caseId: string, key: string, threadId: string) => {
+    getThreadForCaseDocument: async (caseId: string, key: string, threadId: string, viewer?: ReactionViewer) => {
       const doc = await getCaseDocument(caseId, key);
       if (!doc) return null;
       const thread = await getThreadForCase(caseId, key, threadId, doc.companyId, doc.documentId);
       if (!thread) return null;
-      const comments = await commentsForThreads([thread.id]);
+      const comments = await commentsForThreads([thread.id], db, viewer);
       return { ...thread, comments };
     },
 
@@ -786,6 +890,183 @@ export function documentAnnotationService(db: Db) {
         .set({ updatedAt: now })
         .where(eq(documentAnnotationThreads.id, thread.id));
       return comment;
+    }),
+
+    setCommentReaction: async (input: {
+      target: DocumentAnnotationReactionTarget;
+      threadId: string;
+      commentId: string;
+      reaction: DocumentAnnotationCommentReactionName;
+      present: boolean;
+      actor: ActorInput;
+    }) => db.transaction(async (tx) => {
+      const thread = await getThreadForReactionTarget(input.target, input.threadId, tx);
+      if (!thread) throw notFound("Annotation thread not found");
+      if (input.target.kind === "issue") {
+        await assertAgentInteraction(tx, { companyId: thread.companyId, actorAgentId: input.actor.agentId,
+          operation: "comment", issueId: input.target.issueId, texts: [], lock: true });
+      }
+      const [comment]: DocumentAnnotationComment[] = await tx
+        .select(commentSelect)
+        .from(documentAnnotationComments)
+        .where(and(
+          eq(documentAnnotationComments.id, input.commentId),
+          eq(documentAnnotationComments.threadId, thread.id),
+          eq(documentAnnotationComments.companyId, thread.companyId),
+        ));
+      if (!comment) throw notFound("Annotation comment not found");
+
+      const changedRows: Array<{ id: string; firstAdd: boolean }> = input.present
+        ? await tx
+          .insert(documentAnnotationCommentReactions)
+          .values({
+            companyId: thread.companyId,
+            commentId: comment.id,
+            reaction: input.reaction,
+            actorType: input.actor.actorType,
+            actorId: input.actor.actorId,
+          })
+          .onConflictDoUpdate({
+            target: [
+              documentAnnotationCommentReactions.commentId,
+              documentAnnotationCommentReactions.reaction,
+              documentAnnotationCommentReactions.actorType,
+              documentAnnotationCommentReactions.actorId,
+            ],
+            set: { removedAt: null },
+            setWhere: sql`${documentAnnotationCommentReactions.removedAt} is not null`,
+          })
+          .returning({ id: documentAnnotationCommentReactions.id, firstAdd: sql<boolean>`(xmax = 0)` })
+        : await tx
+          .update(documentAnnotationCommentReactions)
+          .set({ removedAt: new Date() })
+          .where(and(
+            eq(documentAnnotationCommentReactions.commentId, comment.id),
+            eq(documentAnnotationCommentReactions.reaction, input.reaction),
+            eq(documentAnnotationCommentReactions.actorType, input.actor.actorType),
+            eq(documentAnnotationCommentReactions.actorId, input.actor.actorId),
+            isNull(documentAnnotationCommentReactions.removedAt),
+          ))
+          .returning({ id: documentAnnotationCommentReactions.id, firstAdd: sql<boolean>`false` });
+      const changed = changedRows.length > 0;
+      const firstAdd = changedRows[0]?.firstAdd === true;
+      let questionWakeRequestId: string | null = null;
+      let questionWakeAgentId: string | null = null;
+      let questionWakeSuppressed = false;
+      if (
+        input.present &&
+        firstAdd &&
+        input.reaction === "question" &&
+        input.actor.actorType === "user" &&
+        input.target.kind === "issue"
+      ) {
+        const [issue] = await tx
+          .select({
+            id: issues.id,
+            status: issues.status,
+            assigneeAgentId: issues.assigneeAgentId,
+            conversationAgentId: issues.conversationAgentId,
+            conversationUserId: issues.conversationUserId,
+          })
+          .from(issues)
+          .where(and(eq(issues.companyId, thread.companyId), eq(issues.id, input.target.issueId)))
+          .for("update");
+        const chatOwnerAllowed =
+          !issue?.conversationAgentId ||
+          (issue.assigneeAgentId === issue.conversationAgentId &&
+            issue.conversationUserId === input.actor.actorId);
+        if (
+          issue &&
+          issue.assigneeAgentId &&
+          issue.status !== "done" &&
+          issue.status !== "cancelled" &&
+          chatOwnerAllowed
+        ) {
+          const [existingPending] = await tx
+            .select({ id: agentWakeupRequests.id })
+            .from(agentWakeupRequests)
+            .where(and(
+              eq(agentWakeupRequests.companyId, thread.companyId),
+              eq(agentWakeupRequests.agentId, issue.assigneeAgentId),
+              inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued", "claimed"]),
+              sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+              sql`${agentWakeupRequests.payload}->>'mutation' = 'annotation_reaction'`,
+            ))
+            .limit(1);
+          const windowStart = new Date(Date.now() - ANNOTATION_QUESTION_WAKE_WINDOW_MS);
+          const recentActorWakes = existingPending
+            ? []
+            : await tx
+              .select({ id: agentWakeupRequests.id })
+              .from(agentWakeupRequests)
+              .where(and(
+                eq(agentWakeupRequests.companyId, thread.companyId),
+                eq(agentWakeupRequests.requestedByActorType, "user"),
+                eq(agentWakeupRequests.requestedByActorId, input.actor.actorId),
+                gte(agentWakeupRequests.requestedAt, windowStart),
+                sql`${agentWakeupRequests.idempotencyKey} like ${ANNOTATION_QUESTION_REACTION_KEY_PREFIX + "%"}`,
+                sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
+                sql`${agentWakeupRequests.payload}->>'mutation' = 'annotation_reaction'`,
+              ))
+              .limit(ANNOTATION_QUESTION_WAKE_MAX_PER_WINDOW);
+          if (existingPending || recentActorWakes.length >= ANNOTATION_QUESTION_WAKE_MAX_PER_WINDOW) {
+            questionWakeSuppressed = true;
+          } else {
+            const wakeRequestId = randomUUID();
+            await notifyDeferredExecutionWork(tx, {
+              companyId: thread.companyId,
+              requestId: wakeRequestId,
+            });
+            await tx.insert(agentWakeupRequests).values({
+              id: wakeRequestId,
+              companyId: thread.companyId,
+              agentId: issue.assigneeAgentId,
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_commented",
+              status: "deferred_issue_execution",
+              requestedByActorType: "user",
+              requestedByActorId: input.actor.actorId,
+              idempotencyKey: `${ANNOTATION_QUESTION_REACTION_KEY_PREFIX}${changedRows[0]!.id}`,
+              payload: {
+                issueId: issue.id,
+                annotationCommentId: comment.id,
+                annotationThreadId: thread.id,
+                annotationReaction: "question",
+                mutation: "annotation_reaction",
+                executionWait: deferredWorkIntentWait(
+                  "wake_lost",
+                  "Waiting to deliver annotation question reaction.",
+                ),
+                _paperclipWakeContext: {
+                  issueId: issue.id,
+                  taskId: issue.id,
+                  annotationCommentId: comment.id,
+                  annotationThreadId: thread.id,
+                  annotationReaction: "question",
+                  annotationReactionUserId: input.actor.actorId,
+                  source: "issue.document_annotation_reaction",
+                  wakeReason: "issue_commented",
+                },
+              },
+            });
+            questionWakeRequestId = wakeRequestId;
+            questionWakeAgentId = issue.assigneeAgentId;
+          }
+        } else {
+          questionWakeSuppressed = true;
+        }
+      }
+      const [withSummary] = await withReactions([comment], input.actor, tx);
+      return {
+        thread,
+        comment: withSummary!,
+        changed,
+        firstAdd,
+        questionWakeRequestId,
+        questionWakeAgentId,
+        questionWakeSuppressed,
+      };
     }),
 
     cleanupForIssueCommentDeletion: async (

@@ -1,13 +1,13 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { readFileSync } from "node:fs";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { describe, expect, it, vi } from "vitest";
-import { canonicalProviderPackJson, verifyRemoteProviderPack, type ProviderPackIdentity } from "./remote-provider-pack-verification.js";
+import { canonicalProviderPackJson, clearSealedProviderPacksForTest, PROVIDER_PACK_IDENTITY_FUNCTION, verifyRemoteProviderPack, type ProviderPackIdentity } from "./remote-provider-pack-verification.js";
 
 const sha = (text: string) => `sha256:${createHash("sha256").update(text).digest("hex")}`;
 const manifest = (revision: string): ProviderPackIdentity => {
@@ -76,6 +76,11 @@ describe("installed provider pack compatibility", () => {
       await expect(verifyRemoteProviderPack(input)).rejects.toMatchObject({
         message: expect.stringContaining("manifest mismatch"), failureCheck: "manifest_mismatch:runnerSourceRevision" });
       expect(execute).toHaveBeenCalledOnce();
+      // The sealing variant of the verifier runs the same checks in a real Node process.
+      await expect(verifyRemoteProviderPack({ ...input, seal: { targetKey: "sandbox:env:real" } })).rejects.toMatchObject({
+        failureCheck: "manifest_mismatch:runnerSourceRevision" });
+      await expect(verifyRemoteProviderPack({ ...input, manifest: installed, seal: { targetKey: "sandbox:env:real" } })).rejects.toMatchObject({
+        failureCheck: "artifact_digest:nodeCommand" });
       await expect(verifyRemoteProviderPack({ ...input, manifest: installed })).rejects.toMatchObject({
         message: expect.stringContaining("nodeCommand digest mismatch"), failureCheck: "artifact_digest:nodeCommand" });
       await rm(join(root, "provider-pack.json"));
@@ -212,6 +217,71 @@ describe("installed provider pack compatibility", () => {
     await expect(verifyRemoteProviderPack({ ...input, provider: { kind: "acpx", agent: "codex" } })).rejects.toThrow("profile is incompatible");
   });
 
+  describe("sealed reuse on the same sandbox", () => {
+    const identityOf = async (root: string) => {
+      const { stdout } = await promisify(execFile)(process.execPath, ["-e",
+        `${PROVIDER_PACK_IDENTITY_FUNCTION};process.stdout.write(packIdentity(process.argv[1]))`, root]);
+      return stdout;
+    };
+
+    it("changes the identity for any same-size rewrite, even with its mtime restored", async () => {
+      const root = await mkdtemp(join(tmpdir(), "pack-identity-"));
+      try {
+        await mkdir(join(root, "dist"));
+        await writeFile(join(root, "dist", "file.js"), "original");
+        await symlink(join(root, "dist", "file.js"), join(root, "link.js"));
+        const sealed = await identityOf(root);
+        expect(sealed).toMatch(/^[a-f0-9]{64}$/);
+        expect(await identityOf(root)).toBe(sealed);
+        const before = await stat(join(root, "dist", "file.js"));
+        await new Promise(resolve => setTimeout(resolve, 20));
+        await writeFile(join(root, "dist", "file.js"), "tampered");
+        await utimes(join(root, "dist", "file.js"), before.atime, before.mtime);
+        expect(await identityOf(root)).not.toBe(sealed);
+      } finally { await rm(root, { recursive: true, force: true }); }
+    });
+
+    it("re-checks only the identity on a sealed sandbox and fully re-verifies after any change", async () => {
+      clearSealedProviderPacksForTest();
+      const expected = manifest("b");
+      let identity = "a".repeat(64);
+      const execute = vi.fn(async (request: Parameters<CommandManagedRuntimeRunner["execute"]>[0]) => {
+        const script = String(request.args?.[1] ?? "");
+        const stdout = request.args?.[0] === "--version" ? `${expected.payload.pins.opencode}\n`
+          : script.includes("paperclip-pack-check") ? `verified\npaperclip-pack-identity=${identity}\n`
+            : `\npaperclip-pack-identity=${identity}\n`;
+        return { exitCode: 0, signal: null, pid: null, startedAt: null, timedOut: false, stderr: "", stdout };
+      });
+      const kinds = () => execute.mock.calls.map(([request]) => request.args?.[0] === "--version" ? "version"
+        : String(request.args?.[1]).includes("paperclip-pack-check") ? "full" : "identity");
+      const input = { runner: { execute }, cwd: "/workspace", packRoot: "/workspace/provider-pack", manifest: expected,
+        seal: { targetKey: "sandbox:env-1:sandbox-1" } };
+      await expect(verifyRemoteProviderPack(input)).resolves.toEqual(expected);
+      expect(kinds()).toEqual(["full", "version"]);
+      execute.mockClear();
+      await expect(verifyRemoteProviderPack(input)).resolves.toEqual(expected);
+      expect(kinds()).toEqual(["identity"]);
+      // Another sandbox, or no sandbox identity, never reuses the seal.
+      execute.mockClear();
+      await verifyRemoteProviderPack({ ...input, seal: { targetKey: "sandbox:env-1:sandbox-2" } });
+      await verifyRemoteProviderPack({ ...input, seal: undefined });
+      expect(kinds()).toEqual(["full", "version", "full", "version"]);
+      // A changed identity falls back to the complete verification.
+      execute.mockClear();
+      identity = "b".repeat(64);
+      await expect(verifyRemoteProviderPack(input)).resolves.toEqual(expected);
+      expect(kinds()).toEqual(["identity", "full", "version"]);
+      // A pack that changed while it was hashed reports no identity and is not sealed.
+      execute.mockClear();
+      clearSealedProviderPacksForTest();
+      execute.mockImplementation(async (request) => ({ exitCode: 0, signal: null, pid: null, startedAt: null, timedOut: false, stderr: "",
+        stdout: request.args?.[0] === "--version" ? `${expected.payload.pins.opencode}\n` : "verified\n" }));
+      await verifyRemoteProviderPack(input);
+      await verifyRemoteProviderPack(input);
+      expect(kinds()).toEqual(["full", "version", "full", "version"]);
+    });
+  });
+
   it("rejects the published Grok pack from before native effort admission", async () => {
     const profiles = JSON.parse(readFileSync(new URL("../../../../packages/paperclip-runner/acpx-profiles.json", import.meta.url), "utf8"));
     const current = manifest("b"), installed = manifest("a");
@@ -257,6 +327,149 @@ describe("installed provider pack compatibility", () => {
     await expect(verifyRemoteProviderPack({ ...input, manifest: reseal(historical),
       installation: { ...input.installation, manifest: reseal(historical) }, requireExactIdentity: true })).resolves.toEqual(reseal(historical));
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("re-pins an immutable installation from a durable admittedReceipt across controller releases while rejecting mismatches and unprotected paths", async () => {
+    const admitted = manifest("a");
+    admitted.payload.contractDigest = sha("old-contracts");
+    admitted.payload.acpxProfileDigests = { claude: sha("old-claude") };
+    const sealedAdmitted = reseal(admitted);
+    const deployed = manifest("b");
+    deployed.payload.contractDigest = sha("new-contracts");
+    deployed.payload.acpxProfileDigests = { claude: sha("new-claude") };
+    const sealedDeployed = reseal(deployed);
+    const receipt = {
+      providerPackDigest: sealedAdmitted.digest,
+      opencodeProxySha256: sealedAdmitted.payload.artifacts.opencodeProxy!.sha256,
+      sourceRevision: sealedAdmitted.payload.runnerSourceRevision,
+    };
+    const execute = vi.fn();
+    const baseInput = {
+      runner: { execute }, cwd: "/workspace", packRoot: "/opt/paperclip-runner/provider-pack",
+      manifest: sealedDeployed,
+      installation: { root: "/opt/paperclip-runner/provider-pack", manifest: sealedAdmitted, immutable: true },
+      requireExactIdentity: true,
+      admittedReceipt: receipt,
+    };
+    await expect(verifyRemoteProviderPack({ ...baseInput, provider: { kind: "opencode" } })).resolves.toEqual(sealedAdmitted);
+    await expect(verifyRemoteProviderPack({ ...baseInput, provider: { kind: "acpx", agent: "claude" } })).resolves.toEqual(sealedAdmitted);
+    await expect(verifyRemoteProviderPack({ ...baseInput, provider: { kind: "acpx", agent: "codex" } }))
+      .rejects.toMatchObject({ failureCheck: "acpx_profile" });
+    await expect(verifyRemoteProviderPack({ ...baseInput, provider: { kind: "opencode" },
+      installation: { ...baseInput.installation, immutable: false } })).rejects.toMatchObject({ failureCheck: "installation_unprotected" });
+    await expect(verifyRemoteProviderPack({ ...baseInput, provider: { kind: "opencode" },
+      admittedReceipt: { ...receipt, providerPackDigest: sha("other-pack") } })).rejects.toMatchObject({ failureCheck: "exact_identity" });
+    const tampered = { ...sealedAdmitted, payload: { ...sealedAdmitted.payload, runnerSourceRevision: "c".repeat(40) } };
+    await expect(verifyRemoteProviderPack({ ...baseInput, provider: { kind: "opencode" },
+      installation: { ...baseInput.installation, manifest: tampered } })).rejects.toMatchObject({ failureCheck: "manifest_digest" });
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("verifies only the selected provider's asset tree and isolates seals per provider", async () => {
+    clearSealedProviderPacksForTest();
+    const root = await mkdtemp(join(tmpdir(), "pack-provider-scoped-verify-"));
+    try {
+      const write = async (relative: string, content: string, mode?: number) => {
+        const full = join(root, relative);
+        await mkdir(dirname(full), { recursive: true });
+        await writeFile(full, content, mode ? { mode } : undefined);
+      };
+      const shaFile = (content: string) => sha(content);
+      const treeSha = (fileName: string, content: string) =>
+        `sha256:${createHash("sha256").update(`file\0${fileName}\0${shaFile(content)}\n`).digest("hex")}`;
+      await mkdir(join(root, "node_modules/node/bin"), { recursive: true });
+      await symlink(process.execPath, join(root, "node_modules/node/bin/node"));
+      const nodeBytes = readFileSync(process.execPath);
+      const nodeSha = `sha256:${createHash("sha256").update(nodeBytes).digest("hex")}`;
+      const opencodeScript = "#!/bin/sh\necho 1.18.34\n";
+      await write("node_modules/.bin/opencode", opencodeScript, 0o755);
+      await write("pnpm-lock.yaml", "lock");
+      await write("node_modules/opencode-ai/bin/opencode.exe", "bin");
+      await write("dist/cli/opencode-app-server-proxy.cjs", "proxy");
+      await write("dist/cli/acpx-runtime-sidecar.cjs", "sidecar");
+      await write("dist/providers/grok/launcher.cjs", "grok");
+      for (const [pkg, version] of [
+        ["acpx", "1.0.0"],
+        ["@agentclientprotocol/claude-agent-acp", "1.0.0"],
+        ["@agentclientprotocol/codex-acp", "1.0.0"],
+        ["opencode-ai", "1.18.34"],
+      ] as const) {
+        await write(`node_modules/${pkg}/package.json`, JSON.stringify({ version }));
+      }
+      const distDigest = `sha256:${createHash("sha256").update([
+        "directory\0cli\n",
+        `file\0cli/acpx-runtime-sidecar.cjs\0${shaFile("sidecar")}\n`,
+        `file\0cli/opencode-app-server-proxy.cjs\0${shaFile("proxy")}\n`,
+        "directory\0providers\n",
+        "directory\0providers/grok\n",
+        `file\0providers/grok/launcher.cjs\0${shaFile("grok")}\n`,
+      ].join("")).digest("hex")}`;
+      const cursorPath = `provider-assets/cursor/${process.platform}-${process.arch}`;
+      const kimiPath = `provider-assets/kimi/${process.platform}-${process.arch}`;
+      const payload = {
+        compatibility: { opencode: 1, acpx: 1 },
+        contractDigest: sha("contracts"),
+        pins: {
+          opencode: "1.18.34",
+          nodeMinimum: "20.0.0",
+          acpx: "1.0.0",
+          claudeAcp: "1.0.0",
+          codexAcp: "1.0.0",
+        },
+        target: { platform: process.platform, architecture: process.arch },
+        runnerSourceRevision: "a".repeat(40),
+        distDigest,
+        providers: {
+          cursor: { path: cursorPath, sha256: treeSha("agent", "cursor-v1") },
+          kimi: { path: kimiPath, sha256: treeSha("agent", "kimi-v1") },
+        },
+        artifacts: {
+          nodeCommand: { path: "node_modules/node/bin/node", sha256: nodeSha },
+          productionLock: { path: "pnpm-lock.yaml", sha256: shaFile("lock") },
+          opencodeCommand: { path: "node_modules/.bin/opencode", sha256: shaFile(opencodeScript) },
+          opencodeExecutable: { path: "node_modules/opencode-ai/bin/opencode.exe", sha256: shaFile("bin") },
+          opencodeProxy: { path: "dist/cli/opencode-app-server-proxy.cjs", sha256: shaFile("proxy") },
+          acpxSidecar: { path: "dist/cli/acpx-runtime-sidecar.cjs", sha256: shaFile("sidecar") },
+          grokLauncher: { path: "dist/providers/grok/launcher.cjs", sha256: shaFile("grok") },
+        },
+      };
+      const expected = {
+        schema: "paperclip-runner/remote-provider-pack/v1",
+        payload,
+        digest: sha(canonicalProviderPackJson(payload)),
+      };
+      await write("provider-pack.json", JSON.stringify(expected));
+      const execute = vi.fn(async (request: Parameters<CommandManagedRuntimeRunner["execute"]>[0]) => {
+        try {
+          const result = await promisify(execFile)(request.command, request.args ?? [], { cwd: root, timeout: 10_000 });
+          return { ...result, exitCode: 0, signal: null, timedOut: false, pid: null, startedAt: new Date().toISOString() };
+        } catch (error) {
+          const failed = error as Error & { code: number; stdout: string; stderr: string };
+          if (typeof failed.code !== "number") throw error;
+          return { stdout: failed.stdout, stderr: failed.stderr, exitCode: failed.code, signal: null, timedOut: false, pid: null, startedAt: new Date().toISOString() };
+        }
+      });
+      const seal = { targetKey: "sandbox:env-1:scoped-provider" };
+      // Claude and OpenCode succeed even when provider-assets/ is absent.
+      await expect(verifyRemoteProviderPack({ runner: { execute }, cwd: root, packRoot: root, manifest: expected,
+        provider: { kind: "acpx", agent: "claude" }, seal })).resolves.toEqual(expected);
+      await expect(verifyRemoteProviderPack({ runner: { execute }, cwd: root, packRoot: root, manifest: expected,
+        provider: { kind: "opencode" }, seal })).resolves.toEqual(expected);
+      // Cursor must still reject when provider-assets/cursor is missing (and must NOT reuse Claude's seal).
+      await expect(verifyRemoteProviderPack({ runner: { execute }, cwd: root, packRoot: root, manifest: expected,
+        provider: { kind: "acpx", agent: "cursor" }, seal })).rejects.toMatchObject({ failureCheck: "candidate_digest" });
+      // Materializing only Cursor passes Cursor verification while Kimi still rejects.
+      await write(`${cursorPath}/agent`, "cursor-v1");
+      await expect(verifyRemoteProviderPack({ runner: { execute }, cwd: root, packRoot: root, manifest: expected,
+        provider: { kind: "acpx", agent: "cursor" }, seal })).resolves.toEqual(expected);
+      await expect(verifyRemoteProviderPack({ runner: { execute }, cwd: root, packRoot: root, manifest: expected,
+        provider: { kind: "acpx", agent: "kimi" }, seal })).rejects.toMatchObject({ failureCheck: "candidate_digest" });
+      // Omitting provider still checks every declared provider asset tree.
+      await expect(verifyRemoteProviderPack({ runner: { execute }, cwd: root, packRoot: root, manifest: expected, seal }))
+        .rejects.toMatchObject({ failureCheck: "candidate_digest" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
 });

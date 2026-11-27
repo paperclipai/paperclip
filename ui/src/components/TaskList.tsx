@@ -2,12 +2,12 @@ import { Fragment, useId, useState, type ReactNode } from "react";
 import type { Issue } from "@paperclipai/shared";
 import { ChevronDown, ChevronRight, GitBranch } from "lucide-react";
 import { buildIssueTree } from "../lib/issue-tree";
-import { issueFilterLabel } from "../lib/issue-filters";
+import { issueFilterLabel, issueUpdatedTime } from "../lib/issue-filters";
 import { paperclipHumanAvatarUrl } from "../lib/issue-chat-human-author";
 import { defaultTaskListColumns, defaultTaskListSort, isTaskListColumnSort, taskListOrderToIssueSort, type TaskListColumnId, type TaskListSort, type TaskListOrder } from "../lib/task-list";
 import { sortIssues } from "../lib/issue-sort";
 import { timeAgo } from "../lib/timeAgo";
-import { IssueRow, type IssueRowDensity } from "./IssueRow";
+import { IssueRow, type IssueRowArchiveAction, type IssueRowDensity } from "./IssueRow";
 import { IssueGroupHeader } from "./IssueGroupHeader";
 import { TaskListColumnHeader, TaskListColumnSettings, TaskListViewport } from "./TaskListColumns";
 import { TaskRowGroup } from "./TaskRowGroup";
@@ -69,7 +69,7 @@ function TaskChatPreload({ companyId, refs }: { companyId: string; refs: readonl
 }
 
 /** Opt-in collection built from the reviewed row, hierarchy and column primitives. */
-export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey, preferenceLocation, sort: controlledSort, onSortChange, preloadCompanyId }: {
+export function TaskList({ items, allItems = items, initialColumns = defaultTaskListColumns, density = "comfortable", collapsedIds, onCollapsedIdsChange, groupBy = "none", emptyState, issueLinkState, collectionKey, preferenceLocation, sort: controlledSort, onSortChange, preloadCompanyId, getArchiveAction }: {
   items: readonly TaskListItem[];
   allItems?: readonly TaskListItem[];
   initialColumns?: readonly TaskListColumnId[];
@@ -86,6 +86,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   onSortChange?: (sort: TaskListSort | undefined) => void;
   /** Preload the chat of the top rows for this company. Only a page's main task list sets this. */
   preloadCompanyId?: string | null;
+  getArchiveAction?: (issue: Issue) => IssueRowArchiveAction | undefined;
 }) {
   const localKey = useId();
   const { columns, order: columnOrder, setColumns, setOrder: setColumnOrder } = useTaskListColumnPreferences(preferenceLocation, initialColumns);
@@ -103,7 +104,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   const ordered = sortIssues(items.map(item => item.issue), taskListOrderToIssueSort(sort ?? defaultTaskListSort), issue => {
     const item = byId.get(issue.id)!;
     const parent = issue.parentId ? byId.get(issue.parentId)?.issue : null;
-    return { createdBy: item.createdBy, assignee: item.assignee, parentTask: parent ? `${parent.identifier} ${parent.title}` : null };
+    return { createdBy: item.createdBy, assignee: item.assignee, parentTask: parent ? `${parent.identifier} ${parent.title}` : null, updated: issueUpdatedTime(issue) };
   });
   const { roots, childMap } = buildIssueTree(ordered);
   const rowIds: string[] = [];
@@ -131,6 +132,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
       <Fragment key={issue.id}>
         <IssueRow
           issue={issue} presentation="task" appearance="refreshed" density={density} issueLinkState={issueLinkState}
+          archiveAction={getArchiveAction?.(issue)}
           unreadState={item.unread ? "visible" : "hidden"}
           treeGuides={depth} chevronInGuide={depth > 0 && children.length > 0}
           leadingControl={children.length ? (
@@ -155,7 +157,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
             parentTask: parent ? <span><span className="font-mono">{parent.identifier}</span> {parent.title}</span> : undefined,
             tags: issue.labels?.length ? <span className="inline-flex items-center gap-1">{issue.labels.map(label => <Badge key={label.id} variant="secondary" className="shrink-0 px-1.5 py-0">{label.name}</Badge>)}</span> : undefined,
             worktree: branch ? <span className="inline-flex items-center gap-1.5"><GitBranch className="size-3 shrink-0" aria-hidden />{branch}</span> : undefined,
-            lastUpdated: timeAgo(issue.updatedAt),
+            lastUpdated: timeAgo(issueUpdatedTime(issue)),
           }}
         />
         {expanded ? children.map(child => renderBranch(child, depth + 1)) : null}

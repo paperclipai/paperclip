@@ -1461,6 +1461,14 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       await queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
     },
   });
+  const rotateSecret = useMutation({
+    mutationFn: (input: { secretId: string; value: string }) =>
+      secretsApi.rotate(input.secretId, { value: input.value }),
+    onSuccess: async () => {
+      if (!selectedCompanyId) return;
+      await queryClient.invalidateQueries({ queryKey: queryKeys.secrets.list(selectedCompanyId) });
+    },
+  });
 
   // Managed (platform-provisioned) environments accept exactly one tenant
   // edit: the env var map. The server's write floor rejects everything
@@ -1825,9 +1833,12 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     navigate(ENVIRONMENTS_PATH);
   }
 
-  function flushEnvironmentForm(): EnvironmentFormState {
+  function flushEnvironmentForm(): EnvironmentFormState | null {
     const flushedEnvVars = environmentVariablesEditorRef.current?.flushPendingDraft();
-    return flushedEnvVars ? { ...environmentForm, envVars: flushedEnvVars } : environmentForm;
+    if (flushedEnvVars?.status === "blocked") return null;
+    return flushedEnvVars?.status === "flushed"
+      ? { ...environmentForm, envVars: flushedEnvVars.value }
+      : environmentForm;
   }
 
   const discoveredPluginSandboxProviders = Object.entries(environmentCapabilities?.sandboxProviders ?? {})
@@ -2218,6 +2229,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                 value={environmentForm.envVars}
                 secrets={secrets ?? []}
                 onCreateSecret={async (name, value) => await createSecret.mutateAsync({ name, value })}
+                onRotateSecret={async (secretId, value) => await rotateSecret.mutateAsync({ secretId, value })}
                 onChange={(env) =>
                   setEnvironmentForm((current) => ({ ...current, envVars: env ?? {} }))}
                 onDirtyChange={setEnvironmentVariablesDirty}
@@ -2238,7 +2250,10 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
               Cancel
             </Button>
             <Button
-              onClick={() => managedEnvironmentEnvVarsMutation.mutate(flushEnvironmentForm().envVars)}
+              onClick={() => {
+                const flushed = flushEnvironmentForm();
+                if (flushed) managedEnvironmentEnvVarsMutation.mutate(flushed.envVars);
+              }}
               disabled={managedEnvironmentEnvVarsMutation.isPending}
             >
               {managedEnvironmentEnvVarsMutation.isPending ? "Saving..." : "Save environment variables"}
@@ -2544,6 +2559,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
                   value={environmentForm.envVars}
                   secrets={secrets ?? []}
                   onCreateSecret={async (name, value) => await createSecret.mutateAsync({ name, value })}
+                  onRotateSecret={async (secretId, value) => await rotateSecret.mutateAsync({ secretId, value })}
                   onChange={(env) =>
                     setEnvironmentForm((current) => ({ ...current, envVars: env ?? {} }))}
                   onDirtyChange={setEnvironmentVariablesDirty}
@@ -2574,7 +2590,10 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
             {environmentForm.driver !== "local" ? (
               <Button
                 variant="outline"
-                onClick={() => draftEnvironmentProbeMutation.mutate(flushEnvironmentForm())}
+                onClick={() => {
+                  const flushed = flushEnvironmentForm();
+                  if (flushed) draftEnvironmentProbeMutation.mutate(flushed);
+                }}
                 disabled={draftEnvironmentProbeMutation.isPending || !environmentFormValid || (environmentForm.driver === "ssh" && environmentForm.sshNetwork === "tailscale")}
                 title={environmentForm.driver === "ssh" && environmentForm.sshNetwork === "tailscale" ? "Save this environment, then test its connection from the list." : undefined}
               >
@@ -2582,7 +2601,10 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
               </Button>
             ) : null}
             <Button
-              onClick={() => environmentMutation.mutate(flushEnvironmentForm())}
+              onClick={() => {
+                const flushed = flushEnvironmentForm();
+                if (flushed) environmentMutation.mutate(flushed);
+              }}
               disabled={environmentMutation.isPending || !environmentFormValid}
             >
               {environmentMutation.isPending

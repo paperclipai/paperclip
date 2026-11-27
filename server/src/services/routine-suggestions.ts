@@ -44,7 +44,7 @@ const ROUTINE_EXECUTION_ORIGIN_KIND = "routine_execution";
  */
 export interface RoutineSuggestionResponsibilityFiling {
   /** Every responsibility the task is under (directly or through its project); empty when loose. */
-  responsibilitiesForIssue(companyId: string, issueId: string): Promise<Array<{ id: string }>>;
+  responsibilitiesForIssue(companyId: string, issueId: string, ownerUserId: string): Promise<Array<{ id: string }>>;
   /** File the routine under one responsibility. Linking is additive and idempotent. */
   fileRoutine(responsibilityId: string, routineId: string): Promise<{ linkId: string; created: boolean } | null>;
 }
@@ -60,8 +60,8 @@ export function responsibilityFilingForRoutineSuggestions(db: Db): RoutineSugges
   // linking a routine reads no task or project rows, so no further read scope applies.
   const unrestricted = { issueReadCondition: sql<boolean>`true`, projectReadCondition: sql<boolean>`true` };
   return {
-    async responsibilitiesForIssue(companyId, issueId) {
-      return svc.lookup(companyId, { kind: "issue", id: issueId }, unrestricted);
+    async responsibilitiesForIssue(companyId, issueId, ownerUserId) {
+      return svc.lookup(companyId, ownerUserId, { kind: "issue", id: issueId }, unrestricted);
     },
     async fileRoutine(responsibilityId, routineId) {
       const row = await svc.getById(responsibilityId);
@@ -346,7 +346,7 @@ export function routineSuggestionService(
 
     const filed: FiledUnder = [];
     try {
-      for (const responsibility of await filing.responsibilitiesForIssue(issue.companyId, issue.id)) {
+      for (const responsibility of await filing.responsibilitiesForIssue(issue.companyId, issue.id, actor.userId)) {
         try {
           const link = await filing.fileRoutine(responsibility.id, routine.id);
           if (link) filed.push({ responsibilityId: responsibility.id, ...link });

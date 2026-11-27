@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { assets, companies, completionContracts, documents, documentRevisions, heartbeatRuns, issueDocuments, issueAttachments, issues, issueThreadInteractions, issueWorkProducts, mcpAttachmentUploads, dotRunnerAssignments, type Db } from "@paperclipai/db";
 import { projectHumanInteractionResponse } from "../execution-continuation.js";
+import { isCommittedToolReceiptResult } from "../heartbeat-run-summary.js";
 
 export class NativeDeliverableEvidenceError extends Error {}
 
@@ -42,7 +43,7 @@ async function hasCurrentPublicationReceipt(db: Db, companyId: string, receipts:
     const receipt = record(value);
     const input = record(receipt.input);
     const result = record(receipt.result);
-    if ((result.disposition !== "applied" && result.disposition !== "duplicate") ||
+    if (!isCommittedToolReceiptResult(result) ||
         !Array.isArray(result.entityRefs) || result.entityRefs[0] !== attachment.id) continue;
     if (receipt.operationId === "publish_external_deliverable" && result.source === "authenticated_upload"
       && result.commandId === `deliverable-uploaded:${attachment.id}` && typeof input.uploadId === "string"
@@ -324,7 +325,7 @@ export async function publishedTaskDocuments(db: Db, binding: { companyId: strin
   const saved = await (binding.lockSources ? query.for("share", { of: [issueDocuments, documents, documentRevisions, heartbeatRuns], noWait: true }) : query);
   return saved.filter(document => Object.values(record(document.resultJson?.semanticToolReceipts)).some(value => {
     const receipt = record(value), result = record(receipt.result), published = record(result.document);
-    return receipt.operationId === "write_document" && ["applied", "duplicate"].includes(String(result.disposition))
+    return receipt.operationId === "write_document" && isCommittedToolReceiptResult(result)
       && published.id === document.id && published.latestRevisionId === document.revisionId;
   })).map(({ id, revisionId, key, issuePrefix, issueIdentifier }) => ({ id, revisionId, key,
     href: `/${encodeURIComponent(issuePrefix)}/issues/${encodeURIComponent(issueIdentifier ?? binding.issueId)}#document-${encodeURIComponent(key)}` }));

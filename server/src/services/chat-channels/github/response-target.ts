@@ -14,8 +14,14 @@ export type GitHubResponseSource = {
   repositoryId?: string;
 };
 
+/** A pull request's main conversation; inline review threads add `:rc:<id>`. */
+const MAIN_PULL_THREAD = "^github:[^:]+:[1-9][0-9]*$";
+export const isMainPullThread = (threadId: string) => new RegExp(MAIN_PULL_THREAD).test(threadId);
+/** The conversation thread the request's pull request or issue starts from. */
+export const baseThreadId = (threadId: string) => threadId.replace(/:rc:[1-9][0-9]*$/, "");
+
 export const isMainPullResponse = (source: GitHubResponseSource) =>
-  !source.replyId && /^github:[^:]+:[1-9][0-9]*$/.test(source.conversation.externalThreadId);
+  !source.replyId && isMainPullThread(source.conversation.externalThreadId);
 
 export const requestResponseMarker = (source: GitHubResponseSource) => `<!-- paperclip-response:${createHash("sha256")
   .update(`${source.endpoint.companyId}:${source.endpoint.id}:${source.delivery.id}`).digest("hex")} -->`;

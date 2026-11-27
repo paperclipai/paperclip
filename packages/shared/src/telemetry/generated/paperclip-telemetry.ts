@@ -11,7 +11,7 @@ agent_role: ("ceo" | "cto" | "cmo" | "cfo" | "security" | "engineer" | "designer
 }
 
 export interface PaperclipAgentTaskCompletedDimensions {
-adapter_type: ("process" | "http" | "acpx_local" | "claude_local" | "codex_local" | "cursor_cloud" | "gemini_local" | "hermes_gateway" | "hermes_local" | "opencode_local" | "pi_local" | "cursor" | "openclaw_gateway" | "grok_local" | "kimi_local" | "other")
+adapter_type: ("process" | "http" | "acpx_local" | "claude_local" | "codex_local" | "cursor_cloud" | "gemini_local" | "hermes_gateway" | "hermes_local" | "opencode_local" | "pi_local" | "cursor" | "openclaw_gateway" | "grok_local" | "kimi_local" | "antigravity_runtime" | "copilot_runtime" | "aws_agentcore" | "claude_managed" | "grok_bot" | "muse" | "openai_dot" | "other")
 agent_id: string
 agent_role: ("ceo" | "cto" | "cmo" | "cfo" | "security" | "engineer" | "designer" | "pm" | "qa" | "devops" | "researcher" | "general" | "other")
 model?: string
@@ -19,7 +19,7 @@ task_id?: string
 }
 
 export interface PaperclipAgentTaskRunDimensions {
-adapter_type?: ("process" | "http" | "acpx_local" | "claude_local" | "codex_local" | "cursor_cloud" | "gemini_local" | "hermes_gateway" | "hermes_local" | "opencode_local" | "pi_local" | "cursor" | "openclaw_gateway" | "grok_local" | "kimi_local" | "other")
+adapter_type?: ("process" | "http" | "acpx_local" | "claude_local" | "codex_local" | "cursor_cloud" | "gemini_local" | "hermes_gateway" | "hermes_local" | "opencode_local" | "pi_local" | "cursor" | "openclaw_gateway" | "grok_local" | "kimi_local" | "antigravity_runtime" | "copilot_runtime" | "aws_agentcore" | "claude_managed" | "grok_bot" | "muse" | "openai_dot" | "other")
 agent_id: string
 agent_role?: ("ceo" | "cto" | "cmo" | "cfo" | "security" | "engineer" | "designer" | "pm" | "qa" | "devops" | "researcher" | "general" | "other")
 model?: string
@@ -44,10 +44,23 @@ source_ref?: string
 source_ref_hashed?: boolean
 }
 
+export interface PaperclipConnectionAppLinkedDimensions {
+app: string
+provider: ("composio" | "arcade" | "executor")
+}
+
+export interface PaperclipConnectionAppRequestedDimensions {
+app: string
+origin: ("user" | "agent")
+outcome: ("succeeded" | "failed" | "needs_auth")
+provider: ("composio" | "arcade" | "executor")
+}
+
 export interface PaperclipConnectionCreatedDimensions {
 auth_kind: ("oauth" | "api_key" | "none")
 connector_key: string
 enabled: boolean
+server_domain?: string
 setup_flow: ("gallery" | "api" | "example")
 status: ("draft" | "active" | "disabled" | "archived")
 transport: ("mcp_remote" | "rest_api" | "local_stdio")
@@ -57,6 +70,7 @@ export interface PaperclipConnectionInvokedDimensions {
 connector_key: string
 duration_seconds?: number
 origin: ("setup_test" | "agent" | "user" | "system" | "plugin")
+server_domain?: string
 status: ("succeeded" | "failed" | "denied" | "cancelled" | "timed_out" | "rate_limited")
 transport: ("mcp_remote" | "rest_api" | "local_stdio")
 }
@@ -68,6 +82,7 @@ connector_key: string
 enabled: boolean
 previous_enabled: boolean
 previous_status: ("draft" | "active" | "disabled" | "archived")
+server_domain?: string
 status: ("draft" | "active" | "disabled" | "archived")
 transport: ("mcp_remote" | "rest_api" | "local_stdio")
 }
@@ -178,6 +193,8 @@ export type PaperclipEventName =
   | "agent.task_run"
   | "artifact.created"
   | "company.imported"
+  | "connection.app_linked"
+  | "connection.app_requested"
   | "connection.created"
   | "connection.invoked"
   | "connection.updated"
@@ -206,6 +223,8 @@ export interface EventDimensionsMap {
   "agent.task_run": PaperclipAgentTaskRunDimensions;
   "artifact.created": PaperclipArtifactCreatedDimensions;
   "company.imported": PaperclipCompanyImportedDimensions;
+  "connection.app_linked": PaperclipConnectionAppLinkedDimensions;
+  "connection.app_requested": PaperclipConnectionAppRequestedDimensions;
   "connection.created": PaperclipConnectionCreatedDimensions;
   "connection.invoked": PaperclipConnectionInvokedDimensions;
   "connection.updated": PaperclipConnectionUpdatedDimensions;
@@ -235,6 +254,8 @@ export const PAPERCLIP_EVENTS = {
   "agent.task_run": "agent.task_run",
   "artifact.created": "artifact.created",
   "company.imported": "company.imported",
+  "connection.app_linked": "connection.app_linked",
+  "connection.app_requested": "connection.app_requested",
   "connection.created": "connection.created",
   "connection.invoked": "connection.invoked",
   "connection.updated": "connection.updated",
@@ -309,6 +330,13 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "openclaw_gateway": "Agent runtime uses the OpenClaw gateway adapter.",
       "grok_local": "Agent runtime uses the local Grok adapter.",
       "kimi_local": "Agent runtime uses the local Kimi adapter.",
+      "antigravity_runtime": "Agent runs Google Antigravity through the Paperclip runner.",
+      "copilot_runtime": "Agent runs GitHub Copilot through the Paperclip runner.",
+      "aws_agentcore": "Agent runs on AWS Bedrock AgentCore through the Paperclip runner.",
+      "claude_managed": "Agent runs on Claude Managed Agents through the Paperclip runner.",
+      "grok_bot": "Agent runs as Grok Bot through the Paperclip runner.",
+      "muse": "Agent runs Muse through the Paperclip runner.",
+      "openai_dot": "Agent runs OpenAI Dot through the Paperclip runner.",
       "other": "Fallback when the adapter type is unknown or not represented by the tracked enum."
     },
     "agent_role": {
@@ -344,6 +372,13 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "openclaw_gateway": "Agent runtime uses the OpenClaw gateway adapter.",
       "grok_local": "Agent runtime uses the local Grok adapter.",
       "kimi_local": "Agent runtime uses the local Kimi adapter.",
+      "antigravity_runtime": "Agent runs Google Antigravity through the Paperclip runner.",
+      "copilot_runtime": "Agent runs GitHub Copilot through the Paperclip runner.",
+      "aws_agentcore": "Agent runs on AWS Bedrock AgentCore through the Paperclip runner.",
+      "claude_managed": "Agent runs on Claude Managed Agents through the Paperclip runner.",
+      "grok_bot": "Agent runs as Grok Bot through the Paperclip runner.",
+      "muse": "Agent runs Muse through the Paperclip runner.",
+      "openai_dot": "Agent runs OpenAI Dot through the Paperclip runner.",
       "other": "Fallback when the adapter type is unknown or not represented by the tracked enum."
     },
     "agent_role": {
@@ -413,6 +448,29 @@ export const PAPERCLIP_ENUM_DESCRIPTIONS = {
       "catalog": "Import source came from a Paperclip catalog entry.",
       "skills_sh": "Import source came from a Skills.sh-compatible source.",
       "unknown": "Source type could not be classified."
+    }
+  },
+  "connection.app_linked": {
+    "provider": {
+      "composio": "The app is reached through a Composio gateway.",
+      "arcade": "The app is reached through an Arcade gateway.",
+      "executor": "The app is reached through an Executor gateway."
+    }
+  },
+  "connection.app_requested": {
+    "origin": {
+      "user": "A person asked from the app setup screens.",
+      "agent": "An agent asked through the gateway's connection-management tool."
+    },
+    "outcome": {
+      "succeeded": "The app is connected without a further sign-in.",
+      "failed": "The aggregator rejected the request or did not confirm it.",
+      "needs_auth": "The aggregator returned a sign-in step the person must finish."
+    },
+    "provider": {
+      "composio": "The app is reached through a Composio gateway.",
+      "arcade": "The app is reached through an Arcade gateway.",
+      "executor": "The app is reached through an Executor gateway."
     }
   },
   "connection.created": {

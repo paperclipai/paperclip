@@ -35,13 +35,13 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Enab
 
 ### `status-board`
 
-Automated: [status-card service/routes](../../server/src/__tests__/status-cards.test.ts) covers gated lifecycle and generation contracts; [tile UI](../../ui/src/pages/StatusCards/StatusCardTile.test.tsx) covers rendering.
+Automated: [status-card service/routes](../../server/src/__tests__/status-cards.test.ts) covers gated lifecycle and generation contracts (mocked `StatusCardTile` UI rendering tests were removed; verify tile UI via Storybook/manual checks).
 
 Manual: Create a bounded card, inspect its generation task, and wait for a saved summary. Change a watched task, refresh, and verify both the summary and update history reflect the source change. Exercise a failed generation and confirm it is not presented as fresh.
 
 ### `card-settings`
 
-Automated: [settings form](../../ui/src/pages/StatusCards/StatusCardSettingsForm.test.tsx) and [update engine](../../server/src/__tests__/status-card-update-engine.test.ts) cover separate UI/engine layers.
+Automated: [update engine](../../server/src/__tests__/status-card-update-engine.test.ts) covers engine behavior (mocked `StatusCardSettingsForm` UI tests were removed; verify settings form UI via Storybook/manual checks).
 
 Manual: Change a disposable card’s prompt or summarizer, run the offered rebuild/refresh, and inspect the resulting query and summary. Archive and restore it, reload its direct link, and check the actual new generation outcome.
 
@@ -60,7 +60,7 @@ Capability ID: `status-cards/authoring`.
 Scope: ui
 Storybook: Mount CreateStatusCardDialog and StatusCardSettingsForm prompt, summarizer, refresh options, required/invalid inputs and save errors.
 Production: POST /companies/{id}/status-cards and PATCH /status-cards/{id} must enforce gate/author authority, save configuration and start expected compile task when prompt changes.
-Sources: Source: [CreateStatusCardDialog.tsx](../../ui/src/pages/StatusCards/CreateStatusCardDialog.tsx), [StatusCardSettingsForm.tsx](../../ui/src/pages/StatusCards/StatusCardSettingsForm.tsx), [status-cards.ts](../../server/src/routes/status-cards.ts). Tests: [StatusCardSettingsForm.test.tsx](../../ui/src/pages/StatusCards/StatusCardSettingsForm.test.tsx), [status-cards.test.ts](../../server/src/__tests__/status-cards.test.ts)
+Sources: Source: [CreateStatusCardDialog.tsx](../../ui/src/pages/StatusCards/CreateStatusCardDialog.tsx), [StatusCardSettingsForm.tsx](../../ui/src/pages/StatusCards/StatusCardSettingsForm.tsx), [status-cards.ts](../../server/src/routes/status-cards.ts). Tests: [status-cards.test.ts](../../server/src/__tests__/status-cards.test.ts)
 
 #### `generation`
 
@@ -69,7 +69,7 @@ Capability ID: `status-cards/generation`.
 Scope: ui
 Storybook: Mount card tile/drawer compiling, refreshing, failed, stale existing summary and successful new-summary states with linked task.
 Production: POST /status-cards/{id}/recompile and /refresh plus update/finalization engine must persist actual new output/history; compare saved summary with source tasks, not merely successful task status.
-Sources: Source: [StatusCardTile.tsx](../../ui/src/pages/StatusCards/StatusCardTile.tsx), [StatusCardDetailDrawer.tsx](../../ui/src/pages/StatusCards/StatusCardDetailDrawer.tsx), [status-cards.ts](../../server/src/routes/status-cards.ts), [status-card-update-engine.ts](../../server/src/services/status-card-update-engine.ts). Tests: [StatusCardTile.test.tsx](../../ui/src/pages/StatusCards/StatusCardTile.test.tsx), [status-cards.test.ts](../../server/src/__tests__/status-cards.test.ts), [status-card-update-engine.test.ts](../../server/src/__tests__/status-card-update-engine.test.ts)
+Sources: Source: [StatusCardTile.tsx](../../ui/src/pages/StatusCards/StatusCardTile.tsx), [StatusCardDetailDrawer.tsx](../../ui/src/pages/StatusCards/StatusCardDetailDrawer.tsx), [status-cards.ts](../../server/src/routes/status-cards.ts), [status-card-update-engine.ts](../../server/src/services/status-card-update-engine.ts). Tests: [status-cards.test.ts](../../server/src/__tests__/status-cards.test.ts), [status-card-update-engine.test.ts](../../server/src/__tests__/status-card-update-engine.test.ts)
 
 #### `inspection`
 
@@ -78,7 +78,7 @@ Capability ID: `status-cards/inspection`.
 Scope: ui
 Storybook: Mount StatusCardDetailDrawer summary, watched work, update/revision history, query debug, empty/loading/error and stale summary disclosure.
 Production: GET /status-cards/{id}, /updates, /summary-revisions and /dry-run must filter accessible card/source records; fixtures cannot establish summary truth or query authorization.
-Sources: Source: [StatusCardDetailDrawer.tsx](../../ui/src/pages/StatusCards/StatusCardDetailDrawer.tsx), [status-cards.ts](../../server/src/routes/status-cards.ts). Tests: [StatusCardTile.test.tsx](../../ui/src/pages/StatusCards/StatusCardTile.test.tsx), [status-cards.test.ts](../../server/src/__tests__/status-cards.test.ts)
+Sources: Source: [StatusCardDetailDrawer.tsx](../../ui/src/pages/StatusCards/StatusCardDetailDrawer.tsx), [status-cards.ts](../../server/src/routes/status-cards.ts). Tests: [status-cards.test.ts](../../server/src/__tests__/status-cards.test.ts)
 
 #### `archive`
 

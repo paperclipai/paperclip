@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { normalizeRunFailureCause, readRunFailureCause, RUN_FAILURE_CAUSE_MAX_LENGTH, withoutSqlStatementText } from "./run-failure-cause.js";
+import { normalizeRunFailureCause, readRunFailureCause, RUN_FAILURE_CAUSE_MAX_LENGTH, withoutSqlStatementText, runFailureMessage } from "./run-failure-cause.js";
 
 describe("run failure cause contract", () => {
+  it("leads with the confirmed full disk instead of the later restore failure", () => {
+    expect(runFailureMessage({ errorCode: "sandbox_disk_full", error: "The previous turn is no longer active." }))
+      .toMatch(/^The agent's computer ran out of disk space/);
+    expect(runFailureMessage({ errorCode: "sandbox_disk_full", error: null })).toContain("Retry");
+    expect(runFailureMessage({ errorCode: "process_lost", error: "Process lost" })).toBe("Process lost");
+    expect(runFailureMessage({ errorCode: null, error: null })).toBeNull();
+  });
   it("accepts bounded identifier codes", () => {
     for (const code of ["40001", "ECONNRESET", "provider_http_429", "TypeError", "signal_SIGKILL", "a".repeat(RUN_FAILURE_CAUSE_MAX_LENGTH)]) {
       expect(normalizeRunFailureCause(code)).toBe(code);

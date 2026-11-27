@@ -1457,9 +1457,16 @@ describe("automatic retained workspace recovery", () => {
     queueDeps.wakeQueue.admitIssueWake.mockImplementation((target, evaluate, effects) =>
       admitIssueWake(target, (tx, admission) => evaluate(tx, {
         ...admission,
-        admitWakeBehindIssueExecution(input) {
-          expect(input.durableReceipt).toBeUndefined();
-          return admission.admitWakeBehindIssueExecution(input);
+        async prepareRecovery(input) {
+          const recovery = await admission.prepareRecovery(input);
+          return { ...recovery, async checkBusyAdmission() {
+            const busy = await recovery.checkBusyAdmission();
+            if (busy.kind !== "allowed") return busy;
+            return { ...busy, admitBusy(input) {
+              expect(input.durableReceipt).toBeUndefined();
+              return busy.admitBusy(input);
+            } };
+          } };
         },
       }), effects));
     queueDeps.liveRunExecutions.has.mockImplementation(id => t.deps.activeRunExecutions.has(id));

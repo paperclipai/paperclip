@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { buildPaperclipTaskMarkdown } from "./task-markdown.js";
+import { NATIVE_PLAN_REVIEW_DIRECTIVE, buildPaperclipTaskMarkdown } from "./task-markdown.js";
 
 const issue = {
   id: "task-1",
@@ -64,6 +64,15 @@ describe("heartbeat task markdown rendering", () => {
     expect(markdown).toContain("an unanswered question is not consent");
     expect(markdown).toContain("A human-dismissed request is deferred to history");
     expect(markdown).toContain("Do not invent material user intent or success criteria");
+  });
+
+  it("tells a native Plan-mode run that Paperclip opens the one plan review card", () => {
+    const planning = { issue: { ...issue, workMode: "planning" } };
+    expect(buildPaperclipTaskMarkdown({ ...planning, nativeRunner: true })).toContain(NATIVE_PLAN_REVIEW_DIRECTIVE);
+    // Adapters keep their own approval flow, and an accepted plan is executed.
+    expect(buildPaperclipTaskMarkdown({ ...planning, nativeRunner: false })).not.toContain(NATIVE_PLAN_REVIEW_DIRECTIVE);
+    expect(buildPaperclipTaskMarkdown({ ...planning, nativeRunner: true, acceptedPlanContinuation: true,
+      taskPlan: { documentId: "plan", revisionId: "revision", revisionNumber: 1, body: "Do it." } })).not.toContain(NATIVE_PLAN_REVIEW_DIRECTIVE);
   });
 
   it("preserves execution of a clear accepted plan without imposing clarification", () => {
@@ -162,6 +171,22 @@ describe("heartbeat task markdown rendering", () => {
     expect(buildPaperclipTaskMarkdown({ issue: { ...chat, conversationAgentId: null }, nativeRunner: true, casesEnabled: true }))
       .not.toContain("Cases:");
   });
+  it("points a standing chat at the responsibility tools, or says the feature is off", () => {
+    const chat = { id: "chat", identifier: "RUN-1", title: "Chat", conversationAgentId: "ceo" };
+    const enabled = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, responsibilitiesEnabled: true })!;
+    expect(enabled).toContain("Areas and responsibilities:");
+    expect(enabled).toContain("read them first with list_responsibilities");
+    expect(enabled).toContain("Do not ask the person what their responsibilities are or where they are written down before reading them");
+    expect(enabled).toContain("/RUN/responsibilities");
+    const app = readFileSync(new URL("../../../../ui/src/App.tsx", import.meta.url), "utf8");
+    expect(app).toMatch(/path="responsibilities"/);
+    const off = buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true, responsibilitiesEnabled: false })!;
+    expect(off).toContain("Areas and responsibilities are turned off on this instance");
+    expect(off).not.toContain("list_responsibilities");
+    expect(buildPaperclipTaskMarkdown({ issue: chat, nativeRunner: true })).not.toContain("Areas and responsibilities");
+    expect(buildPaperclipTaskMarkdown({ issue: { ...chat, conversationAgentId: null }, nativeRunner: true, responsibilitiesEnabled: true }))
+      .not.toContain("Areas and responsibilities");
+  });
   it("returns null without a task or a nonempty wake comment", () => {
     expect(buildPaperclipTaskMarkdown({ issue: null })).toBeNull();
     expect(buildPaperclipTaskMarkdown({
@@ -217,6 +242,20 @@ describe("heartbeat task markdown rendering", () => {
     expect(markdown).toContain("[ancestor context truncated after 6 entries]");
   });
 
+  it("points the follow-up directive at the wake comment when the wake payload carries its text", () => {
+    const input = {
+      issue: { id: "issue-48", identifier: "PAP-48", title: "Two small files", workMode: "standard", description: "Two small files are needed." },
+      wakeComment: { id: "comment-latest", body: "append three to w1.txt" },
+    };
+    const assignment = buildPaperclipTaskMarkdown({ ...input, includeWakeComments: false })!;
+    expect(assignment).toContain('Follow-up directive:');
+    expect(assignment).toContain('Latest wake comment: "comment-latest", shown in the wake payload.');
+    expect(assignment).not.toMatch(/Latest wake comment:\n\n/);
+    expect(assignment).not.toContain("append three to w1.txt");
+    const legacy = buildPaperclipTaskMarkdown(input)!;
+    expect(legacy).toContain("Latest wake comment:\n```text\nappend three to w1.txt\n```");
+  });
+
   it.each([true, false])("retains attachment-only wakes with hidden comment bodies (native=%s)", (nativeRunner) => {
     const contentPath = "/api/attachments/attachment-1/content";
     const markdown = buildPaperclipTaskMarkdown({
@@ -236,6 +275,8 @@ describe("heartbeat task markdown rendering", () => {
       }],
     });
 
+    expect(markdown).toContain('Latest wake comment: "comment-file" has attachments only; see the attachment directive.');
+    expect(markdown).not.toContain("shown in the wake payload");
     expect(markdown).toContain('Attachments on wake comment "comment-file":');
     expect(markdown).toContain('"filename":"evidence.txt"');
     expect(markdown).toContain("Attachment directive:");
