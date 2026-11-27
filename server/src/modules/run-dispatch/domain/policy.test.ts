@@ -267,6 +267,34 @@ describe("decideScheduledRetryGate", () => {
 });
 
 describe("decideQueuedRunStaleness", () => {
+  it("continues a task its agent blocked to wait for the answered question", () => {
+    const answer = { ...baseStalenessFacts(), isResolvedInteractionContinuation: true,
+      issueStatus: "blocked", isAgentBlockingQuestionAnswer: true };
+    expect(decideQueuedRunStaleness(answer, NOW)).toEqual({ stale: false });
+    expect(decideQueuedRunStaleness({ ...answer, isAgentBlockingQuestionAnswer: false }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_not_in_progress" });
+    expect(decideQueuedRunStaleness({ ...answer, issueAssigneeAgentId: "other-agent" }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_assignee_changed" });
+    for (const issueStatus of ["backlog", "done", "cancelled"]) {
+      expect(decideQueuedRunStaleness({ ...answer, issueStatus }, NOW)).toMatchObject({ stale: true });
+    }
+  });
+
+  it("keeps a verified response bounded to a blocked task and its current assignee", () => {
+    const response = { ...baseStalenessFacts(), isResolvedInteractionContinuation: true,
+      issueStatus: "blocked", isDependencyBlockedInteractionResponse: true };
+    expect(decideQueuedRunStaleness(response, NOW)).toEqual({ stale: false });
+    expect(decideQueuedRunStaleness({ ...response, isDependencyBlockedInteractionResponse: false }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_not_in_progress" });
+    expect(decideQueuedRunStaleness({ ...response, issueAssigneeAgentId: "other-agent" }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_assignee_changed" });
+    for (const issueStatus of ["backlog", "todo", "done", "cancelled"]) {
+      expect(decideQueuedRunStaleness({ ...response, issueStatus }, NOW)).toMatchObject({ stale: true });
+    }
+    expect(decideQueuedRunStaleness({ ...response, pendingResponse: "approval" }, NOW))
+      .toMatchObject({ stale: true, errorCode: "issue_waiting_for_response" });
+  });
+
   it("is not stale when every rule passes", () => {
     expect(decideQueuedRunStaleness(baseStalenessFacts(), NOW)).toEqual({
       stale: false,
@@ -299,6 +327,15 @@ describe("decideQueuedRunStaleness", () => {
       overrides: {
         isResolvedInteractionContinuation: true,
         issueStatus: "todo",
+      } satisfies Partial<QueuedRunFacts>,
+      errorCode: "issue_not_in_progress",
+    },
+    {
+      name: "issue_not_in_progress (resolved-interaction continuation, unstarted answer on a non-todo task)",
+      overrides: {
+        isResolvedInteractionContinuation: true,
+        isUnstartedTaskQuestionAnswer: true,
+        issueStatus: "backlog",
       } satisfies Partial<QueuedRunFacts>,
       errorCode: "issue_not_in_progress",
     },
@@ -396,6 +433,15 @@ describe("decideQueuedRunStaleness", () => {
       isConnectionContinuation: false,
       issueStatus: "in_review",
       reviewParticipant: { ...NO_PARTICIPANT, isInReview: true },
+    }, NOW)).toEqual({ stale: false });
+  });
+
+  it("allows an answer to a question no run asked to start a todo task that has never started", () => {
+    expect(decideQueuedRunStaleness({
+      ...baseStalenessFacts(),
+      isResolvedInteractionContinuation: true,
+      isUnstartedTaskQuestionAnswer: true,
+      issueStatus: "todo",
     }, NOW)).toEqual({ stale: false });
   });
 

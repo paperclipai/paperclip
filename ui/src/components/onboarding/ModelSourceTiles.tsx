@@ -21,17 +21,21 @@ import {
 
 /** How a source gets authenticated. Every tile is in the same mode at once. */
 export type CredentialMode = "subscription" | "api";
+export type ModelConnectionMode = CredentialMode | "advanced";
 
 export type ModelSource = {
   id: string;
   label: string;
   /** The brand mark, rendered into a 30px square. */
   icon: ReactNode;
+  /** Override the row's credential mode; null leaves the tag slot empty. */
+  credentialMode?: ModelConnectionMode | null;
 };
 
-const CREDENTIAL_TAG_LABEL: Record<CredentialMode, string> = {
+const CREDENTIAL_TAG_LABEL: Record<ModelConnectionMode, string> = {
   subscription: "Subscription",
-  api: "API",
+  api: "API key",
+  advanced: "Custom Gateway",
 };
 
 /**
@@ -43,7 +47,7 @@ const CREDENTIAL_TAG_LABEL: Record<CredentialMode, string> = {
  * what makes the outgoing label fall out of frame rather than slide past the
  * tile's padding and over the row below.
  */
-export function CredentialTag({ mode }: { mode: CredentialMode }) {
+export function CredentialTag({ mode }: { mode: ModelConnectionMode }) {
   return (
     <span className="relative flex h-4 w-full items-center justify-center overflow-hidden text-(length:--text-micro) text-muted-foreground">
       <AnimatePresence initial={false} mode="sync">
@@ -54,7 +58,9 @@ export function CredentialTag({ mode }: { mode: CredentialMode }) {
           animate={{ opacity: 1, y: 0, transition: TAG_SWAP_ENTER }}
           exit={{ opacity: 0, y: TAG_SWAP_TRAVEL, transition: TAG_SWAP_EXIT }}
         >
-          {CREDENTIAL_TAG_LABEL[mode]}
+          <motion.span layout="position" transition={SOURCE_COLLAPSE_MOVE}>
+            {CREDENTIAL_TAG_LABEL[mode]}
+          </motion.span>
         </motion.span>
       </AnimatePresence>
     </span>
@@ -70,7 +76,7 @@ function ModelSourceTile({
   settling,
 }: {
   source: ModelSource;
-  mode: CredentialMode;
+  mode: ModelConnectionMode | null;
   selected: boolean;
   onSelect: () => void;
   buttonRef: (node: HTMLButtonElement | null) => void;
@@ -110,9 +116,13 @@ function ModelSourceTile({
           : "border-border bg-card hover:bg-accent/40",
       )}
     >
-      <span className="flex size-(--sz-30px) shrink-0 items-center justify-center">
+      <motion.span
+        layout="position"
+        transition={SOURCE_COLLAPSE_MOVE}
+        className="flex size-(--sz-30px) shrink-0 items-center justify-center"
+      >
         {source.icon}
-      </span>
+      </motion.span>
       {/*
         One step up the named ladder each — the source name from text-xs (12px)
         to --text-compact (13px), the tag under it from --text-nano (10px) to
@@ -120,10 +130,14 @@ function ModelSourceTile({
         font-size-only token form, so the line box comes from the tile's own
         rhythm rather than the Tailwind scale's paired line-height.
       */}
-      <span className="text-(length:--text-compact) font-medium text-foreground">
+      <motion.span
+        layout="position"
+        transition={SOURCE_COLLAPSE_MOVE}
+        className="text-(length:--text-compact) font-medium text-foreground"
+      >
         {source.label}
-      </span>
-      <CredentialTag mode={mode} />
+      </motion.span>
+      {mode ? <CredentialTag mode={mode} /> : <span aria-hidden className="h-4" />}
     </button>
   );
 }
@@ -138,7 +152,7 @@ export function ModelSourceTiles({
   settling = false,
 }: {
   sources: ModelSource[];
-  mode: CredentialMode;
+  mode: ModelConnectionMode;
   /** `null` before anything has been picked — the step opens this way. */
   selectedId: string | null;
   onSelect: (id: string) => void;
@@ -220,7 +234,7 @@ export function ModelSourceTiles({
           >
             <ModelSourceTile
               source={source}
-              mode={mode}
+              mode={source.credentialMode === undefined ? mode : source.credentialMode}
               selected={source.id === selectedId}
               onSelect={() => onSelect(source.id)}
               settling={settling}

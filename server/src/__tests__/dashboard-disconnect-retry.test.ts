@@ -18,9 +18,9 @@ function disconnected(code = "CONNECTION_CLOSED") {
 }
 
 function fixture(failures: Error[] = [], options: {
-  laterError?: Error;
   missingCompany?: boolean;
   readFailures?: Record<string, Error[]>;
+  activityFailures?: Error[];
 } = {}) {
   const reads: string[] = [];
   const companyParameters: unknown[][] = [];
@@ -47,7 +47,6 @@ function fixture(failures: Error[] = [], options: {
               if (failure) throw failure;
               return options.missingCompany ? [] : [{ id: companyId, budgetMonthlyCents: 10_000 }];
             }
-            if (options.laterError) throw options.laterError;
             if (name === "agents") return [{ status: "idle", count: 2 }];
             if (name === "issues") return [{ status: "in_progress", count: 1 }];
             if (name === "approvals") return [{ count: 3 }];
@@ -59,9 +58,15 @@ function fixture(failures: Error[] = [], options: {
       return query;
     },
   }));
-  const execute = vi.fn().mockResolvedValue([]);
+  const activityQueries: SQL[] = [];
+  const execute = vi.fn(async (query: SQL) => {
+    const failure = options.activityFailures?.[activityQueries.length];
+    activityQueries.push(query);
+    if (failure) throw failure;
+    return [{ date: new Date().toISOString().slice(0, 10), status: "succeeded", count: 2 }];
+  });
   const db = { select, execute } as unknown as Db;
-  return { service: dashboardService(db), reads, companyParameters, parameters, select, execute };
+  return { service: dashboardService(db), reads, companyParameters, parameters, select, execute, activityQueries };
 }
 
 beforeEach(() => {
@@ -121,14 +126,6 @@ describe("dashboard read connection recovery", () => {
     expect(overview).not.toHaveBeenCalled();
   });
 
-  it("does not replay later summary reads when they lose a connection", async () => {
-    const error = disconnected();
-    const test = fixture([], { laterError: error });
-    await expect(test.service.summary(companyId)).rejects.toBe(error);
-    expect(test.reads).toEqual(["companies", "agents"]);
-    expect(overview).not.toHaveBeenCalled();
-  });
-
   it("does not replay the budget workflow when it loses a connection", async () => {
     const error = disconnected();
     overview.mockRejectedValue(error);
@@ -139,12 +136,13 @@ describe("dashboard read connection recovery", () => {
   });
 
   const tables = ["companies", "agents", "issues", "approvals", "cost_events"];
-  it.each(["issues", "approvals", "cost_events"])("retries only the failed %s read", async (table) => {
+  it.each(["agents", "issues", "approvals", "cost_events"])("retries only the failed %s read", async (table) => {
     const test = fixture([], { readFailures: { [table]: [disconnected()] } });
     await expect(test.service.summary(companyId)).resolves.toMatchObject({ companyId });
     const prefix = tables.slice(0, tables.indexOf(table) + 1);
     const suffix = tables.slice(tables.indexOf(table) + 1);
     expect(test.reads).toEqual([...prefix, table, ...suffix]);
+    expect(test.select).toHaveBeenCalledTimes(tables.length + 1);
     const attempts = test.parameters.get(table)!;
     expect(attempts).toHaveLength(2);
     expect(attempts[0]).toContain(companyId);
@@ -153,7 +151,7 @@ describe("dashboard read connection recovery", () => {
     expect(overview).toHaveBeenCalledExactlyOnceWith(companyId);
   });
 
-  it.each(["issues", "approvals", "cost_events"])("stops after the %s read exhausts its budget", async (table) => {
+  it.each(["agents", "issues", "approvals", "cost_events"])("stops after the %s read exhausts its budget", async (table) => {
     const failures = [disconnected(), disconnected(), disconnected()];
     const test = fixture([], { readFailures: { [table]: failures } });
     await expect(test.service.summary(companyId)).rejects.toBe(failures[2]);
@@ -162,4 +160,40 @@ describe("dashboard read connection recovery", () => {
     expect(test.execute).not.toHaveBeenCalled();
     expect(overview).not.toHaveBeenCalled();
   });
+
+  it("rebuilds only the run activity query through two transient disconnects", async () => {
+    const test = fixture([], { activityFailures: [disconnected(), disconnected()] });
+    const result = await test.service.summary(companyId);
+    expect(result.runActivity.at(-1)).toMatchObject({ succeeded: 2, total: 2 });
+    expect(test.reads).toEqual(tables);
+    expect(test.select).toHaveBeenCalledTimes(tables.length);
+    expect(test.execute).toHaveBeenCalledTimes(3);
+    expect(new Set(test.activityQueries).size).toBe(3);
+    const queries = test.activityQueries.map((query) => dialect.sqlToQuery(query));
+    expect(queries[0].params).toContain(companyId);
+    expect(queries[1]).toEqual(queries[0]);
+    expect(queries[2]).toEqual(queries[0]);
+    expect(overview).toHaveBeenCalledExactlyOnceWith(companyId);
+  });
+
+  it("propagates the last run activity failure without entering the budget workflow", async () => {
+    const failures = [disconnected(), disconnected(), disconnected()];
+    const test = fixture([], { activityFailures: failures });
+    await expect(test.service.summary(companyId)).rejects.toBe(failures[2]);
+    expect(test.reads).toEqual(tables);
+    expect(test.execute).toHaveBeenCalledTimes(3);
+    expect(overview).not.toHaveBeenCalled();
+  });
+
+  it.each(["agents", "activity"])("does not retry a non-transient %s error", async (read) => {
+    const error = disconnected("42501");
+    const test = fixture([], read === "agents"
+      ? { readFailures: { agents: [error] } }
+      : { activityFailures: [error] });
+    await expect(test.service.summary(companyId)).rejects.toBe(error);
+    expect(test.reads.filter((table) => table === "agents")).toHaveLength(1);
+    expect(test.execute).toHaveBeenCalledTimes(read === "activity" ? 1 : 0);
+    expect(overview).not.toHaveBeenCalled();
+  });
+
 });
