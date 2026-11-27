@@ -245,8 +245,6 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
     <AgentConversationsSidebar mobileSwitcher />
   ) : shellRoute.builtInContextualSurface === "agent" && agentId ? (
     <AgentContextualMobileNav agentRef={agentId} />
-  ) : appDetailConnectionId ? (
-    <AppDetailMobileNav kind="connection" connectionId={appDetailConnectionId} />
   ) : appDetailApplicationId ? (
     <AppDetailMobileNav kind="application" applicationId={appDetailApplicationId} />
   ) : appsRouteHasRail(companyPathSegments, appsDeveloperTabs.length > 0)
@@ -259,7 +257,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
       ? "Agent"
       : isCompanySettingsRoute
         ? "Settings"
-        : appDetailConnectionId || appDetailApplicationId || isAppsRoute || isToolsRoute
+        : appDetailApplicationId || isAppsRoute || isToolsRoute
           ? "Apps"
           : shellRoute.builtInContextualSurface === "skills"
             ? "Skills"
