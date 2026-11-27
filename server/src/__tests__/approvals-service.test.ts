@@ -118,7 +118,10 @@ describe("approvalService resolution idempotency", () => {
     const result = await svc.approve("approval-1", "board", "ship it");
 
     expect(result.applied).toBe(true);
-    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1", approved.payload, approved.requestedByUserId);
+    expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith(
+      "agent-1", approved.payload, approved.requestedByUserId,
+      { companyId: approved.companyId, requestedByAgentId: approved.requestedByAgentId },
+    );
     expect(mockNotifyHireApproved).toHaveBeenCalledTimes(1);
   });
 
@@ -167,7 +170,12 @@ describe("approvalService resolution idempotency", () => {
         adapterType: "codex_local",
         adapterConfig: approved.payload.adapterConfig,
       }),
-      { runnerResolved: true, createdByUserId: expectedCreator, responsibleUserId: requestedByUserId },
+      {
+        runnerResolved: true,
+        ...(requestedByAgentId ? { createdByAgentId: requestedByAgentId, createdByAgentCompanyId: "company-1" } : {}),
+        createdByUserId: expectedCreator,
+        responsibleUserId: requestedByUserId,
+      },
     );
   });
 });

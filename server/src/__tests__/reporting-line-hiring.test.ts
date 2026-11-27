@@ -6,8 +6,10 @@ import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { errorHandler } from "../middleware/error-handler.js";
 import { agentRoutes } from "../routes/agents.js";
+import { approvalRoutes } from "../routes/approvals.js";
 import { configureAgentLifecycle, createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { agentService } from "../services/agents.js";
+import { approvalService } from "../services/approvals.js";
 import { withPluginInteractionOrigin } from "../services/plugin-interaction-context.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { uniqueIssuePrefix } from "./helpers/issue-prefix.js";
@@ -63,7 +65,7 @@ describePostgres("reporting-line hiring restrictions", () => {
       membershipRole: "member" as const, status: "active" as const,
     })));
 
-    function hire(actorId: string, name: string, reportsTo?: string | null, route = "agent-hires") {
+    function agentRequest(actorId: string) {
       const app = express();
       app.use(express.json());
       app.use((req, _res, next) => {
@@ -71,12 +73,17 @@ describePostgres("reporting-line hiring restrictions", () => {
         next();
       });
       app.use("/api", agentRoutes(db));
+      app.use("/api", approvalRoutes(db));
       app.use(errorHandler);
-      return request(app).post(`/api/companies/${companyId}/${route}`)
+      return request(app);
+    }
+
+    function hire(actorId: string, name: string, reportsTo?: string | null, route = "agent-hires") {
+      return agentRequest(actorId).post(`/api/companies/${companyId}/${route}`)
         .send({ name, reportsTo, adapterType: "process", adapterConfig: {} });
     }
 
-    return { companyId, manager, peer, noHiring, lead, workerAgent, hire };
+    return { companyId, manager, peer, noHiring, lead, workerAgent, hire, agentRequest };
   }
 
   it("preserves company-wide hiring when the policy is off", async () => {
@@ -107,6 +114,27 @@ describePostgres("reporting-line hiring restrictions", () => {
     expect(result.body.agent).toMatchObject({ status: "pending_approval", reportsTo: f.manager });
     const [approval] = await db.select().from(approvals).where(eq(approvals.id, result.body.approval.id));
     expect(approval?.payload).toMatchObject({ reportsTo: f.manager });
+  });
+
+  it("places a board-approved hire under the requesting agent when no manager was specified", async () => {
+    const f = await fixture(limits, true);
+    const created = await f.agentRequest(f.manager).post(`/api/companies/${f.companyId}/approvals`)
+      .send({ type: "hire_agent", payload: { name: "Approved report", adapterType: "process" } }).expect(201);
+    expect(created.body.requestedByAgentId).toBe(f.manager);
+    await approvalService(db).approve(created.body.id, "board");
+
+    const [report] = await db.select().from(agents)
+      .where(eq(agents.companyId, f.companyId)).then(rows => rows.filter(row => row.name === "Approved report"));
+    expect(report?.reportsTo).toBe(f.manager);
+  });
+
+  it("preserves the requesting agent's reporting line when activating a pending hire", async () => {
+    const f = await fixture(limits, true);
+    const pending = await f.hire(f.manager, "Pending report").expect(201);
+    await approvalService(db).approve(pending.body.approval.id, "board");
+    const [report] = await db.select().from(agents).where(eq(agents.id, pending.body.agent.id));
+    expect(report).toMatchObject({ reportsTo: f.manager });
+    expect(report?.lifecycleState).not.toBe("pending_approval");
   });
 
   it("applies the hiring agent's reporting line in a plugin interaction", async () => {

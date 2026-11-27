@@ -1,4 +1,4 @@
-import { reportingLineForHire } from "./reporting-line-hiring.js";
+import { assertReportingLineMove, reportingLineForHire } from "./reporting-line-hiring.js";
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { assertNoInitialAgentInteractionPermissions, preserveAgentInteractionPermissions } from "../lib/agent-interaction-permissions.js";
@@ -118,9 +118,15 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
   }
 }
 
-export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireRecord, approvedPayload?: Record<string, unknown> | null): Promise<AgentConfigurationPatch> {
+export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireRecord, approvedPayload?: Record<string, unknown> | null,
+  requestedByAgentId?: string | null): Promise<AgentConfigurationPatch> {
   const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
   const patch = { ...approvedPatch } as AgentConfigurationPatch;
+  await assertReportingLineMove(txDb, existing, patch.reportsTo, requestedByAgentId);
+  await reportingLineForHire(txDb, existing.companyId, {
+    id: existing.id,
+    reportsTo: patch.reportsTo === undefined ? existing.reportsTo : patch.reportsTo,
+  }, requestedByAgentId);
   const hasApprovedAdapterConfig = Object.prototype.hasOwnProperty.call(patch, "adapterConfig") && isPlainRecord(patch.adapterConfig);
   if (
     Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&

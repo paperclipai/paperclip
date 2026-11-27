@@ -69,7 +69,7 @@ function assertDirectReportLimit(graph: ReportingGraph, managerId: string, maxim
   if (reports.length >= maximum) throw conflict("Maximum direct reports exceeded");
 }
 
-export async function reportingLineForHire(db: Db, companyId: string, hire: CreateAgentData, actorId: string | null | undefined) {
+export async function reportingLineForHire(db: Db, companyId: string, hire: Pick<CreateAgentData, "id" | "reportsTo">, actorId: string | null | undefined) {
   if (!actorId) return hire.reportsTo;
   const policy = await enabledHiringPolicy(db, companyId);
   if (!policy) return hire.reportsTo;
@@ -82,7 +82,7 @@ export async function reportingLineForHire(db: Db, companyId: string, hire: Crea
 }
 
 export async function assertReportingLineMove(
-  db: Db, current: AgentConfigurationRecord, managerId: string | null | undefined, actorId: string | null | undefined,
+  db: Db, current: Report & Pick<AgentConfigurationRecord, "companyId">, managerId: string | null | undefined, actorId: string | null | undefined,
 ) {
   if (!actorId || managerId === undefined || managerId === current.reportsTo) return;
   const policy = await enabledHiringPolicy(db, current.companyId);
