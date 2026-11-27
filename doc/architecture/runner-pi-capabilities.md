@@ -1254,3 +1254,31 @@ of the generic `session_ensure_failed`. Its child watchdog is 80 seconds (20
 seconds for cleanup after admission), inside a 90-second test timeout. Failed evidence stays
 in its reported temporary directory. These margins do not extend production
 command deadlines or qualify a target platform without a fresh run.
+
+## Local Pi profile compatibility probe
+
+Use the development probe to check an independently installed Pi CLI with the
+Paperclip runtime extension. Run it as the OS user that owns the Pi profile.
+It calls only Pi RPC readiness and state methods. It does not send a model prompt
+or save a Pi session.
+
+```sh
+node packages/paperclip-runner/scripts/probe-local-pi-profile.mjs \
+  --entrypoint /absolute/path/to/pi/dist/cli.js \
+  --profile /absolute/path/to/pi/agent \
+  --workspace /absolute/path/to/test-repository \
+  --extension /absolute/path/to/trusted-extension.js \
+  --expect-command my-extension-command \
+  --model provider/model
+```
+
+Omit the extension and model options to test the Paperclip readiness command
+alone. Repeat `--extension` for each extension you trust to run as your OS user.
+Use `--expect-command` for an extension that registers a command. The probe
+leaves automatic discovery disabled and uses the specified profile in place.
+
+The probe runs a standalone process. The production Runner still uses the
+qualified distribution and its own isolated profile. A passing probe shows
+that the Paperclip extension initialized and that Pi can select the requested
+model. A successful provider call, Runner admission, and session recovery
+require separate verification.
