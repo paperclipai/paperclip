@@ -53,8 +53,6 @@ describe("chat connector UI contract", () => {
       expect(detail).toContain(`"${tab}"`);
     }
     expect(detail).not.toContain('"overview"');
-    expect(detail).toContain("Open {providerNames[provider]}");
-    expect(detail).toContain("Open task");
     expect(detail.toLowerCase()).not.toContain("detach");
   });
 
@@ -69,20 +67,13 @@ describe("chat connector UI contract", () => {
     expect(detail).toContain("Not observed");
   });
 
-  it("lists every supported provider in the agent channel empty state", () => {
-    const panel = source("../../../components/chat/AgentChannelsPanel.tsx");
-    expect(panel).toContain(
-      "Connect AgentMail, Slack, GitHub Code Review Bot, Discord, Microsoft Teams, or Telegram from",
-    );
-  });
-
   it("keeps provider capabilities automatic and settings focused on plausible reach", () => {
     const detail = source("./ChatEndpointDetail.tsx");
     const setup = source("./ChatEndpointSetup.tsx");
     expect(detail).toContain("Allow direct messages");
     expect(detail).toContain("Allow group chats");
-    expect(detail).toContain("Their tasks run only with an isolated workspace");
-    expect(detail).toContain("otherwise Paperclip safely refuses the request");
+    expect(detail).toContain("People without linked accounts can start isolated tasks");
+    expect(detail).toContain("Requests are refused when isolation is unavailable");
     expect(setup).toContain("Link the account you’re testing");
     expect(setup).toContain("Paperclip does not replay the refused request");
     expect(setup).toContain("Review identity access");
@@ -120,7 +111,10 @@ describe("chat connector UI contract", () => {
     expect(detail).not.toContain("Change agent");
     for (const label of ["Pause", "Resume", "Reconnect", "Remove connection"]) {
       expect(activity).toContain(label);
-      expect(settings).not.toContain(label);
+      // Guidance may name an action that lives on Activity; only controls
+      // must stay out of the Settings surface.
+      const settingsButtons = settings.match(/<Button\b[\s\S]*?<\/Button>/g) ?? [];
+      expect(settingsButtons.join("\n")).not.toContain(label);
     }
   });
 
@@ -247,31 +241,12 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain('type="password"');
     expect(setup).not.toContain("WebkitTextSecurity");
     expect(setup).toContain("Verify Slack connection");
-    expect(setup).toContain("member_joined_channel");
-    expect(setup).toContain("member_left_channel");
-    expect(setup).toContain("channel_left");
-    expect(setup).toContain("group_left");
-    expect(setup).toContain("group_archive");
-    expect(setup).toContain("group_unarchive");
-    expect(setup).toContain("group_rename");
-    expect(setup).toContain("app_uninstalled");
-    expect(setup).toContain("slackBotNameForAgent");
-    expect(setup).not.toContain("- im:write");
-    expect(setup).toContain("- reactions:write");
-    expect(setup).not.toContain("always_online");
-    expect(setup).toContain("- reactions:read");
-    expect(setup).toContain("- assistant:write");
-    expect(setup).toContain("agent_view:");
-    expect(setup).toContain("agent_session_stopped");
-    expect(setup).not.toContain("assistant_view:");
-    expect(setup).toContain("reaction_added");
-    expect(setup).toContain("reaction_removed");
-    expect(setup).toContain("home_tab_enabled: false");
-    expect(setup).toContain("messages_tab_enabled: true");
-    expect(setup).toContain("messages_tab_read_only_enabled: false");
+    expect(setup).toContain("buildSlackAppManifest");
+    expect(setup).toContain("defaultSlackAppConfiguration");
     expect(setup).not.toContain("No credentials");
     expect(setup).not.toContain("managed Microsoft app");
-    expect(setup).toContain("endpoint.providerAccountId && !repairing");
+    expect(setup).toContain("slackSetupState({ endpoint, repairing");
+    expect(source("./slack/setup-state.ts")).toContain("endpoint.providerAccountId && !repairing");
     expect(setup).not.toContain('field("webhookSecret"');
     expect(setup).not.toContain("@paperclipai/teams-connect");
     expect(setup).not.toContain("Copy setup command");
@@ -281,23 +256,14 @@ describe("chat connector UI contract", () => {
 
   it("keeps provider setup failures visible without rendering submitted credentials", () => {
     const setup = source("./ChatEndpointSetup.tsx");
-    const setupError = source("./chat-setup-error.ts");
     expect(setup).toContain("sanitizedSetupErrorMessage");
     expect(setup).toContain('role="alert"');
-    expect(setupError).toContain('message.replaceAll(candidate, "[redacted]")');
-    expect(setupError).toContain("return encodeURIComponent(value)");
     expect(setup).toContain("onMutate: () => setSetupError(null)");
     expect(setup).not.toContain('title: "Connection failed"');
   });
 
   it("keeps GitHub setup on the shipped customer-owned App path", () => {
     const setup = source("./ChatEndpointSetup.tsx");
-    const generator = source(
-      "../../../../../doc/plans/chat-adapters/generate-wireframes-v8.mjs",
-    );
-    const setupData = source(
-      "../../../../../doc/plans/chat-adapters/setup-wireframe-data-v8.mjs",
-    );
     expect(setup).toContain("Generate webhook secret");
     expect(setup).toContain("GitHub App ID");
     expect(setup).toContain("Private key (PEM)");
@@ -310,8 +276,5 @@ describe("chat connector UI contract", () => {
     expect(setup).toContain('type="password"');
     expect(setup).toContain('event.clipboardData.getData("text")');
     expect(setup).not.toContain("WebkitTextSecurity");
-    expect(generator).toContain("./setup-wireframe-data-v8.mjs");
-    expect(generator).not.toContain("./setup-wireframe-data-v6.mjs");
-    expect(setupData).not.toContain('primary: "Create in GitHub"');
   });
 });

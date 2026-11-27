@@ -30,7 +30,7 @@ export const kubernetesProviderConfigSchema = z
     runtimeClassName: z.string().optional(),
 
     /** Copied verbatim into every agent pod spec. Empty = scheduler default. */
-    nodeSelector: z.record(z.string()).default({}),
+    nodeSelector: z.record(z.string(), z.string()).default({}),
     tolerations: z
       .array(
         z
@@ -54,7 +54,7 @@ export const kubernetesProviderConfigSchema = z
           }),
       )
       .default([]),
-    serviceAccountAnnotations: z.record(z.string()).default({}),
+    serviceAccountAnnotations: z.record(z.string(), z.string()).default({}),
 
     jobTtlSecondsAfterFinished: z.number().int().nonnegative().default(900),
     podActivityDeadlineSec: z.number().int().positive().default(3600),

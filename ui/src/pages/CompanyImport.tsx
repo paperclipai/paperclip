@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
+  AgentRunnerChoice,
   CompanyPortabilityCollisionStrategy,
   CompanyPortabilityFileEntry,
   CompanyPortabilityImportResult,
@@ -8,6 +9,7 @@ import type {
   CompanyPortabilitySource,
   CompanyPortabilityAdapterOverride,
 } from "@paperclipai/shared";
+import { agentHarnessType, agentRunner } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
@@ -15,6 +17,7 @@ import { authApi } from "../api/auth";
 import { ApiError } from "../api/client";
 import { companiesApi, type CompanyImportJobAccepted } from "../api/companies";
 import { adaptersApi } from "../api/adapters";
+import { instanceSettingsApi } from "../api/instanceSettings";
 import { agentsApi } from "../api/agents";
 import { routinesApi } from "../api/routines";
 import { sidebarPreferencesApi } from "../api/sidebarPreferences";
@@ -23,8 +26,8 @@ import { getAgentOrderStorageKey, writeAgentOrder } from "../lib/agent-order";
 import { MarkdownBody } from "../components/MarkdownBody";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "../components/EmptyState";
-import { AgentConfigForm } from "../components/AgentConfigForm";
-import { cn } from "../lib/utils";
+import { AgentConfigForm, overlayValuesEqual } from "../components/AgentConfigForm";
+import { asObject, cn } from "../lib/utils";
 import {
   ArrowRight,
   Check,
@@ -37,9 +40,12 @@ import {
 import { GithubIcon } from "../components/icons/github-icon";
 import { Field, adapterLabels } from "../components/agent-config-primitives";
 import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { useCloudInstance } from "@/hooks/useCloudInstance";
+import { useCloudHarnessPolicy } from "@/hooks/useCloudHarnessPolicy";
 import { defaultCreateValues } from "../components/agent-config-defaults";
 import { getUIAdapter, listUIAdapters } from "../adapters";
-import type { CreateConfigValues } from "@paperclipai/adapter-utils";
+import { isPaperclipRunnerProvider, PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES, type CreateConfigValues } from "@paperclipai/adapter-utils";
+import { resolveCodexLocalCliPolicy } from "@paperclipai/adapter-codex-local";
 import {
   type FileTreeNode,
   type FrontmatterData,
@@ -67,6 +73,8 @@ import {
   writeStoredImportJob,
 } from "../lib/import-job-watch";
 import { Badge } from "@/components/ui/badge";
+import { describeError } from "@/api/errors";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 
 // ── Import-specific helpers ───────────────────────────────────────────
 
@@ -270,7 +278,7 @@ function ImportPreviewPane({
             <img src={imageSrc} alt={selectedFile} className="max-h-(--sz-480px) max-w-full object-contain" />
           </div>
         ) : textContent !== null ? (
-          <pre className="overflow-x-auto whitespace-pre-wrap break-words border-0 bg-transparent p-0 font-mono text-sm text-foreground">
+          <pre className={cn("overflow-x-auto whitespace-pre-wrap break-words border-0 bg-transparent p-0 font-mono text-sm text-foreground", ANALYTICS_MASK_CLASS)}>
             <code>{textContent}</code>
           </pre>
         ) : (
@@ -556,11 +564,66 @@ function ConflictResolutionList({
 
 // ── Adapter type options for import ───────────────────────────────────
 
-const FALLBACK_IMPORT_ADAPTER_TYPE = "claude_local";
-const IMPORT_ADAPTER_OPTIONS: { value: string; label: string }[] = listUIAdapters().map((adapter) => ({
-  value: adapter.type,
-  label: adapterLabels[adapter.type] ?? getAdapterLabel(adapter.type),
-}));
+const IMPORT_ADAPTER_OPTIONS: { value: string; label: string }[] = [
+  ...listUIAdapters().map((adapter) => ({
+    value: adapter.type,
+    label: adapterLabels[adapter.type] ?? getAdapterLabel(adapter.type),
+  })),
+  { value: "openai_dot", label: "OpenAI Dot (experimental)" },
+  { value: "muse", label: "Muse — Personal agent (experimental)" },
+];
+
+// Dot is a picker choice backed by the shared Runner API adapter.
+function importAdapterValues(
+  choice: string,
+  sourceConfig?: Record<string, unknown>,
+  sourceAdapterType?: string,
+  runner?: AgentRunnerChoice,
+): CreateConfigValues {
+  const nativeHarness = sourceAdapterType === "paperclip_runner" && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(choice);
+  const nativeCodex = nativeHarness && choice === "codex_local";
+  const savedBypass = sourceConfig?.dangerouslyBypassApprovalsAndSandbox
+    ?? (nativeCodex ? undefined : sourceConfig?.dangerouslyBypassSandbox);
+  return {
+    ...defaultCreateValues,
+    adapterType: (choice === "openai_dot" || choice === "muse") ? "paperclip_runner" : choice,
+    ...(runner !== undefined ? { runner } : nativeHarness ? { runner: agentRunner("paperclip_runner") } : {}),
+    ...(sourceConfig && choice === "codex_local" ? {
+      model: typeof sourceConfig.model === "string" ? sourceConfig.model : "",
+      thinkingEffort: String(sourceConfig.modelReasoningEffort ?? sourceConfig.reasoningEffort ?? ""),
+      ...(typeof savedBypass === "boolean" ? { codexLegacySandboxBypass: savedBypass } : {}),
+      dangerouslyBypassSandbox: typeof savedBypass === "boolean" ? savedBypass
+        : nativeCodex
+          ? (sourceConfig.codexPermissionMode ?? PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.defaultMode) === "never"
+          : resolveCodexLocalCliPolicy(sourceConfig).bypass,
+    } : {}),
+    ...(sourceConfig && choice === "opencode_local" ? { model: typeof sourceConfig.model === "string" ? sourceConfig.model : "" } : {}),
+    ...(sourceConfig && choice === "pi_local" ? { model: typeof sourceConfig.model === "string" ? sourceConfig.model : "", thinkingEffort: String(sourceConfig.piThinkingLevel ?? sourceConfig.thinking ?? "") } : {}),
+    ...(sourceConfig && choice === "claude_local" ? { model: typeof sourceConfig.model === "string" ? sourceConfig.model : "", thinkingEffort: String(sourceConfig.modelReasoningEffort ?? sourceConfig.reasoningEffort ?? sourceConfig.effort ?? "") } : {}),
+    ...(nativeHarness && sourceConfig ? {
+      cwd: typeof sourceConfig.cwd === "string" ? sourceConfig.cwd : "",
+      instructionsFilePath: typeof sourceConfig.instructionsFilePath === "string" ? sourceConfig.instructionsFilePath : "",
+      envBindings: { ...asObject(sourceConfig.env) },
+      workspaceStrategyType: String(asObject(sourceConfig.workspaceStrategy).type ?? "project_primary"),
+      workspaceBaseRef: String(asObject(sourceConfig.workspaceStrategy).baseRef ?? ""),
+      workspaceBranchTemplate: String(asObject(sourceConfig.workspaceStrategy).branchTemplate ?? ""),
+      worktreeParentDir: String(asObject(sourceConfig.workspaceStrategy).worktreeParentDir ?? ""),
+      runtimeServicesJson: sourceConfig.workspaceRuntime ? JSON.stringify(sourceConfig.workspaceRuntime) : "",
+      ...(sourceConfig.lifecycleMode === "warm" || sourceConfig.lifecycleMode === "per_turn" ? { paperclipRunnerLifecycleMode: sourceConfig.lifecycleMode } : {}),
+      ...(typeof sourceConfig.idleTimeoutMs === "number" ? { paperclipRunnerIdleTimeoutMs: sourceConfig.idleTimeoutMs } : {}),
+    } : {}),
+    ...(sourceAdapterType === "paperclip_runner" && choice !== "openai_dot"
+      ? { adapterSchemaValues: { ...sourceConfig } } : {}),
+    ...(choice === "openai_dot" ? {
+      adapterSchemaValues: {
+        provider: "openai_dot",
+        allowUnmeteredProvider: sourceConfig?.allowUnmeteredProvider === true,
+        dotAttachmentAccess: sourceConfig?.dotAttachmentAccess === true,
+        dotWorkspaceAccess: sourceConfig?.dotWorkspaceAccess === true,
+      },
+    } : choice === "muse" ? { adapterSchemaValues: { provider: "muse", allowUnmeteredProvider: sourceConfig?.allowUnmeteredProvider === true } } : {}),
+  };
+}
 
 // ── Adapter picker for imported agents ───────────────────────────────
 
@@ -569,11 +632,16 @@ interface AdapterPickerItem {
   name: string;
   /** Adapter type from the package manifest (the source's adapter). */
   adapterType: string;
+  /** Display choice, including the separate Dot provider. */
+  adapterChoice: string;
+  adapterConfig: Record<string, unknown>;
+  runner?: AgentRunnerChoice;
+  availabilityWarning?: string;
   /**
    * Set when the manifest adapter is not installed on the destination: the
    * adapter type the agent falls back to unless the user picks another one.
    * Null when the manifest adapter is usable here (or availability is unknown,
-   * which fails open to the manifest adapter except for native runner).
+   * which fails open to the manifest adapter except for experimental Runner providers).
    */
   fallbackAdapterType: string | null;
 }
@@ -597,6 +665,8 @@ function AdapterPickerList({
   onToggleExpand: (slug: string) => void;
   onChangeConfig: (slug: string, patch: Partial<CreateConfigValues>) => void;
 }) {
+  const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
   if (agents.length === 0) return null;
 
   return (
@@ -611,9 +681,15 @@ function AdapterPickerList({
         <div className="divide-y divide-border">
           {agents.map((agent) => {
             const selectedType =
-              adapterOverrides[agent.slug] ?? agent.fallbackAdapterType ?? agent.adapterType;
+              adapterOverrides[agent.slug] ?? agent.fallbackAdapterType ?? agent.adapterChoice;
             const isExpanded = expandedSlugs.has(agent.slug);
-            const vals = configValues[agent.slug] ?? { ...defaultCreateValues, adapterType: selectedType };
+            const allowed = !cloud || harnessPolicy.isCloudHarnessAllowed(selectedType,
+              configValues[agent.slug]?.adapterSchemaValues ?? (selectedType === agent.adapterChoice ? agent.adapterConfig : {}));
+            const vals = configValues[agent.slug] ?? importAdapterValues(
+              selectedType, selectedType === agent.adapterChoice ? agent.adapterConfig : undefined,
+              selectedType === agent.adapterChoice ? agent.adapterType : undefined,
+              selectedType === agent.adapterChoice ? agent.runner : undefined,
+            );
 
             return (
               <div key={agent.slug}>
@@ -630,7 +706,7 @@ function AdapterPickerList({
                   <ArrowRight className="h-3 w-3 shrink-0 text-muted-foreground" />
                   <select
                     className="min-w-0 flex-1 rounded-md border border-border bg-transparent px-2 py-1 text-xs outline-none focus:border-foreground"
-                    value={selectedType}
+                    value={allowed ? selectedType : ""}
                     onChange={(e) => onChangeAdapter(agent.slug, e.target.value)}
                   >
                     {adapterOptions.map((opt) => (
@@ -638,6 +714,10 @@ function AdapterPickerList({
                         {opt.label}
                       </option>
                     ))}
+                    {!allowed && <option value="" disabled>Choose an available harness</option>}
+                    {allowed && !adapterOptions.some((option) => option.value === selectedType) && (
+                      <option value={selectedType}>{agent.adapterChoice === "openai_dot" ? "OpenAI Dot (experimental)" : `${getAdapterLabel(selectedType)} (${agentHarnessType(agent.adapterType, agent.adapterConfig)})`}</option>
+                    )}
                   </select>
                   <button
                     type="button"
@@ -648,6 +728,7 @@ function AdapterPickerList({
                         : "border-border text-muted-foreground hover:bg-accent/50",
                     )}
                     onClick={() => onToggleExpand(agent.slug)}
+                    disabled={!allowed}
                   >
                     <ChevronRight className={cn("h-3 w-3 transition-transform", isExpanded && "rotate-90")} />
                     configure adapter
@@ -656,12 +737,15 @@ function AdapterPickerList({
                 {agent.fallbackAdapterType && (
                   <div className="mx-4 mb-2.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2">
                     <p className="text-xs text-amber-500">
-                      source adapter {agent.adapterType} is not installed here — this agent
+                      source adapter {agent.adapterChoice === "openai_dot" ? "OpenAI Dot" : agent.adapterChoice === "muse" ? "Muse — Personal agent" : agent.adapterType} is not installed here — this agent
                       will use {adapterLabels[selectedType] ?? getAdapterLabel(selectedType)}
                     </p>
                   </div>
                 )}
-                {isExpanded && (
+                {agent.availabilityWarning && selectedType === agent.adapterChoice && (
+                  <p role="alert" className="mx-4 mb-2.5 text-xs text-destructive">{agent.availabilityWarning}</p>
+                )}
+                {isExpanded && allowed && (
                   <div className="border-t border-border bg-accent/10 px-4 py-3 space-y-3">
                     <AgentConfigForm
                       mode="create"
@@ -892,6 +976,7 @@ export function CompanyImport() {
   const [adapterOverrides, setAdapterOverrides] = useState<Record<string, string>>({});
   const [adapterExpandedSlugs, setAdapterExpandedSlugs] = useState<Set<string>>(new Set());
   const [adapterConfigValues, setAdapterConfigValues] = useState<Record<string, CreateConfigValues>>({});
+  const [adapterConfigEditedSlugs, setAdapterConfigEditedSlugs] = useState<Set<string>>(new Set());
 
   // Post-import success / activation state
   const [pauseAutomations, setPauseAutomations] = useState(true);
@@ -1013,10 +1098,6 @@ export function CompanyImport() {
     return ceo?.adapterType ?? "claude_local";
   }, [companyAgents]);
 
-  // Fetch the destination's installed adapters so imported agents keep their
-  // manifest adapter whenever it is usable here. Only agents whose manifest
-  // adapter is missing (or disabled) fall back to the CEO's adapter — with a
-  // visible per-agent warning, never silently.
   const { data: installedAdapters } = useQuery({
     queryKey: queryKeys.adapters.all,
     queryFn: () => adaptersApi.list(),
@@ -1028,17 +1109,22 @@ export function CompanyImport() {
     if (!installedAdapters) return null;
     return new Set(installedAdapters.filter((a) => !a.disabled).map((a) => a.type));
   }, [installedAdapters]);
-  // Native runner is the one adapter that fails closed in the importer. Other
-  // adapter choices preserve the importer's existing fail-open behavior when
-  // availability cannot be read, but Paperclip Runner only appears after the
-  // server explicitly reports that its experimental flag is enabled.
-  const nativeRunnerAvailable =
-    availableAdapterTypes?.has("paperclip_runner") === true;
+  const { data: experimentalSettings } = useQuery({
+    queryKey: queryKeys.instance.experimentalSettings,
+    queryFn: () => instanceSettingsApi.getExperimental(),
+  });
+  const runnerInstalled = availableAdapterTypes?.has("paperclip_runner") === true;
+  const nativeRunnerAvailable = runnerInstalled && experimentalSettings?.enableNativeRunner === true;
+  const dotAvailable = runnerInstalled && experimentalSettings?.enableOpenAiDot === true;
+  const museAvailable = nativeRunnerAvailable && experimentalSettings?.enableMuse === true;
+  const cloud = Boolean(useCloudInstance());
+  const harnessPolicy = useCloudHarnessPolicy();
   const importAdapterOptions = useMemo(
-    () => IMPORT_ADAPTER_OPTIONS.filter(
-      (option) => option.value !== "paperclip_runner" || nativeRunnerAvailable,
+    () => IMPORT_ADAPTER_OPTIONS.filter((option) =>
+      (!cloud || harnessPolicy.isCloudHarnessAllowed(option.value)) && (option.value === "paperclip_runner" ? nativeRunnerAvailable
+        : option.value === "openai_dot" ? dotAvailable : option.value === "muse" ? museAvailable : true),
     ),
-    [nativeRunnerAvailable],
+    [cloud, harnessPolicy, nativeRunnerAvailable, dotAvailable, museAvailable],
   );
 
   const localZipHelpText =
@@ -1132,6 +1218,7 @@ export function CompanyImport() {
       setAdapterOverrides({});
       setAdapterExpandedSlugs(new Set());
       setAdapterConfigValues({});
+      setAdapterConfigEditedSlugs(new Set());
 
       // Check all files by default, then uncheck COMPANY.md for existing company
       const allFiles = new Set(Object.keys(result.files));
@@ -1169,7 +1256,7 @@ export function CompanyImport() {
       pushToast({
         tone: "error",
         title: "Preview failed",
-        body: err instanceof Error ? err.message : "Failed to preview import.",
+        body: describeError(err).body,
       });
     },
   });
@@ -1323,7 +1410,7 @@ export function CompanyImport() {
       pushToast({
         tone: "error",
         title: "Import failed",
-        body: err instanceof Error ? err.message : "Failed to apply import.",
+        body: describeError(err).body,
       });
     },
   });
@@ -1377,7 +1464,7 @@ export function CompanyImport() {
       pushToast({
         tone: "error",
         title: "Package read failed",
-        body: err instanceof Error ? err.message : "Failed to read folder.",
+        body: describeError(err).body,
       });
     }
   }
@@ -1515,13 +1602,32 @@ export function CompanyImport() {
 
   function handleAdapterChange(slug: string, adapterType: string) {
     resetMutationState();
+    const source = adapterAgents.find(agent => agent.slug === slug);
+    const resetCloudProfile = cloud && source && !harnessPolicy.isCloudHarnessAllowed(source.adapterType, source.adapterConfig);
     setAdapterOverrides((prev) => ({ ...prev, [slug]: adapterType }));
+    setAdapterConfigEditedSlugs(prev => {
+      const next = new Set(prev);
+      // Selecting the generic Runner resets its provider, even when its API
+      // adapter type matches the manifest's unsupported native profile.
+      if (adapterType === "paperclip_runner" || resetCloudProfile) next.add(slug);
+      else next.delete(slug);
+      return next;
+    });
     // Reset config values when adapter type changes
     setAdapterConfigValues((prev) => {
       const next = { ...prev };
-      delete next[slug];
+      if (adapterType === "openai_dot" || adapterType === "muse" || adapterType === "paperclip_runner" || resetCloudProfile) {
+        next[slug] = { ...importAdapterValues(adapterType),
+          ...(adapterType === "paperclip_runner" ? { adapterSchemaValues: { provider: "codex" } } : {}),
+        };
+      } else {
+        delete next[slug];
+      }
       return next;
     });
+    if (adapterType === "openai_dot" || adapterType === "muse") {
+      setAdapterExpandedSlugs((prev) => new Set([...prev, slug]));
+    }
   }
 
   function handleAdapterToggleExpand(slug: string) {
@@ -1537,9 +1643,16 @@ export function CompanyImport() {
     resetMutationState();
     const agent = adapterAgents.find((a) => a.slug === slug);
     const currentType = agent ? effectiveAdapterType(agent) : adapterOverrides[slug] ?? "claude_local";
+    if (Object.keys(patch).some(key => key !== "runner" && key !== "resolvedRunner")) {
+      setAdapterConfigEditedSlugs(prev => new Set([...prev, slug]));
+    }
     setAdapterConfigValues((prev) => ({
       ...prev,
-      [slug]: { ...(prev[slug] ?? { ...defaultCreateValues, adapterType: currentType }), ...patch },
+      [slug]: { ...(prev[slug] ?? importAdapterValues(
+        currentType, currentType === agent?.adapterChoice ? agent.adapterConfig : undefined,
+        currentType === agent?.adapterChoice ? agent.adapterType : undefined,
+        currentType === agent?.adapterChoice ? agent.runner : undefined,
+      )), ...patch },
     }));
   }
 
@@ -1567,7 +1680,7 @@ export function CompanyImport() {
         }
         nextActivated.add(item.key);
       } catch (err) {
-        nextFailures[item.key] = err instanceof Error ? err.message : "Activation failed.";
+        nextFailures[item.key] = describeError(err).body;
       }
     }
     setActivatedKeys(nextActivated);
@@ -1583,62 +1696,136 @@ export function CompanyImport() {
     }
   }
 
-  // Build the list of agents for adapter picking. An agent whose manifest
-  // adapter is not installed on the destination gets a warned fallback to the
-  // CEO's adapter; while availability is unknown the manifest adapter stands.
   const adapterAgents = useMemo<AdapterPickerItem[]>(() => {
     if (!importPreview) return [];
     return importPreview.manifest.agents.map((a) => {
+      const nativeCodex = a.adapterType === "paperclip_runner"
+        && (a.adapterConfig?.provider === "codex" || a.adapterConfig?.provider === undefined);
+      const nativeHarness = nativeCodex || (a.adapterType === "paperclip_runner"
+        && ["claude_local", "opencode_local", "pi_local"].includes(agentHarnessType(a.adapterType, a.adapterConfig)));
+      const adapterChoice = a.adapterType === "paperclip_runner" && a.adapterConfig?.provider === "openai_dot"
+        ? "openai_dot" : a.adapterType === "paperclip_runner" && a.adapterConfig?.provider === "muse" ? "muse" : nativeHarness ? agentHarnessType(a.adapterType, a.adapterConfig) : a.adapterType;
       let fallbackAdapterType: string | null = null;
-      if (a.adapterType === "paperclip_runner" && !nativeRunnerAvailable) {
-        const firstEnabledLegacyAdapter = availableAdapterTypes
-          ? [...availableAdapterTypes].find((type) => type !== "paperclip_runner") ?? null
-          : null;
-        fallbackAdapterType =
-          ceoAdapterType !== "paperclip_runner" &&
-          (!availableAdapterTypes || availableAdapterTypes.has(ceoAdapterType))
-            ? ceoAdapterType
-            : firstEnabledLegacyAdapter ?? FALLBACK_IMPORT_ADAPTER_TYPE;
+      let availabilityWarning: string | undefined;
+      if (a.adapterType === "paperclip_runner") {
+        const available = nativeHarness ? runnerInstalled : adapterChoice === "openai_dot" ? dotAvailable : adapterChoice === "muse" ? museAvailable : nativeRunnerAvailable;
+        if (!available && (availableAdapterTypes || !nativeHarness)) {
+          availabilityWarning = nativeHarness
+            ? "Paperclip Runner is unavailable here. Choose another harness."
+            : `Paperclip Runner provider ${String(a.adapterConfig?.provider)} requires its experimental feature to be enabled. This import keeps its saved harness until you choose another one.`;
+        }
       } else if (availableAdapterTypes && !availableAdapterTypes.has(a.adapterType)) {
         // The fallback must itself be installed: the CEO's adapter when it is,
         // else any installed adapter, else null so the manifest adapter stands
         // and the server's unknown-adapter rejection is the backstop.
-        fallbackAdapterType = availableAdapterTypes.has(ceoAdapterType)
+        const selectableTypes = [...availableAdapterTypes].filter((type) =>
+          (!cloud || harnessPolicy.isCloudHarnessAllowed(type)) && (type !== "paperclip_runner" || nativeRunnerAvailable),
+        );
+        fallbackAdapterType = selectableTypes.includes(ceoAdapterType)
           ? ceoAdapterType
-          : [...availableAdapterTypes][0] ?? null;
+          : selectableTypes[0] ?? null;
       }
 
       return {
         slug: a.slug,
         name: a.name,
         adapterType: a.adapterType,
+        adapterChoice,
+        adapterConfig: a.adapterConfig ?? {},
+        runner: a.runner,
+        availabilityWarning,
         fallbackAdapterType,
       };
     });
-  }, [importPreview, availableAdapterTypes, ceoAdapterType, nativeRunnerAvailable]);
+  }, [importPreview, availableAdapterTypes, ceoAdapterType, runnerInstalled, nativeRunnerAvailable, dotAvailable, museAvailable, cloud, harnessPolicy]);
 
   /** The adapter type an imported agent will actually use: an explicit user pick, else the availability fallback, else the manifest adapter. */
   function effectiveAdapterType(agent: AdapterPickerItem): string {
-    return adapterOverrides[agent.slug] ?? agent.fallbackAdapterType ?? agent.adapterType;
+    return adapterOverrides[agent.slug] ?? agent.fallbackAdapterType ?? agent.adapterChoice;
   }
+
+  const selectedImportAgentSlugs = new Set(importPreview?.manifest.agents
+    .filter(agent => checkedFiles.has(agent.path) && !skippedSlugs.has(agent.slug)).map(agent => agent.slug));
+  const hasUnavailableCloudHarness = cloud && adapterAgents.some(agent => selectedImportAgentSlugs.has(agent.slug) && !harnessPolicy.isCloudHarnessAllowed(
+    effectiveAdapterType(agent), adapterConfigValues[agent.slug]?.adapterSchemaValues
+      ?? (effectiveAdapterType(agent) === agent.adapterChoice ? agent.adapterConfig : {}),
+  ));
 
   // Build final adapterOverrides for import request. Only agents that diverge
   // from the manifest adapter (a user pick or an availability fallback) or
   // carry edited adapter config send an override — untouched agents flow
   // through with none, so the manifest adapter survives the import.
   function buildFinalAdapterOverrides(): Record<string, CompanyPortabilityAdapterOverride> | undefined {
+    if (hasUnavailableCloudHarness) throw new Error("Choose an available Cloud harness for each imported agent.");
     const overrides: Record<string, CompanyPortabilityAdapterOverride> = {};
     for (const agent of adapterAgents) {
       const selectedType = effectiveAdapterType(agent);
       const configVals = adapterConfigValues[agent.slug];
-      if (selectedType === agent.adapterType && !configVals) continue;
-      const override: CompanyPortabilityAdapterOverride = { adapterType: selectedType };
-      if (configVals) {
-        const uiAdapter = getUIAdapter(selectedType);
-        override.adapterConfig = uiAdapter.buildAdapterConfig(configVals);
+      if (selectedType === agent.adapterChoice && !adapterConfigEditedSlugs.has(agent.slug)
+        && (!configVals || configVals.runner === importAdapterValues(selectedType, agent.adapterConfig, agent.adapterType, agent.runner).runner)) continue;
+      const retainsNativeHarness = agent.adapterType === "paperclip_runner"
+        && selectedType === agent.adapterChoice && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(selectedType);
+      const apiType = selectedType === "openai_dot" || selectedType === "muse" || retainsNativeHarness ? "paperclip_runner" : selectedType;
+      const override: CompanyPortabilityAdapterOverride = { adapterType: apiType };
+      if (configVals?.runner !== undefined) override.runner = configVals.runner;
+      if (configVals && (selectedType !== agent.adapterChoice || adapterConfigEditedSlugs.has(agent.slug))) {
+        const provider = configVals.adapterSchemaValues?.provider;
+        if (configVals.adapterType === "paperclip_runner" && provider !== undefined && !isPaperclipRunnerProvider(provider)) {
+          throw new Error(`Unknown Paperclip Runner provider ${String(provider)}. Keep the package configuration or explicitly choose another harness.`);
+        }
+        if (selectedType === "openai_dot" && configVals.adapterSchemaValues?.allowUnmeteredProvider !== true) {
+          throw new Error("OpenAI Dot requires acknowledgement of external billing. Configure the Dot adapter and enable Allow externally billed provider.");
+        }
+        if (selectedType === "muse" && configVals.adapterSchemaValues?.allowUnmeteredProvider !== true) {
+          throw new Error("Muse requires acknowledgement of external billing. Configure Muse and enable Allow externally billed provider.");
+        }
+        const nativeClaudeForm = selectedType === "claude_local" && (retainsNativeHarness
+          || (configVals.runner !== "legacy" && configVals.adapterSchemaValues?.provider === "acpx"
+            && configVals.adapterSchemaValues.acpxAgent === "claude"));
+        const build = getUIAdapter(nativeClaudeForm ? "paperclip_runner" : configVals.adapterType).buildAdapterConfig;
+        const edited = build(configVals);
+        if (agent.adapterType === "paperclip_runner" && selectedType === agent.adapterChoice
+          && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(selectedType) && configVals.adapterType === selectedType
+          && agentHarnessType("paperclip_runner", configVals.adapterSchemaValues) === selectedType) {
+          const original = importAdapterValues(selectedType, agent.adapterConfig, agent.adapterType, configVals.runner);
+          const baseline = build(original);
+          const retained = { ...agent.adapterConfig };
+          const applyChanges = (before: Record<string, unknown>, after: Record<string, unknown>) => {
+            for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+              if (overlayValuesEqual(before[key], after[key])) continue;
+              if (after[key] === undefined) delete retained[key];
+              else retained[key] = after[key];
+            }
+          };
+          applyChanges(original.adapterSchemaValues ?? {}, configVals.adapterSchemaValues ?? {});
+          applyChanges(baseline, edited);
+          if (selectedType === "claude_local") {
+            const commonBuild = getUIAdapter("claude_local").buildAdapterConfig;
+            const commonBefore = commonBuild(original);
+            const commonAfter = commonBuild(configVals);
+            for (const key of ["cwd", "instructionsFilePath", "env", "workspaceStrategy", "workspaceRuntime"]) {
+              if (overlayValuesEqual(commonBefore[key], commonAfter[key])) continue;
+              if (commonAfter[key] === undefined) delete retained[key];
+              else retained[key] = commonAfter[key];
+            }
+          }
+          if (original.model !== configVals.model && !configVals.model) delete retained.model;
+          if (original.thinkingEffort !== configVals.thinkingEffort) {
+            delete retained.reasoningEffort;
+            delete retained.effort;
+            if (!configVals.thinkingEffort) delete retained.modelReasoningEffort;
+          }
+          override.adapterConfig = retained;
+        } else {
+          override.adapterConfig = edited;
+        }
       }
       overrides[agent.slug] = override;
     }
+    if (cloud && adapterAgents.some(agent => selectedImportAgentSlugs.has(agent.slug) && !harnessPolicy.isCloudHarnessAllowed(
+      overrides[agent.slug]?.adapterType ?? agent.adapterType,
+      overrides[agent.slug]?.adapterConfig ?? agent.adapterConfig,
+    ))) throw new Error("Choose an available Cloud harness for each imported agent.");
     return Object.keys(overrides).length > 0 ? overrides : undefined;
   }
 
@@ -2022,15 +2209,13 @@ export function CompanyImport() {
             </p>
           </div>
         )}
-        {previewMutation.isError &&
+        {previewMutation.isError && // query-error-ok: mutation outcome for the upload the user just started, not a read
           !previewMutation.isPending &&
           previewMutation.variables === previewGenerationRef.current && (
           <div className="mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2.5">
             <p className="text-xs text-destructive">
               Preview failed:{" "}
-              {previewMutation.error instanceof Error
-                ? previewMutation.error.message
-                : "the request did not complete."}{" "}
+              {describeError(previewMutation.error).body}{" "}
               Retry, or re-export the package without large attachments to shrink it.
             </p>
           </div>
@@ -2102,7 +2287,7 @@ export function CompanyImport() {
             <Button
               size="sm"
               onClick={() => importMutation.mutate({ previewForImport: importPreview, pauseAutomations })}
-              disabled={importMutation.isPending || hasErrors || selectedCount === 0}
+              disabled={importMutation.isPending || hasErrors || hasUnavailableCloudHarness || selectedCount === 0}
             >
               <Download className="mr-1.5 h-3.5 w-3.5" />
               {importMutation.isPending
@@ -2120,13 +2305,11 @@ export function CompanyImport() {
               </p>
             </div>
           )}
-          {importMutation.isError && !importMutation.isPending && (
+          {importMutation.isError && !importMutation.isPending && ( // query-error-ok: mutation outcome for the import the user just started, not a read
             <div className="mx-5 mt-3 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2.5">
               <p className="text-xs text-destructive">
                 Import failed:{" "}
-                {importMutation.error instanceof Error
-                  ? importMutation.error.message
-                  : "the request did not complete."}{" "}
+                {describeError(importMutation.error).body}{" "}
                 Nothing may have been created, or the import stopped partway — check the target company
                 before retrying.
               </p>

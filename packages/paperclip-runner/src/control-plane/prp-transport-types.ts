@@ -27,7 +27,7 @@ export interface DurableWarmRunTransition {
 }
 
 export interface DurableRecoveryCoreCommand {
-  schema: "paperclip.prp.command.v1" | "paperclip.prp.command.v2";
+  schema: "paperclip.prp.command.v1" | "paperclip.prp.command.v2" | "paperclip.prp.command.v3";
   commandId: string;
   controllerSeq: number;
   type: string;

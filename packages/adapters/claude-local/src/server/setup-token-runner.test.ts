@@ -96,6 +96,31 @@ async function flush(): Promise<void> {
 }
 
 describe("runSetupTokenLogin", () => {
+  it("reports a rejected OAuth code immediately even while the CLI waits for Enter to retry", async () => {
+    const fake = createFakeDriver({ chunks: [PROMPT_OUTPUT] });
+    let stream!: (chunk: string) => void;
+    const start = fake.driver.start.bind(fake.driver);
+    fake.driver.start = (command, onData) => { stream = onData; return start(command, onData); };
+    const write = fake.driver.write.bind(fake.driver);
+    fake.driver.write = input => {
+      write(input);
+      if (input === CODE_SUBMISSION_TERMINATOR) {
+        stream("\r\n\u001b[31mOAuth\u001b[1Cerr");
+        stream(`or: Invalid code ${BROWSER_CODE}\u001b[0m\r\nPress Enter to retry\r\n`);
+      }
+    };
+    const log = vi.fn();
+    const onCredential = vi.fn();
+    const result = await runSetupTokenLogin(fake.driver, {
+      onPrompt: () => {}, provideCode: async () => BROWSER_CODE, onCredential,
+      codeSubmitSettleMs: 0, timeoutMs: 1000, log,
+    });
+    expect(result).toMatchObject({ outcome: "failure", failureReason: "oauth_error", credentialDelivered: false });
+    expect(onCredential).not.toHaveBeenCalled();
+    expect(fake.stops.count).toBe(1);
+    expect(JSON.stringify({ result, logs: log.mock.calls })).not.toContain(BROWSER_CODE);
+  });
+
   it("sends one login URL through onPrompt", async () => {
     // A success stream and a resolving sink, so the run reports success after the
     // runner delivers the credential.
@@ -164,6 +189,41 @@ describe("runSetupTokenLogin", () => {
     expect(result.outcome).toBe("timeout");
     expect(fake.stops.count).toBe(1);
     expect(fake.disposes.count).toBe(1);
+  });
+
+  it("logs one fixed line when the prompt is on screen but the parser does not bind it", async () => {
+    const unrecognized = PROMPT_OUTPUT.replace(VALID_URL, `${VALID_URL}\nan unknown status line`);
+    const fake = createFakeDriver({ chunks: [unrecognized, unrecognized] });
+    const logs: string[] = [];
+    const onPrompt = vi.fn();
+    const result = await runSetupTokenLogin(fake.driver, {
+      onPrompt,
+      provideCode: async () => BROWSER_CODE,
+      timeoutMs: 20,
+      log: (line) => {
+        logs.push(line);
+      },
+    });
+    expect(result.outcome).toBe("timeout");
+    expect(onPrompt).not.toHaveBeenCalled();
+    const unrecognizedLogs = logs.filter((line) => line.includes("did not recognize the sign-in screen"));
+    expect(unrecognizedLogs).toHaveLength(1);
+    expect(logs.join("\n")).not.toContain(VALID_URL);
+    expect(logs.join("\n")).not.toContain("an unknown status line");
+  });
+
+  it("does not log the unrecognized-screen line before the prompt appears", async () => {
+    const fake = createFakeDriver();
+    const logs: string[] = [];
+    await runSetupTokenLogin(fake.driver, {
+      onPrompt: () => {},
+      provideCode: async () => BROWSER_CODE,
+      timeoutMs: 20,
+      log: (line) => {
+        logs.push(line);
+      },
+    });
+    expect(logs.some((line) => line.includes("did not recognize the sign-in screen"))).toBe(false);
   });
 
   it("stops the process on a cancellation", async () => {

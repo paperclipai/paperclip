@@ -42,6 +42,28 @@
       "warnings": [
         "A Hugging Face account."
       ]
+    },
+    {
+      "key": "public-mcp",
+      "transport": "mcp_remote",
+      "auth": "none",
+      "ownershipModes": [
+        "customer"
+      ],
+      "whenToUse": "Use the anonymous hosted MCP endpoint for public Hugging Face Hub lookups.",
+      "defaults": {
+        "serverUrl": "https://huggingface.co/mcp"
+      },
+      "guidanceMd": "This anonymous method exposes the public Hugging Face Hub read tools for repository search, public repository details, datasets, and documentation. It does not require an account or API key and is rate-limited. Keep queries to public information; do not include secrets, personal data, private repository names, or proprietary content.",
+      "riskTier": "S1",
+      "label": "Use public Hugging Face Hub",
+      "consoleLinks": {
+        "docs": "https://huggingface.co/docs/hub/agents-mcp"
+      },
+      "warnings": [
+        "Anonymous requests are rate-limited by Hugging Face.",
+        "This method only advertises read tools for the public Hub; do not include secrets, personal data, private repository names, or proprietary content in queries."
+      ]
     }
   ]
 }

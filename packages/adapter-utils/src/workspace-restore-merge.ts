@@ -2,9 +2,11 @@ import { createHash, randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { createWorkspaceManifest, WorkspaceManifestMap, workspacePathMatcher, type PathManifest, type WorkspacePaths, type WorkspaceManifestWriter } from "./workspace-manifest.js";
 import { shouldExcludePath } from "./exclude-patterns.js";
-import { resolvePaperclipInstanceRootForAdapter } from "./server-utils.js";
+import { runSnapshotThread } from "./workspace-snapshot-thread.js";
+import type { WorkspaceRestoreDiagnostic } from "./workspace-restore-diagnostics.js";
 
 export type SnapshotEntry =
   | { kind: "dir" }
@@ -142,24 +144,51 @@ async function hashFile(filePath: string): Promise<string> {
   });
 }
 
+const isVanishedEntry = (error: unknown) => (error as NodeJS.ErrnoException | null)?.code === "ENOENT";
+
 async function* walkDirectory(
   root: string, exclude: readonly string[], ignored: ReturnType<typeof workspacePathMatcher>, relative = "",
 ): AsyncGenerator<[string, SnapshotEntry]> {
+  const readEntry = async (nextRelative: string): Promise<[string, SnapshotEntry | null]> => {
+    const fullPath = path.join(root, nextRelative);
+    try {
+      const stats = await fs.lstat(fullPath);
+      if (stats.isDirectory()) return [nextRelative, { kind: "dir" }];
+      if (stats.isSymbolicLink()) return [nextRelative, { kind: "symlink", target: await fs.readlink(fullPath) }];
+      if (stats.isFile()) return [nextRelative, { kind: "file", mode: stats.mode, hash: await hashFile(fullPath) }];
+    } catch (error) {
+      if (!isVanishedEntry(error)) throw error;
+    }
+    return [nextRelative, null];
+  };
+  const visitBatch = async function* (paths: string[]): AsyncGenerator<[string, SnapshotEntry]> {
+    const results = await Promise.allSettled(paths.map(readEntry));
+    for (const result of results) if (result.status === "rejected") throw result.reason;
+    for (const result of results) {
+      if (result.status !== "fulfilled") continue;
+      const [nextRelative, entry] = result.value;
+      if (!entry) continue;
+      yield [nextRelative, entry];
+      if (entry.kind === "dir") yield* walkDirectory(root, exclude, ignored, nextRelative);
+    }
+  };
   const current = relative ? path.join(root, relative) : root;
-  for await (const entry of await fs.opendir(current)) {
+  const dir = await fs.opendir(current).catch((error: unknown) => {
+    if (relative && isVanishedEntry(error)) return null;
+    throw error;
+  });
+  if (!dir) return;
+  let batch: string[] = [];
+  for await (const entry of dir) {
     const nextRelative = relative ? path.posix.join(relative, entry.name) : entry.name;
     if (shouldExcludePath(nextRelative, exclude) || ignored.matches(nextRelative)) continue;
-    const fullPath = path.join(root, nextRelative);
-    const stats = await fs.lstat(fullPath);
-    if (stats.isDirectory()) {
-      yield [nextRelative, { kind: "dir" }];
-      yield* walkDirectory(root, exclude, ignored, nextRelative);
-    } else if (stats.isSymbolicLink()) {
-      yield [nextRelative, { kind: "symlink", target: await fs.readlink(fullPath) }];
-    } else if (stats.isFile()) {
-      yield [nextRelative, { kind: "file", mode: stats.mode, hash: await hashFile(fullPath) }];
+    batch.push(nextRelative);
+    if (batch.length === 16) {
+      yield* visitBatch(batch);
+      batch = [];
     }
   }
+  if (batch.length) yield* visitBatch(batch);
 }
 
 async function readSnapshotEntry(root: string, relative: string): Promise<SnapshotEntry | null> {
@@ -200,11 +229,20 @@ function entriesMatch(left: SnapshotEntry | null | undefined, right: SnapshotEnt
   return false;
 }
 
-const LOCK_STALE_MS = 30_000;
+function directorySnapshotsMatch(left: DirectorySnapshot, right: DirectorySnapshot): boolean {
+  if (left.entries.size !== right.entries.size) return false;
+  for (const [relative, entry] of right.entries) {
+    if (!entriesMatch(left.entries.get(relative), entry)) return false;
+  }
+  return true;
+}
+
+const LOCK_WAIT_MS = 30_000;
 const LOCK_DIAGNOSTIC_READ_TIMEOUT_MS = 100;
 const activeDirectoryMergeLocks = new Set<string>();
 const MAX_LOCK_DIAGNOSTIC_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export type DirectoryMergeLockOperation =
+  | "agent_directory_prepare"
   | "agent_directory_release"
   | "agent_directory_collect"
   | "agent_directory_checkpoint"
@@ -212,7 +250,7 @@ export type DirectoryMergeLockOperation =
 
 /** Evidence only: neither process age nor this module's holder set can prove
  * that a lock in another process or PID namespace is safe to reclaim. */
-async function directoryMergeLockDiagnostics(lockDir: string, waitMs: number): Promise<Record<string, string | number | boolean>> {
+async function directoryMergeLockDiagnostics(lockDir: string, waitMs: number, ownerPath: string): Promise<Record<string, string | number | boolean>> {
   const diagnostics: Record<string, string | number | boolean> = {
     ownerState: "unknown",
     knownLocalHolder: activeDirectoryMergeLocks.has(lockDir),
@@ -224,7 +262,7 @@ async function directoryMergeLockDiagnostics(lockDir: string, waitMs: number): P
     // Abort is best effort: race the read as well so a stalled filesystem
     // cannot keep the original lock timeout from reaching its caller.
     const raw = await Promise.race([
-      fs.readFile(path.join(lockDir, "owner.json"), { encoding: "utf8", signal: controller.signal }),
+      fs.readFile(ownerPath, { encoding: "utf8", signal: controller.signal }),
       new Promise<undefined>((resolve) => {
         timeout = setTimeout(() => resolve(undefined), LOCK_DIAGNOSTIC_READ_TIMEOUT_MS);
       }),
@@ -281,6 +319,7 @@ export type WorkspaceRestoreFailureCode =
   | "restore_permission_denied"
   | "restore_lock_timeout"
   | "restore_unsafe_archive"
+  | "restore_invalid_metadata"
   | "restore_failed";
 
 /**
@@ -290,7 +329,7 @@ export type WorkspaceRestoreFailureCode =
  */
 export type WorkspaceRestoreOutcome =
   | { readonly ok: true }
-  | { readonly ok: false; readonly code: WorkspaceRestoreFailureCode };
+  | { readonly ok: false; readonly code: WorkspaceRestoreFailureCode; readonly diagnostic?: WorkspaceRestoreDiagnostic };
 
 /**
  * Classifies a caught workspace-restore error into one allowlisted code. Maps
@@ -303,6 +342,7 @@ export type WorkspaceRestoreOutcome =
  */
 export function classifyWorkspaceRestoreFailure(error: unknown): WorkspaceRestoreFailureCode {
   const code = error && typeof error === "object" ? (error as NodeJS.ErrnoException).code : undefined;
+  if (code === "WORKSPACE_RESTORE_INVALID_GIT_METADATA") return "restore_invalid_metadata";
   if (code === "EACCES" || code === "EPERM") return "restore_permission_denied";
   if (code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) return "restore_lock_timeout";
   const message = error instanceof Error ? error.message : "";
@@ -334,80 +374,93 @@ export function describeWorkspaceRestoreFailure(code: WorkspaceRestoreFailureCod
       return "the restore timed out waiting for the workspace merge lock";
     case "restore_unsafe_archive":
       return "the archive contains an unsafe link or path; workspace repair is required";
+    case "restore_invalid_metadata":
+      return "the restore metadata is invalid; workspace repair is required";
     case "restore_failed":
       return "the restore failed";
   }
 }
 
-async function isLockStale(lockDir: string): Promise<boolean> {
-  try {
-    const raw = await fs.readFile(path.join(lockDir, "owner.json"), "utf8");
-    const owner = JSON.parse(raw) as { pid?: unknown };
-    const pid = typeof owner.pid === "number" && Number.isFinite(owner.pid) && owner.pid > 0 ? owner.pid : null;
-    if (pid === null) {
-      // Owner record is unparseable / missing pid — treat as stale.
-      return true;
-    }
-    try {
-      process.kill(pid, 0);
-      return false;
-    } catch {
-      return true;
-    }
-  } catch {
-    // owner.json is missing or unreadable. A live holder also passes through
-    // this exact state, briefly, between its own `fs.mkdir(lockDir)` and its
-    // `fs.writeFile(owner.json)` below. Reading "missing" as "stale" here would
-    // let a concurrent acquirer delete a live holder's lock directory during
-    // that window. Mirror the materializePaperclipSkillCopy lock pattern: fall
-    // back to the lock directory's own mtime, and only call it stale once the
-    // directory itself has outlived the stale threshold.
-    const stat = await fs.stat(lockDir).catch(() => null);
-    return !stat || Date.now() - stat.mtimeMs > LOCK_STALE_MS;
-  }
-}
-
-async function acquireDirectoryMergeLock(lockDir: string, operation?: DirectoryMergeLockOperation): Promise<() => Promise<void>> {
+async function acquireDirectoryMergeLock(lockDir: string, operation?: DirectoryMergeLockOperation, waitMs: number = LOCK_WAIT_MS): Promise<() => Promise<void>> {
   const startedAt = performance.now();
-  const deadline = Date.now() + LOCK_STALE_MS;
-  while (true) {
-    try {
-      await fs.mkdir(lockDir);
-      await fs.writeFile(
-        path.join(lockDir, "owner.json"),
-        `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
-        "utf8",
+  const deadline = Date.now() + waitMs;
+  const databasePath = `${lockDir}.sqlite`;
+  const ownerPath = `${lockDir}.owner.json`;
+  async function waitForLock(diagnosticOwnerPath: string) {
+    if (Date.now() >= deadline) {
+      const timeoutError: NodeJS.ErrnoException & { workspaceRestoreLock?: Record<string, string | number | boolean> } = new Error(
+        `Timed out waiting for workspace restore lock at ${lockDir}`,
       );
-      activeDirectoryMergeLocks.add(lockDir);
-      return async () => {
-        try {
-          await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
-        } finally {
-          activeDirectoryMergeLocks.delete(lockDir);
-        }
-      };
-    } catch (error) {
-      const code = error && typeof error === "object" ? (error as { code?: unknown }).code : null;
-      if (code !== "EEXIST") throw error;
-      // Stale-lock detection: if the owner PID is dead (SIGKILL / OOM / crash),
-      // the lockDir would otherwise persist forever and stall restores. Mirror
-      // the materializePaperclipSkillCopy lock pattern — remove and retry.
-      if (await isLockStale(lockDir)) {
-        await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
-        continue;
-      }
-      if (Date.now() >= deadline) {
-        const timeoutError: NodeJS.ErrnoException & { workspaceRestoreLock?: Record<string, string | number | boolean> } = new Error(
-          `Timed out waiting for workspace restore lock at ${lockDir}`,
-        );
-        timeoutError.code = WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE;
-        // Keep the original timeout if the diagnostic read itself fails.
-        timeoutError.workspaceRestoreLock = await directoryMergeLockDiagnostics(lockDir, performance.now() - startedAt).catch(() => undefined);
-        if (operation && timeoutError.workspaceRestoreLock) timeoutError.workspaceRestoreLock.operation = operation;
-        throw timeoutError;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      timeoutError.code = WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE;
+      // Keep the original timeout if the diagnostic read itself fails.
+      timeoutError.workspaceRestoreLock = await directoryMergeLockDiagnostics(lockDir, performance.now() - startedAt, diagnosticOwnerPath).catch(() => undefined);
+      if (operation && timeoutError.workspaceRestoreLock) timeoutError.workspaceRestoreLock.operation = operation;
+      throw timeoutError;
     }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  // SQLite's RESERVED file lock is the authority, including across processes
+  // and PID namespaces. It is released by the OS on a crash. The empty database
+  // is permanent: unlinking it would let contenders lock different inodes.
+  // node:sqlite is already required for workspace manifests; no native add-on
+  // or external flock command is needed on macOS, Linux, or Windows.
+  const databaseStat = await fs.lstat(databasePath).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (databaseStat && (!databaseStat.isFile() || databaseStat.isSymbolicLink() || databaseStat.nlink !== 1)) {
+    throw new Error("Directory merge lock database is not a plain, unshared file.");
+  }
+  // Let SQLite create and manage every descriptor for this inode. On POSIX,
+  // closing a raw fs.open descriptor could release another connection's locks.
+  // The parent is private (0700), including while a new file is chmodded.
+  const database = new DatabaseSync(databasePath, { allowExtension: false });
+  try {
+    await fs.chmod(databasePath, 0o600);
+    // Never block the event loop while another async operation holds the lock.
+    database.exec("PRAGMA busy_timeout=0;");
+    while (true) {
+      try {
+        database.exec("BEGIN IMMEDIATE;");
+        break;
+      } catch (error) {
+        const code = (error as { errcode?: number }).errcode;
+        if (typeof code !== "number" || (code & 0xff) !== 5) throw error; // SQLITE_BUSY
+        await waitForLock(ownerPath);
+      }
+    }
+
+    // Old processes do not participate in the SQLite protocol. Never infer
+    // that a legacy owner is dead from PID existence, age, or missing metadata.
+    // Drain old writers before upgrading. A leftover legacy directory requires
+    // explicit offline cleanup; a live legacy holder can still release normally.
+    while (await fs.lstat(lockDir).then(() => true, (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    })) await waitForLock(path.join(lockDir, "owner.json"));
+
+    const owner = await fs.open(ownerPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | fsConstants.O_NOFOLLOW, 0o600);
+    try {
+      await owner.writeFile(`${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`, "utf8");
+    } finally { await owner.close(); }
+    activeDirectoryMergeLocks.add(lockDir);
+    let released = false;
+    return async () => {
+      if (released) return;
+      released = true;
+      try {
+        // This sidecar is diagnostic only. A failed removal cannot retain
+        // ownership, and the next holder replaces it while holding the DB lock.
+        await fs.unlink(ownerPath).catch(() => undefined);
+      } finally {
+        activeDirectoryMergeLocks.delete(lockDir);
+        database.close();
+      }
+    };
+  } catch (error) {
+    database.close();
+    throw error;
   }
 }
 
@@ -454,6 +507,7 @@ function nonEmpty(value: string | undefined): string | null {
  * would follow the symlink) before any caller treats it as the lock root.
  */
 async function resolveDirectoryMergeLockRoot(env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  const { resolvePaperclipInstanceRootForAdapter } = await import("./server-utils.js");
   const instanceRoot = resolvePaperclipInstanceRootForAdapter({
     homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
     instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
@@ -483,13 +537,60 @@ export async function withDirectoryMergeLock<T>(
   fn: (canonicalTargetDir: string) => Promise<T>,
   env: NodeJS.ProcessEnv = process.env,
   diagnosticOperation?: DirectoryMergeLockOperation,
+  // Test seam only: overrides how long acquisition waits before it reports a
+  // timeout. Production callers must omit this and keep the real budget.
+  waitMs: number = LOCK_WAIT_MS,
 ): Promise<T> {
   // Canonicalize before we hash or lock: a retargeted symlink must not let the
   // lock protect one directory while the caller mutates another.
   const canonicalTargetDir = await fs.realpath(targetDir);
+  return withCanonicalDirectoryMergeLock(canonicalTargetDir, fn, env, diagnosticOperation, waitMs);
+}
+
+export async function withDirectoryPublicationLock<T>(
+  targetDir: string,
+  fn: (canonicalTargetDir: string) => Promise<T>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<T> {
+  const absoluteTarget = path.resolve(targetDir);
+  const parent = await fs.realpath(path.dirname(absoluteTarget));
+  const canonicalTargetDir = path.join(parent, path.basename(absoluteTarget));
+  const assertSafeLeaf = async () => {
+    const leaf = await fs.lstat(canonicalTargetDir).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null;
+      throw error;
+    });
+    if (leaf && (!leaf.isDirectory() || leaf.isSymbolicLink())) {
+      throw new Error(`Directory publication target at ${canonicalTargetDir} is not a plain directory.`);
+    }
+  };
+  await assertSafeLeaf();
+  return withCanonicalDirectoryMergeLock(canonicalTargetDir, async () => {
+    await assertSafeLeaf();
+    return fn(canonicalTargetDir);
+  }, env);
+}
+
+export async function tryWithDirectoryMergeLock<T>(targetDir: string, fn: () => Promise<T>): Promise<T | undefined> {
+  const canonicalTargetDir = await fs.realpath(targetDir);
+  try {
+    return await withCanonicalDirectoryMergeLock(canonicalTargetDir, fn, process.env, undefined, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) return undefined;
+    throw error;
+  }
+}
+
+async function withCanonicalDirectoryMergeLock<T>(
+  canonicalTargetDir: string,
+  fn: (canonicalTargetDir: string) => Promise<T>,
+  env: NodeJS.ProcessEnv,
+  diagnosticOperation?: DirectoryMergeLockOperation,
+  waitMs: number = LOCK_WAIT_MS,
+): Promise<T> {
   const lockRoot = await resolveDirectoryMergeLockRoot(env);
   const lockKey = createHash("sha256").update(canonicalTargetDir).digest("hex");
-  const releaseLock = await acquireDirectoryMergeLock(path.join(lockRoot, `${lockKey}.lock`), diagnosticOperation);
+  const releaseLock = await acquireDirectoryMergeLock(path.join(lockRoot, `${lockKey}.lock`), diagnosticOperation, waitMs);
   try {
     return await fn(canonicalTargetDir);
   } finally {
@@ -563,6 +664,22 @@ export async function captureDirectorySnapshot(
     if (writer) await fs.rm(path.dirname(writer.filePath), { recursive: true, force: true });
     throw error;
   } finally { ignored.close(); }
+}
+
+export async function captureDirectorySnapshotOffThread(
+  rootDir: string,
+  options: { exclude?: string[]; ignoredPaths?: WorkspacePaths; diskBacked?: boolean } = {},
+): Promise<DirectorySnapshot> {
+  if (!options.diskBacked) return captureDirectorySnapshot(rootDir, options);
+  const result = await runSnapshotThread({ rootDir, exclude: options.exclude, ignoredPaths: options.ignoredPaths });
+  try {
+    const snapshot = openDirectorySnapshot(result.snapshot);
+    ownedDirectorySnapshots.set(snapshot, result.directory);
+    return snapshot;
+  } catch (error) {
+    await fs.rm(result.directory, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /** A disk-backed subset for independent nested-repository merges. */
@@ -641,20 +758,26 @@ export async function mergeDirectoryWithBaseline(input: {
   sourceDir: string;
   targetDir: string;
   conflictPolicy?: "reject";
+  workspaceSnapshotIsolation?: "worker";
   beforeApply?: () => Promise<void>;
   afterApply?: () => Promise<void>;
   /** Caller holds the target's writer lock and validated an immutable sparse
    * source. Unchanged entries need no payload and are never copied. */
-  snapshots?: { source: DirectorySnapshot; current: DirectorySnapshot };
+  snapshots?: { source: DirectorySnapshot; current?: DirectorySnapshot };
 }): Promise<void> {
+  const capture = input.workspaceSnapshotIsolation === "worker" ? captureDirectorySnapshotOffThread : captureDirectorySnapshot;
   const options = { exclude: input.baseline.exclude, ignoredPaths: input.baseline.ignoredPaths, diskBacked: true };
-  const source = input.snapshots?.source ?? await captureDirectorySnapshot(input.sourceDir, options);
+  const source = input.snapshots?.source ?? await capture(input.sourceDir, options);
   try {
     await withDirectoryMergeLock(input.targetDir, async (canonicalTargetDir) => {
       await input.beforeApply?.();
+      if (!input.snapshots?.current && directorySnapshotsMatch(input.baseline, source)) {
+        await input.afterApply?.();
+        return;
+      }
       // Strict preflight must see excluded children before a directory is
       // replaced. The merge still applies only the filtered source/baseline.
-      const current = input.snapshots?.current ?? await captureDirectorySnapshot(canonicalTargetDir,
+      const current = input.snapshots?.current ?? await capture(canonicalTargetDir,
         input.conflictPolicy === "reject" ? { exclude: [], diskBacked: true } : options);
       try {
         if (input.conflictPolicy === "reject") {

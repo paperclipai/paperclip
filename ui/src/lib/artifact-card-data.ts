@@ -1,3 +1,5 @@
+import { safeExternalHttpUrl, safeNavigableUrl } from "./safe-url";
+
 /** Optional producer metadata must never become invented facts in an artifact card. */
 export function artifactText(
   metadata: Record<string, unknown> | null,
@@ -24,13 +26,10 @@ export function artifactNumber(
 
 export function artifactUrl(value: string | null | undefined): string {
   if (!value || /[\u0000-\u0020\\]/.test(value)) return "";
-  if (value.startsWith("/") && !value.startsWith("//")) return value;
-  try {
-    const url = new URL(value);
-    return ["https:", "http:"].includes(url.protocol) ? value : "";
-  } catch {
-    return "";
-  }
+  const safe = value.startsWith("/") && !value.startsWith("//")
+    ? safeNavigableUrl(value)
+    : safeExternalHttpUrl(value);
+  return safe ?? "";
 }
 
 /** Optional link thumbnails and video posters must not contact producer-chosen hosts. */

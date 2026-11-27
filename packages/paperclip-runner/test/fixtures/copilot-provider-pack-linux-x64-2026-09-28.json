@@ -1,0 +1,88 @@
+{
+  "schema": "paperclip.copilot-provider-pack-smoke/v1",
+  "sourceRevision": "8aa867b64d5fc2fd62cff110bd000addf5dc54de",
+  "providerPackDigest": "sha256:b11984fe02bd5d5a36b01ed559d2f4c765663df09a46117d3092b1183be08ba4",
+  "platform": "linux",
+  "architecture": "x64",
+  "candidate": {
+    "version": "1.0.88",
+    "profileDigest": "sha256:b18c01603dd0169d233140709cfaa8bf5304a03cf5de78ca4f625f30013e8457",
+    "closureDigest": "sha256:1a675c5b54ae4d94f08718a318451e0499708ded388b4cfd98acec6b4311ccbd",
+    "qualification": "pending",
+    "path": "provider-assets/copilot/linux-x64",
+    "sha256": "sha256:e9413d46e5feeec5e7708b3092af02399319342531345fdfdccb4f0853cd87cc"
+  },
+  "executableSha256": "sha256:0059754cf78c3f3bf2c9d4564dfa7e9e25f3a3f8f411f2f0cdad9363f5662748",
+  "registryLaunch": "verifyAcpxProfileInstallation/openCommand/spawn",
+  "initializeRequestId": 0,
+  "initialize": {
+    "protocolVersion": 1,
+    "agentCapabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "image": true,
+        "audio": false,
+        "embeddedContext": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "list": {}
+      }
+    },
+    "agentInfo": {
+      "name": "Copilot",
+      "title": "Copilot",
+      "version": "1.0.88"
+    },
+    "authMethods": [
+      {
+        "id": "copilot-login",
+        "name": "Log in with Copilot CLI",
+        "description": "Run `copilot login` in the terminal",
+        "_meta": {
+          "terminal-auth": {
+            "command": "/fixture/verified/copilot",
+            "args": [
+              "login"
+            ],
+            "label": "Copilot Login"
+          }
+        }
+      }
+    ]
+  },
+  "missingCredentialPreflight": "COPILOT_AUTH_REQUIRED",
+  "cleanExit": true,
+  "inheritedCredentials": false,
+  "promptSent": false,
+  "networkMode": "COPILOT_OFFLINE=true; loopback metadata-only provider",
+  "fixtureRequests": [],
+  "protocolFixtureModel": "gpt-4.1 (not a qualified GitHub model)",
+  "costUsd": 0,
+  "qualification": "pending: no credential, entitlement, model execution or Daytona",
+  "executionBoundary": {
+    "kind": "Linux image initialize-only build proof",
+    "image": "ghcr.io/paperclipai/paperclip-daytona-runner@sha256:5457769683fd310223d3b0d4f1ed9a6cf341bdb16514746b3aaeabca2e888fee",
+    "network": "none",
+    "rootFilesystem": "read-only",
+    "writableState": "private tmpfs",
+    "providerCredentials": false,
+    "probeScript": "maintained copilot-provider-pack-smoke.mjs mounted read-only",
+    "actualDaytonaServiceExecution": false
+  },
+  "originalOutputSha256": "sha256:46cfc84ce0d180fdaf5b75730683dffc65af4506bfaf8fdd07dd496186a7bec8",
+  "retainedOperatorSetupFailures": [
+    {
+      "reason": "wrong image repository",
+      "providerLaunched": false
+    },
+    {
+      "reason": "wrong Node path",
+      "providerLaunched": false
+    }
+  ]
+}
