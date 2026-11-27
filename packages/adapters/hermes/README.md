@@ -156,10 +156,10 @@ alongside your API key.
 }
 ```
 
-Paperclip uses the saved API key to check `/health/detailed` for that profile.
-The check passes when Hermes serves `researcher` and its gateway is ready and
-idle. If you use a reverse proxy, forward the `/p/researcher` path and preserve
-Hermes's authentication responses.
+Paperclip checks `/p/researcher/health/detailed`. The endpoint must require
+authentication, accept the saved key, and report a ready, idle gateway. If you
+use a reverse proxy, forward the profile path and keep the authentication
+status codes from Hermes.
 
 ### Compatibility with the old gateway package
 
