@@ -356,6 +356,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             memberships,
             isInstanceAdmin: Boolean(roleRow),
             runId: runIdHeader ?? undefined,
+            sessionId: session.session?.id ?? undefined,
             source: "session",
           };
           next();
