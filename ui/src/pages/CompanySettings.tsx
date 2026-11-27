@@ -416,13 +416,12 @@ export function CompanySettings() {
           />
         </div>
         {canManageReportingLinePolicy && (
-          <div className="space-y-3">
+          <fieldset className="space-y-3" disabled={reportingLineMutation.isPending}>
             <ToggleField
               label="Restrict hiring to the agent’s reporting line"
               hint="Agents with hiring permission can hire under themselves or their reports. The approval setting above still applies."
               checked={reportingLinePolicy.enabled}
               onChange={(enabled) => reportingLineMutation.mutate({ ...reportingLinePolicy, enabled })}
-              disabled={reportingLineMutation.isPending}
             />
             {reportingLinePolicy.enabled && (
               <div className="flex flex-wrap gap-3">
@@ -443,7 +442,7 @@ export function CompanySettings() {
             {reportingLineMutation.error && (
               <p className="text-xs text-destructive" role="alert">{describeError(reportingLineMutation.error).body}</p>
             )}
-          </div>
+          </fieldset>
         )}
       </div>
 

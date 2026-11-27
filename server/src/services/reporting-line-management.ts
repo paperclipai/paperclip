@@ -28,8 +28,8 @@ export async function assertReportingLinePolicyOwner(db: Db, companyId: string, 
 async function enabledPolicy(db: Db, companyId: string) {
   const [company] = await db.select({ policy: companies.reportingLinePolicy })
     .from(companies).where(eq(companies.id, companyId));
-  const policy = reportingLinePolicySchema.safeParse(company?.policy);
-  return policy.success && policy.data.enabled ? policy.data : null;
+  const policy = company?.policy == null ? null : reportingLinePolicySchema.parse(company.policy);
+  return policy?.enabled ? policy : null;
 }
 
 async function reportingGraph(db: Db, companyId: string): Promise<ReportingGraph> {
