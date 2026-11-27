@@ -30,7 +30,7 @@ export const createCompanySchema = z.object({
 
 export type CreateCompany = z.infer<typeof createCompanySchema>;
 
-export const reportingLinePolicySchema = z.object({
+export const reportingLineHiringPolicySchema = z.object({
   enabled: z.boolean(),
   maxDepth: z.number().int().min(1).max(1000).default(50),
   maxDirectReports: z.number().int().min(1).max(1000).default(12),
@@ -49,7 +49,7 @@ export const updateCompanySchema = objectWithoutDefaults(
       // stops in the Company view only.
       budgetOwnerUserId: z.string().min(1).nullable().optional(),
       requireBoardApprovalForNewAgents: z.boolean().optional(),
-      reportingLinePolicy: reportingLinePolicySchema.optional(),
+      reportingLineHiringPolicy: reportingLineHiringPolicySchema.optional(),
       interactionResolverGovernance: interactionResolverGovernanceSchema.optional(),
       feedbackDataSharingEnabled: z.boolean().optional(),
       feedbackDataSharingConsentAt: z.coerce.date().nullable().optional(),

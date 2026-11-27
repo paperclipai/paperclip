@@ -49,7 +49,7 @@ describePostgres("reporting-line hiring restrictions", () => {
     ];
     await db.insert(companies).values({
       id: companyId, name: "Reporting lines", issuePrefix: uniqueIssuePrefix("RL"),
-      reportingLinePolicy: policy, requireBoardApprovalForNewAgents: requiresApproval,
+      reportingLineHiringPolicy: policy, requireBoardApprovalForNewAgents: requiresApproval,
     });
     for (const person of people) {
       await db.insert(agents).values({

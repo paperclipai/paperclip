@@ -1,5 +1,5 @@
 import { agents, companies, companyMemberships, type Db } from "@paperclipai/db";
-import { reportingLinePolicySchema } from "@paperclipai/shared";
+import { reportingLineHiringPolicySchema } from "@paperclipai/shared";
 import { and, eq } from "drizzle-orm";
 import { conflict, forbidden } from "../errors.js";
 import type { AgentConfigurationRecord, CreateAgentData } from "../lib/agent-records.js";
@@ -8,7 +8,7 @@ import type { AuthorizationActor } from "./authorization.js";
 type Report = Pick<AgentConfigurationRecord, "id" | "reportsTo" | "lifecycleState">;
 type ReportingGraph = Map<string, Report>;
 
-export async function assertReportingLinePolicyOwner(db: Db, companyId: string, actor: AuthorizationActor) {
+export async function assertReportingLineHiringPolicyOwner(db: Db, companyId: string, actor: AuthorizationActor) {
   if (actor.type === "board") {
     if (actor.source === "local_implicit" || (actor.isInstanceAdmin && !actor.ignoreInstanceAdmin)) return;
     if (actor.userId) {
@@ -25,10 +25,10 @@ export async function assertReportingLinePolicyOwner(db: Db, companyId: string, 
   throw forbidden("Company owner access is required");
 }
 
-async function enabledPolicy(db: Db, companyId: string) {
-  const [company] = await db.select({ policy: companies.reportingLinePolicy })
+async function enabledHiringPolicy(db: Db, companyId: string) {
+  const [company] = await db.select({ policy: companies.reportingLineHiringPolicy })
     .from(companies).where(eq(companies.id, companyId));
-  const policy = company?.policy == null ? null : reportingLinePolicySchema.parse(company.policy);
+  const policy = company?.policy == null ? null : reportingLineHiringPolicySchema.parse(company.policy);
   return policy?.enabled ? policy : null;
 }
 
@@ -71,7 +71,7 @@ function assertDirectReportLimit(graph: ReportingGraph, managerId: string, maxim
 
 export async function reportingLineForHire(db: Db, companyId: string, hire: CreateAgentData, actorId: string | null | undefined) {
   if (!actorId) return hire.reportsTo;
-  const policy = await enabledPolicy(db, companyId);
+  const policy = await enabledHiringPolicy(db, companyId);
   if (!policy) return hire.reportsTo;
 
   const graph = await reportingGraph(db, companyId);
@@ -85,7 +85,7 @@ export async function assertReportingLineMove(
   db: Db, current: AgentConfigurationRecord, managerId: string | null | undefined, actorId: string | null | undefined,
 ) {
   if (!actorId || managerId === undefined || managerId === current.reportsTo) return;
-  const policy = await enabledPolicy(db, current.companyId);
+  const policy = await enabledHiringPolicy(db, current.companyId);
   if (!policy) return;
 
   const graph = await reportingGraph(db, current.companyId);

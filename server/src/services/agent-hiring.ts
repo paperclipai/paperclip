@@ -1,4 +1,4 @@
-import { reportingLineForHire } from "./reporting-line-management.js";
+import { reportingLineForHire } from "./reporting-line-hiring.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { assertNoInitialAgentInteractionPermissions, preserveAgentInteractionPermissions } from "../lib/agent-interaction-permissions.js";
 import { assertEphemeralAgentInstructions } from "./agent-instructions.js";

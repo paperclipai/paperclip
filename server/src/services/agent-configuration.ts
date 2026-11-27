@@ -1,4 +1,4 @@
-import { assertReportingLineMove } from "./reporting-line-management.js";
+import { assertReportingLineMove } from "./reporting-line-hiring.js";
 import { isDeepStrictEqual } from "node:util";
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";

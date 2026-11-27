@@ -1,1 +1,0 @@
-ALTER TABLE "companies" ADD COLUMN "reporting_line_policy" jsonb;

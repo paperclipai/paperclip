@@ -1,0 +1,1 @@
+ALTER TABLE "companies" ADD COLUMN "reporting_line_hiring_policy" jsonb;

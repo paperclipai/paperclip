@@ -854,7 +854,7 @@ export {
 export type {
   Company,
   InteractionResolverGovernance,
-  ReportingLinePolicy,
+  ReportingLineHiringPolicy,
   InteractionResolverKindGovernance,
   GenerateSummarySlotRequest,
   GenerateSummarySlotResponse,
@@ -2020,7 +2020,7 @@ export {
   createCompanySchema,
   interactionResolverGovernanceSchema,
   updateCompanySchema,
-  reportingLinePolicySchema,
+  reportingLineHiringPolicySchema,
   updateCompanyBrandingSchema,
   feedbackTargetTypeSchema,
   feedbackTraceStatusSchema,

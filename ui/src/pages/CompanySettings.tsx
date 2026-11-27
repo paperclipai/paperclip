@@ -5,7 +5,7 @@ import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type InteractionResolverGovernance,
-  type ReportingLinePolicy,
+  type ReportingLineHiringPolicy,
   type IssueThreadInteractionKind,
 } from "@paperclipai/shared";
 import { useCompany } from "../context/CompanyContext";
@@ -100,12 +100,12 @@ export function CompanySettings() {
     enabled: !!selectedCompanyId,
   });
   const boardAuthority = boardAccess.data;
-  const canManageReportingLinePolicy = boardAuthority?.source === "local_implicit" || boardAuthority?.isInstanceAdmin ||
+  const canManageReportingLineHiringPolicy = boardAuthority?.source === "local_implicit" || boardAuthority?.isInstanceAdmin ||
     boardAuthority?.memberships?.some(member => member.companyId === selectedCompanyId &&
       member.status === "active" && member.membershipRole === "owner");
-  const reportingLinePolicy = selectedCompany?.reportingLinePolicy ?? { enabled: false, maxDepth: 50, maxDirectReports: 12 };
-  const reportingLineMutation = useMutation({
-    mutationFn: (policy: ReportingLinePolicy) => companiesApi.update(selectedCompanyId!, { reportingLinePolicy: policy }),
+  const reportingLineHiringPolicy = selectedCompany?.reportingLineHiringPolicy ?? { enabled: false, maxDepth: 50, maxDirectReports: 12 };
+  const reportingLineHiringMutation = useMutation({
+    mutationFn: (policy: ReportingLineHiringPolicy) => companiesApi.update(selectedCompanyId!, { reportingLineHiringPolicy: policy }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.companies.all }),
   });
 
@@ -415,32 +415,32 @@ export function CompanySettings() {
             toggleTestId="company-settings-team-approval-toggle"
           />
         </div>
-        {canManageReportingLinePolicy && (
-          <fieldset className="space-y-3" disabled={reportingLineMutation.isPending}>
+        {canManageReportingLineHiringPolicy && (
+          <fieldset className="space-y-3" disabled={reportingLineHiringMutation.isPending}>
             <ToggleField
-              label="Restrict hiring to the agent’s reporting line"
+              label="Limit hiring to each agent’s reporting line"
               hint="Agents with hiring permission can hire under themselves or their reports. The approval setting above still applies."
-              checked={reportingLinePolicy.enabled}
-              onChange={(enabled) => reportingLineMutation.mutate({ ...reportingLinePolicy, enabled })}
+              checked={reportingLineHiringPolicy.enabled}
+              onChange={(enabled) => reportingLineHiringMutation.mutate({ ...reportingLineHiringPolicy, enabled })}
             />
-            {reportingLinePolicy.enabled && (
+            {reportingLineHiringPolicy.enabled && (
               <div className="flex flex-wrap gap-3">
                 <label className="flex items-center gap-2 text-sm">
                   Maximum reporting depth
                   <DraftNumberInput className="w-20 rounded-md border bg-background px-2 py-1" min={1} max={1000}
-                    value={reportingLinePolicy.maxDepth} disabled={reportingLineMutation.isPending}
-                    onCommit={(maxDepth) => reportingLineMutation.mutate({ ...reportingLinePolicy, maxDepth })} />
+                    value={reportingLineHiringPolicy.maxDepth} disabled={reportingLineHiringMutation.isPending}
+                    onCommit={(maxDepth) => reportingLineHiringMutation.mutate({ ...reportingLineHiringPolicy, maxDepth })} />
                 </label>
                 <label className="flex items-center gap-2 text-sm">
                   Maximum direct reports
                   <DraftNumberInput className="w-20 rounded-md border bg-background px-2 py-1" min={1} max={1000}
-                    value={reportingLinePolicy.maxDirectReports} disabled={reportingLineMutation.isPending}
-                    onCommit={(maxDirectReports) => reportingLineMutation.mutate({ ...reportingLinePolicy, maxDirectReports })} />
+                    value={reportingLineHiringPolicy.maxDirectReports} disabled={reportingLineHiringMutation.isPending}
+                    onCommit={(maxDirectReports) => reportingLineHiringMutation.mutate({ ...reportingLineHiringPolicy, maxDirectReports })} />
                 </label>
               </div>
             )}
-            {reportingLineMutation.error && (
-              <p className="text-xs text-destructive" role="alert">{describeError(reportingLineMutation.error).body}</p>
+            {reportingLineHiringMutation.error && (
+              <p className="text-xs text-destructive" role="alert">{describeError(reportingLineHiringMutation.error).body}</p>
             )}
           </fieldset>
         )}

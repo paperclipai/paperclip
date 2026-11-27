@@ -1,4 +1,4 @@
-import { assertReportingLinePolicyOwner } from "../services/reporting-line-management.js";
+import { assertReportingLineHiringPolicyOwner } from "../services/reporting-line-hiring.js";
 import { createHash, randomUUID } from "node:crypto";
 import express, { Router, type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
@@ -1265,7 +1265,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       body = updateCompanyBrandingSchema.parse(req.body);
     } else {
       body = updateCompanySchema.parse(req.body);
-      if (body.reportingLinePolicy !== undefined) await assertReportingLinePolicyOwner(db, companyId, req.actor);
+      if (body.reportingLineHiringPolicy !== undefined) await assertReportingLineHiringPolicyOwner(db, companyId, req.actor);
     }
 
     const existingCompany = await svc.getById(companyId);

@@ -115,9 +115,9 @@ Returns whether agent trace export is set up for the company. Every member of th
 | `createdAt` | string | ISO timestamp |
 | `updatedAt` | string | ISO timestamp |
 
-## Reporting-line policy
+## Hiring within reporting lines
 
-A company owner can turn on **Restrict hiring to the agent’s reporting line**
+A company owner can turn on **Limit hiring to each agent’s reporting line**
 in Company Settings. It is off by default. The setting limits where agents
 with hiring permission can place new agents or move their reports.
 **Require board approval for new hires** is a separate setting.
@@ -127,7 +127,7 @@ To enable the restriction through the API, send this body to
 
 ```json
 {
-  "reportingLinePolicy": {
+  "reportingLineHiringPolicy": {
     "enabled": true,
     "maxDepth": 50,
     "maxDirectReports": 12
@@ -141,4 +141,4 @@ hires and paused agents. The limits apply to new hires and reporting-line moves
 made by agents. They leave existing reporting lines in place.
 
 To restore company-wide hiring for agents with hiring permission, send
-`{"reportingLinePolicy":{"enabled":false}}`.
+`{"reportingLineHiringPolicy":{"enabled":false}}`.
