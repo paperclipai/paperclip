@@ -6,7 +6,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { registerGitHubTerminalResponseWork } from "./chat-channels/github/terminal-response-work.js";
-import { awaitsAutomaticContinuation, githubResponseExecution, githubResponseRunColumns as responseRunColumns } from "./chat-channels/github/response-execution.js";
+import { awaitsAutomaticContinuation, githubResponseExecution, githubResponseRunColumns as responseRunColumns, latestResponseNotice } from "./chat-channels/github/response-execution.js";
 import { FINISHED_RUN_STATUSES, finishedRunStatusSql, runBoundToIssue, runWokeForComment } from "./chat-channels/github/response-run-state.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { registerGitHubAcknowledgementWork } from "./chat-channels/github/acknowledgement-work.js";
@@ -428,7 +428,10 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         if (isMainPullResponse(source) && current.passiveResponseWait) throw forbidden("GitHub run intentionally yielded without a new response");
         if (await githubRunReplyState(db, input) !== "none") throw conflict("GitHub reply is still being resolved");
       };
-      receipt = await acknowledge(link.deliveryId, input.body, assertRun);
+      const source = await context(link.deliveryId);
+      const notice = await latestResponseNotice(db, { companyId: input.companyId,
+        endpointId: input.endpointId, issueId: input.issueId, since: source.delivery.createdAt, threadId: source.conversation.externalThreadId });
+      receipt = await acknowledge(link.deliveryId, notice ?? input.body, assertRun);
     }
     if (!receipt) throw forbidden("GitHub failure has no request binding");
     return receipt;
