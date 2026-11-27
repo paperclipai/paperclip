@@ -1,6 +1,7 @@
-import type { SVGProps } from "react";
+import { useEffect, type SVGProps } from "react";
 import { cn } from "../lib/utils";
 import { useBlockingPageGate } from "../hooks/usePageContentReady";
+import { beginRouteSuspense } from "../lib/activity-loader";
 
 export function AnimatedPaperclipIcon({ className, ...props }: SVGProps<SVGSVGElement>) {
   return (
@@ -34,6 +35,27 @@ export function PaperclipLoading({ className }: { className?: string }) {
     >
       <AnimatedPaperclipIcon className="h-24 w-24 text-muted-foreground" />
       <span className="sr-only">Loading…</span>
+    </div>
+  );
+}
+
+export function RouteContentLoading({ className }: { className?: string }) {
+  useBlockingPageGate();
+  useEffect(() => beginRouteSuspense(), []);
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={cn(
+        "flex min-h-64 w-full flex-col items-center justify-center gap-3 py-12",
+        className,
+      )}
+    >
+      <AnimatedPaperclipIcon className="h-14 w-14 text-primary/80" />
+      <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+        <span className="paperclip-inline-spinner" aria-hidden="true" />
+        <span>Loading page…</span>
+      </div>
     </div>
   );
 }

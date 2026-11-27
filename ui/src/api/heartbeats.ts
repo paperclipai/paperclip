@@ -252,10 +252,10 @@ export const heartbeatsApi = {
       reason: input.reason ?? null,
       snoozedUntil: input.snoozedUntil ?? null,
     }),
-  liveRunsForIssue: (issueId: string) =>
-    api.get<LiveRunForIssue[]>(`/issues/${issueId}/live-runs`),
-  activeRunForIssue: (issueId: string) =>
-    api.get<ActiveRunForIssue | null>(`/issues/${issueId}/active-run`),
+  liveRunsForIssue: (issueId: string, options?: { background?: boolean }) =>
+    api.get<LiveRunForIssue[]>(`/issues/${issueId}/live-runs`, options),
+  activeRunForIssue: (issueId: string, options?: { background?: boolean }) =>
+    api.get<ActiveRunForIssue | null>(`/issues/${issueId}/active-run`, options),
   liveRunsForCompany: (
     companyId: string,
     options?: number | { minCount?: number; limit?: number; distinctTasks?: boolean },

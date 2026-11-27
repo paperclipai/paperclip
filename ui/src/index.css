@@ -5903,3 +5903,131 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
 }
 .routine-table { min-width: max-content; }
 .routine-table-grid { display: grid; align-items: center; gap: calc(var(--spacing) * 3); }
+
+:root {
+  --motion-loading-spin: 750ms;
+  --motion-loading-shimmer: 1100ms;
+  --motion-click-feedback: 160ms;
+  --spinner-favicon-size: 32px;
+  --spinner-favicon-radius: 11.5px;
+  --spinner-favicon-stroke: 4px;
+  --spinner-favicon-track-opacity: 0.35;
+}
+
+@keyframes paperclip-spin-ring {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes paperclip-shimmer-sweep {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+@keyframes paperclip-pill-enter {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+html.paperclip-browser-loading,
+html.paperclip-browser-loading body {
+  cursor: progress;
+}
+
+.paperclip-browser-progress-fill {
+  position: relative;
+  box-shadow: 0 0 10px color-mix(in oklab, var(--primary) 70%, transparent);
+}
+
+.paperclip-browser-progress-fill::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, color-mix(in oklab, var(--primary-foreground) 45%, transparent), transparent);
+  animation: paperclip-shimmer-sweep var(--motion-loading-shimmer) var(--motion-ease-standard) infinite;
+}
+
+.paperclip-loading-pill {
+  animation: paperclip-pill-enter var(--motion-duration-fast) var(--motion-ease-out-expo);
+}
+
+.paperclip-inline-spinner {
+  display: inline-block;
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 9999px;
+  border: 2px solid color-mix(in oklab, currentColor 25%, transparent);
+  border-top-color: currentColor;
+  animation: paperclip-spin-ring var(--motion-loading-spin) linear infinite;
+}
+
+[data-paperclip-clicked="true"] {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--ring) 45%, transparent);
+  transition: box-shadow var(--motion-click-feedback) var(--motion-ease-standard);
+}
+
+:is(button, [role="button"], [data-slot="button"]):is([data-paperclip-busy="true"], [data-loading="true"]) {
+  overflow: hidden;
+  opacity: 0.86;
+  cursor: progress;
+}
+
+:is(button, [role="button"], [data-slot="button"]):is([data-paperclip-busy="true"], [data-loading="true"]):where(:not(.fixed, .absolute, .sticky)) {
+  position: relative;
+}
+
+:is(button, [role="button"], [data-slot="button"]):is([data-paperclip-busy="true"], [data-loading="true"])::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    110deg,
+    transparent 20%,
+    color-mix(in oklab, var(--primary-foreground) 18%, transparent) 48%,
+    transparent 76%
+  );
+  animation: paperclip-shimmer-sweep var(--motion-loading-shimmer) var(--motion-ease-standard) infinite;
+}
+
+:is(button, [role="button"], [data-slot="button"]):is([data-paperclip-busy="true"], [data-loading="true"]):not(:has(.animate-spin)):not(:has(.paperclip-inline-spinner))::after {
+  content: "";
+  display: inline-block;
+  flex-shrink: 0;
+  width: 0.85em;
+  height: 0.85em;
+  margin-inline-start: 0.35rem;
+  border-radius: 9999px;
+  border: 2px solid color-mix(in oklab, currentColor 28%, transparent);
+  border-top-color: currentColor;
+  pointer-events: none;
+  animation: paperclip-spin-ring var(--motion-loading-spin) linear infinite;
+}
+
+:is(button, [role="button"], [data-slot="button"])[data-size^="icon"]:is([data-paperclip-busy="true"], [data-loading="true"]):not(:has(.animate-spin))::after {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  background: color-mix(in oklab, var(--background) 60%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .paperclip-browser-progress-fill::after,
+  .paperclip-loading-pill,
+  .paperclip-inline-spinner,
+  :is(button, [role="button"], [data-slot="button"]):is([data-paperclip-busy="true"], [data-loading="true"])::before,
+  :is(button, [role="button"], [data-slot="button"]):is([data-paperclip-busy="true"], [data-loading="true"])::after {
+    animation: none;
+  }
+}

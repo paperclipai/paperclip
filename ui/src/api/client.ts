@@ -111,6 +111,7 @@ export interface RequestOptions {
   /** The `fetch` cache mode. Use `"no-store"` for a response that must never
    *  come from the browser's HTTP cache. */
   cache?: RequestCache;
+  background?: boolean;
 }
 
 function abortError(): DOMException {
@@ -181,10 +182,14 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
   let entry = inflightGets.get(key);
   if (!entry) {
     const controller = new AbortController();
+    const requestHeaders = options?.background
+      ? { ...(options.headers ?? {}), "X-Paperclip-Background": "true" }
+      : options?.headers;
     const promise = request<T>(path, {
       method: "GET",
       signal: controller.signal,
       ...(options?.cache ? { cache: options.cache } : {}),
+      ...(requestHeaders ? { headers: requestHeaders } : {}),
     });
     const created: InflightGet = { promise, controller, refs: new Set() };
     // Clear the shared entry once settled so later calls issue a fresh request.
