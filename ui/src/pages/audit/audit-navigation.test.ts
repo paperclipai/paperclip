@@ -3,6 +3,7 @@ import {
   agentAuditHref,
   auditScopeFromSearchParams,
   auditSectionHref,
+  caseAuditHref,
   routineAuditHref,
   runAuditHref,
 } from "./audit-navigation";
@@ -10,6 +11,7 @@ import {
 describe("audit navigation", () => {
   it("builds stable section routes", () => {
     expect(auditSectionHref("activity")).toBe("/activity");
+    expect(auditSectionHref("commentary")).toBe("/activity/commentary");
     expect(auditSectionHref("runs")).toBe("/activity/runs");
     expect(auditSectionHref("costs")).toBe("/activity/costs");
     expect(auditSectionHref("budgets")).toBe("/activity/budgets");
@@ -22,6 +24,7 @@ describe("audit navigation", () => {
     expect(routineAuditHref("routine-1")).toBe(
       "/activity?entityType=routine&entityId=routine-1",
     );
+    expect(caseAuditHref("case-1")).toBe("/activity?entityType=case&entityId=case-1");
     expect(runAuditHref("run-1", "agent-1")).toBe(
       "/activity?mode=agents&agentId=agent-1&runId=run-1",
     );

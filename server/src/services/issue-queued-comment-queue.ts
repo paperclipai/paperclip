@@ -1,55 +1,17 @@
 import { createHash } from "node:crypto";
 import type { IssueComment, IssueQueuedCommentQueue } from "@paperclipai/shared";
 
-const QUEUE_CONTEXT_KEY = "_paperclipWakeContext";
-const QUEUE_IDS_KEY = "wakeCommentIds";
+export {
+  queuedCommentIdsFromRunContext,
+  queuedCommentIdsFromWakePayload,
+  withQueuedCommentIdsInRunContext,
+  withQueuedCommentIdsInWakePayload,
+} from "../lib/queued-comment-context.js";
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
-}
-
-function uniqueIds(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  const seen = new Set<string>();
-  return value.flatMap((candidate) => {
-    if (typeof candidate !== "string" || !candidate || seen.has(candidate)) return [];
-    seen.add(candidate);
-    return [candidate];
-  });
-}
-
-export function queuedCommentIdsFromWakePayload(payloadValue: unknown): string[] {
-  const payload = record(payloadValue);
-  const context = record(payload[QUEUE_CONTEXT_KEY]);
-  return uniqueIds(context[QUEUE_IDS_KEY]);
-}
-
-export function queuedCommentIdsFromRunContext(contextValue: unknown): string[] {
-  return uniqueIds(record(contextValue)[QUEUE_IDS_KEY]);
-}
-
-export function withQueuedCommentIdsInWakePayload(
-  payloadValue: unknown,
-  ids: string[],
-): Record<string, unknown> {
-  const payload = { ...record(payloadValue) };
-  const context = { ...record(payload[QUEUE_CONTEXT_KEY]) };
-  if (ids.length > 0) {
-    const latestId = ids[ids.length - 1]!;
-    context[QUEUE_IDS_KEY] = ids;
-    context.wakeCommentId = latestId;
-    context.commentId = latestId;
-    payload.commentId = latestId;
-  } else {
-    delete context[QUEUE_IDS_KEY];
-    delete context.wakeCommentId;
-    delete context.commentId;
-    delete payload.commentId;
-  }
-  payload[QUEUE_CONTEXT_KEY] = context;
-  return payload;
 }
 
 /**
@@ -71,31 +33,6 @@ export function queuedCommentQueueRevision(input: {
     }))
     .digest("hex")
     .slice(0, 32);
-}
-
-export function withQueuedCommentIdsInRunContext(
-  contextValue: unknown,
-  ids: string[],
-): Record<string, unknown> {
-  const context = { ...record(contextValue) };
-  if (ids.length > 0) {
-    const latestId = ids[ids.length - 1]!;
-    context[QUEUE_IDS_KEY] = ids;
-    context.wakeCommentId = latestId;
-    context.commentId = latestId;
-  } else {
-    delete context[QUEUE_IDS_KEY];
-    delete context.wakeCommentId;
-    delete context.commentId;
-  }
-
-  // These projections are generated immediately before dispatch. Any queue
-  // mutation must force them to be rebuilt from the canonical comment ids.
-  delete context.paperclipWake;
-  delete context.paperclipWakeComment;
-  delete context.paperclipTaskMarkdown;
-  delete context.paperclipTaskMarkdownCompact;
-  return context;
 }
 
 export type QueuedCommentQueueProtocol = "paperclip_runner_v1" | "legacy";
@@ -125,11 +62,16 @@ export function decideQueuedCommentQueueSteering(facts: {
   /** The queued run's own runtime mode. Read only when `state` is `"queued"`. */
   queueRunRuntimeMode: string | null;
   /** The currently running turn, if any. Read only when `state` is `"deferred"`. */
-  activeRun: { id: string; runtimeMode: string | null } | null;
+  activeRun: { id: string; runtimeMode: string | null; runtimeModeResolvedAt?: Date | null; runnerProfileJson?: Record<string, unknown> | null } | null;
   assignedAgentAdapterType: string | null;
   queuedCommentCount: number;
 }): QueuedCommentQueueSteeringDecision {
-  const persistedRuntimeMode =
+  // The default legacy value is not a selection receipt during preparation.
+  // Use the run's immutable dispatch choice, never the agent's mutable settings.
+  const preparingNative = facts.state === "deferred" && facts.activeRun?.runtimeMode === "legacy" &&
+    facts.activeRun.runtimeModeResolvedAt === null &&
+    record(facts.activeRun.runnerProfileJson?.adapterDispatch).adapterType === "paperclip_runner";
+  const persistedRuntimeMode = preparingNative ? null :
     facts.state === "queued"
       ? facts.queueRunRuntimeMode
       : facts.state === "deferred"
@@ -137,7 +79,7 @@ export function decideQueuedCommentQueueSteering(facts: {
         : null;
 
   const protocol: QueuedCommentQueueProtocol =
-    persistedRuntimeMode === "native"
+    preparingNative || persistedRuntimeMode === "native"
       || (persistedRuntimeMode === null && facts.assignedAgentAdapterType === "paperclip_runner")
       ? "paperclip_runner_v1"
       : "legacy";
@@ -147,7 +89,7 @@ export function decideQueuedCommentQueueSteering(facts: {
   }
 
   const steeringRun = facts.state === "deferred" ? facts.activeRun : null;
-  if (!steeringRun || facts.queuedCommentCount === 0) {
+  if (!steeringRun || preparingNative || facts.queuedCommentCount === 0) {
     return { protocol, kind: "temporarily_unavailable" };
   }
 
@@ -158,6 +100,7 @@ type QueuedCommentQueueEntryFacts = {
   id: string;
   updatedAt: Date;
   authorUserId: string | null;
+  authorAgentId: string | null;
 };
 
 /**
@@ -194,7 +137,8 @@ export function buildQueuedCommentQueueSnapshot<TComment extends QueuedCommentQu
       comment: comment as unknown as IssueComment,
       position,
       canEdit: facts.actorType === "user" && comment.authorUserId === facts.actorId,
-      canDiscard: facts.actorType === "user" && comment.authorUserId === facts.actorId,
+      canDiscard: facts.actorType === "user" &&
+        (comment.authorUserId === facts.actorId || Boolean(comment.authorAgentId)),
     })),
   };
 }

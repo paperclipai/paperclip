@@ -13,6 +13,7 @@ Operator guide for Paperclip's MCP tool access surface. Audience: board users an
 - [Managed connections](#managed-connections)
 - [Catalog and risk classification](#catalog-and-risk-classification)
 - [Profiles and bindings](#profiles-and-bindings)
+- [Scoped tool grants](#scoped-tool-grants)
 - [Policies](#policies)
 - [Approval flow and trust rules](#approval-flow-and-trust-rules)
 - [Runtime slots](#runtime-slots)
@@ -123,6 +124,26 @@ Paperclip plays two roles in the MCP graph, and confusing them is the most commo
 **Gateway mode** — Paperclip proxies tool calls from a Paperclip agent to an upstream MCP server (GitHub, Linear, a local stdio fixture, etc.). Every call goes through profile selection, policy evaluation, optional human approval, rate limiting, redaction, and audit. This is what the rest of this document covers.
 
 Operators usually mean *gateway* when they say "MCP access governance". For Paperclip-managed local adapter runs, Paperclip writes adapter MCP config that points at named gateway endpoints with short-lived scoped bearer tokens. Policies, approvals, and the audit log only exist for calls that enter gateway mode.
+
+Native assigned-tool responses larger than 500,000 encoded bytes are saved after gateway
+validation and redaction. The provider receives a bounded asset reference and
+uses `read_tool_result` to retrieve UTF-8 JSON pages. The entire result is preserved:
+each page includes the next byte offset until EOF.
+The reader fits each encoded page within 500,000 bytes, including JSON escaping,
+with space left for PRP framing. Reading the saved response
+does not call the upstream tool again. The reader requires a currently authorized
+run, the same task and agent, and the existing asset/responsible-user access checks.
+It works when generic API tools are disabled. Storage uses the existing response
+capture quotas and audit path. A failure to save a completed action remains an
+uncertain delivery outcome; it must not invite an automatic repeat of the action.
+Saved provider content remains untrusted.
+
+Connected tool names reserve the `mcp__paperclip-assigned__` provider prefix
+within the 128-character limit. Short existing names stay compatible. Longer
+names use a readable prefix and a stable hash of the connection, application,
+and upstream tool identity; duplicate catalog entries also include their entry
+identity. Gateway metadata retains the original upstream name for dispatch,
+permissions, and audit. An alias never changes which connection executes a call.
 
 V1 does not claim host-wide MCP enforcement. If an unmanaged external client, hand-edited adapter config, or process outside the Paperclip-controlled workspace calls an upstream MCP server directly, Paperclip can warn about known overlapping config entries but cannot prevent or audit that bypass. Treat managed MCP config as a control-plane containment feature for Paperclip-launched agents, not as an endpoint firewall for the operator's whole machine.
 
@@ -242,6 +263,28 @@ curl -fsS -H "Authorization: Bearer $BOARD_API_KEY" \
   "$PAPERCLIP_URL/api/companies/$COMPANY_ID/tools/profiles/effective/agents/$AGENT_ID" \
   | jq '{profileIds, allowedToolNames}'
 ```
+
+## Scoped tool grants
+
+A stored tool grant can restrict access with `scope.allow` and tool selectors.
+An explicit `allow` must contain a matching `tool:<name>`, `connection:<id>`, or
+`application:<id>`. Tool names can use the gateway name or the upstream name.
+If the scope also includes selectors, those selectors must match as well.
+
+For example, `{"allow":["tool:read_item"],"connectionId":"<connection-id>"}`
+allows that tool only on the selected connection. A matching allow entry does
+not override a mismatched connection selector.
+
+Unknown selector names, malformed values, empty restrictions, and non-object
+scopes deny access. Singular selectors require a nonempty string. Plural
+selectors require a nonempty array of nonempty strings. The supported selector
+names are `actorType`, `agentId`, `projectId`, `routineId`, `issueId`, `gatewayId`,
+`applicationId`, `connectionId`, `catalogEntryId`, `applicationKey`,
+`providerType`, `toolName`, and `riskLevel`, plus their plural forms.
+
+A null scope or an empty object preserves the existing unrestricted grant
+behavior. Discovery and execution evaluate the current grant. A revoked grant
+cannot authorize a later call merely because discovery previously listed it.
 
 ## Policies
 
@@ -417,7 +460,7 @@ These are intentional gaps as of the MCP Access Governance v1 launch. Track or w
 | Effective profile | `GET /api/companies/:companyId/tools/profiles/effective/agents/:agentId` | Use for QA proofs and debugging selector misses. |
 | Policies | `GET\|POST /api/companies/:companyId/tools/policies`, `PATCH\|DELETE /api/companies/:companyId/tools/policies/:id` | Types: `allow`, `block`, `require_approval`, `rate_limit`, `trust_rule`. |
 | Policy dry-run | `POST /api/companies/:companyId/tools/policy/test` | Structured `{ companyId, actor, request, runContext? }` body; decision returned under `.decision`. |
-| Gateway sessions | `POST /api/tool-gateway/sessions`, `POST /api/tool-gateway/sessions/:sessionId/revoke` | Board callers must supply `companyId`, `agentId`, `runId` to create and `companyId` to revoke; agent JWTs auto-fill from the token. Revocation invalidates the session immediately and emits `tool_gateway.session_revoked` without logging the raw session token. |
+| Gateway sessions | `POST /api/tool-gateway/sessions`, `POST /api/tool-gateway/sessions/:sessionId/revoke` | Board callers must supply `companyId`, `agentId`, `runId` to create and `companyId` to revoke; agent JWTs auto-fill from the token. A board caller needs permission to wake the agent. A session that a person opens acts as that person: it uses that person's own personal (user-owned) grants, or asks that person to connect, and never another member's personal grant. An approval or long-running provider task started from that session runs as the same person. Approvals and tasks started before this rule shipped have no recorded opener and keep the previous behavior until they expire (15 to 60 minutes). Company-shared connections are unchanged. Revocation invalidates the session immediately and emits `tool_gateway.session_revoked` without logging the raw session token. |
 | Gateway calls | `POST /api/tool-gateway/tools/call` | `X-Paperclip-Tool-Gateway-Token` header; body uses `tool` + `parameters`. Approval-required calls respond `409` with `reasonCode: approval_required` and an `actionRequestId`; the agent retries with `approvedActionRequestId`. |
 | Action requests | `POST /api/tool-gateway/action-requests/:id/approve` | Requires `companyId` (body or query). Listing is via the audit log: filter for `tool_gateway.approval_requested`. |
 | Trust rules | `POST /api/companies/:companyId/tools/action-requests/:id/trust-rule`, `POST /api/companies/:companyId/tools/trust-rules/:id/revoke` | Approval-derived allow policies. |

@@ -6,6 +6,11 @@ import {
   stripSecretBearingUrlParts,
 } from "../middleware/redact-sensitive.js";
 
+it("redacts Slack manager grants and sealed OAuth handoffs", () => {
+  const result = redactSensitive({ managerToken: "manager-canary", refreshToken: "refresh-canary", sealed: { ct: "sealed-canary" }, handoff: { token: "handoff-canary" }, claim_id: "claim-canary" });
+  expect(JSON.stringify(result)).not.toContain("canary");
+});
+
 describe("redactSensitive", () => {
   it("redacts a plaintext password field on a sign-in body", () => {
     const body = {
@@ -221,14 +226,116 @@ describe("redactSensitive", () => {
     expect(json).not.toContain("null");
     expect(json).not.toContain("[1,2,3]");
   });
+
+  it("redacts secret-shaped object keys so accidental tokens in env var names never leak into 4xx logs", () => {
+    const githubPat = ["github", "pat", "11ABCDEF0123456789", "secretTokenValue99"].join("_");
+    const ghpToken = ["ghp", "0123456789abcdef0123456789abcdef"].join("_");
+    const openaiKey = ["sk", "proj", "secretApiKey1234567890abcdef"].join("-");
+    const out = redactSensitive({
+      adapterConfig: {
+        env: {
+          [githubPat]: { type: "plain", value: "x" },
+          [ghpToken]: { type: "plain", value: "y" },
+          [openaiKey]: { type: "plain", value: "z" },
+          NODE_ENV: { type: "plain", value: "production" },
+        },
+      },
+    });
+    const serialized = JSON.stringify(out);
+    expect(serialized).not.toContain(githubPat);
+    expect(serialized).not.toContain(ghpToken);
+    expect(serialized).not.toContain(openaiKey);
+    expect(serialized).toContain("NODE_ENV");
+  });
+
+  it("handles thousands of distinct credential-shaped object keys in linear time without leaking them", () => {
+    const env: Record<string, unknown> = { "[REDACTED]": "existing", "[REDACTED]_2": "existing2" };
+    const prefix = ["xoxb", "1234567890"].join("-");
+    for (let index = 0; index < 4_000; index += 1) {
+      env[`${prefix}-${String(index).padStart(6, "0")}abcdef`] = "secret";
+    }
+    const startedAt = performance.now();
+    const out = redactSensitive({ env }) as { env: Record<string, unknown> };
+    const elapsedMs = performance.now() - startedAt;
+    expect(elapsedMs).toBeLessThan(1_000);
+    expect(Object.keys(out.env)).toHaveLength(4_002);
+    expect(JSON.stringify(out)).not.toContain(prefix);
+  });
 });
 
 describe("stripSecretBearingUrlParts", () => {
+  it("redacts the connector credentialValues envelope on an app-connect body", () => {
+    const out = redactSensitive({
+      galleryKey: "github",
+      name: "GitHub",
+      credentialValues: {
+        "credentials.authorization": "authorization-canary",
+        "headers.X-Api-Key": "header-canary",
+      },
+    }) as Record<string, unknown>;
+
+    // Diagnostics that make the failed connect debuggable must survive.
+    expect(out.galleryKey).toBe("github");
+    expect(out.name).toBe("GitHub");
+    expect(out.credentialValues).toBe("[REDACTED]");
+    expect(JSON.stringify(out)).not.toContain("canary");
+  });
+
+  it("redacts a credentialValues envelope nested below the top level", () => {
+    const out = redactSensitive({
+      connection: {
+        credentialValues: { "credentials.authorization": "nested-canary" },
+      },
+    });
+
+    expect(JSON.stringify(out)).not.toContain("nested-canary");
+  });
+
   it("keeps a request path legible while dropping its complete query and fragment", () => {
     expect(
       stripSecretBearingUrlParts(
         "/api/tools/oauth/callback?code=authorization-code&error_description=provider-prose#fragment",
       ),
     ).toBe("/api/tools/oauth/callback");
+  });
+});
+
+it("redacts Grok routine URL and key in setup failure logs", () => {
+  const payload = { webhookUrl: "https://bot.example/routine/url-canary", webhookKey: "key-canary" };
+  expect(JSON.stringify(redactSensitive(payload))).not.toContain("canary");
+  expect(collectSensitiveStringValues(payload)).toContain(payload.webhookUrl);
+  expect(collectSensitiveStringValues(payload)).toContain(payload.webhookKey);
+});
+
+it("redacts hosted Google redirect URLs and browser codes unconditionally", () => {
+  const payload = {
+    browserCode: "http://127.0.0.1:41234/?state=state-canary&code=code-canary",
+    redirectUrl: "http://127.0.0.1:41234/?state=state-canary-2&code=code-canary-2",
+    redirect_url: "http://127.0.0.1:41234/?state=state-canary-3&code=code-canary-3",
+  };
+  const redacted = redactSensitive(payload) as Record<string, unknown>;
+  expect(redacted).toEqual({
+    browserCode: "[REDACTED]",
+    redirectUrl: "[REDACTED]",
+    redirect_url: "[REDACTED]",
+  });
+  expect(JSON.stringify(redacted)).not.toContain("canary");
+  expect(collectSensitiveStringValues(payload)).toContain(payload.browserCode);
+  expect(collectSensitiveStringValues(payload)).toContain(payload.redirectUrl);
+});
+
+describe("invitation bearer URL paths", () => {
+  it.each([
+    ["/api/invites/invite-bearer-canary/accept?token=query-canary", "/api/invites/[REDACTED]/accept"],
+    ["/invites/invite-bearer-canary/onboarding.txt", "/invites/[REDACTED]/onboarding.txt"],
+    ["/invite/invite-bearer-canary", "/invite/[REDACTED]"],
+    ["/API/INVITES/encoded%2Fbearer/skills/paperclip", "/API/INVITES/[REDACTED]/skills/paperclip"],
+    ["https://user:password@board.example/api/invites/invite-bearer-canary/accept#fragment", "https://board.example/api/invites/[REDACTED]/accept"],
+    ["/api/invites/invite-record-id/revoke", "/api/invites/invite-record-id/revoke"],
+    ["/invites/invite-record-id/revoke/", "/invites/invite-record-id/revoke/"],
+    ["/invite/invite-bearer-canary/revoke", "/invite/[REDACTED]/revoke"],
+    ["/api/companies/company/invites/invite-record-id", "/api/companies/company/invites/invite-record-id"],
+  ])("sanitizes %s without hiding the route", (input, expected) => {
+    expect(stripSecretBearingUrlParts(input)).toBe(expected);
   });
 });

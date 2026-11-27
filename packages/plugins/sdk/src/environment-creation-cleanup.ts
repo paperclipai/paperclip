@@ -11,7 +11,57 @@ export interface PluginEnvironmentCreationCleanup {
   labels: Record<string, string>;
 }
 
-const SCHEMA = "paperclip/environment-creation-cleanup/v1";
+export const ENVIRONMENT_CREATION_CLEANUP_SCHEMA = "paperclip/environment-creation-cleanup/v1";
+export const ENVIRONMENT_ACQUIRE_ERROR_SCHEMA = "paperclip/environment-acquire-error/v1";
+
+/** The step observed at the first acquisition failure, not its upstream cause. */
+export interface PluginEnvironmentAcquisitionDiagnostic {
+  phase: "create" | "workspace" | "shell" | "expiry" | "sentinel";
+  /** Milliseconds from acquisition start to the first failure, before cleanup. */
+  elapsedMs: number;
+  budgetMs: number;
+  /**
+   * Provider state of the provisional allocation, observed once after a create
+   * deadline. Only a fixed set of states is reported; it is not the cause.
+   */
+  providerState?: PluginEnvironmentAcquisitionProviderState;
+}
+
+export const ENVIRONMENT_ACQUISITION_PROVIDER_STATES = [
+  "absent", "creating", "pending_build", "building_snapshot", "pulling_snapshot",
+  "starting", "started", "error", "build_failed", "other", "unavailable",
+] as const;
+export type PluginEnvironmentAcquisitionProviderState = typeof ENVIRONMENT_ACQUISITION_PROVIDER_STATES[number];
+
+function acquisitionDiagnosticContainer(error: unknown): object | null {
+  if (error instanceof PluginEnvironmentAcquisitionError) return error;
+  if (readEnvironmentCreationCleanupError(error)) {
+    return error instanceof PluginEnvironmentCreationCleanupError ? error : (error as { data?: object }).data ?? null;
+  }
+  const data = error && typeof error === "object" ? Object.getOwnPropertyDescriptor(error, "data")?.value : undefined;
+  return data && typeof data === "object" && Object.getOwnPropertyDescriptor(data, "schema")?.value === ENVIRONMENT_ACQUIRE_ERROR_SCHEMA
+    ? data : null;
+}
+
+export function readEnvironmentAcquisitionDiagnostic(error: unknown): PluginEnvironmentAcquisitionDiagnostic | null {
+  try {
+    const container = acquisitionDiagnosticContainer(error);
+    const value = container && Object.getOwnPropertyDescriptor(container, "acquisitionDiagnostic")?.value;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const fields = Object.getOwnPropertyDescriptors(value);
+    const phase = fields.phase?.value;
+    const elapsedMs = fields.elapsedMs?.value;
+    const budgetMs = fields.budgetMs?.value;
+    const providerState = fields.providerState?.value;
+    if (!["create", "workspace", "shell", "expiry", "sentinel"].includes(phase as string) ||
+        typeof elapsedMs !== "number" || !Number.isSafeInteger(elapsedMs) || elapsedMs < 0 || elapsedMs > 604_800_000 ||
+        typeof budgetMs !== "number" || !Number.isSafeInteger(budgetMs) || budgetMs < 1 || budgetMs > 86_400_000) return null;
+    // An unknown optional state is omitted; it never invalidates the observation.
+    const knownState = ENVIRONMENT_ACQUISITION_PROVIDER_STATES.find(value => value === providerState);
+    return { phase: phase as PluginEnvironmentAcquisitionDiagnostic["phase"], elapsedMs, budgetMs,
+      ...(knownState ? { providerState: knownState } : {}) };
+  } catch { return null; }
+}
 
 /**
  * Never serialize the provider exceptions: they may contain credentials.
@@ -19,25 +69,39 @@ const SCHEMA = "paperclip/environment-creation-cleanup/v1";
  */
 export class PluginEnvironmentCreationCleanupError extends AggregateError {
   readonly cleanup: PluginEnvironmentCreationCleanup;
+  readonly acquisitionDiagnostic?: PluginEnvironmentAcquisitionDiagnostic;
 
-  constructor(errors: unknown[], message: string, cleanup: PluginEnvironmentCreationCleanup) {
+  constructor(errors: unknown[], message: string, cleanup: PluginEnvironmentCreationCleanup,
+    acquisitionDiagnostic?: PluginEnvironmentAcquisitionDiagnostic) {
     super(errors, message);
     this.name = "PluginEnvironmentCreationCleanupError";
     this.cleanup = cleanup;
+    this.acquisitionDiagnostic = acquisitionDiagnostic;
   }
 }
 
-export function environmentCreationCleanupErrorData(error: unknown): unknown {
+export class PluginEnvironmentAcquisitionError extends Error {
+  readonly acquisitionDiagnostic: PluginEnvironmentAcquisitionDiagnostic;
+
+  constructor(message: string, acquisitionDiagnostic: PluginEnvironmentAcquisitionDiagnostic, cause?: unknown) {
+    super(message, { cause });
+    this.name = "PluginEnvironmentAcquisitionError";
+    this.acquisitionDiagnostic = acquisitionDiagnostic;
+  }
+}
+
+export function environmentCreationCleanupErrorData(error: unknown, includeAcquisitionDiagnostic = false): unknown {
   if (!(error instanceof PluginEnvironmentCreationCleanupError)) return undefined;
   const cleanup = readEnvironmentCreationCleanupError(error);
-  return cleanup ? { schema: SCHEMA, cleanup } : undefined;
+  const acquisitionDiagnostic = includeAcquisitionDiagnostic ? readEnvironmentAcquisitionDiagnostic(error) : null;
+  return cleanup ? { schema: ENVIRONMENT_CREATION_CLEANUP_SCHEMA, cleanup, ...(acquisitionDiagnostic ? { acquisitionDiagnostic } : {}) } : undefined;
 }
 
 export function readEnvironmentCreationCleanupError(error: unknown): PluginEnvironmentCreationCleanup | null {
   const data = error instanceof PluginEnvironmentCreationCleanupError
-    ? { schema: SCHEMA, cleanup: error.cleanup }
+    ? { schema: ENVIRONMENT_CREATION_CLEANUP_SCHEMA, cleanup: error.cleanup }
     : error && typeof error === "object" && "data" in error ? error.data : null;
-  if (!data || typeof data !== "object" || !("schema" in data) || data.schema !== SCHEMA || !("cleanup" in data)) return null;
+  if (!data || typeof data !== "object" || !("schema" in data) || data.schema !== ENVIRONMENT_CREATION_CLEANUP_SCHEMA || !("cleanup" in data)) return null;
   const value = data.cleanup;
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const row = value as Record<string, unknown>;

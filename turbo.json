@@ -1,0 +1,339 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "globalDependencies": [
+    "*",
+    "**/package.json",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    ".npmrc",
+    "tsconfig*.json",
+    "vitest.config.ts",
+    "**/vitest.config.*",
+    "**/vite.config.*",
+    "**/vitest.setup.*",
+    "**/tsconfig*.json",
+    "scripts/**",
+    ".github/**",
+    "patches/**",
+    "tests/fixtures/**",
+    "tests/helpers/**",
+    "tests/runner-e2e/fixtures/**",
+    "tests/tsconfig.playwright.json",
+    "tests/acpx-qualification-models.ts",
+    "doc/**",
+    "docs/**",
+    "skills/**",
+    ".agents/**",
+    "maps/**",
+    ".claude/**"
+  ],
+  "globalEnv": [
+    "CI",
+    "CI_TASK_CACHE_SCOPE",
+    "GITHUB_WORKFLOW",
+    "NODE_OPTIONS",
+    "TZ",
+    "PAPERCLIP_*",
+    "TEST_*",
+    "VITE_*",
+    "DATABASE_URL",
+    "PG*",
+    "RUST*",
+    "CARGO*",
+    "NODE_ENV",
+    "XDG_*",
+    "LANG",
+    "LC_*",
+    "GIT_*",
+    "NPM_CONFIG_*",
+    "npm_config_*"
+  ],
+  "globalPassThroughEnv": [
+    "GITHUB_*",
+    "RUNNER_*",
+    "SSH_AUTH_SOCK",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "HOME",
+    "USER",
+    "SHELL"
+  ],
+  "tasks": {
+    "//#ci:server": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/src/lib/**",
+        "ui/src/api/**",
+        "ui/src/types/**",
+        "ui/src/index.css",
+        "ui/src/bootstrapSetup.ts",
+        "ui/src/pages/CompanyExport.tsx",
+        "ui/*",
+        "ui/src/components/MarkdownBody.tsx"
+      ],
+      "outputs": [],
+      "cache": true
+    },
+    "//#ci:chat": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/src/lib/**",
+        "ui/src/api/**",
+        "ui/src/types/**",
+        "ui/src/index.css",
+        "ui/src/bootstrapSetup.ts",
+        "ui/src/pages/CompanyExport.tsx",
+        "ui/*",
+        "ui/src/components/MarkdownBody.tsx"
+      ],
+      "outputs": [],
+      "cache": true
+    },
+    "//#ci:workspaces-a": {
+      "inputs": [
+        "ui/**",
+        "cli/**",
+        "packages/db/**",
+        "packages/shared/**",
+        "packages/adapter-utils/**",
+        "packages/adapters/**",
+        "packages/paperclip-runner/**",
+        "packages/plugins/**",
+        "server/src/services/agent-conversations.ts",
+        "announcements/examples/animated/**"
+      ],
+      "outputs": [],
+      "cache": true
+    },
+    "//#ci:workspaces-b": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/src/lib/**",
+        "ui/public/**"
+      ],
+      "outputs": [],
+      "cache": true
+    },
+    "//#ci:db": {
+      "inputs": [
+        "packages/db/**",
+        "packages/shared/**"
+      ],
+      "outputs": [],
+      "cache": true
+    },
+    "//#ci:serialized": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/src/lib/**",
+        "ui/src/api/**",
+        "ui/src/types/**",
+        "ui/src/index.css",
+        "ui/src/bootstrapSetup.ts",
+        "ui/src/pages/CompanyExport.tsx",
+        "ui/*",
+        "ui/src/components/MarkdownBody.tsx"
+      ],
+      "outputs": [],
+      "cache": true
+    },
+    "//#ci:runner-static": {
+      "inputs": [
+        "server/**",
+        "packages/**",
+        "tests/runner-e2e/**",
+        "ui/src/lib/**",
+        "ui/src/api/**",
+        "ui/src/types/**",
+        "ui/src/index.css",
+        "ui/src/bootstrapSetup.ts",
+        "ui/src/pages/CompanyExport.tsx",
+        "ui/*",
+        "ui/src/components/MarkdownBody.tsx"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:runner-rust": {
+      "inputs": [
+        "packages/paperclip-runner/**"
+      ],
+      "outputs": [],
+      "cache": true
+    },
+    "//#ci:runner-package": {
+      "inputs": [
+        "packages/paperclip-runner/**",
+        "packages/paperclip-eval-kernel/**",
+        "packages/adapters/codex-local/**",
+        "packages/adapter-utils/**",
+        "tests/runner-e2e/**"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:runner-vitest": {
+      "inputs": [
+        "server/**",
+        "packages/**",
+        "ui/src/lib/**",
+        "ui/src/api/**",
+        "ui/src/types/**",
+        "ui/src/index.css",
+        "ui/src/bootstrapSetup.ts",
+        "ui/src/pages/CompanyExport.tsx",
+        "ui/*",
+        "ui/src/components/MarkdownBody.tsx"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:typecheck": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/**",
+        "tests/e2e/**",
+        "tests/runner-e2e/**"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:build": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/**"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:sandbox-providers": {
+      "inputs": [
+        "packages/plugins/sandbox-providers/**",
+        "packages/plugins/sdk/**",
+        "packages/shared/**"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:docker": {
+      "inputs": [
+        "packages/paperclip-runner/**"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:canary": {
+      "inputs": [
+        "scripts/release*",
+        "scripts/build-npm.sh",
+        "scripts/build-standalone-public-packages.mjs",
+        "scripts/cli-bundled-npm-dependencies.mjs",
+        "scripts/link-plugin-dev-sdk.mjs",
+        "scripts/prefetch-child.mjs",
+        "scripts/stage-bundled-packages.mjs",
+        "scripts/pack-staged-packages.mjs",
+        "scripts/prepare-bundled-package.mjs",
+        "scripts/prepare-server-ui-dist.sh",
+        "scripts/generate-npm-package-json.mjs",
+        "scripts/prepare-npm-readme.mjs",
+        "scripts/check-forbidden-tokens.mjs",
+        "scripts/confirm-canary-publication.sh",
+        "scripts/create-github-release.sh"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:e2e": {
+      "inputs": [
+        "server/**",
+        "cli/**",
+        "packages/**",
+        "ui/**",
+        "tests/e2e/**"
+      ],
+      "outputs": [],
+      "cache": false
+    },
+    "//#ci:runner-e2e-support": {
+      "inputs": [
+        "tests/runner-e2e/**",
+        "tests/e2e/fetch-allowed-port.ts",
+        "packages/paperclip-runner/**",
+        "packages/plugins/sdk/**",
+        "packages/adapter-utils/**",
+        "packages/adapters/**",
+        "packages/shared/**",
+        "packages/teams-catalog/**",
+        "packages/db/src/client.ts",
+        "packages/db/src/index.ts",
+        "packages/db/src/test-embedded-postgres.ts",
+        "packages/db/src/schema/cases.ts",
+        "packages/db/src/schema/execution_workspace_repositories.ts",
+        "packages/db/src/schema/heartbeat_runs.ts",
+        "cli/src/checks/database-check.ts",
+        "cli/src/client/context.ts",
+        "cli/src/index.ts",
+        "server/src/__tests__/helpers/embedded-postgres.ts",
+        "server/src/__tests__/helpers/isolated-test-home.ts",
+        "server/src/__tests__/helpers/recovery-postgres.ts",
+        "server/src/adapters/**",
+        "server/src/agent-auth-jwt.ts",
+        "server/src/attachment-types.ts",
+        "server/src/home-paths.ts",
+        "server/src/index.ts",
+        "server/src/lib/agent-records.ts",
+        "server/src/middleware/board-mutation-guard.ts",
+        "server/src/modules/agent-lifecycle/**",
+        "server/src/onboarding-assets/**",
+        "server/src/redaction.ts",
+        "server/src/routes/activity.ts",
+        "server/src/routes/native-run-mcp.ts",
+        "server/src/secrets/local-encrypted-provider.ts",
+        "server/src/services/accounting-integrity.ts",
+        "server/src/services/activity.ts",
+        "server/src/services/agent-ai-connection-default.ts",
+        "server/src/services/agentmail-api.ts",
+        "server/src/services/ai-api-key-failures.ts",
+        "server/src/services/company-member-roles.ts",
+        "server/src/services/company-portability.ts",
+        "server/src/services/cost-data-quality.ts",
+        "server/src/services/cron.ts",
+        "server/src/services/default-agent-instructions.ts",
+        "server/src/services/heartbeat/task-markdown.ts",
+        "server/src/services/hot-restart.ts",
+        "server/src/services/issue-comment-wakeup.ts",
+        "server/src/services/issues.ts",
+        "server/src/services/native-runtime/**",
+        "server/src/services/plugin-tool-dispatcher.ts",
+        "server/src/services/run-cost-accounting.ts",
+        "server/src/services/tool-content-guards.ts",
+        "server/src/vendor/paperclip-runner/**",
+        "ui/public/favicon-32x32.png",
+        "ui/public/fonts/InterVariable.woff2",
+        "ui/src/api/activity.ts",
+        "ui/src/features/connections/ConnectionSetupFlow.tsx",
+        "ui/src/lib/company-routes.ts",
+        "ui/src/lib/company-skill-routes.ts",
+        "ui/src/lib/grok-bot-setup-prompt.ts",
+        "ui/src/lib/issue-reference.ts",
+        "ui/src/lib/markdown-reply-content.ts",
+        "ui/src/lib/onboarding-route.ts"
+      ],
+      "outputs": [],
+      "cache": false
+    }
+  }
+}
