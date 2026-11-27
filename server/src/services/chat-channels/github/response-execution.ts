@@ -34,6 +34,16 @@ export function settlesFromRequestRun(state: GitHubResponseRunState, issueStatus
     issueStatus !== "blocked" && !!state.finishedRequestRun;
 }
 
+export const GITHUB_CONTINUATION_WAIT_MS = 30 * 60_000;
+
+export function awaitsAutomaticContinuation(
+  latestRun: { continuesAutomatically: boolean; updatedAt: Date },
+  continuesRequest: boolean,
+  now = Date.now(),
+) {
+  return continuesRequest && latestRun.continuesAutomatically && now - latestRun.updatedAt.getTime() < GITHUB_CONTINUATION_WAIT_MS;
+}
+
 /** The notice that points a request at the latest response its agent published
  * on the same pull request or issue after the request arrived, if any. */
 export async function latestResponseNotice(db: Db,
@@ -47,7 +57,7 @@ export async function latestResponseNotice(db: Db,
 export async function githubResponseExecution(db: Db, input: GitHubResponseExecutionInput, read?: GitHubResponseRunRead) {
   const state = read ?? await readGitHubResponseRun(db, input);
   if ("forbidden" in state) throw state.forbidden;
-  const { latestRun, ownsLatestRequest, finishedRequestRun } = state;
+  const { latestRun, ownsLatestRequest, finishedRequestRun, latestContinuesRequestRun } = state;
   const requestRunning = ownsLatestRequest && latestRun?.status === "running";
   const terminal = latestRun && finished(latestRun.status);
   // Once the task is idle, a request whose own run finished earlier settles
@@ -70,19 +80,22 @@ export async function githubResponseExecution(db: Db, input: GitHubResponseExecu
   const taskFinished = ["done", "cancelled"].includes(input.issueStatus);
   // Precedence: a later published response is more useful to the reader than
   // any notice about this request's own run, including a refused reply.
+  const awaitingContinuation = !!run && !!latestRun && !taskFinished &&
+    awaitsAutomaticContinuation(latestRun, run.id === latestRun.id || (run.id === requestRun?.id && latestContinuesRequestRun));
   const outcome: keyof typeof STATUS_TEXT | "link" | "waiting" | null =
     presentationPending ? null
     : !run ? paused ? "paused" : null
     : reply === "confirmed" ? "handled"
     : paused ? "paused"
     : latestResponse ? "link"
-    : run.passiveResponseWait && !isMainPullThread(input.threadId) && !taskFinished ? "waiting"
+    : awaitingContinuation || (run.passiveResponseWait && !isMainPullThread(input.threadId) && !taskFinished) ? "waiting"
     : run.responsePublicationFailed ? "publish_failed"
     : run.status === "succeeded" ? "ended" : "stopped";
   const body = outcome === null || outcome === "waiting" ? undefined
     : outcome === "link" ? latestResponse! : STATUS_TEXT[outcome];
   return {
-    body, outcome, paused, reply, running: requestRunning, presentationPending, passiveResponseWait,
+    body, outcome, paused, reply, running: requestRunning, presentationPending, passiveResponseWait, awaitingContinuation,
+    continuationDeadline: outcome === "waiting" && awaitingContinuation && latestRun ? latestRun.updatedAt.getTime() + GITHUB_CONTINUATION_WAIT_MS : undefined,
     versionAt: run ? new Date(Math.max(run.updatedAt.getTime(), input.deliveryCreatedAt.getTime()))
       : paused ? input.deliveryCreatedAt : undefined,
     version: JSON.stringify([latestRun?.id ?? null, latestRun?.status ?? null,

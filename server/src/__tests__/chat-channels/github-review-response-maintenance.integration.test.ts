@@ -19,6 +19,7 @@ vi.mock("@chat-adapter/telegram", async (importOriginal) => {
   return candidate ? import(/* @vite-ignore */ candidate) : importOriginal();
 });
 import { githubResponseCommentService } from "../../services/chat-github-response-comments.js";
+import { createDeliveryWorkCoordinator } from "../../services/delivery-work-coordinator.js";
 import { githubChatReviewService } from "../../services/chat-github-reviews.js";
 import { type TestDb, describeEmbeddedPostgres, makeThread, makeMessage } from "./providers.js";
 import { createChatChannelHarness } from "./harness.js";
@@ -128,6 +129,104 @@ describeEmbeddedPostgres("chat channels: github review response maintenance", ()
       const writes = f.responseWrites.length;
       await responses.processPending();
       expect(f.responseWrites).toHaveLength(writes);
+    });
+    it.each([["recent", 0, "See the [latest response]"], ["too old", 31 * 60_000, "stopped before completing"]] as const)(
+      "waits for the automatic continuation of a failed GitHub request run: %s", async (_label, failedAgoMs, settled) => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native",
+        errorCode: "native_continuation_requires_reconciliation", updatedAt: new Date(Date.now() - failedAgoMs) })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      const stopped = { companyId: f.companyId, endpointId: f.endpoint.id, issueId: f.conversation.issueId!, runId: f.run.id,
+        body: "This turn stopped before completing. See the Paperclip task for details." };
+      if (failedAgoMs === 0) {
+        await expect(responses.failRun(stopped)).rejects.toMatchObject({ status: 409 });
+        await responses.processPending();
+        expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+        await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId, status: "succeeded",
+          runtimeMode: "native", nativePhase: "committed", retryOfRunId: f.run.id,
+          contextSnapshot: { issueId: f.conversation.issueId }, resultJson: { presentationDecision: {
+            schema: "paperclip.run_presentation_decision.v1", chosenSource: "none", commentAction: "none" } } });
+        const [main] = await db.insert(chatConversations).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+          issueId: f.conversation.issueId, externalConversationId: "github:paperclipai/paperclip",
+          externalLabel: "paperclipai/paperclip", externalThreadId: "github:paperclipai/paperclip:418" }).returning();
+        await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: main.id,
+          kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`, status: "processed",
+          payload: { operation: "assessment", session: { companyId: f.companyId, issueId: f.conversation.issueId,
+            runId: randomUUID(), agentId: f.assignedAgentId } },
+          result: { summaryUrl: "https://github.com/paperclipai/paperclip/pull/418#issuecomment-5" } });
+        await responses.processPending();
+      } else {
+        await responses.failRun(stopped);
+      }
+      expect(f.responseComments.get(firstId)?.body).toContain(settled);
+    });
+    it("keeps waiting while the automatic continuations of a failed GitHub request run also fail", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      const failed = (ago: number) => ({ status: "failed", runtimeMode: "native" as const,
+        errorCode: "native_continuation_requires_reconciliation", updatedAt: new Date(Date.now() - ago) });
+      await db.update(heartbeatRuns).set(failed(50 * 60_000)).where(eq(heartbeatRuns.id, f.run.id));
+      const [first] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+        ...failed(40 * 60_000), retryOfRunId: f.run.id, contextSnapshot: { issueId: f.conversation.issueId } }).returning();
+      const [second] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.assignedAgentId,
+        ...failed(60_000), contextSnapshot: { issueId: f.conversation.issueId, previousRunId: first.id } }).returning();
+      const responses = githubResponseCommentService(db, f.providerFetch);
+      await responses.processPending();
+      expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+      await db.update(heartbeatRuns).set({ updatedAt: new Date(Date.now() - 31 * 60_000) }).where(eq(heartbeatRuns.id, second.id));
+      await responses.processPending();
+      expect(f.responseComments.get(firstId)?.body).toContain("stopped before completing");
+    });
+    it("links a request awaiting a continuation to a later response without waiting for the deadline", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native",
+          errorCode: "native_continuation_requires_reconciliation", updatedAt: new Date(Date.now() - 60_000) })
+          .where(eq(heartbeatRuns.id, f.run.id));
+        const [main] = await db.insert(chatConversations).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+          issueId: f.conversation.issueId, externalConversationId: "github:paperclipai/paperclip",
+          externalLabel: "paperclipai/paperclip", externalThreadId: "github:paperclipai/paperclip:418" }).returning();
+        await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: main.id,
+          kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`, status: "processed",
+          payload: { operation: "assessment", session: { companyId: f.companyId, issueId: f.conversation.issueId,
+            runId: randomUUID(), agentId: f.assignedAgentId } },
+          result: { summaryUrl: "https://github.com/paperclipai/paperclip/pull/418#issuecomment-5" } });
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await vi.waitFor(() => expect(f.responseComments.get(firstId)?.body).toContain("See the [latest response]"),
+          { timeout: 10_000 });
+        expect(errors).toEqual([]);
+      } finally {
+        await coordinator.stop();
+        vi.useRealTimers();
+      }
+    });
+    it("settles a request still waiting for a continuation once the wait expires, through the registered worker", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      const errors: unknown[] = [];
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+      try {
+        await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native",
+          errorCode: "native_continuation_requires_reconciliation", updatedAt: new Date(Date.now() - 29 * 60_000) })
+          .where(eq(heartbeatRuns.id, f.run.id));
+        await githubResponseCommentService(db, f.providerFetch).registerTerminalResponseWork(coordinator, () => true).ready;
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(f.responseComments.get(firstId)?.body).toContain("Working on this");
+        await vi.advanceTimersByTimeAsync(2 * 60_000);
+        await vi.waitFor(() => expect(f.responseComments.get(firstId)?.body).toContain("stopped before completing"),
+          { timeout: 10_000 });
+        expect(errors).toEqual([]);
+      } finally {
+        await coordinator.stop();
+        vi.useRealTimers();
+      }
     });
     it.each(["in_progress", "blocked"] as const)("links the latest response when a request's run ends without its own reply: %s",
       async issueStatus => {

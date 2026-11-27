@@ -271,8 +271,8 @@ describeEmbeddedPostgres("chat channels: github review publications", () => {
 
     it("reconciles a GitHub working comment when execution stops without a publication", async () => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418");
-      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "execution_finalization_deadline_exceeded" })
-        .where(eq(heartbeatRuns.id, f.run.id));
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "execution_finalization_deadline_exceeded",
+        updatedAt: new Date(Date.now() - 31 * 60_000) }).where(eq(heartbeatRuns.id, f.run.id));
       await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.conversation.issueId!));
       await githubResponseCommentService(db, f.providerFetch).processPending();
       expect(f.responseComments.size).toBe(1);
