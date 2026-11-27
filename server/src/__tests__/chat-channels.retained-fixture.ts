@@ -1,3 +1,4 @@
+import type { RetainedWakeQueueFixtures } from "./chat-channels.integration.test.js";
 import { execFileSync } from "node:child_process";
 import { releaseAbandonedNativeOwners } from "../services/native-runtime/native-failed-run-owner-release.js";
 import { guardSlackFixtureNetwork } from "./helpers/slack-cloud/transport.js";
@@ -17,7 +18,6 @@ import { settleUnrecoverableExecutions } from "../services/execution-recovery-re
 import { recordRunPresentationDecision } from "../services/heartbeat/run-completion.js";
 import { environmentService } from "../services/environments.js";
 import { reconcilePersistedRuntimeServicesOnStartup, readWorkspaceRuntimeIdleWork } from "../services/workspace-runtime.js";
-import { createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { chatFailedRetryNoticeWork } from "../services/chat-failed-retry-notice-work.js";
 import { issueTreeControlService } from "../services/issue-tree-control.js";
 import { chatInboundWakeNoticeWork } from "../services/chat-inbound-wake-notice-work.js";
@@ -244,7 +244,6 @@ import * as discordQuestionForms from "../services/chat-discord-question-forms.j
 import { issueService } from "../services/issues.js";
 import { companyService } from "../services/companies.js";
 import { ensureProjectAccessMember } from "../services/projects.js";
-import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/postgres.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
@@ -1149,7 +1148,7 @@ function webhookApp(
   return app;
 }
 
-export function registerRetainedChatTests(partition: number) {
+export function registerRetainedChatTests(partition: number, { createWakeAdmissionWriter, createPostgresWakeQueueAdapter }: RetainedWakeQueueFixtures) {
 describeEmbeddedPostgres("chat channel control-plane integration", () => {
   let db!: TestDb;
   let tempDb: Awaited<

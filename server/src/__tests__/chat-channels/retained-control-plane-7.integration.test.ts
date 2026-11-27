@@ -1,3 +1,4 @@
+import { createWakeAdmissionWriter, createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
 import { registerRetainedChatTests } from "../chat-channels.retained-fixture.js";
 
-registerRetainedChatTests(6);
+registerRetainedChatTests(6, { createWakeAdmissionWriter, createPostgresWakeQueueAdapter });
