@@ -2,9 +2,10 @@ import express from "express";
 import request from "supertest";
 import {
   createRunnerAttachmentGrant, RUNNER_ATTACHMENT_DOWNLOAD_PATH, runnerAttachmentDownloadRoutes,
+  runnerAttachmentDownloadUrl, verifyRunnerAttachmentGrant,
 } from "./runner-attachment-download.js";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, readFile, symlink, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, stat, writeFile } from "node:fs/promises";
 import { Readable } from "node:stream";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -34,12 +35,58 @@ import {
 } from "@paperclipai/db";
 
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { deploymentEnvironment } from "../../deployment/runtime.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
 import { createStorageService } from "../../storage/service.js";
 import type { StorageService } from "../../storage/types.js";
 import { issueService } from "../issues.js";
 import { NativeChatAttachmentReadScope } from "./chat-attachment-read.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
+
+it("uses the managed deployment config and protected credential for Runner attachment downloads", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "paperclip-runner-attachment-"));
+  const configFile = path.join(root, "config.json");
+  const credentialFile = path.join(root, "auth");
+  const secret = randomUUID();
+  const origin = "https://tenant.example.test";
+  const writeConfig = (publicBaseUrl: string) => writeFile(configFile, JSON.stringify({
+    $meta: { version: 1, updatedAt: new Date().toISOString(), source: "configure" },
+    database: {},
+    logging: { mode: "file" },
+    server: { deploymentMode: "authenticated" },
+    auth: { baseUrlMode: "explicit", publicBaseUrl },
+  }));
+  try {
+    await writeConfig(origin);
+    await writeFile(credentialFile, `${secret}\n`, { mode: 0o600 });
+    const env = deploymentEnvironment({
+      version: 1, home: root, instance: "test", configFile, credentialFiles: {},
+      serverCredentials: { auth: credentialFile },
+    }, {});
+    for (const name of [
+      "PAPERCLIP_DECLARATIVE", "PAPERCLIP_CONFIG", "PAPERCLIP_AGENT_JWT_SECRET", "BETTER_AUTH_SECRET",
+      "PAPERCLIP_PUBLIC_URL", "PAPERCLIP_AUTH_PUBLIC_BASE_URL", "PAPERCLIP_MANAGED_RUNTIME_PUBLIC_URL",
+    ]) vi.stubEnv(name, env[name]);
+
+    const url = runnerAttachmentDownloadUrl();
+    expect(url).toBe(`${origin}${RUNNER_ATTACHMENT_DOWNLOAD_PATH}`);
+    const binding = { companyId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), agentId: randomUUID() };
+    const source = {
+      kind: "wake" as const, attachmentId: randomUUID(), sourceCommentId: randomUUID(),
+      contentType: "text/plain", byteSize: 1, sha256: createHash("sha256").update("x").digest("hex"),
+    };
+    const grant = createRunnerAttachmentGrant(binding, source, "turn", url!);
+    expect(verifyRunnerAttachmentGrant(grant.token)).toMatchObject({ ...binding, ...source, turnId: "turn" });
+    expect(process.env.PAPERCLIP_AGENT_JWT_SECRET).toBeUndefined();
+    expect(process.env.BETTER_AUTH_SECRET).toBeUndefined();
+
+    await writeConfig("http://tenant.example.test");
+    expect(runnerAttachmentDownloadUrl()).toBeNull();
+  } finally {
+    vi.unstubAllEnvs();
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 const stagingControl = vi.hoisted(() => ({
   beforeStage: undefined as (() => Promise<void>) | undefined,
