@@ -126,6 +126,7 @@ export async function materializeFreshWorkspaceSeed(input: {
       commit = resolved.stdout.trim();
       if (!/^[a-f0-9]{40,64}$/.test(commit)) throw new Error("Invalid fresh workspace seed commit");
       await execFile("git", ["clone", "--no-local", "--no-checkout", "--", input.sourceCwd, staging], gitOptions);
+      await execFile("git", ["-C", staging, "-c", "core.hooksPath=/dev/null", "fetch", "--no-tags", "origin", commit], gitOptions);
       await execFile("git", ["-C", staging, "-c", "core.hooksPath=/dev/null", "checkout", "--detach", commit], gitOptions);
       // The old local directory is not a publication target for this attempt.
       await execFile("git", ["-C", staging, "remote", "remove", "origin"], gitOptions);
