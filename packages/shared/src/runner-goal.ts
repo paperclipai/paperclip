@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { maxStringLength } from "./validators/text.js";
 
 export const RUNNER_GOAL_MAX_OBJECTIVE_CHARS = 4_000;
 
@@ -85,11 +86,7 @@ export interface RunnerGoalProjection {
   observedAt: string | null;
 }
 
-const objectiveSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(RUNNER_GOAL_MAX_OBJECTIVE_CHARS);
+const objectiveSchema = maxStringLength(z.string().trim().min(1), RUNNER_GOAL_MAX_OBJECTIVE_CHARS);
 
 export const runnerGoalActionRequestSchema = z
   .object({

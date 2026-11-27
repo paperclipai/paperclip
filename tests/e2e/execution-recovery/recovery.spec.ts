@@ -109,7 +109,7 @@ for (const journey of [
     });
     try {
       const port = await listenOnFetchAllowedPort(fixture);
-      const env = {
+      const env: NodeJS.ProcessEnv = {
         ...process.env,
         PAPERCLIP_RECOVERY_CEO_LINEAGE: journey === "ceo_lineage" ? "1" : "0",
         IN_FEED_FIXTURE_KEY: "not-a-real-model-key",
@@ -308,16 +308,8 @@ for (const journey of [
       const connections: Record<string, { id: string; name: string }> = {};
       for (const service of ["notion", "gmail"]) {
         await page.goto(base + prefix + "/apps");
-        const custom = page
-          .getByRole("list", { name: "Connector list" })
-          .getByRole("listitem")
-          .filter({ hasText: "Connect your own tool" });
-        await custom
-          .getByRole("button", { name: "Connect", exact: true })
-          .click();
-        await custom
-          .getByRole("button", { name: "Connect your own MCP server" })
-          .click();
+        await page.getByRole("button", { name: "Add", exact: true }).click();
+        await page.getByRole("menuitem", { name: /MCP server URL/ }).click();
         await page
           .getByPlaceholder("https://example.com/actions")
           .fill(`http://127.0.0.1:${port}/${service}`);

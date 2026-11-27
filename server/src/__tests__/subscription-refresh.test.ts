@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { refreshCompanySubscriptions, refreshSubscriptionConnection } from "../services/subscription-refresh.js";
 import type { SubscriptionConnection } from "../services/subscriptions.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const mocks = vi.hoisted(() => ({ accounts: vi.fn(), credential: vi.fn(), register: vi.fn(), probe: vi.fn() }));
 vi.mock("../services/ai-connections.js", () => ({ aiConnectionService: () => ({ subscriptionAccounts: mocks.accounts, credential: mocks.credential }) }));
-vi.mock("../services/subscriptions.js", () => ({ subscriptionService: () => ({ register: mocks.register }) }));
+vi.mock("../services/subscriptions.js", () => ({ subscriptionService: () => ({ register: mocks.register }), subscriptionSession: async () => null }));
 vi.mock("../services/subscription-identity.js", () => ({ probeSubscriptionIdentity: mocks.probe }));
 
 function deferred<T>() {
@@ -28,6 +29,40 @@ beforeEach(() => {
 });
 
 describe("subscription discovery capacity", () => {
+  it("tracks detached provider refresh through its final database write", async () => {
+    const db = database(), probe = deferred<{ credentialKey: string }>(), save = deferred<string>();
+    const before = idleWorkSnapshot();
+    mocks.probe.mockReturnValue(probe.promise);
+    mocks.register.mockReturnValue(save.promise);
+    const task = refreshSubscriptionConnection(db, input("tracked"), "tracked");
+    try {
+      await vi.waitFor(() => expect(mocks.probe).toHaveBeenCalledOnce());
+      expect(idleWorkSnapshot().active).toBe(before.active + 1);
+      expect(refreshSubscriptionConnection(db, input("tracked"), "tracked")).toBe(task);
+      expect(idleWorkSnapshot().active).toBe(before.active + 1);
+      probe.resolve({ credentialKey: "fixture-key" });
+      await vi.waitFor(() => expect(mocks.register).toHaveBeenCalledOnce());
+      expect(idleWorkSnapshot().active).toBe(before.active + 1);
+    } finally {
+      probe.resolve({ credentialKey: "fixture-key" }); save.resolve("tracked"); await task;
+    }
+    expect(idleWorkSnapshot().active).toBe(before.active);
+    expect(idleWorkSnapshot().generation).toBe(before.generation + 2);
+  });
+
+  it("tracks detached discovery while it waits for account credentials", async () => {
+    const db = database(), accounts = deferred<[]>();
+    const before = idleWorkSnapshot();
+    mocks.accounts.mockReturnValue(accounts.promise);
+    const task = refreshCompanySubscriptions(db, "tracked-company", "alice");
+    try {
+      expect(idleWorkSnapshot().active).toBe(before.active + 1);
+      expect(refreshCompanySubscriptions(db, "tracked-company", "alice")).toBe(task);
+      expect(idleWorkSnapshot().active).toBe(before.active + 1);
+    } finally { accounts.resolve([]); await task; }
+    expect(idleWorkSnapshot().active).toBe(before.active);
+  });
+
   it.each([false, true])("waits for a provider slot without dropping accepted discovery (provider fails: %s)", async (fails) => {
     const db = database();
     const gates = Array.from({ length: 5 }, () => deferred<void>());
