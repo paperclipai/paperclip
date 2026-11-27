@@ -15680,6 +15680,22 @@ export function issueRoutes(
           runToStopForReassignment.agentId === req.actor.agentId &&
           runToStopForReassignment.companyId === existing.companyId &&
           runToStopForReassignment.contextSnapshot?.issueId === existing.id;
+        // A legacy run handing its own task to another agent (directly, or as
+        // a review stage moving it to its reviewer) also finishes its turn.
+        // Cancelling it would kill the request that saves the hand-off. The
+        // new assignee's wake re-binds the execution lock to this still-running
+        // run and waits behind it, and the assignee boundary refuses this run's
+        // later writes to a task another agent now owns.
+        const isAgentSelfHandoff =
+          req.actor.type === "agent" &&
+          req.actor.source === "agent_jwt" &&
+          nextAssigneeAgentId !== null &&
+          req.actor.agentId === existing.assigneeAgentId &&
+          runToStopForReassignment?.runtimeMode === "legacy" &&
+          runToStopForReassignment.id === req.actor.runId &&
+          runToStopForReassignment.agentId === req.actor.agentId &&
+          runToStopForReassignment.companyId === existing.companyId &&
+          runToStopForReassignment.contextSnapshot?.issueId === existing.id;
         // Record the native hand-off on the run before the task changes, so the
         // run's terminal fence accepts the task it gave away. A failed update
         // leaves the record unused: the fence also requires the person to own it.
@@ -15693,7 +15709,7 @@ export function issueRoutes(
             runId: runToStopForReassignment.id,
           });
         }
-        if (runToStopForReassignment && !isHumanSelfHandoff) {
+        if (runToStopForReassignment && !isHumanSelfHandoff && !isAgentSelfHandoff) {
           let cancelled: Awaited<ReturnType<typeof heartbeat.cancelRun>> = null;
           try {
             cancelled = await heartbeat.cancelRun(
