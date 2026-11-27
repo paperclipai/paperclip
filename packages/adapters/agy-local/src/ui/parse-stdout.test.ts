@@ -20,6 +20,18 @@ describe("parseAgyStdoutLine", () => {
     expect(out[1]).toMatchObject({ inputTokens: 3, outputTokens: 3, cachedTokens: 4, isError: false });
   });
 
+  it("streams reply deltas and does not repeat them in the final result", () => {
+    const delta = (text: string) => JSON.stringify({
+      event: "step_update",
+      step_update: { conversation_id: AGY_CONVERSATION_ID, step_index: 3, state: "ACTIVE", step_type: "agent_response", text_delta: text },
+    });
+    expect(parseAgyStdoutLine(delta("hel"), "t")).toEqual([{ kind: "assistant", ts: "t", text: "hel", delta: true }]);
+    expect(parseAgyStdoutLine(delta("lo"), "t")).toEqual([{ kind: "assistant", ts: "t", text: "lo", delta: true }]);
+    expect(parseAgyStdoutLine(AGY_RESULT_LINE, "t").map((e) => e.kind)).toEqual(["result"]);
+    // The next run, with no streamed text, still shows the final response.
+    expect(parseAgyStdoutLine(AGY_RESULT_LINE, "t").map((e) => e.kind)).toEqual(["assistant", "result"]);
+  });
+
   it("passes non-JSON through as stdout", () => {
     expect(parseAgyStdoutLine("plain", "t")).toEqual([{ kind: "stdout", ts: "t", text: "plain" }]);
   });

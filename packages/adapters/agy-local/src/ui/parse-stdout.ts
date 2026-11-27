@@ -23,6 +23,9 @@ function stringify(value: unknown): string {
   }
 }
 
+// Conversations whose reply already streamed as deltas, so the final result does not repeat it.
+const streamedConversations = new Set<string>();
+
 /**
  * Map one agy stream-json stdout line to transcript entries.
  * Shapes: init, step_update (agent_response / tool), result.
@@ -52,7 +55,12 @@ export function parseAgyStdoutLine(line: string, ts: string): TranscriptEntry[] 
     const step = asRecord(parsed.step_update) ?? {};
     const stepType = asString(step.step_type);
     const state = asString(step.state).toLowerCase();
-    // Streamed agent_response deltas are rendered from the final result.
+    if (stepType === "agent_response") {
+      const delta = asString(step.text_delta);
+      if (!delta) return [];
+      streamedConversations.add(asString(step.conversation_id));
+      return [{ kind: "assistant", ts, text: delta, delta: true }];
+    }
     if (stepType !== "tool") return [];
     const info = asRecord(step.tool_info) ?? {};
     const name = asString(info.name, asString(step.tool_name, "tool")) || "tool";
@@ -72,7 +80,8 @@ export function parseAgyStdoutLine(line: string, ts: string): TranscriptEntry[] 
     const isError = status !== "SUCCESS";
     const response = asString(result.response).trim();
     const entries: TranscriptEntry[] = [];
-    if (response) entries.push({ kind: "assistant", ts, text: response });
+    const alreadyStreamed = streamedConversations.delete(asString(result.conversation_id));
+    if (response && !alreadyStreamed) entries.push({ kind: "assistant", ts, text: response });
     entries.push({
       kind: "result",
       ts,
