@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { and, eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -25,6 +25,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
+import { prepareAgentHireApproval } from "../services/agent-hiring.js";
 import { secretService } from "../services/secrets.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -152,6 +153,39 @@ describeEmbeddedPostgres("hired agent provider credential inheritance", () => {
   function childEnvOf(res: request.Response): Record<string, unknown> {
     return ((res.body.agent?.adapterConfig as { env?: Record<string, unknown> } | undefined)?.env) ?? {};
   }
+
+  it("preserves the resolved manager when approving a delegated Hermes hire", async () => {
+    const companyId = await seedCompany();
+    await db.update(companies).set({ requireBoardApprovalForNewAgents: true }).where(eq(companies.id, companyId));
+    const manager = await seedParentAgent(companyId, "process", {});
+    const policyFile = path.join(secretsTmpDir, "hermes-policy.json");
+    writeFileSync(policyFile, JSON.stringify({
+      companyId,
+      projectId: randomUUID(),
+      gatewayHost: "http://127.0.0.1",
+      paperclipApiUrl: "http://127.0.0.1:3100",
+      slots: [{ port: 18642, adminUrl: "http://127.0.0.1:9119", adminTokenFile: "unused-fixture-token" }],
+      profileConfig: {},
+      allowReportingLineHires: true,
+    }));
+    vi.stubEnv("PAPERCLIP_HERMES_PROFILE_POLICY_FILE", policyFile);
+    try {
+      const result = await hire(agentActor(companyId, manager.id), companyId, {
+        name: "Managed report",
+        adapterType: "hermes_gateway",
+        adapterConfig: { managedProfile: true },
+      }).expect(201);
+      expect(result.body.agent.reportsTo).toBe(manager.id);
+      const [approval] = await db.select().from(approvals).where(eq(approvals.id, result.body.approval.id));
+      expect(approval?.payload).toMatchObject({ reportsTo: manager.id });
+      const [pending] = await db.select().from(agents).where(eq(agents.id, result.body.agent.id));
+      expect(pending).toBeDefined();
+      const patch = await prepareAgentHireApproval(db, pending!, { ...approval!.payload, reportsTo: null });
+      expect(patch.reportsTo).toBe(manager.id);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 
   it("inherits the parent secret_ref for a codex_local hire with no env, and derives the child binding", async () => {
     const companyId = await seedCompany();

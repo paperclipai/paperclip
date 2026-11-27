@@ -187,6 +187,8 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
     const requester = prior.managedProfileAuthorizedBy;
     const delegated = typeof expectedDigest === "string" && typeof requester === "string"
       && usesManagedHermesProfile(existing.adapterType, prior);
+    // Older approvals stored null when the hire omitted its manager.
+    if (delegated && patch.reportsTo === null) patch.reportsTo = existing.reportsTo;
     if (delegated && !usesManagedHermesProfile(effectiveType, effectiveConfig)) {
       throw forbidden("An approved managed Hermes hire cannot switch to a different adapter");
     }
