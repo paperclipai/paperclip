@@ -137,7 +137,7 @@ describeEmbeddedPostgres("chat channels: github review response maintenance", ()
         externalLabel: "paperclipai/paperclip", externalThreadId: "github:paperclipai/paperclip:418" }).returning();
       await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: main.id,
         kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`, status: "processed",
-        payload: { operation: "assessment", session: { companyId: f.companyId, issueId: f.conversation.issueId, runId: randomUUID() } },
+        payload: { operation: "assessment", session: { companyId: f.companyId, issueId: f.conversation.issueId, runId: randomUUID(), agentId: f.assignedAgentId } },
         result: { summaryUrl: "https://github.com/paperclipai/paperclip/pull/418#issuecomment-1" } });
       await db.update(heartbeatRuns).set({ status: "succeeded", runtimeMode: "native", nativePhase: "committed", resultJson: {
         finalizationPhase: "committed", finalizationReasonCode: "completion_claim_policy_accepted",
@@ -164,7 +164,7 @@ describeEmbeddedPostgres("chat channels: github review response maintenance", ()
         externalLabel: "paperclipai/paperclip", externalThreadId: "github:paperclipai/paperclip:4180" }).returning();
       await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: other.id,
         kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`, status: "processed",
-        payload: { operation: "comment", session: { companyId: f.companyId, issueId: f.conversation.issueId, runId: f.run.id } },
+        payload: { operation: "comment", session: { companyId: f.companyId, issueId: f.conversation.issueId, runId: randomUUID(), agentId: f.assignedAgentId } },
         result: { id: "77", url: "https://github.com/paperclipai/paperclip/pull/4180#issuecomment-77" } });
       await db.update(issues).set({ status: "in_progress" }).where(eq(issues.id, f.conversation.issueId!));
       await responses.processPending();
@@ -197,7 +197,7 @@ describeEmbeddedPostgres("chat channels: github review response maintenance", ()
           url: "https://github.com/paperclipai/paperclip/pull/418#discussion_r88", digest: "d" } } });
       await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: f.conversation.id,
         kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`, status: "processed",
-        payload: { operation: "assessment", reviewId, session: { companyId: f.companyId, issueId: f.conversation.issueId, runId: f.run.id } },
+        payload: { operation: "assessment", reviewId, session: { companyId: f.companyId, issueId: f.conversation.issueId, runId: f.run.id, agentId: f.assignedAgentId } },
         result: { reviewId, summaryUrl: null } });
       await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.conversation.issueId!));
       await responses.processPending();
