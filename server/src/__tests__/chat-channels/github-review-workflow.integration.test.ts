@@ -222,6 +222,64 @@ describeEmbeddedPostgres("chat channels: github review workflow", () => {
       expect(action).toMatchObject({ status: "cancelled", result: { code: "stale_head" } });
       expect((await db.select().from(chatGitHubReviews).where(eq(chatGitHubReviews.id, review.id)))[0].state).toBe("running");
     });
+    it("keeps the action retryable when completing the old head's check fails", async () => {
+      const f = await reviewBotFixture();
+      const oldHead = "b".repeat(40), newHead = "c".repeat(40);
+      const event = githubAutomaticReviewEvent({
+        action: "synchronize", installation: { id: 2468 },
+        repository: { id: 97531, full_name: "paperclipai/paperclip", name: "paperclip", owner: { id: 1357, login: "paperclipai" } },
+        sender: { id: 42, login: "octocat" },
+        pull_request: {
+          number: 86, title: "PATCH failure", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: oldHead },
+          user: { id: 42, login: "octocat", type: "User" }, labels: [],
+        },
+      }, randomUUID())!;
+      const config = await f.management.configuration(f.endpoint.id, "owner-user");
+      const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Reviewed task", status: "in_progress" }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({
+        id: randomUUID(), companyId: f.companyId, agentId: f.assignedAgentId, status: "running",
+      }).returning();
+      await db.insert(chatGitHubReviews).values({
+        companyId: f.companyId, endpointId: f.endpoint.id, issueId: issue.id, runId: run.id,
+        repositoryId: String(event.repositoryId), repository: event.repository, pullNumber: 86, headSha: oldHead,
+        deliveryId: event.deliveryId, configurationRevision: config.revision + 1,
+        policySnapshot: config.configuration.defaults, event, state: "running",
+      }).returning();
+      let failPatch = true;
+      const patches: number[] = [];
+      f.setSupplementalProviderFetch(async (input, init) => {
+        const url = String(input);
+        if (url.endsWith("/pulls/86")) return Response.json({ head: { sha: newHead } });
+        if (url.includes(`/commits/${oldHead}/check-runs?`))
+          return Response.json({ check_runs: [
+            { id: 861, status: "in_progress", external_id: `${f.endpoint.id}:86:${oldHead}`, app: { id: Number(f.endpoint.botExternalId) } },
+          ] });
+        const match = url.match(/\/check-runs\/(\d+)$/);
+        if (match && init?.method === "PATCH") {
+          patches.push(Number(match[1]));
+          return failPatch
+            ? Response.json({ message: "upstream error" }, { status: 500 })
+            : Response.json({ id: Number(match[1]) });
+        }
+        return undefined;
+      });
+      const checks = githubReviewCheckService(db, f.providerFetch);
+      const [activeEndpoint] = await readChatEndpointsById(f.endpoint.id);
+      await checks.enqueue(activeEndpoint, event, true, "authorized");
+      await checks.processPending();
+      let [action] = await db.select().from(chatActions).where(and(
+        eq(chatActions.endpointId, f.endpoint.id), eq(chatActions.kind, "github_review_check"),
+      ));
+      expect(action).toMatchObject({ status: "failed", result: { code: "check_publication_failed", retryable: true } });
+      failPatch = false;
+      const result = { ...(action.result as Record<string, unknown>), retryAt: new Date(Date.now() - 1000).toISOString() };
+      await db.update(chatActions).set({ result }).where(eq(chatActions.id, action.id));
+      await checks.processPending();
+      [action] = await db.select().from(chatActions).where(eq(chatActions.id, action.id));
+      expect(action).toMatchObject({ status: "cancelled", result: { code: "stale_head" } });
+      expect(patches).toEqual([861, 861]);
+    });
     it.each(["snapshot_callback", "snapshot_restart", "snapshot_race", "snapshot_unknown_stop", "snapshot_wrong_allocation", "snapshot_revoked_principal", "snapshot_changed_generation", "snapshot_changed_source", "callback", "restart", "race", "unknown_stop", "wrong_allocation", "paused_endpoint", "revoked_principal", "deleted_comment", "changed_generation", "foreign_scope", "changed_source", "revoked_before_valid"])(
       "reconsiders the same GitHub reply after stopped native workspace cleanup (%s)", async scenario => {
         const snapshotScenario = scenario.startsWith("snapshot_");
