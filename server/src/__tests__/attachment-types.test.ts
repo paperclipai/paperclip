@@ -110,6 +110,9 @@ describe("matchesContentType", () => {
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      "application/vnd.oasis.opendocument.text",
+      "application/vnd.oasis.opendocument.spreadsheet",
+      "application/vnd.oasis.opendocument.presentation",
     ]) {
       expect(matchesContentType(contentType, [...DEFAULT_ALLOWED_TYPES])).toBe(true);
     }
@@ -164,6 +167,18 @@ describe("inferOfficeAttachmentContentTypeFromFilename", () => {
     expect(inferOfficeAttachmentContentTypeFromFilename("legacy.doc")).toBe("application/msword");
     expect(inferOfficeAttachmentContentTypeFromFilename("legacy.xls")).toBe("application/vnd.ms-excel");
     expect(inferOfficeAttachmentContentTypeFromFilename("legacy.ppt")).toBe("application/vnd.ms-powerpoint");
+  });
+
+  it("infers OpenDocument content types from filenames", () => {
+    expect(inferOfficeAttachmentContentTypeFromFilename("notes.odt")).toBe(
+      "application/vnd.oasis.opendocument.text",
+    );
+    expect(inferOfficeAttachmentContentTypeFromFilename("Budget.ODS")).toBe(
+      "application/vnd.oasis.opendocument.spreadsheet",
+    );
+    expect(inferOfficeAttachmentContentTypeFromFilename("deck.odp")).toBe(
+      "application/vnd.oasis.opendocument.presentation",
+    );
   });
 
   it("does not infer unknown extensions", () => {

@@ -3,8 +3,9 @@
  *
  * By default a curated set of image/document/text/media types are allowed. Set the
  * `PAPERCLIP_ALLOWED_ATTACHMENT_TYPES` environment variable to a
- * comma-separated list of MIME types or wildcard patterns to expand the
- * allowed set for routes that use this allowlist.
+ * comma-separated list of MIME types or wildcard patterns to replace the
+ * allowed set for routes that use this allowlist. The value replaces the
+ * defaults rather than adding to them, so include every type you still need.
  *
  * Examples:
  *   PAPERCLIP_ALLOWED_ATTACHMENT_TYPES=image/*,application/pdf
@@ -42,6 +43,9 @@ export const DEFAULT_ALLOWED_TYPES: readonly string[] = [
   "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.oasis.opendocument.text",
+  "application/vnd.oasis.opendocument.spreadsheet",
+  "application/vnd.oasis.opendocument.presentation",
   "video/mp4",
   "video/webm",
   "video/quicktime",
@@ -125,6 +129,9 @@ export function inferOfficeAttachmentContentTypeFromFilename(
   if (lower.endsWith(".doc")) return "application/msword";
   if (lower.endsWith(".xls")) return "application/vnd.ms-excel";
   if (lower.endsWith(".ppt")) return "application/vnd.ms-powerpoint";
+  if (lower.endsWith(".odt")) return "application/vnd.oasis.opendocument.text";
+  if (lower.endsWith(".ods")) return "application/vnd.oasis.opendocument.spreadsheet";
+  if (lower.endsWith(".odp")) return "application/vnd.oasis.opendocument.presentation";
   return null;
 }
 
