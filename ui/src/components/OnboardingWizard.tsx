@@ -8,7 +8,7 @@ import { agentHarnessType, agentRunner } from "@paperclipai/shared";
 import { adaptersApi, type AdapterInfo } from "../api/adapters";
 import { healthApi } from "@/api/health";
 import { describeError } from "@/api/errors";
-import { LocalProviderLoginInstructions } from "./AdapterLoginChrome";
+import { LocalProviderLoginInstructions, resolveLocalLoginPrimaryAction } from "./AdapterLoginChrome";
 import { useLocalAiLogin } from "./ai-connections/useLocalAiLogin";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { cloudInferenceApi } from "@/api/cloud-inference";
@@ -1162,6 +1162,7 @@ function OnboardingWizardInner({
   const googleHostedRedirect: boolean | "optional" = managedSubscriptionProvider === "google" && hostedGoogleAiLoginSupported
     ? (localAiLoginSupported ? "optional" : true)
     : false;
+  const [localLoginSubmitting, setLocalLoginSubmitting] = useState(false);
   const localLogin = useLocalAiLogin(createdCompanyId, {
     provider: managedSubscriptionProvider ?? "anthropic", method: "subscription",
     name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} subscription`,
@@ -1613,6 +1614,19 @@ function OnboardingWizardInner({
    * easing width so those changes read as one control rather than four.
    */
   const connectSourceLabel = CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
+  const usingLocalLogin =
+    sourcePicked &&
+    connectPhase === "ready" &&
+    canUseLocalLogin &&
+    Boolean(managedProvider) &&
+    credentialMode === "subscription" &&
+    !hasSavedSubscription &&
+    !managedBindingForStep() &&
+    connectStepHasNoSandbox &&
+    !connectStepNeedsLogin;
+  const localLoginAction = usingLocalLogin
+    ? resolveLocalLoginPrimaryAction({ adapterType, login: localLogin, submitting: localLoginSubmitting })
+    : null;
   const connectCta: { label: string; icon: FooterPrimaryIcon; disabled: boolean } =
     setupError ? { label: "Retry", icon: "arrow", disabled: false }
       : retryLogin ? { label: "Retry sign-in", icon: "arrow", disabled: false } : connectProgress
@@ -1630,18 +1644,25 @@ function OnboardingWizardInner({
                 icon: "none",
                 disabled: !connectAuthUrl,
               }
-            : {
-                label: "Connect",
-                icon: "arrow",
-                disabled:
-                  !connectStepReady || connectStepLoggingIn || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey && !restoredApiCredential && !managedBindingForStep()),
-              }
+            : localLoginAction
+              ? {
+                  label: localLoginAction.label,
+                  icon: localLoginAction.icon,
+                  disabled: localLoginAction.disabled,
+                }
+              : {
+                  label: "Connect",
+                  icon: "arrow",
+                  disabled:
+                    !connectStepReady || connectStepLoggingIn || (credentialMode === "api" && !apiKey.trim() && !selectedApiKey && !restoredApiCredential && !managedBindingForStep()),
+                }
           : // Nothing is chosen on arrival, and the row is what chooses. Until
             // it has been answered the button has nothing to do.
             { label: "Next", icon: "arrow", disabled: true };
 
   function unwindConnectStep() {
     localLogin.cancel();
+    setLocalLoginSubmitting(false);
     dismissedLoginResumes.current.add(loginResumeKey);
     if (createdCompanyId) {
       void queryClient.cancelQueries({ queryKey: queryKeys.agents.activeLoginSession(createdCompanyId, adapterType) });
@@ -1698,6 +1719,16 @@ function OnboardingWizardInner({
     // Mid-sequence the button belongs to the sign-in, not to the step.
     if (connectPhase === "ready" && connectStepNeedsLogin) {
       openConnectAuthorization();
+      return;
+    }
+    if (localLoginAction) {
+      if (localLoginAction.kind === "retry") {
+        autoConnectStartedRef.current = false;
+        setError(null);
+        localLogin.retry();
+      } else if (localLoginAction.kind === "open_sign_in") {
+        window.open(localLoginAction.url, "_blank", "noreferrer,noopener");
+      }
       return;
     }
     // The hold owns the hire once "Connecting" is showing. That now starts at
@@ -3444,7 +3475,13 @@ function OnboardingWizardInner({
                       />
                     ) : hasSavedSubscription || localLogin.status === "ready" ? null : connectStepHasNoSandbox ? (
                       canUseLocalLogin && managedProvider ? (
-                        <LocalProviderLoginInstructions adapterType={adapterType} hostedRedirect={googleHostedRedirect} login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }} />
+                        <LocalProviderLoginInstructions
+                          adapterType={adapterType}
+                          hostedRedirect={googleHostedRedirect}
+                          primaryHandlesRetry
+                          onSubmittingChange={setLocalLoginSubmitting}
+                          login={{ ...localLogin, retry: () => { autoConnectStartedRef.current = false; setError(null); localLogin.retry(); } }}
+                        />
                       ) : browserSignInUnavailable ? <p role="status" className="text-xs text-muted-foreground">This environment does not support browser sign-in. Go back to use an API key or choose another model.</p> : null
                     ) : null}
                   </motion.div>

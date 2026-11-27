@@ -505,10 +505,78 @@ export function ProviderApiKeyCard({
   );
 }
 
+function isHttpAuthorizationUrl(url: string | null | undefined): url is string {
+  if (!url) return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" || parsed.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+export type LocalLoginPrimaryAction =
+  | { kind: "retry"; label: string; icon: "arrow"; disabled: false }
+  | { kind: "open_sign_in"; label: string; icon: "none"; disabled: false; url: string }
+  | { kind: "connecting"; label: string; icon: "spinner"; disabled: true }
+  | { kind: "preparing"; label: string; icon: "spinner"; disabled: true }
+  | { kind: "waiting"; label: string; icon: "arrow"; disabled: true }
+  | null;
+
+/** Maps local/hosted sign-in state to the step footer's primary CTA. */
+export function resolveLocalLoginPrimaryAction({
+  adapterType,
+  login,
+  submitting = false,
+}: {
+  adapterType: string;
+  login?: {
+    isolated?: boolean;
+    authorizationUrl?: string | null;
+    preparing: boolean;
+    status?: "ready" | "sign_in_required" | "expired" | null;
+    error: string | null;
+  };
+  submitting?: boolean;
+}): LocalLoginPrimaryAction {
+  if (!login || login.status === "ready") return null;
+  const browserLogin = adapterType === "claude_local" || adapterType === "codex_local" || adapterType === "antigravity_runtime";
+  if (login.preparing) {
+    return { kind: "preparing", label: "Preparing sign-in…", icon: "spinner", disabled: true };
+  }
+  if (Boolean(login.error) || login.status === "expired") {
+    return {
+      kind: "retry",
+      label: login.isolated === false ? "Check again" : "Start sign in",
+      icon: "arrow",
+      disabled: false,
+    };
+  }
+  if (submitting) {
+    return { kind: "connecting", label: "Connecting", icon: "spinner", disabled: true };
+  }
+  if (browserLogin && isHttpAuthorizationUrl(login.authorizationUrl)) {
+    return {
+      kind: "open_sign_in",
+      label: `Sign in to ${connectSourceName(adapterType)}`,
+      icon: "none",
+      disabled: false,
+      url: login.authorizationUrl,
+    };
+  }
+  if (browserLogin && !login.authorizationUrl) {
+    return { kind: "preparing", label: "Preparing sign-in…", icon: "spinner", disabled: true };
+  }
+  return { kind: "waiting", label: "Connect", icon: "arrow", disabled: true };
+}
+
 /** Shared instructions for local subscription setup in every authentication host. */
-export function LocalProviderLoginInstructions({ adapterType, login, hostedRedirect = false }: {
+export function LocalProviderLoginInstructions({ adapterType, login, hostedRedirect = false, primaryHandlesRetry = false, onSubmittingChange }: {
   adapterType: string;
   hostedRedirect?: boolean | "optional";
+  /** Omit the inline retry link when an error/expiry is already surfaced on the primary footer CTA. */
+  primaryHandlesRetry?: boolean;
+  onSubmittingChange?: (submitting: boolean) => void;
   login?: { isolated?: boolean; command?: string; authorizationUrl?: string | null; code?: string | null; accountLabel?: string | null; submitCode?: (code: string) => Promise<void>; preparing: boolean; status?: "ready" | "sign_in_required" | "expired" | null; error: string | null; retry: () => void };
 }) {
   const [showCommand, setShowCommand] = useState(false);
@@ -524,6 +592,10 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
     setCodeSubmitted(false);
     setSubmitError(null);
   }, [login?.authorizationUrl, login?.preparing]);
+  useEffect(() => {
+    onSubmittingChange?.(submitting || codeSubmitted);
+  }, [submitting, codeSubmitted, onSubmittingChange]);
+  useEffect(() => () => onSubmittingChange?.(false), [onSubmittingChange]);
   const provider = adapterType === "antigravity_runtime" ? "Antigravity" : adapterType === "claude_local" ? "Claude Code" : adapterType === "grok_local" ? "Grok CLI" : "Codex CLI";
   const isolated = login?.isolated ?? (adapterType === "codex_local" || adapterType === "grok_local");
   const command = login?.command;
@@ -566,15 +638,17 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
   }
   if (login?.preparing) return <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Preparing sign-in…</p>;
   const ready = login?.status === "ready";
-  const awaitingBrowserSignIn = browserLogin && !ready && !login?.authorizationUrl && !login?.error;
+  const needsRetry = Boolean(login?.error) || login?.status === "expired";
+  const awaitingBrowserSignIn = browserLogin && !ready && !login?.authorizationUrl && !needsRetry;
+  const showInlineRetry = Boolean(login && !login.preparing && !ready && !awaitingBrowserSignIn && (isolated || login.error) && !(primaryHandlesRetry && needsRetry));
   return <div className="min-w-0 max-w-full space-y-3 text-sm text-muted-foreground">
     {ready ? <>
       <p role="status" className={cn("flex items-center gap-2 text-foreground", ANALYTICS_MASK_CLASS)}><Check className="size-4 shrink-0 text-(--status-task-icon-done)" />{login?.accountLabel ?? provider} is signed in. Click Connect to use this account.</p>
       {!showCommand && <button type="button" className="underline underline-offset-4" onClick={() => browserLogin ? login?.retry() : setShowCommand(true)}>Use a different account</button>}
     </> : !browserLogin && <p>{isolated ? `Sign in to ${provider} for this connection on the machine running Paperclip. Your existing terminal login stays separate.` : `Connect uses your local ${provider} account on the machine running Paperclip.`}</p>}
     {awaitingBrowserSignIn && <p role="status">Preparing browser sign-in…</p>}
-    {(submitting || codeSubmitted) && !ready && !login?.error && <p role="status">Finishing sign-in…</p>}
-    {browserLogin && !ready && !submitting && !codeSubmitted && !login?.error && login?.authorizationUrl && <ProviderSubscriptionCard
+    {(submitting || codeSubmitted) && !ready && !needsRetry && <p role="status">Finishing sign-in…</p>}
+    {browserLogin && !ready && !submitting && !codeSubmitted && !needsRetry && login?.authorizationUrl && <ProviderSubscriptionCard
       providerName={connectSourceName(adapterType)}
       authorizationUrl={login.authorizationUrl}
       mode={hostedGoogleRedirect && !optionalHostedGoogleRedirect ? "hosted_redirect" : adapterType === "antigravity_runtime" ? "browser_redirect" : adapterType === "claude_local" ? "submitted_code" : "displayed_code"}
@@ -611,7 +685,7 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
         {submitError && <p role="alert" className="px-2 text-xs text-destructive">{submitError}</p>}
       </div> : adapterType === "antigravity_runtime" ? <p>Finish signing in in the Antigravity browser window, then return here.</p> : <OnboardingLoginCodeRow code={login.code ?? ""} />}
     </ProviderSubscriptionCard>}
-    {!browserLogin && (!ready || showCommand) && !login?.error && <>
+    {!browserLogin && (!ready || showCommand) && !needsRetry && <>
       <p>Run this in a terminal on that machine and finish signing in in your browser. We’ll check automatically when you return.</p>
       {command && <div className="flex min-w-0 max-w-full items-start gap-2 rounded-md border bg-muted p-3 text-foreground">
         <pre className={cn("min-w-0 flex-1 whitespace-pre-wrap break-all font-mono text-xs", ANALYTICS_NO_CAPTURE_CLASS)}><code>{command}</code></pre>
@@ -619,6 +693,6 @@ export function LocalProviderLoginInstructions({ adapterType, login, hostedRedir
       </div>}
     </>}
     {login?.error && <p role="alert">{login.error}</p>}
-    {login && !login.preparing && !ready && !awaitingBrowserSignIn && (isolated || login.error) && <button type="button" className="underline underline-offset-4" onClick={login.retry}>{isolated ? "Start sign-in again" : "Check again"}</button>}
+    {showInlineRetry && <button type="button" className="underline underline-offset-4" onClick={login!.retry}>{isolated ? "Start sign-in again" : "Check again"}</button>}
   </div>;
 }
