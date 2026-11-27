@@ -141,6 +141,23 @@ describe("run startup stages", () => {
     expect(getRunStartupStage(run.id)).toBeNull();
   });
 
+  it("keeps tracking when a live-event listener throws", () => {
+    const unsubscribe = subscribeCompanyLiveEvents(companyId, () => { throw new Error("listener failed"); });
+    try {
+      expect(() => beginRunStartupStages(run)).not.toThrow();
+      expect(() => noteRunStartupStep(run.id, "runner.session.startup")).not.toThrow();
+      expect(() => noteRunStartupSessionResumed(run.id)).not.toThrow();
+      expect(getRunStartupStage(run.id)).toEqual({ stage: "starting_agent", sessionResumed: true });
+      expect(() => endRunStartup(run.id)).not.toThrow();
+      expect(getRunStartupStage(run.id)).toEqual({ stage: null, sessionResumed: true });
+      beginRunStartupStages({ ...run, id: "run-2" });
+      expect(() => finishRunStartupStages("run-2")).not.toThrow();
+      expect(getRunStartupStage("run-2")).toBeNull();
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("bounds the number of tracked runs", () => {
     for (let index = 0; index <= MAX_TRACKED_RUN_STARTUPS; index += 1) {
       beginRunStartupStages({ ...run, id: `run-${index}` });

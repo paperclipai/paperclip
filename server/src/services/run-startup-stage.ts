@@ -1,4 +1,5 @@
 import { RUN_STARTUP_STAGES, type HeartbeatRunStartupStageEvent, type RunStartupStage } from "@paperclipai/shared";
+import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 
 /**
@@ -61,7 +62,13 @@ function publish(runId: string, entry: Pick<RunStartupEntry, "companyId" | "agen
   const payload: HeartbeatRunStartupStageEvent = {
     runId, agentId: entry.agentId, issueId: entry.issueId, stage, sessionResumed, updatedAt: updatedAt.toISOString(),
   };
-  publishLiveEvent({ companyId: entry.companyId, type: "heartbeat.run.startup_stage", payload: { ...payload } });
+  // Listeners run synchronously. The stage is display only, so a failing
+  // listener must never interrupt the run step or agent event that moved it.
+  try {
+    publishLiveEvent({ companyId: entry.companyId, type: "heartbeat.run.startup_stage", payload: { ...payload } });
+  } catch (err) {
+    logger.warn({ runId, stage, err }, "run startup stage notification failed");
+  }
 }
 
 /**
