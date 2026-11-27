@@ -509,7 +509,6 @@ test.describe("iMessage Photon setup and management", () => {
       await group.click();
       await expect(group).toBeChecked();
       await page.setViewportSize({ width: 390, height: 844 });
-      await page.getByRole("button", { name: "Open sidebar" }).click();
       await page.getByRole("navigation", { name: "Chat connection" }).getByRole("link", { name: "Activity", exact: true }).click();
       await page.getByText("Connection health and controls", { exact: true }).click();
       await expect(

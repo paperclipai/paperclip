@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import {
-  archiveImageDigest, assertPipelineUnchanged, changedSince, createRecord, repositoryId, selectArtifact, selectVerifiedRun, verifyRecord, workflowPath,
+  archiveImageDigest, assertPipelineUnchanged, changedSince, createRecord, repositoryId, resolveFindWaitMs, selectArtifact, selectVerifiedRun, verifyRecord, workflowPath,
 } from "./merge-group-image.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -208,6 +208,14 @@ test("master promotes only after proof and otherwise builds exactly as before", 
   const order = name => steps.indexOf(step(name));
   assert.match(step("Find the merge-queue build of this commit"),
     /if: github.repository == 'paperclipai\/paperclip' && github.repository_id == '1170821064' && github.event_name == 'push' && github.ref == 'refs\/heads\/master'/);
+  assert.match(step("Find the merge-queue build of this commit"),
+    /MERGE_GROUP_FIND_WAIT_MS: \$\{\{ vars\.CORE_RELEASE_AWS_ENABLED == 'true' && '0' \|\| '180000' \}\}/);
+  assert.equal(resolveFindWaitMs({}), 180_000);
+  assert.equal(resolveFindWaitMs({ MERGE_GROUP_FIND_WAIT_MS: "0" }), 0);
+  assert.equal(resolveFindWaitMs({ MERGE_GROUP_FIND_WAIT_MS: "45000" }), 45_000);
+  assert.equal(resolveFindWaitMs({ MERGE_GROUP_FIND_WAIT_MS: "999999" }), 180_000);
+  assert.equal(resolveFindWaitMs({ MERGE_GROUP_FIND_WAIT_MS: "-1" }), 180_000);
+  assert.equal(resolveFindWaitMs({ MERGE_GROUP_FIND_WAIT_MS: "invalid" }), 180_000);
   for (const name of ["Find the merge-queue build of this commit", "Download the merge-queue image", "Promote the merge-queue image"]) {
     assert.match(step(name), /continue-on-error: true/, `${name} must fall back to the build`);
   }

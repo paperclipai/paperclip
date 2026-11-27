@@ -14,6 +14,7 @@ export const NATIVE_STATUS_ARBITER_POLICY_VERSION = "phase6-v14";
 /** The automatic continuation after a failed turn is used once per chain. */
 export const NATIVE_RUN_FAILED_RETRY_CAUSE = "native_run_failed";
 export const NATIVE_RESPONSE_WAKE_WAITING_REASON = "response_wake_waiting_for_input";
+export const EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST = "external_chat_response_wait_authorization_lost";
 export const NATIVE_BLOCKER_SUPERSEDED_BY_QUEUED_REQUEST_CODE = "native_blocker_superseded_by_queued_request";
 export const NATIVE_RUN_FAILED_CONTINUATION_EXHAUSTED_ACTION =
   "The agent's turn failed again after Paperclip continued it automatically. The saved work is kept. Check the failed run, then Retry the task.";
@@ -849,7 +850,7 @@ export function arbitrateNativeStatus(input: {
       policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
       statusAction: "preserve",
       toStatus: input.priorIssueStatus,
-      reasonCode: "external_chat_response_wait_authorization_lost",
+      reasonCode: EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST,
       unblockDescriptor: null,
       // Revocation cannot be converted into an unrequested background run.
       effects: [],

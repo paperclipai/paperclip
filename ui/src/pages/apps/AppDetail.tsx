@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { EmailConnectionAccess } from "@/components/EmailConnectionAccess";
 import { EmailConnectionInboxes } from "./chat/EmailEndpointSetup";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Loader2, Pencil } from "lucide-react";
+import { ArrowLeft, Check, Loader2, Pencil } from "lucide-react";
 import type {
   ToolConnection,
   ToolPolicy,
@@ -24,7 +24,7 @@ import {
   aiSubscriptionNeedsIsolatedLogin,
   isToolConnectionAttentionHealth as isAttentionHealthStatus,
 } from "@paperclipai/shared";
-import { Navigate, useParams, useNavigate, useSearchParams } from "@/lib/router";
+import { Link, Navigate, useParams, useNavigate, useSearchParams } from "@/lib/router";
 import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
@@ -57,7 +57,7 @@ import {
   galleryEntryFor,
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
-import { appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
+import { APP_TABS, appTabHref, isAppTabKey, type AppTabKey } from "./app-tabs";
 import { ConnectionProvenanceChip } from "./ConnectionProvenanceChip";
 import { IdentitiesSection } from "./app-detail/IdentitiesSection";
 import { PermissionsPanel } from "./app-detail/PermissionsPanel";
@@ -258,6 +258,8 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   const appName = connection
     ? connectionDisplayNameForOwner(connection, baseAppName, owner)
     : "App";
+  // A connection made from the catalog belongs to a plugin page; anything else goes back to the marketplace.
+  const pluginHref = logoEntry ? `/apps/plugin/${encodeURIComponent(appDefinitionSlug(logoEntry))}` : null;
   const successNoticeShownFor = useRef<string | null>(null);
 
   useEffect(() => {
@@ -285,11 +287,11 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     if (!activeTab) return;
     setBreadcrumbs([
       { label: "Plugins", href: "/apps" },
-      { label: appName, href: appTabHref(connectionId, "permissions") },
-      { label: appTabLabel(activeTab) },
+      ...(pluginHref ? [{ label: baseAppName, href: pluginHref }] : []),
+      { label: appName },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs, appName, connectionId, activeTab]);
+  }, [setBreadcrumbs, appName, baseAppName, pluginHref, activeTab]);
 
   const { catalog, active, quarantined, readOnly, canChange } = useMemo(() => {
     const catalog = catalogQuery.data?.catalog ?? [];
@@ -543,7 +545,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   }
   if (connectionQuery.isLoading || connectionView.kind === "reconnecting") {
     return (
-      <div className="max-w-3xl space-y-4">
+      <div className="mx-auto w-full max-w-3xl space-y-4">
         <Skeleton className="h-10 w-56" />
         <Skeleton className="h-48 w-full" />
         <Skeleton className="h-40 w-full" />
@@ -591,9 +593,11 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   const permissionsFailure = permissionsViews.find((view) => view.kind === "error");
 
   return (
-    <div className="max-w-4xl space-y-10 pb-12">
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-8 pb-12">
       {authorization.fallback}
       {workspaceGate.dialog}
+      <div className="flex flex-col gap-4">
+      <ConnectionBackLink label={pluginHref ? baseAppName : "Plugins"} href={pluginHref ?? "/apps"} />
       <AppDetailHeader
         appName={appName}
         connection={connection}
@@ -616,7 +620,9 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
           else setRenaming(false);
         }}
       />
-      <div className={cn("space-y-10", ANALYTICS_MASK_CLASS)}>
+      <ConnectionTabs connectionId={connectionId} active={activeTab} />
+      </div>
+      <div className={cn("flex flex-col gap-8", ANALYTICS_MASK_CLASS)}>
 
       {status.tone === "attention" && connection.requiresReauthorization === false && (
         <AccessRetryBanner
@@ -668,7 +674,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
             }} />
           : permissionsLoading
           ? <ToolsLoading />
-          : <div className="space-y-10">
+          : <div className="flex flex-col gap-8">
               {isAppAggregator(brandKey) && grantsQuery.data?.capabilities.canConfigure === true
                 ? <ConnectedAggregatorApps key={connection.id} connection={connection} /> : null}
               {connection.config?.sourceTemplateKey === "honcho" && <HonchoWorkspaceSettings key={connection.id} connection={connection} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}
@@ -708,10 +714,10 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                 onReplaceAudience={(grant, memberUserIds) =>
                   replaceAudience.mutate({ grantId: grant.id, memberUserIds })}
               />
-              {connection.config?.sourceTemplateKey === "composio" ? <p className="text-sm text-muted-foreground">
+              {connection.config?.sourceTemplateKey === "composio" ? <p className="px-4 text-sm text-muted-foreground">
                 These permissions apply to all apps available through this Composio connection. Manage app accounts and sign-in in Composio.
               </p> : null}
-              {connection.config?.sourceTemplateKey !== "composio" && isRemoteMcpConnectorMethod(connection.config?.sourceTemplateKey, connection.config?.connectionMethodKey) && <p className="text-sm text-muted-foreground">Paperclip controls access to the tools listed here. App and action permissions inside these tools are managed in {baseAppName}.</p>}
+              {connection.config?.sourceTemplateKey !== "composio" && isRemoteMcpConnectorMethod(connection.config?.sourceTemplateKey, connection.config?.connectionMethodKey) && <p className="px-4 text-sm text-muted-foreground">Paperclip controls access to the tools listed here. App and action permissions inside these tools are managed in {baseAppName}.</p>}
               <PermissionsPanel
                 afterAgentAccess={<>{instructionsTemplate && <ConnectionInstructionsSettings key={connection.id} connection={connection} provider={instructionsTemplate.provider} template={instructionsTemplate.template} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}{renderAgentSettings?.(connection)}</>}
                 actions={actionsContent}
@@ -759,7 +765,7 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
                 onDisconnect={() => disconnectRemote.mutateAsync()}
               />}
               {grantsQuery.data?.capabilities.canConfigure === true && connection.connectionPurpose === "tool" && (
-                <section className="border-t border-border">
+                <section className="rounded-2xl bg-muted/50 px-4">
                   <StoredContentDeletionRow connectionId={connectionId} appName={appName} />
                 </section>
               )}
@@ -805,73 +811,116 @@ export function AppDetailHeader({
   onRenameSubmit: (value: string) => void;
 }) {
   const unverifiedHost = unverifiedRemoteHost(connection);
+  const hint = connectionDisplaySecondaryHint(connection);
   return (
-    <header>
-      <div className="flex items-center gap-3">
-        <AppLogo
-          name={appName}
-          brandKey={brandKey}
-          logoUrl={appDefinitionLogoUrl(logoEntry)}
-          darkLogoUrl={appDefinitionDarkLogoUrl(logoEntry)}
-          allowRemoteFallback={allowRemoteLogo}
-          size={44}
-        />
-        <div className="min-w-0">
-          {renaming ? (
-            <form
-              className="flex items-center gap-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                onRenameSubmit(nameDraft.trim());
-              }}
+    <header className="flex flex-wrap items-center gap-4">
+      <AppLogo
+        name={appName}
+        brandKey={brandKey}
+        logoUrl={appDefinitionLogoUrl(logoEntry)}
+        darkLogoUrl={appDefinitionDarkLogoUrl(logoEntry)}
+        allowRemoteFallback={allowRemoteLogo}
+        size={64}
+        className="rounded-2xl"
+      />
+      <div className="flex min-w-0 flex-1 flex-col gap-1">
+        {renaming ? (
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              onRenameSubmit(nameDraft.trim());
+            }}
+          >
+            <Input
+              aria-label="App name"
+              value={nameDraft}
+              onChange={(event) => onNameDraftChange(event.target.value)}
+              className="h-9 w-64 text-lg font-semibold"
+              autoFocus
+            />
+            <Button type="submit" size="sm" disabled={renamePending || !nameDraft.trim()}>
+              {renamePending ? <Loader2 className="size-3.5 animate-spin" /> : "Save"}
+            </Button>
+            <Button type="button" size="sm" variant="ghost" onClick={onRenameCancel} disabled={renamePending}>
+              Cancel
+            </Button>
+          </form>
+        ) : (
+          <div className="flex min-w-0 items-center gap-1.5">
+            <h1 className={cn("truncate text-2xl leading-8 font-semibold tracking-tight text-foreground", ANALYTICS_MASK_CLASS)}>{appName}</h1>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              className="shrink-0 text-muted-foreground"
+              aria-label="Rename app"
+              disabled={!canRename}
+              onClick={onRenameStart}
             >
-              <Input
-                aria-label="App name"
-                value={nameDraft}
-                onChange={(event) => onNameDraftChange(event.target.value)}
-                className="h-9 w-64 text-lg font-bold"
-                autoFocus
-              />
-              <Button type="submit" size="sm" disabled={renamePending || !nameDraft.trim()}>
-                {renamePending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : "Save"}
-              </Button>
-              <Button type="button" size="sm" variant="ghost" onClick={onRenameCancel} disabled={renamePending}>
-                Cancel
-              </Button>
-            </form>
-          ) : (
-            <div className="flex items-center gap-1.5">
-              <h1 className={cn("truncate text-xl font-bold", ANALYTICS_MASK_CLASS)}>{appName}</h1>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 text-muted-foreground"
-                aria-label="Rename app"
-                disabled={!canRename}
-                onClick={onRenameStart}
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </Button>
-            </div>
-          )}
-          <div className="mt-2 flex flex-wrap items-center gap-2">
-            <StatusBadge status={status} />
-            {connection.config?.provider !== "agentmail" && actionCount !== null && (
-              <span className="text-xs text-muted-foreground">
-                {actionCount} {actionCount === 1 ? "action" : "actions"} available
-              </span>
-            )}
-            {connectionDisplaySecondaryHint(connection) ? (
-              <span className="text-xs text-muted-foreground">
-                {connectionDisplaySecondaryHint(connection)}
-              </span>
-            ) : null}
-            {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} /> : null}
-            <ConnectionProvenanceChip connection={connection} />
+              <Pencil aria-hidden />
+            </Button>
           </div>
+        )}
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
+          <StatusBadge status={status} />
+          {connection.config?.provider !== "agentmail" && actionCount !== null && (
+            <span className="tabular-nums">
+              {actionCount} {actionCount === 1 ? "action" : "actions"} available
+            </span>
+          )}
+          {hint ? <span>{hint}</span> : null}
+          {unverifiedHost ? <UnverifiedServerBadge host={unverifiedHost} /> : null}
+          <ConnectionProvenanceChip connection={connection} />
         </div>
       </div>
     </header>
+  );
+}
+
+/** Returns from a connection to the plugin it belongs to, or to the marketplace when it has none. */
+export function ConnectionBackLink({ label, href }: { label: string; href: string }) {
+  return (
+    <Button asChild variant="ghost" size="sm" className="-ml-3 h-8 self-start text-muted-foreground">
+      <Link to={href} aria-label={`Back to ${label}`}>
+        <ArrowLeft aria-hidden />
+        {label}
+      </Link>
+    </Button>
+  );
+}
+
+/** Permissions and Review for one connection, with how many requests and new actions are waiting. */
+function ConnectionTabs({ connectionId, active }: { connectionId: string; active: AppTabKey }) {
+  const { selectedCompanyId } = useCompany();
+  const counts = useQuery({
+    queryKey: queryKeys.apps.connectionReviewCounts(selectedCompanyId ?? "__none__", connectionId),
+    queryFn: () => toolsApi.getConnectionReviewCounts(connectionId),
+    enabled: !!selectedCompanyId && !!connectionId,
+    refetchInterval: 30_000,
+  });
+  const waiting = (counts.data?.pendingActionRequestCount ?? 0) + ((counts.data?.quarantinedCatalogEntryCount ?? 0) > 0 ? 1 : 0);
+  return (
+    <nav aria-label="Connection sections" className="flex items-center gap-1">
+      {APP_TABS.map((tab) => (
+        <Link
+          key={tab.key}
+          to={appTabHref(connectionId, tab.key)}
+          aria-current={tab.key === active ? "page" : undefined}
+          className={cn(
+            "inline-flex h-8 items-center gap-2 rounded-lg px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            tab.key === active ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {tab.label}
+          {tab.key === "review" && waiting > 0 ? (
+            <span className="inline-flex h-5 items-center rounded-md bg-(--status-task-todo)/15 px-1.5 text-xs font-normal text-(--status-task-icon-todo) tabular-nums">
+              {waiting}
+              <span className="sr-only"> needing review</span>
+            </span>
+          ) : null}
+        </Link>
+      ))}
+    </nav>
   );
 }
 
@@ -921,18 +970,13 @@ function statusFor(connection: ToolConnection): StatusInfo {
 
 function StatusBadge({ status }: { status: StatusInfo }) {
   const klass: Record<StatusInfo["tone"], string> = {
-    connected: "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-    attention: "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-300",
-    paused: "border-border bg-muted text-muted-foreground",
+    connected: "bg-(--status-task-done)/15 text-(--status-task-icon-done)",
+    attention: "bg-(--status-task-todo)/15 text-(--status-task-icon-todo)",
+    paused: "bg-muted text-muted-foreground",
   };
   return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium",
-        klass[status.tone],
-      )}
-    >
-      {status.tone === "connected" && <Check className="h-3 w-3" />}
+    <span className={cn("inline-flex h-6 items-center gap-1 rounded-md px-2 text-xs", klass[status.tone])}>
+      {status.tone === "connected" && <Check className="size-3" aria-hidden />}
       {status.label}
     </span>
   );

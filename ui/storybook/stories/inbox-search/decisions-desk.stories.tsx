@@ -9,13 +9,17 @@ import type {
   AttentionSourceKind,
 } from "@paperclipai/shared";
 import { Routes, Route } from "@/lib/router";
+import { Layout } from "@/components/Layout";
+import { CoordinatorNeedsYou } from "@/components/coordinator/CoordinatorNeedsYou";
 import { WhatNeedsMe } from "@/pages/WhatNeedsMe";
 import { DecisionQueuePage } from "@/pages/DecisionQueuePage";
 import { AttentionQueueRow } from "@/components/AttentionQueueRow";
+import { PluginLauncherProvider } from "@/plugins/launchers";
 import type { DecisionQueueDto } from "@/api/decisionQueues";
 import { queryKeys } from "@/lib/queryKeys";
 import { coordinatorAttentionQueryKey } from "@/lib/coordinator-attention";
 import { storybookAuthSession } from "../../fixtures/paperclipData";
+import { installFixtureApi } from "../../support/capability-gaps/api";
 
 const STORYBOOK_USER_ID = storybookAuthSession.user!.id;
 
@@ -600,6 +604,61 @@ export const CardTriageStrip: Story = {
           onSnooze={() => {}}
         />
       </div>
+    </PrimeDeskFixtures>
+  ),
+};
+
+export const CoordinatorInboxMobile: Story = {
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: {
+    layout: "fullscreen",
+    waitForViewport: true,
+    initialEntries: ["/PAP/decisions"],
+  },
+  beforeEach: () =>
+    installFixtureApi([
+      {
+        path: "/api/workspace-preferences/me",
+        read: () => ({
+          userId: STORYBOOK_USER_ID,
+          coordinatorWorkspaceEnabled: true,
+          updatedAt: null,
+        }),
+      },
+      {
+        path: `/api/companies/${companyId}/access/user-directory`,
+        read: () => ({
+          users: [
+            {
+              principalId: STORYBOOK_USER_ID,
+              status: "active",
+              user: { name: "Riley Board" },
+            },
+          ],
+        }),
+      },
+      {
+        path: `/api/companies/${companyId}/attention/history`,
+        read: () => ({ items: [], nextCursor: null }),
+      },
+      {
+        path: `/api/companies/${companyId}/attention/run-history`,
+        read: () => ({ items: [], nextCursor: null }),
+      },
+      {
+        path: `/api/companies/${companyId}/attention`,
+        read: () => feed(DESK_ITEMS),
+      },
+    ]).cleanup,
+  render: () => (
+    <PrimeDeskFixtures items={DESK_ITEMS}>
+      <PluginLauncherProvider>
+        <Routes>
+          <Route path="/:companyPrefix" element={<Layout />}>
+            <Route path="decisions" element={<CoordinatorNeedsYou />} />
+          </Route>
+        </Routes>
+      </PluginLauncherProvider>
     </PrimeDeskFixtures>
   ),
 };

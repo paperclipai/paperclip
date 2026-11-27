@@ -70,7 +70,7 @@ test("native catalog setup, account edits, conflicts and removal persist through
     const saved = async () => (await listPools(request)).find(pool => pool.id === poolId)!;
     expect(await saved()).toMatchObject({ enabled: false, mode: "round_robin", thresholdPercent: 90 });
     expect((await saved()).members.map(member => member.binding.connectionId)).toEqual([accounts[1]!.id, accounts[0]!.id]);
-    await expect(page.getByRole("link", { name: "Settings", exact: true })).toBeVisible();
+    await expect(page.getByRole("link", { name: "Back to Plugins", exact: true })).toBeVisible();
     await expect(page.getByRole("link", { name: "Review", exact: true })).toHaveCount(0);
     await expect(page.getByRole("checkbox", { name: "Enable this pool", exact: true })).not.toBeChecked();
     await expect(page.getByRole("region", { name: "Used by", exact: true })).toContainText("No agents yet.");
@@ -116,7 +116,7 @@ test("native catalog setup, account edits, conflicts and removal persist through
     await expect(confirmation).toContainText("The connections in this pool are kept.");
     await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
     expect(await saved()).toBeTruthy();
-    await page.getByRole("link", { name: "All connectors", exact: true }).click();
+    await page.getByRole("link", { name: "Back to Plugins", exact: true }).click();
     await page.getByRole("button", { name: `Manage ${name} connection`, exact: true }).click();
     await page.getByRole("menuitem", { name: "Remove connection", exact: true }).click();
     await page.getByRole("alertdialog").getByRole("button", { name: "Remove connection", exact: true }).click();

@@ -337,9 +337,11 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
   async function supersededAutomaticReview(
     source: Awaited<ReturnType<typeof scope>>,
     requestedCommit: string,
-    currentCommit: string,
+    pull: Pull,
   ) {
-    const [newer] = await db
+    const currentCommit = pull.head.sha;
+    const closed = pull.state === "closed";
+    const [newer] = closed || requestedCommit === currentCommit ? [] : await db
       .select({ id: chatDeliveries.id })
       .from(chatDeliveries)
       .where(
@@ -358,19 +360,27 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
         ),
       )
       .limit(1);
-    const next = newer
-      ? "a newer automatic review for that commit is already queued on this task"
-      : "no newer automatic review is queued for it. An authorized person can request a manual review";
+    const target = requestedCommit === currentCommit
+      ? `This automatic review was requested for ${requestedCommit.slice(0, 7)}, and `
+      : `This automatic review was requested for an older pull request head (${requestedCommit.slice(0, 7)}). ` +
+        `The pull request now points to ${currentCommit.slice(0, 7)}, and `;
+    const next = closed
+      ? "the pull request is already merged or closed, so no review is needed. Stop this review and finish the task as done"
+      : newer
+        ? "a newer automatic review for that commit is already queued on this task. Stop this run and leave the task " +
+          "open for the queued review"
+        : "no newer automatic review is queued for it, so this review is no longer needed. Stop this review and finish " +
+          "the task as done";
     return conflict(
-      `This automatic review was requested for an older pull request head (${requestedCommit.slice(0, 7)}). ` +
-        `The pull request now points to ${currentCommit.slice(0, 7)}, and ${next}. ` +
-        "Stop this review: do not call review tools again and do not post the review as an ordinary comment.",
+      `${target}${next}: do not call review tools again, do not post the review as an ordinary comment, ` +
+        "and do not block the task or ask anyone to request a review.",
       {
         reasonCode: "github_review_superseded",
         retryable: false,
         requestedCommit,
         currentCommit,
         newerReviewQueued: !!newer,
+        pullRequestClosed: closed,
       },
     );
   }
@@ -672,8 +682,8 @@ export function githubChatReviewService(db: Db, fetchImpl = fetch) {
     const pull = await api.request<Pull>(`/pulls/${source.number}`);
     const automatic = source.delivery.normalizedEvent.githubAutomatic as
       { context: GitHubReviewEventContext } | undefined;
-    if (automatic && automatic.context.headSha !== pull.head.sha)
-      throw await supersededAutomaticReview(source, automatic.context.headSha, pull.head.sha);
+    if (automatic && (automatic.context.headSha !== pull.head.sha || pull.state === "closed"))
+      throw await supersededAutomaticReview(source, automatic.context.headSha, pull);
     if (name === "read_pull_request") {
       const parsed = readSchema.parse(input);
       if (parsed.section === "metadata") {

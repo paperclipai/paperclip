@@ -61,16 +61,16 @@ export function AgentConnectionAccess({ connectionId, profiles, policies, catalo
     }
   }
 
-  return <section className="space-y-4 border-t border-border pt-8">
-    <div className="space-y-2">
-      <h2 className="text-sm font-semibold">Additional agent access</h2>
-      <p className="text-sm text-muted-foreground">These agents can use the listed actions in addition to the permissions above. Removing a grant restores their other permissions.</p>
+  return <section className="flex flex-col gap-3">
+    <div className="flex flex-col gap-1 px-4">
+      <h2 className="text-sm text-muted-foreground">Additional agent access</h2>
+      <p className="text-xs text-muted-foreground">These agents can use the listed actions in addition to the permissions above. Removing a grant restores their other permissions.</p>
     </div>
     {grants.map(profile => {
       const agentId = profile.metadata!.agentId as string;
       const agent = agentsById.get(agentId);
       const tools = toolsByProfileId.get(profile.id) ?? [];
-      return <div key={profile.id} className="space-y-3 rounded-lg border border-border p-4">
+      return <div key={profile.id} className="space-y-3 rounded-2xl bg-muted/50 p-4">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <AgentAvatar agent={agent ?? { id: agentId, name: "Agent" }} size={32} />
@@ -91,6 +91,6 @@ export function AgentConnectionAccess({ connectionId, profiles, policies, catalo
         </ul>
       </div>;
     })}
-    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+    {error && <p role="alert" className="px-4 text-sm text-destructive">{error}</p>}
   </section>;
 }

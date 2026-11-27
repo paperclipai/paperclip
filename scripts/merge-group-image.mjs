@@ -22,10 +22,20 @@ const architectures = ["amd64", "arm64"];
 const indexTypes = ["application/vnd.oci.image.index.v1+json", "application/vnd.docker.distribution.manifest.list.v2+json"];
 const manifestTypes = ["application/vnd.oci.image.manifest.v1+json", "application/vnd.docker.distribution.manifest.v2+json"];
 // How long a master push waits for a merge-queue build that is still running.
-// Capped at 3 minutes so a master push on a fast AWS runner falls back to
-// building from source instead of stalling behind a slower merge-group leg.
+// Capped at 3 minutes so a master push falls back to building from source
+// instead of stalling behind a slower merge-group leg; callers on fast AWS
+// release runners pass MERGE_GROUP_FIND_WAIT_MS=0 to promote completed builds
+// immediately with zero wait penalty.
 const findWaitMs = 3 * 60_000;
 const findPollMs = 15_000;
+
+export function resolveFindWaitMs(env = process.env) {
+  const raw = env?.MERGE_GROUP_FIND_WAIT_MS;
+  if (raw === undefined || raw === "") return findWaitMs;
+  const parsed = Number(raw);
+  if (!Number.isInteger(parsed) || parsed < 0) return findWaitMs;
+  return Math.min(parsed, findWaitMs);
+}
 const fullSha = /^[a-f0-9]{40}$/;
 const hex64 = /^[a-f0-9]{64}$/;
 const digestPattern = /^sha256:[a-f0-9]{64}$/;
@@ -215,7 +225,8 @@ async function main(command) {
     // Publication waits for the exact-source gate in any case, so waiting here
     // briefly for an almost-finished build costs nothing; past the deadline the
     // push builds from source.
-    const deadline = Date.now() + findWaitMs;
+    const waitMs = resolveFindWaitMs(process.env);
+    const deadline = Date.now() + waitMs;
     let run;
     for (;;) {
       const { workflow_runs: runs } = await api(`/actions/workflows/docker-merge-group.yml/runs?event=merge_group&head_sha=${sha}&per_page=20`);

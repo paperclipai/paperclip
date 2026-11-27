@@ -120,11 +120,9 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
             arch: arm64
-    # GitHub-hosted runners: the protected release fleets admit only
-    # docker.yml on master. amd64 merge-queue builds for canonical master use
-    # the larger GitHub-hosted runner (cloud-release-32) so pre-merge builds
-    # finish quickly while commits wait in the queue.
-    runs-on: ${{ matrix.arch == 'amd64' && (vars.CORE_PUBLICATION_RUNNER || 'cloud-release-32') || matrix.runner }}
+    # GitHub-hosted runners: the protected release fleets and larger release
+    # runner groups admit only docker.yml on master.
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
       contents: read

@@ -18,6 +18,7 @@ vi.mock("@chat-adapter/telegram", async (importOriginal) => {
 });
 import { chatHistoryActionBlocks } from "../helpers/chat-history-proof.js";
 import { githubChatReviewService } from "../../services/chat-github-reviews.js";
+import { githubAutomaticReviewEvent } from "../../services/chat-github-events.js";
 import { githubResponseCommentService } from "../../services/chat-github-response-comments.js";
 import { githubBotToolsForSession } from "../../services/chat-github-tools.js";
 import { resolveRunScopedMentionedSkillKeys } from "../../services/heartbeat/run-preparation.js";
@@ -50,6 +51,40 @@ describeEmbeddedPostgres("chat channels: github review publications", () => {
   } = rev;
 
   describe("GitHub agent review publications", () => {
+    it.each([
+      ["closed", "e", "already merged or closed, so no review is needed", "finish the task as done"],
+      ["closed", "f", "already merged or closed, so no review is needed", "finish the task as done"],
+      ["open", "e", "this review is no longer needed", "finish the task as done"],
+      ["queued", "e", "a newer automatic review for that commit is already queued", "leave the task open for the queued review"],
+    ] as const)("tells a superseded automatic review to stop without waiting on a person: %s, requested head %s",
+      async (state, requestedHead, reason, ending) => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418");
+      const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.endpointId, f.endpoint.id));
+      const context = githubAutomaticReviewEvent({ action: "opened", repository: { id: 97531, full_name: "paperclipai/paperclip" },
+        sender: { id: 42, login: "octocat" }, pull_request: { number: 418, title: "Review", body: "", draft: false,
+          base: { sha: "a".repeat(40), ref: "master" }, head: { sha: requestedHead.repeat(40) }, user: { id: 42, login: "octocat" }, labels: [] } },
+      randomUUID())!;
+      await db.update(chatDeliveries).set({ normalizedEvent: { ...delivery.normalizedEvent, githubAutomatic: { context } } })
+        .where(eq(chatDeliveries.id, delivery.id));
+      if (state === "queued") await db.insert(chatDeliveries).values({ companyId: delivery.companyId, endpointId: delivery.endpointId,
+        conversationId: delivery.conversationId, providerEventId: `newer-${randomUUID()}`, deduplicationKey: `newer-${randomUUID()}`,
+        eventKind: delivery.eventKind, state: "received", createdAt: new Date(delivery.createdAt.getTime() + 60_000),
+        normalizedEvent: { ...delivery.normalizedEvent, githubAutomatic: { context: { ...context, headSha: "f".repeat(40) } } } });
+      f.setSupplementalProviderFetch(async input => String(input).endsWith("/pulls/418")
+        ? Response.json({ number: 418, title: "Fix", body: null, state: state === "queued" ? "open" : state, draft: false, head: { sha: "f".repeat(40) },
+          base: { sha: "a".repeat(40), ref: "master" }, user: { id: 42, login: "octocat", type: "User" }, labels: [] })
+        : undefined);
+      const error = await githubChatReviewService(db, f.providerFetch).execute(f.session, "read_pull_request", { section: "metadata" })
+        .then(() => null, (caught: unknown) => caught as { message: string; details?: Record<string, unknown> });
+      expect(error?.message).toContain(reason);
+      expect(error?.message).toContain(ending);
+      if (state === "queued") expect(error?.message).not.toContain("finish the task as done");
+      if (requestedHead === "f") expect(error?.message).not.toContain("older pull request head");
+      expect(error?.message).not.toContain("An authorized person can request");
+      expect(error?.details).toMatchObject({ reasonCode: "github_review_superseded", pullRequestClosed: state === "closed",
+        newerReviewQueued: state === "queued" });
+    });
+
     it("loads only the current configured instruction skills, never provider links or another company", async () => {
       const f = await reviewBotFixture();
       const other = await seedCompany();
@@ -236,8 +271,8 @@ describeEmbeddedPostgres("chat channels: github review publications", () => {
 
     it("reconciles a GitHub working comment when execution stops without a publication", async () => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418");
-      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "execution_finalization_deadline_exceeded" })
-        .where(eq(heartbeatRuns.id, f.run.id));
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "execution_finalization_deadline_exceeded",
+        updatedAt: new Date(Date.now() - 31 * 60_000) }).where(eq(heartbeatRuns.id, f.run.id));
       await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, f.conversation.issueId!));
       await githubResponseCommentService(db, f.providerFetch).processPending();
       expect(f.responseComments.size).toBe(1);

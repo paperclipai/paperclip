@@ -140,5 +140,10 @@ describe("AppsConnect Antigravity routing and branding", () => {
     expect(host.querySelector('img[src="/brands/apps/antigravity.svg"]')).not.toBeNull();
     expect(host.textContent).toContain("Sign in to Antigravity");
     expect(host.textContent).not.toContain("Connect Google");
+    const primarySignIn = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Sign in to Antigravity",
+    ) as HTMLButtonElement | undefined;
+    expect(primarySignIn).toBeDefined();
+    expect(primarySignIn!.disabled).toBe(false);
   });
 });

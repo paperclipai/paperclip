@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, ne, or, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { nativeEffectiveRunTerminalStateSql } from "./native-accepted-outcome.js";
 import { completionContracts, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations,
   nativeRunResults, type Db } from "@paperclipai/db";
@@ -8,6 +8,7 @@ import { remoteExecutionHasStopped } from "../remote-execution-termination.js";
 import { readSystemRecovery } from "../system-recovery-state.js";
 import { completedWorkspaceRecoveryCondition, readWorkspaceRecovery, verifiedWorkspaceRepairReceipt } from "../workspace-recovery-receipt.js";
 import { nativeSha256 } from "./canonical.js";
+import { hasNewerIssueRun } from "./native-run-ownership.js";
 
 export const nativeWorkspaceFinalizationBlockSchema = z.object({
   schema: z.literal("paperclip.native-workspace-finalization-block.v1"),
@@ -107,12 +108,7 @@ export async function readPreservedNativeResultFinalization(db: Db, binding: {
   const recovery = readSystemRecovery(row.evidence), workspace = readWorkspaceRecovery(row.evidence);
   if (recovery?.state !== "complete" || recovery.sourceRunId !== binding.runId || !recovery.preservationOperationIds.length
     || workspace?.status !== "recovered" || workspace.runId !== binding.runId) return null;
-  const [newer] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-    eq(heartbeatRuns.companyId, binding.companyId), ne(heartbeatRuns.id, binding.runId),
-    gte(heartbeatRuns.createdAt, row.run.createdAt), or(eq(heartbeatRuns.issueId, binding.issueId),
-      eq(heartbeatRuns.nativeIssueId, binding.issueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${binding.issueId}`),
-  )).limit(1);
-  if (newer || await issueTreeControlService(db).getActivePauseHoldGate(binding.companyId, binding.issueId)
+  if (await hasNewerIssueRun(db, binding) || await issueTreeControlService(db).getActivePauseHoldGate(binding.companyId, binding.issueId)
     || !await remoteExecutionHasStopped(db, binding.companyId, binding.runId)) return null;
   const receiptId = await verifiedWorkspaceRepairReceipt(db, row.run);
   if (!receiptId || !recovery.preservationOperationIds.includes(receiptId)) return null;

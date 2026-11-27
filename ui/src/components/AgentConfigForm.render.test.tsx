@@ -7,7 +7,7 @@ import type { Agent, Environment } from "@paperclipai/shared";
 import { getEnvironmentCapabilities } from "@paperclipai/shared";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ToastProvider } from "../context/ToastContext";
-import { AgentConfigForm } from "./AgentConfigForm";
+import { AdapterTypeDropdown, AgentConfigForm } from "./AgentConfigForm";
 import { isBlockedFromReplay } from "@/lib/analytics/replay-recording.test-utils";
 import { ApiError } from "../api/client";
 import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
@@ -270,5 +270,211 @@ describe("AgentConfigForm session replay masking", () => {
     await flushReact();
 
     expect(isBlockedFromReplay("WXYZ-1234", document.body)).toBe(true);
+  });
+
+  it("offers Google Antigravity in the Harness dropdown, displays its logo, exposes Daytona and Unikraft environments, and saves native ACPX config", async () => {
+    mockEnvironmentsApi.list.mockResolvedValue([
+      makeEnvironment({ id: "local-1", name: "Local", driver: "local" }),
+      makeEnvironment({ id: "daytona-sbx", name: "Paperclip Sandbox", driver: "sandbox", config: { provider: "daytona" } }),
+      makeEnvironment({ id: "daytona-plugin", name: "Paperclip Sandbox (Daytona)", driver: "plugin", config: { pluginKey: "paperclip-cloud.plugin-agent-computer", driverKey: "daytona-tasks" } }),
+      makeEnvironment({ id: "unikraft-computer", name: "Paperclip Computer", driver: "plugin", config: { pluginKey: "paperclip-cloud.plugin-agent-computer", driverKey: "tasks" } }),
+    ]);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableEnvironments: true,
+      enableNativeRunner: false,
+    });
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AgentConfigForm
+                mode="edit"
+                agent={makeAgent({ adapterType: "process", adapterConfig: {} })}
+                onSave={onSave}
+                hidePromptTemplate
+                showAdapterTypeField
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const harnessTrigger = container.querySelector<HTMLButtonElement>('button[aria-label="Harness"]');
+    expect(harnessTrigger).not.toBeNull();
+    await act(async () => {
+      harnessTrigger!.click();
+    });
+    await flushReact();
+
+    const antigravityOption = Array.from(document.body.querySelectorAll<HTMLElement>('[data-value="antigravity_runtime"]'))[0];
+    expect(antigravityOption).toBeDefined();
+    expect(antigravityOption!.textContent).toContain("Google Antigravity");
+    expect(antigravityOption!.querySelector('img[src="/brands/apps/antigravity.svg"]')).not.toBeNull();
+
+    await act(async () => {
+      antigravityOption!.click();
+    });
+    await flushReact();
+
+    // Top Harness trigger displays Google Antigravity with its logo, and redundant inner ACP agent dropdown is hidden.
+    expect(container.querySelector('button[aria-label="Harness"]')?.textContent).toContain("Google Antigravity");
+    expect(container.querySelector('button[aria-label="Harness"] img[src="/brands/apps/antigravity.svg"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="ACP agent"]')).toBeNull();
+
+    // Both Daytona sandbox/plugin and Unikraft Paperclip Computer environments are selectable.
+    const envTrigger = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(
+      (button) => button.textContent?.includes("Default: Local"),
+    );
+    expect(envTrigger).toBeDefined();
+    await act(async () => {
+      envTrigger!.click();
+    });
+    await flushReact();
+    expect(document.body.textContent).toContain("Paperclip Sandbox");
+    expect(document.body.textContent).toContain("Paperclip Sandbox (Daytona)");
+    expect(document.body.textContent).toContain("Paperclip Computer");
+
+    await clickByText(container, "Save");
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({
+      adapterType: "paperclip_runner",
+      replaceAdapterConfig: true,
+      adapterConfig: expect.objectContaining({
+        provider: "acpx",
+        acpxAgent: "antigravity",
+        lifecycleMode: "per_turn",
+      }),
+    }));
+  });
+
+  it("displays an existing Antigravity paperclip_runner agent as Google Antigravity without exposing internal runner harness pickers", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AgentConfigForm
+                mode="edit"
+                agent={makeAgent({
+                  adapterType: "paperclip_runner",
+                  adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "gemini-3.8-flash-low", lifecycleMode: "per_turn" },
+                })}
+                onSave={vi.fn()}
+                hidePromptTemplate
+                showAdapterTypeField
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.querySelector('button[aria-label="Harness"]')?.textContent).toContain("Google Antigravity");
+    expect(container.querySelector('button[aria-label="Harness"] img[src="/brands/apps/antigravity.svg"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="ACP agent"]')).toBeNull();
+  });
+
+  it("displays an existing Copilot paperclip_runner agent as GitHub Copilot and keeps its saved model on re-selection", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ToastProvider>
+            <TooltipProvider>
+              <AgentConfigForm
+                mode="edit"
+                agent={makeAgent({
+                  adapterType: "paperclip_runner",
+                  adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.4", lifecycleMode: "per_turn" },
+                })}
+                onSave={onSave}
+                hidePromptTemplate
+                showAdapterTypeField
+              />
+            </TooltipProvider>
+          </ToastProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const harnessTrigger = container.querySelector<HTMLButtonElement>('button[aria-label="Harness"]');
+    expect(harnessTrigger?.textContent).toContain("GitHub Copilot");
+    expect(harnessTrigger?.querySelector('img[src="/brands/apps/github-copilot.svg"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="ACP agent"]')).toBeNull();
+    expect(container.textContent).toContain("gpt-5.4");
+
+    await act(async () => {
+      harnessTrigger!.click();
+    });
+    await flushReact();
+    const copilotOption = document.body.querySelector<HTMLElement>('[data-value="copilot_runtime"]');
+    expect(copilotOption).not.toBeNull();
+    await act(async () => {
+      copilotOption!.click();
+    });
+    await flushReact();
+
+    // Re-selecting the active Copilot harness is a no-op and preserves the saved model.
+    expect(container.textContent).toContain("gpt-5.4");
+    expect(container.textContent).not.toContain("Unsaved changes");
+  });
+
+  it("keeps native ACPX harnesses opt-in on AdapterTypeDropdown so raw adapter callers never offer them", async () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <AdapterTypeDropdown value="codex_local" onChange={vi.fn()} disabledTypes={new Set()} />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Harness"]');
+    expect(trigger).not.toBeNull();
+    await act(async () => {
+      trigger!.click();
+    });
+    await flushReact();
+
+    expect(document.body.querySelector('[data-value="antigravity_runtime"]')).toBeNull();
+    expect(document.body.querySelector('[data-value="copilot_runtime"]')).toBeNull();
   });
 });

@@ -1,7 +1,7 @@
 import { notifyChatConnectionObservation } from "../../chat-channels/configuration-work-notifications.js";
 import { assertPluginConnectionWorker, PLUGIN_CONNECTOR_UNAVAILABLE_CODE } from "../../plugin-connector-runtime.js";
 import { findPluginWorkerUnavailableError } from "../../plugin-worker-unavailable-error.js";
-import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
+import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import { connectionActorUserId } from "../actor.js";
 import { assertSupportedConnection } from "../connections/setup-policy.js";
 import { connectionSetupUrl, connectionReconnectUrl } from "../identifiers.js";
@@ -12,10 +12,10 @@ import { nativeProviderCatalogFor } from "../../native-provider-catalogs.js";
 import { restConnectorFor } from "../../connectors/rest-registry.js";
 import { retainMcpConnectionFailure } from "../../mcp-connection-failure.js";
 import { isBrowserUseConnection } from "../../browser-use-client.js";
-import { and, asc, eq, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { connectionGrants, toolApplications, toolConnections, toolRuntimeSlots } from "@paperclipai/db";
-import type { ToolConnectionHealthCheckResult, ToolConnectionHealthStatus } from "@paperclipai/shared";
+import { chatEndpoints, connectionGrants, toolApplications, toolConnections, toolRuntimeSlots } from "@paperclipai/db";
+import type { ToolConnectionHealthCheckResult, ToolConnectionHealthStatus, ToolConnectionTransport } from "@paperclipai/shared";
 import { HttpError, unprocessable } from "../../../errors.js";
 
 import type { ToolAccessAudit } from "../audit.js";
@@ -23,7 +23,111 @@ import type { ConnectionCredentialAccess } from "../credential-access.js";
 import type { ConnectionSetupPolicy } from "../connections/setup-policy.js";
 import { toConnection } from "../connections/projection.js";
 import { isAgentMailConnection, type ToolCatalogDiscovery } from "./discovery.js";
-import { healthFailureHttpStatus, isCallerAuthorizationFailure, sanitizeHttpFailure, unreachableServerRemediation, unsupportedToolConnectionTransport } from "./failures.js";
+import { healthFailureHttpStatus, isCallerAuthorizationFailure, sanitizeHttpFailure, unreachableServerRemediation, UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE, unsupportedToolConnectionTransport } from "./failures.js";
+
+export const HEALTH_SWEEP_TRANSPORTS: readonly ToolConnectionTransport[] = [
+  "mcp_remote",
+  "rest_api",
+  "local_stdio",
+  "plugin",
+];
+
+export function healthSweepConnectionWhere() {
+  return and(
+    eq(toolConnections.enabled, true),
+    eq(toolConnections.status, "active"),
+    inArray(toolConnections.transport, HEALTH_SWEEP_TRANSPORTS),
+    ne(toolApplications.type, "paperclip_plugin"),
+  );
+}
+
+/**
+ * Repair active Speko voice connections previously marked error by the generic
+ * tool health sweep before voice transport was excluded from sweeps.
+ */
+export async function repairUnsupportedVoiceConnectionHealth(
+  db: Db,
+  options: {
+    companyId?: string;
+    connectionId?: string;
+    now?: () => Date;
+    batchSize?: number;
+    signal?: AbortSignal;
+  } = {},
+): Promise<number> {
+  const batchSize = Math.max(1, options.batchSize ?? 100);
+  const nowFn = options.now ?? (() => new Date());
+  let totalRepaired = 0;
+  let cursor: string | undefined;
+  while (true) {
+    options.signal?.throwIfAborted();
+    const candidates = await db
+      .selectDistinctOn([toolConnections.id], {
+        id: toolConnections.id,
+        companyId: toolConnections.companyId,
+      })
+      .from(toolConnections)
+      .innerJoin(chatEndpoints, and(
+        eq(chatEndpoints.connectionId, toolConnections.id),
+        eq(chatEndpoints.companyId, toolConnections.companyId),
+      ))
+      .where(and(
+        eq(toolConnections.transport, "voice"),
+        eq(toolConnections.enabled, true),
+        eq(toolConnections.status, "active"),
+        eq(toolConnections.healthStatus, "error"),
+        eq(toolConnections.healthMessage, UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE),
+        eq(chatEndpoints.provider, "speko"),
+        eq(chatEndpoints.status, "active"),
+        isNull(chatEndpoints.lastError),
+        options.companyId === undefined ? undefined : eq(toolConnections.companyId, options.companyId),
+        options.connectionId === undefined ? undefined : eq(toolConnections.id, options.connectionId),
+        cursor === undefined ? undefined : sql`${toolConnections.id} > ${cursor}`,
+      ))
+      .orderBy(asc(toolConnections.id), asc(chatEndpoints.id))
+      .limit(batchSize);
+    if (candidates.length === 0) break;
+    const candidateIds = candidates.map((row) => row.id);
+    cursor = candidateIds[candidateIds.length - 1];
+    const repairedAt = nowFn().toISOString();
+    const repairedRows = await db.transaction(async (tx) => {
+      // Register delivery work before the write so drain/sleep checks observe it.
+      for (const candidate of candidates) {
+        await notifyToolConnectionHealth(tx, { id: candidate.id, companyId: candidate.companyId });
+        await notifyChatConnectionObservation(tx, candidate.id, "voice");
+      }
+      return tx.execute<{ id: string; company_id: string }>(sql`
+        update ${toolConnections} as tc
+        set
+          health_status = 'healthy',
+          health_message = coalesce(ce.health_message, 'Connected'),
+          last_error = null,
+          updated_at = ${repairedAt}::timestamptz
+        from (
+          select distinct on (connection_id)
+            connection_id,
+            company_id,
+            health_message
+          from ${chatEndpoints}
+          where provider = 'speko' and status = 'active' and last_error is null
+          order by connection_id, id
+        ) as ce
+        where tc.id in (${sql.join(candidateIds.map((id) => sql`${id}`), sql`, `)})
+          and tc.id = ce.connection_id
+          and tc.company_id = ce.company_id
+          and tc.transport = 'voice'
+          and tc.enabled = true
+          and tc.status = 'active'
+          and tc.health_status = 'error'
+          and tc.health_message = ${UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE}
+        returning tc.id, tc.company_id
+      `);
+    });
+    totalRepaired += repairedRows.length;
+    if (candidates.length < batchSize) break;
+  }
+  return totalRepaired;
+}
 function asRecord(value: unknown): Record<string, unknown> {
   if (value && typeof value === "object" && !Array.isArray(value))
     return value as Record<string, unknown>;
@@ -87,6 +191,15 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
   ): Promise<ToolConnectionHealthCheckResult> {
     const connection = await getConnectionRow(connectionId);
     if (connection.connectionPurpose === "ai") return { connection: toConnection(connection), runtimeSlot: null };
+    if (connection.transport === "voice") {
+      const repaired = await repairUnsupportedVoiceConnectionHealth(db, {
+        companyId: connection.companyId,
+        connectionId: connection.id,
+        now,
+      });
+      const current = repaired > 0 ? await getConnectionRow(connectionId) : connection;
+      return { connection: toConnection(current), runtimeSlot: null };
+    }
     await assertConnectorConnectionSetupEnabled(connection);
     const unavailableServices: string[] = [];
     try {
@@ -252,6 +365,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
   async function sweepConnectionHealth(
     input: { staleAfterMs?: number; limit?: number } = {},
   ) {
+    await repairUnsupportedVoiceConnectionHealth(db, { now });
     const generatedAt = now();
     const staleAfterMs = input.staleAfterMs ?? 15 * 60 * 1000;
     const limit = input.limit ?? 25;
@@ -269,11 +383,7 @@ export function createConnectionHealth(db: Db, { now, audit, getConnectionRow, d
       ))
       .where(
         and(
-          eq(toolConnections.enabled, true),
-          eq(toolConnections.status, "active"),
-          ne(toolConnections.transport, "chat_sdk"),
-          ne(toolConnections.transport, "runtime_auth"),
-          ne(toolApplications.type, "paperclip_plugin"),
+          healthSweepConnectionWhere(),
           or(isNull(toolConnections.healthCheckedAt), lte(toolConnections.healthCheckedAt, cutoff)),
         ),
       )

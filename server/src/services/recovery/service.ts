@@ -70,7 +70,8 @@ import {
   hasCommittedNativeBoardResponseWait,
   readNativeBoardResponseWaitSource,
 } from "../native-runtime/native-board-response-wait.js";
-import { authorizeChatConversationForBoundRun } from "../native-runtime/chat-attachment-reuse.js";
+import { authorizeChatConversationForBoundRun, resolveExternalChatResponseWaitAuthorization } from "../native-runtime/chat-attachment-reuse.js";
+import { EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST } from "../native-runtime/status-arbiter.js";
 import {
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
@@ -256,6 +257,7 @@ const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON =
   "execution_review_participant_recovery";
 const STRANDED_BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
+const EXTERNAL_CHAT_WAIT_RECOVERY_SOURCE = "issue.external_chat_wait_recovery";
 const DISPOSITION_REPAIR_IDEMPOTENCY_INDEX =
   "agent_wakeup_requests_disposition_repair_idempotency_uq";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
@@ -286,6 +288,7 @@ type RecoveryWakeupOptions = {
   issueStateGuard?: {
     statuses: string[];
     assigneeAgentId: string;
+    withoutSuccessorOfRunId?: string;
   };
   allowRunCoalescing?: boolean;
 };
@@ -1991,6 +1994,48 @@ export function recoveryService(
       .then((rows) => Boolean(rows[0]));
   }
 
+  /**
+   * Continue a settled external-chat turn whose response wait was lost
+   * although its requester and destination are still allowed. No provider
+   * message owns its next wake, so the task would otherwise idle in progress.
+   * A wait lost because access was revoked stays parked: revocation never
+   * starts work. Returns null when the turn is not such a wait.
+   *
+   * Bounded to one continuation per turn: the successor run owns the task, so
+   * the wait is no longer authorized; the queue rechecks for a successor under
+   * the issue lock, so overlapping sweeps cannot both queue one.
+   */
+  async function continueUnregisteredExternalChatWait(
+    issue: RecoveryIssue,
+    latestRun: LatestIssueRun,
+    agentId: string,
+  ): Promise<"queued" | "skipped" | null> {
+    if (
+      issue.status !== "in_progress" || latestRun?.status !== "succeeded" ||
+      latestRun.agentId !== agentId || latestRun.agentId !== issue.assigneeAgentId ||
+      !isExternalChatPresentationContext(latestRun.contextSnapshot) ||
+      parseObject(latestRun.resultJson).finalizationReasonCode !== EXTERNAL_CHAT_RESPONSE_WAIT_AUTHORIZATION_LOST
+    ) return null;
+    // The caller already proved the invocation budget clear for this task.
+    const [authorization, queuedWake] = await Promise.all([
+      resolveExternalChatResponseWaitAuthorization({ db, binding: {
+        companyId: issue.companyId, issueId: issue.id, runId: latestRun.id, agentId,
+      } }),
+      hasQueuedIssueWake(issue.companyId, issue.id, agentId),
+    ]);
+    if (authorization !== "authorized") return null;
+    if (queuedWake) return "skipped";
+    const queued = await enqueueStrandedIssueRecovery({
+      issueId: issue.id,
+      agentId,
+      reason: "issue_continuation_needed",
+      retryReason: "issue_continuation_needed",
+      source: EXTERNAL_CHAT_WAIT_RECOVERY_SOURCE,
+      retryOfRunId: latestRun.id,
+    });
+    return queued ? "queued" : "skipped";
+  }
+
   async function hasQueuedIssueWake(
     companyId: string,
     issueId: string,
@@ -2261,7 +2306,16 @@ export function recoveryService(
               assigneeAgentId: input.agentId,
             },
           }
-        : {}),
+        : input.source === EXTERNAL_CHAT_WAIT_RECOVERY_SOURCE && input.retryOfRunId
+          ? {
+              // One continuation per settled turn, even across overlapping sweeps.
+              issueStateGuard: {
+                statuses: ["in_progress"],
+                assigneeAgentId: input.agentId,
+                withoutSuccessorOfRunId: input.retryOfRunId,
+              },
+            }
+          : {}),
       payload: withRecoveryContext(
         {
           issueId: input.issueId,
@@ -5308,6 +5362,14 @@ export function recoveryService(
         } else {
           result.skipped += 1;
         }
+        continue;
+      }
+      const externalChatWait = await continueUnregisteredExternalChatWait(issue, latestRun, agentId);
+      if (externalChatWait) {
+        if (externalChatWait === "queued") {
+          result.continuationRequeued += 1;
+          result.issueIds.push(issue.id);
+        } else result.skipped += 1;
         continue;
       }
       if (
