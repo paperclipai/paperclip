@@ -23,6 +23,7 @@ import type {
 import { ArrowDownLeft, ArrowUpRight, ChevronDown, ChevronRight, Coins, DollarSign, ReceiptText } from "lucide-react";
 import { budgetsApi } from "../api/budgets";
 import { costsApi } from "../api/costs";
+import { agentsApi } from "../api/agents";
 import { BillerSpendCard } from "../components/BillerSpendCard";
 import { BudgetIncidentCard } from "../components/BudgetIncidentCard";
 import { BudgetPolicyCard } from "../components/BudgetPolicyCard";
@@ -180,6 +181,13 @@ export function Costs({
   const queryClient = useQueryClient();
 
   const [searchParams, setSearchParams] = useSearchParams();
+  const scopedAgentId = searchParams.get("agentId");
+  const { data: scopedAgent, error: scopedAgentError } = useQuery({
+    queryKey: [...queryKeys.agents.detail(scopedAgentId ?? NO_COMPANY), selectedCompanyId],
+    queryFn: () => agentsApi.get(scopedAgentId!, selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId && scopedAgentId),
+  });
+  const museUsageUnavailable = scopedAgent?.adapterType === "paperclip_runner" && scopedAgent.adapterConfig.provider === "muse";
   const [mainTab, setMainTab] = useState<CostsMainTab>(initialTab);
   const [activeProvider, setActiveProvider] = useState("all");
   const [activeBiller, setActiveBiller] = useState("all");
@@ -597,7 +605,15 @@ export function Costs({
   const showOverviewLoading = spendLoading && customReady;
   const overviewError = !spendData && spendError;
   return (
-    <div className="space-y-6">
+    <div className="min-w-0 max-w-full space-y-6">
+      {scopedAgentError && (
+        <p role="alert" className="text-sm text-destructive">Could not load agent details. Totals below show recorded organization costs.</p>
+      )}
+      {museUsageUnavailable && (
+        <p role="status" className="text-sm text-muted-foreground">
+          {scopedAgent.name}'s Muse activity has no reported usage or cost. Totals below show recorded organization charges only. Paperclip cannot enforce a Muse spend ceiling.
+        </p>
+      )}
       {showSummaryChrome ? (
         <div className="space-y-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -609,7 +625,7 @@ export function Costs({
               )}
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div data-canonical-toolbar="cost-range" role="toolbar" aria-label="Cost date range" className="flex flex-wrap items-center gap-2">
               {PRESET_KEYS.map((key) => (
                 <Button
                   key={key}
@@ -625,7 +641,7 @@ export function Costs({
           </div>
 
           {preset === "custom" ? (
-            <div className="flex flex-wrap items-center gap-2 border border-border p-3">
+            <div data-canonical-toolbar="cost-dates" className="flex flex-wrap items-center gap-2 border border-border p-3">
               <input
                 type="date"
                 value={customFrom}
@@ -721,7 +737,7 @@ export function Costs({
       ) : null}
 
       {incidentMutation.error && <p role="alert" className="text-sm text-destructive">Could not update the budget. Check any pending runs or unpriced usage shown on this page, then try again.</p>}
-      <Tabs value={mainTab} onValueChange={(value) => { setMainTab(value as typeof mainTab); setSearchParams(current => { const next = new URLSearchParams(current); next.set("tab", value); return next; }, { replace: true }); }}>
+      <Tabs className="min-w-0 max-w-full" value={mainTab} onValueChange={(value) => { setMainTab(value as typeof mainTab); setSearchParams(current => { const next = new URLSearchParams(current); next.set("tab", value); return next; }, { replace: true }); }}>
         {!lockTab ? (
           <div className="max-w-full overflow-x-auto pb-2">
             <TabsList variant="line" className="justify-start">
@@ -736,9 +752,9 @@ export function Costs({
           </div>
         ) : null}
 
-        <TabsContent value="fast-responses" className="mt-4">{showCustomPrompt ? <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p> : <FastResponseHistory companyId={companyId} from={from} to={to} />}</TabsContent>
-        <TabsContent value="decisions" className="mt-4">{showCustomPrompt ? <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p> : <DecisionHistory companyId={companyId} from={from} to={to} />}</TabsContent>
-        <TabsContent value="overview" className="mt-4 space-y-4">
+        <TabsContent value="fast-responses" className="mt-4 min-w-0 max-w-full">{showCustomPrompt ? <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p> : <FastResponseHistory companyId={companyId} from={from} to={to} />}</TabsContent>
+        <TabsContent value="decisions" className="mt-4 min-w-0 max-w-full">{showCustomPrompt ? <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p> : <DecisionHistory companyId={companyId} from={from} to={to} />}</TabsContent>
+        <TabsContent value="overview" className="mt-4 min-w-0 max-w-full space-y-4">
           {showCustomPrompt ? (
             <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
           ) : showOverviewLoading ? (
@@ -747,8 +763,8 @@ export function Costs({
             <p className="text-sm text-destructive">Cost data could not be loaded. Please try again shortly.</p>
           ) : (
             <>
-              <div className="grid gap-4 xl:grid-cols-(--gtc-32)">
-                <div className="min-w-0 space-y-4">
+              <div className="grid min-w-0 gap-4 xl:grid-cols-(--gtc-32)">
+                <div className="min-w-0 max-w-full space-y-4">
                   <Card className="gap-3 py-4">
                     <CardHeader className="gap-0 px-5">
                       <CardTitle className="text-base">By agent</CardTitle>
@@ -845,7 +861,7 @@ export function Costs({
                   {userSpendData && <CostByUserTable report={userSpendData} />}
                 </div>
 
-                <div className="space-y-4">
+                <div className="min-w-0 max-w-full space-y-4">
                   <Card className="gap-3 py-4">
                     <CardHeader className="gap-0 px-5">
                       <CardTitle className="text-base">By project</CardTitle>
@@ -906,7 +922,7 @@ export function Costs({
           )}
         </TabsContent>
 
-        <TabsContent value="budgets" className="mt-4 space-y-4">
+        <TabsContent value="budgets" className="mt-4 min-w-0 max-w-full space-y-4">
           {policyMutation.error && <p role="alert" className="text-sm text-destructive">Could not update the budget policy. Review your settings and try again.</p>}
           {budgetLoading ? (
             <PageSkeleton variant="costs" />
@@ -1019,13 +1035,13 @@ export function Costs({
           )}
         </TabsContent>
 
-        <TabsContent value="providers" className="mt-4 space-y-4">
+        <TabsContent value="providers" className="mt-4 min-w-0 max-w-full space-y-4">
           {showCustomPrompt ? (
             <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
           ) : (
             <>
-              <Tabs value={effectiveProvider} onValueChange={setActiveProvider}>
-                <PageTabBar items={providerTabItems} value={effectiveProvider} />
+              <Tabs className="min-w-0 max-w-full" value={effectiveProvider} onValueChange={setActiveProvider}>
+                <PageTabBar items={providerTabItems} value={effectiveProvider} onValueChange={setActiveProvider} />
 
                 <TabsContent value="all" className="mt-4">
                   {providers.length === 0 ? (
@@ -1080,13 +1096,13 @@ export function Costs({
           )}
         </TabsContent>
 
-        <TabsContent value="billers" className="mt-4 space-y-4">
+        <TabsContent value="billers" className="mt-4 min-w-0 max-w-full space-y-4">
           {showCustomPrompt ? (
             <p className="text-sm text-muted-foreground">Select a start and end date to load data.</p>
           ) : (
             <>
-              <Tabs value={effectiveBiller} onValueChange={setActiveBiller}>
-                <PageTabBar items={billerTabItems} value={effectiveBiller} />
+              <Tabs className="min-w-0 max-w-full" value={effectiveBiller} onValueChange={setActiveBiller}>
+                <PageTabBar items={billerTabItems} value={effectiveBiller} onValueChange={setActiveBiller} />
 
                 <TabsContent value="all" className="mt-4">
                   {billers.length === 0 ? (
@@ -1135,7 +1151,7 @@ export function Costs({
           )}
         </TabsContent>
 
-        <TabsContent value="finance" className="mt-4 space-y-4">
+        <TabsContent value="finance" className="mt-4 min-w-0 max-w-full space-y-4">
           {financeData?.summary.providerReportedCentsExact !== undefined && <p className="text-sm text-muted-foreground">Provider API cost reports: {formatCents(financeData.summary.providerReportedCents ?? 0)}. Report totals overlap invoices and run estimates and are shown separately from recorded charges.</p>}
 
           {showCustomPrompt ? (
@@ -1154,8 +1170,8 @@ export function Costs({
                 eventCount={financeData?.summary.eventCount ?? 0}
               />
 
-              <div className="grid gap-4 xl:grid-cols-(--gtc-33)">
-                <div className="space-y-4">
+              <div className="grid min-w-0 gap-4 xl:grid-cols-(--gtc-33)">
+                <div className="min-w-0 space-y-4">
                   <Card>
                     <CardHeader className="px-5 pt-5 pb-2">
                       <CardTitle className="text-base">By biller</CardTitle>

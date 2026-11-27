@@ -3,10 +3,17 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAnnouncement } from "./useAnnouncement";
+import { AnnouncementVisitProvider } from "@/context/AnnouncementVisitContext";
 import { announcementPreview } from "@/lib/announcement-preview";
 import { announcementStoragePrefix } from "@/lib/announcement-dismissals";
+import { isIntentionalAbortReason } from "@/lib/intentional-abort";
 
 const api = vi.hoisted(() => ({ current: vi.fn(), dismiss: vi.fn() }));
+const connectors = {
+  ...announcementPreview,
+  id: "2026-09-14-connectors",
+  primaryAction: { kind: "route", path: "/apps", label: "Explore connectors" },
+};
 vi.mock("@/api/announcements", () => ({ announcementsApi: api }));
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -23,7 +30,7 @@ describe("announcement lifecycle", () => {
     observed = useAnnouncement({ userId, companyId, enabled, onSaveFailure: failure });
     return <div>{observed.announcement?.id}</div>;
   }
-  const render = async () => { await act(async () => root.render(<Harness />)); };
+  const render = async () => { await act(async () => root.render(<AnnouncementVisitProvider userId={userId}><Harness /></AnnouncementVisitProvider>)); };
   const settle = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(3000); }); };
   const event = async (name: string) => { await act(async () => window.dispatchEvent(new Event(name))); };
   const visibility = async (value: "hidden" | "visible") => {
@@ -58,6 +65,70 @@ describe("announcement lifecycle", () => {
     root = createRoot(container);
   });
   afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
+  it("keeps the Connectors card out of chat until the user returns after 30 idle minutes", async () => {
+    api.current.mockResolvedValue(connectors);
+    await render();
+    await settle();
+    expect(container.textContent).toBe("");
+
+    const idle = 30 * 60_000;
+    await act(async () => { await vi.advanceTimersByTimeAsync(idle - 4000); });
+    await event("keydown");
+    await visibility("hidden");
+    await visibility("visible");
+    companyId = "company-two";
+    await render();
+    await settle();
+    expect(container.textContent).toBe("");
+
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await render();
+    await settle();
+    expect(container.textContent).toBe("");
+    await act(async () => { await vi.advanceTimersByTimeAsync(idle); });
+    expect(container.textContent).toBe("");
+    await event("pointerdown");
+    await settle();
+    expect(container.textContent).toBe(connectors.id);
+
+    userId = "another-first-time-user";
+    await render();
+    await settle();
+    expect(container.textContent).toBe("");
+  });
+  it("uses the most recent activity across tabs, including visits while onboarding hides the feed", async () => {
+    api.current.mockResolvedValue(connectors);
+    enabled = false;
+    await render();
+    await visibility("hidden");
+    const idle = 30 * 60_000;
+    await act(async () => { await vi.advanceTimersByTimeAsync(idle); });
+    localStorage.setItem(`paperclip.board-visit.v1:${userId}`, String(Date.now() - idle + 1));
+    enabled = true;
+    await render();
+    await visibility("visible");
+    await settle();
+    expect(container.textContent).toBe("");
+    await visibility("hidden");
+    await act(async () => { await vi.advanceTimersByTimeAsync(idle - 3000); });
+    await visibility("visible");
+    await settle();
+    expect(container.textContent).toBe(connectors.id);
+  });
+  it("checks for a dismissal from another browser before revealing Connectors on an idle return", async () => {
+    api.current.mockResolvedValueOnce(connectors);
+    let respond!: (value: null) => void;
+    api.current.mockReturnValueOnce(new Promise((resolve) => { respond = resolve; }));
+    await render();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30 * 60_000); });
+    await event("pointerdown");
+    await settle();
+    expect(container.textContent).toBe("");
+    expect(api.current).toHaveBeenCalledTimes(2);
+    await act(async () => respond(null));
+    expect(container.textContent).toBe("");
+  });
   it("settles before showing and never polls during uninterrupted work", async () => {
     await render();
     expect(container.textContent).toBe("");
@@ -137,6 +208,29 @@ describe("announcement lifecycle", () => {
     expect(container.textContent).toBe("");
     await settle();
     expect(container.textContent).toBe("after-return");
+  });
+  it("aborts with an intentional reason when the tab is hidden, a card is dismissed, or the hook unmounts", async () => {
+    api.current.mockReturnValue(new Promise(() => {}));
+    await render();
+    const hidden = api.current.mock.calls[0][0] as AbortSignal;
+    await visibility("hidden");
+    expect(hidden.aborted).toBe(true);
+    expect(isIntentionalAbortReason(hidden.reason)).toBe(true);
+
+    await visibility("visible");
+    const dismissed = api.current.mock.calls[1][0] as AbortSignal;
+    api.dismiss.mockReturnValue(new Promise(() => {}));
+    await act(async () => observed.dismiss(announcementPreview.id));
+    expect(dismissed.aborted).toBe(true);
+    expect(isIntentionalAbortReason(dismissed.reason)).toBe(true);
+
+    const write = api.dismiss.mock.calls[0][2] as AbortSignal;
+    await visibility("hidden"); await visibility("visible");
+    const unmounted = api.current.mock.calls[2][0] as AbortSignal;
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    expect(isIntentionalAbortReason(unmounted.reason)).toBe(true);
+    expect(isIntentionalAbortReason(write.reason)).toBe(true);
   });
   it("keeps failed writes pending and retries on reconnect", async () => {
     api.dismiss.mockRejectedValueOnce(new Error("offline"));

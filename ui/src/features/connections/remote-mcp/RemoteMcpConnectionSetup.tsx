@@ -18,6 +18,8 @@ import {
 } from "../ConnectionSetupFlow";
 import type { RemoteMcpProvider } from "./providers";
 import type { RemoteMcpSetupActions, RemoteMcpSetupState } from "./types";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
+import { cn } from "@/lib/utils";
 
 /**
  * PAP-659 C0: the connect path is one screen. `access` is still a real screen,
@@ -32,7 +34,7 @@ function FieldHelp({ label, children }: { label: string; children: ReactNode }) 
   const [open, setOpen] = useState(false);
   return <Tooltip open={open} onOpenChange={setOpen}>
     <TooltipTrigger asChild><button type="button" aria-label={`Help with ${label}`} onClick={() => setOpen(!open)} className="rounded-sm text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><HelpCircle className="size-4" /></button></TooltipTrigger>
-    <TooltipContent className="max-w-xs">{children}</TooltipContent>
+    <TooltipContent className={cn("max-w-xs", ANALYTICS_MASK_CLASS)}>{children}</TooltipContent>
   </Tooltip>;
 }
 

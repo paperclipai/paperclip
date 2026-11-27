@@ -112,13 +112,14 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
       issue: seeded.issue,
       actor: { type: "agent", id: seeded.requesterAgentId },
     });
-    await expect(denied).rejects.toMatchObject<HttpError>({
+    await expect(denied).rejects.toMatchObject<Partial<HttpError>>({
       status: 403,
       details: expect.objectContaining({
         code: "review_policy_denied",
         policy: "not_creator",
         allowedActor: "writer_other_than_review_requester",
       }),
+      message: "Whoever sent this task for review cannot also approve or reject it; someone else must submit the verdict.",
     });
     await expect(assertIssueReviewVerdictActorAllowed(db, {
       issue: seeded.issue,
@@ -156,7 +157,7 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
     await expect(assertIssueReviewVerdictActorAllowed(db, {
       issue: seeded.issue,
       actor: { type: "agent", id: seeded.requesterAgentId },
-    })).rejects.toMatchObject<HttpError>({
+    })).rejects.toMatchObject<Partial<HttpError>>({
       status: 403,
       details: expect.objectContaining({ code: "review_policy_denied" }),
     });
@@ -227,13 +228,15 @@ describeEmbeddedPostgres("issue review verdict policy", () => {
       issue: seeded.issue,
       actor: { type: "agent", id: seeded.requesterAgentId },
     });
-    await expect(denied).rejects.toMatchObject<HttpError>({
+    await expect(denied).rejects.toMatchObject<Partial<HttpError>>({
       status: 403,
       details: expect.objectContaining({
         code: "review_policy_denied",
         policy: "human_only",
         allowedActor: "authenticated_user_with_issue_write_access",
+        remediation: "Ask a person with access to this task to approve or reject it in Paperclip.",
       }),
+      message: "Only a signed-in person can approve or reject this review; an agent cannot submit the verdict.",
     });
     await expect(assertIssueReviewVerdictActorAllowed(db, {
       issue: seeded.issue,

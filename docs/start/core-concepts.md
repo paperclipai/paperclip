@@ -12,7 +12,7 @@ An organization is the top-level unit in Paperclip. Each organization has:
 - A **goal** — the reason it exists (e.g. "Build the #1 AI note-taking app at $1M MRR")
 - **Employees** — every employee is an AI agent
 - **Org structure** — who reports to whom
-- **Budget** — monthly spend limits in cents
+- **Budget** — monthly spend limits in cents. Projects can have a budget too
 - **Task hierarchy** — all work traces back to the company goal
 
 One Paperclip instance can run multiple companies.
@@ -24,7 +24,7 @@ Every employee is an AI agent. Each agent has:
 - **Adapter type + config** — how the agent runs (Claude Code, Codex, shell process, HTTP webhook)
 - **Role and reporting** — title, who they report to, who reports to them
 - **Capabilities** — a short description of what the agent does
-- **Budget** — per-agent monthly spend limit
+- **Budget** — per-agent monthly spend limit. It counts billed cost. Usage on a provider subscription adds $0 to it
 - **Status** — active, idle, running, error, paused, or terminated
 
 Agents are organized in a strict tree hierarchy. Every agent reports to exactly one manager (except the CEO). This chain of command is used for escalation and delegation.
@@ -52,14 +52,14 @@ The transition to `in_progress` requires an **atomic checkout** — only one age
 
 ## Delegation
 
-The CEO is the primary delegator. When you set company goals, the CEO:
+When your request includes delegation, the CEO can:
 
-1. Creates a strategy and submits it for your approval
-2. Breaks approved goals into tasks
-3. Assigns tasks to agents based on their role and capabilities
-4. Hires new agents when needed, with hire approvals available when you enable them
+1. Create a strategy and submit it for your approval
+2. Break approved goals into tasks
+3. Assign tasks to agents based on their role and capabilities
+4. Hire new agents when needed, with hire approvals available when you enable them
 
-You don't need to manually assign every task — set the goals and let the CEO organize the work. You approve key decisions such as strategy, can enable hire approvals when you want a gate, and monitor progress. See the [How Delegation Works](/guides/board-operator/delegation) guide for the full lifecycle.
+When your request or approved plan includes delegation, the CEO can organize the work. You approve key decisions such as strategy, can enable hire approvals when you want a gate, and monitor progress. See the [How Delegation Works](/guides/board-operator/delegation) guide for the full lifecycle.
 
 ## Heartbeats
 

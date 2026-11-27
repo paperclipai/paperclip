@@ -611,6 +611,7 @@ describe("openclaw gateway ui build config", () => {
       promptTemplate: "",
       model: "",
       thinkingEffort: "",
+      fastMode: false,
       chrome: false,
       dangerouslySkipPermissions: false,
       search: false,

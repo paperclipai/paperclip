@@ -18,8 +18,12 @@ const githubBranding = {
   logoUrl: "./brands/apps/github.svg",
   darkLogoUrl: "./brands/apps/github-dark.svg",
 };
+const copilotBranding = {
+  logoUrl: "./brands/apps/github-copilot.svg",
+  darkLogoUrl: "./brands/apps/github-copilot-dark.svg",
+};
 
-function GitHubConnections({ saved = false, chatEnabled = true }) {
+function GitHubConnections({ saved = false }) {
   const location = useLocation();
   const [client] = useState(() => {
     const result = new QueryClient({
@@ -30,10 +34,11 @@ function GitHubConnections({ saved = false, chatEnabled = true }) {
       apps: [
         { ...github, branding: githubBranding, ownershipAvailability: { platform_shared: true, customer: true } },
         { ...getAppStoreDefinition("github-code-review-bot"), branding: githubBranding },
+        { ...getAppStoreDefinition("github-copilot"), branding: copilotBranding },
       ],
       capabilities: { canSetCompanyInstall: true, canCreatePersonalConnection: true, canCreateOrganizationConnection: true },
     });
-    result.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: false, enableGitHubReviewBots: chatEnabled });
+    result.setQueryData(queryKeys.instance.experimentalSettings, { enableChatConnectors: false });
     result.setQueryData(queryKeys.tools.applications(companyId), { applications: saved ? [
       { id: "github-tools", companyId, name: "GitHub", status: "active", metadata: { sourceTemplateKey: "github" } },
       // Existing bots retain their provider/source identity after the catalog split.
@@ -43,6 +48,10 @@ function GitHubConnections({ saved = false, chatEnabled = true }) {
       id: "github-account", applicationId: "github-tools", companyId, name: "octocat",
       status: "active", enabled: true, healthStatus: "healthy", transport: "mcp_remote",
       authKind: "oauth", config: { sourceTemplateKey: "github" }, transportConfig: {},
+    }, {
+      id: "copilot-account", applicationId: "github-tools", companyId, name: "My Copilot",
+      status: "active", enabled: true, healthStatus: "ok", transport: "runtime_auth", connectionPurpose: "ai",
+      authKind: "api_key", config: { sourceTemplateKey: "github", ai: { provider: "github", method: "api_key" } }, transportConfig: {},
     }] : [] });
     result.setQueryData(queryKeys.chatEndpoints.list(companyId), saved ? [
       { id: "github-review", companyId, provider: "github", status: "active", assignedAgentId: "reviewer", assignedAgentName: "Reviewer", botLabel: "Paperclip Review", allowUnlinkedPeople: false },
@@ -82,11 +91,11 @@ const meta = {
   title: "Apps, channels, and extensions/External chat and email/Connections/GitHub and Code Review Bot",
   component: GitHubConnections,
   play: async ({ canvasElement }) => {
-    await userEvent.type(await within(canvasElement).findByRole("searchbox", { name: "Search connectors" }), "GitHub");
+    await userEvent.type(await within(canvasElement).findByRole("searchbox", { name: "Search plugins" }), "GitHub");
   },
   parameters: {
     layout: "fullscreen",
-    docs: { description: { component: "Production catalog cards and setup pages with local API query fixtures. GitHub opens account/tool access; GitHub Code Review Bot opens Choose agent. These stories cover discovery and entry into setup, without live GitHub consent or app installation." } },
+    docs: { description: { component: "Production catalog cards and setup pages with local API query fixtures. GitHub opens account/tool access; GitHub Copilot opens Copilot runtime authentication; GitHub Code Review Bot opens Choose agent. These stories cover discovery and entry into setup, without live GitHub consent or app installation." } },
     paperclip: {
       "capabilities": [
         "chat-channels/providers",
@@ -103,19 +112,34 @@ type Story = StoryObj<typeof meta>;
 export const Catalog: Story = {};
 export const SavedConnections: Story = { args: { saved: true } };
 export const ChatDisabled: Story = {
-  args: { chatEnabled: false },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await expect(await canvas.findByRole("button", { name: /^Connect GitHub$/ })).toBeVisible();
-    await expect(canvas.queryByRole("heading", { name: "GitHub Code Review Bot" })).not.toBeInTheDocument();
+    await expect(await canvas.findByRole("heading", { name: "GitHub Code Review Bot" })).toBeVisible();
   },
 };
 export const ToolSetup: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(await canvas.findByRole("button", { name: /^Connect GitHub$/ }));
-    await expect(await canvas.findByRole("heading", { name: "Connect GitHub as" })).toBeVisible();
+    await expect(await canvas.findByRole("button", { name: "Continue to GitHub" })).toBeVisible();
     await expect(canvas.queryByRole("heading", { name: "Choose how to connect" })).not.toBeInTheDocument();
+    // The identity choice is a stated default; Change opens it.
+    await userEvent.click(canvas.getByRole("button", { name: "Change" }));
+    await expect(await canvas.findByRole("heading", { name: "Connect GitHub as" })).toBeVisible();
+  },
+};
+export const CopilotSetup: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByRole("button", { name: "Connect Copilot" })).not.toBeInTheDocument();
+    await userEvent.click(await canvas.findByRole("button", { name: /^Connect GitHub Copilot$/ }));
+    // The key prompt fades in, so check that it rendered rather than its opacity.
+    await expect(await canvas.findByText("Provide your GitHub Copilot API key to connect")).toBeInTheDocument();
+    await expect(canvas.queryByRole("heading", { name: "Choose how to connect" })).not.toBeInTheDocument();
+    // Copilot connects with an API key, so its identity choice sits under Change.
+    await userEvent.click(canvas.getByRole("button", { name: "Change" }));
+    await expect(await canvas.findByRole("heading", { name: "Connect GitHub as" })).toBeVisible();
   },
 };
 export const BotSetup: Story = {

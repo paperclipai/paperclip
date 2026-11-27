@@ -6,15 +6,17 @@ navigation: {"section":"Projects and execution","sectionOrder":40,"order":20}
 
 People define company and lower-level goals and connect projects and tasks to the outcome they serve.
 
+Feature ID: `goals`.
+
 Implementation: [goals](../../ui/src/pages/Goals.tsx), [goal detail](../../ui/src/pages/GoalDetail.tsx).
 
 Agent access: [companion](../agent-access-map/goals.md).
 
 ## Sub-features
 
-- `hierarchy`: create and inspect goal level, parent, owner, and status.
-- `alignment`: associate work with a valid goal in the same company.
-- `navigation`: follow goal/project/task context to understand why work exists.
+- `hierarchy`: `goals/hierarchy` — create and inspect goal level, parent, owner, and status.
+- `alignment`: `goals/alignment` — associate work with a valid goal in the same company.
+- `navigation`: `goals/navigation` — follow goal/project/task context to understand why work exists.
 
 ## How to get to it (user POV)
 
@@ -32,7 +34,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Prep
 
 ### `goal-detail`
 
-Automated: [project-goal validation](../../server/src/__tests__/project-goal-validation.test.ts) covers relationship validation; [goal detail control](../../ui/src/pages/GoalDetail.test.tsx) only tests the properties toggle, not the whole creation journey.
+Automated: [project-goal validation](../../server/src/__tests__/project-goal-validation.test.ts) covers relationship validation (mocked `GoalDetail` UI tests were removed; verify goal detail UI manually).
 
 Manual: Choose **Add Goal/New Goal**, enter **Goal title**, select the level, and
 create a parent. Open it and choose **Sub Goal** to create a child with the
@@ -56,6 +58,8 @@ Manual: Compare a task with an explicit goal to one relying on project context. 
 
 #### `alignment`
 
+Capability ID: `goals/alignment`.
+
 Scope: ui
 Storybook: Project/task goal selection, explicit/inherited context and invalid association error.
 Production: Persist same-company valid association, reject invalid/cross-company reference, verify explicit versus inherited server context after reload.
@@ -63,10 +67,12 @@ Sources: Source: [ProjectProperties.tsx](../../ui/src/components/ProjectProperti
 
 #### `navigation`
 
+Capability ID: `goals/navigation`.
+
 Scope: ui
 Storybook: Parent/child goal and project/task context links, empty/unavailable context and permitted destination.
 Production: Follow actual goal/project/task records and compare explicit versus inherited context; ensure reload and inaccessible destination behavior.
-Sources: Source: [GoalDetail.tsx](../../ui/src/pages/GoalDetail.tsx), [GoalProperties.tsx](../../ui/src/components/GoalProperties.tsx). Tests: [GoalDetail.test.tsx](../../ui/src/pages/GoalDetail.test.tsx), [issues-goal-context-routes.test.ts](../../server/src/__tests__/issues-goal-context-routes.test.ts), [issue-goal-fallback.test.ts](../../server/src/__tests__/issue-goal-fallback.test.ts)
+Sources: Source: [GoalDetail.tsx](../../ui/src/pages/GoalDetail.tsx), [GoalProperties.tsx](../../ui/src/components/GoalProperties.tsx). Tests: [issues-goal-context-routes.test.ts](../../server/src/__tests__/issues-goal-context-routes.test.ts), [issue-goal-fallback.test.ts](../../server/src/__tests__/issue-goal-fallback.test.ts)
 
 ### Documentation scope: Goals, dashboards, costs, and activity
 
