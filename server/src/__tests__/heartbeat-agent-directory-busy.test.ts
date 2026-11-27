@@ -94,7 +94,7 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "busy-directory-user",
       status: "active", membershipRole: "member" });
     await db.insert(agents).values({ id: agentId, companyId, name: "BusyCoder", role: "engineer", status: "idle", adapterType: ADAPTER,
-      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
+      adapterConfig: { cwd: process.cwd() }, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
     return { companyId, agentId };
   }
 
@@ -164,7 +164,7 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const otherAgentId = randomUUID();
     await db.insert(agents).values({ id: otherAgentId, companyId, name: "OtherCoder", role: "engineer", status: "idle", adapterType: ADAPTER,
-      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
+      adapterConfig: { cwd: process.cwd() }, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
     const issueId = randomUUID(), runId = randomUUID(), wakeupRequestId = randomUUID(), interactionId = randomUUID();
     const context = { issueId, taskId: issueId, wakeReason: "issue_commented", mutation: "interaction", interactionId,
       interactionKind: "request_confirmation", interactionStatus: "accepted" };
@@ -205,7 +205,7 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const assigneeId = randomUUID(), issueId = randomUUID();
     await db.insert(agents).values({ id: assigneeId, companyId, name: "AssigneeCoder", role: "engineer", status: "idle", adapterType: ADAPTER,
-      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
+      adapterConfig: { cwd: process.cwd() }, runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } }, permissions: {} });
     await db.insert(issues).values({ id: issueId, companyId, title: "Shared review", status: "in_progress", priority: "medium",
       responsibleUserId: "busy-directory-user", assigneeAgentId: assigneeId, issueNumber: 5 });
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, invocationSource: "on_demand", status: "queued",
@@ -236,7 +236,7 @@ describeEmbeddedPostgres("a new run that meets a busy agent directory", () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const newOwnerId = randomUUID(), issueId = randomUUID();
     await db.insert(agents).values({ id: newOwnerId, companyId, name: "NewOwner", role: "engineer", status: "idle", adapterType: ADAPTER,
-      adapterConfig: {}, runtimeConfig: { heartbeat: { wakeOnDemand: false, maxConcurrentRuns: 1 } }, permissions: {} });
+      adapterConfig: { cwd: process.cwd() }, runtimeConfig: { heartbeat: { wakeOnDemand: false, maxConcurrentRuns: 1 } }, permissions: {} });
     await db.insert(issues).values({ id: issueId, companyId, title: "Handed over", status: "in_progress", priority: "medium",
       responsibleUserId: "busy-directory-user", assigneeAgentId: agentId, issueNumber: 6 });
     busyPrepares.remaining = 1;

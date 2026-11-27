@@ -1,3 +1,4 @@
+import { authorizationService } from "../authorization.js";
 import { hasActionableCommentIntent, canNotifyIssueCommentAssignee, isOrdinaryIssueCommentWake } from "../issue-comment-wakeup.js";
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../../modules/wake-queue/index.js";
 import { connectionIntentService } from "../connection-intents.js";
@@ -3720,6 +3721,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               operatorResponsibleUserId = opts.requestedByActorId!;
             }
             if (opts.queuedCommentInterruptId) {
+              // Recheck the persisted click's current native wake entitlement
+              // under the issue lock before creating a run or reopening work.
+              const clickAccess = await authorizationService(tx as unknown as Db).decide({
+                actor: { type: "agent", agentId: agent.id, companyId: agent.companyId, onBehalfOfUserId: opts.requestedByActorId!, source: "agent_jwt" }, action: "agent:wake",
+                resource: { type: "agent", companyId: agent.companyId, agentId: agent.id },
+              });
+              if (!clickAccess.allowed) return { kind: "deferred" as const };
               // The locked board receipt supplies execution authority even when
               // another user authored the messages. Dispatch revalidates the receipt.
               operatorResponsibleUserId = opts.requestedByActorId!;
@@ -3928,7 +3936,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             return { kind: "skipped" as const };
           }
 
-          if (!await ordinaryCommentWakeAllowed(tx as unknown as Db, { companyId: issue.companyId,
+          // The branded durable request has already reauthorized its exact chat receipt above.
+          // Its source is independent of ordinary task-composer intent.
+          if (!durableRequest && !await ordinaryCommentWakeAllowed(tx as unknown as Db, { companyId: issue.companyId,
             issueId: issue.id, agentId: agent.id, assigneeAgentId: issue.assigneeAgentId,
             status: issue.status === "done" && opts.queuedCommentInterruptId &&
               executionWaitRequestId === opts.queuedCommentInterruptId ? "todo" : issue.status,

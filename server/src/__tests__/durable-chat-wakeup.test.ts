@@ -123,7 +123,7 @@ describe("durable inbound chat scheduler receipts", () => {
       role: "ceo",
       status: "running",
       adapterType: "process",
-      adapterConfig: {},
+      adapterConfig: { cwd: process.cwd() },
       runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } },
     });
     await db.insert(heartbeatRuns).values({

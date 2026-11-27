@@ -674,4 +674,31 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
     expect(runs).toHaveLength(0);
   });
+  it.each(["missing-receipt", "wrong-company", "discarded", "missing-actor", "unentitled-actor", "deleted-input"])(
+    "denies queued Send with %s without reopening a done task", async (kind) => {
+      const { companyId, agentId, ownerUserId } = await seedCompany();
+      const issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId, title: "Protected Send", status: "done",
+        assigneeAgentId: agentId, responsibleUserId: ownerUserId });
+      await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId,
+        body: `[@Agent](agent://${agentId}) Continue the task`,
+        metadata: actionableWakeFixture(companyId, issueId, agentId, ownerUserId),
+        ...(kind === "deleted-input" ? { deletedAt: new Date() } : {}) });
+      await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId, source: "automation",
+        status: kind === "discarded" ? "cancelled" : "deferred_issue_execution", requestedByActorType: "user",
+        requestedByActorId: ownerUserId, payload: { issueId, commentId,
+          _paperclipWakeContext: { wakeCommentIds: [commentId] },
+          ...(kind === "missing-actor" ? {} : { queuedCommentInterrupt: {
+            actorId: kind === "unentitled-actor" ? `unentitled-${randomUUID()}` : ownerUserId,
+            requestedAt: new Date().toISOString() } }) } });
+      try { await heartbeat.resumeQueuedCommentInterrupt(kind === "wrong-company" ? randomUUID() : companyId,
+        kind === "missing-receipt" ? randomUUID() : queueId); } catch (error) {
+        expect(kind).toBe("unentitled-actor");
+      }
+      await heartbeat.drainActiveRunExecutions();
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toEqual([]);
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("done");
+    });
+
 });

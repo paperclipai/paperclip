@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  agentWakeupRequests, agents, companies, createDb, environmentLeases,
+  agentWakeupRequests, agents, companies, authUsers, companyMemberships, createDb, environmentLeases,
   heartbeatRunEvents, heartbeatRuns, issueComments, issueRecoveryActions, issues, issueTreeHoldMembers, issueTreeHolds,
   nativeRunFinalizations,
 } from "@paperclipai/db";
@@ -25,6 +25,8 @@ const support = await getEmbeddedPostgresTestSupport();
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     const runId = randomUUID(), actionId = randomUUID(), originalActionId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Admission wait", defaultResponsibleUserId: "board", issuePrefix: "W" + companyId.replaceAll("-", "") });
+    await db.insert(authUsers).values({ id: "board", name: "Board fixture", email: "board@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board", status: "active", membershipRole: "member" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Worker", role: "engineer", adapterType: "paperclip_runner", status: "idle", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } });
     await db.insert(issues).values({ id: issueId, companyId, title: "Continue saved work", status: "todo", assigneeAgentId: agentId });
     const [run] = await db.insert(heartbeatRuns).values({
@@ -50,7 +52,7 @@ const support = await getEmbeddedPostgresTestSupport();
     const commentIds = [randomUUID(), randomUUID()];
     await db.insert(issueComments).values(commentIds.map((id, index) => ({ id, companyId: f.companyId,
       issueId: f.issueId, authorType: "user" as const, authorUserId: index ? "second-user" : "board",
-      body: index ? "Preserve the recovered files." : "Continue the original work.",
+      body: `[@Worker](agent://${f.agentId}) ${index ? "Preserve the recovered files." : "Continue the original work."}`, metadata: { version: 1, sections: [], commentWake: { version: 1, kind: "actionable", companyId: f.companyId, issueId: f.issueId, recipientAgentId: f.agentId, actorType: "user", actorId: index ? "second-user" : "board", request: index ? "Preserve the recovered files." : "Continue the original work." } },
       createdAt: new Date(Date.now() - 20_000 + index) })));
     const queueId = randomUUID();
     await db.insert(agentWakeupRequests).values({ id: queueId, companyId: f.companyId, agentId: f.agentId,
