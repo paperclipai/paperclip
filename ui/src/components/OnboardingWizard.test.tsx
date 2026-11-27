@@ -230,7 +230,11 @@ vi.mock("../adapters/adapter-display-registry", () => ({
     // with the step down to a tile row built from this flag, it made that row
     // empty in every test and hid the surface under it.
     recommended: type === "claude_local" || type === "codex_local" || mockAdapterRegistry.list.some(entry => entry.type === type && entry.recommended),
-    label: type,
+    // Mirror the real display registry (adapter-display-registry.ts): the
+    // tile renders CONNECT_SOURCE_NAMES[type] ?? opt.label, and upstream
+    // trimmed CONNECT_SOURCE_NAMES to the types this registry does not name,
+    // so a blanket `label: type` would render "pi_local" instead of "Pi".
+    label: ({ pi_local: "Pi", hermes_local: "Hermes", agy_local: "Antigravity (agy)", opencode_local: "OpenCode", cursor: "Cursor", claude_local: "Claude Code", codex_local: "Codex", gemini_local: "Gemini CLI", kimi_local: "Kimi Code", grok_local: "Grok Build" } as Record<string, string>)[type] ?? type,
     description: "",
     icon: () => null,
   }),
@@ -4810,7 +4814,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           await pickSource(label);
           expect(document.body.textContent).toContain("Sign in to");
           expect(document.body.textContent).not.toContain("Run this in a terminal");
-          expect(button("Connect").disabled).toBe(true);
+          // #23112: the primary action is the sign-in itself now, not a
+          // disabled "Connect"; verification still has not started.
+          expect(button(`Sign in to ${label.source}`).disabled).toBe(false);
           await detected();
           expectTesting();
           // The saved account can become visible while its hello test is pending.
@@ -4882,7 +4888,9 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
           expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
           expect(mockAgentsApi.hire).not.toHaveBeenCalled();
           expect(document.body.textContent).toContain("Sign in to");
-          expect(button("Connect").disabled).toBe(true);
+          // #23112: with no account chosen the step offers sign-in, not a
+          // disabled "Connect" — and still verifies and hires nothing.
+          expect(button(`Sign in to ${label.source}`).disabled).toBe(false);
         } finally { await act(async () => root.unmount()); }
       });
 
@@ -4978,13 +4986,15 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
         }
       });
 
-      it.each(providers)("waits for %s sign-in before allowing Connect or the keyboard shortcut", async (adapterType, _provider, label) => {
+      it.each(providers)("offers %s sign-in before verification and does not verify until sign-in completes", async (adapterType, _provider, label) => {
         const { root } = await openStep4({ adapterType });
         try {
           await pickSource(label);
           expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
-          expect(button("Connect").disabled).toBe(true);
-          await click("Connect");
+          // #23112: the primary action IS the sign-in now — pressing it (or
+          // the keyboard shortcut) starts sign-in, never verification.
+          expect(button(`Sign in to ${label.source}`).disabled).toBe(false);
+          await click(`Sign in to ${label.source}`);
           await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })));
           expect(managedApi.connectLocal).not.toHaveBeenCalled();
           expect(mockAgentsApi.testEnvironment).not.toHaveBeenCalled();
@@ -5073,9 +5083,11 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       expect(document.body.textContent).not.toContain("claude auth login");
       expect(document.body.textContent).not.toContain("No managed sandbox");
       expect(mockAgentsApi.startClaudeSetupTokenLogin).not.toHaveBeenCalled();
-      const connect = [...document.body.querySelectorAll("button")].find(b => b.textContent?.trim().startsWith("Connect"));
-      expect(connect).toBeTruthy();
-      expect(connect!.disabled).toBe(true);
+      // #23112: the footer offers the sign-in action itself now, not a
+      // disabled "Connect" — the step is waiting for the pasted code.
+      const signIn = [...document.body.querySelectorAll("button")].find(b => b.textContent?.trim() === "Sign in to Claude");
+      expect(signIn).toBeTruthy();
+      expect(signIn!.disabled).toBe(false);
       const code = document.body.querySelector('input[aria-label="Authorization code"]')!;
       const paste = new Event("paste", { bubbles: true, cancelable: true });
       Object.defineProperty(paste, "clipboardData", { value: { getData: () => "fixture-authorization-code" } });

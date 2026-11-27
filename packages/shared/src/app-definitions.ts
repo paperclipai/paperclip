@@ -60,7 +60,6 @@ export const CONNECTABLE_APP_DEFINITIONS = APP_DEFINITIONS.filter((app) =>
  * is pulled from Browse or reserved for a future first-party experience.
  */
 export const APP_STORE_HIDDEN_SLUGS = new Set([
-  "antigravity",
   "beehiiv",
   "brex",
   "candid",

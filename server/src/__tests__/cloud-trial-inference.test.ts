@@ -317,6 +317,15 @@ describe("cloud-trial-inference", () => {
       acpxAgent: "antigravity",
       model: "gemini-2.5-pro",
     });
+    // The "antigravity" provider is the same Google agent over acpx, so it
+    // migrates to the same target as "google" (upstream #22966 omitted it,
+    // which also broke the UI typecheck: TS2454 on the unassigned `base`).
+    expect(defaultMigrationTargetForProvider("antigravity", "subscription")).toEqual({
+      adapterType: "paperclip_runner",
+      runnerProvider: "acpx",
+      acpxAgent: "antigravity",
+      model: "gemini-2.5-pro",
+    });
     expect(defaultMigrationTargetForProvider("github", "subscription")).toEqual({
       adapterType: "paperclip_runner",
       runnerProvider: "acpx",
