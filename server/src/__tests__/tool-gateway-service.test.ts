@@ -1831,6 +1831,7 @@ describeToolGatewayEmbeddedPostgres("tool gateway service", () => {
       policyType: "allow",
       selectors: { toolName: "fixture:read_status" },
     });
+    await grantLegacyPluginTools(db, company.id, "fixture");
 
     const result = await gateway.executePluginTool({
       actor: { type: "agent", companyId: company.id, agentId: agent.id, runId: run.id },
