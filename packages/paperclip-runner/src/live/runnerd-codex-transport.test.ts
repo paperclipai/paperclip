@@ -2552,6 +2552,7 @@ it.each([
   { provider: "codex" as const, acpxAgent: undefined, closeGraceMs: undefined, drained: false },
   { provider: "acpx" as const, acpxAgent: "pi" as const, closeGraceMs: 400, drained: false },
 ])("keeps Pi stop, remote drain and suspension within a finite close budget ($provider, $closeGraceMs)", async ({ drained, ...options }) => {
+  vi.stubEnv("PAPERCLIP_RUNNER_CLOSE_GRACE_MS", undefined);
   vi.useFakeTimers();
   try {
     const { preparationDeadline, closeDeadline } = runnerdRecoveryInternals.runnerCloseDeadlines(
@@ -2582,7 +2583,7 @@ it.each([
     expect(await result).toBe(drained);
     expect(closeDeadline - preparationDeadline).toBeLessThanOrEqual(2_500);
     expect(runnerdRecoveryInternals.runnerCloseGraceMs(options)).toBeLessThanOrEqual(45_000);
-  } finally { vi.useRealTimers(); }
+  } finally { vi.useRealTimers(); vi.unstubAllEnvs(); }
 });
 
 it.each([
