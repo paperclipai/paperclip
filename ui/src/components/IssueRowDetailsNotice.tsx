@@ -10,9 +10,12 @@ export function IssueRowDetailsNotice({ error, onRetry, message = "Some task det
 }) {
   if (!error) return null;
   return createPortal(
-    <div role="alert" className="fixed bottom-4 right-4 z-50 flex max-w-sm items-center gap-3 rounded-lg border bg-card p-3 text-sm shadow-lg">
-      <p>{message}</p>
-      <Button variant="outline" size="sm" onClick={onRetry}>{retryLabel}</Button>
+    <div
+      role="alert"
+      className="fixed inset-x-4 bottom-(--mobile-nav-overlay-bottom) z-50 flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-card p-3 text-sm shadow-lg sm:left-auto sm:right-4 sm:max-w-sm sm:flex-nowrap md:bottom-4"
+    >
+      <p className="min-w-0 flex-1">{message}</p>
+      <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry}>{retryLabel}</Button>
     </div>, document.body,
   );
 }

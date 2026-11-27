@@ -1,4 +1,6 @@
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
+import { UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE } from "../services/tool-access/catalog/failures.js";
+import { repairUnsupportedVoiceConnectionHealth } from "../services/tool-access/catalog/health.js";
 const googleSignIn = vi.hoisted(() => ({ cloudHosted: true }));
 vi.mock("../services/google-sign-in-availability.js", () => ({ paperclipGoogleSignInAvailable: () => googleSignIn.cloudHosted }));
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -24,6 +26,7 @@ import {
   activityLog,
   agents,
   authUsers,
+  chatEndpoints,
   companies,
   companyMemberships,
   companySecretBindings,
@@ -20962,6 +20965,40 @@ describeEmbeddedPostgres("tool access service", () => {
         lastHealthAt: new Date(0),
       })
       .returning();
+    const [voiceApplication] = await db
+      .insert(toolApplications)
+      .values({
+        companyId: company.id,
+        applicationKey: `chat:speko:${randomUUID()}`,
+        name: "Speko voice",
+        type: "chat",
+        status: "active",
+        metadata: { sourceTemplateKey: "speko", purpose: "channel" },
+      })
+      .returning();
+    const [voiceConnection] = await db
+      .insert(toolConnections)
+      .values({
+        companyId: company.id,
+        applicationId: voiceApplication!.id,
+        name: "Speko agent",
+        uid: `chat-speko-${randomUUID()}`,
+        connectionKind: "managed",
+        connectionPurpose: "channel",
+        ownership: "customer",
+        transport: "voice",
+        authKind: "api_key",
+        credentialPolicy: "shared",
+        status: "active",
+        enabled: true,
+        config: { provider: "speko" },
+        transportConfig: {},
+        healthStatus: "healthy",
+        healthMessage: "Connected; conversation test optional",
+        healthCheckedAt: new Date(0),
+        lastHealthAt: new Date(0),
+      })
+      .returning();
     const [pluginApplication] = await db.insert(toolApplications).values({
       companyId: company.id,
       applicationKey: `paperclip_plugin:fixture-${randomUUID()}`,
@@ -20992,7 +21029,10 @@ describeEmbeddedPostgres("tool access service", () => {
       status: "active",
     }));
 
-    const sweep = await service.sweepConnectionHealth({ staleAfterMs: 0, limit: 1 });
+    const scheduledDeadlines = await service.scheduledHealth.load(company.id);
+    expect(scheduledDeadlines.map((deadline) => deadline.id)).toEqual([connection.id]);
+
+    const sweep = await service.sweepConnectionHealth({ staleAfterMs: 0, limit: 5 });
     const [updatedConnection] = await db
       .select()
       .from(toolConnections)
@@ -21001,6 +21041,10 @@ describeEmbeddedPostgres("tool access service", () => {
       .select()
       .from(toolConnections)
       .where(eq(toolConnections.id, chatConnection!.id));
+    const [untouchedVoiceConnection] = await db
+      .select()
+      .from(toolConnections)
+      .where(eq(toolConnections.id, voiceConnection!.id));
 
     const [untouchedPlugin] = await db.select().from(toolConnections)
       .where(eq(toolConnections.id, pluginConnection!.id));
@@ -21024,6 +21068,213 @@ describeEmbeddedPostgres("tool access service", () => {
       healthCheckedAt: new Date(0),
       lastHealthAt: new Date(0),
     });
+    expect(untouchedVoiceConnection).toMatchObject({
+      healthStatus: "healthy",
+      healthMessage: "Connected; conversation test optional",
+      lastError: null,
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
+    });
+  });
+
+  it("repairs active Speko voice connections falsely marked unsupported by the old health sweep without clearing real errors", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const [agent] = await db.insert(agents).values({
+      companyId: company.id,
+      name: "Speko Voice Agent",
+      role: "general",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+    }).returning();
+    const [voiceApplication] = await db.insert(toolApplications).values({
+      companyId: company.id,
+      applicationKey: `chat:speko:${randomUUID()}`,
+      name: "Speko voice",
+      type: "chat",
+      status: "active",
+      metadata: { sourceTemplateKey: "speko", purpose: "channel" },
+    }).returning();
+    const [corruptedVoice] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: voiceApplication!.id,
+      name: "Speko corrupted by old sweep",
+      uid: `chat-speko-${randomUUID()}`,
+      connectionKind: "managed",
+      connectionPurpose: "channel",
+      ownership: "customer",
+      transport: "voice",
+      authKind: "api_key",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      config: { provider: "speko" },
+      transportConfig: {},
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
+    }).returning();
+    await db.insert(chatEndpoints).values({
+      companyId: company.id,
+      connectionId: corruptedVoice!.id,
+      provider: "speko",
+      publicId: `speko-${randomUUID()}`,
+      status: "active",
+      assignedAgentId: agent!.id,
+      healthMessage: "Connected; conversation test optional",
+    });
+    const [realErrorVoice] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: voiceApplication!.id,
+      name: "Speko real error",
+      uid: `chat-speko-${randomUUID()}`,
+      connectionKind: "managed",
+      connectionPurpose: "channel",
+      ownership: "customer",
+      transport: "voice",
+      authKind: "api_key",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      config: { provider: "speko" },
+      transportConfig: {},
+      healthStatus: "error",
+      healthMessage: "Speko API key rejected",
+      lastError: "Speko API key rejected",
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
+    }).returning();
+    await db.insert(chatEndpoints).values({
+      companyId: company.id,
+      connectionId: realErrorVoice!.id,
+      provider: "speko",
+      publicId: `speko-${randomUUID()}`,
+      status: "active",
+      assignedAgentId: agent!.id,
+      healthMessage: "Speko API key rejected",
+      lastError: "Speko API key rejected",
+    });
+    const [endpointErrorVoice] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: voiceApplication!.id,
+      name: "Speko endpoint error",
+      uid: `chat-speko-${randomUUID()}`,
+      connectionKind: "managed",
+      connectionPurpose: "channel",
+      ownership: "customer",
+      transport: "voice",
+      authKind: "api_key",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      config: { provider: "speko" },
+      transportConfig: {},
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
+    }).returning();
+    await db.insert(chatEndpoints).values({
+      companyId: company.id,
+      connectionId: endpointErrorVoice!.id,
+      provider: "speko",
+      publicId: `speko-${randomUUID()}`,
+      status: "active",
+      assignedAgentId: agent!.id,
+      healthMessage: "Speko webhook failed",
+      lastError: "Speko webhook failed",
+    });
+
+    // Scheduled load repairs only the false unsupported-transport error and returns no voice deadlines.
+    expect(await service.scheduledHealth.load(company.id)).toEqual([]);
+    const [repaired] = await db.select().from(toolConnections).where(eq(toolConnections.id, corruptedVoice!.id));
+    expect(repaired).toMatchObject({
+      healthStatus: "healthy",
+      healthMessage: "Connected; conversation test optional",
+      lastError: null,
+    });
+    const [preservedRealError] = await db.select().from(toolConnections).where(eq(toolConnections.id, realErrorVoice!.id));
+    expect(preservedRealError).toMatchObject({
+      healthStatus: "error",
+      healthMessage: "Speko API key rejected",
+      lastError: "Speko API key rejected",
+    });
+    const [preservedEndpointError] = await db.select().from(toolConnections).where(eq(toolConnections.id, endpointErrorVoice!.id));
+    expect(preservedEndpointError).toMatchObject({
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+    });
+
+    // sweepConnectionHealth also repairs corrupted active Speko voice connections without probing them.
+    await db.update(toolConnections).set({
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+    }).where(eq(toolConnections.id, corruptedVoice!.id));
+    expect(await service.sweepConnectionHealth({ staleAfterMs: 0, limit: 5 })).toMatchObject({ checked: 0, healthy: 0, failed: 0 });
+    const [repairedBySweep] = await db.select().from(toolConnections).where(eq(toolConnections.id, corruptedVoice!.id));
+    expect(repairedBySweep).toMatchObject({
+      healthStatus: "healthy",
+      healthMessage: "Connected; conversation test optional",
+      lastError: null,
+    });
+
+    // Manual health check on a voice connection also self-heals instead of throwing 422.
+    await db.update(toolConnections).set({
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+    }).where(eq(toolConnections.id, corruptedVoice!.id));
+    const manual = await service.checkHealth(corruptedVoice!.id);
+    expect(manual.connection).toMatchObject({
+      healthStatus: "healthy",
+      healthMessage: "Connected; conversation test optional",
+      lastError: null,
+    });
+
+    // Multi-batch repair drains beyond a single batch size.
+    const [secondCorruptedVoice] = await db.insert(toolConnections).values({
+      companyId: company.id,
+      applicationId: voiceApplication!.id,
+      name: "Speko second corrupted",
+      uid: `chat-speko-${randomUUID()}`,
+      connectionKind: "managed",
+      connectionPurpose: "channel",
+      ownership: "customer",
+      transport: "voice",
+      authKind: "api_key",
+      credentialPolicy: "shared",
+      status: "active",
+      enabled: true,
+      config: { provider: "speko" },
+      transportConfig: {},
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      healthCheckedAt: new Date(0),
+      lastHealthAt: new Date(0),
+    }).returning();
+    await db.insert(chatEndpoints).values({
+      companyId: company.id,
+      connectionId: secondCorruptedVoice!.id,
+      provider: "speko",
+      publicId: `speko-${randomUUID()}`,
+      status: "active",
+      assignedAgentId: agent!.id,
+      healthMessage: "Connected",
+    });
+    await db.update(toolConnections).set({
+      healthStatus: "error",
+      healthMessage: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+      lastError: UNSUPPORTED_TOOL_CONNECTION_TRANSPORT_MESSAGE,
+    }).where(eq(toolConnections.id, corruptedVoice!.id));
+    expect(await repairUnsupportedVoiceConnectionHealth(db, { companyId: company.id, batchSize: 1 })).toBe(2);
+    const [repairedSecond] = await db.select().from(toolConnections).where(eq(toolConnections.id, secondCorruptedVoice!.id));
+    expect(repairedSecond).toMatchObject({ healthStatus: "healthy", healthMessage: "Connected", lastError: null });
   });
 
   it("enriches listConnections with lastUsedAt from the most recent tool-call event", async () => {

@@ -172,7 +172,7 @@
     "packages/shared/src/app-definitions/shopify.json": "f6bff7db55083d96060d8bd46a08aa38b33c3080",
     "packages/shared/src/app-definitions/similarweb.json": "37a912287b7ad323cf783eb32d01b943a93e83fd",
     "packages/shared/src/app-definitions/slack.json": "0a3e028d0c729f1448be06eaff3a7b51f08b194d",
-    "packages/shared/src/app-definitions/speko.json": "6f25f776269b435e8cbde3c3249d35d3063156ce",
+    "packages/shared/src/app-definitions/speko.json": "8edaad773c06372ee8cd9e7ee3e5b03ffe875a5f",
     "packages/shared/src/app-definitions/stripe.json": "708fb6d3498dbb57902dd5ebc45c8fded5d6b578",
     "packages/shared/src/app-definitions/supabase.json": "9a92a2f30af01e1c9f4cebdf7d4ba0101353c1c6",
     "packages/shared/src/app-definitions/superagent.json": "6e1a847cc0c754a326250caa8dc93401b5c823f1",

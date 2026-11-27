@@ -4257,12 +4257,17 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     onArrival: registerArtifactTab,
   });
   const toggleTaskSidePanel = useCallback(() => {
+    if (isMobile) {
+      setMobilePropsOpen((open) => !open);
+      return;
+    }
     if (!panelVisible || suppressPanelUntilPlan) {
       openTaskSidePanel();
       return;
     }
     setPanelVisible(false);
   }, [
+    isMobile,
     openTaskSidePanel,
     panelVisible,
     setPanelVisible,
@@ -6164,19 +6169,22 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   ]);
 
   useEffect(() => {
-    if (!streamlinedTaskDetailEnabled || !taskChatShellEnabled || !issue?.id) {
+    if ((!streamlinedTaskDetailEnabled && !isAgentChatRoute) || !taskChatShellEnabled || !issue?.id) {
       setBreadcrumbPanelControl(null);
       return;
     }
 
     setBreadcrumbPanelControl({
-      open: panelVisible && !suppressPanelUntilPlan,
+      open: isMobile ? mobilePropsOpen : panelVisible && !suppressPanelUntilPlan,
       onToggle: toggleTaskSidePanel,
     });
 
     return () => setBreadcrumbPanelControl(null);
   }, [
+    isAgentChatRoute,
+    isMobile,
     issue?.id,
+    mobilePropsOpen,
     panelVisible,
     setBreadcrumbPanelControl,
     streamlinedTaskDetailEnabled,
@@ -7785,7 +7793,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       )}
     >
       {streamlinedTaskDetailEnabled ? (
-        <div className="flex min-w-0 items-start gap-2 md:items-center md:pr-8">
+        <div
+          className={cn(
+            "flex min-w-0 items-start gap-2 md:items-center md:pr-8",
+            !(isMobile && isFromInbox) ? "pr-16" : "pr-8",
+          )}
+        >
           {!proposedTaskHeader ? (
             <div className="hidden md:block">{issueStatusControl}</div>
           ) : null}
@@ -8067,14 +8080,31 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               />
             </TooltipProvider>
           ) : null}
-          <div
-            data-slot="task-title-actions"
-            className={cn(
-              streamlinedTaskDetailEnabled &&
-                "absolute right-0 top-0 flex h-7 items-center",
-            )}
-          >
-            <IssuePrivacyActions
+        </div>
+        <div
+          data-slot="task-title-actions"
+          className={cn(
+            "flex shrink-0 items-center gap-0.5",
+            streamlinedTaskDetailEnabled
+              ? "absolute right-0 top-0 h-7"
+              : isMobile && isFromInbox
+                ? "ml-auto md:ml-0"
+                : undefined,
+          )}
+        >
+          {streamlinedTaskDetailEnabled && !(isMobile && isFromInbox) ? (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="md:hidden shrink-0"
+              onClick={() => setMobilePropsOpen(true)}
+              aria-label="Properties"
+              title="Properties"
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+            </Button>
+          ) : null}
+          <IssuePrivacyActions
                 issue={issue}
                 companyId={issue.companyId}
                 canManage={canManagePrivacy}
@@ -8215,7 +8245,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             </Popover>
                 )}
               </IssuePrivacyActions>
-          </div>
         </div>
       </div>
 

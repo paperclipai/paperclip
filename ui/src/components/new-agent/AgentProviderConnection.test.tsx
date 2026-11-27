@@ -116,6 +116,93 @@ describe("AgentProviderConnection hosted Google sign-in gating", () => {
     expect(host.textContent).toContain("Antigravity");
     expect(host.textContent).toContain("Sign in to Antigravity");
     expect(host.textContent).toContain("127.0.0.1");
+
+    const openSpy = vi.spyOn(window, "open").mockReturnValue(null);
+    try {
+      const signInCta = Array.from(host.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Sign in to Antigravity",
+      ) as HTMLButtonElement | undefined;
+      expect(signInCta).toBeDefined();
+      expect(signInCta!.disabled).toBe(false);
+      flushSync(() => signInCta!.click());
+      expect(openSpy).toHaveBeenCalledWith(
+        "https://accounts.google.com/o/oauth2/v2/auth?state=hosted-ui-state",
+        "_blank",
+        "noreferrer,noopener",
+      );
+    } finally {
+      openSpy.mockRestore();
+    }
+  });
+
+  it("turns the primary footer button into Start sign in when Google sign-in fails or expires and retries on click", async () => {
+    mocks.healthGet.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+      localAiLoginSupported: false,
+      hostedGoogleAiLoginSupported: true,
+    });
+    mocks.checkLocalLogin
+      .mockResolvedValueOnce({
+        status: "expired",
+        error: "Google sign-in did not complete. Start sign-in again.",
+      })
+      .mockResolvedValueOnce({
+        status: "sign_in_required",
+        authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=retried-state",
+      });
+    renderConnection("antigravity_runtime", false);
+
+    await vi.waitFor(() => {
+      expect(host.textContent).toContain("Google sign-in did not complete. Start sign-in again.");
+    });
+    const startSignInCta = Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Start sign in",
+    ) as HTMLButtonElement | undefined;
+    expect(startSignInCta).toBeDefined();
+    expect(startSignInCta!.disabled).toBe(false);
+    // Redundant inline retry link is hidden when the footer owns Start sign in.
+    expect(Array.from(host.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Start sign-in again",
+    )).toBeUndefined();
+
+    flushSync(() => startSignInCta!.click());
+    await vi.waitFor(() => expect(mocks.startLocalLogin).toHaveBeenCalledTimes(2));
+    expect(mocks.startLocalLogin).toHaveBeenLastCalledWith(
+      "company-1",
+      expect.objectContaining({ provider: "google", method: "subscription", restart: true }),
+    );
+    await vi.waitFor(() => {
+      const signInCta = Array.from(host.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Sign in to Antigravity",
+      ) as HTMLButtonElement | undefined;
+      expect(signInCta).toBeDefined();
+      expect(signInCta!.disabled).toBe(false);
+    });
+  });
+
+  it("switches the primary footer button back to Connect once Antigravity sign-in is ready", async () => {
+    mocks.healthGet.mockResolvedValue({
+      status: "ok",
+      deploymentMode: "authenticated",
+      deploymentExposure: "public",
+      localAiLoginSupported: false,
+      hostedGoogleAiLoginSupported: true,
+    });
+    mocks.checkLocalLogin.mockResolvedValue({
+      status: "ready",
+      accountLabel: "dotta@paperclip.ing",
+    });
+    renderConnection("antigravity_runtime", false);
+
+    await vi.waitFor(() => {
+      const connectCta = Array.from(host.querySelectorAll("button")).find(
+        (button) => button.textContent?.trim() === "Connect",
+      ) as HTMLButtonElement | undefined;
+      expect(connectCta).toBeDefined();
+      expect(connectCta!.disabled).toBe(false);
+    });
   });
 
   it("still exposes the Antigravity redirect paste field when local login is also supported (remote private/trusted host)", async () => {

@@ -472,7 +472,8 @@ function AllowList({ rows, total }: { rows: AllowRow[]; total: number }) {
   }
   return (
     <div className="overflow-hidden rounded-lg border border-border">
-      <table className="w-full text-sm">
+      <div className="max-w-full overflow-x-auto">
+        <table className="w-full text-sm">
         <thead>
           <tr className="border-b border-border bg-muted/40 text-left text-xs font-medium text-muted-foreground">
             <th className="px-3 py-2 font-medium">Tool</th>
@@ -516,6 +517,7 @@ function AllowList({ rows, total }: { rows: AllowRow[]; total: number }) {
           ))}
         </tbody>
       </table>
+      </div>
       {rows.length > 80 ? (
         <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
           Showing 80 of {rows.length} allowed tools.

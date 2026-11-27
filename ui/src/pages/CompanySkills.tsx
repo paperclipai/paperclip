@@ -2589,12 +2589,12 @@ function SkillVersionDiffDialog({
             {(leftQuery.isLoading || rightQuery.isLoading) && <p className="text-sm text-muted-foreground">Loading selected versions…</p>}
           </DialogHeader>
           <div className="flex flex-wrap items-center gap-3 text-xs">
-            <label className="flex items-center gap-2">
+            <label className="flex min-w-0 items-center gap-2">
               <Badge variant="outline" className="border-red-500/30 bg-red-500/10 uppercase tracking-wider text-red-400">Old</Badge>
               <select
                 value={leftVersionId ?? ""}
                 onChange={(event) => onLeftVersionChange(event.target.value || null)}
-                className="h-8 w-44 rounded-md border border-border bg-background px-2 text-xs"
+                className="h-8 w-full max-w-44 rounded-md border border-border bg-background px-2 text-xs sm:w-44"
               >
                 <option value="">Initial</option>
                 {sorted.map((version) => (
@@ -2602,12 +2602,12 @@ function SkillVersionDiffDialog({
                 ))}
               </select>
             </label>
-            <label className="flex items-center gap-2">
+            <label className="flex min-w-0 items-center gap-2">
               <Badge variant="outline" className="border-green-500/30 bg-green-500/10 uppercase tracking-wider text-green-400">New</Badge>
               <select
                 value={right?.id ?? ""}
                 onChange={(event) => onRightVersionChange(event.target.value || null)}
-                className="h-8 w-44 rounded-md border border-border bg-background px-2 text-xs"
+                className="h-8 w-full max-w-44 rounded-md border border-border bg-background px-2 text-xs sm:w-44"
               >
                 {sorted.map((version) => (
                   <option key={version.id} value={version.id}>{versionLabel(version)}</option>
@@ -2616,6 +2616,23 @@ function SkillVersionDiffDialog({
             </label>
           </div>
         </div>
+        {allPaths.length > 0 ? (
+          <div className="md:hidden">
+            <label className="flex items-center gap-2 text-xs">
+              <span className="shrink-0 text-muted-foreground">File</span>
+              <select
+                aria-label="Diff file"
+                value={effectivePath}
+                onChange={(event) => setSelectedPath(event.target.value)}
+                className="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground"
+              >
+                {allPaths.map((path) => (
+                  <option key={path} value={path}>{path}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        ) : null}
         <div className="flex min-h-0 flex-1 gap-3">
           <aside className="hidden w-56 shrink-0 overflow-auto border-r border-border pr-3 md:block">
             {allPaths.map((path) => (
@@ -3528,7 +3545,7 @@ export function SkillDetailPage({
       {/* Floating save bar: stays visible while a file edit is dirty so the
           unsaved state is obvious (PAP-10907 J). */}
       {isDirty ? (
-        <div className="fixed bottom-6 left-1/2 z-40 flex -translate-x-1/2 items-center gap-3 rounded-full border border-border bg-background/95 px-4 py-2 shadow-lg backdrop-blur">
+        <div className="fixed bottom-(--sz-calc-14) left-1/2 z-40 flex max-w-(--sz-calc-4) -translate-x-1/2 flex-wrap items-center justify-center gap-3 rounded-2xl border border-border bg-background/95 px-4 py-2 shadow-lg backdrop-blur sm:rounded-full md:bottom-6">
           <span className="text-sm text-muted-foreground">Unsaved changes</span>
           <Button
             variant="ghost"

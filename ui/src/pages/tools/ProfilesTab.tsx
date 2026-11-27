@@ -585,9 +585,10 @@ function AllowList({ rows, catalogLoading }: { rows: AllowListRow[]; catalogLoad
             : "No tools resolved for this profile. Add an include selector or refresh the tool catalog."}
         </div>
       ) : (
-        <Card>
-          <CardContent className="px-0 py-0">
-            <table className="w-full text-sm">
+        <Card className="min-w-0 max-w-full">
+          <CardContent className="min-w-0 px-0 py-0">
+            <div className="max-w-full overflow-x-auto">
+              <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
                   <th className="px-3 py-2.5 font-medium">Tool</th>
@@ -627,6 +628,7 @@ function AllowList({ rows, catalogLoading }: { rows: AllowListRow[]; catalogLoad
                 ))}
               </tbody>
             </table>
+            </div>
           </CardContent>
         </Card>
       )}

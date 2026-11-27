@@ -11,6 +11,7 @@ import {
   OnboardingCardField,
   OnboardingLoginCodeRow,
   onboardingCardInputClass,
+  resolveLocalLoginPrimaryAction,
 } from "./AdapterLoginChrome";
 import { isBlockedFromReplay, replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
@@ -355,5 +356,70 @@ describe("session replay", () => {
     );
     expect(container.querySelector('input[aria-label="Antigravity redirect URL"]')).toBeNull();
     expect(container.textContent).toContain("Finish signing in in the Antigravity browser window");
+  });
+
+  it("hides the inline error retry link only when primaryHandlesRetry is enabled", async () => {
+    const failedLogin = {
+      ...login,
+      status: "expired" as const,
+      error: "Google sign-in did not complete. Start sign-in again.",
+    };
+    const standalone = await render(
+      <LocalProviderLoginInstructions adapterType="antigravity_runtime" hostedRedirect login={failedLogin} />,
+    );
+    expect(standalone.textContent).toContain("Start sign-in again");
+
+    const footerOwned = await render(
+      <LocalProviderLoginInstructions adapterType="antigravity_runtime" hostedRedirect primaryHandlesRetry login={failedLogin} />,
+    );
+    expect(footerOwned.textContent).toContain("Google sign-in did not complete.");
+    expect(Array.from(footerOwned.querySelectorAll("button")).find(b => b.textContent === "Start sign-in again")).toBeUndefined();
+  });
+
+  it("maps local/hosted sign-in state to the expected primary footer CTA", () => {
+    expect(resolveLocalLoginPrimaryAction({
+      adapterType: "antigravity_runtime",
+      login: { isolated: true, preparing: true, status: null, error: null },
+    })).toEqual({ kind: "preparing", label: "Preparing sign-in…", icon: "spinner", disabled: true });
+
+    expect(resolveLocalLoginPrimaryAction({
+      adapterType: "antigravity_runtime",
+      login: { isolated: true, preparing: false, status: "expired", error: "Google sign-in did not complete. Start sign-in again." },
+    })).toEqual({ kind: "retry", label: "Start sign in", icon: "arrow", disabled: false });
+
+    expect(resolveLocalLoginPrimaryAction({
+      adapterType: "antigravity_runtime",
+      login: { isolated: true, preparing: false, status: "sign_in_required", authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth", error: null },
+    })).toEqual({ kind: "open_sign_in", label: "Sign in to Antigravity", icon: "none", disabled: false, url: "https://accounts.google.com/o/oauth2/v2/auth" });
+
+    expect(resolveLocalLoginPrimaryAction({
+      adapterType: "antigravity_runtime",
+      login: { isolated: true, preparing: false, status: "sign_in_required", authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth", error: null },
+      submitting: true,
+    })).toEqual({ kind: "connecting", label: "Connecting", icon: "spinner", disabled: true });
+
+    expect(resolveLocalLoginPrimaryAction({
+      adapterType: "antigravity_runtime",
+      login: { isolated: true, preparing: false, status: "sign_in_required", authorizationUrl: "javascript:alert(1)", error: null },
+    })).toEqual({ kind: "waiting", label: "Connect", icon: "arrow", disabled: true });
+
+    expect(resolveLocalLoginPrimaryAction({
+      adapterType: "antigravity_runtime",
+      login: { isolated: true, preparing: false, status: "ready", error: null },
+    })).toBeNull();
+  });
+
+  it("omits the inline sign-in card anchor when authorizationUrl is not http(s)", async () => {
+    const container = await render(
+      <LocalProviderLoginInstructions
+        adapterType="antigravity_runtime"
+        hostedRedirect
+        login={{
+          ...login,
+          authorizationUrl: "javascript:alert(1)",
+        }}
+      />,
+    );
+    expect(container.querySelector("a")).toBeNull();
   });
 });

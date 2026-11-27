@@ -544,7 +544,7 @@ export function Routines() {
 
   if (!streamlinedUiEnabled && activeTab === "runs") {
     return (
-      <div className="space-y-6">
+      <div className="min-w-0 max-w-full space-y-6">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="space-y-1">
             <h1 className="text-2xl font-semibold tracking-tight">Routines</h1>
@@ -587,7 +587,7 @@ export function Routines() {
 
   const emptyList = sortedRoutines.length === 0;
   return (
-    <div className={cn("space-y-6", emptyList && "empty-state-page")}>
+    <div className={cn("min-w-0 max-w-full space-y-6", emptyList && "empty-state-page")}>
       <h1 className="sr-only">Routines</h1>
       <RoutinesToolbar
         query={query} onQueryChange={query => updateRoutineView({ query })}
@@ -654,7 +654,7 @@ export function Routines() {
           onRetry={foldersView.retry} retrying={foldersView.isFetching} />
       ) : null}
 
-      <div className={cn(showFolderRail && "flex gap-4", emptyList && "flex flex-1")}>
+      <div className={cn("min-w-0 max-w-full", showFolderRail && "flex gap-4", emptyList && "flex flex-1")}>
           {showFolderRail ? (
             <FolderRail
               result={railFolderResult}
@@ -672,7 +672,7 @@ export function Routines() {
               onDelete={setDeleteFolderTarget}
             />
           ) : null}
-          <div className={cn("min-w-0 flex-1", emptyList && "flex flex-col")}>
+          <div className={cn("min-w-0 max-w-full flex-1", emptyList && "flex flex-col")}>
           {routineViewState.groupBy === "folder" && routineFolders && !hasRoutineFolders && !foldersLoading && visibleRoutines.length > 0 ? (
             <AllUnfiledBanner
               storageKey={`paperclip:routines-folder-nudge:${selectedCompanyId ?? "none"}`}
@@ -689,12 +689,13 @@ export function Routines() {
               onAction={openCreateRoutine}
             />
           ) : (
-            <div className="flex flex-col gap-3">
+            <div className="flex min-w-0 max-w-full flex-col gap-3">
               {routineSections.map((group) => {
                 const isOpen = !routineViewState.collapsedGroups.includes(group.key);
                 return (
                   <Collapsible
                     key={group.key}
+                    className="min-w-0 max-w-full"
                     open={isOpen}
                     onOpenChange={(open) => {
                       updateRoutineView({
@@ -711,7 +712,7 @@ export function Routines() {
                         isOpen={isOpen}
                       />
                     ) : null}
-                    <CollapsibleContent>
+                    <CollapsibleContent className="min-w-0 max-w-full">
                       <RoutineTable columns={routineViewState.columns} label={group.label ?? "Routines"}>
                       {group.items.map((routine) => (
                         <RoutineTableRow

@@ -3,7 +3,7 @@ import { InboxRunHistory } from "./InboxRunHistory";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useCallback, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, ArrowUpRight, ChevronDown, FileText, Image as ImageIcon, Loader2 } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, ChevronDown, FileText, Image as ImageIcon, Loader2, X } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import { attentionCardType, type AttentionCloseMode, type AttentionItem, type AttentionPersonalView } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
@@ -37,6 +37,7 @@ import { InboxFilter } from "@/components/InboxFilter";
 import { ToolbarSearch } from "@/components/ToolbarSearch";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { parseCssTimeMs } from "@/components/task-chat/motion-tokens";
 import { timeAgo } from "@/lib/timeAgo";
 import { CoordinatorDecisionReceipt as Receipt } from "./CoordinatorDecisionReceipt";
@@ -289,15 +290,18 @@ export function CoordinatorNeedsYou() {
   const showReview = useCallback((item: AttentionItem, artifact?: NeedsYouArtifact | null) => {
     openReviewTab(needsYouReviewTab(item, artifact));
     setReviewPanelOpen(true);
-    setPanelVisible(true);
-  }, [openReviewTab, setPanelVisible]);
+    if (!isMobile) setPanelVisible(true);
+  }, [isMobile, openReviewTab, setPanelVisible]);
   // The frame's close control hides the panel; its tabs come back with the next Review.
-  useEffect(() => { if (!panelVisible) setReviewPanelOpen(false); }, [panelVisible]);
+  useEffect(() => { if (!isMobile && !panelVisible) setReviewPanelOpen(false); }, [isMobile, panelVisible]);
   // A resolved or closed card's tabs close with it.
   useEffect(() => {
     const open = new Set(pendingItems.map(item => item.id));
     for (const tab of reviewTabs.tabs) if (!open.has(tab.payload.itemId)) closeReviewTab(tab.id);
   }, [pendingItems, reviewTabs.tabs, closeReviewTab]);
+  useEffect(() => {
+    if (isMobile && reviewPanelOpen && reviewTabs.tabs.length === 0) setReviewPanelOpen(false);
+  }, [isMobile, reviewPanelOpen, reviewTabs.tabs.length]);
   useEffect(() => { setBreadcrumbs([{ label: "Inbox" }]); }, [setBreadcrumbs]);
   useEffect(() => {
     setSettling([]); setReviewPanelOpen(false); resetReviewTabs({ tabs: [], activeTabId: null }); setNow(Date.now()); closePanel();
@@ -344,9 +348,9 @@ export function CoordinatorNeedsYou() {
     const phase = !receipt ? "pending" : ["cancelled", "expired"].includes(receipt.outcome) ? "closed" : "resolved";
     const refetchAll = () => { void feed.refetch(); void recent.refetch(); };
     // Focus (PAP-770, PAP-775 IA5): a card about an artifact opens it beside the card.
-    const artifact = isMobile ? null : needsYouArtifact(item);
+    const artifact = needsYouArtifact(item);
     // The card stays highlighted while any of its artifacts is open beside it (UI9).
-    const panelOpen = !isMobile && reviewPanelOpen && panelVisible;
+    const panelOpen = reviewPanelOpen && (isMobile || panelVisible);
     const activeTab = panelOpen ? reviewTabs.tabs.find(tab => tab.id === reviewTabs.activeTabId) : undefined;
     const reviewing = !!activeTab && activeTab.payload.itemId === item.id;
     const reviewingOwn = !!artifact && panelOpen && reviewTabs.activeTabId === needsYouReviewTabId(item);
@@ -354,14 +358,14 @@ export function CoordinatorNeedsYou() {
     const artifactRow = artifact && artifact.kind !== "approval" ? <NeedsYouPanelRow
       icon={artifact.kind === "images" ? <ImageIcon /> : <FileText />}
       title={artifact.kind === "document" && !artifact.title ? (artifact.key === "plan" ? "Plan" : documentKeyLabel(artifact.key)) : needsYouArtifactLabel(artifact)}
-      meta={reviewingOwn ? "Open in sidebar · Showing" : "Open in sidebar"}
-      label={`${reviewingOwn ? "Close" : "Open"} ${needsYouArtifactLabel(artifact)} in the sidebar`}
+      meta={isMobile ? (reviewingOwn ? "Showing details" : "View details") : (reviewingOwn ? "Open in sidebar · Showing" : "Open in sidebar")}
+      label={isMobile ? `${reviewingOwn ? "Close" : "Open"} ${needsYouArtifactLabel(artifact)}` : `${reviewingOwn ? "Close" : "Open"} ${needsYouArtifactLabel(artifact)} in the sidebar`}
       onOpen={() => reviewingOwn ? closeReviewTab(needsYouReviewTabId(item)) : showReview(item)} /> : null;
     // A plan, document, approval or attachment the card links to opens as a
     // side-panel tab beside the card, not a page change (PAP-775, IA5).
     // A modified click still opens the link itself.
     const openMentionedDocument = (event: ReactMouseEvent) => {
-      if (isMobile || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
+      if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) return;
       const link = (event.target as HTMLElement).closest<HTMLAnchorElement>("a[href]");
       const mentioned = link ? needsYouMentionedArtifact(link.getAttribute("href")!, link.textContent) : null;
       if (!mentioned) return;
@@ -410,7 +414,7 @@ export function CoordinatorNeedsYou() {
         : stalledReview ? <><div className="space-y-1.5"><h2>Choose how this task continues</h2><p className="text-sm text-muted-foreground">This task is still in review with no active reviewer or continuation. Return it to work, request changes, or mark the task done.</p></div><BlockedTaskCardBody item={item} companyId={selectedCompanyId!} agentMap={agentMap} userLabelMap={userLabelMap} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
         : failedRun ? <>{heading}<FailedRunActions item={item} companyId={selectedCompanyId!} leading={taskLink} footerContext={footerContext} presentation="card" onResolved={refetchAll} /></>
         : budget ? <>{heading}<BudgetAlertActions item={item} companyId={selectedCompanyId!} leading={taskLink} footerContext={footerContext} presentation="card" onResolved={refetchAll} /></>
-        : approval ? <>{heading}<ApprovalResolver item={item} companyId={selectedCompanyId!} toggle={taskLink} footerContext={footerContext} presentation="card" onViewDetails={isMobile ? undefined : () => showReview(item)} shareDraft onResolved={() => onResolved(item)} /></>
+        : approval ? <>{heading}<ApprovalResolver item={item} companyId={selectedCompanyId!} toggle={taskLink} footerContext={footerContext} presentation="card" onViewDetails={() => showReview(item)} shareDraft onResolved={() => onResolved(item)} /></>
         : joinRequest ? <>{heading}<JoinRequestResolver item={item} companyId={selectedCompanyId!} toggle={taskLink} presentation="card" onResolved={() => onResolved(item)} /></>
         : type === "review_task" ? <>{heading}<ReviewTaskCardBody item={item} companyId={selectedCompanyId!} agentMap={agentMap} userLabelMap={userLabelMap} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
         : type === "blocked_task" ? <>{heading}<BlockedTaskCardBody item={item} companyId={selectedCompanyId!} agentMap={agentMap} userLabelMap={userLabelMap} leading={taskLink} footerContext={footerContext} onOpen={navigate} onResolved={refetchAll} /></>
@@ -452,6 +456,16 @@ export function CoordinatorNeedsYou() {
   const sectionHeading = (section: NeedsYouSection) => <h2 className="text-base font-medium" data-needs-you-section={section}>
     {NEEDS_YOU_SECTIONS[section].title}
   </h2>;
+  const mobileActiveTab = isMobile && reviewPanelOpen
+    ? reviewTabs.tabs.find(tab => tab.id === reviewTabs.activeTabId) ?? reviewTabs.tabs[0] ?? null
+    : null;
+  const mobileActiveItem = mobileActiveTab
+    ? pendingItems.find(entry => entry.id === mobileActiveTab.payload.itemId) ?? null
+    : null;
+  const mobileActiveArtifact = mobileActiveTab && mobileActiveItem
+    ? needsYouTabArtifact(mobileActiveItem, mobileActiveTab.payload)
+    : null;
+
   return <LayoutGroup id="coordinator-decisions"><section className="coordinator-needs-you w-full space-y-6" aria-label="Inbox">
     {archivedView ? <div className="flex items-center gap-2"><Button variant="ghost" size="icon-sm" aria-label="Back to Needs You" onClick={() => setView(null)}><ArrowLeft className="size-4" /></Button><h1 className="text-2xl font-medium">Archived</h1></div> : null}
     <div data-canonical-toolbar="inbox" className="design-page-toolbar" role="toolbar" aria-label="Decisions controls">
@@ -507,5 +521,70 @@ export function CoordinatorNeedsYou() {
     <AttentionSnoozedGroup count={snoozedItems.length} open={snoozedOpen} onToggle={() => setSnoozedOpen(open => !open)}>
       <InboxLimitCards items={snoozedItems} renderCard={renderCard} />
     </AttentionSnoozedGroup>
+    <Sheet open={isMobile && reviewPanelOpen} onOpenChange={(open) => { if (!open) setReviewPanelOpen(false); }}>
+      <SheetContent
+        side="bottom"
+        className="max-h-(--sz-85dvh) gap-0 overflow-hidden p-0 pb-(--sz-safe-bottom)"
+        data-testid="mobile-coordinator-review-sheet"
+      >
+        <SheetHeader className="border-b border-border px-4 py-3 pr-10">
+          <SheetTitle className="truncate text-sm">{mobileActiveTab?.label ?? "Review"}</SheetTitle>
+        </SheetHeader>
+        {reviewTabs.tabs.length > 1 ? (
+          <div className="flex items-center gap-1 overflow-x-auto border-b border-border px-4 py-2" role="tablist" aria-label="Open review artifacts">
+            {reviewTabs.tabs.map((tab) => {
+              const selected = tab.id === mobileActiveTab?.id;
+              return (
+                <div key={tab.id} className="inline-flex shrink-0 items-center rounded-md border border-border">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={selected}
+                    onClick={() => selectReviewTab(tab.id)}
+                    className={cn(
+                      "px-2.5 py-1 text-xs",
+                      selected ? "bg-secondary font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {tab.label}
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={`Close ${tab.label}`}
+                    onClick={() => closeReviewTab(tab.id)}
+                    className="px-1.5 py-1 text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        ) : null}
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+          {mobileActiveTab && mobileActiveItem && mobileActiveArtifact ? (
+            <CoordinatorReviewPanel
+              key={mobileActiveTab.id}
+              companyId={selectedCompanyId}
+              item={mobileActiveItem}
+              artifact={mobileActiveArtifact}
+              agentMap={agentMap}
+              currentUserId={userId}
+              userLabelMap={userLabelMap}
+              onOpenTask={(href) => {
+                setReviewPanelOpen(false);
+                navigate(href);
+              }}
+              onResolved={() => {
+                closeReviewTab(mobileActiveTab.id);
+                if (reviewTabs.tabs.length <= 1) setReviewPanelOpen(false);
+              }}
+            />
+          ) : (
+            <p className="text-sm text-muted-foreground">This is no longer waiting on you.</p>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
   </section></LayoutGroup>;
 }

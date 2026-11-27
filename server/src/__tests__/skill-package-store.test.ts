@@ -1047,4 +1047,37 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     expect(converted!.packageSnapshotId).toBe(id);
     expect(skillSnapshotHash(await store.versionFiles(converted!))).toBe(skillSnapshotHash(large));
   }, 90_000);
+
+  it("starts package transfer deadlines after queued storage waits", async () => {
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => timeout(ms === 180_000 ? 1_000 : ms));
+    const busy = [await fixture(), await fixture()];
+    const target = await fixture();
+    for (const f of [...busy, target]) await fs.rm(skillPackagePaths(f.companyId, f.id).directory, { recursive: true, force: true });
+    const stalled = new Set(await Promise.all(busy.map(async f => (await f.store.descriptor(f.companyId, f.id)).storage!.archiveKey)));
+    const get = storage.getObject.bind(storage);
+    let entered = 0;
+    let bothEntered!: () => void;
+    const started = new Promise<void>(resolve => { bothEntered = resolve; });
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(storage, "getObject").mockImplementation(async (...args) => {
+      if (stalled.has(args[1])) {
+        if (++entered === 2) bothEntered();
+        await blocked;
+      }
+      return get(...args);
+    });
+    const occupied = busy.map(f => f.resolve());
+    let herd: ReturnType<typeof target.resolve>[] = [];
+    try {
+      await started;
+      herd = Array.from({ length: 5 }, () => target.resolve());
+      await new Promise(resolve => setTimeout(resolve, 1_500));
+      release();
+      for (const entries of await Promise.all(herd)) {
+        expect(entries.map(entry => entry.missingDetail ?? entry.sourceStatus)).toEqual(["available", "available"]);
+      }
+    } finally { release(); await Promise.allSettled([...occupied, ...herd]); }
+  });
 });

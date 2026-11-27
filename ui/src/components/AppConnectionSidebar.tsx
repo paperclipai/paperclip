@@ -24,6 +24,7 @@ import {
   type AppGalleryDisplayEntry,
 } from "@/pages/apps/app-definition-display";
 import { SidebarNavItem } from "./SidebarNavItem";
+import { MobileContextualNav } from "./MobileContextualNav";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { cn } from "@/lib/utils";
 
@@ -31,9 +32,8 @@ type AppDetailSidebarProps =
   | { kind: "connection"; connectionId: string }
   | { kind: "application"; applicationId: string };
 
-export function AppDetailSidebar(props: AppDetailSidebarProps) {
+function useAppDetailNavigation(props: AppDetailSidebarProps) {
   const { selectedCompanyId } = useCompany();
-  const { isMobile, setSidebarOpen } = useSidebar();
 
   const connectionQuery = useQuery({
     queryKey: queryKeys.tools.connection(props.kind === "connection" ? props.connectionId : "__none__"),
@@ -83,6 +83,32 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
     (reviewCountsQuery.data?.pendingActionRequestCount ?? 0) +
     ((reviewCountsQuery.data?.quarantinedCatalogEntryCount ?? 0) > 0 ? 1 : 0);
 
+  const visibleTabs = APP_TABS
+    .filter((tab) => !poolPluginKey || tab.key === "permissions")
+    .map((tab) => ({
+      key: tab.key,
+      to: tabHref(props, tab.key),
+      label: poolPluginKey ? "Settings" : tab.label,
+      icon: tab.icon,
+      end: true,
+      badge: tab.key === "review" && reviewCount > 0 ? reviewCount : undefined,
+      badgeTone: "danger" as const,
+      badgeLabel: "needing review",
+    }));
+
+  return {
+    appName,
+    brandKey,
+    logoEntry,
+    applicationsPending: applicationsQuery.isPending,
+    visibleTabs,
+  };
+}
+
+export function AppDetailSidebar(props: AppDetailSidebarProps) {
+  const { isMobile, setSidebarOpen } = useSidebar();
+  const { appName, brandKey, logoEntry, applicationsPending, visibleTabs } = useAppDetailNavigation(props);
+
   return (
     <aside className="flex h-full min-h-0 w-full flex-col border-r border-border bg-background">
       <div className="flex shrink-0 flex-col gap-3 px-3 py-3">
@@ -101,7 +127,7 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
             name={appName}
             brandKey={brandKey}
             logoUrl={appDefinitionLogoUrl(logoEntry)}
-            allowRemoteFallback={!applicationsQuery.isPending}
+            allowRemoteFallback={!applicationsPending}
             darkLogoUrl={appDefinitionDarkLogoUrl(logoEntry)}
             size={28}
           />
@@ -111,21 +137,34 @@ export function AppDetailSidebar(props: AppDetailSidebarProps) {
 
       <nav className="scrollbar-auto-hide min-h-0 flex-1 overflow-y-auto px-3 py-2">
         <div className="flex flex-col gap-0.5">
-          {APP_TABS.filter(tab => !poolPluginKey || tab.key === "permissions").map((tab) => (
+          {visibleTabs.map((tab) => (
             <SidebarNavItem
               key={tab.key}
-              to={tabHref(props, tab.key)}
-              label={poolPluginKey ? "Settings" : tab.label}
+              to={tab.to}
+              label={tab.label}
               icon={tab.icon}
-              end
-              badge={tab.key === "review" && reviewCount > 0 ? reviewCount : undefined}
-              badgeTone="danger"
-              badgeLabel="needing review"
+              end={tab.end}
+              badge={tab.badge}
+              badgeTone={tab.badgeTone}
+              badgeLabel={tab.badgeLabel}
             />
           ))}
         </div>
       </nav>
     </aside>
+  );
+}
+
+export function AppDetailMobileNav(props: AppDetailSidebarProps) {
+  const { appName, visibleTabs } = useAppDetailNavigation(props);
+  if (visibleTabs.length <= 1) return null;
+
+  return (
+    <MobileContextualNav
+      surface="app-detail"
+      ariaLabel={`${appName} navigation`}
+      groups={[{ key: "tabs", items: visibleTabs }]}
+    />
   );
 }
 
