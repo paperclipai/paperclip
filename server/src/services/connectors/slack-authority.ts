@@ -8,8 +8,10 @@ import {
   type chatConversations,
 } from "@paperclipai/db";
 import { and, eq, inArray } from "drizzle-orm";
-import { captureRunIdentity } from "../run-identity.js";
+import { captureRunIdentity, runIdentityTaskFields } from "../run-identity.js";
 import { forbidden } from "../../errors.js";
+import { boundRunIssueId } from "../run-task-binding.js";
+import { chatRunSourceMessageId } from "../chat-channels/run-origin.js";
 
 export interface SlackTaskBinding {
   companyId: string;
@@ -37,28 +39,43 @@ export interface SlackTaskAuthority {
   botToken: string;
   searchActionToken?: string | null;
 }
+export type SlackTaskAuthorization = Omit<SlackTaskAuthority, "revision" | "searchActionToken">;
 // Only the live chat service can attest to admission. JSON snapshots, model
 // arguments and credential possession cannot install an authority callback.
 const authorities = new WeakMap<
   Db,
-  (binding: SlackTaskBinding) => Promise<SlackTaskAuthority>
+  {
+    resolve: (binding: SlackTaskBinding) => Promise<SlackTaskAuthority>;
+    authorize?: (binding: SlackTaskBinding) => Promise<SlackTaskAuthorization>;
+  }
 >();
 export function registerSlackTaskAuthority(
   db: Db,
   resolve: (binding: SlackTaskBinding) => Promise<SlackTaskAuthority>,
+  authorize?: (binding: SlackTaskBinding) => Promise<SlackTaskAuthorization>,
 ) {
-  authorities.set(db, resolve);
+  const registration = { resolve, authorize };
+  authorities.set(db, registration);
   return () => {
-    if (authorities.get(db) === resolve) authorities.delete(db);
+    if (authorities.get(db) === registration) authorities.delete(db);
   };
 }
 export async function resolveSlackTaskAuthority(
   db: Db,
   binding: SlackTaskBinding,
 ) {
-  const resolve = authorities.get(db);
-  if (!resolve) throw forbidden("Slack task authority is unavailable");
+  const registration = authorities.get(db);
+  if (!registration) throw forbidden("Slack task authority is unavailable");
+  const resolve = registration.resolve;
   return resolve(binding);
+}
+export async function resolveSlackTaskAuthorization(
+  db: Db,
+  binding: SlackTaskBinding,
+): Promise<SlackTaskAuthorization> {
+  const registration = authorities.get(db);
+  if (!registration) throw forbidden("Slack task authority is unavailable");
+  return (registration.authorize ?? registration.resolve)(binding);
 }
 
 /** Follow only immutable controller provenance, stopping at the latest human message.
@@ -93,7 +110,7 @@ export async function slackRunOrigin(db: Db, binding: SlackTaskBinding) {
     if (!approved || !binding.identityContextId)
       throw forbidden("Slack approval is not executing for this task");
     const [run] = await db
-      .select()
+      .select(runIdentityTaskFields)
       .from(heartbeatRuns)
       .where(
         and(
@@ -124,7 +141,7 @@ export async function slackRunOrigin(db: Db, binding: SlackTaskBinding) {
       );
     captured = { run, context };
   } else {
-    captured = await captureRunIdentity(db, binding);
+    captured = await captureRunIdentity(db, binding, { readScope: "task_authorization" });
     if (
       binding.identityContextId &&
       binding.identityContextId !== captured.context?.id
@@ -134,51 +151,13 @@ export async function slackRunOrigin(db: Db, binding: SlackTaskBinding) {
       );
   }
   if (
-    (captured.run.contextSnapshot?.issueId ??
-      captured.run.contextSnapshot?.taskId) !== binding.issueId ||
+    boundRunIssueId(captured.run) !== binding.issueId ||
     !captured.run.responsibleUserId
   )
     throw forbidden(
       "Slack tools require the bound task and an accepted linked user",
     );
-  let origin = captured.context;
-  const seen = new Set<string>();
-  while (origin && !origin.messageId && origin.parentContextId) {
-    if (seen.has(origin.id) || seen.size >= 100)
-      throw forbidden("Slack source provenance could not be verified");
-    seen.add(origin.id);
-    const [parent] = await db
-      .select()
-      .from(runIdentityContexts)
-      .where(
-        and(
-          eq(runIdentityContexts.id, origin.parentContextId),
-          eq(runIdentityContexts.companyId, binding.companyId),
-          eq(runIdentityContexts.status, "accepted"),
-        ),
-      );
-    if (!parent || parent.responsibleUserId !== captured.run.responsibleUserId)
-      throw forbidden("Slack requester provenance changed");
-    // Delegation to a different task does not grant that task Slack tools.
-    const [sourceRun] = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(
-        and(
-          eq(heartbeatRuns.id, parent.runId),
-          eq(heartbeatRuns.companyId, binding.companyId),
-          eq(heartbeatRuns.agentId, binding.agentId),
-        ),
-      );
-    if (
-      !sourceRun ||
-      (sourceRun.contextSnapshot?.issueId ??
-        sourceRun.contextSnapshot?.taskId) !== binding.issueId
-    )
-      throw forbidden("Slack tools cannot be inherited by another task");
-    origin = parent;
-  }
-  return { ...captured, sourceMessageId: origin?.messageId ?? null };
+  return { ...captured, sourceMessageId: await chatRunSourceMessageId(db, captured.run, { context: captured.context }) };
 }
 
 /** Enumerate only this agent's connections; each still needs live run/user authority. */
@@ -187,7 +166,7 @@ export async function slackEndpointCandidates(
   binding: Pick<SlackTaskBinding, "companyId" | "agentId" | "endpointId">,
 ) {
   return db
-    .select({ id: chatEndpoints.id })
+    .select({ id: chatEndpoints.id, connectionId: chatEndpoints.connectionId })
     .from(chatEndpoints)
     .where(
       and(

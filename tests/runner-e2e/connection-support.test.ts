@@ -1,17 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { AGENT_ADAPTER_TYPES } from "../../packages/shared/src/constants.js";
+import { AI_KEY_VERIFICATION_FAILURES } from "../../server/src/services/ai-api-key-failures.js";
 import { runnerMatrix } from "./catalog.js";
 import { parseRunnerSelectors, selectRunnerExecutions, buildMatrixJobs } from "./selectors.js";
 import { connectionHarnesses, connectionScopeGaps, connectionCell, supportsConnection } from "./connection-cases.js";
 import { parseConnectionConfig, targetOrigin, selectedSecret, resolveConnectionSecret, resolveConnectionSettings } from "./connection-config.js";
-import { connectionCheckpoints, connectionEvidencePasses, connectionRunDiagnostic, createConnectionProof, verifyConnectionArtifact, verifyConnectionRun, completedConnectionArtifactRun, connectionProbeChecks, type ConnectionEvidence } from "./connection-evidence.js";
+import { connectionCheckpoints, connectionVerificationFailureCodes, connectionEvidencePasses, connectionRunDiagnostic, createConnectionProof, verifyConnectionArtifact, verifyConnectionRun, completedConnectionArtifactRun, connectionProbeChecks, type ConnectionEvidence } from "./connection-evidence.js";
 import { validateRetainedRunnerResult } from "./result-validation.js";
-import { verifyConnectionTarget } from "./connection-target.js";
+import { ConnectionApi, verifyConnectionTarget } from "./connection-target.js";
 import { cleanupConnectionCompany, connectionCreationReceipt, runConnectionCampaign, safeConnectionFailure, withConnectionCampaignCancellation } from "./connection-launch.js";
-import type { ConnectionApi } from "./connection-target.js";
 import * as connectionConfig from "./connection-config.js";
 import * as connectionTarget from "./connection-target.js";
 import * as reportAssets from "./report-assets.js";
@@ -144,6 +144,71 @@ describe("live connection coverage", () => {
 });
 
 describe("target and selected credential boundaries", () => {
+  it("passes a bounded GET timeout and preserves the default for other readers", async () => {
+    const fetch = vi.fn(async () => ({ ok: () => true, json: async () => ({ passed: true }) }));
+    const api = new ConnectionApi({ fetch } as any, "https://qa.test.paperclip.app");
+    await api.get("/api/health", { timeoutMs: 17 });
+    expect(fetch).toHaveBeenLastCalledWith("https://qa.test.paperclip.app/api/health", expect.objectContaining({ timeout: 17 }));
+    await api.get("/api/health");
+    expect(fetch).toHaveBeenLastCalledWith("https://qa.test.paperclip.app/api/health", expect.objectContaining({ timeout: 30_000 }));
+    await expect(api.get("/api/health", { timeoutMs: 0 })).rejects.toThrow("invalid_api_timeout");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+  it("retries a transient read failure but never repeats a write", async () => {
+    const ok = { ok: () => true, status: () => 200, json: async () => ({ id: "agent" }) };
+    const unavailable = { ok: () => false, status: () => 503 };
+    const fetch = vi.fn().mockRejectedValueOnce(new Error("socket hang up")).mockResolvedValueOnce(unavailable).mockResolvedValueOnce(ok);
+    const api = new ConnectionApi({ fetch } as any, "https://qa.test.paperclip.app");
+    await expect(api.get("/api/agents/agent")).resolves.toEqual({ id: "agent" });
+    expect(fetch).toHaveBeenCalledTimes(3);
+    fetch.mockReset().mockRejectedValue(new Error("socket hang up"));
+    await expect(api.get("/api/agents/agent")).rejects.toThrow("api_request_failed");
+    expect(fetch).toHaveBeenCalledTimes(3);
+    fetch.mockReset().mockResolvedValue({ ok: () => false, status: () => 404 });
+    await expect(api.get("/api/agents/agent")).rejects.toThrow("api_status_404");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    for (const method of ["post", "patch", "delete"] as const) {
+      fetch.mockReset().mockRejectedValueOnce(new Error("socket hang up")).mockResolvedValue(ok);
+      await expect((api as any)[method]("/api/agents/agent", {})).rejects.toThrow("api_request_failed");
+      expect(fetch).toHaveBeenCalledTimes(1);
+    }
+    // Binary downloads and readers with their own retry ledger stay single attempts.
+    fetch.mockReset().mockResolvedValueOnce(unavailable).mockResolvedValue({ ...ok, body: async () => Buffer.from("x") });
+    await expect(api.bytes("/api/attachments/file/content")).rejects.toThrow("api_status_503");
+    expect(fetch).toHaveBeenCalledTimes(1);
+    fetch.mockReset().mockResolvedValueOnce(unavailable).mockResolvedValue(ok);
+    await expect(api.get("/api/agents/agent", { retry: false })).rejects.toThrow("api_status_503");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it("honors a bounded Retry-After and keeps every attempt inside the caller's timeout", async () => {
+    vi.useFakeTimers();
+    try {
+      const ok = { ok: () => true, status: () => 200, json: async () => ({ id: "agent" }) };
+      const throttled = { ok: () => false, status: () => 429, headers: () => ({ "retry-after": "2" }) };
+      const fetch = vi.fn().mockResolvedValueOnce(throttled).mockResolvedValueOnce(ok);
+      const api = new ConnectionApi({ fetch } as any, "https://qa.test.paperclip.app");
+      const read = api.get("/api/agents/agent", { timeoutMs: 10_000 });
+      await vi.advanceTimersByTimeAsync(1_999);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(read).resolves.toEqual({ id: "agent" });
+      expect((fetch.mock.calls[1]![1] as { timeout: number }).timeout).toBeLessThanOrEqual(8_000);
+      // No retry when the wait would leave no useful time before the caller's timeout.
+      fetch.mockReset().mockResolvedValue(throttled);
+      await expect(api.get("/api/agents/agent", { timeoutMs: 2_500 })).rejects.toThrow("api_status_429");
+      expect(fetch).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+  it("keeps scoped requests on tenant APIs and bounds extended probe timeouts", async () => {
+    const fetch = vi.fn(async (_url: string, _options: unknown) => ({ ok: () => true, json: async () => ({ passed: true }) }));
+    const api = new ConnectionApi({ fetch } as any, "https://qa.test.paperclip.app");
+    await api.post("/api/companies/qa/adapters/paperclip_runner/test-environment", {}, { timeoutMs: 120_000 });
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ headers: { Origin: "https://qa.test.paperclip.app" }, timeout: 120_000, maxRedirects: 0 });
+    fetch.mockClear();
+    for (const route of ["https://other.test/api/health", "/api/../v1/admin", "/api/%2e%2e/v1/admin"]) await expect(api.get(route)).rejects.toThrow("invalid_api_route");
+    await expect(api.post("/api/health", {}, { timeoutMs: 120_001 })).rejects.toThrow("invalid_api_timeout");
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("accepts local/staging origins and rejects credential-bearing or redirectable target strings", () => {
     expect(targetOrigin("http://127.0.0.1:3109/")).toBe("http://127.0.0.1:3109");
     expect(targetOrigin("https://staging.example.test")).toBe("https://staging.example.test");
@@ -179,6 +244,7 @@ describe("target and selected credential boundaries", () => {
       expect(await resolveConnectionSecret(config, undefined, {})).toBeUndefined();
       await expect(resolveConnectionSecret(config, "XAI_API_KEY", {})).rejects.toThrow("missing_XAI_API_KEY");
       await writeFile(path.join(root, "public"), "OPENAI_API_KEY=private", { mode: 0o644 });
+      await chmod(path.join(root, "public"), 0o644);
       await expect(resolveConnectionSecret(parseConnectionConfig({ secretFile: path.join(root, "public") }), "OPENAI_API_KEY", {})).rejects.toThrow(/owner_only/);
     } finally { await rm(root, { recursive: true, force: true }); }
   });
@@ -278,5 +344,12 @@ describe("independent qualification", () => {
     expect(renderCaseOutcome(result, false, [])).toContain("Blocked: awaiting user");
     const cleanupFailed = buildRunnerCampaign({ campaignId: "failed-cleanup", generatedAt: result.finishedAt, expected: [execution.id], results: [{ ...result, cleanup: "failed", failureClass: "cleanup_failure" }] });
     expect(cleanupFailed.failed).toBe(1); expect(cleanupFailed.incomplete).toBe(0);
+  });
+});
+
+describe("connection creation failure codes", () => {
+  it("keeps every API key verification code the server can return", () => {
+    expect([...connectionVerificationFailureCodes].sort())
+      .toEqual(Object.values(AI_KEY_VERIFICATION_FAILURES).map(failure => failure.code).sort());
   });
 });

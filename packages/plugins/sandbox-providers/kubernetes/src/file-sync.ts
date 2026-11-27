@@ -369,8 +369,11 @@ export function splitLinkEntryOnce(field: string, delimiter: string): { name: st
  * escapes the tree. Legitimate in-tree relative links are preserved. Parses the
  * `-tvf` verbose listing; any unparseable line fails closed.
  */
-async function assertTarballEntriesConfined(archivePath: string): Promise<void> {
-  const { stdout } = await execFileAsync("tar", ["-tvf", archivePath], {
+async function assertTarballEntriesConfined(archivePath: string, rejectSpecialModes = false): Promise<void> {
+  // Validate the same raw `._*` members the preserving extractor will write.
+  const rawMacEntries = rejectSpecialModes && process.platform === "darwin"
+    && (await execFileAsync("tar", ["--version"])).stdout.includes("bsdtar");
+  const { stdout } = await execFileAsync("tar", ["-tvf", archivePath, ...(rawMacEntries ? ["--options=!mac-ext"] : [])], {
     env: { ...process.env, COPYFILE_DISABLE: "1" },
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -379,6 +382,11 @@ async function assertTarballEntriesConfined(archivePath: string): Promise<void> 
     const parsed = parseTarVerboseListingLine(line);
     if (!parsed) {
       throw new Error(`Kubernetes syncOut refusing tarball with an unparseable entry listing: ${line}`);
+    }
+    // Source preservation promises 0777 modes only. Refuse special execution
+    // bits before the host extractor can apply them, retaining every source file.
+    if (rejectSpecialModes && /[sStT]/.test(line.trimStart().slice(0, 10))) {
+      throw new Error("Kubernetes syncOut source preservation does not support special mode bits");
     }
     const typeFlag = parsed.typeFlag;
     let name = parsed.rest;
@@ -409,12 +417,21 @@ async function assertTarballEntriesConfined(archivePath: string): Promise<void> 
   }
 }
 
-async function extractHostTarball(input: { archivePath: string; localDir: string }): Promise<void> {
+async function extractHostTarball(input: { archivePath: string; localDir: string; preserveSourceEntries?: boolean }): Promise<void> {
   // The archive is sandbox-authored and untrusted: validate every member (and
   // link target) is confined before letting host-side tar write a single byte.
-  await assertTarballEntriesConfined(input.archivePath);
+  await assertTarballEntriesConfined(input.archivePath, input.preserveSourceEntries);
   await fs.mkdir(input.localDir, { recursive: true });
-  await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir], {
+  // macOS tar otherwise consumes source files named `._*` as AppleDouble
+  // metadata instead of writing their bytes. These are ordinary user entries.
+  // Preserve mode also ignores the host umask without adopting archive owners,
+  // ACLs, attributes or file flags from the sandbox.
+  const hostTarIsBsd = input.preserveSourceEntries
+    && (await execFileAsync("tar", ["--version"])).stdout.includes("bsdtar");
+  await execFileAsync("tar", ["-xf", input.archivePath, "-C", input.localDir,
+    ...(input.preserveSourceEntries ? ["-p", "--no-same-owner", "--no-acls", "--no-xattrs"] : []),
+    ...(hostTarIsBsd ? ["--no-fflags"] : []),
+    ...(hostTarIsBsd && process.platform === "darwin" ? ["--no-mac-metadata", "--options=!mac-ext"] : [])], {
     env: { ...process.env, COPYFILE_DISABLE: "1" },
     maxBuffer: 64 * 1024 * 1024,
   });
@@ -835,9 +852,13 @@ async function syncOutDirectoryMapping(input: {
   const { exec, mapping, remoteDir, timeoutMs, maxOutputBytes } = input;
   assertConfinedSandboxPath(remoteDir, mapping.sourcePath, "source");
   return withHostTempDir(async (tmp) => {
-    const excludeFlags = ["._*", ...(mapping.exclude ?? [])]
-      .map((entry) => `--exclude ${shQuote(entry)}`)
-      .join(" ");
+    // Preservation exclusions name literal source-relative paths. GNU tar's
+    // default basename/glob matching could silently omit unrelated user files.
+    const excludes = [...(mapping.preserveSourceEntries ? [] : ["._*"]), ...(mapping.exclude ?? [])];
+    const excludeFlags = (mapping.preserveSourceEntries ? "--anchored --no-wildcards " : "") +
+      (mapping.preserveSourceEntries
+        ? [...new Set(excludes.map(entry => entry.replace(/^(?:\.\/)+/, "").replace(/\/+$/, "")))].flatMap(entry => [entry, `./${entry}`])
+        : excludes).map(entry => `--exclude ${shQuote(entry)}`).join(" ");
     const script = [
       ...canonicalizerPreamble(shQuote(remoteDir)),
       // Confine the source dir through an open-then-verify pinned fd before taring.
@@ -867,8 +888,8 @@ async function syncOutDirectoryMapping(input: {
       label: "syncOut directory transfer",
     });
     const bytesTransferred = (await fs.stat(localTar)).size;
-    await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath });
-    const filesTransferred = await countHostFiles(mapping.targetPath, mapping.exclude);
+    await extractHostTarball({ archivePath: localTar, localDir: mapping.targetPath, preserveSourceEntries: mapping.preserveSourceEntries });
+    const filesTransferred = await countHostFiles(mapping.targetPath, mapping.preserveSourceEntries ? undefined : mapping.exclude);
     return { filesTransferred, bytesTransferred };
   });
 }

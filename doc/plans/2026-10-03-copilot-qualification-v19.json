@@ -1,0 +1,1055 @@
+{
+  "schema": "paperclip.copilot.qualification-progress/v1",
+  "status": "superseded-by-v20-current-grant-repair",
+  "productionAdmission": "gated",
+  "runtimeSourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+  "productDefinitionsRevision": "421cbda22d9e5fecfe9e64df296df26e9cf9335c",
+  "evalsRevision": "2528ec812771e2fb432be6a516cf82c8bb678a59",
+  "copilotVersion": "1.0.88",
+  "model": "gpt-5.6-luna",
+  "profileVersion": 19,
+  "profileDigest": "sha256:c2825f706f839071ce5aa9ddc2a058d785a55644964ff9c2ba878ac9ccc66fef",
+  "runnerPackageSha256": "sha256:3c58ab0db7f1e8d4a6578502f60638a8df6aeb73cc4008ef1352dc7b396f0ccd",
+  "runnerdSha256": "sha256:3a91a4a7142a34932ae0ea50971b08fbf8c3441da5ad111042598da27d18478b",
+  "runnerCliSha256": "sha256:bed6afbd86ab25c4bf90886a162e2b8a3e192005c77f50b597aee48a619dc3eb",
+  "providerPackDigest": "sha256:fb17098f93bbb888e605ee84201f4f6f0e6920dc81b1d9cd293f343876b959ed",
+  "resolvedLockSha256": "sha256:83b5b1848a9e5c8bee2608732df317caab338e6f22a343bc8029fa86f1acbeab",
+  "daytonaImage": {
+    "tag": "ghcr.io/paperclipai/paperclip-daytona-runner:copilot-qualification-434d749103ab3ae4058e",
+    "digest": "sha256:6ab9b0166580020cc16240bdcf27067459f7720cfdcb4f25bacd5fb6fca77be0",
+    "contentId": "434d749103ab3ae4058ef1600795ce3e9ff1a78b7049c556c0d41b3fc3af1e93",
+    "publication": "published-anonymous-pull-verified",
+    "anonymousPull": true,
+    "runtimeCredentialIncluded": false
+  },
+  "productCells": [
+    {
+      "selector": "native-active-stop.runner-acpx-copilot.local.pending-permission-stop",
+      "status": "pending-current-definitions",
+      "definitionVersion": 17
+    },
+    {
+      "selector": "native-active-stop.runner-acpx-copilot.daytona.pending-permission-stop",
+      "status": "pending-current-definitions",
+      "definitionVersion": 17
+    },
+    {
+      "selector": "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+      "status": "pending-current-definitions",
+      "definitionVersion": 14
+    },
+    {
+      "selector": "copilot-provider-death.runner-acpx-copilot.daytona.pending-permission-provider-death",
+      "status": "pending-current-definitions",
+      "definitionVersion": 14
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+      "status": "pending-current-definitions",
+      "definitionVersion": 19
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.attached-async-settlement",
+      "status": "pending-current-definitions",
+      "definitionVersion": 19
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.daytona.native-permission-deny-write",
+      "status": "pending-current-definitions",
+      "definitionVersion": 19
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.daytona.attached-async-settlement",
+      "status": "pending-current-definitions",
+      "definitionVersion": 19
+    },
+    {
+      "selector": "rich-acp-warm-continuity.runner-acpx-copilot.local.warm-three-turn",
+      "status": "pending-current-definitions",
+      "definitionVersion": null
+    },
+    {
+      "selector": "rich-acp-warm-continuity.runner-acpx-copilot.daytona.warm-three-turn",
+      "status": "pending-current-definitions",
+      "definitionVersion": null
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.local.hello-complete",
+      "status": "pending-current-definitions",
+      "definitionVersion": null
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.local.question-resume-complete",
+      "status": "pending-current-definitions",
+      "definitionVersion": null
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.local.plan-approve-complete",
+      "status": "pending-current-definitions",
+      "definitionVersion": null
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.local.structured-question-restart-resume",
+      "status": "pending-current-definitions",
+      "definitionVersion": null
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.local.file-edit-validate",
+      "status": "pending-current-definitions",
+      "definitionVersion": null
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.daytona.hello-complete",
+      "status": "pending-current-definitions",
+      "definitionVersion": null
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.daytona.question-resume-complete",
+      "status": "pending-current-definitions",
+      "definitionVersion": null
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.daytona.plan-approve-complete",
+      "status": "pending-current-definitions",
+      "definitionVersion": null
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.daytona.structured-question-restart-resume",
+      "status": "pending-current-definitions",
+      "definitionVersion": null
+    },
+    {
+      "selector": "extended-harnesses.runner-acpx-copilot.daytona.file-edit-validate",
+      "status": "pending-current-definitions",
+      "definitionVersion": null
+    }
+  ],
+  "runnerProtocol": [
+    {
+      "case": "get-task-context",
+      "disposition": "passed",
+      "retries": 0,
+      "providerReportedUsd": null
+    },
+    {
+      "case": "context-before-action",
+      "disposition": "passed",
+      "retries": 0,
+      "providerReportedUsd": null
+    },
+    {
+      "case": "create-task-document",
+      "disposition": "passed",
+      "retries": 0,
+      "providerReportedUsd": null
+    },
+    {
+      "case": "finish-task",
+      "disposition": "passed",
+      "retries": 0,
+      "providerReportedUsd": null
+    },
+    {
+      "case": "request-human-confirmation",
+      "disposition": "passed",
+      "retries": 0,
+      "providerReportedUsd": null
+    },
+    {
+      "case": "workflow-context-document-progress",
+      "disposition": "passed",
+      "retries": 0,
+      "providerReportedUsd": null
+    },
+    {
+      "case": "workflow-governed-wait",
+      "disposition": "passed",
+      "retries": 0,
+      "providerReportedUsd": null
+    }
+  ],
+  "runnerProtocolSummarySha256": "sha256:2cd60d19f9f05335732b80bcef57d214482b02f73fbf63d595f45d8d4816cb03",
+  "installedRuntimeSmokes": [
+    {
+      "platform": "darwin",
+      "architecture": "arm64",
+      "translatedIntel": false,
+      "status": "passed",
+      "scope": "credential-free installed initialize/cleanup; no model execution or Daytona qualification",
+      "providerPackDigest": "sha256:fb17098f93bbb888e605ee84201f4f6f0e6920dc81b1d9cd293f343876b959ed",
+      "sourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "evidenceSha256": "sha256:ff77894fffe5089267d605b0254442b3b6b7e0ef01fd6756f19fec27be256c45"
+    },
+    {
+      "platform": "darwin",
+      "architecture": "x64",
+      "translatedIntel": true,
+      "status": "passed",
+      "scope": "credential-free installed initialize/cleanup; no model execution or Daytona qualification",
+      "providerPackDigest": "sha256:29a0a71712e2219bc7240d06106bae21b739a5772172743ff3b8f8285ab42dac",
+      "sourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "evidenceSha256": "sha256:9e1c6cc23c0db0ae534a95a346bd5a918527778b4e64af7a33c7ef93fc4e6b38",
+      "stagedRunnerDaemonArchitecture": "x64",
+      "limitation": "Complete x64 pack executed under Rosetta; no physical Intel hardware smoke."
+    },
+    {
+      "platform": "linux",
+      "architecture": "x64",
+      "translatedIntel": false,
+      "status": "passed",
+      "scope": "credential-free installed initialize/cleanup; no model execution or Daytona qualification",
+      "providerPackDigest": "sha256:42a0cdfea607e68f1e1bd20b27a54507d5727c6417f6d8df553a9f41f882d533",
+      "sourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "evidenceSha256": "sha256:d723290d88381963094f978733f204dac339e9cf9bc5eec62b9c3c9bed9b7729"
+    }
+  ],
+  "budget": {
+    "originalTotalCeilingUsd": 100,
+    "originalCopilotAllocationUsd": 25,
+    "latestUserApprovedTotalUsd": 100,
+    "priorConservativeSharedExposureUsd": 47.080380624,
+    "copilotInferenceExposureBoundUsd": 29.0,
+    "combinedConservativeExposureBoundUsd": 82.580380624,
+    "nativeProviderReportedUsd": null,
+    "creditsPricedAsMeasuredZero": false,
+    "pastReservationsReset": false,
+    "futureDaytonaInfrastructureReservationUsd": 0.5,
+    "pricingSource": "https://www.daytona.io/pricing",
+    "pricingVerifiedAt": "2026-10-05T02:10:57.482245+00:00",
+    "combinedConservativeExposureUpperBoundUsd": 84.939080624,
+    "inferenceReservationsRetainedUsd": 33.5,
+    "daytonaInfrastructureBoundUsd": 4.3587,
+    "reconciliationEvidenceSha256": "sha256:0391f3abd84f83cf7cdcdcb8fdee1e1281fd2fce6f3b635fbe03617ad0d106f6"
+  },
+  "fullRepositoryTestInvocation": "failed; no clean full invocation",
+  "rollout": {
+    "ordinaryInstallationWithoutOverrides": "pending",
+    "currentHeadCiAndReview": "pending",
+    "canary": "pending"
+  },
+  "evidencePolicy": "Original failures are retained. Earlier-definition passes are not final frozen-definition passes. Native USD is unknown; conservative exposure is not measured spend. Local raw evidence is retained separately from this safe summary.",
+  "historicalProductResults": [
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+      "status": "failed",
+      "paperclipSourceRevision": "90b14b00b7a56d48a6d203545d04753750f864d7",
+      "definitionHash": "dcb4ee9b775ee3c739d5b5ddc1ccdafcd5e7ab6325e8d6f8a1e6a4d3d65a0de9",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 0,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-03T22-19-31-840Z/copilot-protection/runner-acpx-copilot/local/native-permission-deny-write/attempt-1/result.json",
+      "resultSha256": "sha256:85e83de987404dde5d474d4de9d405ca1b63d8fcdfefef969ead5a48f69cad49",
+      "evidenceManifestSha256": "sha256:61f2aa46af4abb960e69e0696bd0b63d88d96ac0e6ca7eab4c22df1c33db7826",
+      "providerReportedUsd": null,
+      "reservationId": "copilot-v15-integration-local-denial-01"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+      "status": "failed",
+      "paperclipSourceRevision": "8fba5cca4ae7d2d0d7346d76c05f43699f07049c",
+      "definitionHash": "044e32cb8124e8f7a0fb8dd8bb168d807f8d0b5c1668456de96b6ee6184e0abc",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 0,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-03T22-34-57-911Z/copilot-protection/runner-acpx-copilot/local/native-permission-deny-write/attempt-1/result.json",
+      "resultSha256": "sha256:e7741648c998c7084eff74dffcfc0560e95372a8015808c9c74e99f48787d42c",
+      "evidenceManifestSha256": "sha256:7d9d9d4ac8ea264a3a7d9799f5a0d1869c6adaaa04e3ea7b51de83200d6bbc31",
+      "providerReportedUsd": null,
+      "reservationId": "copilot-v15-integration-local-denial-02"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+      "status": "failed",
+      "paperclipSourceRevision": "2dd62ad52b8b4348d286c59e11e36144305bca6c",
+      "definitionHash": "ece61a911483026b573ac3e6eda89fd7943e9d481fb3dbbaa11435ec9e1f662a",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 0,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-03T22-42-14-193Z/copilot-protection/runner-acpx-copilot/local/native-permission-deny-write/attempt-1/result.json",
+      "resultSha256": "sha256:ab63b5b7cf485802af3239aa4688e8f4f3ab926247fa6f71771bb0f20426cba2",
+      "evidenceManifestSha256": "sha256:c55cd754424c9d19ef5f43ef2d72bb88085d0864c34741e91c7cd47125c0ada3",
+      "providerReportedUsd": null,
+      "reservationId": "copilot-v15-integration-local-denial-03"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+      "status": "failed",
+      "paperclipSourceRevision": "7dec03762eb8201f721b7a1c5116861c8ccd23b4",
+      "definitionHash": "9ad440a7514c33a6b1726915c11f18ca9f1b441aa4344c718ac993337ff7b938",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 0,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-03T23-00-26-289Z/copilot-protection/runner-acpx-copilot/local/native-permission-deny-write/attempt-1/result.json",
+      "resultSha256": "sha256:1ee52613f6b3e51d878c0af426f1e387b7627434ce04126293ce235dbf2a0687",
+      "evidenceManifestSha256": "sha256:533c6010580251f699c85f595eacdfc2de03cdceb6d8fce991ef1b8da750d893",
+      "providerReportedUsd": null,
+      "reservationId": "copilot-v15-integration-local-denial-04"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.attached-async-settlement",
+      "status": "failed",
+      "paperclipSourceRevision": "7dec03762eb8201f721b7a1c5116861c8ccd23b4",
+      "definitionHash": "9ad440a7514c33a6b1726915c11f18ca9f1b441aa4344c718ac993337ff7b938",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 0,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-03T23-03-48-015Z/copilot-protection/runner-acpx-copilot/local/attached-async-settlement/attempt-1/result.json",
+      "resultSha256": "sha256:6bccec5ced26d6872ec78b973ed56ac37863a983b4368a7992265fceed7d8135",
+      "evidenceManifestSha256": "sha256:d16035d4bde265308cba7d3a2f897eb23e79f8eeaa3620483fbd59dda7b55e52",
+      "providerReportedUsd": null,
+      "reservationId": "copilot-v15-integration-local-attached-01"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.attached-async-settlement",
+      "status": "passed",
+      "paperclipSourceRevision": "7f6238747165ba2b420fff48ec3a71f6ca594f21",
+      "definitionHash": "bd4dad6fe54ba18cb380667faa770e10d9add836683d58341f7425aca94a0ff9",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 10,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-03T23-12-02-324Z/copilot-protection/runner-acpx-copilot/local/attached-async-settlement/attempt-1/result.json",
+      "resultSha256": "sha256:d0b096ce473b1802ea227a8c19d5885f61b29215fa8264b88310a34424a6311c",
+      "evidenceManifestSha256": "sha256:6fb3312bedce96bfb91cc6e5e60ef2c29880fe835eb5eca7a5ce4aaf479b1211",
+      "providerReportedUsd": null,
+      "reservationId": "copilot-v15-integration-local-attached-02"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+      "status": "passed",
+      "paperclipSourceRevision": "7f6238747165ba2b420fff48ec3a71f6ca594f21",
+      "definitionHash": "bd4dad6fe54ba18cb380667faa770e10d9add836683d58341f7425aca94a0ff9",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 10,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-03T23-13-32-999Z/copilot-protection/runner-acpx-copilot/local/native-permission-deny-write/attempt-1/result.json",
+      "resultSha256": "sha256:5e2e17b3a284d40c2209d0c2c90fc1a2cd32987a1b070d0857ca4d5c9d83ea75",
+      "evidenceManifestSha256": "sha256:dcca4ba5ee6563cb93ca7e0527004aaea575c979eedfc3c91d001406cc5d9681",
+      "providerReportedUsd": null,
+      "reservationId": "copilot-v15-integration-local-denial-05"
+    },
+    {
+      "selector": "native-active-stop.runner-acpx-copilot.local.pending-permission-stop",
+      "status": "failed",
+      "paperclipSourceRevision": "7f6238747165ba2b420fff48ec3a71f6ca594f21",
+      "definitionHash": "f3658b3294236a8d9abfdc0698cb4d9efc5547bcfc0aee9ebd00899f0b0bdf48",
+      "attempt": 1,
+      "cleanup": "failed",
+      "passedMatchers": 0,
+      "failedMatchers": 1,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-03T23-14-48-559Z/native-active-stop/runner-acpx-copilot/local/pending-permission-stop/attempt-1/result.json",
+      "resultSha256": "sha256:643e73eae0acddbaedca071f5b78e6ec45bc8a561061b921ea726e018e2ce7e3",
+      "evidenceManifestSha256": "sha256:7d0a13723f075081148636086ab922cfc5fa39c7addda342bfe19b23e71d1079",
+      "providerReportedUsd": null,
+      "reservationId": "copilot-v15-integration-local-stop-01"
+    },
+    {
+      "selector": "native-active-stop.runner-acpx-copilot.local.pending-permission-stop",
+      "status": "passed",
+      "paperclipSourceRevision": "3f1d303c8ff41ea5ffdc7ffda9ec3613476d791c",
+      "definitionHash": "b56fcb4d86b4c8aa280a3f619abb0091b2d18e51a4ecd8d3c33c19aed3302f94",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 8,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-03T23-26-04-211Z/native-active-stop/runner-acpx-copilot/local/pending-permission-stop/attempt-1/result.json",
+      "resultSha256": "sha256:6a2168027038b06e81c599700fa7d4febb82218a8218afa1b43ce0d2aa6ff8e8",
+      "evidenceManifestSha256": "sha256:5092c36c2d3e5e3338a99857066f661d456d7a9f90377b0fcfc5032e238f7561",
+      "providerReportedUsd": null,
+      "reservationId": "copilot-v15-integration-local-stop-02"
+    },
+    {
+      "selector": "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+      "status": "failed",
+      "paperclipSourceRevision": "3f1d303c8ff41ea5ffdc7ffda9ec3613476d791c",
+      "definitionHash": "746e79093aaa137ac3038a7d9ee5a7f3ffe694dcf13f8c2c884010d1465ae96d",
+      "attempt": 1,
+      "cleanup": "failed",
+      "passedMatchers": 0,
+      "failedMatchers": 1,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-03T23-27-25-491Z/copilot-provider-death/runner-acpx-copilot/local/pending-permission-provider-death/attempt-1/result.json",
+      "resultSha256": "sha256:18fbd3a98db9dc14a8ff63cd2cf3b33bd4350d2cd75516443a96a731059112a7",
+      "evidenceManifestSha256": "sha256:11a4c40b9a12f6466568983009274cbeff80c03de6ceebec2c0138a353f95906",
+      "providerReportedUsd": null,
+      "reservationId": "copilot-v15-integration-local-death-01"
+    },
+    {
+      "selector": "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+      "status": "failed",
+      "paperclipSourceRevision": "790ff2d0bb71fce9adb66f35d9847d57d3f7e88d",
+      "definitionHash": "746e79093aaa137ac3038a7d9ee5a7f3ffe694dcf13f8c2c884010d1465ae96d",
+      "attempt": 1,
+      "cleanup": "failed",
+      "passedMatchers": 0,
+      "failedMatchers": 1,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-04T00-02-45-977Z/copilot-provider-death/runner-acpx-copilot/local/pending-permission-provider-death/attempt-1/result.json",
+      "resultSha256": "sha256:3742a2a2274d42d6b06d25e590a17a6878f818ad667cd8cef66d5a68afe02a10",
+      "evidenceManifestSha256": "sha256:dbe677444b58993478dea4be416295b1383b8fb276dcb7782360d3c68a81a4f6",
+      "providerReportedUsd": null,
+      "reservationId": "copilot-v16-local-death-01"
+    },
+    {
+      "selector": "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+      "status": "failed",
+      "paperclipSourceRevision": "e00fe7ba5952533f6036f7abb883d110992889f8",
+      "definitionHash": "746e79093aaa137ac3038a7d9ee5a7f3ffe694dcf13f8c2c884010d1465ae96d",
+      "attempt": 1,
+      "cleanup": "failed",
+      "passedMatchers": 0,
+      "failedMatchers": 1,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-04T00-21-23-068Z/copilot-provider-death/runner-acpx-copilot/local/pending-permission-provider-death/attempt-1/result.json",
+      "resultSha256": "sha256:b4baaaa26bc94bbfab2576b5208c9832d962aaca2b949d9d34fa7850c19ae8cc",
+      "evidenceManifestSha256": "sha256:95967c7393849d6431152bbfb23b07064c9d4ea947843c89a2b9abad068a8fd0",
+      "providerReportedUsd": null,
+      "reservationId": "copilot-v17-local-death-01"
+    },
+    {
+      "selector": "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+      "status": "failed",
+      "paperclipSourceRevision": "8bdf8358270fb8c8490ecfa003018bd09838d0f5",
+      "definitionHash": "fee2bd21509715d05fc4feac3f2e202ea3939bf909fc1031c65c425429847b61",
+      "attempt": 1,
+      "cleanup": "failed",
+      "passedMatchers": 0,
+      "failedMatchers": 1,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-04T00-26-56-154Z/copilot-provider-death/runner-acpx-copilot/local/pending-permission-provider-death/attempt-1/result.json",
+      "resultSha256": "sha256:7c34e29a6d3d676b6e8e69a5614fda5e97de46dba9a4e75c3432d3839d88ff98",
+      "evidenceManifestSha256": "sha256:30056dc4b37de80f532ed6b07756ba066b79d6b3201b9e95677aff14e55fafd1",
+      "providerReportedUsd": null,
+      "reservationId": "copilot-v17-local-death-02"
+    },
+    {
+      "selector": "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+      "status": "failed",
+      "paperclipSourceRevision": "221d65ed6db340df1cfcb7c704eaab11c024f11b",
+      "definitionHash": "fee2bd21509715d05fc4feac3f2e202ea3939bf909fc1031c65c425429847b61",
+      "attempt": 1,
+      "cleanup": "failed",
+      "passedMatchers": 0,
+      "failedMatchers": 1,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-04T00-55-48-647Z/copilot-provider-death/runner-acpx-copilot/local/pending-permission-provider-death/attempt-1/result.json",
+      "resultSha256": "sha256:4d4f9a95b75de7c495f9b2ea1923d452f2e6c31805a1befcb87004baea3ace13",
+      "evidenceManifestSha256": "sha256:923c425da23b56bc8e2ec81f23b15cc195fb57b214cf267de2d65a8030841321",
+      "providerReportedUsd": null,
+      "reservationId": "v18-provider-death-local-01"
+    },
+    {
+      "selector": "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+      "status": "failed",
+      "paperclipSourceRevision": "300463538363dcff3c06e765847fc57e16f652e2",
+      "definitionHash": "f83100ccdae9a9726853346f6f34c0f8fec595f2a3c6b5059542ed91af76b22d",
+      "attempt": 1,
+      "cleanup": "failed",
+      "passedMatchers": 0,
+      "failedMatchers": 1,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-04T01-01-43-714Z/copilot-provider-death/runner-acpx-copilot/local/pending-permission-provider-death/attempt-1/result.json",
+      "resultSha256": "sha256:bb0ad8704a22cf14a7d0bb7d743e9200fa73c1069681811ed87ea80e4d980430",
+      "evidenceManifestSha256": "sha256:5483ee75af5c14421765d092c2d6eb07047652e1ec253618809c40d59eccc1ca",
+      "providerReportedUsd": null,
+      "reservationId": "v18-provider-death-local-02"
+    },
+    {
+      "selector": "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+      "status": "failed",
+      "paperclipSourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "definitionHash": "f83100ccdae9a9726853346f6f34c0f8fec595f2a3c6b5059542ed91af76b22d",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 1,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-04T01-39-27-516Z/copilot-provider-death/runner-acpx-copilot/local/pending-permission-provider-death/attempt-1/result.json",
+      "resultSha256": "sha256:eb42e27681f90e6164b831df5419048f7bc17492345eb03f666bdd670295777d",
+      "evidenceManifestSha256": "sha256:29dc69828987e3fc1a4365e574370e05794b79a85a03d56d8eec799994ef974c",
+      "providerReportedUsd": null,
+      "reservationId": "v19-local-provider-death"
+    },
+    {
+      "selector": "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+      "status": "failed",
+      "paperclipSourceRevision": "e91ca6e389222901474b1a6ac8d701c33617c4f0",
+      "definitionHash": "126c626809f39d674ae5feaeac095e8a3c9c02841b7d9e9b1b629f5e294fa731",
+      "attempt": 1,
+      "cleanup": "failed",
+      "passedMatchers": 0,
+      "failedMatchers": 1,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-04T01-46-41-594Z/copilot-provider-death/runner-acpx-copilot/local/pending-permission-provider-death/attempt-1/result.json",
+      "resultSha256": "sha256:f85bb5c18fa4b15ec6f127d677e90edc22f0c60c113b576fdf4a0729fdf16426",
+      "evidenceManifestSha256": "sha256:988acfb2c210108721916c80fe92ef3b109f98293011305a34aa9b94a820d306",
+      "providerReportedUsd": null,
+      "reservationId": "v19-local-provider-death-status-label"
+    },
+    {
+      "selector": "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+      "status": "passed",
+      "paperclipSourceRevision": "8fd0e05451ed3531855884fd4375ef3564620c2f",
+      "definitionHash": "080baff12a04bdf5a129f5a8060f57721d11254d7a29e878e7602623eb9e07f4",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 8,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-04T01-53-10-210Z/copilot-provider-death/runner-acpx-copilot/local/pending-permission-provider-death/attempt-1/result.json",
+      "resultSha256": "sha256:531ddd5fc8928f4174e56914b7869a836ce61f16ea92a9eb16562f550244ce37",
+      "evidenceManifestSha256": "sha256:60d5d47b070e75a8f7c3006e729107a160bdda710fcf79d39fbacbc20a3aa997",
+      "providerReportedUsd": null,
+      "reservationId": "v19-local-provider-death-direct-context"
+    },
+    {
+      "selector": "native-active-stop.runner-acpx-copilot.local.pending-permission-stop",
+      "status": "passed",
+      "paperclipSourceRevision": "8fd0e05451ed3531855884fd4375ef3564620c2f",
+      "definitionHash": "18c06d7ab4fec4df3d11ea52af4e1f7b70e38d50418772befff1c3bf9ef0236e",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 8,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-04T01-54-35-782Z/native-active-stop/runner-acpx-copilot/local/pending-permission-stop/attempt-1/result.json",
+      "resultSha256": "sha256:ea07bca7ae4068349ed218b7c3b41a6ae8f4e5780f04a52cf64260811644f5d3",
+      "evidenceManifestSha256": "sha256:8581b4db25e48f21f4c78562d2b130cde70ebde333909f5e9153cd71ddeea31d",
+      "providerReportedUsd": null,
+      "reservationId": "v19-local-pending-stop"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.attached-async-settlement",
+      "status": "passed",
+      "paperclipSourceRevision": "8fd0e05451ed3531855884fd4375ef3564620c2f",
+      "definitionHash": "341901ee5b09a42368963a77dbfc3ea569d438952b9bb53001edb4e1cd6fb536",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 10,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-04T01-56-00-612Z/copilot-protection/runner-acpx-copilot/local/attached-async-settlement/attempt-1/result.json",
+      "resultSha256": "sha256:8e1bdf2881c6c7e1289fdd377eee82ae513cbe087005087c4b56e47d47d55e7c",
+      "evidenceManifestSha256": "sha256:b1abaa63d1d1ce5f244959d9ced3b1dc84fae258e946fc42d9bbab7c1db39093",
+      "providerReportedUsd": null,
+      "reservationId": "v19-local-attached-settlement"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+      "status": "failed",
+      "paperclipSourceRevision": "8fd0e05451ed3531855884fd4375ef3564620c2f",
+      "definitionHash": "341901ee5b09a42368963a77dbfc3ea569d438952b9bb53001edb4e1cd6fb536",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 0,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-04T01-57-21-213Z/copilot-protection/runner-acpx-copilot/local/native-permission-deny-write/attempt-1/result.json",
+      "resultSha256": "sha256:3a25d7729aca113b2c57a4e76a85a9be2d00b3fad4488ba1f684ac8565d83f8b",
+      "evidenceManifestSha256": "sha256:fafb82c4cb8c48e1798d13c09fed633ada654db05a9d229e326ebd94040344a0",
+      "providerReportedUsd": null,
+      "reservationId": "v19-local-denial"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+      "status": "passed",
+      "paperclipSourceRevision": "56a5af9aff8dce145e5154576bd43820537dda1b",
+      "definitionHash": "b6440cda129842dd041f64226b6e8643aeb23c2acffd3b2d2128b36caca99d5d",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 10,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-04T02-02-05-129Z/copilot-protection/runner-acpx-copilot/local/native-permission-deny-write/attempt-1/result.json",
+      "resultSha256": "sha256:463ef704416b8828fe530ac8a8887cbdda2fd6fdd24a58aac830f02e1d5dfb8a",
+      "evidenceManifestSha256": "sha256:425908db38374ad556b57cd84b990b60871631075c658225454aef00b558b122",
+      "providerReportedUsd": null,
+      "reservationId": "v19-local-denial-direct-context"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.attached-async-settlement",
+      "status": "passed",
+      "paperclipSourceRevision": "20f8e5389b9305745e6609c7fd0172a9517191bb",
+      "definitionHash": "b6440cda129842dd041f64226b6e8643aeb23c2acffd3b2d2128b36caca99d5d",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 10,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-05T01-20-12-021Z/copilot-protection/runner-acpx-copilot/local/attached-async-settlement/attempt-1/result.json",
+      "resultSha256": "sha256:c85d21ac7d7d241aa2521898303cd344d74b28b84444a2fe69bb0f2a42fedd6b",
+      "evidenceManifestSha256": "sha256:19daa31baa3e219c50b69e584552a4e7c935835eb8d33080a03da19e2d28bc63",
+      "providerReportedUsd": null,
+      "reservationId": "v19-final-local-attached-16"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.daytona.attached-async-settlement",
+      "status": "failed",
+      "paperclipSourceRevision": "20f8e5389b9305745e6609c7fd0172a9517191bb",
+      "definitionHash": "b6440cda129842dd041f64226b6e8643aeb23c2acffd3b2d2128b36caca99d5d",
+      "attempt": 1,
+      "cleanup": "not_started",
+      "passedMatchers": 0,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-05T01-22-01-019Z/copilot-protection/runner-acpx-copilot/daytona/attached-async-settlement/attempt-1/result.json",
+      "resultSha256": "sha256:e99f974175f0b37724a5b6113c1e3a4225a626fa77558cdb285d0fded0eac124",
+      "evidenceManifestSha256": "sha256:0d7d6965a21f60faa44706509d03a0819c6348c3fd2f4f1e9f7827ec344b7fe5",
+      "providerReportedUsd": null,
+      "reservationId": "v19-daytona-attached-16"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.daytona.attached-async-settlement",
+      "status": "failed",
+      "paperclipSourceRevision": "20f8e5389b9305745e6609c7fd0172a9517191bb",
+      "definitionHash": "b6440cda129842dd041f64226b6e8643aeb23c2acffd3b2d2128b36caca99d5d",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 0,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-05T01-23-45-635Z/copilot-protection/runner-acpx-copilot/daytona/attached-async-settlement/attempt-1/result.json",
+      "resultSha256": "sha256:7d70384919ffd402186cee653c01281cd9f884e934dc3b8e1475833e91d89d9f",
+      "evidenceManifestSha256": "sha256:d0edd46ced30b1b63fef6c990bc261e912e767fe6c6549480b492fa18fa68cd0",
+      "providerReportedUsd": null,
+      "reservationId": "v19-daytona-attached-16-exact-identities"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.daytona.attached-async-settlement",
+      "status": "failed",
+      "paperclipSourceRevision": "b65637614ee207da797b0b89633745338f322e75",
+      "definitionHash": "b6440cda129842dd041f64226b6e8643aeb23c2acffd3b2d2128b36caca99d5d",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 0,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-05T01-27-58-464Z/copilot-protection/runner-acpx-copilot/daytona/attached-async-settlement/attempt-1/result.json",
+      "resultSha256": "sha256:b0952528e8d3386da73b713df1ea7dd1e18e078c049f15b8e9ab43b2cdb1b97f",
+      "evidenceManifestSha256": "sha256:5e22ccb5bd60843419dc5cb5fcefc08e6547a37fdba4c2c479f9a7f57689eb20",
+      "providerReportedUsd": null,
+      "reservationId": "v19-daytona-attached-16-worker-wiring"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.daytona.attached-async-settlement",
+      "status": "failed",
+      "paperclipSourceRevision": "b65637614ee207da797b0b89633745338f322e75",
+      "definitionHash": "b6440cda129842dd041f64226b6e8643aeb23c2acffd3b2d2128b36caca99d5d",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 1,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-05T01-31-26-543Z/copilot-protection/runner-acpx-copilot/daytona/attached-async-settlement/attempt-1/result.json",
+      "resultSha256": "sha256:5b5500f6d282047b530e44814a9eb9830d94082338b6c3ccc6ff01f6b00a5a47",
+      "evidenceManifestSha256": "sha256:a60471d6fbb912939f7cf24b7c95a24829c265f5e7bbcca4a64b77b6e49e3edf",
+      "providerReportedUsd": null,
+      "reservationId": "v19-daytona-attached-16-image-artifacts"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.daytona.attached-async-settlement",
+      "status": "passed",
+      "paperclipSourceRevision": "324d069bddc4240260c2e2b8bee40bef4640b778",
+      "definitionHash": "8c25a7e654e01333a899310e3096f7eb8108b0e6b7e13c446e80c3258426a6a9",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 11,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-05T01-39-22-257Z/copilot-protection/runner-acpx-copilot/daytona/attached-async-settlement/attempt-1/result.json",
+      "resultSha256": "sha256:44a176953d53490c47e4d6fd5b588740c3c451a6f26b171f3f14b23bde9fa321",
+      "evidenceManifestSha256": "sha256:1b8a29bc0c8bd4e0c2863bd14b75fb0057fe3fec9568a645b57173461a69d4d1",
+      "providerReportedUsd": null,
+      "reservationId": "v19-final-daytona-attached-17"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.local.attached-async-settlement",
+      "status": "passed",
+      "paperclipSourceRevision": "324d069bddc4240260c2e2b8bee40bef4640b778",
+      "definitionHash": "8c25a7e654e01333a899310e3096f7eb8108b0e6b7e13c446e80c3258426a6a9",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 10,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-05T01-41-02-735Z/copilot-protection/runner-acpx-copilot/local/attached-async-settlement/attempt-1/result.json",
+      "resultSha256": "sha256:6b8ff7eb1a385f23cc2cad226ceddca13de866e894e46594d1edcdf41c84471a",
+      "evidenceManifestSha256": "sha256:1a81e1cb05bcf8d9ddd679abbf215ac963ca5ab78d7543d9362a14f8015b8357",
+      "providerReportedUsd": null,
+      "reservationId": "v19-final-local-attached-17"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.daytona.native-permission-deny-write",
+      "status": "failed",
+      "paperclipSourceRevision": "324d069bddc4240260c2e2b8bee40bef4640b778",
+      "definitionHash": "8c25a7e654e01333a899310e3096f7eb8108b0e6b7e13c446e80c3258426a6a9",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 1,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-05T01-45-22-273Z/copilot-protection/runner-acpx-copilot/daytona/native-permission-deny-write/attempt-1/result.json",
+      "resultSha256": "sha256:d47794e3a41303be2d30e7805ab85c65f13f267ea44c6ef91c11dde60e34d40b",
+      "evidenceManifestSha256": "sha256:e3d59c218ac2e184775fb1bb84b945f37c7e34ff498efbec836d2c56185a1665",
+      "providerReportedUsd": null,
+      "reservationId": "v19-final-daytona-denial-17"
+    },
+    {
+      "selector": "copilot-protection.runner-acpx-copilot.daytona.native-permission-deny-write",
+      "status": "passed",
+      "paperclipSourceRevision": "40de4e3f200c741985983cd269a935d2ab7a6e73",
+      "definitionHash": "823ae4239d90ca9080cb4a34e828691e68d404dbe1cc2a1ea28b63d462022218",
+      "attempt": 1,
+      "cleanup": "passed",
+      "passedMatchers": 11,
+      "failedMatchers": 0,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-05T01-53-48-252Z/copilot-protection/runner-acpx-copilot/daytona/native-permission-deny-write/attempt-1/result.json",
+      "resultSha256": "sha256:e601f1e95174bd8166d7fe7f9362880f8bd4f821d3531e1e09c17d48326f160d",
+      "evidenceManifestSha256": "sha256:f93099b917733f5be383b8153d4201dcccf00ffd261f3d47db0a3e827747bbe4",
+      "providerReportedUsd": null,
+      "reservationId": "v19-final-daytona-denial-18"
+    },
+    {
+      "selector": "native-active-stop.runner-acpx-copilot.daytona.pending-permission-stop",
+      "status": "failed",
+      "paperclipSourceRevision": "40de4e3f200c741985983cd269a935d2ab7a6e73",
+      "definitionHash": "1691a5b4ca1280419d703fcd3df2c13b4d3189ed58d8e34c5cddd7e449dfd049",
+      "attempt": 1,
+      "cleanup": "failed",
+      "passedMatchers": 0,
+      "failedMatchers": 1,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-05T01-54-50-087Z/native-active-stop/runner-acpx-copilot/daytona/pending-permission-stop/attempt-1/result.json",
+      "resultSha256": "sha256:fb3eb3070b31cb530d83a0de19bc9034645a2b593fc6adedf64991431cdf6d95",
+      "evidenceManifestSha256": "sha256:fffa76851d4a23ef7132f14dc8d024c30fe2e242b0a48dbedecd9bf105427440",
+      "providerReportedUsd": null,
+      "reservationId": "v19-final-daytona-pending-permission-stop-15"
+    },
+    {
+      "selector": "native-active-stop.runner-acpx-copilot.daytona.pending-permission-stop",
+      "status": "failed",
+      "paperclipSourceRevision": "276415d2e8a8460aad21882651341658f3af5a72",
+      "definitionHash": "95ed6666ca8d1f0f912d79cd84ddba326cb17dde26d6f54c864b62d11bd842be",
+      "attempt": 1,
+      "cleanup": "failed",
+      "passedMatchers": 5,
+      "failedMatchers": 1,
+      "resultPath": "tests/runner-e2e/results/local-2026-10-05T02-03-34-775Z/native-active-stop/runner-acpx-copilot/daytona/pending-permission-stop/attempt-1/result.json",
+      "resultSha256": "sha256:170fb1b9c1280cd271969da688c075f03de2f9d5e00689ad0393a754761b6a9a",
+      "evidenceManifestSha256": "sha256:4eeb94e4b9154ca13c19b7259f8ec80cf0780ec615cc0ffb7e2efc0d782dd8ec",
+      "providerReportedUsd": null,
+      "reservationId": "v19-daytona-stop-retirement-diagnostic-16"
+    },
+    {
+      "reservationId": "v19-final-daytona-pending-permission-stop-17",
+      "selector": "native-active-stop.runner-acpx-copilot.daytona.pending-permission-stop",
+      "status": "passed",
+      "launchLogSha256": "sha256:c55f28aa6dbd530ff7dc45f0b0ea2d598673e865d6d9a2f0743b8752bd2752bc",
+      "runtimeSourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "sourceRevision": "b5a1ee8dde80b7911cb751cfcd56861534620239",
+      "historicalOnly": true,
+      "resultId": "local-2026-10-05T02-14-00-983Z"
+    },
+    {
+      "reservationId": "v19-final-daytona-pending-permission-provider-death-14",
+      "selector": "copilot-provider-death.runner-acpx-copilot.daytona.pending-permission-provider-death",
+      "status": "failed",
+      "launchLogSha256": "sha256:b7c04fd182a21095c6916257df4ce1b20b736ad8c41f20bdf0435ec703563e9b",
+      "runtimeSourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "sourceRevision": "b5a1ee8dde80b7911cb751cfcd56861534620239",
+      "historicalOnly": true,
+      "resultId": "local-2026-10-05T02-15-00-661Z"
+    },
+    {
+      "reservationId": "v19-final-daytona-provider-death-15-descriptor",
+      "selector": "copilot-provider-death.runner-acpx-copilot.daytona.pending-permission-provider-death",
+      "status": "passed",
+      "launchLogSha256": "sha256:662005e7247f5a93a8342a841322b8bda1c39ed5b00049b2a53ca23f2f70e1b9",
+      "runtimeSourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "sourceRevision": "b5a1ee8dde80b7911cb751cfcd56861534620239",
+      "historicalOnly": true,
+      "resultId": "local-2026-10-05T02-24-48-909Z"
+    },
+    {
+      "reservationId": "v19-final-local-native-permission-deny-write-19",
+      "selector": "copilot-protection.runner-acpx-copilot.local.native-permission-deny-write",
+      "status": "passed",
+      "launchLogSha256": "sha256:2258c7a83abd3f1b1d6ec1013e46dd6f2e8659b9d1fffed181c58098938c6aa6",
+      "runtimeSourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "sourceRevision": "b5a1ee8dde80b7911cb751cfcd56861534620239",
+      "historicalOnly": true,
+      "resultId": "local-2026-10-05T02-27-16-877Z"
+    },
+    {
+      "reservationId": "v19-final-local-pending-permission-stop-17",
+      "selector": "native-active-stop.runner-acpx-copilot.local.pending-permission-stop",
+      "status": "passed",
+      "launchLogSha256": "sha256:ffb0577b4e3c0ad90d41f2f0f27bae532d49e26052d41d7c1616774b0de9deb9",
+      "runtimeSourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "sourceRevision": "b5a1ee8dde80b7911cb751cfcd56861534620239",
+      "historicalOnly": true,
+      "resultId": "local-2026-10-05T02-28-02-611Z"
+    },
+    {
+      "reservationId": "v19-final-local-pending-permission-provider-death-15",
+      "selector": "copilot-provider-death.runner-acpx-copilot.local.pending-permission-provider-death",
+      "status": "passed",
+      "launchLogSha256": "sha256:5c34c323ca5a670d713b880ce52b702d3963d1d74516f4aa57f8d654084808d0",
+      "runtimeSourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "sourceRevision": "b5a1ee8dde80b7911cb751cfcd56861534620239",
+      "historicalOnly": true,
+      "resultId": "local-2026-10-05T02-28-44-155Z"
+    },
+    {
+      "reservationId": "v19-final-local-hello-complete",
+      "selector": "extended-harnesses.runner-acpx-copilot.local.hello-complete",
+      "status": "passed",
+      "launchLogSha256": "sha256:4f231072676a641b09b917ed5b5c8200f1f3df45b90d686d9541a9d7cc5c1101",
+      "runtimeSourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "sourceRevision": "b5a1ee8dde80b7911cb751cfcd56861534620239",
+      "historicalOnly": true,
+      "resultId": "local-2026-10-05T02-29-32-869Z"
+    },
+    {
+      "reservationId": "v19-final-daytona-hello-complete",
+      "selector": "extended-harnesses.runner-acpx-copilot.daytona.hello-complete",
+      "status": "passed",
+      "launchLogSha256": "sha256:09d0ad8ccb29df2a1ffa9983c0c3b2ebe0163b93e5faf15ca7b2c101f9136adc",
+      "runtimeSourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "sourceRevision": "b5a1ee8dde80b7911cb751cfcd56861534620239",
+      "historicalOnly": true,
+      "resultId": "local-2026-10-05T02-30-08-196Z"
+    },
+    {
+      "reservationId": "v19-final-local-question-resume-complete",
+      "selector": "extended-harnesses.runner-acpx-copilot.local.question-resume-complete",
+      "status": "failed",
+      "launchLogSha256": "sha256:b26bde50b89cf0d079e7e729d73a751ab160f87602176a9483284274e7409d2c",
+      "runtimeSourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "sourceRevision": "b5a1ee8dde80b7911cb751cfcd56861534620239",
+      "historicalOnly": true,
+      "resultId": "local-2026-10-05T02-31-23-855Z"
+    }
+  ],
+  "integrationSourceRevision": "421cbda22d9e5fecfe9e64df296df26e9cf9335c",
+  "productDefinitionVersions": {
+    "copilot-protection": 19,
+    "native-active-stop": 17,
+    "copilot-provider-death": 14
+  },
+  "updatedAt": "2026-10-05T03:17:13.711277+00:00",
+  "browserSavedTokenAcceptance": {
+    "status": "passed",
+    "flow": "Connectors -> Connect Copilot -> personal token -> selected agent -> runtime save -> reopen -> metadata-only test",
+    "newConnectionCreatedThroughBrowser": true,
+    "companyWideAgentAccess": false,
+    "ownership": "personal",
+    "heartbeatEnabled": false,
+    "provider": "acpx",
+    "acpxAgent": "copilot",
+    "model": "gpt-5.6-luna",
+    "discoveredModelCount": 17,
+    "modelPromptSentByVerification": false,
+    "ordinaryFreshProviderSelection": "pending-production-admission"
+  },
+  "nativeIntelInstalledRuntime": {
+    "status": "passed",
+    "os": "darwin",
+    "architecture": "x64",
+    "execution": "Rosetta on macOS ARM64",
+    "physicalIntelHardware": false,
+    "providerPackDigest": "sha256:29a0a71712e2219bc7240d06106bae21b739a5772172743ff3b8f8285ab42dac",
+    "runnerdArchitecture": "x86_64",
+    "providerArchitecture": "x86_64",
+    "nodeArchitecture": "x86_64",
+    "initializeAndCleanup": "passed",
+    "modelPromptSent": false
+  },
+  "latestRepairs": [
+    {
+      "revision": "20f8e5389b9305745e6609c7fd0172a9517191bb",
+      "change": "Explicit personal Copilot connection access defaults."
+    },
+    {
+      "revision": "b65637614ee207da797b0b89633745338f322e75",
+      "change": "Remote saved-token probe receives live worker manager."
+    },
+    {
+      "revision": "324d069bddc4240260c2e2b8bee40bef4640b778",
+      "change": "Direct semantic context guidance in remote bootstrap; HTTP substitution still rejected."
+    },
+    {
+      "revision": "40de4e3f200c741985983cd269a935d2ab7a6e73",
+      "change": "Observed remote action published before context permission approval."
+    },
+    {
+      "revision": "276415d2e8a8460aad21882651341658f3af5a72",
+      "change": "Bounded incomplete-retirement diagnostics; strict receipt rejection preserved."
+    },
+    {
+      "revision": "7a64dce18",
+      "change": "Remote Stop uses attested sandbox root; local PID/start identity guards preserved."
+    },
+    {
+      "revision": "421cbda22d9e5fecfe9e64df296df26e9cf9335c",
+      "change": "Selected-environment model discovery receives live worker manager."
+    },
+    {
+      "cause": "Cross-run recovery retained a collected previous instruction working-copy path. Actual registered-file binding reproduced ENOENT offline.",
+      "repair": "Deliver the current authenticated instruction grant before recovery opens; forward it through warm attachment and project remote paths.",
+      "newProfileVersion": 20,
+      "previousPassesRemainHistorical": true,
+      "newLiveCoverage": "pending"
+    }
+  ],
+  "currentVerification": {
+    "productSupport": {
+      "sourceRevision": "7a64dce18",
+      "sourceGatesPassed": 128,
+      "testsPassed": 1876,
+      "testsSkipped": 1
+    },
+    "savedConnections": {
+      "sourceRevision": "421cbda22d9e5fecfe9e64df296df26e9cf9335c",
+      "testsPassed": 57
+    },
+    "serverTypecheck": "passed",
+    "productTypecheck": "passed",
+    "singleFullTestCommand": "failed; unchanged anonymous health timeout; 15100 tests passed, 85 skipped",
+    "productionPromotion": "pending-required-live-coverage",
+    "fullTestFailedInvocation": {
+      "sourceRevision": "b65637614ee207da797b0b89633745338f322e75",
+      "generalServerTestsPassed": 15100,
+      "generalServerTestsSkipped": 85,
+      "failure": "15-second timeout: anonymous health workspace readiness; cause unknown",
+      "durationSeconds": 2309,
+      "assertionsAndTimeoutUnchanged": true
+    }
+  },
+  "historicalSavedTokenBrowser": {
+    "reopenAndMetadataVerification": "passed",
+    "promptSent": false,
+    "newConnectionCreation": "staged-empty-token-awaiting-credential-step-authorization"
+  },
+  "savedTokenBrowser": {
+    "status": "passed",
+    "flow": "Connectors -> Connect Copilot -> personal token -> selected agent -> runtime save -> reopen -> metadata-only test",
+    "newConnectionCreatedThroughBrowser": true,
+    "companyWideAgentAccess": false,
+    "ownership": "personal",
+    "heartbeatEnabled": false,
+    "provider": "acpx",
+    "acpxAgent": "copilot",
+    "model": "gpt-5.6-luna",
+    "discoveredModelCount": 17,
+    "modelPromptSentByVerification": false,
+    "ordinaryFreshProviderSelection": "pending-production-admission"
+  },
+  "historicalInstalledRuntimeSmokes": [
+    {
+      "platform": "darwin",
+      "architecture": "arm64",
+      "translatedIntel": false,
+      "status": "passed",
+      "scope": "credential-free installed initialize/cleanup; no model execution or Daytona qualification",
+      "providerPackDigest": "sha256:fb17098f93bbb888e605ee84201f4f6f0e6920dc81b1d9cd293f343876b959ed",
+      "sourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "evidenceSha256": "sha256:ff77894fffe5089267d605b0254442b3b6b7e0ef01fd6756f19fec27be256c45"
+    },
+    {
+      "platform": "darwin",
+      "architecture": "x64",
+      "translatedIntel": true,
+      "status": "passed",
+      "scope": "credential-free installed initialize/cleanup; no model execution or Daytona qualification",
+      "providerPackDigest": "sha256:29a0a71712e2219bc7240d06106bae21b739a5772172743ff3b8f8285ab42dac",
+      "sourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "evidenceSha256": "sha256:9e1c6cc23c0db0ae534a95a346bd5a918527778b4e64af7a33c7ef93fc4e6b38",
+      "stagedRunnerDaemonArchitecture": "x64",
+      "limitation": "Complete x64 pack executed under Rosetta; no physical Intel hardware smoke."
+    },
+    {
+      "platform": "linux",
+      "architecture": "x64",
+      "translatedIntel": false,
+      "status": "passed",
+      "scope": "credential-free installed initialize/cleanup; no model execution or Daytona qualification",
+      "providerPackDigest": "sha256:42a0cdfea607e68f1e1bd20b27a54507d5727c6417f6d8df553a9f41f882d533",
+      "sourceRevision": "0c192bded19a9e000618ba21393ec0d46e7bceff",
+      "evidenceSha256": "sha256:d723290d88381963094f978733f204dac339e9cf9bc5eec62b9c3c9bed9b7729"
+    }
+  ],
+  "historicalOfflineVerification": {
+    "runnerContractsAuthorityConformanceReplay": "passed",
+    "recursiveTypecheck": "passed",
+    "tokenGates": "passed",
+    "productionBuild": "passed",
+    "productSupport": {
+      "nodeGatesPassed": 128,
+      "vitestPassed": 1868,
+      "linuxOnlySkippedOnMacOS": 1
+    },
+    "uiTestsPassed": 7283,
+    "cliTestsPassed": 502,
+    "remainingAdapterPluginSourceTestsPassed": 2926,
+    "database": {
+      "testsPassedSerially": 160,
+      "initialParallelAttempt": "failed-bootstrap-before-migration-assertion"
+    },
+    "generalServer": {
+      "singleInvocation": "failed",
+      "testsPassedInFailedInvocation": 15099,
+      "testsSkipped": 85,
+      "failure": "socket hang up in status-cards",
+      "isolatedFileTestsPassed": 24
+    },
+    "serializedRoutes": {
+      "selectedFiles": 150,
+      "allSelectedFilesHavePassingResults": true,
+      "singleInvocation": "failed",
+      "failuresRetained": [
+        "socket hang up in issue-feedback-routes",
+        "15-second timeout in secret-proposals-routes"
+      ],
+      "isolatedDiagnosticTestsPassed": {
+        "issue-feedback-routes": 4,
+        "secret-proposals-routes": 25
+      },
+      "timeoutCause": "unknown; not reproduced in one timing diagnostic",
+      "diagnosticTransport": {
+        "syntheticRequestsWithResponse": 86,
+        "maximumResponseElapsedMs": 1042,
+        "traceSha256": "sha256:477c338475bd80242ade1a0bea80b1cb3389a22565c94ddf1ce43b8f93c3bc44"
+      }
+    }
+  },
+  "offlineVerification": {
+    "runnerContractsAuthorityConformanceReplay": "passed",
+    "recursiveTypecheck": "passed",
+    "tokenGates": "passed",
+    "productionBuild": "passed",
+    "productSupport": {
+      "nodeGatesPassed": 128,
+      "vitestPassed": 1876,
+      "linuxOnlySkippedOnMacOS": 1
+    },
+    "uiTestsPassed": 7283,
+    "cliTestsPassed": 502,
+    "remainingAdapterPluginSourceTestsPassed": 2926,
+    "database": {
+      "testsPassedSerially": 160,
+      "initialParallelAttempt": "failed-bootstrap-before-migration-assertion"
+    },
+    "generalServer": {
+      "singleInvocation": "failed",
+      "testsPassedInFailedInvocation": 15099,
+      "testsSkipped": 85,
+      "failure": "socket hang up in status-cards",
+      "isolatedFileTestsPassed": 24
+    },
+    "serializedRoutes": {
+      "selectedFiles": 150,
+      "allSelectedFilesHavePassingResults": true,
+      "singleInvocation": "failed",
+      "failuresRetained": [
+        "socket hang up in issue-feedback-routes",
+        "15-second timeout in secret-proposals-routes"
+      ],
+      "isolatedDiagnosticTestsPassed": {
+        "issue-feedback-routes": 4,
+        "secret-proposals-routes": 25
+      },
+      "timeoutCause": "unknown; not reproduced in one timing diagnostic",
+      "diagnosticTransport": {
+        "syntheticRequestsWithResponse": 86,
+        "maximumResponseElapsedMs": 1042,
+        "traceSha256": "sha256:477c338475bd80242ade1a0bea80b1cb3389a22565c94ddf1ce43b8f93c3bc44"
+      }
+    },
+    "savedConnectionTestsPassed": 57
+  }
+}
