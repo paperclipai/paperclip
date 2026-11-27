@@ -124,9 +124,9 @@ describe("heartbeat queue module boundary", () => {
 });
 
 function actionableInput(companyId: string, issueId: string, agentId: string, userId: string, request: string) {
-  return { body: `[@Agent](agent://${agentId}) ${request}`, metadata: { version: 1, sections: [], commentWake: {
-    version: 1, kind: "actionable", companyId, issueId, recipientAgentId: agentId,
-    actorType: "user", actorId: userId, request,
+  return { body: `[@Agent](agent://${agentId}) ${request}`, metadata: { version: 1 as const, sections: [], commentWake: {
+    version: 1 as const, kind: "actionable" as const, companyId, issueId, recipientAgentId: agentId,
+    actorType: "user" as const, actorId: userId, request,
   } } };
 }
 

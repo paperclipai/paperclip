@@ -55,7 +55,7 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
     await db.insert(companies).values({ id: companyId, name: "Task context fixture", issuePrefix: `T${companyId.slice(0, 6)}` });
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "context-user",
       membershipRole: "member", status: "active" });
-    await db.insert(agents).values({ id: agentId, companyId, name: "Context reader", adapterType, status: "idle" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Context reader", adapterType, adapterConfig: { cwd: process.cwd() }, status: "idle" });
     await db.insert(issues).values({
       id: issueId, companyId, title: "Task context fixture", description: "Assignment description canary",
       status: "todo", assigneeAgentId: agentId, responsibleUserId: "context-user", issueNumber: 1,
@@ -148,11 +148,17 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
     const f = await seed(), commentId = randomUUID();
     await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: f.issueId,
       authorType: "user", authorUserId: "context-user", body: "discarded wake", deletedAt: new Date() });
-    const run = await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
-      payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId, wakeCommentId: commentId, wakeCommentIds: [commentId] } });
+    // Exercise dispatch of an already queued comment that was subsequently deleted.
+    // Admission of a new deleted-comment wake is correctly suppressed separately.
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      invocationSource: "on_demand", triggerDetail: "manual", status: "queued", issueId: f.issueId,
+      responsibleUserId: "context-user",
+      contextSnapshot: { issueId: f.issueId, wakeReason: "issue_commented", wakeCommentId: commentId, wakeCommentIds: [commentId] } }).returning();
     expect(run).not.toBeNull();
+    await heartbeat.resumeQueuedRuns();
     await heartbeat.drainActiveRunExecutions();
     const finished = await heartbeat.getRun(run!.id);
+    console.info("deleted queued dispatch", { status: finished?.status, error: finished?.error, errorCode: finished?.errorCode });
     expect(finished).toMatchObject({ status: "cancelled", error: "Queued messages were discarded before dispatch" });
     expect(captured.has(run!.id)).toBe(false);
   });

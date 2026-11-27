@@ -1105,11 +1105,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         }
         if (!ordinary && (!Array.isArray(currentContext.ordinaryIssueCommentIds) ||
             (currentContext.ordinaryIssueCommentIds.length===0 && !recoveredIndependentOrigin))) return true;
+        let discardedOnly = false;
         if (ordinary || Array.isArray(currentContext.ordinaryIssueCommentIds)) {
           const marked = new Set<string>(ordinary
             ? [...extractWakeCommentIds(currentContext), ...queuedCommentIdsFromRunContext(currentContext),
                 currentContext.commentId, currentContext.wakeCommentId, currentContext.sourceCommentId].filter((id): id is string => typeof id === "string")
             : (currentContext.ordinaryIssueCommentIds as unknown[]).filter((id): id is string => typeof id === "string"));
+          // Preserve the native deleted-message cancellation contract while
+          // keeping this pre-identity eligibility check fail closed.
+          if (ordinary && marked.size > 0 && [...marked].every(id => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id))) {
+            const markedRows = await tx.select({ id: issueComments.id, deletedAt: issueComments.deletedAt })
+              .from(issueComments).where(and(eq(issueComments.companyId, run.companyId),
+                eq(issueComments.issueId, issueId), inArray(issueComments.id, [...marked])));
+            discardedOnly = markedRows.length === marked.size && markedRows.every(row => row.deletedAt !== null);
+          }
           const allowed = new Set<string>();
           for (const id of marked) {
             if (owner && await ordinaryCommentWakeAllowed(tx, { companyId:run.companyId,issueId,agentId:run.agentId,
@@ -1137,11 +1146,11 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             context: currentContext, reason: currentContext.wakeReason as string | undefined }))) {
           const now = new Date();
           // Retire before dispatch, never active work or the durable comment.
+          const error = discardedOnly ? "Queued messages were discarded before dispatch" : "Comment retained without starting work";
           await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: now,
-            errorCode: "issue_comment_no_longer_eligible", error: "Comment retained without starting work" })
+            errorCode: discardedOnly ? "queued_comment_discarded" : "issue_comment_no_longer_eligible", error })
             .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued")));
-          if (run.wakeupRequestId) await tx.update(agentWakeupRequests).set({ status: "skipped", finishedAt: now,
-            error: "Comment retained without starting work" }).where(and(eq(agentWakeupRequests.id, run.wakeupRequestId),
+          if (run.wakeupRequestId) await tx.update(agentWakeupRequests).set({ status: "skipped", finishedAt: now, error }).where(and(eq(agentWakeupRequests.id, run.wakeupRequestId),
               eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.status, "queued")));
           await tx.update(issues).set({ executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
             .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
