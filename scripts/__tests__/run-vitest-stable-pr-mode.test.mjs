@@ -307,8 +307,11 @@ test("general-workspaces-b 2-shard split partitions projects cleanly without Vit
 
   assert.equal(shard0.workspacesVitestShard, null);
   assert.equal(shard1.workspacesVitestShard, null);
-  assert.deepEqual(shard0.workspaceProjects, ["@paperclipai/adapter-utils"]);
-  assert.ok(shard1.workspaceProjects.length === unsharded.workspaceProjects.length - 1);
+  const expectedShards = partitionWorkspaceProjects(unsharded.workspaceProjects, 2);
+  assert.deepEqual(shard0.workspaceProjects, expectedShards[0].projects);
+  assert.deepEqual(shard1.workspaceProjects, expectedShards[1].projects);
+  assert.ok(shard0.workspaceProjects.includes("@paperclipai/adapter-utils"));
+  assert.ok(shard1.workspaceProjects.length > shard0.workspaceProjects.length);
 
   const combined = [...shard0.workspaceProjects, ...shard1.workspaceProjects].sort();
   assert.deepEqual(combined, [...unsharded.workspaceProjects].sort(), "2-shard partition must cover every project exactly once");

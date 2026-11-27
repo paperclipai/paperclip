@@ -10,6 +10,7 @@ export const WORKSPACES_B_PROJECT_DURATIONS_MS = Object.freeze({
   "@paperclipai/plugin-daytona": 34_000,
   "@paperclipai/adapter-claude-local": 20_000,
   "@paperclipai/adapter-codex-local": 17_500,
+  "@paperclipai/adapter-t3code-local": 17_000,
   "@paperclipai/adapter-gemini-local": 8_800,
   "@paperclipai/hermes-paperclip-adapter": 7_900,
   "@paperclipai/adapter-grok-local": 7_400,
