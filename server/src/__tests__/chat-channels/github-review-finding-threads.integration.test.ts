@@ -339,7 +339,8 @@ describeEmbeddedPostgres("chat channels: github review finding threads and fallb
         const posts = f.runtime.endpoints.get(f.endpoint.id)?.posts ?? [];
         expect(posts).toHaveLength(0);
         expect(f.responseWrites).toHaveLength(expected === "none" ? 2 : 1);
-        if (expected === "none") expect(f.responseWrites[1]).toMatchObject({ method: "PATCH", body: expect.stringContaining("stopped before completing this turn") });
+        if (expected === "none") expect(f.responseWrites[1]).toMatchObject({ method: "PATCH", body: expect.stringContaining(
+          scenario === "different_run" ? "See the [latest response](https://github.com/paperclipai/paperclip/issues/418)" : "stopped before completing this turn") });
         const [fallback] = await db.select().from(chatPublications).where(and(eq(chatPublications.endpointId, f.endpoint.id),
           eq(chatPublications.idempotencyKey, `run:${f.run.id}:failed:${f.endpoint.id}`)));
         expect(fallback.state).toBe(expected === "none" ? "published" : "cancelled");

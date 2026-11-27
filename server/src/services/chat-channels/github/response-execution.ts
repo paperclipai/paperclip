@@ -34,6 +34,15 @@ export function settlesFromRequestRun(state: GitHubResponseRunState, issueStatus
     issueStatus !== "blocked" && !!state.finishedRequestRun;
 }
 
+/** The notice that points a request at the latest response its agent published
+ * on the same pull request or issue after the request arrived, if any. */
+export async function latestResponseNotice(db: Db,
+  input: { companyId: string; endpointId: string; issueId: string; since: Date; threadId: string }) {
+  const url = await githubLatestTaskResponseUrl(db, { companyId: input.companyId, endpointId: input.endpointId,
+    issueId: input.issueId, since: input.since, baseThreadId: baseThreadId(input.threadId) });
+  return url ? `See the [latest response](${url}).` : null;
+}
+
 /** `read` is this request's state from a batched page read, if the caller has it. */
 export async function githubResponseExecution(db: Db, input: GitHubResponseExecutionInput, read?: GitHubResponseRunRead) {
   const state = read ?? await readGitHubResponseRun(db, input);
@@ -55,8 +64,8 @@ export async function githubResponseExecution(db: Db, input: GitHubResponseExecu
   const presentationPending = !!run && answersRequest && run.nativePresentationPending && reply === "none";
   const passiveResponseWait = !!run && answersRequest && run.passiveResponseWait && reply === "none";
   const unanswered = !!run && !presentationPending && reply === "none" && !paused;
-  const latestResponse = unanswered ? await githubLatestTaskResponseUrl(db, { companyId: input.companyId,
-    endpointId: input.endpointId, issueId: input.issueId, since: input.deliveryCreatedAt, baseThreadId: baseThreadId(input.threadId) })
+  const latestResponse = unanswered ? await latestResponseNotice(db, { companyId: input.companyId,
+    endpointId: input.endpointId, issueId: input.issueId, since: input.deliveryCreatedAt, threadId: input.threadId })
     : null;
   const taskFinished = ["done", "cancelled"].includes(input.issueStatus);
   // Precedence: a later published response is more useful to the reader than
@@ -71,7 +80,7 @@ export async function githubResponseExecution(db: Db, input: GitHubResponseExecu
     : run.responsePublicationFailed ? "publish_failed"
     : run.status === "succeeded" ? "ended" : "stopped";
   const body = outcome === null || outcome === "waiting" ? undefined
-    : outcome === "link" ? `See the [latest response](${latestResponse}).` : STATUS_TEXT[outcome];
+    : outcome === "link" ? latestResponse! : STATUS_TEXT[outcome];
   return {
     body, outcome, paused, reply, running: requestRunning, presentationPending, passiveResponseWait,
     versionAt: run ? new Date(Math.max(run.updatedAt.getTime(), input.deliveryCreatedAt.getTime()))
