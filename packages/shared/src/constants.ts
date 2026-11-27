@@ -1,4 +1,13 @@
 export const COMPANY_STATUSES = ["active", "paused", "archived"] as const;
+/**
+ * IDs per `/issues/summaries` request. Large enough that a typical recent-task
+ * list is one request; callers split longer lists into parallel chunks.
+ */
+export const ISSUE_SUMMARIES_MAX_IDS = 50;
+/** Tasks per chat bootstrap request. The list preloads larger sets in chunks. */
+export const ISSUE_CHAT_BOOTSTRAP_MAX_IDS = 10;
+/** Tasks per keyed bulk document read; keeps a routine's case inventory in one request. */
+export const ISSUE_DOCUMENT_BATCH_MAX_IDS = 200;
 export type CompanyStatus = (typeof COMPANY_STATUSES)[number];
 
 export const DEPLOYMENT_MODES = ["local_trusted", "authenticated"] as const;
@@ -197,6 +206,12 @@ export const ISSUE_STATUSES = [
 ] as const;
 export type IssueStatus = (typeof ISSUE_STATUSES)[number];
 
+/** Read-only task presentation. Monitoring never grants execution authority. */
+export const ISSUE_DISPLAY_STATUSES = [
+  "backlog", "todo", "in_progress", "monitoring", "in_review", "done", "blocked", "cancelled",
+] as const;
+export type IssueDisplayStatus = (typeof ISSUE_DISPLAY_STATUSES)[number];
+
 export const INBOX_MINE_ISSUE_STATUSES = [
   "backlog",
   "todo",
@@ -216,6 +231,13 @@ export type IssueWorkMode = (typeof ISSUE_WORK_MODES)[number];
 export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
 export type IssueHarnessKind = (typeof ISSUE_HARNESS_KINDS)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
+/**
+ * Deepest task tree an agent (or automation acting for one) may create: a root
+ * task plus one level of children. A deeper request is not rejected; the new
+ * task is parented at this depth instead, as a sibling of the requester. Board
+ * users are not limited, and existing deeper trees stay valid.
+ */
+export const MAX_AGENT_TASK_HIERARCHY_DEPTH = 2;
 
 export const SUMMARY_SLOT_SCOPE_KINDS = [
   "project",
@@ -263,6 +285,25 @@ export const ISSUE_THREAD_INTERACTION_KINDS = [
   "request_checkbox_confirmation",
   "request_item_verdicts",
   "connection_intent",
+  // Server-authored offer to repeat a finished task as a routine
+  // (experimental `enableResponsibilities`). Not creatable through the generic
+  // interactions endpoint; see server/src/services/routine-suggestions.ts.
+  "suggest_routine",
+  // Server-authored bar an agent proposes in a responsibility's bar
+  // conversation (experimental `enableResponsibilities`). Not creatable through
+  // the generic interactions endpoint; see
+  // server/src/services/responsibility-bars.ts.
+  "propose_responsibility_bar",
+  // Server-authored automation an agent proposes in a task's automation
+  // conversation (experimental `enableResponsibilities`). Not creatable through
+  // the generic interactions endpoint; see
+  // server/src/services/responsibility-automation-conversations.ts.
+  "propose_automation",
+  // Server-authored change set an agent proposes for a person's Dashboard in
+  // their dashboard conversation (experimental `enableResponsibilities`). Not
+  // creatable through the generic interactions endpoint; see
+  // server/src/services/responsibility-dashboard.ts.
+  "propose_dashboard_changes",
 ] as const;
 export type IssueThreadInteractionKind = (typeof ISSUE_THREAD_INTERACTION_KINDS)[number];
 
@@ -352,6 +393,33 @@ export const TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND = "task_watchdog_product_bug"
 // Marks the single onboarding "first task" so surfaces can special-case it
 // (e.g. suppress the seeded-description bubble and rely on a seeded greeting).
 export const ONBOARDING_FIRST_TASK_ORIGIN_KIND = "onboarding_first_task";
+/**
+ * The task that holds a conversation with an agent about one responsibility's
+ * bar (experimental `enableResponsibilities`); its origin id is the
+ * responsibility id. See packages/shared/src/responsibility-bars.ts.
+ */
+export const RESPONSIBILITY_BAR_ORIGIN_KIND = "responsibility_bar";
+/**
+ * The task that holds a conversation with an agent about turning one manual
+ * task into an automation (experimental `enableResponsibilities`); its origin
+ * id is that task's id. See packages/shared/src/responsibility-automation.ts.
+ */
+export const AUTOMATION_CONVERSATION_ORIGIN_KIND = "automation_conversation";
+/**
+ * The small task asking the agent with the best view of one responsibility to
+ * write its status (experimental `enableResponsibilities`); its origin id is
+ * the responsibility id. See packages/shared/src/responsibility-status-reports.ts.
+ */
+export const RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND = "responsibility_status_update";
+/**
+ * The task that holds a conversation with an agent about one person's
+ * Dashboard: its areas and the responsibilities they own (experimental
+ * `enableResponsibilities`); its origin id is the person's user id and its
+ * origin fingerprint the mode (`create` or `edit`). See
+ * packages/shared/src/responsibility-dashboard.ts.
+ */
+export const RESPONSIBILITY_DASHBOARD_ORIGIN_KIND = "responsibility_dashboard";
+export const ONBOARDING_CHAT_ORIGIN_KIND = "onboarding_chat";
 
 export const ISSUE_ORIGIN_KINDS = [
   "manual",
@@ -364,7 +432,12 @@ export const ISSUE_ORIGIN_KINDS = [
   "task_watchdog",
   TASK_WATCHDOG_PRODUCT_BUG_ORIGIN_KIND,
   ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+  ONBOARDING_CHAT_ORIGIN_KIND,
   "chat_channel",
+  RESPONSIBILITY_BAR_ORIGIN_KIND,
+  AUTOMATION_CONVERSATION_ORIGIN_KIND,
+  RESPONSIBILITY_STATUS_UPDATE_ORIGIN_KIND,
+  RESPONSIBILITY_DASHBOARD_ORIGIN_KIND,
 ] as const;
 export type BuiltInIssueOriginKind = (typeof ISSUE_ORIGIN_KINDS)[number];
 export type PluginIssueOriginKind = `plugin:${string}`;
@@ -403,6 +476,14 @@ export const ISSUE_RECOVERY_ACTION_OWNER_TYPES = [
 ] as const;
 export type IssueRecoveryActionOwnerType = (typeof ISSUE_RECOVERY_ACTION_OWNER_TYPES)[number];
 
+/**
+ * Wake reason for an agent whose child or blocker stalled on a recovery action
+ * that needs the board. Woken once per stall (one recovery action).
+ */
+export const ISSUE_BLOCKER_STALLED_WAKE_REASON = "issue_blocker_stalled" as const;
+export const ISSUE_BLOCKER_STALL_RELATIONS = ["child", "blocker"] as const;
+export type IssueBlockerStallRelation = (typeof ISSUE_BLOCKER_STALL_RELATIONS)[number];
+
 export const ISSUE_RECOVERY_ACTION_OUTCOMES = [
   "restored",
   "handed_back",
@@ -436,11 +517,9 @@ export const ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES = ["manual", "after_activ
 export type IssueTreeHoldReleasePolicyStrategy = (typeof ISSUE_TREE_HOLD_RELEASE_POLICY_STRATEGIES)[number];
 
 export const ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY = "continuation-summary" as const;
-export const PIPELINE_CASE_BODY_DOCUMENT_KEY = "pipeline-case-body" as const;
-export const PIPELINE_AUTOMATION_DEFAULT_TITLE_TEMPLATE = "{{pipeline_name}} / {{stage_name}}: {{case_title}}" as const;
 export const SYSTEM_ISSUE_DOCUMENT_KEYS = [
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
-  PIPELINE_CASE_BODY_DOCUMENT_KEY,
+  "pipeline-case-body",
 ] as const;
 export type SystemIssueDocumentKey = (typeof SYSTEM_ISSUE_DOCUMENT_KEYS)[number];
 
@@ -454,6 +533,9 @@ export type IssueReferenceSourceKind = (typeof ISSUE_REFERENCE_SOURCE_KINDS)[num
 
 export const DOCUMENT_ANNOTATION_THREAD_STATUSES = ["open", "resolved"] as const;
 export type DocumentAnnotationThreadStatus = (typeof DOCUMENT_ANNOTATION_THREAD_STATUSES)[number];
+
+export const DOCUMENT_ANNOTATION_COMMENT_REACTIONS = ["done", "check", "thumbs_up", "question"] as const;
+export type DocumentAnnotationCommentReactionName = (typeof DOCUMENT_ANNOTATION_COMMENT_REACTIONS)[number];
 
 export const DOCUMENT_ANNOTATION_ANCHOR_STATES = ["active", "stale", "orphaned"] as const;
 export type DocumentAnnotationAnchorState = (typeof DOCUMENT_ANNOTATION_ANCHOR_STATES)[number];
@@ -498,6 +580,7 @@ export const EXTERNAL_OBJECT_LIVENESS_STATES = [
   "fresh",
   "stale",
   "auth_required",
+  "rate_limited",
   "unreachable",
 ] as const;
 export type ExternalObjectLivenessState = (typeof EXTERNAL_OBJECT_LIVENESS_STATES)[number];
@@ -574,6 +657,94 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
+/** Responsibilities (experimental, `enableResponsibilities`). */
+export const RESPONSIBILITY_STATUSES = ["proposed", "active", "let_go", "dismissed"] as const;
+export type ResponsibilityStatus = (typeof RESPONSIBILITY_STATUSES)[number];
+
+export const RESPONSIBILITY_SOURCES = ["manual", "onboarding"] as const;
+export type ResponsibilitySource = (typeof RESPONSIBILITY_SOURCES)[number];
+
+/**
+ * Status of a responsibility, derived from its metric against its target.
+ * `not_measured`: no metric name, no target, or no current reading yet.
+ * Work under the responsibility does not change it (see the work summary).
+ */
+export const RESPONSIBILITY_HEALTH = ["behind", "at_risk", "on_track", "not_measured"] as const;
+export type ResponsibilityHealth = (typeof RESPONSIBILITY_HEALTH)[number];
+
+/** The values a person may set as a manual status override. */
+export const RESPONSIBILITY_HEALTH_OVERRIDES = ["behind", "at_risk", "on_track"] as const;
+export type ResponsibilityHealthOverride = (typeof RESPONSIBILITY_HEALTH_OVERRIDES)[number];
+
+/** `at_least`: higher is better (attainment = current / target). `at_most`: lower is better (target / current). */
+export const RESPONSIBILITY_METRIC_DIRECTIONS = ["at_least", "at_most"] as const;
+export type ResponsibilityMetricDirection = (typeof RESPONSIBILITY_METRIC_DIRECTIONS)[number];
+
+/** Attainment at or above 1 is on track; at or above this (and below 1) is at risk; below it is behind. */
+export const RESPONSIBILITY_AT_RISK_THRESHOLD = 0.75;
+
+/** A current reading older than this many days is reported as stale. */
+export const RESPONSIBILITY_METRIC_STALE_DAYS = 14;
+
+/** An unfinished project whose target date is within this many days is "due soon". */
+export const RESPONSIBILITY_DUE_SOON_DAYS = 7;
+
+/** Tasks completed within this many days count as "recently completed". */
+export const RESPONSIBILITY_RECENTLY_COMPLETED_DAYS = 7;
+
+/** Per-item work-summary signals (one per project, task or routine) beyond this many collapse into one "more" line. */
+export const RESPONSIBILITY_WORK_SIGNAL_ITEM_LIMIT = 5;
+
+/** Most artifacts listed in a responsibility detail, newest first. */
+export const RESPONSIBILITY_DETAIL_ARTIFACT_LIMIT = 50;
+
+/** `artifactsTotal` in a responsibility detail counts up to this many, then stops. */
+export const RESPONSIBILITY_ARTIFACT_COUNT_LIMIT = 1000;
+
+/** Most loose tasks listed in the overview; `loose.openTaskCount` is always complete. */
+export const RESPONSIBILITY_LOOSE_TASK_LIMIT = 50;
+
+/** Most loose projects and routines listed in the overview; their counts are always complete. */
+export const RESPONSIBILITY_LOOSE_LIST_LIMIT = 100;
+
+/** Work-summary signal kinds, in the order the summary lists them within a tone. */
+export const RESPONSIBILITY_WORK_SIGNAL_KINDS = [
+  "metric_stale",
+  "project_late",
+  "routine_failed",
+  "task_blocked",
+  "project_due_soon",
+  "routine_paused",
+  "tasks_open_agent",
+  "tasks_open_person",
+  "tasks_open_unassigned",
+  "tasks_completed_recently",
+  "routine_active",
+] as const;
+export type ResponsibilityWorkSignalKind = (typeof RESPONSIBILITY_WORK_SIGNAL_KINDS)[number];
+
+/** Signal tones, in summary order: what needs attention first. */
+export const RESPONSIBILITY_WORK_SIGNAL_TONES = ["attention", "neutral", "good"] as const;
+export type ResponsibilityWorkSignalTone = (typeof RESPONSIBILITY_WORK_SIGNAL_TONES)[number];
+
+/** Responsibility areas: broad nouns a company cares about, with no owner. */
+export const RESPONSIBILITY_AREA_STATUSES = ["proposed", "active", "archived"] as const;
+export type ResponsibilityAreaStatus = (typeof RESPONSIBILITY_AREA_STATUSES)[number];
+
+export const RESPONSIBILITY_AREA_SOURCES = ["manual", "onboarding"] as const;
+export type ResponsibilityAreaSource = (typeof RESPONSIBILITY_AREA_SOURCES)[number];
+
+export const RESPONSIBILITY_DELEGATION_MODES = [
+  "plan_with_me",
+  "prepare_i_decide",
+  "handle_and_tell_me",
+  "own_from_now_on",
+] as const;
+export type ResponsibilityDelegationMode = (typeof RESPONSIBILITY_DELEGATION_MODES)[number];
+
+/** Most member tasks listed in a responsibility detail; rollup counts are not limited. */
+export const RESPONSIBILITY_DETAIL_TASK_LIMIT = 200;
+
 export const ENVIRONMENT_DRIVERS = ["local", "ssh", "sandbox", "plugin"] as const;
 export type EnvironmentDriver = (typeof ENVIRONMENT_DRIVERS)[number];
 
@@ -645,7 +816,13 @@ export type RoutineActivityGatePolicy = (typeof ROUTINE_ACTIVITY_GATE_POLICIES)[
 export const ROUTINE_ACTIVITY_GATE_SCOPES = ["company", "project"] as const;
 export type RoutineActivityGateScope = (typeof ROUTINE_ACTIVITY_GATE_SCOPES)[number];
 
-export const ROUTINE_TRIGGER_KINDS = ["schedule", "webhook", "api"] as const;
+/**
+ * `heartbeat` is a standing check (experimental `enableResponsibilities`): it
+ * never fires a run by itself. Instead the routine's agent carries out the
+ * routine's instructions each time its heartbeat timer wakes it, and reports
+ * the outcome. See server/src/services/routine-standing-checks.ts.
+ */
+export const ROUTINE_TRIGGER_KINDS = ["schedule", "webhook", "api", "heartbeat"] as const;
 export type RoutineTriggerKind = (typeof ROUTINE_TRIGGER_KINDS)[number];
 
 export const ROUTINE_TRIGGER_SIGNING_MODES = ["bearer", "app_webhook", "hmac_sha256", "github_hmac", "fireflies_hmac", "none"] as const;
@@ -664,13 +841,14 @@ export const ROUTINE_RUN_STATUSES = [
  ] as const;
 export type RoutineRunStatus = (typeof ROUTINE_RUN_STATUSES)[number];
 
-export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook"] as const;
+/** `heartbeat`: a standing check's reported outcome (no task is created per check). */
+export const ROUTINE_RUN_SOURCES = ["schedule", "manual", "api", "webhook", "heartbeat"] as const;
 export type RoutineRunSource = (typeof ROUTINE_RUN_SOURCES)[number];
 
 // "import" marks agents parked by a company import (safety default) so the UI
 // can explain the pause and offer a scoped bulk-resume; "system" remains the
 // reason for platform-managed pauses (plugins, built-ins).
-export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived", "import"] as const;
+export const PAUSE_REASONS = ["manual", "budget", "system", "company_archived", "import", "setup"] as const;
 export type PauseReason = (typeof PAUSE_REASONS)[number];
 
 export const PROJECT_COLORS = [
@@ -732,7 +910,7 @@ export type SecretProviderConfigHealthStatus =
 export const SECRET_STATUSES = ["active", "disabled", "archived", "deleted"] as const;
 export type SecretStatus = (typeof SECRET_STATUSES)[number];
 
-export const SECRET_SCOPES = ["company", "user"] as const;
+export const SECRET_SCOPES = ["company", "user", "instance"] as const;
 export type SecretScope = (typeof SECRET_SCOPES)[number];
 
 export const SECRET_MANAGED_MODES = ["paperclip_managed", "external_reference"] as const;
@@ -833,7 +1011,7 @@ export const BILLING_TYPES = [
 ] as const;
 export type BillingType = (typeof BILLING_TYPES)[number];
 
-export const COST_STATUSES = ["reported", "unpriced"] as const;
+export const COST_STATUSES = ["reported", "estimated", "unpriced"] as const;
 export type CostStatus = (typeof COST_STATUSES)[number];
 
 export const FINANCE_EVENT_KINDS = [
@@ -945,13 +1123,18 @@ export const LIVE_EVENT_TYPES = [
   "heartbeat.run.progress",
   "heartbeat.run.event",
   "heartbeat.run.log",
+  "heartbeat.run.activity",
+  "heartbeat.run.tool_progress",
   "agent.session.goal.changed",
   "agent.status",
+  "agent.runtime_state.updated",
   "activity.logged",
   "external_object.updated",
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",
+  "agent_setup_progress.updated",
+  "cloud_trial.status.updated",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -1002,6 +1185,7 @@ export type JoinRequestStatus = (typeof JOIN_REQUEST_STATUSES)[number];
 
 export const PERMISSION_KEYS = [
   "agents:create",
+  "agents:read",
   "agents:configure",
   "agents:suggest-changes",
   "skills:create",
@@ -1012,6 +1196,7 @@ export const PERMISSION_KEYS = [
   "tools:manage_profiles",
   "tools:view_audit",
   "audit:view_agent_actions",
+  "commentary:view",
   "tools:use",
   "tools:manage_runtime",
   "inbox:manage",
@@ -1020,12 +1205,12 @@ export const PERMISSION_KEYS = [
   "tasks:assign",
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
-  "pipelines:write",
+  "tasks:retry",
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
 
-export const TOOL_APPLICATION_TYPES = ["mcp_http", "mcp_stdio", "paperclip_plugin", "a2a", "chat"] as const;
+export const TOOL_APPLICATION_TYPES = ["rest_api", "mcp_http", "mcp_stdio", "paperclip_plugin", "a2a", "chat"] as const;
 export type ToolApplicationType = (typeof TOOL_APPLICATION_TYPES)[number];
 
 export const TOOL_APPLICATION_STATUSES = ["draft", "active", "disabled", "archived"] as const;
@@ -1222,6 +1407,8 @@ export const TOOL_CONNECTION_LIFECYCLE_EVENT_TYPES = [
   "reconnected",
   "disconnected",
   "actions_quarantined",
+  "google_access_ended",
+  "google_access_not_ended",
 ] as const;
 export type ToolConnectionLifecycleEventType = (typeof TOOL_CONNECTION_LIFECYCLE_EVENT_TYPES)[number];
 
@@ -1320,11 +1507,15 @@ export type PluginCategory = (typeof PLUGIN_CATEGORIES)[number];
  * @see PLUGIN_SPEC.md §15 — Capability Model
  */
 export const PLUGIN_CAPABILITIES = [
+  "ai.connections.route",
   // Data Read
   "companies.read",
   "projects.read",
+  "projects.instance-secrets",
+  "projects.git-credentials",
   "project.workspaces.read",
   "execution.workspaces.read",
+  "workspaces.manage",
   "issues.read",
   "issue.relations.read",
   "issue.subtree.read",
@@ -1339,6 +1530,7 @@ export const PLUGIN_CAPABILITIES = [
   "approvals.read",
   "issue.documents.read",
   "agents.read",
+  "agents.lifecycle.manage",
   "goals.read",
   "goals.create",
   "goals.update",
@@ -1410,6 +1602,8 @@ export const PLUGIN_CAPABILITIES = [
   "local.folders",
   // Agent Tools
   "agent.tools.register",
+  // Connectors
+  "connectors.provide",
   // UI
   "instance.settings.register",
   "ui.sidebar.register",
@@ -1494,6 +1688,8 @@ export const PLUGIN_UI_SLOT_TYPES = [
 export type PluginUiSlotType = (typeof PLUGIN_UI_SLOT_TYPES)[number];
 
 export const WORKSPACE_OVERVIEW_DEFAULT_LIMIT = 50;
+export const HEARTBEAT_RUN_LIST_DEFAULT_LIMIT = 200;
+export const HEARTBEAT_RUN_LIST_MAX_LIMIT = 1000;
 export const WORKSPACE_OVERVIEW_MAX_LIMIT = 100;
 export const WORKSPACE_OVERVIEW_LINKED_ISSUE_LIMIT = 4;
 

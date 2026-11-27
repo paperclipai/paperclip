@@ -50,6 +50,11 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableAiConnectionRouters: {
+    title: "AI connection routers",
+    description: "Allow experimental plugin connections to choose task-pinned accounts and harnesses.",
+    tier: "managed", cloudDefault: false, selfHostedDefault: false,
+  },
   enableNativeRunner: {
     title: "Paperclip Runner",
     description:
@@ -76,6 +81,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
+  },
+  remoteWorkspaceStorageEnabled: {
+    title: "Remote workspace storage",
+    description: "Keep eligible new native sandbox workspaces remote when durable storage is configured, and save verified snapshots in object storage.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableIsolatedWorkspacesByDefault: {
     title: "Isolated Workspaces By Default",
@@ -108,10 +120,45 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: true,
     selfHostedDefault: true,
   },
+  enablePublicMcp: {
+    title: "Assistant connections (compatibility)",
+    description:
+      "Deprecated compatibility key. Assistant connections (MCP) are always enabled; stored and managed values are ignored.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: true,
+  },
+  enableGitHubReviewBots: {
+    title: "GitHub review bots (compatibility)",
+    description:
+      "Deprecated compatibility key. GitHub review bots are always enabled; stored and managed values are ignored.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: true,
+  },
+  enableOpenAiDot: {
+    title: "OpenAI Dot",
+    description: "Add OpenAI Dot as a standalone agent choice with its own experimental opt-in. Requires an authenticated instance with a public HTTPS URL.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableGrokBot: {
+    title: "Grok Bot",
+    description: "Connect an existing Grok Bot as an experimental Paperclip agent. Requires Paperclip Runner and an authenticated public HTTPS instance. Provider spending is not reported.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableMuse: {
+    title: "Muse — Personal agent",
+    description: "Connect your personal Meta Muse through its managed background receiver and the external Paperclip Runner. Experimental; requires authenticated public HTTPS and Paperclip Runner.",
+    tier: "managed", cloudDefault: false, selfHostedDefault: false,
+  },
   enableChatConnectors: {
     title: "Chat connectors",
     description:
-      "Show experimental chat connector setup and Board surfaces. Existing connections keep running when hidden; GitHub and other tool connectors are unaffected.",
+      "Show experimental chat connector setup and Board surfaces. Existing connections keep running when hidden; AgentMail, GitHub review bots, and tool connectors are unaffected.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -123,19 +170,33 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enablePaperclipNotebook: {
+    title: "Paperclip Notebook",
+    description: "Allow Paperclip Notebook connections and publishing through an explicitly enabled instance rollout.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableGoogleWorkspaceConnector: {
+    title: "Google Workspace connector (Paperclip)",
+    description: "Show and allow the built-in Google Workspace connector while its Google app verification is pending. When off, Google apps are offered through Composio and Arcade instead.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableAwsConnector: {
+    title: "AWS connector (compatibility)",
+    description: "Deprecated compatibility key. The AWS connector is always available; stored and managed values are ignored.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: true,
+  },
   enableMcpAggregators: {
     title: "MCP aggregators (compatibility)",
     description: "Deprecated compatibility key. MCP aggregators are always enabled; stored and managed values are ignored.",
     tier: "managed",
     cloudDefault: true,
     selfHostedDefault: true,
-  },
-  enablePipelines: {
-    title: "Pipelines",
-    description: "Enable pipeline definitions and pipeline-driven case production surfaces.",
-    tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
   },
   enableCases: {
     title: "Cases",
@@ -146,11 +207,27 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     selfHostedDefault: false,
   },
   enableAgentChat: {
-    title: "Agent Chat",
-    description: "Persistent task-backed conversations that clarify goals and hand work off to tasks.",
+    title: "Agent Chat (compatibility)",
+    description: "Deprecated compatibility key. Agent Chat is always enabled; stored and managed values are ignored.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: true,
+  },
+  enableCombinedInboxTasks: {
+    title: "Combined Inbox + Task List",
+    description:
+      "Inbox becomes a set of views inside Tasks: one Tasks row in the nav carries the unread badge, and a Views menu reaches every inbox and task view.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
+  },
+  enableArtifactsV1: {
+    title: "Artifacts V1",
+    description:
+      "The artifact presentation from the artifact directions lab: paper stacks and tiles on the Artifacts page, compact rows in the panel's Artifacts tab, and grouped rows in the task thread.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: true,
   },
   enableConferenceRoomChat: {
     title: "Conference Room Chat",
@@ -164,6 +241,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     title: "Classic Task Interface",
     description:
       "Restore the pre-chat task detail page: the page-level header with inline description editor, the plain comment thread, and the fixed Properties sidebar. Chat-only features (streaming activity folding, inline plan/question cards, the three-mode composer) are unavailable in the classic view.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableLegacyComposerSubmit: {
+    title: "Command/Ctrl+Enter to Submit",
+    description:
+      "Require Command/Ctrl+Enter to submit task replies and new tasks. Enter inserts a new line.",
     tier: "preference",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -187,6 +272,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     title: "Status Cards",
     description:
       "Enable the experimental shared status-card board, update engine, and gated API.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableResponsibilities: {
+    title: "Areas & Responsibilities dashboard",
+    description:
+      "Replace the classic dashboard with the experimental one built on areas and responsibilities, and enable its API: per-person areas with the projects, tasks and routines under them, rolled-up health, agent proposals and delegation.",
     tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
@@ -235,6 +328,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     description:
       "Show the Decisions item in the main sidebar — the attention home that surfaces tasks awaiting input.",
     tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableFastResponses: {
+    title: "Experimental fast responses",
+    description:
+      "Allow short acknowledgements while agents begin work. Configure them in Settings → Connections.",
+    tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
   },
@@ -301,6 +402,22 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: true,
     selfHostedDefault: false,
   },
+  enableMcpTasks: {
+    title: "Durable app actions (MCP Tasks)",
+    description:
+      "Let connected apps run long actions, such as CI runs or deploys, as tasks that Paperclip keeps track of across timeouts, restarts, and deploys, so the work is never started twice.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableAntigravitySwarm: {
+    title: "Google Antigravity swarm",
+    description:
+      "Let you start Google Antigravity's native swarm by starting a comment on a task with /swarm. Helper actions are approved automatically by Antigravity's auto mode. Paperclip does not sandbox the helpers: their shell commands can write outside the task folder, for example in temp directories. Local computers with a Google sign-in only.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableSandboxDuplexBridge: {
     title: "Sandbox Duplex Bridge",
     description:
@@ -330,6 +447,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     description:
       "When the user's first request is a single task, the chief of staff writes a short plan document and a checkbox card instead of a one-card confirmation. Applies to organizations created after the toggle is flipped.",
     tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableCloudTrialInference: {
+    title: "Cloud starter inference",
+    description:
+      "Lets new Cloud workspaces start their first agent right away (OpenCode / GPT-6 Luna via server proxy) before asking the user to connect a model provider.",
+    tier: "managed",
     cloudDefault: false,
     selfHostedDefault: false,
   },

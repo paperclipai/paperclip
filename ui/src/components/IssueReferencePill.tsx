@@ -1,10 +1,12 @@
 import { X } from "lucide-react";
 import type { ReactNode } from "react";
-import type { IssueRelationIssueSummary } from "@paperclipai/shared";
+import type { IssueLockedStub, IssueRelationIssueSummary } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
 import { cn } from "../lib/utils";
+import { LockedIssueChip, isLockedIssueStub } from "./LockedIssueChip";
 import { badgeVariants } from "./ui/badge";
 import { StatusIcon } from "./StatusIcon";
+import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 export function IssueReferencePill({
   issue,
@@ -14,8 +16,10 @@ export function IssueReferencePill({
   onRemove,
   variant = "mention",
 }: {
-  issue: Pick<IssueRelationIssueSummary, "id" | "identifier" | "title"> &
-    { status?: string };
+  issue:
+    | (Pick<IssueRelationIssueSummary, "id" | "identifier" | "title"> &
+        { status?: string; displayStatus?: string })
+    | IssueLockedStub;
   strikethrough?: boolean;
   variant?: "mention" | "property";
   className?: string;
@@ -23,6 +27,10 @@ export function IssueReferencePill({
   /** Reserves space for a separate hover/focus action without moving the task link. */
   onRemove?: (issueId: string) => void;
 }) {
+  // Private issue referenced from a visible edge — never leak a title or a link.
+  if (isLockedIssueStub(issue)) {
+    return <LockedIssueChip identifier={issue.identifier} className={className} />;
+  }
   const issueLabel = issue.identifier ?? issue.title;
   const classNames = cn(
     variant === "property" || onRemove
@@ -35,7 +43,7 @@ export function IssueReferencePill({
   );
   const content = (
     <>
-      {issue.status ? <StatusIcon status={issue.status} className="h-3 w-3 shrink-0" /> : null}
+      {issue.status ? <StatusIcon {...taskStatusIconProps({ ...issue, status: issue.status })} className="h-3 w-3 shrink-0" /> : null}
       {children !== undefined ? children : <span className="min-w-0 truncate">{issue.identifier ?? issue.title}</span>}
     </>
   );

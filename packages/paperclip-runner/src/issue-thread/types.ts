@@ -227,7 +227,7 @@ export type CapabilityThreadItem =
       kind: "provider_activity";
       id: string;
       at: string;
-      family: "plan" | "tool_execution" | "research" | "delegation" | "model_identity" | "context" | "artifact" | "review" | "hook" | "memory" | "safety" | "terminal" | "wait" | "provider_notice";
+      family: "plan" | "plan_proposal" | "tool_execution" | "research" | "delegation" | "model_identity" | "context" | "artifact" | "review" | "hook" | "memory" | "safety" | "terminal" | "wait" | "provider_notice";
       eventType: string;
       status: "running" | "completed" | "failed" | "interrupted" | "informational";
       title: string;
