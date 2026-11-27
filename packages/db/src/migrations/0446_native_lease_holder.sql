@@ -1,0 +1,3 @@
+ALTER TABLE "native_run_finalizations" ADD COLUMN "lease_holder" jsonb;--> statement-breakpoint
+CREATE INDEX "native_run_finalizations_finalizer_lease_idx" ON "native_run_finalizations" USING btree ("lease_expires_at") WHERE "native_run_finalizations"."lease_owner" like 'native-finalizer:%';--> statement-breakpoint
+CREATE INDEX "native_run_finalizations_cleanup_lease_idx" ON "native_run_finalizations" USING btree ("lease_expires_at") WHERE "native_run_finalizations"."lease_owner" like 'native-cleanup:%';

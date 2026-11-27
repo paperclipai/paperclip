@@ -88,10 +88,10 @@ export async function runBlockerFlow(input: {
       if (hash !== hashes[file]) throw new Error(`Bundled operational skill differs from evaluated source: ${file}`);
     }
     await api.patch("/api/instance/settings/experimental", { enableClassicTaskInterface: false });
-    await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name,
+    const createdTask = await createTaskThroughUi({ page, issuePrefix: fixtures.company.issuePrefix!, agentName: fixtures.agent.name,
       title: execution.task.buildTitle(input.nonce), prompt: scenario.prompt, workMode: "standard" });
     issue = await pollUntil({ label: "browser-created blocker task", deadlineAt: input.deadlineAt,
-      load: async () => (await api.get<Row[]>(`${company}/issues`)).find(i => i.title === execution.task.buildTitle(input.nonce)), accept: Boolean });
+      load: async () => (await api.get<Row[]>(`${company}/issues`)).find(i => i.id === createdTask.issueId), accept: Boolean });
     if (!issue) throw new Error("No browser-created task");
     checkpoints.push(await settle("waiting"));
     await open();

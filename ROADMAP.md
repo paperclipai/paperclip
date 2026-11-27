@@ -134,9 +134,9 @@ As companies grow, agents should be able to propose useful structural changes su
 
 Paperclip should get better at turning completed work into reusable organizational knowledge. That includes capturing playbooks, recurring fixes, and decision patterns so future work starts from what the company has already learned.
 
-### 🟡 Agent Chat (including CEO Chat)
+### ✅ Agent Chat (including CEO Chat)
 
-Experimental Agent Chat provides persistent conversations with any agent, including leadership. Conversations keep their history and plans, then hand execution off to linked tasks. Agent Chat is off by default. Experimental chat and email connectors provide additional entry points through configured external services; they have separate setup and access controls.
+Agent Chat provides persistent conversations with any agent, including leadership. Conversations keep their history and plans, then hand execution off to linked tasks. Agent Chat is available to everyone. Experimental chat and email connectors provide additional entry points through configured external services; they have separate setup and access controls.
 
 ### 🟡 Cloud deployments
 
