@@ -1,3 +1,4 @@
+import { classifyAdapterFailureForRecovery } from "../recovery/service.js";
 import { QUEUED_MESSAGES_DELIVERED_REASON } from "../../modules/wake-queue/index.js";
 import { connectionIntentService } from "../connection-intents.js";
 import { verifyBlockerStallWake } from "../recovery/blocker-stall-wakeups.js";
@@ -37,7 +38,7 @@ import { assertTaskRetryConversationAllowed, readTaskRetryIntent, readTaskRetryB
 import { insertIssueComment } from "../issue-comment-writes.js";
 import { withExternalAdmissionGuard, assertNoExternalOverlap } from "../../modules/external-agents/index.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
-import { normalizeAgentNameKey } from "./retries.js";
+import { normalizeAgentNameKey, readHeartbeatRunErrorFamily } from "./retries.js";
 import { publishActiveDotComment } from "../dot-assignment-follow-up.js";
 import { publishActiveMuseComment } from "../muse-assignment-follow-up.js";
 import {
@@ -3421,6 +3422,29 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       return queuedResponsibleUserId;
     };
 
+    if (contextSnapshot.assignedReviewerHandoff === true && opts.issueStateGuard && agent.role === "qa") {
+      const [latest] = await db.select({
+        status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode,
+        error: heartbeatRuns.error, resultJson: heartbeatRuns.resultJson,
+        startedAt: heartbeatRuns.startedAt, finishedAt: heartbeatRuns.finishedAt, createdAt: heartbeatRuns.createdAt,
+      }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, agent.companyId), eq(heartbeatRuns.agentId, agentId),
+        inArray(heartbeatRuns.status, ["failed", "succeeded"]), isNotNull(heartbeatRuns.finishedAt),
+      )).orderBy(desc(heartbeatRuns.finishedAt)).limit(1);
+      // Anchor relative reset times and the default backoff to the observed failure.
+      if (latest?.status === "failed" && latest.finishedAt) {
+        const quota = latest.errorCode === "native_provider_usage_limit" ||
+          readHeartbeatRunErrorFamily(latest) === "provider_quota";
+        const failure = classifyAdapterFailureForRecovery(
+          quota ? { ...latest, errorCode: "provider_quota" } : latest, latest.finishedAt,
+        );
+        if (failure?.kind === "provider_quota" && failure.retryAt.getTime() > Date.now()) {
+          await writeSkippedRequest("provider_quota", { error: `Quota retry at ${failure.retryAt.toISOString()}` });
+          return null;
+        }
+      }
+    }
+
     const budgetBlock = await budgets.getInvocationBlock(
       agent.companyId,
       agentId,
@@ -3453,7 +3477,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         throw await saveDeferredMessage("agent.not_invokable", invokability.message,
           { status: agent.status, reason: invokability.reason });
       let waitSaved = false;
-      if (opts.requestedByActorType !== "user" || executionWaitRequestId) {
+      if (opts.requestedByActorType !== "user" || executionWaitRequestId || contextSnapshot.assignedReviewerHandoff === true) {
         const wait = await writeSkippedRequest("agent.not_invokable", {
           error: invokability.message,
         }, { status: agent.status, reason: invokability.reason });

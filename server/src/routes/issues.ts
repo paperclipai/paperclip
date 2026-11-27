@@ -16896,10 +16896,18 @@ export function issueRoutes(
           });
         };
 
+        const reviewHandoff = issue.status === "in_review" &&
+          (issueChanges.status?.to === "in_review" || Boolean(issueChanges.assigneeAgentId)) &&
+          deferWakeForGoal !== true;
+        const reviewAssignee = reviewHandoff && issue.assigneeAgentId
+          ? await agentsSvc.getById(issue.assigneeAgentId)
+          : null;
+        const assignedReviewer = reviewAssignee?.role === "qa" && reviewAssignee.companyId === issue.companyId;
+
         if (executionStageWakeup && deferWakeForGoal !== true) {
           addWakeup(executionStageWakeup.agentId, executionStageWakeup.wakeup);
         } else if (
-          assigneeChanged &&
+          (assigneeChanged || assignedReviewer) &&
           issue.assigneeAgentId &&
           issue.status !== "backlog" &&
           // Restoring an assignee on completed work is not a reopen request.
@@ -16940,8 +16948,22 @@ export function issueRoutes(
           });
         }
 
+        if (assignedReviewer && issue.assigneeAgentId) {
+          const reviewerWake = wakeups.get(`${issue.assigneeAgentId}:${issue.id}`)?.wakeup;
+          if (reviewerWake) {
+            reviewerWake.issueStateGuard = {
+              assigneeAgentId: issue.assigneeAgentId,
+              statuses: ["in_review"],
+              statusVersion: issue.statusVersion,
+            };
+            reviewerWake.contextSnapshot = {
+              ...reviewerWake.contextSnapshot, taskId: issue.id, assignedReviewerHandoff: true,
+            };
+          }
+        }
+
         if (
-          !assigneeChanged &&
+          !assigneeChanged && !assignedReviewer &&
           (statusChangedFromBacklog ||
             statusChangedFromBlockedToTodo ||
             statusChangedFromClosedToTodo ||
