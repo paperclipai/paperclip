@@ -155,10 +155,14 @@ export function MobileBottomNav({ visible }: MobileBottomNavProps) {
             >
               {({ isActive }) => (
                 <>
-                  <span className="relative">
+                  <span className="relative inline-flex items-center justify-center">
                     <Icon className={cn("h-(--sz-18px) w-(--sz-18px)", isActive && "stroke-(length:--sw-2_3)")} />
                     {item.badge != null && item.badge > 0 && (
-                      <Badge variant="ghost" className="absolute -right-2 -top-2 bg-primary px-1.5 text-(length:--text-nano) leading-none text-primary-foreground">
+                      <Badge
+                        variant="ghost"
+                        data-slot="mobile-nav-badge"
+                        className="pointer-events-none absolute -top-1.5 left-3 min-w-4 bg-primary px-1 py-0.5 text-(length:--text-nano) leading-none tabular-nums text-primary-foreground"
+                      >
                         {item.badge > 99 ? "99+" : item.badge}
                       </Badge>
                     )}
