@@ -143,15 +143,41 @@ export function createPluginJobScheduler(options: PluginJobSchedulerOptions): Pl
     } catch (err) { activeJobs.delete(job.id); throw err; }
   }
 
+  // A run row is written before the worker call and settled after it. When the host stops while a run is
+  // active (restart, crash), the row stays pending/queued/running and blocks its job forever, because every
+  // dispatch refuses a job with an outstanding run. No live execution can outlast the worker call timeout plus
+  // the settlement timeout, so an outstanding run older than that (with a margin) that this process does not
+  // hold is orphaned: settle it as failed so the job runs again.
+  const orphanAfterMs = jobTimeoutMs + settlementTimeoutMs + 5 * 60_000;
+  async function releaseOrphanedRuns(runs: Array<{ id: string; jobId: string; createdAt: Date; startedAt: Date | null }>, now: number) {
+    const released = new Set<string>();
+    for (const run of runs) {
+      if (activeJobs.has(run.jobId) || pendingSettlements.has(run.jobId)) continue;
+      if (now - (run.startedAt ?? run.createdAt).getTime() < orphanAfterMs) continue;
+      const done = await db.transaction(async tx => {
+        const [current] = await tx.select().from(pluginJobRuns).where(eq(pluginJobRuns.id, run.id)).for("update");
+        if (!current || !["running", "queued", "pending"].includes(current.status)) return false;
+        await pluginJobStore(tx).completeRun(current.id, { status: "failed",
+          error: "Orphaned: the host stopped while this run was active",
+          durationMs: current.startedAt ? now - current.startedAt.getTime() : null });
+        return true;
+      });
+      if (done) { released.add(run.id); log.warn({ jobId: run.jobId, runId: run.id }, "released orphaned plugin job run"); }
+    }
+    return released;
+  }
+
   async function refresh(signal?: AbortSignal) {
     const settlements = await Promise.allSettled([...pendingSettlements.keys()].map(settle));
     const jobs = await db.select().from(pluginJobs).where(eq(pluginJobs.status, "active"));
     const runnable = jobs.filter(job => !unregistered.has(job.pluginId) && workerManager.isRunning(job.pluginId)
       && !activeJobs.has(job.id) && !pendingSettlements.has(job.id) && job.schedule && !validateCron(job.schedule));
-    const outstanding = runnable.length === 0 ? [] : await db.select({ jobId: pluginJobRuns.jobId })
+    const outstanding = runnable.length === 0 ? [] : await db.select({ id: pluginJobRuns.id, jobId: pluginJobRuns.jobId,
+      createdAt: pluginJobRuns.createdAt, startedAt: pluginJobRuns.startedAt })
       .from(pluginJobRuns).where(and(inArray(pluginJobRuns.jobId, runnable.map(job => job.id)),
         inArray(pluginJobRuns.status, ["pending", "queued", "running"])));
-    const blocked = new Set(outstanding.map(run => run.jobId));
+    const orphaned = await releaseOrphanedRuns(outstanding, Date.now());
+    const blocked = new Set(outstanding.filter(run => !orphaned.has(run.id)).map(run => run.jobId));
     const now = new Date();
     const dispatches: Promise<unknown>[] = [];
     next = null;
