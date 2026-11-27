@@ -1,6 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { expect, test, type APIResponse, type Locator, type Page } from "@playwright/test";
 
+test.beforeEach(async ({ page }) => {
+  await page.route("**/api/workspace-preferences/me", route => route.fulfill({ json: {
+    userId: "local-board", coordinatorWorkspaceEnabled: false, updatedAt: null,
+  } }));
+});
+
 async function json(response: APIResponse) {
   expect(response.ok(), await response.text()).toBe(true);
   return response.json();

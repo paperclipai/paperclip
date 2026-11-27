@@ -55,6 +55,10 @@ struct PersistedAcpxProviderSessionIdentity {
     pi_thinking_level: Option<PiThinkingLevel>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     claude_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grok_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    grok_disable_web_search: Option<bool>,
     provider_lifetime_fence_candidates: [u16; 3],
 }
 
@@ -80,6 +84,8 @@ impl PersistedAcpxProviderSessionIdentity {
             mode: identity.mode,
             pi_thinking_level: identity.pi_thinking_level,
             claude_effort: identity.claude_effort.clone(),
+            grok_effort: identity.grok_effort.clone(),
+            grok_disable_web_search: identity.grok_disable_web_search.clone(),
             provider_lifetime_fence_candidates: identity.provider_lifetime_fence_candidates,
         })
     }
@@ -99,6 +105,8 @@ impl PersistedAcpxProviderSessionIdentity {
             mode: self.mode.clone(),
             pi_thinking_level: self.pi_thinking_level,
             claude_effort: self.claude_effort.clone(),
+            grok_effort: self.grok_effort.clone(),
+            grok_disable_web_search: self.grok_disable_web_search.clone(),
             provider_lifetime_fence_candidates: self.provider_lifetime_fence_candidates,
         }
     }
@@ -122,6 +130,8 @@ impl AcpxSuspensionCheckpoint {
             || identity.mode != config.mode
             || identity.pi_thinking_level != config.pi_thinking_level
             || identity.claude_effort != config.claude_effort
+            || identity.grok_effort != config.grok_effort
+            || identity.grok_disable_web_search != config.grok_disable_web_search
             || config
                 .expected_identity
                 .as_ref()

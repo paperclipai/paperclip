@@ -37,3 +37,21 @@ validation and token gates pass.
 The production setup components were checked in a background browser using
 simulated Storybook data: one profile, personal access and OAuth method switching.
 Full regression checks and PR review are in progress. No live Google proof yet.
+
+## Draft resume follow-up — 2026-10-28
+
+The setup draft now retains its validated service request before either managed
+or customer-owned OAuth handoff. This non-secret intent is bound to the company,
+connection, initiating actor, grant kind, and credential subject. Denial, expired
+OAuth state, and a cold Finish setup return restore that exact request rather
+than the new-account write defaults. Historical or differently owned drafts
+require an explicit service choice; existing reconnects keep their grant request.
+
+Agent handoffs still open the addressed human's picker without issuing provider
+state or inventing service access. A human's reviewed choice consumes only their
+own pending service proposal, so an older proposal cannot override that choice
+on the next draft resume. Other users' proposals remain unchanged.
+
+This follow-up is local to a fresh checkout of master at `820c458465fa`.
+Provider-fixture/database and production-component tests cover the changed
+journey; they do not establish live Google consent, merge, or deployment.

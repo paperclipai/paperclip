@@ -19,7 +19,7 @@ export function createOrganizationGrantStore(db: Db) {
      * so without this the grants API reads back a shared identity whose scope has no source
      * and no over-grant warning — while the connection record carries both.
      *
-     * Deliberately scope fields only. The shared grant takes its credential lifecycle from the
+     * Scope provenance includes its consent timestamp. The shared grant takes its credential lifecycle from the
      * connection, and writing `accessTokenExpiresAt` here would make an expired connection
      * look fresh to the refresh-due check and skip the reconnect prompt.
      */
@@ -42,6 +42,7 @@ export function createOrganizationGrantStore(db: Db) {
               scopeSource: oauthProvenance.scopeSource,
               unrequestedScopes: oauthProvenance.unrequestedScopes,
               requestedScopes: oauthProvenance.requestedScopes,
+              consentedAt: new Date().toISOString(),
             },
           }
         : current;

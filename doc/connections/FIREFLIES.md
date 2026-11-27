@@ -175,10 +175,8 @@ accounts or send provider requests.
 | --- | --- |
 | Catalog definition and branded artwork | Fireflies catalog; artwork in dark/light themes; Access, OAuth, API-key, and retry screens |
 | Preserved action restrictions | Permissions with Allowed, Ask first, and Off examples |
-| `TriggerWizard.tsx` | Shared app choice, HTTPS warning, signing secret/bearer copy, four verification states, save/resume, hidden-secret rotation, legacy drafts, mobile and light theme |
-| `RoutineTriggers.tsx` | Saved app-webhook settings, rotated secret/agent instructions, rejected delivery |
-| `RoutineTriggerCard.tsx` | Advanced card with `app_webhook` and no timestamp replay window |
-| `editable-sections.production.tsx` | Advanced creation with shared signing-mode description |
+| `RoutineWebhookDialog.tsx` | Choosing the sender, the one-time key with agent instructions, waiting/received/rejected test states, HTTPS warning, hidden key and Replace key, existing bearer and signed webhooks, mobile and light theme |
+| Routine page and Edit dialog | Saved app webhook, replaced key, rejected delivery, adding a webhook from the Edit dialog |
 
 ```sh
 pnpm storybook
