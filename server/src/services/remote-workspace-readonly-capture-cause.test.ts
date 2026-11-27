@@ -85,6 +85,30 @@ describe("recorded cause of a failed full-disk read-only capture", () => {
     } finally { await fs.chmod(secret, 0o600); }
   });
 
+  it.skipIf(process.platform === "win32")("names a sandbox Git storage guard refusal from the inventory before any transfer", async () => {
+    const realGit = path.join((await exec("git", ["--exec-path"])).stdout.trim(), "git");
+    await exec(realGit, ["-C", workspace, "init", "-q"]);
+    await fs.writeFile(path.join(workspace, "package.json"), "{}\n");
+    await fs.mkdir(path.join(workspace, "node_modules"));
+    const bin = path.join(scratch, "bin");
+    await fs.mkdir(bin);
+    await fs.writeFile(path.join(bin, "git"), [
+      "#!/bin/sh",
+      "for arg in \"$@\"; do case \"$arg\" in ls-files)",
+      "  echo \"paperclip_git_storage_limit: The sandbox has too little free disk space or too few free inodes; Git did not start.\" >&2; exit 75;;",
+      "esac; done",
+      `exec ${JSON.stringify(realGit)} "$@"`,
+      "",
+    ].join("\n"), { mode: 0o755 });
+    vi.stubEnv("PATH", `${bin}${path.delimiter}${process.env.PATH}`);
+    try {
+      const remote = target();
+      expect(remoteWorkspaceFailureCause(await capture(remote)))
+        .toBe(`${DISK_FULL}; remote_workspace_readonly_capture_failed: stage=inspect reason=git_storage_limit transport=provider_error`);
+      expect(remote.runner!.syncOut).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("does not attach a cause outside the fallback grammar", () => {
     const failure = new Error(DISK_FULL, { cause: new Error("remote_workspace_readonly_capture_failed: stage=inspect reason=x /private/path") });
     expect(remoteWorkspaceFailureCause(failure)).toBe(DISK_FULL);
