@@ -394,6 +394,37 @@ describeEmbeddedPostgres("companySearchService", () => {
     expect(result.countsByType.document).toBe(1);
   });
 
+  it("keeps private task artifacts out of an unrelated member's search", async () => {
+    const previousMode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+    process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = "enforce";
+    try {
+      const companyId = await createCompany();
+      const agentId = await createAgent(companyId, { name: "Private Writer" });
+      const ownerId = `owner-${randomUUID()}`, outsiderId = `outsider-${randomUUID()}`;
+      const privateId = randomUUID();
+      await createIssue(companyId, { id: privateId, title: "Confidential work", visibility: "private",
+        privacyRootIssueId: privateId, responsibleUserId: ownerId });
+      const documentId = randomUUID();
+      await db.insert(documents).values({ id: documentId, companyId, title: "Confidential draft",
+        latestBody: "Launch code nightjar-secret for internal review.", format: "markdown", createdByAgentId: agentId });
+      await db.insert(issueDocuments).values({ companyId, issueId: privateId, documentId, key: "announcement" });
+      const conditionFor = async (userId: string) => ({
+        issueReadCondition: await issueReadSqlCondition(db, { type: "board", userId, source: "session" }),
+      });
+      const query = companySearchQuerySchema.parse({ q: "nightjar-secret" });
+
+      const outsider = await svc.search(companyId, query, await conditionFor(outsiderId));
+      expect(outsider.results.filter(row => row.type === "artifact")).toEqual([]);
+      expect(outsider.countsByType.artifact).toBe(0);
+      const owner = await svc.search(companyId, query, await conditionFor(ownerId));
+      expect(owner.results.filter(row => row.type === "artifact")).toHaveLength(1);
+      expect(owner.countsByType.artifact).toBe(1);
+    } finally {
+      if (previousMode === undefined) delete process.env.PAPERCLIP_ISSUE_PRIVACY_MODE;
+      else process.env.PAPERCLIP_ISSUE_PRIVACY_MODE = previousMode;
+    }
+  });
+
   it("searches artifact projections through the artifacts scope", async () => {
     const companyId = await createCompany();
     const agentId = await createAgent(companyId, { name: "Artifact Writer" });

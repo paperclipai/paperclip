@@ -49,7 +49,16 @@ fn within_call_budget(mut files: Vec<Value>) -> Vec<Value> {
 
 static TURN_DIFF_REVISION: AtomicU64 = AtomicU64::new(0);
 
+pub(crate) fn is_single_line_path(value: &str) -> bool {
+    !value
+        .chars()
+        .any(|character| character.is_control() || matches!(character, '\u{2028}' | '\u{2029}'))
+}
+
 fn normalize_relative(candidate: &str) -> Option<String> {
+    if !is_single_line_path(candidate) {
+        return None;
+    }
     let mut parts: Vec<&str> = Vec::new();
     for part in candidate.split('/') {
         match part {

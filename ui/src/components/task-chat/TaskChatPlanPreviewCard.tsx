@@ -176,6 +176,7 @@ export function TaskChatPlanPreviewCard({
     return (
       <a
         href={href}
+        data-plan-expand
         data-testid={testId}
         aria-label={ariaLabel ?? `Open Plan${revision == null ? "" : ` revision ${revision}`}`}
         className={sharedClassName}

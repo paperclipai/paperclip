@@ -1,5 +1,7 @@
 import { readWakeChatConversationId } from "../../run-dispatch/index.js";
-import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun } from "../domain/context.js";
+import { DEFERRED_WAKE_CONTEXT_KEY } from "../../../lib/queued-comment-context.js";
+import { enrichPromotedWakeContext, wakeMustNotJoinActiveRun, withMergedWakeReasons } from "../domain/context.js";
+import { QUEUED_MESSAGES_DELIVERED_REASON } from "../domain/policy.js";
 import {
   decideQueuedCommentAction,
   decideReleaseRecovery,
@@ -24,7 +26,6 @@ import type {
   RecoveryEscalationPort,
   ReleaseTransactionResult,
   RunSnapshot,
-  TransactionScope,
   WakeAdmissionActiveExecutionRun,
   WakeAdmissionHeartbeatHelpers,
   WakeAdmissionReader,
@@ -34,8 +35,6 @@ import type {
 } from "./ports.js";
 import type { PostCommitEffect, ReleaseOutcome } from "./types.js";
 import { WakeQueueApplicationError } from "./types.js";
-
-const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 
 const ISSUE_DISPOSITION_REPAIR_RETRY_REASON = "issue_disposition_repair";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASONS = new Set([
@@ -54,6 +53,7 @@ const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = new Set([
   "cancelled",
 ]);
 const STRANDED_ISSUE_RECOVERY_ORIGIN_KIND = "stranded_issue_recovery";
+const INTERRUPTED_PREPARATION_RETRY_REASON = "interrupted_preparation";
 
 function isExecutionReviewParticipantRecoveryRun(run: Pick<RunSnapshot, "contextSnapshot">): boolean {
   return readNonEmptyString(run.contextSnapshot.retryReason) === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON;
@@ -70,7 +70,8 @@ function didAutomaticRecoveryFail(
   expectedRetryReason: "assignment_recovery" | "issue_continuation_needed",
 ): boolean {
   const latestRetryReason = readNonEmptyString(run.contextSnapshot.retryReason);
-  return latestRetryReason === expectedRetryReason && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
+  return (latestRetryReason === expectedRetryReason || latestRetryReason === INTERRUPTED_PREPARATION_RETRY_REASON)
+    && UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.has(run.status);
 }
 
 function currentAgentParticipant(issue: IssueSnapshot): { agentId: string } | null {
@@ -174,6 +175,12 @@ async function runReleaseDrain(
       continue;
     }
 
+    // An earlier reply in this conversation already reported this wake's
+    // outcome. Settle it here so a duplicate report never becomes a run.
+    if (await ports.transaction.skipAlreadyReportedChatWake({ companyId: run.companyId, issueId: issue.id, wake: candidate, now: input.now })) {
+      continue;
+    }
+
     // A lead can post its closing comment before committing Done. Check
     // again when the source run releases its queue, using every original
     // comment ID so coalesced human or unrelated input is never hidden.
@@ -228,6 +235,12 @@ async function runReleaseDrain(
 
     let liveness: { liveNonSelfCommentIds: string[]; containedSelfAuthoredComment: boolean; deliveredCommentIds?: string[] } =
       { liveNonSelfCommentIds: candidate.queuedCommentIds, containedSelfAuthoredComment: false };
+    // The message is an authorization edge for this independent response,
+    // even when an earlier turn already received the message itself.
+    const retainDeliveredCommentBindings = candidate.payload.mutation === "interaction" &&
+      Boolean(readNonEmptyString(candidate.deferredContextSeed.interactionId)) &&
+      ["accepted", "answered", "rejected"].includes(String(candidate.deferredContextSeed.interactionStatus)) &&
+      Boolean(readNonEmptyString(candidate.deferredContextSeed.source)?.startsWith("chat:"));
     if (
       !candidate.authorizedFailedChatRetry &&
       candidate.queuedCommentIds.length > 0
@@ -239,8 +252,12 @@ async function runReleaseDrain(
         finishingRunId: run.id,
         finishingRunAgentId: run.agentId,
         queuedCommentIds: candidate.queuedCommentIds,
+        ...(retainDeliveredCommentBindings ? { retainDeliveredCommentBindings: true } : {}),
       });
     }
+    // Retained messages a run already received only authorize the response.
+    // They are not fresh input, so they must not reopen a finished task.
+    const bindingOnlyCommentIds = new Set(retainDeliveredCommentBindings ? liveness.deliveredCommentIds ?? [] : []);
     // A length mismatch is the only way the lists can differ: the adapter derives `liveNonSelfCommentIds` with `.filter`, so it is always a subsequence of `queuedCommentIds`.
     const liveCommentIdsDiffer = liveness.liveNonSelfCommentIds.length !== candidate.queuedCommentIds.length;
 
@@ -272,7 +289,7 @@ async function runReleaseDrain(
         reason: commentAction.selfAuthored
           ? "Deferred wake contained only comments authored by the finishing run"
           : liveness.deliveredCommentIds?.length
-            ? "Queued messages were already delivered to a completed run"
+            ? QUEUED_MESSAGES_DELIVERED_REASON
             : "Queued messages were discarded before promotion",
         now: input.now,
       });
@@ -321,7 +338,8 @@ async function runReleaseDrain(
     // Unreachable: decideWakeOutcome only returns "promote" when agentFound and invokable are both true.
     if (!deferredAgent) throw new Error("wake-queue: promoted a deferred wake with no invokable agent");
 
-    const promoted = await promoteDeferredWake(ports, run, issue, workingCandidate, deferredAgent, pauseHold, postCommitEffects, input);
+    const promoted = await promoteDeferredWake(ports, run, issue, workingCandidate, deferredAgent, pauseHold, postCommitEffects, input,
+      bindingOnlyCommentIds);
     if (!promoted) continue;
     return promoted;
   }
@@ -346,29 +364,68 @@ async function promoteDeferredWake(
   pauseHold: PauseHoldFacts,
   postCommitEffects: PostCommitEffect[],
   input: ReleaseIssueExecutionInput,
+  bindingOnlyCommentIds: ReadonlySet<string> = new Set(),
 ): Promise<ReleaseTransactionResult | null> {
   let currentIssue = issue;
   let shouldReopen = false;
+  const freshDeferredCommentIds = workingCandidate.deferredCommentIds.filter(id => !bindingOnlyCommentIds.has(id));
+  const freshQueuedCommentIds = workingCandidate.queuedCommentIds.filter(id => !bindingOnlyCommentIds.has(id));
   if (
     !workingCandidate.authorizedFailedChatRetry &&
-    workingCandidate.deferredCommentIds.length > 0 &&
+    freshDeferredCommentIds.length > 0 &&
     (currentIssue.status === "done" || currentIssue.status === "cancelled")
   ) {
     const selfAuthorship = await ports.transaction.getCommentSelfAuthorship({
       companyId: run.companyId,
       issueId: currentIssue.id,
       finishingRunId: run.id,
-      commentIds: workingCandidate.deferredCommentIds,
+      commentIds: freshDeferredCommentIds,
     });
+    const agentFeedbackAfterCompletion =
+      currentIssue.status === "done" &&
+      workingCandidate.agentId === currentIssue.assigneeAgentId &&
+      workingCandidate.requestedByActorType === "agent" &&
+      workingCandidate.deferredContextSeed.resumeIntent === true &&
+      freshQueuedCommentIds.length > 0;
     shouldReopen =
       !selfAuthorship.allSelfAuthored &&
       (workingCandidate.requestedByActorType === "user" ||
+        selfAuthorship.includesPersonComment ||
         workingCandidate.wakeReason === "issue_reopened_via_comment" ||
-        (currentIssue.status === "done" &&
-          workingCandidate.agentId === currentIssue.assigneeAgentId &&
-          workingCandidate.requestedByActorType === "agent" &&
-          workingCandidate.deferredContextSeed.resumeIntent === true &&
-          workingCandidate.queuedCommentIds.length > 0));
+        // The agent watching the task posted it while the run that closed the
+        // task was active. That agent receives the completed result and can
+        // follow up from it; reopening would only repeat finished work. A
+        // person's message (handled above) always reopens.
+        (agentFeedbackAfterCompletion && run.agentId === currentIssue.assigneeAgentId &&
+          !await ports.transaction.isWatcherCommentDuringFinishingRun({
+            companyId: run.companyId, issueId: currentIssue.id, finishingRunId: run.id,
+            commentIds: freshQueuedCommentIds,
+          })));
+  }
+
+  // A person's answer saved while the task was still open is owed input. The
+  // worker may have finished its turn without reading it; closing the task
+  // must not silently drop it. It reopens the task straight to in_progress,
+  // because an answer continues the assignee's own execution. While
+  // unresolved blockers forbid in_progress, an answer continuation cannot run
+  // (it requires in_progress), so the task stays done and the wake is
+  // cancelled with that reason; it never fails or stalls this drain.
+  let reopenForAnswer = false;
+  if (
+    !shouldReopen &&
+    currentIssue.status === "done" &&
+    workingCandidate.requestedByActorType === "user" &&
+    workingCandidate.agentId === currentIssue.assigneeAgentId
+  ) {
+    const owed = await ports.transaction.owedInteractionAnswer({ companyId: run.companyId, issueId: currentIssue.id, payload: workingCandidate.payload });
+    if (owed === "blocked") {
+      await ports.transaction.cancelDeferredWake({
+        companyId: run.companyId, wakeId: workingCandidate.id, agentId: workingCandidate.agentId,
+        reason: "Queued answer cannot continue a task with unresolved blockers", now: input.now,
+      });
+      return null;
+    }
+    if (owed === "deliver") shouldReopen = reopenForAnswer = true;
   }
 
   // Agent continuations can outlive the work they addressed. Live,
@@ -409,6 +466,7 @@ async function promoteDeferredWake(
       companyId: run.companyId,
       issueId: currentIssue.id,
       runId: run.id,
+      ...(reopenForAnswer ? { status: "in_progress" as const } : {}),
     });
     if (reopened) {
       postCommitEffects.push({
@@ -625,6 +683,7 @@ async function runReleaseRecoveryTail(
         run,
         expectedRetryReason,
       ),
+      automaticRecoveryRetryableBeforeProviderWork: run.retryableBeforeProviderWork === true,
       sourceRequiresExplicitRecovery,
     },
     shared: {
@@ -719,6 +778,7 @@ async function runReleaseRecoveryTail(
     retryReason,
     source: recoverySource,
     retryOfRunId: run.id,
+    ...(run.executionRetryAccounting ? { executionRetryAccounting: run.executionRetryAccounting } : {}),
   };
 
   const recoveryResponsibleUserId = await resolveResponsibleUserForQueuedRun(
@@ -807,7 +867,6 @@ export function createAdmitWakeBehindIssueExecution(deps: {
   helpers: WakeAdmissionHeartbeatHelpers;
 }) {
   return async function admitWakeBehindIssueExecution(
-    scope: TransactionScope,
     input: AdmitWakeBehindIssueExecutionInput,
   ): Promise<AdmitWakeBehindIssueExecutionResult> {
     const manualUserWakeActorId = input.payload?.manualUserWake === true
@@ -816,7 +875,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         (input.requestedByActorType !== "user" || !manualUserWakeActorId)) {
       throw new Error("wake-queue: manual wake requires an authenticated user");
     }
-    const isSameExecutionAgent = await deps.reader.isSameExecutionAgent(scope, {
+    const isSameExecutionAgent = await deps.reader.isSameExecutionAgent({
       companyId: input.companyId,
       activeExecutionRunAgentId: input.activeExecutionRun.agentId,
       issueExecutionAgentNameKey: input.issueExecutionAgentNameKey,
@@ -848,7 +907,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
 
     const sameDurableActor =
       !input.durableReceipt ||
-      (await deps.reader.matchesActiveWakeActor(scope, {
+      (await deps.reader.matchesActiveWakeActor({
         companyId: input.companyId,
         wakeupRequestId: availableActiveExecutionRun?.wakeupRequestId ?? null,
         requestedByActorType: input.requestedByActorType,
@@ -863,7 +922,8 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       isSameExecutionAgent,
       shouldDeferFollowupWake,
       shouldQueueFollowupForRunningWake,
-      availableActiveExecutionRunPresent: availableActiveExecutionRun !== null,
+      availableActiveExecutionRunPresent: availableActiveExecutionRun !== null || (shouldDeferFollowupWake &&
+        isSameExecutionAgent && input.activeExecutionRun.status === "running" && Boolean(input.wakeCommentId)),
     });
 
     if (decision.kind === "proceed") return { kind: "proceed" };
@@ -878,7 +938,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
             target.status === "queued" || target.status === "scheduled_retry",
         },
       );
-      const run = await deps.writer.coalesceIntoActiveExecutionRun(scope, {
+      const run = await deps.writer.coalesceIntoActiveExecutionRun({
         companyId: input.companyId,
         activeExecutionRunId: target.id,
         activeExecutionRunStatus: target.status,
@@ -900,7 +960,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
     const existingDeferred =
       (interactionReceipt || input.allowRunCoalescing === false)
         ? null
-        : await deps.reader.findExistingDeferredWake(scope, {
+        : await deps.reader.findExistingDeferredWake({
             companyId: input.companyId,
             agentId: input.agentId,
             issueId: input.issueId,
@@ -916,12 +976,16 @@ export function createAdmitWakeBehindIssueExecution(deps: {
           });
 
     if (existingDeferred && !existingDeferred.payload?.interactionId && !existingDeferred.deferredContext.interactionId) {
-      const mergedDeferredContext = deps.helpers.mergeCoalescedContextSnapshot(
+      const mergedDeferredContext = withMergedWakeReasons(
+        deps.helpers.mergeCoalescedContextSnapshot(
+          existingDeferred.deferredContext,
+          input.contextSnapshot,
+          {
+            preserveExistingInteractionContinuation: true,
+          },
+        ),
         existingDeferred.deferredContext,
         input.contextSnapshot,
-        {
-          preserveExistingInteractionContinuation: true,
-        },
       );
       const mergedPayload = {
         ...existingDeferred.payload,
@@ -929,7 +993,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
         issueId: input.issueId,
         [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
       };
-      await deps.writer.mergeIntoExistingDeferredWake(scope, {
+      await deps.writer.mergeIntoExistingDeferredWake({
         companyId: input.companyId,
         existingDeferredWakeId: existingDeferred.id,
         mergedPayload,
@@ -965,7 +1029,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
       issueId: input.issueId,
       [DEFERRED_WAKE_CONTEXT_KEY]: input.contextSnapshot,
     };
-    await deps.writer.insertNewDeferredWake(scope, {
+    await deps.writer.insertNewDeferredWake({
       companyId: input.companyId,
       agentId: input.agentId,
       source: input.source,

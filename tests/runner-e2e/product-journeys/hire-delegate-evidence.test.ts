@@ -146,6 +146,25 @@ describe("deployment hiring qualification", () => {
     expect(() => assertHireRuns(scope, f.agent.id, [f.task], [f.taskRun, f.taskRun])).toThrow();
     expect(() => assertHireRuns(scope, f.agent.id, [f.task], [f.leadRun, f.taskRun], 5)).toThrow();
   });
+  it("keeps observing a hired task run while its exact-session retry is scheduled inside the deadline", () => {
+    const f = fixture(), now = Date.now(), deadline = now + 60_000;
+    const pending = { ...f.taskRun, status: "failed", nativeIssueId: f.task.id, nativePhase: "retryable_failure", errorCode: "native_session_interrupted",
+      finishedAt: new Date(now - 1_000).toISOString(), execution: { phase: "retry_scheduled", cause: "native_session_interrupted", attempt: 1,
+        maxAttempts: 3, recoveryOwner: "agent", retryAt: new Date(now + 1_000).toISOString() } };
+    expect(() => assertHireRuns(scope, f.agent.id, [f.task], [f.leadRun, pending], undefined, undefined, undefined, deadline)).not.toThrow();
+    // A pending retry is never completion, and the deadline is required to wait at all.
+    expect(() => assertHireRuns(scope, f.agent.id, [f.task], [f.leadRun, pending], 2, undefined, undefined, deadline)).not.toThrow();
+    expect(() => assertHireRuns(scope, f.agent.id, [f.task], [f.leadRun, pending])).toThrow("hire_native_run_failed");
+    for (const change of [{ execution: { ...pending.execution, attempt: 3 } }, { execution: { ...pending.execution, recoveryOwner: "user" } },
+      { execution: { ...pending.execution, retryAt: new Date(deadline + 1_000).toISOString() } }, { nativePhase: "terminal_failure" },
+      { execution: { ...pending.execution, successorRunId: "other-run" } }]) {
+      expect(() => assertHireRuns(scope, f.agent.id, [f.task], [f.leadRun, { ...pending, ...change }], undefined, undefined, undefined, deadline))
+        .toThrow("hire_native_run_failed");
+    }
+    // Recovery never relaxes the task, agent and company bindings.
+    expect(() => assertHireRuns(scope, f.agent.id, [f.task], [f.leadRun, { ...pending, agentId: scope.leadId }], undefined, undefined, undefined, deadline))
+      .toThrow("hire_run_scope_mismatch");
+  });
   it("rejects a lead task run from create-self-then-reassign even after the saved assignee is correct", () => {
     const f = fixture();
     const delegation = { ...f.run("delegate-chat", scope.chatId, scope.leadId), status: "running" };
@@ -233,6 +252,9 @@ describe("deployment hiring qualification", () => {
     }
     expect(() => grade({ ...document, issueId: "other" })).toThrow();
     expect(() => grade({ ...document, key: "plan" })).toThrow();
+    for (const changed of ["Reference: independent-marker-old", "Reference: xindependent-marker"]) {
+      expect(() => grade({ ...document, body: changed }, [{ ...revision, body: changed }])).toThrow();
+    }
     expect(() => grade(document, [])).toThrow();
     expect(() => grade(document, [revision], [])).toThrow();
   });

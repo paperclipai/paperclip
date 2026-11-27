@@ -139,6 +139,8 @@ export interface TaskChatMessageItem {
   channel?: "progress" | "final" | "unknown";
   /** Transport attribution for an inbound human comment. */
   sourceChannel?: IssueCommentMetadata["sourceChannel"];
+  /** Server-derived: this human message asked the assignee's native command (`/swarm`). */
+  nativeCommand?: "swarm";
   timestamp?: string;
   /** Show a streaming cursor and suppress collapse while true. */
   streaming?: boolean;
@@ -146,6 +148,8 @@ export interface TaskChatMessageItem {
   optimistic?: "pending" | "queued";
   /** Live run this queued message is waiting behind. */
   queueTargetRunId?: string | null;
+  /** Run that wrote this agent reply; its MCP Apps views show with the reply. */
+  sourceRunId?: string;
   /** Non-blocking verification limitations attached to the run's durable reply. */
   verificationCaveats?: Array<{
     commandOrCheck: string;
@@ -224,6 +228,8 @@ export interface TaskChatToolItem {
   name: string;
   /** Raw ACP tool name pre-collapse ("mcp__server__tool") for taxonomy lookup. */
   rawName?: string;
+  /** The app tool a wrapper call runs (`paperclip_call_assigned_tool`'s `name`), for its progress. */
+  appToolName?: string;
   /** ACP ToolKind. */
   toolKind?: string;
   status: TaskChatToolStatus;
@@ -255,6 +261,8 @@ export interface TaskChatToolItem {
   blockedReason?: string;
   /** Execution id of the delegation (subagent) that made this call. */
   parentToolUseId?: string;
+  /** A failed call the agent repeated on the same target and the repeat succeeded. */
+  retried?: boolean;
 }
 
 /**
@@ -446,6 +454,8 @@ export interface TaskChatProviderActivityItem {
   startedAt?: string;
   /** Automatic approval review that let this tool execution run. */
   autoReview?: TaskChatAutoReview;
+  /** A failed tool execution the agent repeated on the same target and the repeat succeeded. */
+  retried?: boolean;
 }
 
 export type TaskChatSubagentStatus = "running" | "completed" | "failed" | "cancelled";

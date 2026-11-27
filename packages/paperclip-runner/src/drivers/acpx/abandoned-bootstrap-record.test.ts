@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAcpRuntime, createAgentRegistry, createRuntimeStore } from "acpx/runtime";
 import { describe, expect, it } from "vitest";
-import { resetAbandonedBootstrapRecord } from "./codex-runtime-adapter.js";
+import { resetAbandonedBootstrapRecord } from "./acpx-runtime-adapter.js";
 
 // A controlled ACP peer that behaves like Claude: a session that never received
 // a prompt was never saved, so session/load (and session/resume) of it fails.

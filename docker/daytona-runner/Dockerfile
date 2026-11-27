@@ -45,6 +45,11 @@ COPY cli/package.json ./cli/package.json
 ARG PAPERCLIP_RUNNER_LOCK_SHA256
 ARG PAPERCLIP_RUNNER_SOURCE_REVISION
 # Optional qualification assets; this never promotes candidate profiles.
+# `antigravity` downloads its pinned ~274 MB archive into memory, patches it
+# (about 2.4 GB peak, outside the JS heap bound below) and keeps only the
+# ~850 MB patched closure in /provider-pack; the archive never touches disk.
+# Its patcher refuses group- or world-writable inputs, so the RUN below drops
+# shared write bits a umask-002 build context would otherwise carry in.
 ARG PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS=
 # pnpm 9 subtracts PNPM_WORKERS from available CPUs; it is not a worker count.
 # Subtract all available CPUs to select its minimum (one tarball worker).
@@ -58,6 +63,7 @@ RUN if ! printf '%s' "${PAPERCLIP_RUNNER_LOCK_SHA256}" | grep -Eqx '[0-9a-f]{64}
     && export PNPM_WORKERS="$(node -p 'require("node:os").availableParallelism()')" \
     && printf '%s  pnpm-lock.yaml\n' "${PAPERCLIP_RUNNER_LOCK_SHA256}" > /tmp/provider-lock.sha256 \
     && sha256sum -c /tmp/provider-lock.sha256 \
+    && chmod -R go-w /workspace \
     && pnpm install --frozen-lockfile --filter '@paperclipai/paperclip-runner...' \
     && pnpm --filter @paperclipai/paperclip-runner build:typescript \
     && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
@@ -81,8 +87,8 @@ ENV PATH=${PAPERCLIP_RUNNER_PROVIDER_PACK_ROOT}/node_modules/.bin:/usr/local/sha
 # Never add a second CLI version to work around a runner compatibility pin.
 RUN npm uninstall -g @anthropic-ai/claude-code @openai/codex opencode-ai \
     && npm install -g \
-      @xai-official/grok@1.0.70 \
-      @google/gemini-cli@0.65.0 \
+      @xai-official/grok@1.0.89 \
+      @google/gemini-cli@0.68.0 \
       @moonshot-ai/kimi-code@2.3.3 \
     && npm cache clean --force
 
@@ -94,8 +100,8 @@ RUN /usr/bin/python3 -m venv /opt/hermes \
     && /opt/hermes/bin/pip install --no-cache-dir hermes-agent==0.19.0 \
     && ln -sf /opt/hermes/bin/hermes /usr/local/bin/hermes
 
-ARG CURSOR_VERSION=2026.10.22-27dcf5f
-ARG CURSOR_SHA256_AMD64=85296944e4600a83c4b764f578d1502bf9c416db200d33a593e8f3ecabfdc294
+ARG CURSOR_VERSION=2026.11.17-f532c45
+ARG CURSOR_SHA256_AMD64=189ed41d8963cd22dcdafbbd62f072cc55ac08374c922dbd04aee525f4018ab6
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
     [ "$arch" = "amd64" ] || { echo "FATAL: cursor pin only covers amd64, not $arch" >&2; exit 1; }; \
@@ -109,8 +115,8 @@ RUN set -eu; \
     ln -sf /usr/local/bin/cursor-agent /usr/local/bin/agent; \
     chmod -R a+rX /opt/cursor
 
-ARG GH_VERSION=2.103.3
-ARG GH_SHA256_AMD64=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d
+ARG GH_VERSION=2.105.0
+ARG GH_SHA256_AMD64=79e7ab5db738c48777b696e374f8b428f0647debfb424f44d2f426370407fe2f
 RUN set -eu; \
     arch="$(dpkg --print-architecture)"; \
     [ "$arch" = "amd64" ] || { echo "FATAL: gh pin only covers amd64, not $arch" >&2; exit 1; }; \
@@ -169,10 +175,10 @@ RUN /bin/sh -lc 'set -eu; \
     for command_name in acpx claude-agent-acp codex-acp; do \
       command -v "$command_name" >/dev/null || { echo "FATAL: $command_name not on PATH for daytona user" >&2; exit 1; }; \
     done; \
-    test "$(codex --version)" = "codex-cli 0.160.0"; \
-    test "$(claude --version)" = "2.1.286 (Claude Code)"; \
+    test "$(codex --version)" = "codex-cli 0.170.0"; \
+    test "$(claude --version)" = "2.1.328 (Claude Code)"; \
     test "$(opencode --version)" = "1.18.34"; \
-    test "$(acpx --version)" = "0.13.1"; \
+    test "$(acpx --version)" = "0.22.0"; \
     test "$(claude-agent-acp --version)" = "0.73.0"; \
     test "$(codex-acp --version)" = "@agentclientprotocol/codex-acp 1.6.2"'
 

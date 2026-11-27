@@ -111,6 +111,19 @@ describe("captureRunFailure", () => {
     sentryModule.captureTaskInterruptionFailure({ ...event, intentId: "next-intent" });
     sentryModule.captureTaskInterruptionFailure({ ...event, runId: "next-run" });
     expect(captureException).toHaveBeenCalledTimes(3);
+    expect(captureException.mock.calls[2]![1]?.tags).not.toHaveProperty("run_error_code");
+  });
+
+  it("tags a saved-message report with a valid run error code without splitting its group", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    const event = { companyId: "company", agentId: "agent", taskId: "task", agentAdapter: "process",
+      runStatus: "failed" as const, intentId: null };
+    sentryModule.captureTaskInterruptionFailure({ ...event, runId: "run", runErrorCode: "native_workspace_sync_out_failed" });
+    sentryModule.captureTaskInterruptionFailure({ ...event, runId: "other", runErrorCode: "token=abc secret" });
+    expect(captureException.mock.calls[0]![1]).toMatchObject({
+      tags: { run_error_code: "native_workspace_sync_out_failed" }, fingerprint: ["task_attempt_failed", "process"] });
+    expect(captureException.mock.calls[1]![1]?.tags).not.toHaveProperty("run_error_code");
+    expect(JSON.stringify(captureException.mock.calls[1])).not.toContain("secret");
   });
 
   it("does not consume a saved-message report while reporting is off or capture fails", async () => {
@@ -218,6 +231,29 @@ describe("captureRunFailure", () => {
       [...prefix, "exception:Error"],
     ]);
     expect(JSON.stringify(fingerprints)).not.toMatch(/workspace|timed out|plain failure/i);
+  });
+
+  it("separates native turn failures by their runner failure code", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    const turnFailure = (provider: NonNullable<RunFailureEvent["diagnostics"]>["provider"]) => baseEvent({
+      errorCode: "native_run_failed", agentAdapter: "paperclip_runner",
+      diagnostics: { execution: {}, adapter: {}, provider, exceptions: [], truncatedFields: [] },
+    });
+
+    sentryModule.captureRunFailure(turnFailure({ provider: "opencode", category: "turn_failed", runnerFailureCode: "opencode_empty_response" }));
+    sentryModule.captureRunFailure(turnFailure({ provider: "opencode", category: "turn_failed", runnerFailureCode: "opencode_server_exited" }));
+    sentryModule.captureRunFailure(turnFailure({ provider: "opencode", category: "turn_failed", runnerFailureCode: "unrecognized" }));
+    sentryModule.captureRunFailure(turnFailure({ provider: "opencode", category: "turn_failed", runnerFailureCode: "not a code" }));
+    sentryModule.captureRunFailure(turnFailure({}));
+
+    const prefix = ["native_run_failed", "paperclip_runner"];
+    expect(captureException.mock.calls.map(([, context]) => context?.fingerprint)).toEqual([
+      [...prefix, "runner:opencode_empty_response"],
+      [...prefix, "runner:opencode_server_exited"],
+      prefix,
+      prefix,
+      prefix,
+    ]);
   });
 
   it("keeps an identifier root code as the only root grouping element", async () => {

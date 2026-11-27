@@ -80,7 +80,7 @@ describe("instance settings service", () => {
     expect(normalizeExperimentalSettings({}).enableOpenAiDot).toBe(false);
     const enabled = applyExperimentalSettingsPatch({}, { enableOpenAiDot: true });
     expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(enabled)))).toMatchObject({
-      enableOpenAiDot: true, enablePublicMcp: false,
+      enableOpenAiDot: true, enablePublicMcp: true,
     });
     expect(applyExperimentalSettingsPatch(enabled, { enableOpenAiDot: false }).enableOpenAiDot).toBe(false);
   });
@@ -93,10 +93,15 @@ describe("instance settings service", () => {
     const disabled = applyExperimentalSettingsPatch(enabled, { enableChatConnectors: false });
     expect(disabled).toMatchObject({ enableApps: true, enableChatConnectors: false });
   });
-  it("keeps GitHub review bots independent across legacy normalization and persistence", () => {
-    expect(normalizeExperimentalSettings({ enableChatConnectors: true })).toMatchObject({ enableChatConnectors: true, enableGitHubReviewBots: false });
-    const saved = applyExperimentalSettingsPatch({}, { enableGitHubReviewBots: true });
-    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(saved)))).toMatchObject({ enableChatConnectors: false, enableGitHubReviewBots: true });
+  it("always enables GitHub review bots and ignores stored or patched off values", () => {
+    for (const stored of [undefined, null, {}, { enableChatConnectors: false }, { enableGitHubReviewBots: false }]) {
+      expect(normalizeExperimentalSettings(stored).enableGitHubReviewBots).toBe(true);
+    }
+    const saved = applyExperimentalSettingsPatch({}, { enableGitHubReviewBots: false });
+    expect(normalizeExperimentalSettings(JSON.parse(JSON.stringify(saved)))).toMatchObject({
+      enableChatConnectors: false,
+      enableGitHubReviewBots: true,
+    });
   });
   it("ignores retired experimental flags without resetting current settings", () => {
     expect(normalizeExperimentalSettings({
@@ -129,29 +134,32 @@ describe("instance settings service", () => {
       enableApps: true,
     enableMcpAggregators: true,
       enableAgentChat: true,
-      enablePublicMcp: false,
+      enablePublicMcp: true,
       enableOpenAiDot: false,
       enableMuse: false,
       enableGrokBot: false,
       enableCombinedInboxTasks: false,
       enableArtifactsV1: true,
       enableChatConnectors: false,
-      enableGitHubReviewBots: false,
+      enableGitHubReviewBots: true,
       enableMemoryConnectors: false,
       enablePaperclipNotebook: false,
       enableGoogleWorkspaceConnector: false,
+      enableAwsConnector: true,
       enableConferenceRoomChat: false,
       enableClassicTaskInterface: false,
       enableLegacyComposerSubmit: false,
       enableExternalObjects: false,
       enableSmokeLab: false,
       enableCases: false,
+      enableCloudTrialInference: false,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: true,
       enableBuiltInAgents: true,
       enableBetaSkills: false,
       enableSummaries: false,
       enableStatusCards: false,
+      enableResponsibilities: false,
       enableDecisions: false,
       enableFastResponses: false,
       enableGoalsSidebarLink: true,
@@ -164,6 +172,8 @@ describe("instance settings service", () => {
       enableWorkspaceDirtyQuarantineRepair: false,
       enableOwnerInstanceAdmin: false,
       enableSandboxDuplexBridge: false,
+      enableMcpTasks: false,
+      enableAntigravitySwarm: false,
       enableRunnerPreviewIngress: false,
       enableWorktreeRunExecution: false,
       worktreeRunExecutionActivatedAt: null,

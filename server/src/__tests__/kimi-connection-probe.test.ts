@@ -24,7 +24,7 @@ vi.mock("node:child_process", async importOriginal => {
     spawn: (file: string, args: string[], options: Parameters<typeof actual.spawn>[2]) => {
       if (file !== "ssh") return actual.spawn(file, args, options);
       mocks.wire.push({ file, args, stdin: true });
-      return actual.spawn(process.execPath, ["-e", 'process.stdout.write(require("node:fs").readFileSync(0,"utf8"))'], options);
+      return actual.spawn(process.execPath, ["-e", 'const wire = require("node:fs").readFileSync(0); process.stdout.write(wire.subarray(wire.indexOf(10) + 1))'], options);
     },
   };
 });
@@ -181,7 +181,13 @@ describe("remote Kimi installation fallback and failure admission", () => {
     const target = { ...remote, runner } as AdapterExecutionTarget;
     await expect(probeKimiExecutionTarget(apiKey, target, model)).resolves.toEqual(verified());
     expect(mocks.select).toHaveBeenCalledWith(selected.configuredRoot);
-    expect(mocks.prepare).toHaveBeenCalledWith({ target, runner, configuredProviderPackRoot: selected.configuredRoot, manifest: selected.manifest });
+    expect(mocks.prepare).toHaveBeenCalledWith({
+      target,
+      runner,
+      configuredProviderPackRoot: selected.configuredRoot,
+      manifest: selected.manifest,
+      provider: { kind: "acpx", agent: "kimi" },
+    });
     expect(mocks.command).toHaveBeenCalledOnce();
     expect(mocks.prepare.mock.invocationCallOrder[0]).toBeLessThan(mocks.command.mock.invocationCallOrder[0]!);
     expect(mocks.local).not.toHaveBeenCalled();

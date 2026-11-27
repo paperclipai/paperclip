@@ -261,6 +261,15 @@ Verification: `not-run` — Withdraw through each permitted actor, reload termin
 
 Gaps: No agent skip authority or generic manual expiry API.
 
+The board-only attention close route
+(`POST /api/companies/{companyId}/attention/{sourceKind}/{sourceId}/close`,
+`mode: "withdraw"`) runs this same withdraw flow for every interaction kind and
+also lets a person withdraw a pending card that outlived its closed task (no
+wake). Its `archive`/`snooze` modes and the `…/transfer` route ("Route to @x",
+sets `addresseeUserId` after checking the new owner can answer) are board-only
+presentation and routing changes, not agent capabilities. Evidence:
+[route tests](../../server/src/__tests__/attention-close.test.ts).
+
 ### `skip`
 
 API: `present` — POST /api/issues/{id}/interactions/{interactionId}/skip.
@@ -465,6 +474,14 @@ Evidence: `source-only` — [approval routes](../../server/src/routes/approvals.
 Verification: `not-run` — Board decisions and revision request, reload audit + actual governed effect. Duplicate same decision one effect; concurrent opposite fails; agent denied and forged actor ignored.
 
 Gaps: Request-revision concurrency/replay not claimed as equivalent to approve/reject; payload integrations remain explicit.
+
+Withdraw (PAP-749 task 2b): POST /api/approvals/{id}/cancel and the attention
+close route with `mode: "withdraw"` cancel an open approval as out of date. They
+are board-only and never approve: the gate stays closed, `decidedByUserId` and
+the reason are recorded, `approval.cancelled` is logged and the requesting agent
+is woken. Hire requests return 422 (reject them instead); a resolved approval
+returns 409 `attention_already_closed`. Evidence: `source-only` plus
+[route tests](../../server/src/__tests__/attention-close.test.ts); no agent path.
 
 ### `resubmit`
 

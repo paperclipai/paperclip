@@ -22,6 +22,7 @@ import {
   admitResult,
   captureResultFromItem,
   mapTerminalTurn,
+  settledTerminalReplayConflict,
 } from "./codex-session-terminal.js";
 import {
   recordCanonicalWorkspaceChange,
@@ -29,6 +30,7 @@ import {
   recordWorkspaceChanges,
 } from "./codex-session-workspace.js";
 import {
+  RUNNERD_RUN_TERMINAL,
   RUNNERD_RUNTIME_ACTIVITY,
   boundedText,
   differingJsonPaths,
@@ -53,6 +55,11 @@ const DELTA_KINDS: Record<string, string> = {
 
 // Turn-scoped activity a resumed runner can replay from committed history.
 // turn/completed is excluded: its replay still passes the fingerprint check.
+/** Methods that keep their own handling for a turn the history rule covers. */
+const HISTORY_RULE_EXEMPT_METHODS: ReadonlySet<string> = new Set([
+  "turn/completed", "turn/started", "thread/tokenUsage/updated", "paperclip/canonicalProviderEvent",
+]);
+
 const REPLAYABLE_TURN_METHODS = new Set([
   "turn/started",
   "item/started",
@@ -146,6 +153,19 @@ async function mapNotification(state: CodexSessionState, notification: CodexRpcN
   }
 
 async function mapNotificationBody(state: CodexSessionState, notification: CodexRpcNotification): Promise<void> {
+    if (notification.method === "paperclip/runTerminal") {
+      if ((notification.params as Record<PropertyKey, unknown>)[RUNNERD_RUN_TERMINAL] !== true) return;
+      if (state.awaitingProviderTurn && state.activeTurnId === null && !state.turnStartPending) {
+        state.awaitingProviderTurn = false;
+        state.emit("item.completed", {
+          kind: "interrupt_acknowledgement",
+          text: "The Runner ended the wait for the provider's own next turn.",
+          status: "provider_turn_wait_ended",
+          cause: "run_terminal",
+        }, { itemId: `interrupt:provider-turn-wait:run-terminal:${state.sourceSequence + 1}` });
+      }
+      return;
+    }
     if (notification.method === "paperclip/runtimeActivityRecorded") {
       const params = notification.params;
       if ((params as Record<PropertyKey, unknown>)[RUNNERD_RUNTIME_ACTIVITY] !== true) return;
@@ -174,20 +194,44 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     const identity = classifyCodexNotification({
       method: notification.method, params: notification.params, runId: state.runId,
       rootThreadId: state.opened.threadId, activeTurnId: state.activeTurnId,
-      knownThreads: new Set(state.lineageByThread.keys()), settledTurns: new Set(state.terminalTurns.keys()),
+      knownThreads: new Set(state.lineageByThread.keys()), settledTurns: state.historyTurnIds(),
     });
     if ((identity.classification === "root" || identity.classification === "stale_turn")
       && identity.threadId === state.opened.threadId
       && notification.method === "thread/tokenUsage/updated"
       && identity.turnId !== null
       && identity.turnId !== state.activeTurnId
-      && (state.activeTurnId === null || (identity.turnId !== null && state.terminalTurns.has(identity.turnId)))) {
+      && (state.activeTurnId === null || state.isHistoryTurn(identity.turnId))) {
       state.codexUsageBaseline = observeCodexUsage(state.codexUsageBaseline, record(notification.params.tokenUsage).total, true);
       state.usageSnapshot = codexRunUsage(state.codexUsageBaseline);
       if (state.notificationIdentityDiagnostics++ < 32) state.emit("harness.diagnostic", {
         code: "codex_resume_usage_snapshot", classification: "resume_usage_snapshot",
         receivedThreadId: identity.threadId, receivedTurnId: identity.turnId,
       });
+      return;
+    }
+    if (identity.classification === "stale_turn") {
+      // History by the one stale-event rule (CodexSessionState.isHistoryTurn).
+      state.recordHistoryEvent(notification.method, identity.turnId ?? "");
+      return;
+    }
+    // Apply the rule before any canonical mapping, so a settled turn's late
+    // items and plans never re-enter the stream as fresh work. Its terminal
+    // keeps its own conflict check below, a provider that starts it again
+    // still fails, and canonical provider diagnostics keep flowing.
+    // A lost turn that reports a result was not lost: never drop that outcome as history.
+    if (identity.classification === "root" && identity.turnId !== null
+      && notification.method === "paperclip/runResult"
+      && state.unconfirmedLostTurns.has(identity.turnId) && identity.turnId !== state.activeTurnId) {
+      state.failProtocol("turn_binding_mismatch",
+        "Provider reported a result for a turn the restore did not find live.");
+      return;
+    }
+    if (identity.classification === "root" && identity.turnId !== null
+      && identity.threadId === state.opened.threadId
+      && state.isHistoryTurn(identity.turnId)
+      && !HISTORY_RULE_EXEMPT_METHODS.has(notification.method)) {
+      state.recordHistoryEvent(notification.method, identity.turnId);
       return;
     }
     if (identity.classification !== "root") {
@@ -499,7 +543,18 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
     if (notification.method === "turn/started") {
-      const autonomousGoalTurn = state.currentGoal?.status === "active"
+      if (params.origin === "provider" && !state.awaitingProviderTurn) await state.recoveryReconciled;
+      // A start replayed for an earlier generation's turn (for example, one
+      // the runner recorded after the previous controller detached and then
+      // lost on restore) is history, never a start of this session's turn. A
+      // restart of a turn this generation settled still fails closed.
+      if ((state.priorGenerationTurns.has(turnId) || state.unconfirmedLostTurns.has(turnId))
+        && state.isHistoryTurn(turnId)) {
+        state.recordHistoryEvent(notification.method, turnId);
+        return;
+      }
+      const providerStartedTurn = params.origin === "provider" && state.awaitingProviderTurn;
+      const autonomousGoalTurn = (state.currentGoal?.status === "active" || providerStartedTurn)
         && state.activeTurnId === null
         && !state.turnStartPending
         && !state.protocolFailed
@@ -530,11 +585,13 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       state.activeTurnId = turnId;
       state.turnStartPending = false;
       state.turnStarted = true;
+      state.awaitingProviderTurn = false;
       state.emit(
         "turn.started",
-        { status: text(turn.status, "inProgress") },
+        { status: text(turn.status, "inProgress"), ...(providerStartedTurn ? { origin: "provider" } : {}) },
         { turnId },
       );
+      if (providerStartedTurn) state.captureBoundary(state.sourceSequence);
       return;
     }
     if (notification.method === "turn/completed") {
@@ -543,13 +600,33 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       // channel. Wait for the pending turn/start to settle first, so
       // turn.accepted always precedes the terminal event for the same turn.
       await state.turnStartSettled;
+      // The restore did not find this accepted turn live. Only the runner's restart-loss
+      // terminal confirms that; any other outcome is real and must not become history.
+      if (state.unconfirmedLostTurns.has(turnId) && turnId !== state.activeTurnId) {
+        state.unconfirmedLostTurns.delete(turnId);
+        if (!ignoreUnboundRestoredTurnLoss(state, turn, turnId)) {
+          state.failProtocol("turn_binding_mismatch",
+            "Provider reported a non-restart outcome for a turn the restore did not find live.");
+        }
+        return;
+      }
+      // A terminal for a turn an earlier generation accepted is history, even
+      // when it disagrees with the checkpointed terminal (for example, a
+      // restored provider that reports the turn lost on restore). A terminal
+      // that contradicts a turn this generation settled is still a conflict.
+      if (state.priorGenerationTurns.has(turnId) && state.isHistoryTurn(turnId)) {
+        const settled = state.terminalTurns.get(turnId);
+        if (settled === undefined || settledTerminalReplayConflict(state, turn, turn, settled) !== null)
+          state.recordHistoryEvent(notification.method, turnId);
+        return;
+      }
       if (state.terminalTurns.has(turnId)) {
         mapTerminalTurn(state, turn, turnId);
         return;
       }
       if (ignoreUnboundRestoredTurnLoss(state, turn, turnId)) return;
       if (!state.notificationNamesActiveTurn(turnId, "turn terminal")) return;
-      mapTerminalTurn(state, turn, turnId);
+      mapTerminalTurn(state, turn, turnId, false, params.awaitingProviderTurn === true);
       return;
     }
     if (notification.method === "item/started") {

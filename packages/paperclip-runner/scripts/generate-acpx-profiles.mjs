@@ -55,6 +55,8 @@ assert.equal(manifest.profiles.antigravity.agentServerVersion, antigravityDistri
 for (const distribution of Object.values(distributions.platforms)) assert.match(distribution.closureSha256, /^[a-f0-9]{64}$/);
 
 const quote = JSON.stringify;
+const antigravityVerified = Object.entries(antigravityDistributions.platforms).filter(([, pin]) => pin.provisioning === "verified-closure");
+for (const [target] of antigravityVerified) assert.match(target, /^(darwin|linux)-(arm64|x64)$/);
 const profiles = Object.fromEntries(entries.map(([agent, declaration]) => {
   const { requiresProviderPolicy, ...runtime } = declaration;
   return [agent, {
@@ -63,7 +65,7 @@ const profiles = Object.fromEntries(entries.map(([agent, declaration]) => {
     permissionPolicy: "interactive",
   }];
 }));
-const header = "Generated from acpx-profiles.json and cursor-distributions.json. Do not edit.";
+const header = "Generated from acpx-profiles.json, cursor-distributions.json and antigravity-distributions.json. Do not edit.";
 const typescript = `// ${header}
 export const QUALIFIED_ACPX_VERSION = ${quote(manifest.acpxVersion)} as const;
 export const ACPX_DRIVER_KIND = ${quote(manifest.driverKind)} as const;
@@ -73,7 +75,9 @@ export const QUALIFIED_ACPX_PROFILE_DATA = ${JSON.stringify(profiles, null, 2)} 
 
 export const CURSOR_DISTRIBUTION_PINS = ${JSON.stringify(Object.fromEntries(Object.entries(distributions.platforms).map(([platform, { closureSha256, executable, entrypoint }]) => [platform, { closureSha256, executable, entrypoint }])), null, 2)} as const;
 
-export const ANTIGRAVITY_DISTRIBUTION_PINS = ${JSON.stringify(Object.fromEntries(Object.entries(antigravityDistributions.platforms).filter(([, pin]) => pin.provisioning === "verified-closure").map(([platform, { closureSha256, executable, args }]) => [platform, { closureSha256, executable, args }])), null, 2)} as const;
+export const ANTIGRAVITY_RUNTIME_VERSION = ${quote(antigravityDistributions.version)} as const;
+
+export const ANTIGRAVITY_DISTRIBUTION_PINS = ${JSON.stringify(Object.fromEntries(antigravityVerified.map(([platform, { closureSha256, executable, args }]) => [platform, { closureSha256, executable, args }])), null, 2)} as const;
 `;
 const option = value => value === null ? "None" : `Some(${quote(value)})`;
 const rust = `// ${header}
@@ -94,6 +98,16 @@ pub(crate) struct AcpxReleaseProfile {
 pub(crate) fn kimi_native_closure(platform: &str, architecture: &str) -> Option<&'static str> {
     match (platform, architecture) {
 ${Object.entries(KIMI_DISTRIBUTION_CLOSURE_SHA256).map(([target, digest]) => { const [platform, architecture] = target.split("-"); return `        (${quote(platform)}, ${quote(architecture)}) => {\n            Some(${quote(digest)})\n        }`; }).join("\n")}
+        _ => None,
+    }
+}
+
+pub(crate) fn antigravity_native_closure(
+    platform: &str,
+    architecture: &str,
+) -> Option<&'static str> {
+    match (platform, architecture) {
+${antigravityVerified.map(([target, { closureSha256 }]) => { const [platform, architecture] = target.split("-"); return `        (${quote(platform)}, ${quote(architecture)}) => {\n            Some(${quote(closureSha256)})\n        }`; }).join("\n")}
         _ => None,
     }
 }

@@ -72,6 +72,16 @@ export function decodeReleaseKimiClosures(file, path) {
   return { 'darwin-arm64': matches[0][1], 'linux-x64': matches[0][2] };
 }
 
+/** The release's frozen Antigravity declaration, read as data from the release
+ * commit. Its PATCHED Linux closure is what the image pack must carry. */
+export async function loadReleaseAntigravityDistributions(profiles, fetchFile) {
+  if (!profiles?.profiles?.antigravity) return undefined;
+  const path = 'packages/paperclip-runner/antigravity-distributions.json';
+  const frozen = decodeReleaseJson(await fetchFile(path), path);
+  if (frozen?.schema !== 'paperclip.antigravity_distribution.v1') throw Error('Invalid frozen Antigravity distribution declaration');
+  return frozen;
+}
+
 const digestFile = async file => {
   const hash = createHash('sha256');
   for await (const chunk of createReadStream(file)) hash.update(chunk);
@@ -150,7 +160,8 @@ z.extractall(dest)
     const path = 'packages/paperclip-runner/src/drivers/acpx/kimi-closure-pins.ts';
     kimiClosures = decodeReleaseKimiClosures(await api(`contents/${path}?ref=${source}`), path);
   }
-  verifyReleaseProviderPack(pack, source, 'linux-x64', { profiles, distributions, kimiClosures });
+  const antigravityDistributions = await loadReleaseAntigravityDistributions(profiles, path => api(`contents/${path}?ref=${source}`));
+  verifyReleaseProviderPack(pack, source, 'linux-x64', { profiles, distributions, kimiClosures, antigravityDistributions });
   const packages = JSON.parse(await readFile(join(dirs[2], 'manifest.json'), 'utf8'));
   if (packages.schema !== 'paperclip.runner.public-packages/v1' || packages.sourceRevision !== source) throw Error('Wrong public-package source');
   const server = packages.archives?.filter(a => a.name === '@paperclipai/server');

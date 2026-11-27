@@ -5,6 +5,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import net from "node:net";
 import { createServer } from "node:http";
+import { Readable } from "node:stream";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -406,7 +407,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     }
   }, 60_000);
 
-  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object", "transient restore", "restore lock busy"] as const)(
+  it.each(["same root", "different root", "destroyed allocation", "occupied root", "missing object", "stalled download", "transient restore", "full sandbox disk", "full reused sandbox disk", "restore lock busy"] as const)(
     "preserves the published workspace path and files on a cold restore (%s)", async mode => {
     const reserved = await reserve({ kind: "empty" }), first = await target("sandbox-A");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
@@ -463,6 +464,68 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
       vi.mocked(second.runner!.execute).mockRestore();
     }
+    if (mode === "full reused sandbox disk") {
+      // Staging 2026-11-24: an earlier run filled this reusable sandbox, and the
+      // next runs resumed it and failed the same way until the task was blocked.
+      await db.insert(environmentLeases).values({ id: randomUUID(), companyId: ids.company, environmentId: ids.environment,
+        heartbeatRunId: ids.run, issueId: ids.issue, provider: "daytona", providerLeaseId: newLease.providerLeaseId,
+        leasePolicy: "reuse_by_environment", status: "expired" });
+      await db.update(environmentLeases).set({ leasePolicy: "reuse_by_environment",
+        metadata: { ...newLease.metadata, agentId: ids.agent, reusableSandboxLease: { companyId: ids.company, environmentId: ids.environment } } })
+        .where(eq(environmentLeases.id, nextLease));
+      Object.assign(newLease, (await db.select().from(environmentLeases).where(eq(environmentLeases.id, nextLease)))[0]!);
+    }
+    if (mode === "full sandbox disk" || mode === "full reused sandbox disk") {
+      // The sandbox cannot hold even one copy: every restored file write fails
+      // with ENOSPC. A new sandbox has the same disk, so on a sandbox made for
+      // this run that is named and goes to the board. A reused sandbox may be
+      // full of an earlier run's files: it leaves reuse, and the bounded retry
+      // restores on a new sandbox.
+      const preload = path.join(root, "full-disk.cjs");
+      await fs.writeFile(preload, `const fs=require('node:fs'),open=fs.promises.open;
+fs.promises.open=async(...args)=>{const handle=await open.apply(fs.promises,args);
+ if(process.argv.includes('restore'))handle.writeFile=async()=>{throw Object.assign(Error('ENOSPC: no space left on device, write'),{code:'ENOSPC'})};
+ return handle;};
+require('node:module').syncBuiltinESMExports();`);
+      const run = second.runner!.execute.bind(second.runner);
+      vi.spyOn(second.runner!, "execute").mockImplementation(async command => run(command.args?.[1]?.includes("remote_workspace_restore_failed")
+        ? { ...command, env: { ...command.env, NODE_OPTIONS: `--require ${preload}` } } : command));
+      const full = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+        .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      const reused = mode === "full reused sandbox disk";
+      expect(full).toMatchObject({ step: "sandbox_restore", retryable: reused, message: "remote_workspace_restore_failed: step=sandbox_restore; "
+        + "remote_workspace_operation_failed: operation=restore exit=1; remote_workspace_restore_failed: stage=extract reason=sandbox_disk_full" });
+      const [after] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, nextLease));
+      if (reused) {
+        expect(after!.metadata).not.toHaveProperty("reusableSandboxLease");
+        expect(after!.metadata?.reusableSandboxLeaseSuperseded).toMatchObject({ reason: "sandbox_disk_full", supersededByRunId: nextRun,
+          reusableSandboxLease: { companyId: ids.company, environmentId: ids.environment } });
+      } else expect(after!.metadata).toEqual(newLease.metadata);
+      expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
+      vi.mocked(second.runner!.execute).mockRestore();
+      if (reused) {
+        // The bounded retry is a new run on a new sandbox. The full sandbox
+        // stays as it was, and the retry restores the saved files.
+        await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, nextRun));
+        const [ended] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, nextLease));
+        await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success", metadata: { ...ended!.metadata,
+          remoteExecutionTermination: remoteTerminationReceipt(ended as EnvironmentLease, { providerLeaseId: ended!.providerLeaseId, state: "stopped" }) } })
+          .where(eq(environmentLeases.id, nextLease));
+        const retryRun = randomUUID(), retryLease = randomUUID();
+        await db.insert(heartbeatRuns).values({ id: retryRun, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
+        const [fresh] = await db.insert(environmentLeases).values({ id: retryLease, companyId: ids.company, environmentId: ids.environment,
+          heartbeatRunId: retryRun, issueId: ids.issue, provider: "daytona", providerLeaseId: `allocation-${retryLease}`,
+          leasePolicy: "reuse_by_environment", status: "active" }).returning();
+        const retryWorkspace = await reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue, runId: retryRun,
+          agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null, existingWorkspaceId: reserved.id, source: { kind: "empty" } });
+        const newSandbox = await target("sandbox-C");
+        const retried = await prepareRemoteWorkspace({ db, storage, workspace: retryWorkspace, runId: retryRun, lease: fresh as EnvironmentLease, target: newSandbox });
+        expect(retried.remoteRoot.startsWith(newSandbox.remoteCwd)).toBe(true);
+        expect(await fs.readFile(path.join(retried.remoteRoot, "report.md"), "utf8")).toBe("useful saved result\n");
+        expect(await fs.readFile(path.join(retried.remoteRoot, "binary.bin"))).toEqual(Buffer.from([0, 1, 255]));
+        return;
+      }
+    }
     if (mode === "restore lock busy") {
       const lockDirectory = path.join(path.dirname(expectedRemoteRoot), ".paperclip-runtime", "workspace-restore-locks");
       await fs.mkdir(lockDirectory, { recursive: true, mode: 0o700 });
@@ -511,6 +574,29 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       expect(missing).toMatchObject({ step: "snapshot_download", retryable: false,
         message: "remote_workspace_restore_failed: step=snapshot_download; remote_workspace_snapshot_object_missing" });
       expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
+    }
+    if (mode === "stalled download") {
+      let ready!: () => void;
+      const started = new Promise<void>(resolve => { ready = resolve; });
+      const body = new Readable({ read() {} });
+      const stalledStorage: StorageService = { ...storage, getObject: async () => { ready(); return { stream: body }; } };
+      const realTimeout = globalThis.setTimeout;
+      const deadline = vi.spyOn(globalThis, "setTimeout").mockImplementation((fn, ms, ...args) =>
+        realTimeout(fn, ms === 300_000 ? 25 : ms, ...args));
+      const restoring = prepareRemoteWorkspace({ db, storage: stalledStorage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second })
+        .then(() => null, (error: unknown) => error as RemoteWorkspaceRestoreError);
+      try {
+        await started;
+        expect(await restoring).toMatchObject({ step: "snapshot_download", retryable: true,
+          message: "remote_workspace_restore_failed: step=snapshot_download; remote_workspace_snapshot_download_stalled" });
+        expect(body.destroyed).toBe(true);
+        expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata))
+          .toEqual(readRemoteWorkspaceAuthority(reservedAgain.metadata));
+        expect(await fs.lstat(expectedRemoteRoot).catch(() => null)).toBeNull();
+      } finally {
+        body.destroy(new Error("test cleanup")); await restoring;
+        deadline.mockRestore();
+      }
     }
     const restored = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun, lease: newLease, target: second });
     expect(restored.remoteRoot).toBe(expectedRemoteRoot);
@@ -736,7 +822,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await fs.readFile(path.join(current, "runner", "state.json"), "utf8")).toBe("unchanged opaque provider state");
   }, 60_000);
 
-  it("cold restores a workspace and prepares its preserved pending repository through normal admission", async () => {
+  it.each(["pending", "needs_repair"] as const)("cold restores a workspace and prepares its preserved %s repository through normal admission", async state => {
     const original = path.join(root, "pending-original"), origin = path.join(root, "pending-origin.git");
     await fs.mkdir(original); await fs.mkdir(origin);
     await fs.writeFile(path.join(original, "saved.txt"), "saved before repository request\n");
@@ -763,7 +849,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       await db.update(issues).set({ executionWorkspaceId: local.id }).where(eq(issues.id, ids.issue));
       const [repository] = await db.insert(executionWorkspaceRepositories).values({ companyId: ids.company,
         executionWorkspaceId: local.id, requestedByIssueId: ids.issue, repoUrl, repositoryIdentity: repoUrl,
-        relativePath, requestedRef: "HEAD", requestKey: "pending-request", requestKeys: ["pending-request"] }).returning();
+        relativePath, requestedRef: "HEAD", requestKey: "pending-request", requestKeys: ["pending-request"],
+        state, failureCode: state === "needs_repair" ? "repository_preparation_failed" : null }).returning();
       vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
       await migrateRemoteWorkspace({ db, storage, companyId: ids.company, workspaceId: local.id, apply: true, writersStopped: true });
       expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.source).toEqual({ kind: "empty" });
@@ -818,7 +905,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       expect(readRemoteWorkspaceAuthority((await workspace(local.id)).metadata)!.snapshotId).toBe(savedId);
       expect(await fs.readFile(path.join(restored.remoteRoot, relativePath, "code.txt"), "utf8")).toBe("acquired on next admission\n");
       expect(await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, repository.id)))
-        .toMatchObject([{ ...repository, state: "ready", pinnedCommit: prepared.find(row => row.id === repository.id)!.pinnedCommit,
+        .toMatchObject([{ ...repository, state: "ready", failureCode: null, pinnedCommit: prepared.find(row => row.id === repository.id)!.pinnedCommit,
           branchName: prepared.find(row => row.id === repository.id)!.branchName, updatedAt: expect.any(Date) }]);
     } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   }, 60_000);
@@ -974,10 +1061,12 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     for (const mode of ["abort", "storage_failure"] as const) {
       const controller = new AbortController(), failure = new Error("Saved object unavailable");
       let observedSignal: AbortSignal | undefined;
+      let observedBody: Readable | undefined;
       const interruptedStorage: StorageService = { ...storage, getObject: async (companyId, objectKey, options) => {
         observedSignal = options?.signal;
         if (mode === "storage_failure") throw failure;
         const object = await storage.getObject(companyId, objectKey, options);
+        observedBody = object.stream;
         controller.abort(new DOMException("Saved read cancelled", "AbortError"));
         return object;
       } };
@@ -986,9 +1075,15 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       const access = await remoteFiles.open({ companyId: ids.company, workspaceId: reserved.id, signal: controller.signal })
         .catch(error => { readError = error; return null; });
       await access?.close();
-      expect(observedSignal).toBe(controller.signal);
+      expect(observedSignal).toBeInstanceOf(AbortSignal);
+      expect(observedSignal?.aborted).toBe(controller.signal.aborted);
       if (mode === "storage_failure") expect(readError).toBe(failure);
-      else expect(readError).toMatchObject({ name: "AbortError" });
+      else {
+        expect(observedSignal?.reason).toBe(controller.signal.reason);
+        expect(readError).toMatchObject({ name: "AbortError" });
+        expect(observedBody?.destroyed).toBe(true);
+        expect(observedBody?.closed).toBe(true);
+      }
       expect(await fs.readdir(savedTemp)).toEqual([]);
     }
     const cancelled = new DOMException("Already cancelled", "AbortError");
@@ -1080,6 +1175,10 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     const [operation] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, ids.company),
       eq(workspaceOperations.heartbeatRunId, nextRun), eq(workspaceOperations.phase, "remote_workspace_restore")));
     expect(operation).toMatchObject({ status: "succeeded", metadata: { exportCleanup: { ...location, state: "pending" } } });
+    // The restore records where it spent its time and the storage requests it sent.
+    expect(operation?.metadata?.restoreTiming).toMatchObject({ schema: "paperclip.remote-workspace-restore-timing.v1",
+      downloadMs: expect.any(Number), decryptMs: expect.any(Number), plaintextVerifyMs: expect.any(Number), publishMs: expect.any(Number),
+      bytes: expect.any(Number), requests: expect.objectContaining({ requests: expect.any(Number) }) });
     await fs.writeFile(path.join(restored.remoteRoot, "saved.txt"), "later agent edits\n");
     await fs.writeFile(path.join(restored.remoteRoot, "newer.txt"), "keep untracked work\n");
     failCleanup = false;
@@ -1115,8 +1214,11 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       lease: await lease(), target: first });
     await fs.writeFile(path.join(prepared.remoteRoot, "shared-result.txt"), "from the first task\n");
     const childInput = { title: "Continue saved work", status: "in_progress" as const, assigneeAgentId: ids.agent };
-    const child = inherited ? await issueService(db).create(ids.company, { ...childInput, parentId: ids.issue })
-      : (await db.insert(issues).values({ ...childInput, companyId: ids.company, projectId, projectWorkspaceId: sourceId }).returning())[0]!;
+    // New children never share a parent's workspace; `inherited` is the shape an
+    // older release wrote, which saved-file continuation must still handle.
+    const child = (await db.insert(issues).values({ ...childInput, companyId: ids.company, projectId, projectWorkspaceId: sourceId,
+      ...(inherited ? { parentId: ids.issue, executionWorkspaceId: reserved.id, executionWorkspacePreference: "reuse_existing",
+        executionWorkspaceSettings: { mode } } : {}) }).returning())[0]!;
     if (inherited) expect(child.executionWorkspaceId).toBe(reserved.id);
     const secondIssue = child.id, secondRun = randomUUID(), secondLease = randomUUID();
     await db.insert(heartbeatRuns).values({ id: secondRun, companyId: ids.company, agentId: ids.agent,
@@ -1202,6 +1304,38 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(operations.at(-1)).toMatchObject({ status: "succeeded" });
   }, 60_000);
 
+  it("rejects a transfer that changed the archive's bytes without storing it, and saves on retry", async () => {
+    const reserved = await reserve({ kind: "empty" }), remote = await target("corrupted-transfer");
+    const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: remote });
+    await fs.writeFile(path.join(prepared.remoteRoot, "saved.txt"), "work that must be saved intact\n");
+    const syncOut = remote.runner!.syncOut!;
+    remote.runner!.syncOut = async (operations, options) => {
+      const result = await syncOut(operations, options);
+      for (const operation of operations) for (const file of operation.files) {
+        const bytes = await fs.readFile(file.targetPath); bytes[bytes.length - 1] ^= 0xff;
+        await fs.writeFile(file.targetPath, bytes);
+      }
+      return result;
+    };
+    const put = vi.spyOn(storage, "putFile");
+    await expect(saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: ids.run, lease: prepared.lease,
+      target: remote, boundary: "final", assertOwned: async () => undefined })).rejects.toThrow("remote_workspace_capture_transfer_mismatch");
+    expect(put).not.toHaveBeenCalled();
+    const pending = await db.select().from(executionWorkspaceSnapshots).where(and(
+      eq(executionWorkspaceSnapshots.executionWorkspaceId, reserved.id), eq(executionWorkspaceSnapshots.status, "pending")));
+    expect(pending.map(row => row.metadata?.uploads ?? [])).toEqual([[]]);
+    expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)).toMatchObject({ dirty: true, writerRunId: ids.run,
+      snapshotId: readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.snapshotId });
+    remote.runner!.syncOut = syncOut;
+    const saved = await saveRemoteWorkspace({ db, storage, workspace: await workspace(reserved.id), runId: ids.run, lease: prepared.lease,
+      target: remote, boundary: "final", assertOwned: async () => undefined });
+    expect(put).toHaveBeenCalledTimes(1);
+    await fs.rm(remote.remoteCwd, { recursive: true, force: true });
+    const restored = await createSavedWorkspaceLoader(db, storage)({ companyId: ids.company, workspaceId: reserved.id, snapshotId: saved.snapshotId });
+    try { expect(await fs.readFile(path.join(restored.root, "saved.txt"), "utf8")).toBe("work that must be saved intact\n"); }
+    finally { await restored.cleanup(); }
+  }, 60_000);
+
   it("retains the writer and previous snapshot when object storage fails", async () => {
     const reserved = await reserve({ kind: "empty" }), first = await target("outage-sandbox");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
@@ -1219,7 +1353,8 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       sql`${workspaceOperations.metadata}->>'boundary' = 'final'`))).map(save => save.metadata?.saveTiming);
     const duration = expect.any(Number), archive = { byteSize: expect.any(Number), entries: expect.any(Number) };
     expect(await finalTiming()).toEqual([{ schema: "paperclip.remote-workspace-save-timing.v1", outcome: "failed", totalMs: duration,
-      captureMs: duration, transferMs: duration, verifyMs: duration, ...archive, at: expect.any(String) }]);
+      captureMs: duration, transferMs: duration, ...archive, storage: expect.objectContaining({ requests: expect.any(Object) }),
+      at: expect.any(String) }]);
     const beforeSuccess = await workspace(reserved.id);
     const saved = await saveRemoteWorkspace({ db, storage, workspace: beforeSuccess, runId: ids.run,
       lease: prepared.lease, target: first, assertOwned: async () => undefined });
@@ -1230,7 +1365,9 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       lease: prepared.lease, target: first, assertOwned: async () => undefined })).resolves.toMatchObject({ snapshotId: saved.snapshotId });
     expect(await finalTiming()).toEqual([succeededTiming]);
     expect(await finalTiming()).toEqual([{ schema: "paperclip.remote-workspace-save-timing.v1", outcome: "succeeded", totalMs: duration,
-      captureMs: duration, transferMs: duration, verifyMs: duration, uploadMs: duration, publishMs: duration, ...archive,
+      captureMs: duration, transferMs: duration, uploadMs: duration, publishMs: duration, ...archive,
+      storage: expect.objectContaining({ encryptMs: duration, digestMs: duration, putMs: duration, verifyMs: duration,
+        bytes: expect.any(Number), requests: expect.any(Object) }),
       at: expect.any(String) }]);
     expect(await fs.readdir(path.join(prepared.remoteRoot, ".paperclip-runtime", "workspace-snapshots"))).toEqual([]);
   }, 60_000);
@@ -1299,6 +1436,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it.each(["journal", "ledger"])("respects historical %s generation reservations without changing the committed parent", async highest => {
     const reserved = await reserve({ kind: "empty" }), first = await target("reserved-generations");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "new-generation.txt"), "new workspace contents\n");
     const parent = readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.snapshotId;
     // A crash after journaling can leave no ledger row; retention can leave a
     // deleted ledger after the source operation is gone. Both remain reserved.
@@ -1356,6 +1494,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it("reserves distinct generations for competing boundaries and fences the losing publication", async () => {
     const reserved = await reserve({ kind: "empty" }), first = await target("competing-boundaries");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "competing-save.txt"), "new workspace contents\n");
     const parent = readRemoteWorkspaceAuthority(prepared.workspace.metadata)!.snapshotId;
     let arrivals = 0, release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
@@ -1392,6 +1531,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it.each(["failed", "succeeded"])("protects an active duplicate after its peer %s and cleans it only after the last invocation settles", async peer => {
     const reserved = await reserve({ kind: "empty" }), first = await target("active-duplicate");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "duplicate-save.txt"), "new workspace contents\n");
     let release!: () => void, entered!: () => void, releaseOwnership!: () => void, postUpload!: () => void, uploads = 0, checks = 0;
     const blocked = new Promise<void>(resolve => { release = resolve; });
     const started = new Promise<void>(resolve => { entered = resolve; });
@@ -1460,6 +1600,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   it.each(["untracked", "malformed-owner", "malformed-active"])("keeps adopted %s work pinned after a newer final save", async marker => {
     const reserved = await reserve({ kind: "empty" }), first = await target("unknown-save-work");
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+    await fs.writeFile(path.join(prepared.remoteRoot, "adopted-save.txt"), "new workspace contents\n");
     const input = { db, storage, workspace: prepared.workspace, runId: ids.run, lease: prepared.lease,
       target: first, assertOwned: async () => undefined, boundary: "repository:legacy" };
     const failed: StorageService = { ...storage, putFile: async () => { throw new Error("old upload failed"); } };
@@ -1475,6 +1616,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     if (marker === "malformed-active") await db.update(workspaceOperations).set({ metadata: sql`jsonb_set(jsonb_set(${workspaceOperations.metadata},
       '{saveWork,unknown}', 'false'::jsonb), '{saveWork,activeIds}', '{"unfinished":"unknown"}'::jsonb)` })
       .where(eq(workspaceOperations.id, old!.sourceOperationId));
+    await fs.writeFile(path.join(prepared.remoteRoot, "after-adopted-save.txt"), "newer final workspace contents\n");
     const final = await saveRemoteWorkspace({ ...input, workspace: await workspace(reserved.id), boundary: "final" });
     const [held] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.id, old!.sourceOperationId));
     expect(held).toMatchObject({ status: "succeeded", metadata: { exportCleanup: { state: "pending" } } });
@@ -1655,10 +1797,54 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(journal).toMatchObject({ status: "running", metadata: { uncertain: true } });
   }, 60_000);
 
+  // An uncertain provisioning row used to block every later reservation of
+  // the workspace forever. It settles only once the earlier run's sandbox is
+  // provably stopped; until then the reservation names the operator's action.
+  it("settles an uncertain provisioning command once its run's sandbox is provably stopped", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("provision-stop-proof");
+    const execute = first.runner!.execute.bind(first.runner!);
+    first.runner!.execute = async input => {
+      const result = await execute(input);
+      if (input.command === "bash") throw new Error("lost provisioning reply");
+      return result;
+    };
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first,
+      provisionCommand: "printf 'one effect\\n' >> setup-result.txt" })).rejects.toThrow("lost provisioning reply");
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, ids.run));
+    const nextRun = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: nextRun, companyId: ids.company, agentId: ids.agent, nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
+    const reserveNext = () => reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue, runId: nextRun,
+      agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null, existingWorkspaceId: reserved.id, source: { kind: "empty" } });
+    const provision = async () => (await db.select().from(workspaceOperations).where(and(
+      eq(workspaceOperations.companyId, ids.company), eq(workspaceOperations.phase, "remote_workspace_provision"))))[0]!;
+    // A failed run alone is not proof: its sandbox may still run the command.
+    await expect(reserveNext()).rejects.toMatchObject({ status: 409,
+      details: { code: "remote_workspace_provision_unverified", operationId: (await provision()).id, runId: ids.run } });
+    expect(await provision()).toMatchObject({ status: "running", metadata: { uncertain: true } });
+    const stopped = await lease();
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success",
+      metadata: { ...stopped.metadata, remoteExecutionTermination: remoteTerminationReceipt(stopped,
+        { providerLeaseId: stopped.providerLeaseId, state: "stopped" }) } }).where(eq(environmentLeases.id, ids.lease));
+    const outcome = await reserveNext().then(() => null, (error: unknown) => error as { details?: { code?: string } });
+    expect(outcome?.details?.code).not.toBe("remote_workspace_provision_unverified");
+    expect(await provision()).toMatchObject({ status: "failed", metadata: { uncertain: false, settledBy: "owner_sandbox_stopped" } });
+    expect(await db.select({ action: activityLog.action }).from(activityLog).where(and(eq(activityLog.companyId, ids.company),
+      eq(activityLog.action, "workspace.remote_provision_settled")))).toHaveLength(1);
+  }, 60_000);
+
+  it("records a provisioning command that reported a failing exit as finished, not uncertain", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("provision-exit-failure");
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first,
+      provisionCommand: "exit 3" })).rejects.toThrow("remote_workspace_provision_unverified");
+    const [journal] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, ids.company),
+      eq(workspaceOperations.phase, "remote_workspace_provision")));
+    expect(journal).toMatchObject({ status: "failed", metadata: { uncertain: false, exitCode: 3 } });
+  }, 60_000);
+
   it("preserves enrolled workspaces after disabling enrollment and rejects a legacy writer", async () => {
     const reserved = await reserve({ kind: "empty" });
     expect(shouldUseRemoteWorkspaces({ adapterType: "paperclip_runner", environmentDriver: "sandbox", experimentalEnabled: false, existingWorkspace: reserved })).toBe(true);
-    expect(() => shouldUseRemoteWorkspaces({ adapterType: "codex_local", environmentDriver: "sandbox", experimentalEnabled: false, existingWorkspace: reserved })).toThrow("native sandbox");
+    expect(() => shouldUseRemoteWorkspaces({ adapterType: "codex_local", environmentDriver: "sandbox", experimentalEnabled: false, existingWorkspace: reserved })).toThrow("supported remote execution environment");
   });
 
   it("keeps enrollment conditional while enrolled authority fails closed when persistence disappears", async () => {

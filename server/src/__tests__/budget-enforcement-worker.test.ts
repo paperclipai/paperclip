@@ -17,6 +17,10 @@ vi.mock("../services/budgets.js", () => ({
   flushBudgetEvaluationWorkPage: work.evaluate,
 }));
 vi.mock("../services/budget-evaluation-work.js", () => ({ hasPendingBudgetEvaluation: work.evaluationPending }));
+const resumeWork = vi.hoisted(() => ({ expiry: vi.fn(async (): Promise<number | null> => null),
+  pendingForRun: vi.fn(async (_db: unknown, runId: string) => runId !== "run-unclaimed") }));
+vi.mock("../services/budget-resume-continuation.js", () => ({ hasDeliverableBudgetResume: vi.fn(async () => false),
+  hasPendingBudgetResumeForRun: resumeWork.pendingForRun, nextBudgetResumeClaimExpiryAt: resumeWork.expiry }));
 vi.mock("../services/run-cost-accounting.js", () => ({ readCostAccountingWork: work.accounting }));
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
@@ -49,6 +53,50 @@ function setup() {
 }
 
 describe("budget accounting delivery", () => {
+  // H1 review: budget-resume claims are delivered by the always-on budget
+  // worker, after the pass's Stop delivery, independent of scheduled agent work.
+  it("delivers budget-resume continuations after Stop delivery in each pass", async () => {
+    const s = setup();
+    const order: string[] = [];
+    work.deliver.mockImplementation(async () => { order.push("stops"); });
+    const deliverResumeContinuations = vi.fn(async () => { order.push("continuations"); });
+    await registerBudgetEnforcementWork(s.db, s.coordinator, { deliverResumeContinuations }).ready;
+    expect(order).toEqual(["stops", "continuations"]);
+  });
+
+  it("wakes resume delivery when a run's Stop settles", async () => {
+    const s = setup();
+    const deliverResumeContinuations = vi.fn(async () => undefined);
+    const worker = registerBudgetEnforcementWork(s.db, s.coordinator, { deliverResumeContinuations });
+    await worker.ready;
+    expect(deliverResumeContinuations).toHaveBeenCalledTimes(1);
+    // Another tenant's cancellation without a resume claim wakes nothing.
+    publishLiveEvent({ companyId: "company-2", type: "heartbeat.run.status", payload: { runId: "run-unclaimed", status: "cancelled" } } as never);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(deliverResumeContinuations).toHaveBeenCalledTimes(1);
+    publishLiveEvent({ companyId: "company-1", type: "heartbeat.run.status", payload: { runId: "run-1", status: "cancelled" } } as never);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(deliverResumeContinuations).toHaveBeenCalledTimes(2);
+    // Stopping the worker removes the listener: later Stops wake nothing.
+    await worker.stop();
+    publishLiveEvent({ companyId: "company-1", type: "heartbeat.run.status", payload: { runId: "run-2", status: "cancelled" } } as never);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(deliverResumeContinuations).toHaveBeenCalledTimes(2);
+  });
+
+  it("wakes when a failed dispatcher's resume claim goes stale", async () => {
+    const s = setup();
+    const expiry = Date.now() + 60_000;
+    resumeWork.expiry.mockResolvedValue(expiry);
+    const deliverResumeContinuations = vi.fn(async () => undefined);
+    await registerBudgetEnforcementWork(s.db, s.coordinator, { deliverResumeContinuations }).ready;
+    expect(deliverResumeContinuations).toHaveBeenCalledTimes(1);
+    expect(s.coordinator.nextWakeAt()).toBe(expiry);
+    resumeWork.expiry.mockResolvedValue(null);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(deliverResumeContinuations).toHaveBeenCalledTimes(2);
+  });
+
   it("continues cancellation delivery and retries a failed startup reconciliation", async () => {
     const s = setup();
     work.reconcile.mockResolvedValueOnce({ nextCursor: null, hadFailures: true });

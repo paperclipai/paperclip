@@ -5,6 +5,25 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { RUNNER_VENDOR_BUILD_COMMAND } from "../../scripts/prepare-runner-vendor.mjs";
+import { buildRunnerBuildPlan } from "../../../packages/paperclip-runner/scripts/run-build.mjs";
+
+type RunnerBuildStep = {
+  label: string;
+  command: string;
+  args: string[];
+};
+
+type RunnerBuildPhase = {
+  name: string;
+  mode: string;
+  steps?: RunnerBuildStep[];
+  chains?: Array<{ name: string; steps: RunnerBuildStep[] }>;
+};
+
+function phaseSteps(phase: RunnerBuildPhase): RunnerBuildStep[] {
+  if (phase.steps) return phase.steps;
+  return (phase.chains ?? []).flatMap((chain) => chain.steps);
+}
 
 const packageJsonPath = fileURLToPath(
   new URL("../../package.json", import.meta.url),
@@ -84,11 +103,21 @@ describe("server package build script", () => {
     const runner = JSON.parse(readFileSync(new URL(
       "../../../packages/paperclip-runner/package.json", import.meta.url,
     ), "utf8")) as { scripts: Record<string, string> };
-    const steps = runner.scripts.build.split(" && ");
-    expect(steps.at(0)).toBe("node scripts/record-build-inputs.mjs --begin");
-    expect(steps.at(-1)).toBe("node scripts/record-build-inputs.mjs --finish");
-    expect(steps.filter((step) => step.includes("record-build-inputs"))).toHaveLength(2);
-    expect(steps.length).toBeGreaterThan(2);
+    expect(runner.scripts.build).toBe("node scripts/run-build.mjs");
+    const phases = buildRunnerBuildPlan({ env: {} }) as RunnerBuildPhase[];
+    expect(phases.length).toBeGreaterThan(2);
+    expect(phases.at(0)?.mode).toBe("serial");
+    expect(phaseSteps(phases.at(0)!).map((step) => step.args)).toEqual([
+      ["scripts/record-build-inputs.mjs", "--begin"],
+    ]);
+    expect(phases.at(-1)?.mode).toBe("serial");
+    expect(phaseSteps(phases.at(-1)!).map((step) => step.args)).toEqual([
+      ["scripts/record-build-inputs.mjs", "--finish"],
+    ]);
+    const allSteps = phases.flatMap(phaseSteps);
+    expect(
+      allSteps.filter((step) => step.args.some((arg) => arg.includes("record-build-inputs"))),
+    ).toHaveLength(2);
   });
 
   it("replaces an existing read-only image manifest with the build's copy step", () => {
@@ -140,23 +169,40 @@ describe("server package build script", () => {
     const runner = JSON.parse(readFileSync(new URL(
       "../../../packages/paperclip-runner/package.json", import.meta.url,
     ), "utf8")) as { scripts: Record<string, string> };
-    const steps = runner.scripts.build.split(" && ");
-    const wrapped = steps
-      .filter((step) => step.startsWith("pnpm run "))
-      .map((step) => step.slice("pnpm run ".length));
-    for (const name of wrapped) {
-      expect(runner.scripts[name], `build step ${name}`).toBeDefined();
-    }
-    const compiles = (step: string) =>
-      step === "build:typescript" || (runner.scripts[step] ?? "").includes("build:typescript");
+    expect(runner.scripts.build).toBe("node scripts/run-build.mjs");
+    const phases = buildRunnerBuildPlan({ env: {} }) as RunnerBuildPhase[];
+    const indexedSteps = phases.flatMap((phase, phaseIndex) =>
+      phaseSteps(phase).map((step) => ({ phaseIndex, step })),
+    );
+    const tscPrimary = indexedSteps.filter(({ step }) =>
+      step.args.includes("tsconfig.json") && step.args.some((arg) => arg.endsWith("/tsc")),
+    );
+    const tscSurfaces = indexedSteps.filter(({ step }) =>
+      step.args.includes("tsconfig.surfaces.json") && step.args.some((arg) => arg.endsWith("/tsc")),
+    );
+    const evalKernelBuilds = indexedSteps.filter(({ step }) =>
+      step.args.includes("@paperclipai/paperclip-eval-kernel") && step.args.includes("build"),
+    );
+    const nestedBuildTs = indexedSteps.filter(({ step }) =>
+      step.args.some((arg) => arg === "build:typescript" || (runner.scripts[arg] ?? "").includes("build:typescript")),
+    );
 
-    expect(wrapped.filter(compiles)).toEqual(["build:typescript"]);
-    expect(steps).toContain("node scripts/generate-semantic-contracts.mjs --check");
-    expect(steps).toContain("node scripts/check-runner-workflow-traceability.mjs");
-    expect(steps.indexOf("node scripts/generate-semantic-contracts.mjs --check"))
-      .toBeGreaterThan(steps.indexOf("pnpm run build:typescript"));
-    expect(steps.indexOf("node scripts/check-runner-workflow-traceability.mjs"))
-      .toBeGreaterThan(steps.indexOf("pnpm run build:typescript"));
+    expect(tscPrimary).toHaveLength(1);
+    expect(tscSurfaces).toHaveLength(1);
+    expect(evalKernelBuilds).toHaveLength(1);
+    expect(nestedBuildTs).toHaveLength(0);
+
+    const tsPhaseIndex = Math.max(tscPrimary[0].phaseIndex, tscSurfaces[0].phaseIndex);
+    const semanticContracts = indexedSteps.find(({ step }) =>
+      step.args[0] === "scripts/generate-semantic-contracts.mjs" && step.args[1] === "--check",
+    );
+    const traceability = indexedSteps.find(({ step }) =>
+      step.args[0] === "scripts/check-runner-workflow-traceability.mjs",
+    );
+    expect(semanticContracts).toBeDefined();
+    expect(traceability).toBeDefined();
+    expect(semanticContracts!.phaseIndex).toBeGreaterThan(tsPhaseIndex);
+    expect(traceability!.phaseIndex).toBeGreaterThan(tsPhaseIndex);
   });
 
   it("ships the pinned OpenCode dependency resolved by the vendored Runner", () => {

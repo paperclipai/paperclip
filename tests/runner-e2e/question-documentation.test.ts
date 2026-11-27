@@ -72,4 +72,10 @@ describe("question tool documentation regression", () => {
     r[2].documents[0].body = "Welcome AMBER123.";
     expect(failed(r)).toContain("both-answers-in-output");
   });
+  it.each(["Welcome to the afternoon meetup, AMBER1234.", "Welcome to the afternoon meetup, AMBER123_old."])(
+    "rejects a changed reference token in the saved result: %s", body => {
+      const r = recording();
+      r[2].documents[0].body = body;
+      expect(failed(r)).toContain("both-answers-in-output");
+    });
 });

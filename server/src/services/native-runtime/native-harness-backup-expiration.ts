@@ -16,6 +16,7 @@ import {
   type Db,
 } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
+import { assessSessionRetention } from "./native-session-retention-blockers.js";
 import { nativeHarnessStateBase } from "./native-harness-backup-stamp.js";
 import { nativeSessionScopeDigestIsBusy } from "./native-session-executor.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
@@ -185,7 +186,7 @@ type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 async function sessionRetentionBlocker(
   tx: Tx,
-  input: { scopeDigest: string | null; identity: SessionIdentity; closedBefore: Date; checkpoint?: boolean; lock?: boolean },
+  input: { scopeDigest: string | null; identity: SessionIdentity; closedBefore: Date; checkpoint?: boolean },
 ): Promise<{ reason: string } | { companyId: string; agentId: string; runIds: string[]; issueIds: string[]; closedAt: number }> {
   const [owner] = await tx
     .select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId })
@@ -225,7 +226,7 @@ async function sessionRetentionBlocker(
     })
     .from(issues)
     .where(and(eq(issues.companyId, owner.companyId), inArray(issues.id, issueIds)));
-  const issueRows = await (input.lock === false ? issueQuery : issueQuery.for("share"));
+  const issueRows = await issueQuery.for("share");
   if (issueRows.length !== issueIds.length) return { reason: "issue_unknown" };
   for (const issue of issueRows) {
     if (!CLOSED_ISSUE_STATUSES.includes(issue.status)) return { reason: "issue_open" };
@@ -314,6 +315,11 @@ export function nativeHarnessBackupExpirationService(
       .where(and(durableBackupCursor ? gt(nativeHarnessBackups.id, durableBackupCursor) : undefined,
         or(eq(nativeHarnessBackups.status, "retired"), lt(nativeHarnessBackups.createdAt, options.closedBefore))))
       .orderBy(asc(nativeHarnessBackups.id)).limit(options.maxEntries + 1);
+    const assessments = await assessSessionRetention(db, candidates.slice(0, options.maxEntries)
+      .filter(candidate => candidate.survivingRunId && candidate.sessionId && !["retired", "pending", "superseded"].includes(candidate.status))
+      .map(candidate => ({ key: candidate.id, scopeDigest: candidate.scopeDigest,
+        identity: { runId: candidate.runId, normalizedSessionId: candidate.sessionId!, environmentLeaseId: null } })),
+    { closedBefore: options.closedBefore, checkpoint: true });
     let processed = 0;
     for (const candidate of candidates) {
       if (!options.shouldContinue() || processed++ >= options.maxEntries || result.expired >= options.maxRemovals) {
@@ -321,6 +327,7 @@ export function nativeHarnessBackupExpirationService(
       }
       durableBackupCursor = candidate.id;
       if (candidate.survivingRunId && !candidate.sessionId) continue;
+      if (assessments.get(candidate.id)?.reason) continue;
       try {
         const retired = candidate.status === "retired" || await db.transaction(async tx => {
           if (["pending", "superseded"].includes(candidate.status)) {
@@ -385,6 +392,11 @@ export function nativeHarnessBackupExpirationService(
         isNull(nativeRunFinalizations.leaseOwner), isNull(nativeRunFinalizations.recoveryState),
       ))
       .orderBy(asc(nativeRunnerCheckpoints.runId)).limit(options.maxEntries + 1);
+    const assessments = await assessSessionRetention(db, candidates.slice(0, options.maxEntries)
+      .filter(candidate => candidate.sessionId && !candidate.retirement)
+      .map(candidate => ({ key: candidate.runId, scopeDigest: null,
+        identity: { runId: candidate.runId, normalizedSessionId: candidate.sessionId!, environmentLeaseId: null } })),
+    { closedBefore: options.closedBefore, checkpoint: true });
     let processed = 0;
     let removed = 0;
     for (const candidate of candidates) {
@@ -395,6 +407,9 @@ export function nativeHarnessBackupExpirationService(
       processed++;
       checkpointCursor = candidate.runId;
       if (!candidate.sessionId) continue; // Unknown identity is never expiration evidence.
+      const assessment = assessments.get(candidate.runId);
+      if (assessment && (assessment.reason || assessment.resumable
+        || assessment.runIds.length > MAX_NATIVE_CHECKPOINT_RETIREMENT_RUNS)) continue;
       try {
         const previousRetirement = readNativeCheckpointRetirement(candidate.retirement, candidate);
         if (previousRetirement && previousRetirement.sessionId !== candidate.sessionId) throw new Error("native_runner_checkpoint_retirement_invalid");
@@ -861,25 +876,6 @@ export function nativeHarnessBackupExpirationService(
     });
   }
 
-  async function backupDependencies(scopeDigest: string, identity: SessionIdentity): Promise<NativeHarnessBackupDependencies | null> {
-    const [owner] = await db.select({ companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
-      issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}, ${heartbeatRuns.issueId})`,
-    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
-    if (!owner) return null;
-    const runs = await db.select({ id: heartbeatRuns.id,
-      issueId: sql<string | null>`coalesce(${heartbeatRuns.nativeIssueId}, ${heartbeatRuns.issueId})`,
-    }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, owner.companyId),
-      eq(heartbeatRuns.agentId, owner.agentId), eq(heartbeatRuns.nativeSessionId, identity.normalizedSessionId)));
-    const runIds = [...new Set([identity.runId, ...runs.map(run => run.id)])];
-    const issueIds = [...new Set([owner.issueId, ...runs.map(run => run.issueId)].filter((id): id is string => Boolean(id)))];
-    const leases = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
-      eq(environmentLeases.companyId, owner.companyId), or(inArray(environmentLeases.heartbeatRunId, runIds),
-        sql`${environmentLeases.metadata}->'nativeHarnessBackup'->>'sessionScopeSha256' = ${scopeDigest}`,
-        identity.environmentLeaseId ? eq(environmentLeases.id, identity.environmentLeaseId) : undefined)));
-    return { companyId: owner.companyId, agentId: owner.agentId, sessionId: identity.normalizedSessionId,
-      runIds, issueIds, leaseIds: leases.map(lease => lease.id) };
-  }
-
   async function resolveBackupScope(scope: NativeHarnessBackupExpirationScope) {
     let runId = scope.runId;
     let issueId = scope.issueId;
@@ -910,18 +906,20 @@ export function nativeHarnessBackupExpirationService(
     if (!stat?.isDirectory() || stat.isSymbolicLink()) return null;
     const identity = await readSessionIdentity(root);
     if (!identity) return null;
-    const dependencies = await backupDependencies(scopeDigest, identity);
-    if (!dependencies) return null;
+    const assessment = (await assessSessionRetention(db, [{ key: scopeDigest, identity, scopeDigest }],
+      { closedBefore: "infinity", checkpoint: false })).get(scopeDigest);
+    if (!assessment?.companyId || !assessment.agentId) return null;
+    const dependencies: NativeHarnessBackupDependencies = { companyId: assessment.companyId, agentId: assessment.agentId,
+      sessionId: identity.normalizedSessionId, runIds: [...new Set([identity.runId, ...assessment.runIds])],
+      issueIds: [...new Set([assessment.ownerIssueId, ...assessment.issueIds].filter((id): id is string => Boolean(id)))],
+      leaseIds: assessment.leaseIds };
     const source = { id: scopeDigest, companyId: dependencies.companyId, agentId: dependencies.agentId, dependencies };
     if (await fs.lstat(path.join(root, "cleanup-activation.json")).then(() => true, () => false)) {
       return { ...source, dueAt: null };
     }
-    const blocker = await db.transaction(tx => sessionRetentionBlocker(tx, {
-      scopeDigest, identity, closedBefore: new Date(8_000_000_000_000_000), lock: false,
-    }));
-    if ("reason" in blocker) return { ...source, dueAt: null };
+    if (assessment.reason || assessment.closedAt === null) return { ...source, dueAt: null };
     const retentionMs = Math.max(1, defaults.closedForDays ?? NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS) * DAY_MS;
-    return { ...source, dueAt: Math.max(stat!.mtime.getTime(), blocker.closedAt) + retentionMs + 1 };
+    return { ...source, dueAt: Math.max(stat!.mtime.getTime(), assessment.closedAt) + retentionMs + 1 };
   }
 
   async function backupScopes(after?: string, limit = 100) {

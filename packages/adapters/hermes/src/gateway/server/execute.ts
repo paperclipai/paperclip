@@ -27,6 +27,7 @@ import {
   isRemotePlainHttp,
   remotePlainHttpDeniedMessage,
 } from "./transport-security.js";
+import { classifyTerminalFailure } from "./terminal-failure.js";
 
 type SessionKeyStrategy = "issue" | "agent" | "run" | "none";
 
@@ -733,7 +734,13 @@ function extractModel(value: unknown): string | null {
 
 function extractErrorMessage(value: unknown): string | null {
   const record = asRecord(value);
-  return nonEmpty(record?.error) ?? nonEmpty(record?.message) ?? nonEmpty(record?.detail) ?? extractOutput(value);
+  const nestedError = asRecord(record?.error);
+  return nonEmpty(record?.error)
+    ?? nonEmpty(nestedError?.message)
+    ?? nonEmpty(nestedError?.detail)
+    ?? nonEmpty(record?.message)
+    ?? nonEmpty(record?.detail)
+    ?? extractOutput(value);
 }
 
 function terminalResultCode(status: string): { exitCode: number; signal: string | null; errorCode: string | null } {
@@ -760,16 +767,25 @@ export function mapFinalResultForTest(input: {
   const mapped = terminalResultCode(input.terminal.status);
   const usage = parseUsage(payload);
   const costUsd = parseCostUsd(payload);
-  const errorMessage = mapped.errorCode
-    ? redactText(extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
+  const rawErrorMessage = mapped.errorCode
+    ? (extractErrorMessage(payload) ?? `Hermes run ${input.terminal.status}`)
     : null;
+  const errorMessage = rawErrorMessage ? redactText(rawErrorMessage) : null;
+  const terminalClassification = mapped.errorCode
+    ? classifyTerminalFailure(input.terminal.status, payload, rawErrorMessage)
+    : { errorFamily: null, retryNotBefore: null, gatewayShutdown: false };
+  const effectiveSignal = terminalClassification.gatewayShutdown ? null : mapped.signal;
+  const effectiveErrorCode = terminalClassification.gatewayShutdown ? "hermes_gateway_run_failed" : mapped.errorCode;
+  const resultStatus = terminalClassification.gatewayShutdown ? "interrupted" : input.terminal.status;
   return {
     exitCode: mapped.exitCode,
-    signal: mapped.signal,
+    signal: effectiveSignal,
     timedOut: false,
     provider: "hermes_gateway",
     model: extractModel(payload),
-    ...(mapped.errorCode ? { errorCode: mapped.errorCode } : {}),
+    ...(effectiveErrorCode ? { errorCode: effectiveErrorCode } : {}),
+    ...(terminalClassification.errorFamily ? { errorFamily: terminalClassification.errorFamily } : {}),
+    ...(terminalClassification.retryNotBefore ? { retryNotBefore: terminalClassification.retryNotBefore } : {}),
     ...(errorMessage ? { errorMessage } : {}),
     ...(usage ? { usage } : {}),
     ...(costUsd !== null ? { costUsd } : {}),
@@ -783,7 +799,8 @@ export function mapFinalResultForTest(input: {
     sessionDisplayId,
     resultJson: {
       run_id: input.terminal.runId,
-      status: input.terminal.status,
+      status: resultStatus,
+      ...(terminalClassification.gatewayShutdown ? { gateway_status: input.terminal.status } : {}),
       session_id: sessionDisplayId,
       last_event: input.terminal.eventName ?? null,
       output: output ?? "",

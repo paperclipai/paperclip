@@ -73,6 +73,7 @@ export interface Routine {
   id: string;
   companyId: string;
   projectId: string | null;
+  configurationWarnings?: import("../runner-configuration-warnings.js").AgentConfigurationWarning[];
   folderId?: string | null;
   goalId: string | null;
   parentIssueId: string | null;
@@ -178,6 +179,8 @@ export interface RoutineWebhookDelivery {
   status: "received" | "rejected";
   receivedAt: string;
   test: boolean;
+  /** While testing, the last real (non-test) delivery, restored when testing ends. */
+  previous?: RoutineWebhookDelivery | null;
 }
 
 export interface RoutineTrigger {

@@ -40,6 +40,8 @@ export function AgentProviderConnection({
   adapterType,
   environmentId,
   canLogin,
+  requiresAgent = false,
+  agentId,
   localEnvironment = false,
   onConnected,
   onDraftChanged,
@@ -53,6 +55,8 @@ export function AgentProviderConnection({
   adapterType: "claude_local" | "codex_local" | "grok_local" | "antigravity_runtime";
   environmentId: string | null;
   canLogin: boolean;
+  requiresAgent?: boolean;
+  agentId?: string;
   localEnvironment?: boolean;
   onConnected: (connection: ProviderConnection) => void;
   onDraftChanged?: () => void;
@@ -70,12 +74,23 @@ export function AgentProviderConnection({
     onComplete: (result: { connectionId: string; grantId: string; method: "subscription" | "api_key" }) => void;
   };
 }) {
-  const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: localEnvironment });
+  const needsHealth = localEnvironment || adapterType === "antigravity_runtime";
+  const health = useQuery({ queryKey: queryKeys.health, queryFn: healthApi.get, enabled: needsHealth });
   // Read health through the shared view: a transient failure keeps the saved
-  // local-login path usable,anda no-data failure shows readable copy.
+  // local-login path usable, and a no-data failure shows readable copy.
 
   const healthView = useQueryView(health);
-  const canUseLocalLogin = localEnvironment && (health.data?.localAiLoginSupported ?? health.data?.deploymentMode === "local_trusted");
+  const localAiLoginSupported = Boolean(health.data?.localAiLoginSupported ?? health.data?.deploymentMode === "local_trusted");
+  const hostedGoogleAiLoginSupported = Boolean(health.data?.hostedGoogleAiLoginSupported);
+  const canUseLocalLogin = adapterType === "antigravity_runtime"
+    ? (hostedGoogleAiLoginSupported || (localEnvironment && localAiLoginSupported))
+    : (localEnvironment && localAiLoginSupported);
+  // Keep the loopback redirect paste option available whenever relay sign-in is
+  // supported, including private/trusted-host servers where `localAiLoginSupported`
+  // is true but the user's browser may be on another machine.
+  const googleHostedRedirect: boolean | "optional" = adapterType === "antigravity_runtime" && hostedGoogleAiLoginSupported
+    ? (localAiLoginSupported ? "optional" : true)
+    : false;
   const epoch = useRef(0);
   useEffect(
     () => () => {
@@ -89,11 +104,15 @@ export function AgentProviderConnection({
     setOpened(false);
     setAuthorizationUrl(null);
     setLoginPhase("preparing");
+    setLoginRequested(false);
   };
   const [methodChoice, setMethod] = useState<"subscription" | "api" | null>(managedAccount?.initialMethod === "api_key" ? "api" : managedAccount ? "subscription" : null);
   const [advanced, setAdvanced] = useState(false);
   // Connections already selected the provider before showing this step.
   const [opened, setOpened] = useState(Boolean(advancedConnection || managedAccount));
+  const [loginRequested, setLoginRequested] = useState(false);
+  const automaticComputer = requiresAgent && !agentId;
+  const awaitingLoginRequest = automaticComputer && !loginRequested;
   const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
   const [loginPhase, setLoginPhase] = useState<"preparing" | "ready" | "waiting" | "connecting">("preparing");
   const phaseBeforeSubmit = useRef<"ready" | "waiting">("ready");
@@ -102,7 +121,7 @@ export function AgentProviderConnection({
   const [error, setError] = useState<string | null>(null);
   const [storedConnection, setStoredConnection] =
     useState<ProviderConnection | null>(null);
-  const provider = adapterType === "antigravity_runtime" ? "Google" : adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : "OpenAI";
+  const provider = adapterType === "antigravity_runtime" ? "Antigravity" : adapterType === "claude_local" ? "Claude" : adapterType === "grok_local" ? "Grok" : "OpenAI";
   const envKey =
     adapterType === "antigravity_runtime" ? "GEMINI_API_KEY" : adapterType === "claude_local" ? "ANTHROPIC_API_KEY" : adapterType === "grok_local" ? "XAI_API_KEY" : "OPENAI_API_KEY";
   const aiProvider = adapterType === "antigravity_runtime" ? "google" : adapterType === "claude_local" ? "anthropic" : adapterType === "grok_local" ? "xai" : "openai";
@@ -366,8 +385,10 @@ export function AgentProviderConnection({
                   />
                 )}
               </OnboardingLoginCard>
-            ) : needsLogin ? (
+            ) : needsLogin ? !awaitingLoginRequest && (
               <AdapterLoginPanel
+                requiresAgent={requiresAgent}
+                agentId={agentId}
                 companyId={companyId}
                 adapterType={adapterType}
                 environmentId={environmentId}
@@ -406,7 +427,7 @@ export function AgentProviderConnection({
                 }}
               />
             ) : savedSubscription ? null : canUseLocalLogin && !storedLogin.data ? (
-              <LocalProviderLoginInstructions adapterType={adapterType} login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }} />
+              <LocalProviderLoginInstructions adapterType={adapterType} hostedRedirect={googleHostedRedirect} login={{ ...localLogin, retry: () => { setError(null); localLogin.retry(); } }} />
             ) : (
               <p className="text-sm text-muted-foreground">
                 {storedLogin.data
@@ -429,7 +450,7 @@ export function AgentProviderConnection({
           {testError ?? error}
         </p>
       )}
-      {localEnvironment && healthView.kind === "error" && (
+      {needsHealth && healthView.kind === "error" && (
         <p role="alert" className="mt-4 text-sm text-destructive">Could not prepare sign-in. Reload this page to try again.</p>
       )}
       <FooterNav
@@ -441,7 +462,7 @@ export function AgentProviderConnection({
           opened && needsLogin
             ? loginPhase === "waiting" ? adapterType === "codex_local" ? "Waiting for auth…" : "Waiting for code"
               : loginPhase === "connecting" ? "Connecting"
-              : `Sign in to ${provider}`
+              : automaticComputer && authorizationUrl ? `Continue to ${provider}` : `Sign in to ${provider}`
             : busy
             ? "Connecting"
             : method === "subscription" &&
@@ -454,7 +475,7 @@ export function AgentProviderConnection({
         primaryDisabled={
           managedAccount?.disabled ||
           (Boolean(managedAccount) && method === "subscription" && !canLogin && !canUseLocalLogin) ||
-          (localEnvironment && health.isPending) || localLogin.preparing || Boolean(localLogin.error) ||
+          (needsHealth && health.isPending) || localLogin.preparing || Boolean(localLogin.error) ||
           (method === "subscription" && canUseLocalLogin && !savedSubscription && !storedLogin.data && localLogin.status !== "ready") ||
           (!managedAccount && adapterType !== "antigravity_runtime" && auth.isPending) ||
           savedKeys.loading ||
@@ -462,16 +483,20 @@ export function AgentProviderConnection({
           // The saved-subscription chooser renders outside the opened section,
           // so reusing the visible choice must not wait for a tile click.
           (!opened && !(method === "subscription" && savedSubscription)) ||
-          (Boolean(needsLogin) && (!authorizationUrl || loginPhase !== "ready")) ||
+          (Boolean(needsLogin) && !awaitingLoginRequest && (!authorizationUrl || loginPhase !== "ready")) ||
           (method === "api" &&
             !apiKey.trim() &&
             !storedConnection &&
             !selectedKey)
         }
         loading={busy}
-        primaryIcon={opened && needsLogin ? loginPhase === "ready" ? "none" : "spinner" : undefined}
+        primaryIcon={opened && needsLogin && !awaitingLoginRequest ? loginPhase === "ready" ? "none" : "spinner" : undefined}
         onPrimary={() => {
           if (needsLogin) {
+            if (awaitingLoginRequest) {
+              setLoginRequested(true);
+              return;
+            }
             if (!authorizationUrl || loginPhase !== "ready") return;
             window.open(authorizationUrl, "_blank", "noreferrer,noopener");
             setLoginPhase("waiting");

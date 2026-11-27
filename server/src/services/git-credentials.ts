@@ -200,7 +200,7 @@ type GitCredentialSecretsDeps = {
   resolveUserSecretValue?: SecretServiceLike["resolveUserSecretValue"];
 };
 
-export type GitHubApiCredentialSource = "company_secret" | "server_env";
+export type GitHubApiCredentialSource = "managed_connection" | "company_secret" | "server_env";
 
 export type GitHubApiCredential = {
   token: string;

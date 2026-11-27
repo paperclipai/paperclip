@@ -15,7 +15,13 @@ import {
 import { prepareEmbeddedPostgresNativeRuntime } from "./embedded-postgres-native.js";
 import { loadWithoutEmbeddedPostgresExitHooks } from "./embedded-postgres-lifecycle.js";
 import { ownTestPostgres, TestPostgresShutdownError, type TestPostgresInstance } from "./test-postgres-owner.js";
-import { checkTestPostgresAdmin, startTestPostgresDatabase, testPostgresAdminUrl } from "./test-postgres-admin.js";
+import postgres from "postgres";
+import {
+  checkTestPostgresAdmin,
+  QUIET_TEST_DATABASE_SQL,
+  startTestPostgresDatabase,
+  testPostgresAdminUrl,
+} from "./test-postgres-admin.js";
 
 // Time budget (ms) for a vitest test in the embedded-Postgres cost class: a
 // test that starts an embedded Postgres cluster and runs migrations. Measured
@@ -156,6 +162,12 @@ async function createEmbeddedPostgresTestInstanceAt(dataDir: string) {
   return { dataDir, port, instance, getRecentLogs: () => logBuffer.getRecentLogs() };
 }
 
+async function quietTestDatabase(adminUrl: string, databaseName: string): Promise<void> {
+  const sql = postgres(adminUrl, { max: 1, onnotice() {} });
+  try { await sql.unsafe(QUIET_TEST_DATABASE_SQL(databaseName)); }
+  finally { await sql.end({ timeout: 1 }); }
+}
+
 function adminConnectionStringFor(port: number): string {
   return `postgres://${EMBEDDED_POSTGRES_USER}:${EMBEDDED_POSTGRES_PASSWORD}@127.0.0.1:${port}/postgres`;
 }
@@ -191,11 +203,30 @@ async function stopEmbeddedPostgresBounded(
 // a fresh port and a fresh data directory, so a transient collision clears.
 const EMBEDDED_POSTGRES_START_MAX_ATTEMPTS = 5;
 
+export type EmbeddedPostgresTestDatabaseOptions = {
+  maxConnections?: number;
+};
+
+function applyPostgresConfigOverrides(dataDir: string, options?: EmbeddedPostgresTestDatabaseOptions): void {
+  const maxConnections = options?.maxConnections;
+  if (!maxConnections || !Number.isInteger(maxConnections) || maxConnections < 1) {
+    return;
+  }
+  const configPath = path.join(dataDir, "postgresql.conf");
+  if (!fs.existsSync(configPath)) {
+    return;
+  }
+  fs.appendFileSync(configPath, `\nmax_connections = ${maxConnections}\n`, "utf8");
+}
+
 // Start one embedded Postgres cluster with a bounded retry. Each attempt gets a
 // fresh port and a fresh data directory. On a failed attempt we stop the cluster
 // and remove its data directory before the next attempt. After the last attempt
 // we throw with the real Postgres output so the failure is loud and diagnosable.
-async function startEmbeddedPostgresWithRetry(tempDirPrefix: string): Promise<{
+async function startEmbeddedPostgresWithRetry(
+  tempDirPrefix: string,
+  options?: EmbeddedPostgresTestDatabaseOptions,
+): Promise<{
   port: number;
   dataDir: string;
   instance: EmbeddedPostgresInstance;
@@ -206,6 +237,7 @@ async function startEmbeddedPostgresWithRetry(tempDirPrefix: string): Promise<{
     const created = await createEmbeddedPostgresTestInstance(tempDirPrefix);
     try {
       await created.instance.initialise();
+      applyPostgresConfigOverrides(created.dataDir, options);
       await created.instance.start();
       return { port: created.port, dataDir: created.dataDir, instance: created.instance };
     } catch (error) {
@@ -530,6 +562,7 @@ function resetTemplateDirCache(): void {
 async function startEmbeddedPostgresFromTemplateWithRetry(
   templateDir: string,
   tempDirPrefix: string,
+  options?: EmbeddedPostgresTestDatabaseOptions,
 ): Promise<{ port: number; dataDir: string; instance: EmbeddedPostgresInstance }> {
   let lastError = new Error("embedded Postgres startup from template failed");
 
@@ -544,6 +577,7 @@ async function startEmbeddedPostgresFromTemplateWithRetry(
       fs.cpSync(templateDir, dataDir, { recursive: true });
       // Postgres refuses a data directory that is group or world accessible.
       fs.chmodSync(dataDir, 0o700);
+      applyPostgresConfigOverrides(dataDir, options);
       created = await createEmbeddedPostgresTestInstanceAt(dataDir);
       await created.instance.start();
       return { port: created.port, dataDir: rootDir, instance: created.instance };
@@ -628,12 +662,13 @@ export async function getEmbeddedPostgresTestSupport(): Promise<EmbeddedPostgres
 // fresh path so the cache can only make a suite faster, never fail it.
 async function startEmbeddedPostgresClusterForSuite(
   tempDirPrefix: string,
+  options?: EmbeddedPostgresTestDatabaseOptions,
 ): Promise<{ port: number; dataDir: string; instance: EmbeddedPostgresInstance; mode: EmbeddedPostgresStartMode }> {
   const templateDir = await getEmbeddedPostgresTemplateDir();
 
   if (templateDir !== null) {
     try {
-      const started = await startEmbeddedPostgresFromTemplateWithRetry(templateDir, tempDirPrefix);
+      const started = await startEmbeddedPostgresFromTemplateWithRetry(templateDir, tempDirPrefix, options);
       return { ...started, mode: "template" };
     } catch (error) {
       if (error instanceof TestPostgresShutdownError) throw error;
@@ -651,22 +686,24 @@ async function startEmbeddedPostgresClusterForSuite(
 
   // The bounded retry hardens the cluster start against the port race. It throws
   // with the real Postgres output if every attempt fails.
-  const started = await startEmbeddedPostgresWithRetry(tempDirPrefix);
+  const started = await startEmbeddedPostgresWithRetry(tempDirPrefix, options);
   return { ...started, mode: "fresh" };
 }
 
 export async function startEmbeddedPostgresTestDatabase(
   tempDirPrefix: string,
+  options?: EmbeddedPostgresTestDatabaseOptions,
 ): Promise<EmbeddedPostgresTestDatabase> {
   const adminUrl = testPostgresAdminUrl();
   if (adminUrl) return startTestPostgresDatabase(adminUrl);
-  const { port, dataDir, instance, mode } = await startEmbeddedPostgresClusterForSuite(tempDirPrefix);
+  const { port, dataDir, instance, mode } = await startEmbeddedPostgresClusterForSuite(tempDirPrefix, options);
   lastStartMode = mode;
 
   try {
     // Both calls are no-ops on a template copy and keep the returned database
     // identical to the fresh path even if the template were ever stale.
     await ensurePostgresDatabase(adminConnectionStringFor(port), "paperclip");
+    await quietTestDatabase(adminConnectionStringFor(port), "paperclip");
     const connectionString = databaseConnectionStringFor(port);
     await applyPendingMigrations(connectionString);
 
