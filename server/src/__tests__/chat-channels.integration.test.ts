@@ -9952,7 +9952,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     };
   }
 
-  it("refuses to create a chat endpoint while its provider experiment is off", async () => {
+  it("refuses experimental chat endpoints while allowing stock GitHub endpoints with experiments off", async () => {
     const settings = instanceSettingsService(db);
     const previous = await settings.getExperimental();
     try {
@@ -9960,12 +9960,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const fixture = await seedCompany();
       const { service } = createService();
       const app = routesApp(db, fixture.companyId, service);
-      for (const provider of ["imessage-photon", "slack", "github"]) {
+      for (const provider of ["imessage-photon", "slack"]) {
         const response = await request(app).post(`/api/companies/${fixture.companyId}/chat-endpoints`)
           .send({ provider, assignedAgentId: fixture.assignedAgentId }).expect(403);
         expect(response.body.error).toContain("/<prefix>/company/settings/instance/experimental");
       }
       expect(await service.list(fixture.companyId)).toEqual([]);
+      // GitHub is generally available in current stock; experimental providers stay gated.
+      const githubResponse = await request(app).post(`/api/companies/${fixture.companyId}/chat-endpoints`)
+        .send({ provider: "github", assignedAgentId: fixture.assignedAgentId }).expect(201);
+      expect(githubResponse.body.provider).toBe("github");
     } finally {
       await settings.updateExperimental({ enableChatConnectors: previous.enableChatConnectors, enableGitHubReviewBots: previous.enableGitHubReviewBots });
     }
