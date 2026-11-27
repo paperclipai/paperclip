@@ -1272,7 +1272,9 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       .set({ Authorization: `Bearer ${f.tokens.access_token}`, "MCP-Protocol-Version": "2026-07-28", "Mcp-Method": method, ...headers })
       .send({ jsonrpc: "2.0", id: 1, method, params: { ...params, ...extra } });
     expect((await rpc("server/discover")).body.result).toMatchObject({ resultType: "complete", supportedVersions: ["2026-07-28"], capabilities: { tools: {}, events: {} }, ttlMs: 0, cacheScope: "private" });
-    expect((await rpc("events/list")).body.result.events.map((e: { name: string }) => e.name)).toEqual(publicMcpEventDefinitions.map(e => e.name));
+    const eventList = (await rpc("events/list")).body.result;
+    expect(eventList.events.map((e: { name: string }) => e.name)).toEqual(publicMcpEventDefinitions.map(e => e.name));
+    expect(eventList).toMatchObject({ ttlMs: 0, cacheScope: "private", resultType: "complete" });
     const toolList = (await rpc("tools/list")).body.result;
     expect(toolList.tools).toHaveLength(publicMcpCapabilities.length);
     expect(toolList).toMatchObject({ ttlMs: 0, cacheScope: "private", resultType: "complete" });
