@@ -129,6 +129,27 @@ describeEmbeddedPostgres("chat channels: github review response maintenance", ()
       await responses.processPending();
       expect(f.responseWrites).toHaveLength(writes);
     });
+    it("links the latest response when a request's run ends without its own reply", async () => {
+      const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
+      const [firstId] = [...f.responseComments.keys()];
+      const [main] = await db.insert(chatConversations).values({ companyId: f.companyId, endpointId: f.endpoint.id,
+        issueId: f.conversation.issueId, externalConversationId: "github:paperclipai/paperclip",
+        externalLabel: "paperclipai/paperclip", externalThreadId: "github:paperclipai/paperclip:418" }).returning();
+      await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpoint.id, conversationId: main.id,
+        kind: "github_review_publication", providerActionId: `github_publication:${randomUUID()}`, status: "processed",
+        payload: { operation: "assessment", session: { companyId: f.companyId, issueId: f.conversation.issueId, runId: randomUUID() } },
+        result: { summaryUrl: "https://github.com/paperclipai/paperclip/pull/418#issuecomment-1" } });
+      await db.update(heartbeatRuns).set({ status: "succeeded", runtimeMode: "native", nativePhase: "committed", resultJson: {
+        finalizationPhase: "committed", finalizationReasonCode: "completion_claim_policy_accepted",
+        nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done" },
+        presentationDecision: { schema: "paperclip.run_presentation_decision.v1", chosenSource: "none", commentAction: "create" } } })
+        .where(eq(heartbeatRuns.id, f.run.id));
+      await githubResponseCommentService(db, f.providerFetch).failRun({ companyId: f.companyId, endpointId: f.endpoint.id,
+        issueId: f.conversation.issueId!, runId: f.run.id,
+        body: "This turn ended without publishing a final response. See the Paperclip task for details." });
+      expect(f.responseComments.get(firstId)?.body).toContain("See the [latest response](https://github.com/paperclipai/paperclip/pull/418)");
+      expect(f.responseComments.get(firstId)?.body).not.toContain("ended without publishing");
+    });
     it("links a GitHub thread whose run waited to the response a later run published", async () => {
       const f = await toolReplyFixture("github:paperclipai/paperclip:418:rc:4100");
       const [firstId] = [...f.responseComments.keys()];

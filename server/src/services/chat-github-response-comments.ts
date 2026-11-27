@@ -19,12 +19,12 @@ import { withGitHubPublicationLease } from "./chat-github-publication-lease.js";
 import { projectSafeChatPublicationText } from "./chat-publication-projection.js";
 import type { GitHubAutomaticPolicyContext } from "./chat-github-review-policy.js";
 import { githubResponseAuthorityFields } from "./chat-channels/github/response-authority-read.js";
-import { githubRunReplyState } from "./chat-run-publications.js";
+import { githubLatestTaskResponseUrl, githubRunReplyState } from "./chat-run-publications.js";
 import { logActivity } from "./activity-log.js";
 import { boundRunIssueId } from "./run-task-binding.js";
 import { chatRunSourceMessageId } from "./chat-channels/run-origin.js";
 import { isMainPullResponse, legacyPullResponseMarkers, pullResponseMarker, requestResponseMarker,
-  retireLegacyResponsePlaceholder, stagePullResponse, type GitHubResponseSource } from "./chat-channels/github/response-target.js";
+  retireLegacyResponsePlaceholder, stagePullResponse, baseThreadId, type GitHubResponseSource } from "./chat-channels/github/response-target.js";
 
 type Transaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Api = { request<T>(path: string, options?: { method?: string; body?: unknown }): Promise<T> };
@@ -427,7 +427,10 @@ export function githubResponseCommentService(db: Db, fetchImpl = fetch) {
         if (isMainPullResponse(source) && current.passiveResponseWait) throw forbidden("GitHub run intentionally yielded without a new response");
         if (await githubRunReplyState(db, input) !== "none") throw conflict("GitHub reply is still being resolved");
       };
-      receipt = await acknowledge(link.deliveryId, input.body, assertRun);
+      const source = await context(link.deliveryId);
+      const latestResponse = await githubLatestTaskResponseUrl(db, { companyId: input.companyId, endpointId: input.endpointId,
+        issueId: input.issueId, since: source.delivery.createdAt, baseThreadId: baseThreadId(source.conversation.externalThreadId) });
+      receipt = await acknowledge(link.deliveryId, latestResponse ? `See the [latest response](${latestResponse}).` : input.body, assertRun);
     }
     if (!receipt) throw forbidden("GitHub failure has no request binding");
     return receipt;
