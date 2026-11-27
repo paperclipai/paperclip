@@ -4,6 +4,7 @@ import { nativeRunHandedOffTask } from "./native-human-self-handoff.js";
 import { CONTROLLER_LEASE_RENEW_MS } from "../controller-instance-lease.js";
 import { currentControllerProcessStamp, UNKNOWN_PROCESS_SPACE } from "../controller-process-identity.js";
 import { readNativeSessionResumptionAgent, restoreNativeSessionExecution } from "./native-session-resumption-admission.js";
+import { getNativeReviewAssignment } from "./native-review-participant.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { NATIVE_AGENT_DIRECTORY_BUSY_WAIT, NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
@@ -1887,9 +1888,18 @@ export async function claimNativeRestartRecoveries(input: {
       if (stopCleanup && classification.claimKind !== "reattach_remote_runner") {
         return { kind: "blocked", runId: row.run.id, reason: "native_stop_requires_existing_remote_session" } as const;
       }
+      const taskClosed = ["done", "cancelled"].includes(row.issueStatus);
+      // A completion reviewer runs on the worker's task, so the task's assignee
+      // is never the reviewer. Its still-open review assignment is what lets it
+      // run there, as in ordinary session resumption. Only a review the task
+      // has moved past counts as an ownership change.
+      const reviewStillAssigned = !taskClosed && row.issueAssigneeAgentId !== row.run.agentId
+        && await getNativeReviewAssignment(tx as unknown as Db, {
+          companyId: row.run.companyId, issueId: row.coordinator.issueId, agentId: row.run.agentId,
+          contextSnapshot: row.run.contextSnapshot,
+        }) !== null;
       const ownershipChanged =
-        row.issueAssigneeAgentId !== row.run.agentId ||
-        ["done", "cancelled"].includes(row.issueStatus);
+        (row.issueAssigneeAgentId !== row.run.agentId && !reviewStillAssigned) || taskClosed;
       if (needsResumptionAdmission && (!durableAuthority || ownershipChanged || classification.claimKind !== "reattach_remote_runner")) {
         if (!admission.exhausted) {
           const deferred = await deferRemoteRetry("native_retry_remote_authority_unverified");
