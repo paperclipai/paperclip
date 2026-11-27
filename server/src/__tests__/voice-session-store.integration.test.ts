@@ -2210,6 +2210,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(markdown).toContain("one focused clarification");
     expect(markdown).toContain("durable Paperclip continuation");
     expect(markdown).toContain("never blindly redial");
+    expect(markdown).toContain("Call my phone");
+    expect(markdown).toContain("Allow this agent to call me about my tasks");
+    expect(markdown).toContain("tool access");
     expect(markdown).not.toContain("+12015551234");
     for (const adapter of ["paperclip_runner", "claude_local", "codex_local"]) {
       expect((await prepareConnectorSkillDelivery({ ...config, engine: "cli" }, adapter)).config.paperclipRuntimeSkills).toEqual([skill]);
