@@ -39,7 +39,17 @@ test("Studio never edits or saves an unhydrated file", async ({ page }) => {
     <button onclick="window.savedUnloadedFile()">Save</button>` }));
   await page.goto("https://fixture.test/QA/issues/QA-1");
   await expect(editCreatedSkillThroughStudio({ page, skillId: "id", skillName: "owned", marker: "New content", deadlineAt: Date.now() + 7000,
-    read: async () => ({}) })).rejects.toThrow();
+    read: async () => ({}) })).rejects.toMatchObject({ outcome: "failed", code: "skill_studio_load_file_failed", message: "skill_studio_load_file_failed" });
   expect(inputs).toBe(0);
   expect(saves).toBe(0);
+});
+
+
+test("Studio identifies a missing task card without retaining browser text", async ({ page }) => {
+  await page.route("https://fixture.test/**", route => route.fulfill({ contentType: "text/html", body: "<p>No skill card</p>" }));
+  await page.goto("https://fixture.test/QA/issues/QA-1?token=private-fixture-value");
+  const failure = await editCreatedSkillThroughStudio({ page, skillId: "owned", skillName: "private-skill-name",
+    marker: "private-marker", deadlineAt: Date.now() + 7000, read: async () => ({}) }).catch(error => error);
+  expect(failure).toMatchObject({ outcome: "failed", code: "skill_studio_open_card_failed", message: "skill_studio_open_card_failed" });
+  expect(JSON.stringify(failure)).not.toMatch(/private|fixture.test|token=/);
 });
