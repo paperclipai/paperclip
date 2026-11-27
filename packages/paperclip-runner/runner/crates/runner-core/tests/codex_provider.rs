@@ -914,7 +914,8 @@ fn command_environment_is_bounded_without_weakening_argument_limits() {
     assert!(boundary.validate().is_ok());
     boundary.driver = "codex_app_server_command_environment_v2".to_owned();
     assert!(boundary.validate().is_ok());
-    boundary.instruction_working_copy_root = Some("/agent-files/run-1".to_owned());
+    let run_copy = directory.join("run-1").to_str().unwrap().to_owned();
+    boundary.instruction_working_copy_root = Some(run_copy.clone());
     assert!(
         boundary.validate().is_err(),
         "the run projection also counts toward 64 KiB"
@@ -922,13 +923,13 @@ fn command_environment_is_bounded_without_weakening_argument_limits() {
     boundary.command_environment = Some(Default::default());
     for root in [
         "relative".to_owned(),
-        "/bad\0root".to_owned(),
-        format!("/{}", "x".repeat(4096)),
+        format!("{run_copy}\0"),
+        format!("{run_copy}{}", "x".repeat(4096)),
     ] {
         boundary.instruction_working_copy_root = Some(root);
         assert!(boundary.validate().is_err());
     }
-    boundary.instruction_working_copy_root = Some("/agent-files/run-1".to_owned());
+    boundary.instruction_working_copy_root = Some(run_copy);
     assert!(boundary.validate().is_ok());
     boundary.driver = "codex_app_server_command_environment_v1".to_owned();
     assert!(
@@ -950,11 +951,13 @@ fn command_environment_rebinds_only_the_registered_run_copy() {
         let directory = temporary_directory("command-environment-run-copy");
         let requests = directory.join("requests.jsonl");
         let config = provider_config(&directory, &["--request-log", requests.to_str().unwrap()]);
+        let tools = directory.join("tools");
+        let old_copy = directory.join("old-copy");
         let mut wire = serde_json::to_value(&config).unwrap();
         wire["driver"] = json!(initial_driver);
-        wire["commandEnvironment"] = json!({"PATH": "/tools", "AGENT_HOME": "/old-copy"});
+        wire["commandEnvironment"] = json!({"PATH": tools, "AGENT_HOME": old_copy});
         if initial_driver.ends_with("v2") {
-            wire["instructionWorkingCopyRoot"] = json!("/old-copy");
+            wire["instructionWorkingCopyRoot"] = json!(old_copy);
         }
         let mut executor = CodexCommandExecutor::new(&directory);
         executor
@@ -969,12 +972,12 @@ fn command_environment_rebinds_only_the_registered_run_copy() {
             .execute(&command("open", 2, "session.open", json!({})))
             .unwrap();
         let mut sequence = 3;
-        for root in [json!("/new-copy"), Value::Null] {
+        for root in [json!(directory.join("new-copy")), Value::Null] {
             wire["driver"] = json!("codex_app_server_command_environment_v2");
             wire["instructionWorkingCopyRoot"] = root.clone();
-            for (key, value) in [("PATH", "/changed"), ("AGENT_HOME", "/spoofed")] {
+            for (key, value) in [("PATH", "changed"), ("AGENT_HOME", "spoofed")] {
                 let mut changed = wire.clone();
-                changed["commandEnvironment"][key] = json!(value);
+                changed["commandEnvironment"][key] = json!(directory.join(value));
                 let error = executor
                     .execute(&command(
                         "bad-profile",
@@ -1026,7 +1029,7 @@ fn command_environment_rebinds_only_the_registered_run_copy() {
                 .find(|frame| frame["method"] == "thread/resume")
                 .unwrap();
             let environment = &frame["params"]["config"]["shell_environment_policy.set"];
-            assert_eq!(environment["PATH"], "/tools");
+            assert_eq!(environment["PATH"], json!(tools));
             if root.is_null() {
                 assert!(environment.get("AGENT_HOME").is_none());
             } else {
