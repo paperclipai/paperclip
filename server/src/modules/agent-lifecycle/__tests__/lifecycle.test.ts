@@ -1,7 +1,7 @@
 import { subscribeDatabaseWork } from "@paperclipai/db";
 import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
 import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
-import { createAgentLifecycle as createLifecycleCommands } from "../index.js";
+import { createAgentLifecycle as createLifecycleCommands, setLifecycleAdapterConfigInTransaction } from "../index.js";
 import { createAgentLifecycleEffects } from "../../../services/agent-lifecycle.js";
 import { deleteCompany } from "../../../services/company-deletion.js";
 import { agentLifecycleCompanyDeletion } from "../company-deletion.js";
@@ -76,6 +76,25 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect((await current(hired.id)).adapterConfig).toMatchObject({ ...adapterConfig, lifecycleMode: "warm" });
     await createAgentLifecycle(db).updateConfiguration(hired.id, { adapterConfig: { ...(await current(hired.id)).adapterConfig, lifecycleMode: "per_turn" } });
     expect((await current(hired.id)).adapterConfig.lifecycleMode).toBe("per_turn");
+  });
+
+  it("updates the adapter binding without replacing the owning lifecycle operation", async () => {
+    const agent = await hire();
+    const claimed = await createLifecycleStore(db).claim(agent.id, "binding-test", new Date());
+    expect(claimed).toBeTruthy();
+    const config = { command: "fixture" };
+
+    await expect(db.transaction(tx => setLifecycleAdapterConfigInTransaction(
+      tx as unknown as Db, { ...claimed!, lifecycleVersion: claimed!.lifecycleVersion - 1 }, config,
+    ))).rejects.toThrow("The lifecycle operation no longer owns the adapter binding");
+    await db.transaction(tx => setLifecycleAdapterConfigInTransaction(tx as unknown as Db, claimed!, config));
+
+    expect(await current(agent.id)).toMatchObject({
+      adapterConfig: config,
+      lifecycleState: claimed!.lifecycleState,
+      lifecycleVersion: claimed!.lifecycleVersion,
+      lifecycleOperation: { id: claimed!.lifecycleOperation!.id, leaseOwner: "binding-test" },
+    });
   });
 
   it("requires an instance administrator at managed Hermes creation and pending activation", async () => {

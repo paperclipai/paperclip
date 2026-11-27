@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { and, eq, ne, sql } from "drizzle-orm";
 import { agents, projects, type Db } from "@paperclipai/db";
 import { z } from "zod";
-import { type LifecycleAgent } from "../modules/agent-lifecycle/index.js";
+import { setLifecycleAdapterConfigInTransaction, type LifecycleAgent } from "../modules/agent-lifecycle/index.js";
 import { agentService } from "./agents.js";
 import { agentCredentialService } from "./agent-credentials.js";
 import { persistActivity } from "./activity-log.js";
@@ -154,7 +154,7 @@ async function reserveConnection(
 }
 
 async function storeBinding(tx: Db, agent: AgentRow, config: Record<string, unknown>) {
-  await tx.update(agents).set({ adapterConfig: config, updatedAt: new Date() }).where(eq(agents.id, agent.id));
+  await setLifecycleAdapterConfigInTransaction(tx, agent, config);
   await agentCredentialService(tx).syncAgentSecretBindings({ ...agent, adapterConfig: config }, tx, agent.adapterConfig);
 }
 
