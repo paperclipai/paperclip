@@ -419,7 +419,7 @@ export function CompanySettings() {
           <fieldset className="space-y-3" disabled={reportingLineHiringMutation.isPending}>
             <ToggleField
               label="Limit hiring to each agent’s reporting line"
-              hint="Agents with hiring permission can hire under themselves or their reports. The approval setting above still applies."
+              hint="Agents with hiring permission can only hire under themselves or their reports. The approval setting above still applies."
               checked={reportingLineHiringPolicy.enabled}
               onChange={(enabled) => reportingLineHiringMutation.mutate({ ...reportingLineHiringPolicy, enabled })}
             />
