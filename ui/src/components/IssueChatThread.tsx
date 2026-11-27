@@ -1,3 +1,4 @@
+import type { ActionableCommentIntent } from "@/lib/composer-draft";
 import { createUuid } from "@/lib/uuid";
 import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { useCurrentAccountGuard } from "../hooks/useAccountBoundMutation";
@@ -644,6 +645,7 @@ interface IssueChatThreadProps {
     clientRequestId?: string,
     runSettings?: ComposerRunSettings,
     nativeCommand?: "swarm",
+    commentIntent?: ActionableCommentIntent,
   ) => Promise<void>;
   onCancelRun?: () => Promise<void>;
   stopPending?: boolean;
@@ -6227,13 +6229,13 @@ export function IssueChatThread({
     onRefresh: onRefreshLatestComments,
   });
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
-    async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings, nativeCommand) => {
+    async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings, nativeCommand, commentIntent) => {
       pendingSubmitScrollRef.current = true;
       clientRequestId ??= createUuid();
       const attempt = beginSubmission(clientRequestId, undefined, reopen);
       try {
-        await (nativeCommand
-          ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings, nativeCommand)
+        await (nativeCommand || commentIntent
+          ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings, nativeCommand, commentIntent)
           : runSettings
           ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
           : onAdd(body, reopen, reassignment, attachmentIds, clientRequestId));

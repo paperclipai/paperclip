@@ -13,6 +13,7 @@ import {
   clearDraftSubmission,
   settleDraftSubmission,
   replayableRequest,
+  isComposerSendRequest,
 } from "./composer-draft";
 
 describe("task draft upload receipts", () => {
@@ -26,6 +27,18 @@ describe("task draft upload receipts", () => {
     contentPath: `/api/attachments/${id}/content`,
   };
   beforeEach(() => { localStorage.clear(); sessionStorage.clear(); });
+
+  it("retains exact intent for same-account retries and refuses malformed intent", () => {
+    const request = { body: "[@Recipient](agent://d2d7ac5b-4014-4dc0-936f-19ad0bc9e787) Inspect", commentIntent: { kind: "actionable" as const, recipientAgentId: "d2d7ac5b-4014-4dc0-936f-19ad0bc9e787", request: "Inspect" } };
+    saveDraftSubmission(key, { attemptId: id, reviewed: false, request, requestOwner: "owner" });
+    const restored = loadDraftSubmission(key);
+    expect(replayableRequest(restored, "owner")).toEqual(request);
+    expect(replayableRequest(restored, "foreign")).toBeUndefined();
+    expect(isComposerSendRequest({ ...request, commentIntent: { ...request.commentIntent, kind: "legacy" } })).toBe(false);
+    expect(isComposerSendRequest({ ...request, commentIntent: { ...request.commentIntent, actorType: "user" } })).toBe(false);
+    expect(isComposerSendRequest({ ...request, commentIntent: { ...request.commentIntent, recipientAgentId: "foreign" } })).toBe(false);
+  });
+
   it("persists a tab recovery without touching shared text, receipts, or pending submission", () => {
     sessionStorage.clear();
     saveDraft(key, "Other tab text");

@@ -1,3 +1,4 @@
+import { isOrdinaryIssueCommentWake } from "../issue-comment-wakeup.js";
 import { isUniqueViolation } from "../../db-errors.js";
 import { skillPackageStore, skillVersionMetadataColumns } from "../skill-package-store.js";
 import { skillAccessService } from "../skill-access.js";
@@ -1861,6 +1862,23 @@ export function mergeCoalescedContextSnapshot(
     ...existing,
     ...incoming,
   };
+  // A comment contributes input, not authority to replace an admitted independent
+  // cause. Keep its ids for dispatch revalidation without erasing assignment,
+  // review or recovery provenance. The marker can only remove comment input.
+  const ordinaryIds = (value: Record<string, unknown>) => isOrdinaryIssueCommentWake(
+    readNonEmptyString(value.wakeReason), value) ? mergeWakeCommentIds(value)
+      : Array.isArray(value.ordinaryIssueCommentIds) ? value.ordinaryIssueCommentIds.filter((id): id is string => typeof id === "string") : [];
+  merged.ordinaryIssueCommentIds = [...new Set([...ordinaryIds(existing), ...ordinaryIds(incoming)])];
+  // A legacy comment snapshot can contain stale interaction data. That data
+  // alone is not an independently admitted interaction continuation.
+  const hasIndependentExistingCause = !!readNonEmptyString(existing.wakeReason) &&
+    (!["issue_commented", "issue_comment_mentioned", "issue_reopened_via_comment"].includes(readNonEmptyString(existing.wakeReason)!) ||
+      existing.source === "issue.interaction.respond");
+  if (isOrdinaryIssueCommentWake(readNonEmptyString(incoming.wakeReason), incoming) &&
+      readNonEmptyString(existing.wakeReason) && hasIndependentExistingCause) {
+    for (const key of ["wakeReason", "source", "wakeSource", "wakeTriggerDetail", "interactionId", "interactionKind", "interactionStatus"])
+      if (key in existing) merged[key] = existing[key]; else delete merged[key];
+  }
   // Only executeRun can mint this proof. Coalescence may retain an unchanged
   // admitted proof, but must never accept a new marker from an incoming wake.
   delete merged[PAPERCLIP_EXTERNAL_CHAT_EXECUTION_BOUND_KEY];
@@ -1933,7 +1951,9 @@ export function mergeCoalescedContextSnapshot(
   if (
     !hasInteractionContinuationWakeContext(incoming) &&
     !(
-      options.preserveExistingInteractionContinuation === true &&
+      (options.preserveExistingInteractionContinuation === true ||
+        (isOrdinaryIssueCommentWake(readNonEmptyString(incoming.wakeReason), incoming) &&
+          hasIndependentExistingCause)) &&
       hasInteractionContinuationWakeContext(existing)
     )
   ) {

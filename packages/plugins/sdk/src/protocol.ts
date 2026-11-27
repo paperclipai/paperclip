@@ -2136,6 +2136,7 @@ export interface WorkerToHostMethods {
       authorAgentId?: string;
       /** Active human company member the comment is attributed to. Requires `issue.comments.create_human_attributed`. */
       actorUserId?: string;
+      commentIntent?: {kind:string;recipientAgentId?:string;request?:string};
     },
     result: IssueComment,
   ];

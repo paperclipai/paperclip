@@ -197,6 +197,16 @@ async function createApp(transaction: (callback: (tx: Record<string, never>) => 
   return app;
 }
 
+
+function actionableFixture(comment: Record<string, unknown>) {
+  return { ...comment, authorUserId: "local-board", metadata: { commentWake: {
+    version: 1, kind: "actionable", companyId: comment.companyId, issueId: comment.issueId,
+    actorType: "user", actorId: "local-board", recipientAgentId: ASSIGNEE_AGENT_ID,
+    request: "Handle this requested change.",
+  } } };
+}
+const actionableIntent = { kind: "actionable", recipientAgentId: ASSIGNEE_AGENT_ID, request: "Handle this requested change." };
+
 function makeIssue(overrides: Record<string, unknown> = {}) {
   return {
     id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -674,17 +684,18 @@ describe("issue update comment wakeups", () => {
     const updated = { ...existing };
     mockIssueService.getById.mockResolvedValue(existing);
     mockIssueService.update.mockResolvedValue(updated);
-    mockIssueService.addComment.mockResolvedValue({
+    mockIssueService.addComment.mockResolvedValue(actionableFixture({
       id: "comment-2",
       issueId: existing.id,
       companyId: existing.companyId,
-      body: "please revise this",
-    });
+      body: `[@Owner](agent://${ASSIGNEE_AGENT_ID}) please revise this`,
+    }));
 
     const res = await request(await createApp())
       .patch(`/api/issues/${existing.id}`)
       .send({
-        comment: "please revise this",
+        commentIntent: actionableIntent,
+        comment: `[@Owner](agent://${ASSIGNEE_AGENT_ID}) please revise this`,
       });
 
     expect(res.status).toBe(200);
@@ -719,23 +730,24 @@ describe("issue update comment wakeups", () => {
       status: "in_progress",
     });
     mockIssueService.getById.mockResolvedValue(existing);
-    mockIssueService.addComment.mockResolvedValue({
+    mockIssueService.addComment.mockResolvedValue(actionableFixture({
       id: "comment-3",
       issueId: existing.id,
       companyId: existing.companyId,
-      body: "please handle this top-level thread comment",
-    });
+      body: `[@Owner](agent://${ASSIGNEE_AGENT_ID}) please handle this top-level thread comment`,
+    }));
 
     const res = await request(await createApp())
       .post(`/api/issues/${existing.id}/comments`)
       .send({
-        body: "please handle this top-level thread comment",
+        commentIntent: actionableIntent,
+        body: `[@Owner](agent://${ASSIGNEE_AGENT_ID}) please handle this top-level thread comment`,
         clientRequestId: "66666666-6666-4666-8666-666666666666",
       });
 
     expect(res.status).toBe(201);
     if (externalConversationState) expect(mockRunnerGoalService.projection).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).toHaveBeenCalledWith(existing.id, "please handle this top-level thread comment", expect.anything(),
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(existing.id, `[@Owner](agent://${ASSIGNEE_AGENT_ID}) please handle this top-level thread comment`, expect.anything(),
       expect.objectContaining({ clientRequestId: "66666666-6666-4666-8666-666666666666", mirrorToSlack: true }), expect.anything());
     await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
@@ -807,9 +819,10 @@ describe("issue update comment wakeups", () => {
       status: scenario === "done_parent" ? "done" : "in_progress",
       executionRunId: "55555555-5555-4555-8555-555555555555",
     });
-    const body = ["blocked_parent", "done_parent"].includes(scenario)
+    const contextBody = ["blocked_parent", "done_parent"].includes(scenario)
       ? `[@QA](agent://${MENTIONED_AGENT_ID}) is relevant; see [${child.identifier}](/PAP/issues/${child.identifier}).`
       : `Finished the task. [@QA](agent://${MENTIONED_AGENT_ID}) has relevant context.`;
+    const body = scenario === "board_comment" ? `[@Owner](agent://${ASSIGNEE_AGENT_ID}) ${contextBody}` : contextBody;
     const originalComment = {
       id: "context-note", issueId: existing.id, companyId: existing.companyId, body,
       createdByRunId: selfComment ? SOURCE_RUN_ID : null,
@@ -817,7 +830,7 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getById.mockImplementation(async (id) => id === child.id ? child : existing);
     mockIssueService.getByIdentifier.mockResolvedValue(child);
     mockIssueService.update.mockResolvedValue(scenario === "closing_comment" ? { ...existing, status: "done" } : existing);
-    mockIssueService.addComment.mockResolvedValue(originalComment);
+    mockIssueService.addComment.mockResolvedValue(scenario === "board_comment" ? actionableFixture(originalComment) : originalComment);
     mockIssueService.findMentionedAgents.mockResolvedValue([MENTIONED_AGENT_ID]);
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [child], blocks: [] });
     mockHeartbeatService.getRun.mockImplementation(async (id) => ({
@@ -830,7 +843,7 @@ describe("issue update comment wakeups", () => {
       ? request(app).post(`/api/issues/${existing.id}/comments`)
       : request(app).patch(`/api/issues/${existing.id}`);
     if (selfComment) req.set("X-Paperclip-Run-Id", SOURCE_RUN_ID);
-    const res = await req.send(method === "post" ? { body } : { comment: body, ...(scenario === "closing_comment" ? { status: "done" } : {}) });
+    const res = await req.send(method === "post" ? { body, ...(scenario === "board_comment" ? { commentIntent: actionableIntent } : {}) } : { comment: body, ...(scenario === "board_comment" ? { commentIntent: actionableIntent } : {}), ...(scenario === "closing_comment" ? { status: "done" } : {}) });
     expect(res.status).toBe(method === "post" ? 201 : 200);
     // Wake scheduling runs after sending the response. Drain its resolved
     // mock promises before asserting that no extra work was dispatched.
@@ -850,11 +863,11 @@ describe("issue update comment wakeups", () => {
     (["acknowledged", "rejected", "timeout", "unavailable"] as const).map((delivery) => ({ method, delivery })),
   ))("uses automatic goal steering for $method comments with $delivery delivery", async ({ method, delivery }) => {
     const existing = makeIssue({ status: "in_progress", assigneeAgentId: ASSIGNEE_AGENT_ID, assigneeUserId: null });
-    const body = "Use a darker shade of blue.";
+    const body = `[@Owner](agent://${ASSIGNEE_AGENT_ID}) Use a darker shade of blue.`;
     const comment = { id: "goal-steering-comment", issueId: existing.id, companyId: existing.companyId, body };
     mockIssueService.getById.mockResolvedValue(existing);
     mockIssueService.update.mockResolvedValue(existing);
-    mockIssueService.addComment.mockResolvedValue(comment);
+    mockIssueService.addComment.mockResolvedValue(actionableFixture(comment));
     mockRunnerGoalService.projection.mockResolvedValue({ goal: { status: "active" }, workingNow: true });
     const commandId = `goal_comment_${comment.id}`;
     mockQueueLiveRunnerPrpCommand.mockImplementation(() => delivery === "unavailable" ? null : {
@@ -866,8 +879,8 @@ describe("issue update comment wakeups", () => {
 
     const app = await createApp();
     const res = method === "post"
-      ? await request(app).post(`/api/issues/${existing.id}/comments`).send({ body })
-      : await request(app).patch(`/api/issues/${existing.id}`).send({ comment: body });
+      ? await request(app).post(`/api/issues/${existing.id}/comments`).send({ body, commentIntent: actionableIntent })
+      : await request(app).patch(`/api/issues/${existing.id}`).send({ comment: body, commentIntent: actionableIntent });
 
     expect(res.status).toBe(method === "post" ? 201 : 200);
     expect(mockIssueService.addComment).toHaveBeenCalledOnce();
@@ -933,12 +946,12 @@ describe("issue update comment wakeups", () => {
       status: "in_review",
     });
     mockIssueService.getById.mockResolvedValue(existing);
-    mockIssueService.addComment.mockResolvedValue({
+    mockIssueService.addComment.mockResolvedValue(actionableFixture({
       id: "comment-review-path",
       issueId: existing.id,
       companyId: existing.companyId,
-      body: "one more review note",
-    });
+      body: `[@Owner](agent://${ASSIGNEE_AGENT_ID}) one more review note`,
+    }));
     mockIssueThreadInteractionService.expireRequestConfirmationsSupersededByComment.mockResolvedValue([{
       id: "interaction-review-path",
       kind: "request_confirmation",
@@ -951,7 +964,7 @@ describe("issue update comment wakeups", () => {
 
     const res = await request(await createApp())
       .post(`/api/issues/${existing.id}/comments`)
-      .send({ body: "one more review note" });
+      .send({ commentIntent: actionableIntent, body: `[@Owner](agent://${ASSIGNEE_AGENT_ID}) one more review note` });
 
     expect(res.status).toBe(201);
     await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));

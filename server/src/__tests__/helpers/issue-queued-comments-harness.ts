@@ -161,7 +161,8 @@ export function createIssueQueuedCommentsHarness(prefix = "paperclip-queued-comm
       issueId,
       authorType: "user" as const,
       authorUserId: "queue-owner",
-      body: index === 0 ? "First queued message" : "Second queued message",
+      metadata: {version: 1 as const, sections: [], commentWake: {version: 1 as const, kind: "actionable" as const, companyId: companyId, issueId: issueId, actorType: "user" as const, actorId: "queue-owner", recipientAgentId: agentId, request: "Inspect the queued input"}},
+      body: `[@Worker](agent://${agentId}) ` + (index === 0 ? "First queued message" : "Second queued message"),
       createdAt: new Date(`2026-08-22T15:0${index + 1}:00.000Z`),
       updatedAt: new Date(`2026-08-22T15:0${index + 1}:00.000Z`),
     })));

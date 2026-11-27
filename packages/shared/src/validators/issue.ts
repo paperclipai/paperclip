@@ -1020,6 +1020,7 @@ export const updateIssueSchema = objectWithoutDefaults(
     requestDepth: issueRequestDepthInputSchema.optional(),
     assigneeAgentId: z.string().trim().min(1).optional().nullable(),
     comment: multilineTextSchema.pipe(z.string().min(1)).optional(),
+    commentIntent: z.object({kind:z.string().max(80),recipientAgentId:z.uuid().optional(),request:z.string().trim().max(2000).optional()}).strict().optional(),
     commentClientRequestId: z.string().uuid().optional(),
     /** Only valid with a comment; the route binds these in the update transaction. */
     attachmentIds: issueCommentAttachmentIdsSchema.optional(),
@@ -1163,9 +1164,14 @@ export const issueCommentMetadataSectionSchema = z
   })
   .strict();
 
+export const issueCommentIntentSchema = z.object({
+  kind: z.string().max(80), recipientAgentId: z.uuid().optional(), request: z.string().trim().max(2000).optional(),
+}).strict();
+
 export const issueCommentMetadataSchema = z
   .object({
     version: z.literal(1),
+    commentWake: z.object({version:z.literal(1),kind:z.literal("actionable"),companyId:z.uuid(),issueId:z.uuid(),actorType:z.enum(["agent","user"]),actorId:z.string().min(1),recipientAgentId:z.uuid(),request:z.string().trim().min(1).max(2000)}).strict().optional(),
     chatMessage: z.object({
       sourceTaskId: z.uuid(),
       sourceTaskIdentifier: z.string().min(1).max(80),
@@ -1205,13 +1211,14 @@ export const sendChatMessageSchema = z.object({
 export const markIssueReadSchema = z.object({ throughCommentId: z.uuid().optional() }).strict();
 
 export const addIssueCommentSchema = z.object({
+  commentIntent: issueCommentIntentSchema.optional(),
   clientRequestId: z.string().uuid().optional(),
   body: multilineTextSchema.pipe(z.string().min(1)),
   attachmentIds: issueCommentAttachmentIdsSchema.optional(),
   onBehalfOfUserId: z.string().trim().min(1).optional().nullable(),
   authorType: issueCommentAuthorTypeSchema.optional(),
   presentation: issueCommentPresentationSchema.nullable().optional(),
-  metadata: issueCommentMetadataSchema.nullable().optional(),
+  metadata: issueCommentMetadataSchema.omit({commentWake:true}).strict().nullable().optional(),
   reopen: z.boolean().optional(),
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),

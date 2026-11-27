@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import {
   test,
@@ -204,6 +206,10 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
         });
       });
       async function agent(name: string) {
+        // Each adapter must prove its own Git workspace before a turn can run.
+        const cwd = testInfo.outputPath(name.replaceAll(" ", "-"));
+        mkdirSync(cwd, { recursive: true });
+        execFileSync("git", ["init", "--quiet", cwd]);
         return json(
           await request.post(`/api/companies/${company.id}/agents`, {
             data: {
@@ -221,9 +227,10 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
                       // The child only runs this script; server-only fixture
                       // loaders must not follow NODE_OPTIONS into the adapter.
                       env: { NODE_OPTIONS: "" },
+                      cwd,
                       graceSec: 1,
                     }
-                  : { provider: "codex", model: "gpt-5.1-codex-mini" },
+                  : { provider: "codex", model: "gpt-5.1-codex-mini", cwd },
               runtimeConfig: {
                 heartbeat: { enabled: false, wakeOnDemand: true },
               },
@@ -284,6 +291,7 @@ for (const adapter of ["process", "paperclip_runner"] as const) {
       await expect(stop).toBeVisible({ timeout: 30_000 });
       const editor = page.getByRole("textbox", { name: "editable markdown" });
       await editor.fill("Please check mobile too.");
+      await page.getByRole("checkbox", { name: "Request action", exact: true }).check();
       await expect(stop).toHaveCount(0);
       await page.getByRole("button", { name: "Send", exact: true }).click();
       await expect(stop).toBeVisible();

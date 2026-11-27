@@ -1671,7 +1671,7 @@ export interface PluginIssuesClient {
     issueId: string,
     body: string,
     companyId: string,
-    options?: { authorAgentId?: string; actorUserId?: string },
+    options?: { authorAgentId?: string; actorUserId?: string; commentIntent?: {kind:string;recipientAgentId?:string;request?:string} },
   ): Promise<IssueComment>;
   createInteraction(
     issueId: string,

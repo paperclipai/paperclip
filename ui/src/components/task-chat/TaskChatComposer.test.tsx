@@ -3985,3 +3985,36 @@ describe("composer Stop", () => {
     expect(sendButton().disabled).toBe(failed);
   });
 });
+
+describe("comment action intent", () => {
+
+  it.each([false, true])("persists deliberate request action and leaves ordinary sends silent (action=%s)", async (action) => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const id = "d2d7ac5b-4014-4dc0-936f-19ad0bc9e787";
+    renderComposer({ onAdd, workMode: "standard", currentAssigneeValue: `agent:${id}`, issueStatus: "in_progress" });
+    typeText("Please check mobile too.");
+    if (action) flushSync(() => container.querySelector<HTMLInputElement>('input[aria-label="Request action"]')!.click());
+    await act(async () => sendButton().click());
+    expect(onAdd).toHaveBeenCalledOnce();
+    const call = onAdd.mock.calls[0];
+    expect(call[0]).toBe(action ? `[@Recipient](agent://${id})\n\nPlease check mobile too.` : "Please check mobile too.");
+    expect(call[7]).toEqual(action ? { kind: "actionable", recipientAgentId: id, request: "Please check mobile too." } : undefined);
+  });
+
+  it("stores actionable input on blocked tasks without asking to reopen", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const id = "d2d7ac5b-4014-4dc0-936f-19ad0bc9e787";
+    renderComposer({ onAdd, workMode: "standard", currentAssigneeValue: `agent:${id}`, issueStatus: "blocked" });
+    typeText("Evidence for the owner");
+    flushSync(() => container.querySelector<HTMLInputElement>('input[aria-label="Request action"]')!.click());
+    await act(async () => sendButton().click());
+    expect(onAdd.mock.calls[0][1]).toBeUndefined();
+    expect(onAdd.mock.calls[0][7]?.recipientAgentId).toBe(id);
+  });
+
+  it("does not expose request action without an agent recipient", () => {
+    renderComposer({ onAdd: vi.fn(), workMode: "standard", currentAssigneeValue: "user:board" });
+    expect(container.querySelector('input[aria-label="Request action"]')).toBeNull();
+  });
+
+});

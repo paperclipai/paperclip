@@ -186,7 +186,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
       .toMatchObject({ status: "done" });
   });
 
-  it("delivers a saved Grok interrupt exactly once after remote cleanup, including concurrent restart sweeps", async () => {
+  it("retains a saved blocked Grok interrupt through cleanup and delivers once after authorized unblock", async () => {
     const seeded = await seedQueue();
     await db.update(agents).set({ adapterType: "grok_local", runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } })
       .where(eq(agents.id, seeded.agentId));
@@ -364,7 +364,7 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     runningProcesses.set(seeded.runId, { child, graceSec: 1, processGroupId: null });
     const client = app(seeded.companyId);
     await request(client).post(`/api/issues/${seeded.issueId}/comments`)
-      .send({ body: "Keep this message too" }).expect(201);
+      .send({ body: `[@Worker](agent://${seeded.agentId}) Keep this message too`, commentIntent: {kind: "actionable", recipientAgentId: seeded.agentId, request: "Keep this message too"} }).expect(201);
     await vi.waitFor(async () => expect(await db.select().from(agentWakeupRequests)).toHaveLength(2));
     let wakes = await db.select().from(agentWakeupRequests);
     expect(wakes.find(w => w.id === seeded.wakeId)?.payload).not.toHaveProperty("commentId");

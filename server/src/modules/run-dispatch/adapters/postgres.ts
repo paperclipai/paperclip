@@ -1426,18 +1426,12 @@ export function createPostgresRunDispatchAdapter(
       if (run.status !== input.expectedStatus) return { outcome: "lost_race" as const };
       const { issueId, facts, decision, executionBlocker } = await decideCurrentRunStaleness(tx, run, input.now, publications);
       if (!decision.stale || !issueId) {
-        if (input.expectedStatus === "queued" && facts?.isInteractionWake) {
-          // Preserve the authority accepted under the issue/run locks. Later
-          // preflight reads can observe a reassignment; they must not turn an
-          // assignee comment into a non-assignee subscription-wait exception.
-          await tx.update(heartbeatRuns).set({
-            runnerProfileJson: {
-              ...parseObject(run.runnerProfileJson),
-              aiConnectionNonAssigneeCommentWake: facts.issueAssigneeAgentId !== run.agentId,
-            },
-          }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)));
-        }
-        return { outcome: "not_stale" as const };
+        // Return the locked authority observation without mutating an unclaimed
+        // run. The queue persists it atomically with a successful claim.
+        return { outcome: "not_stale" as const,
+          ...(input.expectedStatus === "queued" && facts?.isInteractionWake
+            ? { nonAssigneeCommentWake: facts.issueAssigneeAgentId !== run.agentId } : {}),
+        };
       }
       if (input.expectedStatus === "queued" && decision.errorCode === "execution_reconciliation_required") {
         const deferred = await deferRetryForCleanupInTx(tx, run, issueId, input.now, executionBlocker);

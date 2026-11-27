@@ -1,3 +1,4 @@
+import { hasActionableCommentIntent, canNotifyIssueCommentAssignee } from "./issue-comment-wakeup.js";
 import { recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "./public-mcp/upload-cleanup.js";
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { instancePublicOrigin, mayContainInventedHostLink, relativizeInventedHostLinks } from "./agent-invented-host-links.js";
@@ -170,6 +171,7 @@ import {
   extractProjectMentionIds,
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
+  addIssueCommentSchema,
   issueCommentPresentationSchema,
   isAgentCreatedIssue,
   isUuidLike,
@@ -13724,6 +13726,7 @@ export function issueService(db: Db) {
         onBehalfOfUserId?: string | null;
       },
       options?: {
+        commentIntent?: {kind:string;recipientAgentId?:string;request?:string};
         authorType?: IssueCommentAuthorType | null;
         presentation?: IssueCommentPresentation | null;
         metadata?: IssueCommentMetadata | null;
@@ -13740,6 +13743,7 @@ export function issueService(db: Db) {
       },
       dbOrTx: any = db,
     ): Promise<IssueComment> {
+      if (options?.metadata?.commentWake) throw forbidden("Comment wake intent is server-owned");
       const pluginOrigin = currentPluginInteractionOrigin();
       if (pluginOrigin) {
         actor = { ...actor, agentId: pluginOrigin.agentId, runId: pluginOrigin.runId ?? undefined, userId: undefined };
@@ -13784,13 +13788,13 @@ export function issueService(db: Db) {
       // The query below locks human comments on caller-owned transactions too,
       // sharing the fence with both question creation and Slack settlement.
       const issueQuery = dbOrTx
-        .select({ companyId: issues.companyId, conversationAgentId: issues.conversationAgentId })
+        .select({ companyId: issues.companyId, conversationAgentId: issues.conversationAgentId, status: issues.status, assigneeAgentId: issues.assigneeAgentId })
         .from(issues)
         .where(eq(issues.id, issueId));
       // Caller-owned transactions (including chat and review comments) must
       // serialize with question creation before inserting the human comment.
       const issue = await (actor.userId || (actor.runId && dbOrTx !== db) ? issueQuery.for("update") : issueQuery)
-        .then((rows: Array<{ companyId: string; conversationAgentId: string | null }>) => rows[0] ?? null);
+        .then((rows: Array<{ companyId: string; conversationAgentId: string | null; status:string; assigneeAgentId:string|null }>) => rows[0] ?? null);
 
       if (!issue) throw notFound("Issue not found");
 
@@ -13988,7 +13992,7 @@ export function issueService(db: Db) {
             actor.onBehalfOfUserId,
           )
         : null;
-      const metadata = issueCommentMetadataSchema
+      let metadata = issueCommentMetadataSchema
         .nullable()
         .parse(
           actor.agentId
@@ -13998,6 +14002,16 @@ export function issueService(db: Db) {
               )
             : (options?.metadata ?? null),
         );
+      const intent=options?.commentIntent ? addIssueCommentSchema.shape.commentIntent.parse(options.commentIntent) : undefined;
+      const intentActorId=actor.agentId ?? actor.userId;
+      if (intent?.kind==="actionable" && intentActorId && typeof intent.recipientAgentId === "string" && intent.recipientAgentId===issue.assigneeAgentId &&
+          typeof intent.request==="string" && intent.request.trim() &&
+          canNotifyIssueCommentAssignee(redactedBody,issue.assigneeAgentId, "in_progress",true)) {
+        metadata={...(metadata ?? {version:1,sections:[{title:"Request",rows:[{type:"text",text:"Action requested"}]}]}),
+          commentWake:{version:1,kind:"actionable",companyId:issue.companyId,issueId,
+            actorType:actor.agentId?"agent":"user",actorId:intentActorId,recipientAgentId:intent.recipientAgentId,
+            request:redactCurrentUserText(intent.request.trim(),currentUserRedactionOptions)}};
+      }
       let comment: typeof issueComments.$inferSelect | null = null;
       if (createdByRunId && !options?.proactiveChatMessage && !(actor.userId && options?.clientRequestId)) {
         const existing = await dbOrTx
@@ -14299,13 +14313,15 @@ export function issueService(db: Db) {
         }
       }
 
-      if (issue.conversationAgentId && actor.userId) {
+      const commentCanTriggerTurn = issue.status !== "blocked" && (Boolean(issue.conversationAgentId) ||
+        canNotifyIssueCommentAssignee(body, issue.assigneeAgentId, issue.status, hasActionableCommentIntent({companyId:issue.companyId,issueId,authorAgentId:actor.agentId,authorUserId:actor.userId,metadata},issue.assigneeAgentId)));
+      if (commentCanTriggerTurn && issue.conversationAgentId && actor.userId) {
         await dbOrTx.update(issues).set({ conversationState: "active" }).where(eq(issues.id, issueId));
       }
       if (options?.mirrorToSlack && actor.userId && authorType === "user") {
         await mirrorSlackBoardComment(dbOrTx, comment, { attachmentIds: options.attachmentIds });
       }
-      if (authorType === "user" || actor.userId) {
+      if (commentCanTriggerTurn && (authorType === "user" || actor.userId)) {
         await resumeSlackConversation(dbOrTx, issue.companyId, issueId);
       }
       // Update issue's updatedAt so comment activity is reflected in recency sorting

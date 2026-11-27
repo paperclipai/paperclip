@@ -319,7 +319,7 @@ import {
 } from "../attachment-types.js";
 import { retainBacklogHumanAssignment } from "../services/human-directed-work.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
-import { shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
+import { hasActionableCommentIntent, canNotifyIssueCommentAssignee, shouldWakeAssigneeForIssueComment } from "../services/issue-comment-wakeup.js";
 import { createSecretProposalsService } from "../services/secret-proposals.js";
 import {
   renderOnboardingGreeting,
@@ -2255,49 +2255,19 @@ function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   executionRunId: string | null | undefined;
   requestAddsExplicitBlockers?: boolean;
 }) {
-  // A request that wires a non-empty blockedByIssueIds list is declaring that
-  // the issue is waiting on other work. The implicit reopen exists for plain
-  // conversational comments ("please continue"), not structured dependency
-  // edits — flipping to todo here would contradict the caller's stated intent
-  // in the same request.
-  if (input.requestAddsExplicitBlockers) return false;
-  // Local-CLI agents post comments under user auth, so the actor.type is "user"
-  // even though the comment originates from the same heartbeat run that owns
-  // the issue lock. Without this guard, an agent that closes its own issue and
-  // then posts a follow-up comment in the same run silently reopens it.
-  // Suppress the implicit move whenever the comment's source run matches the
-  // issue's checkout/execution run.
-  if (
-    typeof input.actorRunId === "string" &&
-    input.actorRunId.length > 0 &&
-    (input.actorRunId === input.checkoutRunId ||
-      input.actorRunId === input.executionRunId)
-  ) {
-    return false;
-  }
-  // Only human comments should implicitly reopen finished work.
-  // Agent-authored comments remain communicative unless reopen was explicit.
-  if (input.actorType !== "user") return false;
-  if (
-    !isClosedIssueStatus(input.issueStatus) &&
-    input.issueStatus !== "blocked"
-  )
-    return false;
-  if (
-    typeof input.assigneeAgentId !== "string" ||
-    input.assigneeAgentId.length === 0
-  )
-    return false;
-  return true;
+  // Comments are durable input, not a task-state transition. Explicit resume,
+  // reopen, assignment and dependency resolution have their own authorization.
+  return false;
 }
 
 function shouldHumanCommentResumeInProgressScheduledRetry(input: {
   hasComment: boolean;
+  assigneeMentioned?: boolean;
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
   actorType: "agent" | "user";
 }) {
-  if (!input.hasComment) return false;
+  if (!input.hasComment || !input.assigneeMentioned) return false;
   if (input.actorType !== "user") return false;
   if (input.issueStatus !== "in_progress") return false;
   return (
@@ -14935,6 +14905,7 @@ export function issueRoutes(
         : null;
       const {
         comment: commentBody,
+        commentIntent: _commentIntent,
         commentClientRequestId,
         attachmentIds: commentAttachmentIds,
         reviewInteractionId: requestedReviewInteractionId,
@@ -15178,6 +15149,7 @@ export function issueRoutes(
       const scheduledRetryForHumanComment =
         shouldHumanCommentResumeInProgressScheduledRetry({
           hasComment: !!commentBody,
+          assigneeMentioned: canNotifyIssueCommentAssignee(commentBody ?? "", requestedAssigneeAgentId, existing.status, req.body.commentIntent?.kind === "actionable" && req.body.commentIntent?.recipientAgentId === requestedAssigneeAgentId && Boolean(req.body.commentIntent?.request?.trim())),
           issueStatus: existing.status,
           assigneeAgentId: requestedAssigneeAgentId,
           actorType: actor.actorType,
@@ -16032,6 +16004,7 @@ export function issueRoutes(
                   onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
                 },
                 {
+                  ...(req.body.commentIntent ? {commentIntent: req.body.commentIntent} : {}),
                   attachmentIds: commentAttachmentIds,
                   clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
                   mirrorToSlack: actor.actorType === "user",
@@ -16040,7 +16013,7 @@ export function issueRoutes(
                 },
                 tx,
               );
-              if (actor.actorType === "user" && updated.assigneeAgentId && !["backlog", "done", "cancelled"].includes(updated.status)) await enqueueFastResponse(tx as unknown as Db, {
+              if (actor.actorType === "user" && updated.assigneeAgentId && canNotifyIssueCommentAssignee(transactionalComment.body,updated.assigneeAgentId,updated.status,hasActionableCommentIntent(transactionalComment,updated.assigneeAgentId))) await enqueueFastResponse(tx as unknown as Db, {
                 companyId: updated.companyId, issueId: updated.id, agentId: updated.assigneeAgentId, responsibleUserId: actor.actorId,
                 sourceCommentId: transactionalComment.id, sourceKey: `comment:${transactionalComment.id}`, acceptedAt: new Date(transactionalComment.createdAt),
               });
@@ -16651,6 +16624,7 @@ export function issueRoutes(
             onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
           },
           {
+            ...(req.body.commentIntent ? {commentIntent: req.body.commentIntent} : {}),
             authorizationReason: issueMutationAuthorizationReason,
             clientRequestId: actor.actorType === "user" ? commentClientRequestId : undefined,
             mirrorToSlack: actor.actorType === "user",
@@ -16658,18 +16632,19 @@ export function issueRoutes(
           },
           tx as unknown as Db,
         );
-          if (actor.actorType === "user" && issue.assigneeAgentId && !["backlog", "done", "cancelled"].includes(issue.status)) await enqueueFastResponse(tx as unknown as Db, {
+          if (actor.actorType === "user" && issue.assigneeAgentId && canNotifyIssueCommentAssignee(saved.body,issue.assigneeAgentId,issue.status,hasActionableCommentIntent(saved,issue.assigneeAgentId))) await enqueueFastResponse(tx as unknown as Db, {
             companyId: issue.companyId, issueId: issue.id, agentId: issue.assigneeAgentId, responsibleUserId: actor.actorId,
             sourceCommentId: saved.id, sourceKey: `comment:${saved.id}`, acceptedAt: new Date(saved.createdAt),
           });
           return saved;
         };
-        comment ??= actor.actorType === "user" && issue.assigneeAgentId && !["backlog", "done", "cancelled"].includes(issue.status)
+        comment ??= actor.actorType === "user" && issue.assigneeAgentId && issue.status !== "backlog" && canNotifyIssueCommentAssignee(commentBody, issue.assigneeAgentId, issue.status, (req.body.commentIntent?.kind === "actionable" && req.body.commentIntent?.recipientAgentId === issue.assigneeAgentId && Boolean(req.body.commentIntent?.request?.trim())))
           ? await db.transaction(tx => addCommentAndReceipt(tx as unknown as Db))
           : await addCommentAndReceipt(db);
         await issueReferencesSvc.syncComment(comment.id);
         await externalObjectsSvc.syncCommentSafely(comment.id);
-        goalCommentSteered = await steerAutomaticGoalComment(issue, actor, comment);
+        goalCommentSteered = canNotifyIssueCommentAssignee(comment.body, issue.assigneeAgentId, issue.status, hasActionableCommentIntent(comment, issue.assigneeAgentId))
+          ? await steerAutomaticGoalComment(issue, actor, comment) : false;
         const commentReferenceSummaryAfter =
           await issueReferencesSvc.listIssueReferenceSummary(issue.id);
         const commentReferenceDiff =
@@ -16746,7 +16721,7 @@ export function issueRoutes(
           },
         });
 
-        const expiredInteractions = await issueThreadInteractionService(
+        const expiredInteractions = issue.status === "blocked" ? [] : await issueThreadInteractionService(
           db,
         ).expireRequestConfirmationsSupersededByComment(issue, comment, {
           agentId: actor.agentId,
@@ -16992,6 +16967,7 @@ export function issueRoutes(
               issueAtCommentStart: existing,
               reopened,
               currentStatus: issue.status,
+              assigneeMentioned: canNotifyIssueCommentAssignee(comment.body, issue.assigneeAgentId, issue.status, hasActionableCommentIntent(comment, issue.assigneeAgentId)),
             });
 
           if (
@@ -19578,6 +19554,7 @@ export function issueRoutes(
           res.status(422).json({ error: refusal, code: ANTIGRAVITY_SWARM_UNAVAILABLE });
           return;
         }
+
       }
       if (issue.conversationAgentId && req.actor.type === "board") {
         if (!req.actor.userId) throw forbidden("Board user access required");
@@ -19697,7 +19674,7 @@ export function issueRoutes(
           req.body.body,
         ));
       const reopenRequested = req.body.reopen === true && !isConversation(issue);
-      const resumeRequested = req.body.resume === true && !isConversation(issue);
+      const resumeRequested = (req.body.resume === true || swarmRequested) && !isConversation(issue);
       const interruptRequested = req.body.interrupt === true;
       const isClosed = isClosedIssueStatus(issue.status);
       const isBlocked = issue.status === "blocked";
@@ -19750,6 +19727,7 @@ export function issueRoutes(
       const scheduledRetryForHumanComment =
         shouldHumanCommentResumeInProgressScheduledRetry({
           hasComment: true,
+          assigneeMentioned: canNotifyIssueCommentAssignee(req.body.body, issue.assigneeAgentId, issue.status, req.body.commentIntent?.kind === "actionable" && req.body.commentIntent?.recipientAgentId === issue.assigneeAgentId && Boolean(req.body.commentIntent?.request?.trim())),
           issueStatus: issue.status,
           assigneeAgentId: issue.assigneeAgentId,
           actorType: actor.actorType,
@@ -20030,6 +20008,7 @@ export function issueRoutes(
             (actor.actorType === "agent" ? "agent" : "user"),
           presentation: commentPresentation,
           metadata: req.body.metadata ?? null,
+          ...(req.body.commentIntent ? {commentIntent: req.body.commentIntent} : {}),
           attachmentIds: req.body.attachmentIds,
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           mirrorToSlack: actor.actorType === "user",
@@ -20149,6 +20128,7 @@ export function issueRoutes(
             (actor.actorType === "agent" ? "agent" : "user"),
           presentation: commentPresentation,
           metadata: req.body.metadata ?? null,
+          ...(req.body.commentIntent ? {commentIntent: req.body.commentIntent} : {}),
           attachmentIds: req.body.attachmentIds,
           clientRequestId: actor.actorType === "user" ? req.body.clientRequestId : undefined,
           mirrorToSlack: actor.actorType === "user",
@@ -20168,7 +20148,7 @@ export function issueRoutes(
             commentOptions,
             dbOrTx,
           );
-        const needsFastResponse = actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status);
+        const needsFastResponse = actor.actorType === "user" && currentIssue.assigneeAgentId && currentIssue.status !== "backlog" && (swarmRequested || canNotifyIssueCommentAssignee(req.body.body, currentIssue.assigneeAgentId, currentIssue.status, (req.body.commentIntent?.kind === "actionable" && req.body.commentIntent?.recipientAgentId === currentIssue.assigneeAgentId && Boolean(req.body.commentIntent?.request?.trim()))));
         comment = needsFastResponse || swarmRequested ? await db.transaction(async tx => {
           const saved = await add(tx as unknown as Db);
           // The swarm request commits with its comment or not at all.
@@ -20177,7 +20157,7 @@ export function issueRoutes(
               companyId: currentIssue.companyId, issueId: currentIssue.id, commentId: saved.id, userId: actor.actorId,
             });
           }
-          if (needsFastResponse && actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status)) {
+          if (needsFastResponse && actor.actorType === "user" && currentIssue.assigneeAgentId) {
             await enqueueFastResponse(tx as unknown as Db, { companyId: currentIssue.companyId, issueId: currentIssue.id, agentId: currentIssue.assigneeAgentId,
               responsibleUserId: actor.actorId, sourceCommentId: saved.id, sourceKey: `comment:${saved.id}`, acceptedAt: new Date(saved.createdAt) });
             fastResponseEnqueued = true;
@@ -20186,7 +20166,7 @@ export function issueRoutes(
         }) : await add();
       }
 
-      if (!fastResponseEnqueued && actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status)) {
+      if (!fastResponseEnqueued && actor.actorType === "user" && currentIssue.assigneeAgentId && canNotifyIssueCommentAssignee(comment.body,currentIssue.assigneeAgentId,currentIssue.status,hasActionableCommentIntent(comment,currentIssue.assigneeAgentId))) {
         await db.transaction(tx => enqueueFastResponse(tx as unknown as Db, { companyId: currentIssue.companyId, issueId: currentIssue.id, agentId: currentIssue.assigneeAgentId,
           responsibleUserId: actor.actorId, sourceCommentId: comment.id, sourceKey: `comment:${comment.id}`, acceptedAt: new Date(comment.createdAt) }))
           .catch(() => logger.warn({ issueId: currentIssue.id }, "fast response admission unavailable"));
@@ -20256,7 +20236,8 @@ export function issueRoutes(
       });
       else await issueReferencesSvc.syncComment(comment.id);
       await externalObjectsSvc.syncCommentSafely(comment.id);
-      const goalCommentSteered = await steerAutomaticGoalComment(currentIssue, actor, comment);
+      const goalCommentSteered = canNotifyIssueCommentAssignee(comment.body, currentIssue.assigneeAgentId, currentIssue.status, hasActionableCommentIntent(comment, currentIssue.assigneeAgentId))
+        ? await steerAutomaticGoalComment(currentIssue, actor, comment) : false;
 
       if (actor.runId) {
         await heartbeat
@@ -20279,7 +20260,7 @@ export function issueRoutes(
         await logActivity(db, buildCommentActivity(commentReferenceDiff));
       }
 
-      const expiredInteractions = await issueThreadInteractionService(
+      const expiredInteractions = currentIssue.status === "blocked" ? [] : await issueThreadInteractionService(
         db,
       ).expireRequestConfirmationsSupersededByComment(currentIssue, comment, {
         agentId: actor.agentId,
@@ -20316,7 +20297,7 @@ export function issueRoutes(
       );
       const swarmWakeContext = swarmRequested ? { antigravitySwarmCommentId: comment.id } : {};
 
-      await revalidateActiveSourceRecoveryAfterCommittedWrite({
+      if (currentIssue.status !== "blocked") await revalidateActiveSourceRecoveryAfterCommittedWrite({
         issue: currentIssue,
         trigger: "comment",
         actor,
@@ -20442,6 +20423,7 @@ export function issueRoutes(
           issueAtCommentStart: issue,
           reopened,
           currentStatus: wakeIssueSnapshot.status,
+          assigneeMentioned: swarmRequested || canNotifyIssueCommentAssignee(comment.body, wakeIssueSnapshot.assigneeAgentId, wakeIssueSnapshot.status, hasActionableCommentIntent(comment,wakeIssueSnapshot.assigneeAgentId)),
         });
         if (assigneeId && !goalCommentSteered && shouldWakeAssigneeForComment) {
           if (reopened) {

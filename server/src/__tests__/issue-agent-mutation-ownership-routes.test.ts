@@ -1068,14 +1068,8 @@ describe("agent issue mutation checkout ownership", () => {
       expect.any(Object),
       expect.any(Object),
     );
-    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
-      ownerAgentId,
-      expect.objectContaining({
-        reason: "issue_commented",
-        requestedByActorType: "agent",
-        requestedByActorId: peerAgentId,
-      }),
-    ));
+    expect(mockIssueService.addComment.mock.calls[0]?.[2]).toMatchObject({ agentId: peerAgentId });
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("keeps default-open peer comments on closed issues inert", async () => {

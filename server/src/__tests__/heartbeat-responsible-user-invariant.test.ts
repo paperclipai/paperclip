@@ -87,6 +87,12 @@ async function deleteHeartbeatRunsAfterEvents(db: ReturnType<typeof createDb>) {
   }
 }
 
+function actionableWakeFixture(companyId: string, issueId: string, agentId: string, userId: string) {
+  return { version: 1 as const, sections: [], commentWake: { version: 1 as const, kind: "actionable" as const,
+    companyId, issueId, actorType: "user" as const, actorId: userId, recipientAgentId: agentId,
+    request: "Continue the requested work." } };
+}
+
 describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
@@ -164,7 +170,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       role: "engineer",
       status: "active",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: { cwd: process.cwd() },
       runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: {},
     });
@@ -204,7 +210,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       membershipRole: "operator", status: "active" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Interrupted queue", status,
       assigneeAgentId: agentId, responsibleUserId: ownerUserId });
-    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, body: "Continue the task" });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, metadata: actionableWakeFixture(companyId, issueId, agentId, ownerUserId), body: `[@Agent](agent://${agentId}) Continue the task` });
     await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
       source: "automation", status: "deferred_issue_execution", requestedByActorType: "system",
       payload: { issueId, commentId, queuedCommentInterrupt: { actorId: operatorId, requestedAt: new Date().toISOString() },
@@ -269,7 +275,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       membershipRole: "operator", status: "active" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Manual wake", status: "todo",
       assigneeAgentId: agentId, responsibleUserId: ownerUserId });
-    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, body: "Pending work" });
+    await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, metadata: actionableWakeFixture(companyId, issueId, agentId, ownerUserId), body: `[@Agent](agent://${agentId}) Pending work` });
     await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
       source: "automation", reason: "issue_commented", status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: ownerUserId,
       payload: { issueId, commentId, _paperclipWakeContext: { wakeCommentIds: [commentId] } },
@@ -306,7 +312,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       requestedByActorType: "user", requestedByActorId: ownerUserId });
     try {
       await vi.waitFor(() => expect(mockAdapterExecute).toHaveBeenCalled(), { timeout: 5_000 });
-      await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, body: "Pending work" });
+      await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId, metadata: actionableWakeFixture(companyId, issueId, agentId, ownerUserId), body: `[@Agent](agent://${agentId}) Pending work` });
       await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId,
         source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
         requestedByActorType: "user", requestedByActorId: ownerUserId,
@@ -458,7 +464,8 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
         companyId,
         issueId,
         authorUserId: commenterUserId,
-        body: `Current request for ${wakeReason}`,
+        metadata: actionableWakeFixture(companyId, issueId, agentId, commenterUserId),
+        body: `[@Agent](agent://${agentId}) Current request for ${wakeReason}`,
       });
 
       const run = await heartbeat.wakeup(agentId, {
@@ -513,7 +520,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     });
     const [callerAgent] = await db.insert(agents).values({
       companyId, name: "Caller's agent", adapterType: "codex_local", status: "idle",
-      adapterConfig: {}, runtimeConfig: {}, permissions: {},
+      adapterConfig: { cwd: process.cwd() }, runtimeConfig: {}, permissions: {},
     }).returning();
     const svc = routineService(db, { heartbeat });
     const routine = await svc.create(companyId, createRoutineSchema.parse({
@@ -599,7 +606,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       role: "engineer",
       status: "active",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: { cwd: process.cwd() },
       runtimeConfig: { heartbeat: { wakeOnDemand: true } },
       permissions: {},
     });
@@ -615,11 +622,11 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     await expect(heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
-      reason: "issue_commented",
-      payload: { issueId, commentId: randomUUID() },
+      reason: "issue_blockers_resolved",
+      payload: { issueId },
       requestedByActorType: "user",
       requestedByActorId: `commenter-${randomUUID()}`,
-      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_commented" },
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_blockers_resolved" },
     })).rejects.toMatchObject({
       status: 422,
       details: { code: "responsible_user_unresolved" },
@@ -647,7 +654,7 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       role: "engineer",
       status: "active",
       adapterType: "codex_local",
-      adapterConfig: {},
+      adapterConfig: { cwd: process.cwd() },
       runtimeConfig: { heartbeat: { wakeOnDemand: true } },
       permissions: {},
     });
@@ -667,4 +674,31 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)));
     expect(runs).toHaveLength(0);
   });
+  it.each(["missing-receipt", "wrong-company", "discarded", "missing-actor", "unentitled-actor", "deleted-input"])(
+    "denies queued Send with %s without reopening a done task", async (kind) => {
+      const { companyId, agentId, ownerUserId } = await seedCompany();
+      const issueId = randomUUID(), commentId = randomUUID(), queueId = randomUUID();
+      await db.insert(issues).values({ id: issueId, companyId, title: "Protected Send", status: "done",
+        assigneeAgentId: agentId, responsibleUserId: ownerUserId });
+      await db.insert(issueComments).values({ id: commentId, companyId, issueId, authorUserId: ownerUserId,
+        body: `[@Agent](agent://${agentId}) Continue the task`,
+        metadata: actionableWakeFixture(companyId, issueId, agentId, ownerUserId),
+        ...(kind === "deleted-input" ? { deletedAt: new Date() } : {}) });
+      await db.insert(agentWakeupRequests).values({ id: queueId, companyId, agentId, source: "automation",
+        status: kind === "discarded" ? "cancelled" : "deferred_issue_execution", requestedByActorType: "user",
+        requestedByActorId: ownerUserId, payload: { issueId, commentId,
+          _paperclipWakeContext: { wakeCommentIds: [commentId] },
+          ...(kind === "missing-actor" ? {} : { queuedCommentInterrupt: {
+            actorId: kind === "unentitled-actor" ? `unentitled-${randomUUID()}` : ownerUserId,
+            requestedAt: new Date().toISOString() } }) } });
+      try { await heartbeat.resumeQueuedCommentInterrupt(kind === "wrong-company" ? randomUUID() : companyId,
+        kind === "missing-receipt" ? randomUUID() : queueId); } catch (error) {
+        expect(kind).toBe("unentitled-actor");
+      }
+      await heartbeat.drainActiveRunExecutions();
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toEqual([]);
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0].status).toBe("done");
+    });
+
 });
