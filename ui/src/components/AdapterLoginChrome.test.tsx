@@ -11,6 +11,7 @@ import {
   OnboardingCardField,
   OnboardingLoginCodeRow,
   onboardingCardInputClass,
+  resolveLocalLoginPrimaryAction,
 } from "./AdapterLoginChrome";
 import { isBlockedFromReplay, replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
 
@@ -119,6 +120,20 @@ describe("the connect step's cards", () => {
     expect(code!.getAttribute("aria-label")).toBe("Authorization code");
     expect(key!.getAttribute("type")).toBe("password");
     expect(key!.getAttribute("aria-label")).toBe("API key");
+  });
+
+  it("associates a field with its optional description", () => {
+    render(
+      <>
+        <OnboardingCardField description="Account details" value="" onChange={() => {}} onSubmit={() => {}} />
+        <OnboardingCardField value="" onChange={() => {}} onSubmit={() => {}} />
+      </>,
+    );
+
+    const [described, plain] = container.querySelectorAll("input");
+    const descriptionId = described!.getAttribute("aria-describedby");
+    expect(document.getElementById(descriptionId ?? "")?.textContent).toBe("Account details");
+    expect(plain!.hasAttribute("aria-describedby")).toBe(false);
   });
 
   it("holds one height across the card's waiting and ready states", () => {
@@ -277,5 +292,134 @@ describe("session replay", () => {
   it("masks the signed-in account label", async () => {
     await render(<LocalProviderLoginInstructions adapterType="claude_local" login={{ ...login, status: "ready", accountLabel: "hollis.brennan@example.test" }} />);
     expect(replayLeaks("hollis.brennan@example.test", document.body)).toEqual({ rendered: true, recorded: false });
+  });
+
+  it("blocks hosted Google redirect input from session replay and preserves retryable errors", async () => {
+    const submitCode = vi.fn().mockRejectedValueOnce(new Error("The pasted URL does not match this Google sign-in attempt.")).mockResolvedValueOnce(undefined);
+    const container = await render(
+      <LocalProviderLoginInstructions
+        adapterType="antigravity_runtime"
+        hostedRedirect
+        login={{
+          ...login,
+          authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=test-state",
+          submitCode,
+        }}
+      />,
+    );
+    const link = container.querySelector('a[href="https://accounts.google.com/o/oauth2/v2/auth?state=test-state"]') as HTMLAnchorElement | null;
+    expect(link).not.toBeNull();
+    expect(link!.getAttribute("target")).toBe("_blank");
+    expect(link!.getAttribute("rel")).toBe("noreferrer noopener");
+    expect(container.textContent).toContain("Sign in to Antigravity");
+    expect(container.textContent).toContain("127.0.0.1");
+
+    const input = container.querySelector('input[aria-label="Antigravity redirect URL"]') as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    expect(input!.getAttribute("autocomplete")).toBe("off");
+    expect(input!.getAttribute("spellcheck")).toBe("false");
+    expect(input!.className).toContain("ph-mask");
+    expect(input!.className).toContain("ph-no-capture");
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "http://127.0.0.1:41234/?state=bad&code=abc");
+      input!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const submitButton = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Submit redirect URL") as HTMLButtonElement;
+    await act(async () => { submitButton.click(); });
+    await vi.waitFor(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("does not match"));
+    expect(submitCode).toHaveBeenCalledWith("http://127.0.0.1:41234/?state=bad&code=abc");
+    // Input stays open after a retryable bad paste.
+    const retryInput = container.querySelector('input[aria-label="Antigravity redirect URL"]') as HTMLInputElement | null;
+    expect(retryInput).not.toBeNull();
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(retryInput, "http://127.0.0.1:41234/?state=good&code=xyz");
+      retryInput!.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const retrySubmit = Array.from(container.querySelectorAll("button")).find(b => b.textContent === "Submit redirect URL") as HTMLButtonElement;
+    await act(async () => { retrySubmit.click(); });
+    await vi.waitFor(() => expect(container.textContent).toContain("Finishing sign-in"));
+    expect(submitCode).toHaveBeenCalledWith("http://127.0.0.1:41234/?state=good&code=xyz");
+  });
+
+  it("keeps the direct local Antigravity prompt without a paste field when hostedRedirect is false", async () => {
+    const container = await render(
+      <LocalProviderLoginInstructions
+        adapterType="antigravity_runtime"
+        hostedRedirect={false}
+        login={{
+          ...login,
+          authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=local-state",
+        }}
+      />,
+    );
+    expect(container.querySelector('input[aria-label="Antigravity redirect URL"]')).toBeNull();
+    expect(container.textContent).toContain("Finish signing in in the Antigravity browser window");
+  });
+
+  it("hides the inline error retry link only when primaryHandlesRetry is enabled", async () => {
+    const failedLogin = {
+      ...login,
+      status: "expired" as const,
+      error: "Google sign-in did not complete. Start sign-in again.",
+    };
+    const standalone = await render(
+      <LocalProviderLoginInstructions adapterType="antigravity_runtime" hostedRedirect login={failedLogin} />,
+    );
+    expect(standalone.textContent).toContain("Start sign-in again");
+
+    const footerOwned = await render(
+      <LocalProviderLoginInstructions adapterType="antigravity_runtime" hostedRedirect primaryHandlesRetry login={failedLogin} />,
+    );
+    expect(footerOwned.textContent).toContain("Google sign-in did not complete.");
+    expect(Array.from(footerOwned.querySelectorAll("button")).find(b => b.textContent === "Start sign-in again")).toBeUndefined();
+  });
+
+  it("maps local/hosted sign-in state to the expected primary footer CTA", () => {
+    expect(resolveLocalLoginPrimaryAction({
+      adapterType: "antigravity_runtime",
+      login: { isolated: true, preparing: true, status: null, error: null },
+    })).toEqual({ kind: "preparing", label: "Preparing sign-in…", icon: "spinner", disabled: true });
+
+    expect(resolveLocalLoginPrimaryAction({
+      adapterType: "antigravity_runtime",
+      login: { isolated: true, preparing: false, status: "expired", error: "Google sign-in did not complete. Start sign-in again." },
+    })).toEqual({ kind: "retry", label: "Start sign in", icon: "arrow", disabled: false });
+
+    expect(resolveLocalLoginPrimaryAction({
+      adapterType: "antigravity_runtime",
+      login: { isolated: true, preparing: false, status: "sign_in_required", authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth", error: null },
+    })).toEqual({ kind: "open_sign_in", label: "Sign in to Antigravity", icon: "none", disabled: false, url: "https://accounts.google.com/o/oauth2/v2/auth" });
+
+    expect(resolveLocalLoginPrimaryAction({
+      adapterType: "antigravity_runtime",
+      login: { isolated: true, preparing: false, status: "sign_in_required", authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth", error: null },
+      submitting: true,
+    })).toEqual({ kind: "connecting", label: "Connecting", icon: "spinner", disabled: true });
+
+    expect(resolveLocalLoginPrimaryAction({
+      adapterType: "antigravity_runtime",
+      login: { isolated: true, preparing: false, status: "sign_in_required", authorizationUrl: "javascript:alert(1)", error: null },
+    })).toEqual({ kind: "waiting", label: "Connect", icon: "arrow", disabled: true });
+
+    expect(resolveLocalLoginPrimaryAction({
+      adapterType: "antigravity_runtime",
+      login: { isolated: true, preparing: false, status: "ready", error: null },
+    })).toBeNull();
+  });
+
+  it("omits the inline sign-in card anchor when authorizationUrl is not http(s)", async () => {
+    const container = await render(
+      <LocalProviderLoginInstructions
+        adapterType="antigravity_runtime"
+        hostedRedirect
+        login={{
+          ...login,
+          authorizationUrl: "javascript:alert(1)",
+        }}
+      />,
+    );
+    expect(container.querySelector("a")).toBeNull();
   });
 });

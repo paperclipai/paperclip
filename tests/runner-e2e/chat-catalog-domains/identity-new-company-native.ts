@@ -62,9 +62,7 @@ export async function runNativeNewCompanyInPrivateBrowser(input: Input & {
   if (setupAgents.length !== 1 || setupAgents[0]?.name !== input.agentName || setupAgents[0]?.role !== "ceo" || setupAgents[0]?.lifecycleState === "ready")
     throw new Error("Public first-agent dialog did not save one setup-held CEO");
   const provisional = setupAgents[0]!;
-  step("new-company-configure"); await page.getByRole("dialog").locator("summary").filter({ hasText: /^Advanced$/ }).click();
-  await page.getByRole("button", { name: "Experimental harness", exact: true }).click();
-  await page.getByRole("option", { name: "OpenCode (Paperclip Runner)", exact: true }).click();
+  step("new-company-configure"); await page.getByRole("dialog").locator("label").filter({ hasText: /^OpenCode$/ }).click();
   await page.getByRole("button", { name: "Configure agent", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Configure your agent", exact: true })).toBeVisible();
   if (new URL(page.url()).searchParams.get("setupAgentId") !== provisional.id) throw new Error("Public setup route replaced the saved first-agent identity");

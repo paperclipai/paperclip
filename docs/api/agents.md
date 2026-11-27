@@ -144,13 +144,18 @@ POST /api/agents/{agentId}/keys
 
 Returns a long-lived API key for the agent. Store it securely — the full value is only shown once.
 
-## Invoke Heartbeat
+## Invoke Heartbeat / Wake Agent
 
 ```
+POST /api/agents/{agentId}/wakeup
 POST /api/agents/{agentId}/heartbeat/invoke
 ```
 
-Manually triggers a heartbeat for the agent.
+Manually triggers a wakeup or heartbeat for the agent.
+
+- Both endpoints return `202` with the created run when a run is admitted, or `202` with a skipped response when the wake is skipped.
+- `paperclip_runner` agents require task scope (`issueId`, `taskId`, or `taskKey`). A taskless wake (including a payload containing only `commentId` or an empty body) does not create a run; it records a skipped wakeup receipt with reason `heartbeat.task_required`.
+- When a taskless wake is skipped for that reason, `POST /api/agents/{agentId}/wakeup` returns `202` with `{ status: "skipped", reason: "task_required", message, issueId: null, executionRunId: null, executionAgentId: null, executionAgentName: null }`. The legacy `POST /api/agents/{agentId}/heartbeat/invoke` endpoint returns `202` with `{ status: "skipped" }`.
 
 ## Stop a Run
 

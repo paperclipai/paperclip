@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { lstat, mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { availableParallelism } from 'node:os';
 import { spawn } from 'node:child_process';
 import { pipeline } from 'node:stream/promises';
 import { constants, createZstdCompress } from 'node:zlib';
@@ -39,9 +40,32 @@ export async function createProviderPackArchive(root) {
   return receipt;
 }
 
+async function runBoundedPool(tasks, concurrency) {
+  if (tasks.length === 0) return [];
+  const results = new Array(tasks.length);
+  const workerCount = Math.max(1, Math.min(concurrency, tasks.length));
+  let nextIndex = 0;
+  let failed = false;
+  const worker = async () => {
+    while (!failed) {
+      const index = nextIndex;
+      nextIndex += 1;
+      if (index >= tasks.length) return;
+      try {
+        results[index] = await tasks[index]();
+      } catch (error) {
+        failed = true;
+        throw error;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+  return results;
+}
+
 // Keep large immutable files separate so a fresh sandbox can reuse identical
 // image bytes without trusting that image's older provider-pack identity.
-export async function createProviderPackLayers(root) {
+export async function createProviderPackLayers(root, options = {}) {
   const manifest = JSON.parse(await readFile(resolve(root, 'provider-pack.json'), 'utf8'));
   if (manifest.schema !== 'paperclip-runner/remote-provider-pack/v1'
     || !/^sha256:[a-f0-9]{64}$/.test(manifest.digest ?? '')) throw Error('Invalid provider pack identity');
@@ -100,8 +124,16 @@ export async function createProviderPackLayers(root) {
     for await (const chunk of createReadStream(target)) hash.update(chunk);
     return { sha256: hash.digest('hex'), bytes: (await stat(target)).size };
   };
-  const overlay = await archive('overlay.tar.zst', small);
-  for (const [index, file] of files.entries()) file.archive = await archive(`${index}.tar.zst`, [file.path]);
+  const requestedConcurrency = Number(options.concurrency);
+  const concurrency = Number.isInteger(requestedConcurrency) && requestedConcurrency >= 1
+    ? requestedConcurrency
+    : Math.max(1, Math.min(availableParallelism(), 8));
+  const tasks = [
+    () => archive('overlay.tar.zst', small),
+    ...files.map((file, index) => () => archive(`${index}.tar.zst`, [file.path])),
+  ];
+  const [overlay, ...fileArchives] = await runBoundedPool(tasks, concurrency);
+  for (const [index, file] of files.entries()) file.archive = fileArchives[index];
   const receipt = { schema: 'paperclip-runner/provider-pack-archive/v2', encoding: 'tar+zstd',
     providerPackDigest: manifest.digest, overlay, files };
   await writeFile(`${root}.archive.json`, JSON.stringify(receipt) + '\n');

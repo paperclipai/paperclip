@@ -2,7 +2,7 @@ import { AgentAvatar } from "@/components/AgentAvatar";
 import { useEffect, useMemo, useState } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Download, ScrollText, ShieldAlert } from "lucide-react";
-import type { Agent, CaseWorkflowTransition, ManagedGoogleAccessRemoval } from "@paperclipai/shared";
+import type { Agent, AiSignInRemoval, CaseWorkflowTransition, ManagedGoogleAccessRemoval } from "@paperclipai/shared";
 import { Link, useCaseHref } from "@/lib/router";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -28,7 +28,7 @@ import { describeError } from "@/api/errors";
 import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { useToastActions } from "@/context/ToastContext";
 import { instanceSettingsApi } from "@/api/instanceSettings";
-import { googleAccessRemovalNotice } from "@/features/connections/googleAccessRemoval";
+import { aiSignInRemovalNotice, googleAccessRemovalNotice } from "@/features/connections/googleAccessRemoval";
 
 const PAGE_SIZE = 50;
 const ALL = "__all";
@@ -211,10 +211,10 @@ function AuditEntityNode({ record }: { record: AuditActionRecord }) {
 
 function auditOutcome(record: AuditActionRecord): string | null {
   if (record.action === "tool_connection.archived" || record.action === "tool_connection.grant_revoked") {
-    return googleAccessRemovalNotice(
+    return (googleAccessRemovalNotice(
       record.details?.providerAccess as ManagedGoogleAccessRemoval | undefined,
       record.action === "tool_connection.grant_revoked" ? "credentials" : "connection",
-    )?.body ?? null;
+    ) ?? aiSignInRemovalNotice(record.details?.signInRemoval as AiSignInRemoval | undefined))?.body ?? null;
   }
   return formatActivityOutcome(record.action, record.details);
 }

@@ -1,10 +1,13 @@
 import { useLayoutEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { monthlySubscriptionCents, type SubscriptionCostReport, type CostDataQualityReport } from "@paperclipai/shared";
+import { Layout } from "@/components/Layout";
+import { Route, Routes } from "@/lib/router";
 import { Costs } from "@/pages/Costs";
 import { ToastViewport } from "@/components/ToastViewport";
+import { PluginLauncherProvider } from "@/plugins/launchers";
 
 function fixture(): SubscriptionCostReport {
   const zero = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, costCents: "0", eventCount: 0, estimatedEventCount: 0, unpricedEventCount: 0 };
@@ -27,7 +30,7 @@ function fixture(): SubscriptionCostReport {
 }
 
 /** Production Costs page; only API responses are fixtures. Edits persist in the story. */
-function SubscriptionCostsStory({ unknownPrice = false, stale = false, costGaps = false }: { unknownPrice?: boolean; stale?: boolean; costGaps?: boolean }) {
+function SubscriptionCostsStory({ unknownPrice = false, stale = false, costGaps = false, inShell = false }: { unknownPrice?: boolean; stale?: boolean; costGaps?: boolean; inShell?: boolean }) {
   const [ready, setReady] = useState(false);
   const client = useQueryClient();
   useLayoutEffect(() => {
@@ -97,7 +100,20 @@ function SubscriptionCostsStory({ unknownPrice = false, stale = false, costGaps 
     client.removeQueries({ queryKey: ["cost-subscriptions"] }); client.removeQueries({ queryKey: ["costs"] }); setReady(true);
     return () => { window.fetch = original; client.removeQueries({ queryKey: ["cost-subscriptions"] }); client.removeQueries({ queryKey: ["costs"] }); };
   }, [client, unknownPrice, stale, costGaps]);
-  return ready ? <><Costs embedded hideBudgetsTab /><ToastViewport /></> : null;
+  if (!ready) return null;
+  if (inShell) {
+    return (
+      <PluginLauncherProvider>
+        <Routes>
+          <Route path="/:companyPrefix" element={<Layout />}>
+            <Route path="activity/costs" element={<Costs embedded hideBudgetsTab />} />
+          </Route>
+        </Routes>
+        <ToastViewport />
+      </PluginLauncherProvider>
+    );
+  }
+  return <><Costs embedded hideBudgetsTab /><ToastViewport /></>;
 }
 
 const meta = { id: "costs-subscriptions",
@@ -132,6 +148,37 @@ export const AccountDetails: Story = { play: async ({ canvasElement }) => {
 export const UnknownPrice: Story = { args: { unknownPrice: true } };
 export const ProviderUnavailable: Story = { args: { stale: true } };
 export const Mobile: Story = { globals: { viewport: { value: "mobile1", isRotated: false } } };
+export const CostsMobile: Story = {
+  args: { inShell: true },
+  globals: { viewport: { value: "mobile", isRotated: false } },
+  parameters: {
+    layout: "fullscreen",
+    waitForViewport: true,
+    initialEntries: ["/PAP/activity/costs"],
+  },
+  play: async () => {
+    const page = within(document.body);
+    await expect(await page.findByText("API spend")).toBeVisible();
+    const table = await page.findByRole("table", { name: "Costs by user" });
+    const scroller = table.parentElement as HTMLElement;
+    await waitFor(() => {
+      const rect = scroller.getBoundingClientRect();
+      expect(rect.width).toBeGreaterThan(0);
+      expect(rect.right).toBeLessThanOrEqual(window.innerWidth + 1);
+      expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(window.innerWidth);
+    });
+    if (scroller.scrollWidth > scroller.clientWidth) {
+      scroller.scrollLeft = scroller.scrollWidth;
+      const headers = within(table).getAllByRole("columnheader");
+      const lastHeader = headers[headers.length - 1]!;
+      await waitFor(() => {
+        expect(lastHeader.getBoundingClientRect().right).toBeLessThanOrEqual(
+          scroller.getBoundingClientRect().right + 1,
+        );
+      });
+    }
+  },
+};
 export const CostDataQuality: Story = { args: { costGaps: true }, play: async ({ canvasElement }) => {
   const canvas = within(canvasElement);
   await expect(await canvas.findByRole("button", { name: "5 run costs unavailable" })).toHaveAttribute("aria-expanded", "false");

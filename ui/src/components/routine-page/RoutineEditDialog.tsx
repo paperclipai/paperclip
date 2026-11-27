@@ -156,8 +156,13 @@ export function RoutineEditDialog({
   /** Saves the draft, including secrets rows still being typed. */
   const submit = () => {
     if (!canSave) return;
-    const flushed = secretsRef.current?.flushPendingDraft() ?? null;
-    onSave(flushed ? { ...draft, env: Object.keys(flushed).length > 0 ? flushed : null } : draft);
+    const flushed = secretsRef.current?.flushPendingDraft();
+    if (flushed?.status === "blocked") return;
+    onSave(
+      flushed?.status === "flushed"
+        ? { ...draft, env: Object.keys(flushed.value).length > 0 ? flushed.value : null }
+        : draft,
+    );
   };
 
   /** Escape, the close button and Cancel all come here. Nothing closes while a save is running, so a failed save keeps the draft and its error. */

@@ -103,7 +103,7 @@ export function PluginManager() {
     setBreadcrumbs([
       { label: selectedCompany?.name ?? "Organization", href: "/dashboard" },
       { label: "Settings", href: "/company/settings" },
-      { label: "Plugins" },
+      { label: "System plugins" },
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
@@ -210,19 +210,19 @@ export function PluginManager() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Puzzle className="h-6 w-6 text-muted-foreground" />
-          <h1 className="text-xl font-semibold">Plugin Manager</h1>
+          <h1 className="text-xl font-semibold">System plugins</h1>
         </div>
         
         <Dialog open={installDialogOpen} onOpenChange={setInstallDialogOpen}>
           <DialogTrigger asChild>
             <Button size="sm" className="gap-2">
               <Plus className="h-4 w-4" />
-              Install Plugin
+              Install system plugin
             </Button>
           </DialogTrigger>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Install Plugin</DialogTitle>
+              <DialogTitle>Install system plugin</DialogTitle>
               <DialogDescription>
                 Enter the npm package name of the plugin you wish to install.
               </DialogDescription>
@@ -255,7 +255,7 @@ export function PluginManager() {
         <div className="flex items-start gap-3">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-700" />
           <div className="space-y-1 text-sm">
-            <p className="font-medium text-foreground">Plugins are alpha.</p>
+            <p className="font-medium text-foreground">System plugins are alpha.</p>
             <p className="text-muted-foreground">
               The plugin runtime and API surface are still changing. Expect breaking changes while this feature settles.
             </p>
@@ -266,7 +266,7 @@ export function PluginManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <FlaskConical className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Available Plugins</h2>
+          <h2 className="text-base font-semibold">Available system plugins</h2>
           <Badge variant="outline">Bundled</Badge>
         </div>
 
@@ -376,14 +376,14 @@ export function PluginManager() {
       <section className="space-y-3">
         <div className="flex items-center gap-2">
           <Puzzle className="h-5 w-5 text-muted-foreground" />
-          <h2 className="text-base font-semibold">Installed Plugins</h2>
+          <h2 className="text-base font-semibold">Installed system plugins</h2>
         </div>
 
         {!installedPlugins.length ? (
           <Card className="bg-muted/30">
             <CardContent className="flex flex-col items-center justify-center py-10">
               <Puzzle className="h-10 w-10 text-muted-foreground mb-4" />
-              <p className="text-sm font-medium">No plugins installed</p>
+              <p className="text-sm font-medium">No system plugins installed</p>
               <p className="text-xs text-muted-foreground mt-1">
                 Install a plugin to extend functionality.
               </p>

@@ -227,7 +227,7 @@ export function ProfileWizard({
   if (profileId && profiles.isLoading) return <LoadingState label="Loading draft…" />;
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 pb-24">
+    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 pb-36 md:pb-24">
       <Stepper current={step} />
 
       <div className="min-h-(--sz-320px)">
@@ -282,8 +282,8 @@ export function ProfileWizard({
       </div>
 
       {/* Sticky footer: live count + navigation. */}
-      <div className="fixed inset-x-0 bottom-0 z-10 border-t border-border bg-background/95 backdrop-blur">
-        <div className="mx-auto flex w-full max-w-3xl items-center justify-between gap-3 px-4 py-3">
+      <div className="mobile-nav-composer fixed inset-x-0 bottom-(--tc-composer-bottom) z-20 border-t border-border bg-background/95 backdrop-blur md:bottom-0">
+        <div className="mx-auto flex w-full max-w-3xl flex-wrap items-center justify-between gap-3 px-4 py-3">
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
             {step >= 2 ? (
               <span>

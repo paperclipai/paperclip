@@ -72,7 +72,11 @@ test("Kimi's candidate builder rejects invalid paths before any public download"
 });
 test("normal packs include Cursor and Copilot on their three pinned targets without breaking other hosts", () => {
   for (const [platform, architecture] of [["darwin", "arm64"], ["darwin", "x64"], ["linux", "x64"]]) {
-    assert.deepEqual(providerPackProviders(platform, architecture, []), ["pi", "cursor", "copilot", ...((platform === "darwin" && architecture === "arm64") || platform === "linux" ? ["kimi"] : [])]);
+    assert.deepEqual(providerPackProviders(platform, architecture, []), [
+      "pi", "cursor", "copilot",
+      ...((platform === "darwin" && architecture === "arm64") || platform === "linux" ? ["kimi"] : []),
+      ...(platform === "linux" && architecture === "x64" ? ["antigravity"] : []),
+    ]);
     assert.deepEqual(providerPackProviders(platform, architecture, ["cursor"]), providerPackProviders(platform, architecture, []));
   }
   assert.deepEqual(providerPackProviders("linux", "arm64", []), []);
@@ -117,41 +121,42 @@ test("Pi pack selection reaches its pinned builder and rejects unsafe output bef
   assert.equal(requests, 0);
 });
 
-test("pending Antigravity is an explicit linux-x64 candidate and never an ordinary provider", () => {
-  const antigravity = { version: "1.5.2", qualification: "pending", profileDigest: "sha256:profile", closureDigest: "sha256:closure" };
-  assert.equal(profiles.profiles.antigravity.qualificationStatus, "pending");
+test("released Antigravity enters ordinary linux-x64 inventory without a candidate flag", () => {
+  const antigravity = { version: "1.5.2", qualification: "qualified", profileDigest: "sha256:profile", closureDigest: "sha256:closure" };
+  assert.equal(profiles.profiles.antigravity.qualificationStatus, undefined);
   assert.deepEqual(parseProviderPackArguments(["/pack", "--candidate-providers=antigravity"]), { output: "/pack", candidates: ["antigravity"] });
-  assert.equal(providerPackProviders("linux", "x64", []).includes("antigravity"), false);
+  assert.equal(providerPackProviders("linux", "x64", []).filter(provider => provider === "antigravity").length, 1);
   assert.equal(providerPackProviders("linux", "x64", ["antigravity"]).filter(provider => provider === "antigravity").length, 1);
   for (const [platform, architecture] of [["darwin", "arm64"], ["darwin", "x64"], ["linux", "arm64"], ["win32", "x64"]]) {
     assert.equal(providerPackProviders(platform, architecture, []).includes("antigravity"), false);
     assert.throws(() => providerPackProviders(platform, architecture, ["antigravity"]), /only for linux-x64/);
   }
-  assert.equal(providerPackQualification("antigravity"), "pending");
-  const fields = providerPackManifestFields({ antigravity }, ["antigravity"]);
-  assert.deepEqual(fields.candidateProviders, { antigravity });
-  assert.equal(fields.providers?.antigravity, undefined);
-  assert.equal(providerPackManifestFields({ antigravity }, []).candidateProviders?.antigravity, undefined);
-  assert.equal(digest(JSON.parse(JSON.stringify(fields))), digest(fields));
+  assert.equal(providerPackQualification("antigravity"), "qualified");
+  for (const candidates of [[], ["antigravity"]]) {
+    const fields = providerPackManifestFields({ antigravity }, candidates);
+    assert.equal(fields.providers.antigravity, antigravity);
+    assert.equal(fields.candidateProviders?.antigravity, undefined);
+    assert.equal(digest(JSON.parse(JSON.stringify(fields))), digest(fields));
+  }
 });
 
-test("released Antigravity flips to ordinary linux-x64 inventory with its profile status alone", () => {
-  const antigravity = { version: "1.5.2", qualification: "qualified", profileDigest: "sha256:profile", closureDigest: "sha256:closure" };
+test("pending Antigravity stays an explicit linux-x64 candidate when marked pending", () => {
+  const antigravity = { version: "1.5.2", qualification: "pending", profileDigest: "sha256:profile", closureDigest: "sha256:closure" };
   const original = profiles.profiles.antigravity.qualificationStatus;
   try {
-    delete profiles.profiles.antigravity.qualificationStatus;
-    assert.equal(providerPackProviders("linux", "x64", []).filter(provider => provider === "antigravity").length, 1);
+    profiles.profiles.antigravity.qualificationStatus = "pending";
+    assert.equal(providerPackProviders("linux", "x64", []).includes("antigravity"), false);
     assert.equal(providerPackProviders("linux", "x64", ["antigravity"]).filter(provider => provider === "antigravity").length, 1);
-    for (const [platform, architecture] of [["darwin", "arm64"], ["linux", "arm64"]]) {
-      assert.equal(providerPackProviders(platform, architecture, []).includes("antigravity"), false);
-    }
-    assert.equal(providerPackQualification("antigravity"), "qualified");
-    for (const candidates of [[], ["antigravity"]]) {
-      const fields = providerPackManifestFields({ antigravity }, candidates);
-      assert.equal(fields.providers.antigravity, antigravity);
-      assert.equal(fields.candidateProviders?.antigravity, undefined);
-    }
-  } finally { profiles.profiles.antigravity.qualificationStatus = original; }
+    assert.equal(providerPackQualification("antigravity"), "pending");
+    const fields = providerPackManifestFields({ antigravity }, ["antigravity"]);
+    assert.deepEqual(fields.candidateProviders, { antigravity });
+    assert.equal(fields.providers?.antigravity, undefined);
+    assert.equal(providerPackManifestFields({ antigravity }, []).candidateProviders?.antigravity, undefined);
+    assert.equal(digest(JSON.parse(JSON.stringify(fields))), digest(fields));
+  } finally {
+    if (original === undefined) delete profiles.profiles.antigravity.qualificationStatus;
+    else profiles.profiles.antigravity.qualificationStatus = original;
+  }
 });
 
 test("Antigravity pack builder keeps only this release's patched closure", async () => {

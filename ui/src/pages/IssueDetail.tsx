@@ -31,12 +31,14 @@ import { mergeComposerRunSettings, type ComposerRunSettings } from "@/components
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { clearLegacyChatMessageRequests } from "@/lib/chat-message-request";
 import { agentChatDraft } from "@/lib/agent-chat-draft";
+import { captureAgentChatMessageSent } from "@/lib/analytics/onboarding-analytics";
 import { trackRecentProject } from "@/lib/recent-projects";
 import { ExecutionBlockerNotice } from "../components/ExecutionBlockerNotice";
 import type { TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 import { TaskDetailTasksPanel } from "@/components/task-detail/TaskDetailTasksPanel";
 import { IssueCreatedFromNote } from "@/components/task-detail/IssueCreatedFromNote";
 import { EmailThreadProvider } from "../components/EmailMessageCard";
+import { TaskTranscriptAgents } from "../components/task-chat/TaskChatBubble";
 import { EmailTaskActivity } from "../components/EmailTaskActivity";
 import { TaskChatScrollNavigation, taskChatScrollEntry } from "@/components/task-chat/scroll-navigation";
 import {
@@ -2670,6 +2672,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
           }}
         >
           <EmailThreadProvider companyId={companyId} issueId={issueId}>
+          <TaskTranscriptAgents.Provider value={conversationMode ? null : agentMap}>
           <ThreadComponent
             {...(!classicTaskInterfaceEnabled ? {
               compactHistory: !historyExpanded,
@@ -2871,6 +2874,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             externalReferences={externalReferences}
             linkCaseReferences={linkCaseReferences}
           />
+          </TaskTranscriptAgents.Provider>
           </EmailThreadProvider>
         </TaskChatScrollNavigation.Provider>
       )}
@@ -3330,7 +3334,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     setOpenSkill((current) => current?.id === skillId ? null : current);
   }, []);
   const [documentDeepLink, setDocumentDeepLink] = useState<
-    (IssuePropertiesDocumentDeepLink & { issueId: string }) | null
+    (IssuePropertiesDocumentDeepLink & { issueId: string; focusActivePlan?: boolean }) | null
   >(null);
   const [fileViewerPromptOpen, setFileViewerPromptOpen] = useState(false);
   const [detailTab, setDetailTab] = useState("chat");
@@ -4253,12 +4257,17 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     onArrival: registerArtifactTab,
   });
   const toggleTaskSidePanel = useCallback(() => {
+    if (isMobile) {
+      setMobilePropsOpen((open) => !open);
+      return;
+    }
     if (!panelVisible || suppressPanelUntilPlan) {
       openTaskSidePanel();
       return;
     }
     setPanelVisible(false);
   }, [
+    isMobile,
     openTaskSidePanel,
     panelVisible,
     setPanelVisible,
@@ -5148,8 +5157,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const addComment = useAccountBoundMutation({
-    mutationFn: async ({ body, reopen, interrupt, attachmentIds, clientRequestId, runSettings }: {
-      body: string; reopen?: boolean; interrupt?: boolean; attachmentIds?: string[]; clientRequestId?: string; runSettings?: ComposerRunSettings;
+    mutationFn: async ({ body, reopen, interrupt, attachmentIds, clientRequestId, runSettings, nativeCommand }: {
+      body: string; reopen?: boolean; interrupt?: boolean; attachmentIds?: string[]; clientRequestId?: string; runSettings?: ComposerRunSettings; nativeCommand?: "swarm";
     }, { assertCurrentAccount }) => {
       if (issue?.conversationAgentId) clearLegacyChatMessageRequests(`${issue.companyId}:${currentUserId}:${issue.conversationAgentId}`);
       const writableIssueId = await resolveWritableIssueId();
@@ -5171,7 +5180,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         assertCurrentAccount();
         queryClient.setQueryData(queryKeys.issues.detail(writableIssueId), updated);
       }
-      return issuesApi.addComment(writableIssueId, body, reopen, interrupt, attachmentIds, clientRequestId ?? createUuid());
+      return issuesApi.addComment(writableIssueId, body, reopen, interrupt, attachmentIds, clientRequestId ?? createUuid(), nativeCommand);
     },
     onMutate: async ({ body, reopen, interrupt }) => {
       // Start cache cancellation immediately but do not put it in front of the
@@ -5263,6 +5272,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         void queryClient.invalidateQueries({
           queryKey: queryKeys.issues.queuedComments(issueId ?? comment.issueId),
         });
+      }
+      if (issue?.conversationAgentId) {
+        captureAgentChatMessageSent(
+          issue.originKind === "onboarding_chat" ? "onboarding_chat" : "agent_chat",
+        );
       }
       if (context?.optimisticCommentId) {
         commentRenderKeys.current.set(comment.id, context.optimisticCommentId);
@@ -6155,19 +6169,22 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   ]);
 
   useEffect(() => {
-    if (!streamlinedTaskDetailEnabled || !taskChatShellEnabled || !issue?.id) {
+    if ((!streamlinedTaskDetailEnabled && !isAgentChatRoute) || !taskChatShellEnabled || !issue?.id) {
       setBreadcrumbPanelControl(null);
       return;
     }
 
     setBreadcrumbPanelControl({
-      open: panelVisible && !suppressPanelUntilPlan,
+      open: isMobile ? mobilePropsOpen : panelVisible && !suppressPanelUntilPlan,
       onToggle: toggleTaskSidePanel,
     });
 
     return () => setBreadcrumbPanelControl(null);
   }, [
+    isAgentChatRoute,
+    isMobile,
     issue?.id,
+    mobilePropsOpen,
     panelVisible,
     setBreadcrumbPanelControl,
     streamlinedTaskDetailEnabled,
@@ -6642,8 +6659,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   // the issue param so navigating to another issue with an identical hash
   // still maximizes the destination pane.
   const lastMaximizeRequestKeyRef = useRef<string | null>(null);
+  const planExpandNavigation = useRef<{ pathname: string; hash: string } | null>(null);
   const routeIssueDocumentDeepLink = useCallback(
-    (hash: string) => {
+    (hash: string, focusActivePlan = false) => {
       const resolvedRoute = resolveIssueDocumentDeepLink(hash);
       // A handoff is a saved document too. Opening it must not switch the
       // conversation to full activity just because it has a legacy hash.
@@ -6686,6 +6704,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         issueId: targetIssueId,
         tab: route.tab,
         documentKey: route.documentKey,
+        focusActivePlan,
         requestId:
           current?.issueId === targetIssueId ? current.requestId + 1 : 1,
       }));
@@ -6704,7 +6723,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
 
   useEffect(() => {
-    if (!routeIssueDocumentDeepLink(location.hash)) {
+    const expand = planExpandNavigation.current;
+    planExpandNavigation.current = null;
+    if (!routeIssueDocumentDeepLink(location.hash, expand?.pathname === location.pathname && expand.hash === location.hash)) {
       setDocumentDeepLink(null);
       // The deep link ended (hash cleared or issue changed): drop any
       // maximize request the panel never consumed so it cannot maximize a
@@ -6715,6 +6736,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   }, [
     issueId,
     location.hash,
+    location.pathname,
     routeIssueDocumentDeepLink,
     clearPanelMaximizeRequest,
   ]);
@@ -6758,9 +6780,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       event.preventDefault();
       // Let link handlers close any hovered task preview. Router links and
       // popover triggers honor defaultPrevented and skip their navigation.
+      const focusActivePlan = anchor.hasAttribute("data-plan-expand") && !isMobile && panelVisible && !suppressPanelUntilPlan;
       if (hash === location.hash) {
-        routeIssueDocumentDeepLink(hash);
+        routeIssueDocumentDeepLink(hash, focusActivePlan);
       } else {
+        planExpandNavigation.current = focusActivePlan ? { pathname: location.pathname, hash } : null;
         navigate(`${location.pathname}${location.search}${hash}`, {
           preventScrollReset: true,
           state: {
@@ -6779,6 +6803,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     issue?.identifier,
     issueId,
     persistedAgentChat,
+    isMobile,
+    panelVisible,
+    suppressPanelUntilPlan,
     navigate,
     location.hash,
     location.key,
@@ -7042,7 +7069,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       attachmentIds?: string[],
       clientRequestId?: string,
       runSettings?: ComposerRunSettings,
+      nativeCommand?: "swarm",
     ) => {
+      // A swarm request always uses the comments endpoint, which checks it.
+      if (nativeCommand) {
+        await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, nativeCommand });
+        return;
+      }
       if (!issue?.conversationAgentId && (reassignment || runSettings)) {
         await addCommentAndReassign.mutateAsync({
           body,
@@ -7760,7 +7793,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       )}
     >
       {streamlinedTaskDetailEnabled ? (
-        <div className="flex min-w-0 items-start gap-2 md:items-center md:pr-8">
+        <div
+          className={cn(
+            "flex min-w-0 items-start gap-2 md:items-center md:pr-8",
+            !(isMobile && isFromInbox) ? "pr-16" : "pr-8",
+          )}
+        >
           {!proposedTaskHeader ? (
             <div className="hidden md:block">{issueStatusControl}</div>
           ) : null}
@@ -8042,14 +8080,31 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               />
             </TooltipProvider>
           ) : null}
-          <div
-            data-slot="task-title-actions"
-            className={cn(
-              streamlinedTaskDetailEnabled &&
-                "absolute right-0 top-0 flex h-7 items-center",
-            )}
-          >
-            <IssuePrivacyActions
+        </div>
+        <div
+          data-slot="task-title-actions"
+          className={cn(
+            "flex shrink-0 items-center gap-0.5",
+            streamlinedTaskDetailEnabled
+              ? "absolute right-0 top-0 h-7"
+              : isMobile && isFromInbox
+                ? "ml-auto md:ml-0"
+                : undefined,
+          )}
+        >
+          {streamlinedTaskDetailEnabled && !(isMobile && isFromInbox) ? (
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="md:hidden shrink-0"
+              onClick={() => setMobilePropsOpen(true)}
+              aria-label="Properties"
+              title="Properties"
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+            </Button>
+          ) : null}
+          <IssuePrivacyActions
                 issue={issue}
                 companyId={issue.companyId}
                 canManage={canManagePrivacy}
@@ -8190,7 +8245,6 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             </Popover>
                 )}
               </IssuePrivacyActions>
-          </div>
         </div>
       </div>
 

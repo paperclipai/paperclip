@@ -74,7 +74,12 @@ export function fingerprintContracts(readFile, listDir) {
       // Serde type names never reach JSON; a reference to one is replaced by the
       // referenced type's shape, which may be defined in another file.
       const typeShapes = suffix === ".rs" ? rustSerdeTypeShapes(sources, readFile) : {};
-      const crateWide = { "rust-env-keys": { constants }, "rust-serde": { typeShapes } };
+      const constantsKey = suffix === ".rs" ? hashText(stableStringify(constants)) : "";
+      const typeShapesKey = suffix === ".rs" ? hashText(stableStringify(typeShapes)) : "";
+      const crateWide = {
+        "rust-env-keys": { constants, contextKey: constantsKey },
+        "rust-serde": { typeShapes, contextKey: typeShapesKey },
+      };
       const values = [];
       for (const path of sources) {
         const value = probes.map(p => probe({ ...p, path, ...crateWide[p.kind] }, readFile));
@@ -137,22 +142,26 @@ function isEmpty(value) {
   return empty(value);
 }
 const probeCache = new Map();
+function hashText(text) {
+  return createHash("sha1").update(text).digest("hex");
+}
 function probe(spec, readFile) {
   const source = readFile(spec.path);
   if (source === null) return { absent: true };
-  const key = `${JSON.stringify(spec, (k, v) => v instanceof RegExp ? String(v) : v)}\0${createHash("sha1").update(source).digest("hex")}`;
-  if (!probeCache.has(key)) probeCache.set(key, probeUncached(spec, source));
+  const sourceHash = hashText(source);
+  const key = `${spec.kind}\0${spec.path}\0${spec.stripDocs ? 1 : 0}\0${spec.contextKey ?? ""}\0${sourceHash}`;
+  if (!probeCache.has(key)) probeCache.set(key, probeUncached(spec, source, sourceHash));
   return probeCache.get(key);
 }
-function probeUncached(spec, source) {
+function probeUncached(spec, source, sourceHash) {
   switch (spec.kind) {
     case "json": return canonicalJson(JSON.parse(source), spec);
     case "bytes": return [`${spec.path.split("/").pop()}:${digest(source)}`];
-    case "rust-consts": return rustConsts(source);
-    case "rust-serde": return rustSerde(source, spec.typeShapes ?? {});
-    case "rust-json-keys": return rustJsonKeys(source);
-    case "rust-match-literals": return rustMatchLiterals(source);
-    case "rust-env-keys": return rustEnvKeys(source, spec.constants ?? {});
+    case "rust-consts": return rustConsts(source, sourceHash);
+    case "rust-serde": return rustSerde(source, spec.typeShapes ?? {}, sourceHash);
+    case "rust-json-keys": return rustJsonKeys(source, sourceHash);
+    case "rust-match-literals": return rustMatchLiterals(source, sourceHash);
+    case "rust-env-keys": return rustEnvKeys(source, spec.constants ?? {}, sourceHash);
     default: throw new Error(`unknown probe kind ${spec.kind}`);
   }
 }
@@ -188,22 +197,83 @@ function isAnnotation(key, value) {
 
 // ---------- Rust (lexical, no syn available) ----------
 
-function stripRustComments(source) {
-  let out = "", i = 0;
-  while (i < source.length) {
+const strippedRustCache = new Map();
+const withoutTestModulesCache = new Map();
+const rustSerdeItemsCache = new Map();
+const rustFileStringConstsCache = new Map();
+const rustTestModDeclsCache = new Map();
+
+function stripRustComments(source, sourceHash = hashText(source)) {
+  const cached = strippedRustCache.get(sourceHash);
+  if (cached !== undefined) return cached;
+  const chunks = [];
+  let chunkStart = 0;
+  let i = 0;
+  const len = source.length;
+  while (i < len) {
     const c = source[i], n = source[i + 1];
-    if (c === "/" && n === "/") { while (i < source.length && source[i] !== "\n") i++; continue; }
-    if (c === "/" && n === "*") { let depth = 1; i += 2; while (i < source.length && depth) { if (source.startsWith("/*", i)) { depth++; i += 2; } else if (source.startsWith("*/", i)) { depth--; i += 2; } else i++; } continue; }
-    const raw = /^r(#*)"/.exec(source.slice(i, i + 10));
-    if (raw && !/[\w]/.test(source[i - 1] ?? "")) {
-      const end = source.indexOf(`"${raw[1]}`, i + raw[0].length);
-      out += source.slice(i, end + 1 + raw[1].length); i = end + 1 + raw[1].length; continue;
+    if (c === "/" && n === "/") {
+      if (i > chunkStart) chunks.push(source.slice(chunkStart, i));
+      while (i < len && source[i] !== "\n") i++;
+      chunkStart = i;
+      continue;
     }
-    if (c === '"') { let j = i + 1; while (j < source.length && source[j] !== '"') j += source[j] === "\\" ? 2 : 1; out += source.slice(i, j + 1); i = j + 1; continue; }
-    if (c === "'" && /^'(\\.|[^\\'])'/.test(source.slice(i, i + 4))) { const m = /^'(\\.|[^\\'])'/.exec(source.slice(i)); out += m[0]; i += m[0].length; continue; }
-    out += c; i++;
+    if (c === "/" && n === "*") {
+      if (i > chunkStart) chunks.push(source.slice(chunkStart, i));
+      let depth = 1;
+      i += 2;
+      while (i < len && depth) {
+        if (source[i] === "/" && source[i + 1] === "*") { depth++; i += 2; }
+        else if (source[i] === "*" && source[i + 1] === "/") { depth--; i += 2; }
+        else i++;
+      }
+      chunkStart = i;
+      continue;
+    }
+    if (c === "r" && (n === '"' || n === "#") && !/[\w]/.test(source[i - 1] ?? "")) {
+      const raw = /^r(#*)"/.exec(source.slice(i, i + 10));
+      if (raw) {
+        const end = source.indexOf(`"${raw[1]}`, i + raw[0].length);
+        if (end === -1) break;
+        i = end + 1 + raw[1].length;
+        continue;
+      }
+    }
+    if (c === '"') {
+      let j = i + 1;
+      while (j < len && source[j] !== '"') j += source[j] === "\\" ? 2 : 1;
+      i = j + 1;
+      continue;
+    }
+    if (c === "'") {
+      const m = /^'(\\.|[^\\'])'/.exec(source.slice(i, i + 4));
+      if (m) { i += m[0].length; continue; }
+    }
+    i++;
   }
+  if (chunkStart < len) chunks.push(source.slice(chunkStart));
+  const out = chunks.length === 1 ? chunks[0] : chunks.join("");
+  strippedRustCache.set(sourceHash, out);
   return out;
+}
+function withoutTestModulesForSource(source, sourceHash = hashText(source)) {
+  const cached = withoutTestModulesCache.get(sourceHash);
+  if (cached !== undefined) return cached;
+  const out = withoutTestModules(stripRustComments(source, sourceHash));
+  withoutTestModulesCache.set(sourceHash, out);
+  return out;
+}
+function rustTestModDecls(source, sourceHash = hashText(source)) {
+  const cached = rustTestModDeclsCache.get(sourceHash);
+  if (cached !== undefined) return cached;
+  const declaration = /#\[cfg\(test\)\]\s*((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;/g;
+  const decls = [];
+  for (const m of stripRustComments(source, sourceHash).matchAll(declaration)) {
+    const explicit = /#\[path\s*=\s*"([^"]+)"\s*\]/.exec(m[1])?.[1] ?? null;
+    decls.push({ explicit, name: m[2] });
+  }
+  rustTestModDeclsCache.set(sourceHash, decls);
+  return decls;
 }
 /** Files compiled only under `#[cfg(test)]`: modules declared as
  * `#[cfg(test)] [#[path = "..."]] mod name;`, their submodules, and files under
@@ -213,19 +283,19 @@ function rustTestOnlyFiles(paths, readFile) {
   const known = new Set(paths);
   const testOnly = new Set();
   const pending = [...paths];
-  const declaration = /#\[cfg\(test\)\]\s*((?:#\[[^\]]*\]\s*)*)(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)\s*;/g;
   const visit = (path) => {
     const source = readFile(path);
     if (source === null) return [];
+    const decls = rustTestModDecls(source);
+    if (decls.length === 0) return [];
     const directory = path.slice(0, path.lastIndexOf("/"));
     const file = path.slice(path.lastIndexOf("/") + 1);
     const ownDirectory = /^(lib|main|mod)\.rs$/.test(file) ? directory : `${directory}/${file.replace(/\.rs$/, "")}`;
     const found = [];
-    for (const m of stripRustComments(source).matchAll(declaration)) {
-      const explicit = /#\[path\s*=\s*"([^"]+)"\s*\]/.exec(m[1])?.[1];
+    for (const { explicit, name } of decls) {
       // A #[path] on a module declared in a non-mod.rs file resolves from the file's directory.
       const targets = explicit ? [normalizePath(`${directory}/${explicit}`)]
-        : [`${ownDirectory}/${m[2]}.rs`, `${ownDirectory}/${m[2]}/mod.rs`];
+        : [`${ownDirectory}/${name}.rs`, `${ownDirectory}/${name}/mod.rs`];
       for (const target of targets) {
         found.push(target);
         const moduleDirectory = target.endsWith("/mod.rs") ? target.slice(0, -"/mod.rs".length) : target.replace(/\.rs$/, "");
@@ -263,8 +333,8 @@ function withoutTestModules(text) {
 function rustStrings(text) {
   return [...text.matchAll(/"((?:\\.|[^"\\])*)"/g)].map(m => m[1]);
 }
-function rustConsts(source) {
-  const text = stripRustComments(source);
+function rustConsts(source, sourceHash = hashText(source)) {
+  const text = stripRustComments(source, sourceHash);
   const out = {};
   for (const m of text.matchAll(/\b(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s+([A-Z][A-Z0-9_]*)\s*:[^=]+=/g)) {
     const end = text.indexOf(";", m.index + m[0].length);
@@ -281,8 +351,8 @@ const isSerdeItem = attrs => /derive\([^)]*\b(Serialize|Deserialize)\b/.test(att
  * that type's shape digest; renaming a type is not a contract change, while
  * field and variant names, field types (including which shape a reference
  * names) and serde attributes are. */
-function rustSerde(source, typeShapes) {
-  return rustSerdeItems(source)
+function rustSerde(source, typeShapes, sourceHash = hashText(source)) {
+  return rustSerdeItems(source, sourceHash)
     .map(item => serdeShape(item, name => Object.hasOwn(typeShapes, name) ? typeShapes[name] : null))
     .sort();
 }
@@ -290,8 +360,10 @@ function serdeShape({ kind, serde, body }, shapeOf) {
   return stableStringify({ kind, serde, body: withNormalizedTypeReferences(body, shapeOf) });
 }
 /** derive(Serialize|Deserialize) items with whitespace-normalized bodies. */
-function rustSerdeItems(source) {
-  const text = withoutTestModules(stripRustComments(source));
+function rustSerdeItems(source, sourceHash = hashText(source)) {
+  const cached = rustSerdeItemsCache.get(sourceHash);
+  if (cached !== undefined) return cached;
+  const text = withoutTestModulesForSource(source, sourceHash);
   const items = [];
   for (const m of text.matchAll(SERDE_ITEM)) {
     const attrs = m[1];
@@ -315,6 +387,7 @@ function rustSerdeItems(source) {
       body: normalized,
     });
   }
+  rustSerdeItemsCache.set(sourceHash, items);
   return items;
 }
 /** Replaces crate serde type names in type positions (after `:`, or inside
@@ -376,7 +449,7 @@ function rustSerdeTypeShapes(paths, readFile) {
  * so renaming or moving a function is not a contract change, while a parser
  * that starts reading a different key is, even when another function already
  * reads that key. */
-function rustJsonKeys(source) {
+function rustJsonKeys(source, sourceHash = hashText(source)) {
   return rustScopeGroups(source, text => {
     const writes = new Set(), reads = new Set();
     for (const m of text.matchAll(/json!\s*\(/g)) {
@@ -385,11 +458,11 @@ function rustJsonKeys(source) {
     }
     for (const m of text.matchAll(/\[\s*"((?:\\.|[^"\\])*)"\s*\]|\.get\(\s*"((?:\\.|[^"\\])*)"\s*\)/g)) reads.add(m[1] ?? m[2]);
     return writes.size || reads.size ? { writes: [...writes].sort(), reads: [...reads].sort() } : null;
-  });
+  }, sourceHash);
 }
 /** Inline accept-sets, string literals in `matches!(...)` and in match-arm
  * patterns, grouped by enclosing function like rustJsonKeys. */
-function rustMatchLiterals(source) {
+function rustMatchLiterals(source, sourceHash = hashText(source)) {
   return rustScopeGroups(source, text => {
     const out = new Set();
     for (const m of text.matchAll(/matches!\s*\(/g)) {
@@ -400,12 +473,12 @@ function rustMatchLiterals(source) {
       for (const s of rustStrings(m[1])) out.add(s);
     }
     return out.size ? [...out].sort() : null;
-  });
+  }, sourceHash);
 }
 /** Applies `collect` to each outermost function body, and to the code outside
  * any function, and returns the sorted set of non-empty results. */
-function rustScopeGroups(source, collect) {
-  const groups = rustScopes(withoutTestModules(stripRustComments(source))).map(collect).filter(Boolean);
+function rustScopeGroups(source, collect, sourceHash = hashText(source)) {
+  const groups = rustScopes(withoutTestModulesForSource(source, sourceHash)).map(collect).filter(Boolean);
   return [...new Set(groups.map(stableStringify))].sort();
 }
 /** Outermost `fn` bodies, then the remaining text. String contents are masked
@@ -446,8 +519,8 @@ function balanced(text, start, open, close) {
  * an upper-case `NAME_WITH_UNDERSCORE`. A constant resolves to its value, so
  * renaming the Rust constant is not a contract change; an unresolved constant
  * keeps its name so a rename remains visible. */
-function rustEnvKeys(source, constants) {
-  const text = withoutTestModules(stripRustComments(source));
+function rustEnvKeys(source, constants, sourceHash = hashText(source)) {
+  const text = withoutTestModulesForSource(source, sourceHash);
   const keys = new Set();
   const constant = String.raw`(?:[a-z_][a-z0-9_]*::)*([A-Z][A-Z0-9_]*)\b`;
   const resolve = (literal, name) => literal ?? constants[name] ?? `const:${name}`;
@@ -464,6 +537,17 @@ function rustEnvKeys(source, constants) {
   }
   return [...keys].sort();
 }
+function rustFileStringConstants(source, sourceHash = hashText(source)) {
+  const cached = rustFileStringConstsCache.get(sourceHash);
+  if (cached !== undefined) return cached;
+  const text = withoutTestModulesForSource(source, sourceHash);
+  const entries = [];
+  for (const m of text.matchAll(/\b(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s+([A-Z][A-Z0-9_]*)\s*:\s*&(?:'static\s+)?str\s*=\s*"([^"\\]*)"\s*;/g)) {
+    entries.push([m[1], m[2]]);
+  }
+  rustFileStringConstsCache.set(sourceHash, entries);
+  return entries;
+}
 /** String constants (`const NAME: &str = "VALUE";`) across the crate's sources.
  * Names defined twice with different values are ambiguous and left unresolved. */
 function rustStringConstants(paths, readFile) {
@@ -471,11 +555,10 @@ function rustStringConstants(paths, readFile) {
   for (const path of paths) {
     const source = readFile(path);
     if (source === null) continue;
-    const text = withoutTestModules(stripRustComments(source));
-    for (const m of text.matchAll(/\b(?:pub(?:\([^)]*\))?\s+)?(?:const|static)\s+([A-Z][A-Z0-9_]*)\s*:\s*&(?:'static\s+)?str\s*=\s*"([^"\\]*)"\s*;/g)) {
-      const values = found.get(m[1]) ?? new Set();
-      values.add(m[2]);
-      found.set(m[1], values);
+    for (const [name, value] of rustFileStringConstants(source)) {
+      const values = found.get(name) ?? new Set();
+      values.add(value);
+      found.set(name, values);
     }
   }
   return Object.fromEntries([...found].filter(([, values]) => values.size === 1).map(([name, values]) => [name, [...values][0]]).sort());

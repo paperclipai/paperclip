@@ -65,12 +65,11 @@ unsupported steering without treating an absent capability as a product failure.
 
 ### `task-composer`
 
-Automated: [queued-message UI](../../ui/src/components/task-chat/TaskChatQueuedMessages.test.tsx)
-covers order, failure restoration, unavailable steering, stale revisions, and
-discard acknowledgements. [Queue routes](../../server/src/__tests__/issue-queued-comments-routes.test.ts)
+Automated: [Queue routes](../../server/src/__tests__/issue-queued-comments-routes.test.ts)
 cover durable ordering, authorization, steering acknowledgements, interrupt
 recovery, and concurrent dispatch. [Composer](../../ui/src/components/task-chat/TaskChatComposer.test.tsx)
-covers drafts and uncertain saves.
+covers drafts and uncertain saves. (Mocked `TaskChatQueuedMessages` UI tests were
+removed; verify queued-message UI rendering manually.)
 
 Mocked `IssueDetail` delivery-race UI tests were removed (verify late send-response
 and queue-snapshot races manually). Expected behavior: a started
@@ -186,4 +185,4 @@ Capability ID: `steering/approval-queue`.
 Scope: ui
 Storybook: Answered question/accepted approval delivery waiting, eligible steer/interrupt, failed delivery and fresh-session-only approval.
 Production: Keep response delivery durable and distinct from editable comments; coalesce once, enforce fresh-session restrictions and deduplicate concurrent/retried continuation.
-Sources: Source: [TaskChatQueuedMessages.tsx](../../ui/src/components/task-chat/TaskChatQueuedMessages.tsx), [question-response-delivery.ts](../../server/src/services/question-response-delivery.ts). Tests: [TaskChatQueuedMessages.test.tsx](../../ui/src/components/task-chat/TaskChatQueuedMessages.test.tsx), [question-response-delivery.test.ts](../../server/src/__tests__/question-response-delivery.test.ts), [issue-queued-comments-routes.test.ts](../../server/src/__tests__/issue-queued-comments-routes.test.ts)
+Sources: Source: [TaskChatQueuedMessages.tsx](../../ui/src/components/task-chat/TaskChatQueuedMessages.tsx), [question-response-delivery.ts](../../server/src/services/question-response-delivery.ts). Tests: [question-response-delivery.test.ts](../../server/src/__tests__/question-response-delivery.test.ts), [issue-queued-comments-routes.test.ts](../../server/src/__tests__/issue-queued-comments-routes.test.ts)

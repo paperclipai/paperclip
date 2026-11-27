@@ -829,3 +829,11 @@ unknown outside heartbeat accounting, never zero. This candidate includes only
 the focused local native-probe prerequisite from core PR18103; all candidate
 outcomes are separate from frozen39e qualification. Source acceptance is not
 permission to run the unused initial.
+
+
+The hiring journey retains `hire-user-message-checks.json` before grading each
+submitted message. Its private receipt contains comment IDs, exact byte counts,
+SHA-256 body hashes and comparison results. It contains no raw message bodies or
+provider session state. Mention insertion uses ordinary keyboard editing to
+remove the editor-added space before typing the next exact source slice. The
+exact saved-body check and single-message count remain required.

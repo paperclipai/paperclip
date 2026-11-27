@@ -1,4 +1,6 @@
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
+import { checkpointProfileForRun } from "../tool-access/connections/content-cleaning.js";
+import { RUN_CONTENT_DELETED_MARKER } from "../tool-access/connections/run-session-reset.js";
 import { applyNativeAcceptedOutcome, deriveNativeAcceptedOutcome, NATIVE_ACCEPTED_OUTCOME_KEY } from "./native-accepted-outcome.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
 import { notifyNativeWorkspaceFinalization } from "../native-workspace-finalization-notifications.js";
@@ -315,6 +317,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         contextSnapshot: (publication ? sql<Record<string, unknown>>`jsonb_build_object('conversationSessionGeneration', ${heartbeatRuns.contextSnapshot}->'conversationSessionGeneration')` : sql<null>`null`).as("publication_context"),
         resultJson: (publication ? sql<Record<string, unknown>>`jsonb_build_object('nativeCancellation', ${heartbeatRuns.resultJson}->'nativeCancellation',
           'cancellation', ${heartbeatRuns.resultJson}->'cancellation', 'startupCancellation', ${heartbeatRuns.resultJson}->'startupCancellation')` : sql<null>`null`).as("publication_cancellation"),
+        contentDeletedAt: sql<string | null>`${heartbeatRuns.resultJson}->>${RUN_CONTENT_DELETED_MARKER}`.as("content_deleted_at"),
         startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
         companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
         runtimeMode: heartbeatRuns.runtimeMode, nativeIssueId: heartbeatRuns.nativeIssueId,
@@ -332,6 +335,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       // outer clock sample, including when either lock waits.
       const selected = await tx.with(...(ownerLock ? [ownerLock] : []), ...(publicationIssue ? [publicationIssue] : []), lockedRun).select({ run: {
         id: lockedRun.id, status: lockedRun.status, contextSnapshot: lockedRun.contextSnapshot, resultJson: lockedRun.resultJson,
+        contentDeletedAt: lockedRun.contentDeletedAt,
         startedAt: lockedRun.startedAt, createdAt: lockedRun.createdAt,
         companyId: lockedRun.companyId, agentId: lockedRun.agentId,
         runtimeMode: lockedRun.runtimeMode, nativeIssueId: lockedRun.nativeIssueId,
@@ -391,7 +395,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         }
       }
       await tx.update(heartbeatRuns).set({
-        runnerProfileJson: profile,
+        runnerProfileJson: checkpointProfileForRun(run.contentDeletedAt, profile),
         sessionIdAfter: snapshot.providerSessionId ?? snapshot.sessionId,
         nativePhase: snapshot.semanticResult ? "workspace_finalizing" : "observed",
         nativePhaseUpdatedAt: new Date(),

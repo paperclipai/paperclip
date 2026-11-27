@@ -853,7 +853,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             "remote-error" => {
                 let mut error = json!({
                     "code": request["params"]["errorCode"].as_str().unwrap_or("Q7Z9"),
-                    "message": "violet-circuit-4821",
+                    "message": request["params"]["errorMessage"].as_str().unwrap_or("violet-circuit-4821"),
                     "retryable": false,
                 });
                 if let Some(cause) = request["params"].get("providerFailure") {

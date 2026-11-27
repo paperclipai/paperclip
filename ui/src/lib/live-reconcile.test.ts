@@ -17,6 +17,7 @@ describe("live reconcile scope", () => {
       queryKeys.workspacePreferences.mine("user-1"),
       queryKeys.sidebarPreferences.companyOrder("user-1"),
       queryKeys.sidebarPreferences.projectOrder("company-1", "user-1"),
+      ["agent-setup-progress-handoff", "user-1", "company-1", "aws_connection", "conn-1"],
     ]) {
       expect(isLiveReconciledQuery({ queryKey }), JSON.stringify(queryKey)).toBe(false);
     }
@@ -31,6 +32,8 @@ describe("live reconcile scope", () => {
       queryKeys.projects.all("company-1"),
       ["plugins", "company-1"],
       ["instance-admin"],
+      // The checklist's progress still reconciles; only its prompt token and URLs do not.
+      queryKeys.agentSetupProgress("progress-1"),
     ]) {
       expect(isLiveReconciledQuery({ queryKey }), JSON.stringify(queryKey)).toBe(true);
     }

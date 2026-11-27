@@ -136,8 +136,8 @@ export type GoogleWorkspaceService = keyof typeof GOOGLE_WORKSPACE_SERVICES;
 export type GoogleWorkspaceToolTransport = "google_mcp" | "paperclip_rest";
 
 export const GOOGLE_WORKSPACE_TOOL_TRANSPORT: Record<GoogleWorkspaceService, GoogleWorkspaceToolTransport> = {
-  gmail: "paperclip_rest", drive: "paperclip_rest", docs: "paperclip_rest", sheets: "paperclip_rest",
-  slides: "paperclip_rest", calendar: "paperclip_rest", chat: "google_mcp",
+  gmail: "google_mcp", drive: "google_mcp", docs: "google_mcp", sheets: "google_mcp",
+  slides: "google_mcp", calendar: "google_mcp", chat: "google_mcp",
   people: "google_mcp", search: "google_mcp",
 };
 
@@ -244,6 +244,27 @@ export function googleWorkspaceGrantedScopes(grant: { providerTenant?: unknown }
 
 export function isGoogleWorkspaceConnectorProfileId(value: string): value is GoogleWorkspaceConnectorProfileId {
   return Object.prototype.hasOwnProperty.call(GOOGLE_WORKSPACE_CONNECTOR_PROFILES, value);
+}
+
+export const GOOGLE_WORKSPACE_APP_SLUGS: readonly string[] = Object.freeze([
+  ...new Set(Object.values(GOOGLE_WORKSPACE_CONNECTOR_PROFILES).map((profile) => profile.appSlug)),
+]);
+
+export function isGoogleWorkspaceSourceTemplateKey(key: unknown): boolean {
+  return typeof key === "string" && GOOGLE_WORKSPACE_APP_SLUGS.includes(key);
+}
+
+function asConfigRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+export function isGoogleWorkspaceConnectionConfig(config: unknown, transportConfig?: unknown, applicationMetadata?: unknown): boolean {
+  const record = asConfigRecord(config);
+  const metadata = asConfigRecord(applicationMetadata);
+  const key = record.sourceTemplateKey ?? asConfigRecord(transportConfig).sourceTemplateKey ?? metadata.sourceTemplateKey ?? metadata.source;
+  if (isGoogleWorkspaceSourceTemplateKey(key)) return true;
+  const profile = asConfigRecord(record.oauth).connectorProfile;
+  return typeof profile === "string" && isGoogleWorkspaceConnectorProfileId(profile);
 }
 
 function def(appSlug: string, serverUrl: string, scopes: readonly string[], writeTools: readonly string[] = []) {

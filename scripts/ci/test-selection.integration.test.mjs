@@ -234,7 +234,7 @@ test("mixed audited documentation stays graph eligible and large complete source
 });
 
 test("refineTestPlan applies nightly exclusions before partitioning while keeping full inventory validation", () => {
-  const nightlySuite = "server/src/__tests__/heartbeat-process-recovery.test.ts";
+  const nightlySuite = "server/src/__tests__/heartbeat-process-recovery-part-1.test.ts";
   const fastSuite = "server/src/__tests__/issues-service.test.ts";
   const entries = [0, 1].map((shard_index) => ({
     group: "general-server-without-chat",

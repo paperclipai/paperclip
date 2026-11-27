@@ -40,7 +40,7 @@ import {
   type CreateAiConnection,
   type AiConnectionLoginIntent,
 } from "@paperclipai/shared";
-import { forbidden, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "./ai-connection-configuration-failure.js";
 import { quotaCredentialRecovery, quotaCredentialHash } from "./quota-credential-recovery.js";
 import { prepareAntigravityCredentialRecovery } from "./native-runtime/antigravity-runner-credentials.js";
@@ -181,6 +181,7 @@ export function aiConnectionService(db: Db) {
     userId: string,
     grantId: string,
   ) {
+    /** The grant that was the default before this change, if any. */
     return db.transaction(async (tx) => {
       const [row] = await tx
         .select({ connection: toolConnections, grant: connectionGrants })
@@ -211,12 +212,17 @@ export function aiConnectionService(db: Db) {
         );
       const metadata = aiConnectionMetadataSchema.parse(row.connection.config.ai);
       if (metadata.routing) throw unprocessable("Custom providers use an explicit connection selection on the agent.");
+      const [previous] = await tx.select({ grantId: aiProviderDefaults.grantId }).from(aiProviderDefaults).where(and(
+        eq(aiProviderDefaults.companyId, companyId), eq(aiProviderDefaults.userId, userId),
+        eq(aiProviderDefaults.provider, metadata.provider),
+      ));
       await tx.insert(aiProviderDefaults)
         .values({ companyId, userId, provider: metadata.provider, grantId })
         .onConflictDoUpdate({
           target: [aiProviderDefaults.companyId, aiProviderDefaults.userId, aiProviderDefaults.provider],
           set: { grantId, updatedAt: new Date() },
         });
+      return { previousGrantId: previous?.grantId ?? null };
     });
   }
   async function readableAccount(companyId: string, userId: string, connectionId: string, grantId?: string) {
@@ -748,7 +754,13 @@ export function aiConnectionService(db: Db) {
           { userId },
         );
       else if (input.ownership === "personal") {
-        const definition = await secrets.createUserSecretDefinition(
+        const [existingDefinition] = await tx.select().from(userSecretDefinitions)
+          .where(and(eq(userSecretDefinitions.companyId, companyId), eq(userSecretDefinitions.key, `ai_${grantId.replaceAll("-", "_")}`)));
+        if (existingDefinition && (existingDefinition.createdByUserId !== userId || existingDefinition.deletedAt
+          || existingDefinition.status !== "active" || existingDefinition.provider !== "local_encrypted"
+          || existingDefinition.providerConfigId || existingDefinition.managedMode !== "paperclip_managed"))
+          throw conflict("This account's saved sign-in slot was changed outside this connection. Add the account as a new connection.");
+        const definition = existingDefinition ?? await secrets.createUserSecretDefinition(
           companyId,
           {
             key: `ai_${grantId.replaceAll("-", "_")}`,

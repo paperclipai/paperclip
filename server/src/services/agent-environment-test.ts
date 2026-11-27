@@ -598,6 +598,8 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     // exact model without a billable turn. Do not invoke another Google CLI.
     if (adapterType === "paperclip_runner" && context.config.provider === "acpx" && context.config.acpxAgent === "antigravity") {
       if (result.status === "pass" && result.checks.some(check => check.code === "antigravity_metadata_verified" && check.level === "info")) return result;
+      if (target?.kind === "remote" && !(target.transport === "sandbox" && target.runnerTask) && result.status === "warn"
+        && result.checks.some(check => check.code === "antigravity_remote_runtime_ready")) return result;
       return { ...result, status: "fail", checks: [...result.checks, { code: "ai_connection_validation_incomplete", level: "error",
         message: "The selected Google account has not completed native account and model verification. Retry before adopting it." }] };
     }

@@ -24,7 +24,7 @@ import { VOICE_RESULT_NOTIFICATION } from "@paperclipai/shared";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { applyPendingMigrations, chatActions, instanceUserRoles, principalPermissionGrants, environments, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, heartbeatRuns, toolProfileBindings, chatVoiceCallbacks, agentWakeupRequests, issueThreadInteractions, issueQuestionResponseDeliveries, issueComments, agents, chatConversations, chatDeliveries, chatEndpoints, chatPublications, chatVoiceReplies, chatVoiceSessions, chatVoiceToolCalls, companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, issues, toolApplications, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
+import { applyPendingMigrations, chatActions, instanceUserRoles, principalPermissionGrants, environments, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, heartbeatRuns, toolCatalogEntries, toolProfileBindings, chatVoiceCallbacks, agentWakeupRequests, issueThreadInteractions, issueQuestionResponseDeliveries, issueComments, agents, chatConversations, chatDeliveries, chatEndpoints, chatPublications, chatVoiceReplies, chatVoiceSessions, chatVoiceToolCalls, companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, issues, toolApplications, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
 import { configureSpekoSessionTools } from "../services/voice/speko-tool-setup.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { chatChannelService } from "../services/chat-channels.js";
@@ -1716,6 +1716,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect(comments.map(c => c.body)).toEqual(["Help draft a public inquiry", "Keep it short"]);
       expect(comments.every(c => !c.authorUserId && c.sourceTrust?.preset === "low_trust_review")).toBe(true);
       const [task] = await db.select().from(issues).where(eq(issues.id, f.call.intakeIssueId!));
+      expect(task.title).toBe("Help draft a public inquiry");
       expect(task.executionWorkspaceSettings).toMatchObject({mode: "isolated_workspace", workspaceStrategy: {type: "cloud_sandbox"}});
       expect(task.executionPolicy?.authorizationPolicy).toMatchObject({trustBoundary: {issueIds: [task.id], allowedToolClasses: [], allowedSecretBindingIds: []}});
       await db.update(chatVoicePhoneLines).set({guestIntake: false}).where(eq(chatVoicePhoneLines.endpointId, f.endpointId));
@@ -2249,17 +2250,80 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const tools = await f.gateway.listToolsForSession(f.gatewaySession.token);
     const tool = tools.find(tool => tool.providerType === "paperclip_speko_voice");
     expect(tool).toMatchObject({ upstreamToolName: "call_my_phone", connectionId: f.connectionId });
-    const call = { sessionToken: f.gatewaySession.token, tool: tool!.name, parameters: {}, idempotencyKey: randomUUID() };
+    const message = "The release build is green. Should I deploy to production?";
+    const call = { sessionToken: f.gatewaySession.token, tool: tool!.name, parameters: { message }, idempotencyKey: randomUUID() };
     const result = await f.gateway.executeTool(call);
     expect(result).toBeDefined();
     expect(f.transport.createPhoneSession).toHaveBeenCalledOnce();
-    expect(f.transport.createPhoneSession.mock.calls[0]![0]).toMatchObject({ to: "+12015551234", bindingId: expect.any(String) });
+    expect(f.transport.createPhoneSession.mock.calls[0]![0]).toMatchObject({
+      to: "+12015551234",
+      bindingId: expect.any(String),
+      firstMessage: message,
+      systemPrompt: expect.stringContaining(message),
+    });
     await f.gateway.executeTool(call);
     expect(f.transport.createPhoneSession).toHaveBeenCalledOnce();
     const sessions = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.endpointId, f.endpointId));
-    expect(sessions.filter(s => s.mode === "outbound_phone")).toHaveLength(1);
+    const outbound = sessions.filter(s => s.mode === "outbound_phone");
+    expect(outbound).toHaveLength(1);
     expect(JSON.stringify(result)).not.toContain("+12015551234");
     expect(JSON.stringify(result)).not.toContain("short-lived-media-token");
+
+    // Verify outbound call transcript is projected onto the bound issue idempotently.
+    const now = new Date().toISOString();
+    await db.update(chatVoiceSessions).set({ state: "ended", endedAt: new Date() }).where(eq(chatVoiceSessions.id, outbound[0]!.id));
+    f.transport.callReport.mockImplementation(((async (sessionId: string) => ({
+      complete: true,
+      transcript: sessionId === outbound[0]!.providerSessionId ? [
+        { id: "agent-0", index: 0, speaker: "agent", text: message, startedAt: now, endedAt: null, interrupted: false },
+        { id: "caller-1", index: 1, speaker: "caller", text: "Yes, go ahead and deploy to prod.", startedAt: now, endedAt: null, interrupted: false },
+      ] : [],
+      costMicroUsd: "80000",
+      durationSeconds: 18,
+      providerUpdatedAt: new Date(),
+    })) as unknown) as never);
+    await f.service.reconcile(1000);
+    const docs = documentService(db);
+    const transcriptDoc = await docs.getIssueDocumentByKey(f.issueId, `voice-transcript-${outbound[0]!.id}`);
+    expect(transcriptDoc?.title).toBe("Outbound phone call transcript");
+    expect(transcriptDoc?.body).toContain(message);
+    expect(transcriptDoc?.body).toContain("Yes, go ahead and deploy to prod.");
+    // Reconciling an unchanged report keeps a single revision.
+    await db.update(chatVoiceReports).set({ nextCheckAt: new Date(0) }).where(eq(chatVoiceReports.sessionId, outbound[0]!.id));
+    await f.service.reconcile(1000);
+    const repeatedDoc = await docs.getIssueDocumentByKey(f.issueId, `voice-transcript-${outbound[0]!.id}`);
+    expect(repeatedDoc?.latestRevisionId).toBe(transcriptDoc?.latestRevisionId);
+  });
+
+  it("redacts sensitive credentials from call_my_phone opening messages and enforces saved catalog schema", async () => {
+    const f = await phoneToolFixture();
+    // An unrefreshed legacy catalog entry with empty schema properties must not accept message.
+    await db.update(toolCatalogEntries).set({
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      versionHash: "legacy-empty-schema-hash",
+      schemaHash: "legacy-empty-schema-hash",
+    }).where(eq(toolCatalogEntries.connectionId, f.connectionId));
+    const legacyTools = await spekoToolsForSession(db, f.gatewaySession);
+    expect(legacyTools[0]?.parametersSchema).toEqual({ type: "object", properties: {}, additionalProperties: false });
+    await expect(executeSpekoVoiceTool(db, f.gatewaySession, f.endpointId, { message: "Should be blocked on legacy schema" }, randomUUID())).rejects.toThrow();
+
+    // Refresh via owner sync restores the message schema; credentials inside message are redacted before egress.
+    const [endpoint] = await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId));
+    await db.transaction(tx => syncSpekoVoiceTools(tx, endpoint!, f.callerId, true));
+    await executeSpekoVoiceTool(db, f.gatewaySession, f.endpointId, { message: "Deploy ready. Do not leak sk-ant-api03-1234567890abcdef1234567890abcdef!" }, randomUUID());
+    const sent = f.transport.createPhoneSession.mock.calls[0]![0] as unknown as { firstMessage?: string; systemPrompt: string };
+    expect(sent.firstMessage).not.toContain("sk-ant-api03");
+    expect(sent.systemPrompt).not.toContain("sk-ant-api03");
+    expect(sent.systemPrompt).toContain("Always use answer_question");
+
+    // A max-length message whose sanitization expands characters (e.g. @here) stays <= 2000 and succeeds cleanly.
+    const f2 = await phoneToolFixture();
+    const expanded = `@here ${"a".repeat(1994)}`;
+    expect(expanded.length).toBe(2000);
+    await executeSpekoVoiceTool(db, f2.gatewaySession, f2.endpointId, { message: expanded }, randomUUID());
+    const sent2 = f2.transport.createPhoneSession.mock.calls[0]![0] as unknown as { firstMessage?: string };
+    expect(sent2.firstMessage).toBeDefined();
+    expect(sent2.firstMessage!.length).toBeLessThanOrEqual(2000);
   });
   it("does not restore an agent's removed tool binding when callback settings are saved again", async () => {
     const f = await phoneToolFixture();
@@ -2318,6 +2382,36 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       expect(servers).toHaveLength(1);
       expect(servers[0]).toMatchObject({ url: expect.stringContaining("/mcp/gateways/") });
     } finally { if (previousUrl === undefined) delete process.env.PAPERCLIP_API_URL; else process.env.PAPERCLIP_API_URL = previousUrl; }
+  });
+
+  it("allows finishing verified Speko setup without requiring a browser voice test and rejects unverified drafts", async () => {
+    const f = await phoneToolFixture();
+    const testStartedAt = new Date().toISOString();
+    const chat = chatChannelService(db, {
+      heartbeat: { wakeup: vi.fn(async () => ({ accepted: true })) },
+      deferWebhookProcessing: true,
+    });
+    try {
+      // Missing provider verification (runtimeGeneration 0) must still fail closed.
+      await db.update(chatEndpoints).set({
+        status: "verifying",
+        providerAccountId: null,
+        botExternalId: null,
+        setup: { step: "test", runtimeGeneration: 0, testStartedAt } as never,
+      }).where(eq(chatEndpoints.id, f.endpointId));
+      await expect(chat.finishSlackSetup(f.endpointId, f.callerId)).rejects.toMatchObject({ status: 409 });
+
+      // Verified provider + runtimeGeneration >= 1 activates cleanly without a browser mic test.
+      await db.update(chatEndpoints).set({
+        status: "verifying",
+        providerAccountId: `org_${f.companyId}`,
+        botExternalId: "agent_speko_finish_test",
+        setup: { step: "test", runtimeGeneration: 1, testStartedAt } as never,
+      }).where(eq(chatEndpoints.id, f.endpointId));
+      const activated = await chat.finishSlackSetup(f.endpointId, f.callerId);
+      expect(activated.status).toBe("active");
+      expect(activated.setup.step).toBe("complete");
+    } finally { await chat.shutdown(); }
   });
 
 });

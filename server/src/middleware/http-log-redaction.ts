@@ -35,5 +35,7 @@ export const HTTP_LOG_REDACT_PATHS = [
   // each. The key names are chosen by the caller, so no fixed list of leaf
   // names can cover them. Redact the whole envelope instead.
   "reqBody.credentialValues",
+  "reqBody.browserCode",
+  "reqBody.redirectUrl",
   "errorContext.details.credentials",
 ] as const;

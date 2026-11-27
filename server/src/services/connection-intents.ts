@@ -14,7 +14,11 @@ import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
 import { aiConnectionBindingSchema, aiConnectionCatalogSlug, aiConnectionRouterBindingSchema, aiConnectionSourceSlug } from "@paperclipai/shared";
 import { aiBindingForAuthRecovery, isAiAuthenticationRepairable } from "./ai-auth-failure.js";
-import { and, eq, desc, isNull, notInArray, sql } from "drizzle-orm";
+import {
+  detectUnconfiguredGitHubAuthFailureInEvents,
+  isGitHubWorkspaceCloneAuthFailure,
+} from "./git-auth-connection-detection.js";
+import { and, eq, desc, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -29,6 +33,7 @@ import {
   toolProfileBindings,
   toolPolicies,
   companyMemberships,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueThreadInteractions,
   issueComments,
@@ -217,7 +222,10 @@ export function connectionIntentService(db: Db) {
     }
   }
 
-  async function loadRunContext(claims: ConnectionRunClaims, mode: "active" | "failed_auth" | "queued_setup" = "active") {
+  async function loadRunContext(
+    claims: ConnectionRunClaims,
+    mode: "active" | "failed_auth" | "queued_setup" | "completed_git_auth" = "active",
+  ) {
     let run = await db
       .select({
         id: heartbeatRuns.id,
@@ -244,6 +252,7 @@ export function connectionIntentService(db: Db) {
     ) throw forbidden("Runtime tool token does not match its heartbeat run");
     if (mode === "failed_auth" ? run.status !== "failed" || !isAiAuthenticationRepairable(run)
       : mode === "queued_setup" ? run.status !== "queued" || run.startedAt !== null || run.runtimeMode !== "legacy" || run.activeIdentityContextId !== null
+      : mode === "completed_git_auth" ? (run.status !== "failed" && run.status !== "succeeded")
       : run.status !== "running") {
       throw forbidden("Runtime tool token is no longer active");
     }
@@ -522,7 +531,7 @@ export function connectionIntentService(db: Db) {
     const yieldingServices = new Set<string>();
     const discoveryMethods = (app: (typeof APP_STORE_DEFINITIONS)[number]) => getAvailableConnectionMethods(app)
       .filter(method => method.purpose !== "channel" || app.slug === "agentmail"
-        || (method.provider === "github" ? settings.enableGitHubReviewBots : settings.enableChatConnectors));
+        || method.provider === "github" || settings.enableChatConnectors);
     const services = [...APP_STORE_DEFINITIONS.filter(app => isConnectorFeatureEnabled(app, settings)
       && discoveryMethods(app).length).map((app) => app.slug),
       ...inventory.connections.filter((connection) =>
@@ -1547,6 +1556,95 @@ export function connectionIntentService(db: Db) {
           attribution: attribution as unknown as AiConnectionAttribution & { identity: string } });
       }
       return requestWithContext(context, binding.provider, { purpose: "ai" });
+    },
+    // Controller-only entry point. Runtime tokens still require a running run.
+    requestForRunGitHubAuthFailure: async (runId: string, resultJsonOverride?: Record<string, unknown> | null) => {
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      if (!run || (run.status !== "failed" && run.status !== "succeeded") || !run.responsibleUserId) return null;
+      if (record(run.contextSnapshot)?.githubAuthenticationMode === "host") return null;
+      let detected = isGitHubWorkspaceCloneAuthFailure({
+        resultJson: resultJsonOverride ?? run.resultJson,
+        contextSnapshot: run.contextSnapshot,
+      });
+      if (!detected) {
+        const recentEvents = await db
+          .select({ eventType: heartbeatRunEvents.eventType, payload: heartbeatRunEvents.payload })
+          .from(heartbeatRunEvents)
+          .where(and(
+            eq(heartbeatRunEvents.companyId, run.companyId),
+            eq(heartbeatRunEvents.runId, run.id),
+            inArray(heartbeatRunEvents.eventType, ["tool.execution.completed", "item.completed"]),
+          ))
+          .orderBy(desc(heartbeatRunEvents.seq))
+          .limit(200);
+        // Evaluate chronologically (oldest -> newest) so a later successful remote
+        // git/gh command clears an earlier auth failure.
+        detected = detectUnconfiguredGitHubAuthFailureInEvents(recentEvents.reverse());
+      }
+      if (!detected) return null;
+      let context: Awaited<ReturnType<typeof loadRunContext>>;
+      try {
+        context = await loadRunContext(
+          { sub: run.agentId, company_id: run.companyId, run_id: run.id, responsible_user_id: run.responsibleUserId },
+          "completed_git_auth",
+        );
+      } catch (error) {
+        if (error instanceof HttpError && [403, 404, 409, 422].includes(error.status)) return null;
+        throw error;
+      }
+      const [latest] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, run.companyId),
+        sql`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId', ${heartbeatRuns.nativeIssueId}::text) = ${context.issue.id}`,
+      )).orderBy(desc(heartbeatRuns.createdAt)).limit(1);
+      if (latest?.id !== run.id) return null;
+      const [pendingGitHub] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.companyId, run.companyId),
+        eq(issueThreadInteractions.issueId, context.issue.id),
+        eq(issueThreadInteractions.kind, "connection_intent"),
+        eq(issueThreadInteractions.status, "pending"),
+        sql`${issueThreadInteractions.payload}->>'serviceSlug' = 'github'`,
+      )).limit(1);
+      if (pendingGitHub) {
+        return {
+          version: 1 as const,
+          service: "github",
+          state: "needs_user_action" as const,
+          connectionId: null,
+          interactionId: pendingGitHub.id,
+          instruction: "A GitHub connection card is already pending for the responsible user.",
+        };
+      }
+      const ready = await usableConnectionForAgent({
+        companyId: run.companyId,
+        agentId: run.agentId,
+        responsibleUserId: context.run.responsibleUserId!,
+        serviceSlug: "github",
+      });
+      if (ready) return null;
+      const managedGitHub = await resolveManagedGitHubIdentitySelection(db, run.companyId, {
+        agentId: run.agentId,
+        responsibleUserId: context.run.responsibleUserId!,
+      });
+      if (managedGitHub.configured && managedGitHub.grant?.status === "active") {
+        const [connection] = await db.select({
+          status: toolConnections.status,
+          enabled: toolConnections.enabled,
+          healthStatus: toolConnections.healthStatus,
+        }).from(toolConnections).where(and(
+          eq(toolConnections.companyId, run.companyId),
+          eq(toolConnections.id, managedGitHub.grant.connectionId),
+        )).limit(1);
+        if (connection && connection.status === "active" && connection.enabled && !isToolConnectionAttentionHealth(connection.healthStatus)) {
+          return null;
+        }
+      }
+      try {
+        const created = await requestWithContext(context, "github");
+        return created.interactionId ? created : null;
+      } catch (error) {
+        if (error instanceof HttpError && [403, 404, 409, 422].includes(error.status)) return null;
+        throw error;
+      }
     },
     loadIntent,
     setupOptions,

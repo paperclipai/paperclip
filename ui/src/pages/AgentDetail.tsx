@@ -76,8 +76,6 @@ import { cn } from "../lib/utils";
 import { ProviderLimitMessage } from "../components/ProviderLimitMessage";
 import { RunRetryDetails } from "../components/RunRetryDetails";
 import { Button } from "@/components/ui/button";
-import { Tabs } from "@/components/ui/tabs";
-import { PageTabBar } from "../components/PageTabBar";
 import { AuditFeed } from "./audit/AuditFeed";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -797,7 +795,7 @@ export function AgentDetail() {
   return (
     <div className={cn("agent-settings-content mx-auto max-w-5xl space-y-8", `agent-settings-${activeView}`, showConfigActionBar && "agent-settings-with-save-bar")}>
       {showLeftAgentNotice ? (
-        <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
+        <div className="flex flex-wrap items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
           <p className="min-w-0 flex-1">
             You left this agent. It no longer appears in your sidebar.
           </p>

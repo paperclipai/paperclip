@@ -40,6 +40,7 @@ import { queryKeys } from "../lib/queryKeys";
 import { buildMineRevealSources, mineRevealSourcesQueryKey, readMineRevealSources, type MineRevealSources } from "../lib/inbox-mine-reveal-sources";
 import { useDialogActions } from "../context/DialogContext";
 import { useIssueExternalObjectSummaries } from "../hooks/useIssueExternalObjects";
+import { useIssueUpdatedFilterNow } from "../hooks/useIssueUpdatedFilterNow";
 import {
   applyIssueFilters,
   countActiveIssueFilters,
@@ -1362,13 +1363,15 @@ function StreamlinedInbox({
     externalObjectSummaryByIssueId,
     externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
   }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId]);
+  const mineUpdatedNow = useIssueUpdatedFilterNow(mineIssues, issueFilters.updatedWithin);
+  const touchedUpdatedNow = useIssueUpdatedFilterNow(touchedIssues, issueFilters.updatedWithin);
   const visibleMineIssues = useMemo(
-    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
-    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext, mineUpdatedNow),
+    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext, mineUpdatedNow],
   );
   const visibleTouchedIssues = useMemo(
-    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
-    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext, touchedUpdatedNow),
+    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext, touchedUpdatedNow],
   );
   const unreadTouchedIssues = useMemo(
     () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
@@ -2747,7 +2750,7 @@ function StreamlinedInbox({
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
+    return <EmptyState placement={surfaceLabel === "Inbox" ? "upper" : "center"} icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
   }
 
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
@@ -2786,6 +2789,8 @@ function StreamlinedInbox({
         context={toolbarContext ?? (
           <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
             <PageTabBar
+              value={tab}
+              onValueChange={(value) => navigate(`/inbox/${value}`)}
               items={[
                 { value: "mine", label: "Mine" },
                 { value: "recent", label: "Recent" },
@@ -2929,7 +2934,7 @@ function StreamlinedInbox({
                 type="button"
                 variant="outline"
                 size="icon"
-                className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", nestingEnabled && "bg-accent")}
+                className={cn("inline-flex h-8 w-8 shrink-0", nestingEnabled && "bg-accent")}
                 onClick={toggleNesting}
                 title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
               >
@@ -3101,7 +3106,7 @@ function StreamlinedInbox({
       )}
 
       {tab !== "blocked" && allLoaded && !listError && !optionalSourceError && visibleSections.length === 0 && (
-        <EmptyState
+        <EmptyState placement={surfaceLabel === "Inbox" ? "upper" : "center"}
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
             searchQuery.trim()
@@ -3229,7 +3234,8 @@ function StreamlinedInbox({
                               <button
                                 type="button"
                                 data-slot="icon-button"
-                                className="hidden w-4 shrink-0 items-center justify-center sm:inline-flex"
+                                className="inline-flex w-4 shrink-0 items-center justify-center"
+                                aria-label={isExpanded ? "Collapse sub-tasks" : "Expand sub-tasks"}
                                 onClick={(event) => {
                                   event.preventDefault();
                                   event.stopPropagation();
@@ -3239,7 +3245,7 @@ function StreamlinedInbox({
                                 <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                               </button>
                             ) : (
-                              <span className="hidden w-4 shrink-0 sm:block" />
+                              <span className="block w-4 shrink-0" />
                             )
                           ) : null}
                           <InboxIssueMetaLeading

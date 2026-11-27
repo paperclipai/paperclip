@@ -3,6 +3,7 @@ import { isAppQuestionCardKey } from "../services/mcp-elicitation.js";
 import { listStalledDependencies } from "../services/recovery/blocker-stall-wakeups.js";
 import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../services/delivery-work-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../services/unsafe-workspace-export-notifications.js";
@@ -78,6 +79,7 @@ import { z } from "zod";
 import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { ChatChannelService } from "../services/chat-channels.js";
+import { ANTIGRAVITY_SWARM_COMMAND, ANTIGRAVITY_SWARM_UNAVAILABLE, antigravitySwarmCommentRefusal, antigravitySwarmRequestFromComment, antigravitySwarmRequestRefusal, recordAntigravitySwarmRequest, withAntigravitySwarmMarkers } from "../services/antigravity-swarm.js";
 import {
   activityLog,
   agentWakeupRequests,
@@ -108,6 +110,7 @@ import {
 } from "@paperclipai/db";
 import {
   addIssueCommentSchema,
+  addIssueSwarmCommentSchema,
   acceptIssueThreadInteractionSchema,
   resolveConfirmationFromCommentSchema,
   attachmentArtifactWorkProductMetadataSchema,
@@ -124,6 +127,7 @@ import {
   checkoutIssueSchema,
   createDocumentAnnotationCommentSchema,
   createDocumentAnnotationThreadSchema,
+  documentAnnotationCommentReactionSchema,
   createChildIssueSchema,
   createIssueSchema,
   resolveCreateIssueStatusDefault,
@@ -4821,6 +4825,11 @@ export function issueRoutes(
     };
   }
 
+  function annotationReactionViewer(req: Request) {
+    const actor = getActorInfo(req);
+    return { actorType: actor.actorType, actorId: actor.actorId };
+  }
+
   async function canonicalizePaperclipArtifactMetadata(input: {
     issue: { id: string; companyId: string };
     metadata: Record<string, unknown> | null | undefined;
@@ -8852,6 +8861,7 @@ export function issueRoutes(
     const assigneeAgentFilterRaw = req.query.assigneeAgentId;
     let assigneeAgentId: string | null | undefined;
     const rawUpdatedSince = req.query.updatedSince as string | undefined;
+    const rawUpdatedBefore = req.query.updatedBefore as string | undefined;
 
     if (
       assigneeUserFilterRaw === "me" &&
@@ -8974,6 +8984,15 @@ export function issueRoutes(
       });
       return;
     }
+    if (
+      rawUpdatedBefore !== undefined &&
+      !Number.isFinite(new Date(rawUpdatedBefore).getTime())
+    ) {
+      res.status(400).json({
+        error: "updatedBefore must be a valid ISO 8601 timestamp when provided",
+      });
+      return;
+    }
     const uuidQuery = parseIssueListUuidQueryParams(req.query);
     if (!uuidQuery.ok) {
       res.status(422).json({ error: uuidQuery.error });
@@ -9037,6 +9056,7 @@ export function issueRoutes(
       afterId: req.query.afterId as string | undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
+      updatedBefore: rawUpdatedBefore,
     };
     // readCondition is a Drizzle SQL object with cyclic internal references;
     // actor identity already scopes the coordinator key, so only serializable
@@ -10083,11 +10103,46 @@ export function issueRoutes(
   });
 
   router.post("/issues/:id/retry", validate(taskRetrySchema), async (req, res) => {
+    // An agent holding a board user's tasks:retry grant presses Retry as that
+    // person, so the person's gates apply, within a per-task daily cap.
+    let agentRetry: { companyId: string; agentId: string; runId: string } | null = null;
+    if (req.actor.type === "agent" && req.actor.agentId && req.actor.companyId) {
+      const { agentOwnsRun, agentTaskRetryActor } = await import("../services/agent-task-retry.js");
+      const grantor = await agentTaskRetryActor(db, { companyId: req.actor.companyId, agentId: req.actor.agentId,
+        runId: req.actor.runId });
+      if (grantor) {
+        // The agent's own limits apply first: scoped keys never use the grant,
+        // the run must be the agent's, and the agent's own issue:read and
+        // issue:mutate checks (trust boundary, company policy, interaction
+        // rules, and responsible-user ceiling) must pass. The grant lifts only
+        // the board-only gate and task-assignee ownership rule.
+        if (req.actor.keyScope && req.actor.keyScope.kind !== "standard")
+          throw forbidden("Scoped credentials cannot use the Retry grant");
+        const runId = requireAgentRunId(req, res);
+        if (!runId) return;
+        if (!(await agentOwnsRun(db, { companyId: req.actor.companyId, agentId: req.actor.agentId, runId })))
+          throw forbidden("Run does not belong to this agent");
+        const own = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+        if (!own || !(await assertIssueReadAllowed(req, res, own))) return;
+        const ownWrite = await decideIssueAccess(req, own, "issue:mutate");
+        if (!ownWrite.allowed)
+          throw forbidden(ownWrite.explanation, authorizationDeniedDetails(ownWrite));
+        agentRetry = { companyId: req.actor.companyId, agentId: req.actor.agentId, runId };
+        req.actor = grantor;
+      }
+    }
     assertBoard(req);
     const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
     if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    if (agentRetry && issue.companyId !== agentRetry.companyId) throw notFound("Issue not found");
     const decision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+    if (agentRetry) {
+      if (issue.conversationAgentId) throw forbidden("Only the conversation owner can retry a chat run");
+      const { recordAgentTaskRetry } = await import("../services/agent-task-retry.js");
+      await recordAgentTaskRetry(db, { issueId: issue.id, ...agentRetry, grantedByUserId: req.actor.userId!,
+        idempotencyKey: req.body.idempotencyKey });
+    }
     if (issue.conversationAgentId) {
       if (!req.actor.userId || req.actor.userId !== issue.conversationUserId)
         throw forbidden("Only the conversation owner can retry a chat run");
@@ -10366,6 +10421,9 @@ export function issueRoutes(
           await markExecutionReconciliation(tx as unknown as Db, workspaceRepairAction,
             executionReconciliation!, actor.actorId, undefined, { workspaceRepairOnly: true });
           await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: lockedIssue.companyId, issueId: lockedIssue.id });
+          if (lockedIssue.monitorNextCheckAt) {
+            await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+          }
           const [recoveryAction] = await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "restored",
             resolutionNote: resolutionNote ?? null, resolvedAt: new Date(), updatedAt: new Date(),
           }).where(eq(issueRecoveryActions.id, workspaceRepairAction.id)).returning();
@@ -11164,6 +11222,7 @@ export function issueRoutes(
         {
           status: "open",
           includeComments: shouldIncludeDocumentAnnotationComments(req),
+          viewer: annotationReactionViewer(req),
         },
       );
     res.json({ ...doc, annotations });
@@ -11201,6 +11260,7 @@ export function issueRoutes(
       {
         status,
         includeComments: parseBooleanQuery(req.query.includeComments),
+        viewer: annotationReactionViewer(req),
       },
     );
     res.json(threads);
@@ -11320,6 +11380,7 @@ export function issueRoutes(
         issue.id,
         keyParsed.data,
         req.params.threadId as string,
+        annotationReactionViewer(req),
       );
       if (!thread) {
         res.status(404).json({ error: "Annotation thread not found" });
@@ -11463,6 +11524,135 @@ export function issueRoutes(
       });
       res.json(thread);
     },
+  );
+
+  async function setIssueAnnotationCommentReaction(
+    req: Request,
+    res: Response,
+    present: boolean,
+  ) {
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(
+      req,
+      res,
+      svc.getById(id),
+      "Issue not found",
+    );
+    if (!issue) return;
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
+    const keyParsed = issueDocumentKeySchema.safeParse(
+      String(req.params.key ?? "")
+        .trim()
+        .toLowerCase(),
+    );
+    if (!keyParsed.success) {
+      res.status(400).json({
+        error: "Invalid document key",
+        details: keyParsed.error.issues,
+      });
+      return;
+    }
+    const reactionParsed = documentAnnotationCommentReactionSchema.safeParse(
+      req.params.reaction,
+    );
+    if (!reactionParsed.success) {
+      res.status(400).json({
+        error: "Invalid reaction",
+        details: reactionParsed.error.issues,
+      });
+      return;
+    }
+
+    const { actor, annotationActor } = annotationActorInput(req);
+    const result = await documentAnnotationsSvc.setCommentReaction({
+      target: { kind: "issue", issueId: issue.id, key: keyParsed.data },
+      threadId: req.params.threadId as string,
+      commentId: req.params.commentId as string,
+      reaction: reactionParsed.data,
+      present,
+      actor: annotationActor,
+    });
+    if (result.changed) {
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: present
+          ? "issue.document_annotation_comment_reaction_added"
+          : "issue.document_annotation_comment_reaction_removed",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          key: keyParsed.data,
+          documentKey: keyParsed.data,
+          documentId: result.thread.documentId,
+          threadId: result.thread.id,
+          commentId: result.comment.id,
+          reaction: reactionParsed.data,
+        },
+      });
+    }
+
+    const questionWakeAgentId = result.questionWakeAgentId ?? issue.assigneeAgentId;
+    const chatOwnerAllowed =
+      !issue.conversationAgentId || issue.conversationUserId === actor.actorId;
+    if (
+      present &&
+      result.firstAdd &&
+      !result.questionWakeSuppressed &&
+      reactionParsed.data === "question" &&
+      actor.actorType === "user" &&
+      questionWakeAgentId &&
+      chatOwnerAllowed &&
+      !isClosedIssueStatus(issue.status)
+    ) {
+      await heartbeat.wakeup(questionWakeAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: {
+          issueId: issue.id,
+          annotationCommentId: result.comment.id,
+          annotationThreadId: result.thread.id,
+          annotationReaction: "question",
+          mutation: "annotation_reaction",
+        },
+        allowRunCoalescing: false,
+        ...(result.questionWakeRequestId ? { executionWaitRequestId: result.questionWakeRequestId } : {}),
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+        contextSnapshot: {
+          issueId: issue.id,
+          taskId: issue.id,
+          annotationCommentId: result.comment.id,
+          annotationThreadId: result.thread.id,
+          annotationReaction: "question",
+          annotationReactionUserId: actor.actorId,
+          source: "issue.document_annotation_reaction",
+          wakeReason: "issue_commented",
+        },
+      }).catch((err: unknown) => {
+        logger.warn(
+          { err, issueId: issue.id, annotationCommentId: result.comment.id },
+          "failed to wake assignee for an annotation question reaction",
+        );
+      });
+    }
+
+    res.json(result.comment);
+  }
+
+  router.put(
+    "/issues/:id/documents/:key/annotations/:threadId/comments/:commentId/reactions/:reaction",
+    async (req, res) => setIssueAnnotationCommentReaction(req, res, true),
+  );
+
+  router.delete(
+    "/issues/:id/documents/:key/annotations/:threadId/comments/:commentId/reactions/:reaction",
+    async (req, res) => setIssueAnnotationCommentReaction(req, res, false),
   );
 
   router.put(
@@ -14093,6 +14283,40 @@ export function issueRoutes(
     );
 
     const actor = getActorInfo(req);
+    const waitingRetry = issue.monitorNextCheckAt
+      ? null
+      : await svc.getCurrentScheduledRetry?.(issue.id, { companyId: issue.companyId });
+    if (waitingRetry?.status === "scheduled_retry") {
+      // The banner also shows "Check now" for a scheduled retry, such as a
+      // usage wait. With no monitor, the check is that retry: it starts now
+      // and rechecks availability before any work. It needs the same access
+      // as starting that retry directly.
+      assertBoard(req);
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
+      const decision = await decideIssueAccess(req, issue, "issue:mutate");
+      if (!decision.allowed) throw forbidden(decision.explanation, authorizationDeniedDetails(decision));
+      const retry = await heartbeat.retryScheduledRetryNow({
+        issueId: issue.id,
+        actor: { actorType: actor.actorType, actorId: actor.actorId },
+      });
+      await logActivity(db, {
+        companyId: issue.companyId, actorType: actor.actorType, actorId: actor.actorId,
+        action: "issue.scheduled_retry_retry_now", entityType: "issue", entityId: issue.id,
+        agentId: retry.scheduledRetry?.agentId ?? issue.assigneeAgentId ?? null,
+        runId: retry.scheduledRetry?.runId ?? null,
+        details: { outcome: retry.outcome, message: retry.message, source: "monitor_check_now" },
+      });
+      if (retry.outcome === "no_scheduled_retry") {
+        throw conflict("Nothing is waiting to be checked on this task anymore. Refresh the task to see its current state.",
+          { code: "issue_monitor_check_deferred", reason: "no_scheduled_check" });
+      }
+      if (retry.outcome === "gate_suppressed") {
+        throw conflict("The check could not start because the task changed. Refresh the task to see its current state.",
+          { code: "issue_monitor_check_deferred", reason: "gate_suppressed" });
+      }
+      res.json({ ok: true, outcome: retry.outcome, message: retry.message });
+      return;
+    }
     const result = await heartbeat.triggerIssueMonitor(issue.id, {
       actorType: actor.actorType,
       actorId: actor.actorId,
@@ -15777,6 +16001,12 @@ export function issueRoutes(
       try {
         if (shouldUseTransactionalIssueUpdate) {
           issue = await db.transaction(async (tx) => {
+            if (agentCommentUpdate && existing.conversationAgentId && existing.conversationAgentId !== actor.agentId) {
+              // Acquire the company privacy-tree lock before assertAgentInteraction
+              // locks the destination conversation row so concurrent peer PATCH and
+              // POST comment requests follow the same global lock order.
+              await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${existing.companyId}`}, 0))`);
+            }
             if (agentCommentUpdate) await assertAgentInteraction(tx, {
               companyId: existing.companyId, actorAgentId: actor.agentId,
               operation: "comment", issueId: id, texts: [commentBody], lock: true,
@@ -17349,7 +17579,7 @@ export function issueRoutes(
   }) {
     if (issue.conversationAgentId) {
       const recent = await svc.listComments(issue.id, { companyId: issue.companyId, order: "desc", limit: 21 });
-      const comments = recent.slice(0, 20);
+      const comments = await withAntigravitySwarmMarkers(db, issue.companyId, issue.id, recent.slice(0, 20));
       return runRedactions.redactForIssue(issue.companyId, issue.id, {
         comments,
         latestCommentId: comments[0]?.id ?? null,
@@ -17364,7 +17594,8 @@ export function issueRoutes(
         ? Promise.resolve([])
         : svc.listComments(issue.id, { companyId: issue.companyId, order: "asc", limit: 1, humanOnly: true }),
     ]);
-    const comments = [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()];
+    const comments = await withAntigravitySwarmMarkers(db, issue.companyId, issue.id,
+      [...new Map([...firstInstruction, ...human, ...recent.slice(0, 4)].map((comment) => [comment.id, comment])).values()]);
     const included = new Set(comments.map((comment) => comment.id));
     return runRedactions.redactForIssue(issue.companyId, issue.id, {
       comments,
@@ -17416,7 +17647,8 @@ export function issueRoutes(
       limit,
     });
     res.json(
-      await runRedactions.redactForIssue(issue.companyId, issue.id, comments),
+      await runRedactions.redactForIssue(issue.companyId, issue.id,
+        await withAntigravitySwarmMarkers(db, issue.companyId, issue.id, comments)),
     );
   });
 
@@ -18945,8 +19177,9 @@ export function issueRoutes(
       res.status(404).json({ error: "Comment not found" });
       return;
     }
+    const [marked] = await withAntigravitySwarmMarkers(db, issue.companyId, issue.id, [comment]);
     res.json(
-      await runRedactions.redactForIssue(issue.companyId, issue.id, comment),
+      await runRedactions.redactForIssue(issue.companyId, issue.id, marked),
     );
   });
 
@@ -19316,7 +19549,8 @@ export function issueRoutes(
 
   router.post(
     "/issues/:id/comments",
-    validate(addIssueCommentSchema),
+    // A /swarm request without a request text gets the route's documented refusal, not a validation error.
+    (req, res, next) => validate(req.body?.nativeCommand === ANTIGRAVITY_SWARM_COMMAND ? addIssueSwarmCommentSchema : addIssueCommentSchema)(req, res, next),
     async (req, res) => {
       const id = req.params.id as string;
       const issue = await getAccessibleResource(
@@ -19326,6 +19560,25 @@ export function issueRoutes(
         "Issue not found",
       );
       if (!issue) return;
+      // Trusted /swarm: the composer sends it as a structured field; comment text is never read as a command.
+      const swarmRequested = req.body.nativeCommand === ANTIGRAVITY_SWARM_COMMAND;
+      if (swarmRequested) {
+        if (req.actor.type !== "board" || !req.actor.userId) throw forbidden("Only a signed-in user can start a swarm");
+        // A resend of an already accepted request returns its original receipt below; availability
+        // applies only to new requests (the setting may have changed since the first send).
+        const [accepted] = req.body.clientRequestId ? await db.select({ id: issueComments.id }).from(issueComments).where(and(
+          eq(issueComments.companyId, issue.companyId), eq(issueComments.issueId, issue.id),
+          eq(issueComments.authorUserId, req.actor.userId), eq(issueComments.clientRequestId, req.body.clientRequestId),
+        )) : [];
+        const refusal = accepted ? null : issue.conversationAgentId
+          ? "Swarm works in task comments, not in chats."
+          : await antigravitySwarmCommentRefusal(db, issue)
+            ?? antigravitySwarmRequestRefusal(antigravitySwarmRequestFromComment(String(req.body.body ?? "")));
+        if (refusal) {
+          res.status(422).json({ error: refusal, code: ANTIGRAVITY_SWARM_UNAVAILABLE });
+          return;
+        }
+      }
       if (issue.conversationAgentId && req.actor.type === "board") {
         if (!req.actor.userId) throw forbidden("Board user access required");
         if (req.actor.userId !== issue.conversationUserId) throw forbidden("Only the conversation owner can send messages or start a new session");
@@ -19425,7 +19678,9 @@ export function issueRoutes(
             }),
           });
           await externalObjectsSvc.syncCommentSafely(receipt.id);
-          res.status(201).json(receipt);
+          // A resent /swarm request answers with the same marker as its first send.
+          const [marked] = await withAntigravitySwarmMarkers(db, issue.companyId, issue.id, [receipt]);
+          res.status(201).json(marked);
           return;
         }
       }
@@ -19441,8 +19696,8 @@ export function issueRoutes(
           issue.companyId,
           req.body.body,
         ));
-      const reopenRequested = req.body.reopen === true;
-      const resumeRequested = req.body.resume === true;
+      const reopenRequested = req.body.reopen === true && !isConversation(issue);
+      const resumeRequested = req.body.resume === true && !isConversation(issue);
       const interruptRequested = req.body.interrupt === true;
       const isClosed = isClosedIssueStatus(issue.status);
       const isBlocked = issue.status === "blocked";
@@ -19803,6 +20058,12 @@ export function issueRoutes(
               },
               tx,
             );
+            // The swarm request commits with its comment or not at all.
+            if (swarmRequested && actor.actorType === "user") {
+              await recordAntigravitySwarmRequest(tx as unknown as Db, {
+                companyId: currentIssue.companyId, issueId: currentIssue.id, commentId: insertedComment.id, userId: actor.actorId,
+              });
+            }
             const updated =
               actor.actorType === "user" && currentIssue.status !== "done"
                 ? await svc.update(
@@ -19908,9 +20169,15 @@ export function issueRoutes(
             dbOrTx,
           );
         const needsFastResponse = actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status);
-        comment = needsFastResponse ? await db.transaction(async tx => {
+        comment = needsFastResponse || swarmRequested ? await db.transaction(async tx => {
           const saved = await add(tx as unknown as Db);
-          if (actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status)) {
+          // The swarm request commits with its comment or not at all.
+          if (swarmRequested && actor.actorType === "user") {
+            await recordAntigravitySwarmRequest(tx as unknown as Db, {
+              companyId: currentIssue.companyId, issueId: currentIssue.id, commentId: saved.id, userId: actor.actorId,
+            });
+          }
+          if (needsFastResponse && actor.actorType === "user" && currentIssue.assigneeAgentId && !["done", "cancelled", "backlog"].includes(currentIssue.status)) {
             await enqueueFastResponse(tx as unknown as Db, { companyId: currentIssue.companyId, issueId: currentIssue.id, agentId: currentIssue.assigneeAgentId,
               responsibleUserId: actor.actorId, sourceCommentId: saved.id, sourceKey: `comment:${saved.id}`, acceptedAt: new Date(saved.createdAt) });
             fastResponseEnqueued = true;
@@ -20047,6 +20314,7 @@ export function issueRoutes(
         comment,
         currentIssue.assigneeAgentId,
       );
+      const swarmWakeContext = swarmRequested ? { antigravitySwarmCommentId: comment.id } : {};
 
       await revalidateActiveSourceRecoveryAfterCommittedWrite({
         issue: currentIssue,
@@ -20198,6 +20466,7 @@ export function issueRoutes(
                 taskId: currentIssue.id,
                 commentId: comment.id,
                 wakeCommentId: comment.id,
+                ...swarmWakeContext,
                 source: "issue.comment.reopen",
                 wakeReason: "issue_reopened_via_comment",
                 reopenedFrom: reopenFromStatus,
@@ -20235,6 +20504,7 @@ export function issueRoutes(
                 taskId: currentIssue.id,
                 commentId: comment.id,
                 wakeCommentId: comment.id,
+                ...swarmWakeContext,
                 source: "issue.comment",
                 wakeReason: "issue_commented",
                 ...(resumeRequested === true
@@ -20371,7 +20641,11 @@ export function issueRoutes(
 
 
       await queueTaskWatchdogEvaluation(currentIssue, actor.runId);
-      res.status(201).json(comment);
+      // The swarm marker comes from the request record committed with the comment.
+      const [response] = swarmRequested
+        ? await withAntigravitySwarmMarkers(db, currentIssue.companyId, currentIssue.id, [comment])
+        : [comment];
+      res.status(201).json(response);
     },
   );
 

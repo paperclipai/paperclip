@@ -97,7 +97,7 @@ import a95 from "./app-definitions/google-workspace-search.json" with { type: "j
 import a96 from "./app-definitions/openai.json" with { type: "json" };
 import a97 from "./app-definitions/openrouter.json" with { type: "json" };
 import a98 from "./app-definitions/xai.json" with { type: "json" };
-import a99 from "./app-definitions/google.json" with { type: "json" };
+import a99 from "./app-definitions/antigravity.json" with { type: "json" };
 import a100 from "./app-definitions/bedrock.json" with { type: "json" };
 import a101 from "./app-definitions/responses-api.json" with { type: "json" };
 import a102 from "./app-definitions/messages-api.json" with { type: "json" };

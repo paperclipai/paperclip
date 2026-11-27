@@ -476,6 +476,7 @@
   --motion-ease-scroll-pill-in: cubic-bezier(0.23, 1, 0.32, 1);
   --motion-ease-scroll-pill-out: cubic-bezier(0.7, 0, 0.84, 0);
   --motion-pane-glide: 320ms;           /* properties-pane maximize/restore glide */
+  --plan-pane-attention-duration: 520ms;
   --motion-pane-reveal: var(--motion-duration-slow);
   --motion-ease-pane-reveal: var(--motion-ease-out-expo);
   --motion-pane-width-reset: 200ms;
@@ -611,9 +612,12 @@
   --tc-composer-bottom: var(--sz-calc-8);
   --mobile-chat-viewport-height: 100dvh;
   --tc-composer-editor-max-height: min(var(--sz-28dvh), calc(var(--mobile-chat-viewport-height) * 0.4));
-  --tc-composer-visible-nav-offset: calc(4rem + var(--spacing) * 1.5 + var(--sz-safe-bottom));
+  --mobile-nav-height: 4rem;
+  --tc-composer-visible-nav-offset: calc(var(--mobile-nav-height) + var(--spacing) * 1.5 + var(--sz-safe-bottom));
   /* With the dock's pb-1, leave 12px below the card when the nav hides. */
   --tc-composer-hidden-nav-offset: calc(var(--sz-safe-bottom) + var(--spacing) * 2);
+  --mobile-nav-overlay-bottom: calc(var(--mobile-nav-height) + var(--spacing) * 3 + var(--sz-safe-bottom));
+  --mobile-nav-overlay-max-h: calc(100dvh - var(--mobile-nav-overlay-bottom) - var(--spacing) * 4);
 
   /* Dashboard Board (experimental Responsibilities). Every card is this one
      height whatever it says, sized to a full card: padding 1.5rem, title
@@ -1487,6 +1491,22 @@ html:has(.paperclip-app-shell[data-keyboard-open="true"] [data-classic-task-shel
 /* Properties-pane maximize/restore glide (left animates between docked and
    sidebar-flush while the pane is position:fixed). */
 .tc-pane-glide { transition: left var(--motion-pane-glide) var(--motion-ease-standard); }
+[data-plan-pane-attention]:focus {
+  outline: var(--sz-2px) solid transparent;
+  outline-offset: calc(-1 * var(--sz-2px));
+  animation: plan-pane-attention var(--plan-pane-attention-duration) var(--motion-ease-standard) both;
+}
+@keyframes plan-pane-attention {
+  from { outline-color: var(--plan-pane-attention-start, transparent); }
+  25% { outline-color: var(--ring); }
+  to { outline-color: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-plan-pane-attention]:focus {
+    --plan-pane-attention-start: var(--ring);
+    animation-timing-function: steps(1, end);
+  }
+}
 .properties-panel-docked {
   transition: width var(--motion-pane-reveal) var(--motion-ease-pane-reveal),
     opacity var(--motion-pane-reveal) var(--motion-ease-pane-reveal);
@@ -4832,13 +4852,21 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
   color: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
 }
 .design-sidebar .design-sidebar-item { min-height: var(--design-sidebar-item-height); margin-inline: var(--design-sidebar-item-inset); padding-inline: var(--design-sidebar-item-inset); color: var(--design-sidebar-item-foreground); font-size: var(--design-sidebar-label-size); line-height: var(--design-sidebar-label-leading); }
-.design-sidebar-pin-target > .design-sidebar-item { padding-inline-end: calc(var(--spacing) * 10); }
-.design-sidebar .design-sidebar-pinned-item { padding-inline-end: calc(var(--spacing) * 16); }
+.design-sidebar-project-toggle { width: calc(100% - var(--design-sidebar-item-inset) * 2); }
 .design-sidebar .design-sidebar-item:is(:hover, [aria-current="page"]) { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
-.design-sidebar-pin-target > button { opacity: 0; pointer-events: none; }
+.design-sidebar-pin-target > [aria-pressed] { opacity: 0; pointer-events: none; }
 .design-sidebar-pin-target:is(:hover, :has(> [aria-current="page"], > :focus-visible)) {
-  > .design-sidebar-item { background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
-  > button { opacity: 1; pointer-events: auto; }
+  > .design-sidebar-item { padding-inline-end: calc(var(--spacing) * 10); background: var(--design-sidebar-item-highlight); color: var(--design-sidebar-item-active-foreground); }
+  > [aria-pressed] { opacity: 1; pointer-events: auto; }
+}
+.design-sidebar-pinned-row > button:not(.design-sidebar-item) { pointer-events: none; }
+.design-sidebar-pinned-row:is(:hover, :focus-within) {
+  > .design-sidebar-pinned-item { padding-inline-end: calc(var(--spacing) * 16); background: var(--design-sidebar-item-highlight); }
+  > button:not(.design-sidebar-item) { opacity: 1; pointer-events: auto; }
+}
+@media (pointer: coarse) {
+  .design-sidebar-pinned-row > .design-sidebar-pinned-item { padding-inline-end: calc(var(--spacing) * 16); }
+  .design-sidebar-pinned-row > button:not(.design-sidebar-item) { pointer-events: auto; }
 }
 .design-sidebar-new-task { display: flex; justify-content: flex-start; width: calc(100% - var(--design-sidebar-item-inset) * 2); height: var(--design-sidebar-item-height); margin-inline: var(--design-sidebar-item-inset); padding-inline: var(--design-sidebar-item-inset); gap: calc(var(--spacing) * 2.5); font-size: var(--design-sidebar-label-size); line-height: var(--design-sidebar-label-leading); font-weight: var(--font-weight-medium); color: var(--design-sidebar-item-foreground); }
 .design-sidebar-new-task svg { width: var(--design-page-icon-size); height: var(--design-page-icon-size); }
@@ -4897,6 +4925,9 @@ html:has(.design-proposal-theme) .design-navigation-group-label {
 .design-view-toggle .design-toolbar-button:last-child { border-start-end-radius: var(--design-page-control-radius); border-end-end-radius: var(--design-page-control-radius); }
 .design-view-toggle .design-toolbar-button:focus-visible { position: relative; z-index: var(--z-1); }
 .design-toolbar-actions { display: flex; align-items: center; gap: var(--design-page-action-gap); margin-inline-start: auto; }
+@media (width < 48rem) {
+  .design-toolbar-actions { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+}
 .design-page-toolbar .design-new-task { margin-inline-start: var(--design-page-toolbar-gap); background: var(--foreground); color: var(--background); font-weight: var(--font-weight-semibold); }
 .design-page-toolbar .design-new-task:hover { background: color-mix(in oklab, var(--foreground) 90%, var(--task-list-surface)); color: var(--background); }
 .design-task-results { margin-block-end: calc(-1 * var(--design-page-toolbar-gap)); font-size: var(--design-page-type-size); line-height: var(--design-page-type-leading); color: var(--muted-foreground); }
@@ -5270,8 +5301,30 @@ html:not(.dark) .coordinator-sidebar {
 /* The Needs You toolbar fits one row: the search takes what the filters leave. */
 [data-canonical-toolbar="inbox"] { justify-content: space-between; }
 [data-canonical-toolbar="inbox"] .design-toolbar-actions { margin-inline-start: 0; }
-.coordinator-needs-you > :not([role="toolbar"]) { max-width: var(--container-4xl); margin-inline: auto; }
+@media (width < 48rem) {
+  [data-canonical-toolbar="inbox"] [data-toolbar-search] { width: 100%; }
+}
+.coordinator-needs-you:not([data-coordinator-decision-history]) > :not([role="toolbar"], [data-inbox-folders]) { max-width: var(--container-4xl); margin-inline: auto; }
+[data-coordinator-decision-history] > :not([data-decision-history]),
+[data-coordinator-decision-history] > [data-decision-history] > :not([role="toolbar"], [data-inbox-folders]) { max-width: var(--container-4xl); }
 .coordinator-needs-you [data-toolbar-search] input { flex: 1; width: auto; }
+.inbox-run-table {
+  width: 100%;
+  border-collapse: collapse;
+  text-align: start;
+  font-size: var(--task-row-title-size);
+  line-height: var(--task-row-title-leading);
+}
+.inbox-run-table :is(th, td) {
+  height: var(--task-row-height-comfortable);
+  padding-inline: var(--task-row-gap);
+  border-bottom: var(--task-row-rule-width) solid var(--task-row-rule-color);
+  white-space: nowrap;
+}
+.inbox-run-table :is(th, td):first-child { padding-inline-start: var(--task-row-padding-inline); }
+.inbox-run-table :is(th, td):last-child { text-align: end; padding-inline-end: var(--task-row-padding-inline); }
+.inbox-run-table th { color: var(--muted-foreground); font-weight: var(--font-weight-medium); text-align: start; }
+.inbox-run-table tbody tr:is(:hover, :focus-within) { background: var(--task-row-surface-hover); }
 .coordinator-decision-card [data-needs-you-panel] :is(p, label) { font-size: var(--text-compact); line-height: calc(var(--spacing) * 5); }
 .coordinator-decision-card [data-needs-you-panel] :is(p, label, span).text-xs { font-size: var(--text-xs); line-height: calc(var(--spacing) * 4.5); }
 .coordinator-decision-card [data-decision-actions] :is(button, a):is([data-slot="button"], [data-variant]) { height: calc(var(--spacing) * 8); padding-inline: calc(var(--spacing) * 2.5); font-size: var(--text-compact); }
@@ -5442,7 +5495,31 @@ html:not(.dark) .coordinator-sidebar {
 }
 
 /* Large collection empty states share the artifact fan, with 20px rhythm. */
-.empty-state-artwork > p { margin-block: 0; }
+.empty-state[data-placement="upper"] {
+  /* Center the group in the upper 70%, allowing its contents to fit on short screens. */
+  grid-template-rows: minmax(max-content, 70%) 1fr;
+}
+.empty-state-logo {
+  display: block;
+  inline-size: var(--sz-200px);
+  block-size: var(--sz-200px);
+  background: var(--muted);
+  mask: url("/favicon.svg") center / contain no-repeat;
+}
+/* Let a page-level empty state take the space left by its own toolbar and labels. */
+#main-content:has(> .empty-state, > .empty-state-page, > :only-child > .empty-state),
+#main-content > :is(.empty-state-page, :only-child:has(> .empty-state)) {
+  display: flex;
+  flex-direction: column;
+}
+#main-content > :is(.empty-state-page, :only-child:has(> .empty-state)) { flex: 1; }
+.paperclip-app-shell[data-mobile="true"] .app-content-column:has(#main-content > .empty-state, #main-content > .empty-state-page, #main-content > :only-child > .empty-state) {
+  min-height: calc(100dvh - var(--sz-safe-top));
+}
+.paperclip-app-shell[data-mobile="true"] .app-content-row:has(#main-content > .empty-state, #main-content > .empty-state-page, #main-content > :only-child > .empty-state) {
+  display: flex;
+  flex: 1;
+}
 .empty-state-graphic { display: flex; align-items: flex-end; justify-content: center; max-width: 100%; }
 [data-canonical-toolbar] input:not([type="checkbox"], [type="radio"]) {
   height: var(--collection-toolbar-height);
@@ -5487,6 +5564,11 @@ html:not(.dark) .coordinator-sidebar {
   visibility: visible;
   transform: translate(-50%, 0);
   transition: opacity var(--selection-bar-enter) var(--selection-bar-ease-out), transform var(--selection-bar-enter) var(--selection-bar-ease-out), visibility 0s;
+}
+@media (width < 48rem) {
+  .agent-selection-bar {
+    --selection-bar-bottom: calc(var(--mobile-nav-height) + var(--spacing) * 3);
+  }
 }
 .agent-identity-chip { background: var(--agent-identity-chip-bg); color: var(--foreground); }
 /* Raised modules use the Skills chip surface to keep agent chips distinct from their tile. */
@@ -5552,11 +5634,24 @@ span.paperclip-patch-line { display: block; }
 }
 .agent-config-save-bar[data-visible="true"] { transform: translateY(0); visibility: visible; transition-timing-function: var(--motion-ease-out-expo); }
 .agent-file-copy-notice { transition: opacity var(--motion-duration-fast); }
+.agent-settings-with-save-bar { padding-bottom: calc(var(--agent-save-bar-clearance) + var(--spacing) * 4); }
+@media (width < 48rem) {
+  .agent-config-save-bar {
+    bottom: var(--tc-composer-bottom);
+    z-index: var(--z-20);
+    padding: calc(var(--spacing) * 3) calc(var(--spacing) * 4);
+    transition: transform var(--agent-save-bar-motion) var(--motion-ease-standard), visibility var(--agent-save-bar-motion), bottom var(--mobile-nav-motion-duration, var(--motion-mobile-nav-enter)) var(--mobile-nav-motion-ease, var(--motion-ease-out-expo));
+  }
+  .agent-config-save-bar:not([data-visible="true"]) {
+    transform: translateY(calc(100% + var(--tc-composer-bottom)));
+  }
+  .agent-settings-with-save-bar {
+    padding-bottom: calc(var(--agent-save-bar-clearance) + var(--tc-composer-visible-nav-offset));
+  }
+}
 @media (prefers-reduced-motion: reduce) {
   .agent-config-save-bar, .agent-file-copy-notice { transition: none; }
 }
-
-.agent-settings-with-save-bar { padding-bottom: calc(var(--agent-save-bar-clearance) + var(--spacing) * 4); }
 
 /* Identity file chrome uses the same input surface and keeps filenames on one line. */
 :root {
@@ -5808,6 +5903,7 @@ html:has(.design-proposal-theme) .agent-markdown-name-field [data-slot="input"],
 .org-task-mask-card { fill: var(--org-mask-card); }
 @media (width < 48rem) {
   .agents-org-toolbar { padding: calc(var(--spacing) * 4); }
+  .agents-org-controls-reveal:not([data-visible="true"]) { display: none; }
   .paperclip-app-shell:has(.agents-org-surface) { display: flex; flex-direction: column; height: 100dvh; min-height: 0; overflow: hidden; }
   .paperclip-app-shell:has(.agents-org-surface) :is(.app-main-row, .app-content-row) { display: flex; flex: 1; min-height: 0; overflow: hidden; }
   .paperclip-app-shell:has(.agents-org-surface) .app-content-column { flex: 1; min-height: 0; }

@@ -70,6 +70,7 @@ export class NativeRuntimeEligibilityError extends NativeRunnerSelectionError {
   constructor(
     code: string,
     reason?: string,
+    readonly detailReason?: string,
   ) {
     super(code, reason ?? `Native runner profile is ineligible: ${code}`);
     this.name = "NativeRuntimeEligibilityError";
@@ -79,10 +80,12 @@ export class NativeRuntimeEligibilityError extends NativeRunnerSelectionError {
 function ineligible(
   code: string,
   reason: string,
+  detailReason?: string,
 ): NativeRuntimeEligibilityError {
   return new NativeRuntimeEligibilityError(
     code,
     reason,
+    detailReason,
   );
 }
 
@@ -116,7 +119,7 @@ export function resolveNativeRuntimeMode(input: {
       candidateTarget: antigravityCandidateTarget((input.target?.kind ?? "local") === "remote") });
   } catch (error) {
     if (error instanceof PaperclipRunnerProviderProfileError) {
-      throw ineligible(error.code, error.message);
+      throw ineligible(error.code, error.message, error.detailReason);
     }
     throw error;
   }
@@ -149,8 +152,14 @@ export function resolveNativeRuntimeMode(input: {
   if (runnerProfile.provider === "cursor_cloud" && (input.target?.kind ?? "local") !== "local") {
     throw ineligible("paperclip_runner_cursor_cloud_local_controller_required", "Cursor Cloud currently requires a local Paperclip controller. Cursor hosts its execution environment.");
   }
+  if (!input.issue) {
+    throw ineligible(
+      "paperclip_runner_task_required",
+      "Paperclip Runner requires a task to run. Assign or open a task for this agent.",
+    );
+  }
   const allowedWorkModes = ["standard", "planning", "ask", "skill_test"];
-  if (!input.issue || !allowedWorkModes.includes(input.issue.workMode)) {
+  if (!allowedWorkModes.includes(input.issue.workMode)) {
     throw ineligible(
       "paperclip_runner_issue_ineligible",
       "Paperclip Runner requires a standard, planning, ask, or skill test task.",

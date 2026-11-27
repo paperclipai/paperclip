@@ -1,7 +1,10 @@
-import type { ManagedGoogleAccessRemoval } from "@paperclipai/shared";
+import type { AiSignInRemoval, ManagedGoogleAccessRemoval } from "@paperclipai/shared";
 import type { ToastAction, ToastInput, ToastTone } from "../../context/ToastContext";
 
 export const GOOGLE_THIRD_PARTY_ACCESS_URL = "https://myaccount.google.com/connections";
+
+export const GOOGLE_CONTENT_DELETION_NOTICE =
+  "Paperclip then deletes what agents read from Google through it: saved tool results and the transcripts of runs that used it. This starts at once. Paperclip waits for runs that are still working, and keeps trying until every step succeeds. Comments, documents and files that agents wrote into tasks stay.";
 
 export interface GoogleAccessRemovalNotice {
   body: string;
@@ -48,12 +51,28 @@ export function googleAccessRemovalNotice(
   };
 }
 
+export function aiSignInRemovalNotice(removal: AiSignInRemoval | null | undefined): GoogleAccessRemovalNotice | null {
+  if (removal?.provider !== "google") return null;
+  if (removal.savedSignIn === "not_deleted") {
+    return { tone: "warn", body: "Paperclip couldn't delete its saved Google sign-in. Disconnect again to retry." };
+  }
+  const kept = removal.savedSignIn === "kept_shared"
+    ? "Another connection still uses this saved Google sign-in, so Paperclip kept it."
+    : "Paperclip deleted its saved Google sign-in.";
+  return {
+    tone: "info",
+    body: `${kept} The sign-in stays valid at Google until you remove it in your Google account's third-party connections. Removing it there also signs this Google account out of Antigravity everywhere.`,
+    action: openGoogleAccountConnections,
+  };
+}
+
 export function connectionRemovalToast(input: {
   title: string;
   body: string;
   providerAccess: ManagedGoogleAccessRemoval | null | undefined;
+  signInRemoval?: AiSignInRemoval | null;
 }): ToastInput {
-  const notice = googleAccessRemovalNotice(input.providerAccess);
+  const notice = googleAccessRemovalNotice(input.providerAccess) ?? aiSignInRemovalNotice(input.signInRemoval);
   return {
     title: input.title,
     body: notice ? `${input.body} ${notice.body}` : input.body,

@@ -49,12 +49,19 @@ if (SKIP_UI_BUILD && !fs.existsSync(UI_DIST_INDEX)) {
 // `scripts/e2e-shard.mjs` — `scripts/__tests__/e2e-shard.test.mjs` fails if
 // the two ever drift.
 export const SERIAL_SPECS = [
+  "agent-chat-projects-handoff.spec.ts",
+  "agent-chat-projects.spec.ts",
+  "agent-chat-sessions-navigation.spec.ts",
+  "agent-chat-sessions.spec.ts",
+  "agent-configuration-revisions.spec.ts",
   "agent-configuration.spec.ts",
+  "ai-personal-connection-recovery.spec.ts",
   "cases-read-only.spec.ts",
   "classic-workspace.spec.ts",
   "composer-stop.spec.ts",
   "connection-intents.spec.ts",
   "document-image-gallery.spec.ts",
+  "onboarding-resume.spec.ts",
   "onboarding.spec.ts",
   "smoke-lab-p1-p4.spec.ts",
   "smoke-lab-p5-p7.spec.ts",
@@ -101,12 +108,12 @@ function resolveExecutionMode(): { workers: number; fullyParallel: boolean } {
     workers = explicitWorkers;
     fullyParallel = workers > 1 && !includesSerial;
   } else if (strictlyParallelSafe) {
-    // 2 Chromium workers + Node server + embedded Postgres fits cleanly on
-    // 4-vCPU CI runners without CPU over-subscription thrashing.
-    workers = process.env.CI
-      ? 2
-      : Math.min(2, Math.max(1, Math.floor(os.cpus().length / 2)));
-    fullyParallel = true;
+    // Scale parallel Chromium workers dynamically with runner CPU cores while
+    // reserving headroom for the shared Node server + embedded Postgres:
+    // 4-vCPU runner -> 2 workers; 8-vCPU runner (c8i.2xlarge) -> 4 workers.
+    const cpus = os.availableParallelism();
+    workers = Math.max(1, Math.min(4, Math.floor(cpus / 2)));
+    fullyParallel = workers > 1;
   } else {
     workers = 1;
     fullyParallel = false;
@@ -119,10 +126,8 @@ function resolveExecutionMode(): { workers: number; fullyParallel: boolean } {
 
 const EXECUTION_MODE = resolveExecutionMode();
 const SERVER_START_COMMAND =
-  "node cli/node_modules/tsx/dist/cli.mjs cli/src/index.ts onboard --yes --run";
-const WEB_SERVER_COMMAND = SKIP_UI_BUILD
-  ? SERVER_START_COMMAND
-  : `pnpm --filter @paperclipai/ui build --outDir ../server/ui-dist --emptyOutDir && ${SERVER_START_COMMAND}`;
+  "node cli/node_modules/tsx/dist/cli.mjs tests/e2e/start-e2e-server.ts";
+const WEB_SERVER_COMMAND = SERVER_START_COMMAND;
 
 export default defineConfig({
   testDir: ".",
@@ -131,6 +136,7 @@ export default defineConfig({
   // intentionally not part of the default local_trusted e2e run.
   testIgnore: ["in-feed-native/**", "multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
   timeout: 60_000,
+  expect: { timeout: 10_000 },
   retries: 0,
   // Parallel-safe shards run concurrently across multiple workers; shards or
   // runs that include any spec in SERIAL_SPECS (or unfiltered full runs) fall
@@ -172,6 +178,7 @@ export default defineConfig({
     env: {
       ...process.env,
       NODE_ENV: "test",
+      PAPERCLIP_E2E_BUILD_UI: SKIP_UI_BUILD ? "0" : "1",
       PAPERCLIP_UI_DEV_MIDDLEWARE: "false",
       HEARTBEAT_SCHEDULER_INTERVAL_MS: process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS ?? "10000",
       NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ""} --import=${path.resolve(import.meta.dirname, "fixtures/agent-chat-github.mjs")} --import=${path.resolve(import.meta.dirname, "fixtures/ai-connection-provider.mjs")}`,
