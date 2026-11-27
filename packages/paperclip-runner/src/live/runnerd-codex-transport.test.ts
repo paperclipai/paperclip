@@ -4603,7 +4603,7 @@ it("does not certify probe cleanup while owned credential preparation is unconfi
   }
 }, 15_000);
 
-it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-key", "default-model", "mismatched-model", "model-refresh-error", "model-cleanup-error", "missing-model", "missing-runtime", "missing-completion", "late-bootstrap", "remote-complete", "preconfigured", "remote-preconfigured", "remote-mismatched-model", "late-remote-preparation", "late-remote-release-error"] as const)("native Codex setup requires its daemon/app-server hello (%s)", async mode => {
+it.each(["admission-only", "admission-only-mismatched-model", "complete", "generated-args", "api-key", "default-model", "mismatched-model", "model-refresh-error", "model-cleanup-error", "missing-model", "missing-runtime", "missing-completion", "late-bootstrap", "remote-complete", "preconfigured", "remote-preconfigured", "remote-mismatched-model", "late-remote-preparation", "late-remote-release-error"] as const)("native Codex setup requires its daemon/app-server hello (%s)", async mode => {
   const root = await mkdtemp(join(tmpdir(), "runnerd-native-setup-"));
   const runtimeDirectory = join(root, "native-state");
   await mkdir(runtimeDirectory, { mode: 0o700 });
@@ -4622,6 +4622,12 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
   let refreshed = false;
   let cleanupConfirmed = false;
   try {
+    const codexCommand = mode === "generated-args" ? join(root, "codex") : fakeCodex;
+    if (mode === "generated-args") {
+      const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
+      const argv = [fakeCodex, ...fakeCodexArgs(root, "--request-log", calls)];
+      await writeFile(codexCommand, `#!/bin/sh\nexec ${argv.map(quote).join(" ")} "$@"\n`, { mode: 0o700 });
+    }
     const probe = probeNativeRunnerEnvironment({
       runtimeDirectory, provider: "codex", model: mode === "default-model" ? null : "gpt-6.1-sol", reasoningEffort: "low",
       ...(mode.startsWith("admission-only") ? { admissionOnly: true } : {}),
@@ -4646,11 +4652,11 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
           },
         } : {}),
         runnerBinary: mode === "missing-runtime" ? join(root, "missing-runner") : resolve("runner/target/debug/paperclip-runnerd"),
-        codexCommand: fakeCodex, codexArgs: fakeCodexArgs(root, "--request-log", calls,
+        codexCommand, ...(mode === "generated-args" ? {} : { codexArgs: fakeCodexArgs(root, "--request-log", calls,
           ...(mode === "missing-completion" ? ["--hold-turn"] : []),
           ...(mode === "admission-only-mismatched-model" || mode === "mismatched-model" || mode === "remote-mismatched-model" || mode === "model-refresh-error" || mode === "model-cleanup-error" ? ["--returned-model", "another-model"] : []),
           ...(mode === "missing-model" ? ["--returned-model", ""] : []),
-          ...(mode === "late-bootstrap" ? ["--thread-start-delay-ms", "1000"] : [])),
+          ...(mode === "late-bootstrap" ? ["--thread-start-delay-ms", "1000"] : [])) }),
         sourceCodexHome: sourceHome,
       },
       onCodexCredentialRefresh: preconfigured ? undefined : async filename => {
@@ -4675,9 +4681,10 @@ it.each(["admission-only", "admission-only-mismatched-model", "complete", "api-k
         await rm(runtimeDirectory, { recursive: true, force: true });
       },
     });
-    if (preconfigured || mode === "admission-only" || mode === "complete" || mode === "api-key" || mode === "default-model" || mode === "remote-complete") {
+    if (preconfigured || mode === "admission-only" || mode === "complete" || mode === "generated-args" || mode === "api-key" || mode === "default-model" || mode === "remote-complete") {
       const observedModel = mode === "default-model" ? "gpt-test" : "gpt-6.1-sol";
-      await expect(probe).resolves.toEqual({ provider: "codex", providerDriver: "codex_app_server", effectiveModel: observedModel, ...(mode === "admission-only" ? { helloProbePassed: false, admissionOnly: true, sessionAdmissionPassed: true } : { helloProbePassed: true }) });
+      const providerDriver = mode === "generated-args" ? "codex_app_server_command_environment_v2" : "codex_app_server";
+      await expect(probe).resolves.toEqual({ provider: "codex", providerDriver, effectiveModel: observedModel, ...(mode === "admission-only" ? { helloProbePassed: false, admissionOnly: true, sessionAdmissionPassed: true } : { helloProbePassed: true }) });
       expect(refreshed).toBe(!preconfigured);
       if (preconfigured) expect(await readFile(join(sourceHome, "config.toml"), "utf8")).toBe('model = "native-model"\n');
       if (remote) expect(registrationReleased).toBe(true);

@@ -194,8 +194,7 @@ export function validatePreparedRunnerLaunch(
     "preconfiguredHome", "externallySandboxed", "runtimeContext", "instructions",
     "commandEnvironment", "instructionWorkingCopyRoot"]);
   if (requirements.provider === "codex") {
-    if (descriptor.driver !== "codex_app_server"
-      && descriptor.driver !== "codex_app_server_command_environment_v2") reject();
+    if (!isCodexAppServerLaunchDriver(descriptor.driver)) reject();
     hostFields.add("driver");
   }
   for (const [key, value] of Object.entries(expected)) {
@@ -214,6 +213,10 @@ export function validatePreparedRunnerLaunch(
   }
   if (requiredInstructions.trim()
     && (typeof descriptor.instructions !== "string" || !descriptor.instructions.includes(requiredInstructions.trim()))) reject();
+}
+
+export function isCodexAppServerLaunchDriver(driver: unknown): boolean {
+  return driver === "codex_app_server" || driver === "codex_app_server_command_environment_v2";
 }
 
 /**

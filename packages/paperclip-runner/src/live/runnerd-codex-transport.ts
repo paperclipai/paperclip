@@ -7,7 +7,7 @@ import { resolveGrokDisableWebSearch, admittedGrokWebSearchPolicy } from "../dri
 import { PRP_COMPLETION_TOOL_NAME, PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA } from "../contracts/completion-result.js";
 import { RunnerLaunchPreparationStore } from "./runner-launch-preparation-store.js";
 import type { PreparedRunnerProviderLaunch, RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
-import { preparedRunnerLaunchWorkingDirectory, validatePreparedRunnerLaunch, runnerLaunchSettingsMatch, runnerProviderLaunchRequirements, createRunnerProviderLaunch, createRunnerdCodexAppServerArgs, trustedRuntimeReadOnlyRoots } from "./runner-provider-launch.js";
+import { preparedRunnerLaunchWorkingDirectory, validatePreparedRunnerLaunch, runnerLaunchSettingsMatch, runnerProviderLaunchRequirements, createRunnerProviderLaunch, createRunnerdCodexAppServerArgs, isCodexAppServerLaunchDriver, trustedRuntimeReadOnlyRoots } from "./runner-provider-launch.js";
 export { createRunnerdCodexAppServerArgs, resolveRunnerdAcpxPermissionMode, trustedRuntimeReadOnlyRoots, withCodexCollaborationRuntimeInstructions } from "./runner-provider-launch.js";
 import { applyProviderObservabilityEnvironment, redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import type { RunnerExecutionDriver } from "../control-plane/runner-execution-driver.js";
@@ -9794,9 +9794,12 @@ export async function probeNativeRunnerEnvironment(options: {
       workingDirectory, signal: controller.signal });
     controller.signal.throwIfAborted();
     const ids = session.ids();
-    const expectedDriver = { codex: "codex_app_server", opencode: "opencode_server", acpx: "acpx_runtime" }[options.provider];
-    if (!ids.driverSessionId || !ids.providerSessionId || bundle.evidence().providerDriver !== expectedDriver) {
-      throw new Error(`The native environment probe returned no matching provider identity (${bundle.evidence().providerDriver ?? "missing driver"}).`);
+    const { providerDriver } = bundle.evidence();
+    const matchingDriver = options.provider === "codex"
+      ? isCodexAppServerLaunchDriver(providerDriver)
+      : providerDriver === (options.provider === "opencode" ? "opencode_server" : "acpx_runtime");
+    if (!ids.driverSessionId || !ids.providerSessionId || !matchingDriver) {
+      throw new Error(`The native environment probe returned no matching provider identity (${providerDriver ?? "missing driver"}).`);
     }
     const events = session.events()[Symbol.asyncIterator]();
     const first = await events.next();
