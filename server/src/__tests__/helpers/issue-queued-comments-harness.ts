@@ -5,6 +5,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll } from "vitest";
 import {
   agentWakeupRequests,
+  authUsers,
   agents,
   companies,
   companyMemberships,
@@ -32,6 +33,13 @@ export function createIssueQueuedCommentsHarness(prefix = "paperclip-queued-comm
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase(prefix);
     db = createDb(tempDb.connectionString);
+    // Current upstream's responsible-user intersection requires a real user,
+    // in addition to the per-company membership seeded below.
+    await db.insert(authUsers).values(["queue-owner", "other-operator"].map((id) => ({
+      id, name: id, email: `${id}@queue-fixture.invalid`,
+      createdAt: new Date(), updatedAt: new Date(),
+    }))).onConflictDoNothing();
+
   }, 30_000);
 
   afterEach(async () => {

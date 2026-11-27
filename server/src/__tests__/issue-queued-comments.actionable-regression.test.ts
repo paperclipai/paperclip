@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import {
   agentRuntimeState,
   agentWakeupRequests,
+  authUsers,
   agents,
   activityLog,
   companies,
@@ -66,6 +67,13 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-queued-comments-");
     db = createDb(tempDb.connectionString);
+    // Current upstream's responsible-user intersection requires a real user,
+    // in addition to the per-company membership seeded below.
+    await db.insert(authUsers).values(["queue-owner", "other-operator"].map((id) => ({
+      id, name: id, email: `${id}@queue-fixture.invalid`,
+      createdAt: new Date(), updatedAt: new Date(),
+    }))).onConflictDoNothing();
+
   }, 30_000);
 
   const testProcesses = new Map<string, ChildProcess>();
