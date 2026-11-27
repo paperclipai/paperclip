@@ -1302,15 +1302,11 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const svc = toolAccessPolicyService(db);
     const input = sendEmailDecisionInput(company, agent, connection, catalogEntry);
 
-    // A listing-style decision has no real call arguments: the argument
-    // condition is unknown, so the block cannot hide the tool and the profile
-    // grant still applies.
     expect(await svc.decide({
       ...input,
       request: { ...input.request, arguments: {}, argumentsUnknown: true },
     })).toMatchObject({ allowed: true, decision: "allow" });
 
-    // The call path still decides with the actual arguments.
     expect(await svc.decide({
       ...input,
       request: { ...input.request, arguments: {} },
@@ -1420,8 +1416,6 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const svc = toolAccessPolicyService(db);
     const input = sendEmailDecisionInput(company, agent, connection, catalogEntry);
 
-    // A listing cannot match the filtered arguments, so it falls through to
-    // the unconditional block, exactly like every real call does.
     expect(await svc.decide({
       ...input,
       request: { ...input.request, arguments: {}, argumentsUnknown: true },

@@ -3529,9 +3529,6 @@ export function createToolGatewayService(
   ): Promise<Array<{ tool: T; decision: ToolAccessDecision }>> {
     return mapWithConcurrency(tools, LISTING_DECISION_CONCURRENCY, async (tool) => {
       const input = inputForTool(tool);
-      // Listing has no real call arguments; argument conditions must not hide
-      // or block the tool here. The call path still decides with the actual
-      // arguments.
       input.request.argumentsUnknown = true;
       return {
         tool,

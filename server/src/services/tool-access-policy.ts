@@ -547,10 +547,6 @@ export function evaluatePolicyConditions(
   const argumentCondition = conditionRecord(conditions.arguments ?? conditions.args);
   if (argumentCondition) {
     if (ctx.argumentsUnknown) {
-      // A decision without real call arguments (listing, access summary,
-      // grant check) cannot evaluate an argument condition at all. It counts
-      // as unknown, not as "matched against {}". Deny-producing policies must
-      // not fire on it; granting policies treat it as satisfiable.
       argumentUnknown = true;
     } else if (!argumentConditionMatches(argumentCondition, ctx)) {
       return conditionGroupFail("arguments", "Tool arguments did not satisfy the policy condition.");
@@ -714,8 +710,6 @@ function profileEntryMatches(entry: typeof toolProfileEntries.$inferSelect, ctx:
   if (!selected) return false;
   const conditions = isRecord(entry.conditions) ? entry.conditions as ToolPolicyConditions : null;
   const evaluation = evaluatePolicyConditions(conditions, ctx);
-  // An exclude entry cannot exclude on an argument condition that cannot be
-  // evaluated without real call arguments (listing mode).
   if (evaluation.argumentUnknown && entry.effect === "exclude") return false;
   return evaluation.matched;
 }
