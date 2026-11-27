@@ -892,7 +892,13 @@ mod tests {
     }
 
     #[test]
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
     fn candidate_startup_requires_a_complete_trusted_launch_profile() {
         let profiles: serde_json::Value =
             serde_json::from_str(include_str!("../../../../../acpx-profiles.json")).unwrap();
@@ -900,11 +906,18 @@ mod tests {
             "../../../../../antigravity-distributions.json"
         ))
         .unwrap();
+        let (platform, architecture) = if cfg!(target_os = "macos") {
+            ("darwin", "arm64")
+        } else if cfg!(target_arch = "x86_64") {
+            ("linux", "x64")
+        } else {
+            ("linux", "arm64")
+        };
         let encoded = json!({
             "schema":"paperclip.acpx-candidate-admission.v1", "companyId":"company-1", "agent":"antigravity", "model":"exact-model",
             "profileDigest":profiles["profiles"]["antigravity"]["commandDigest"],
-            "nativeClosureDigest":format!("sha256:{}",distributions["platforms"]["darwin-arm64"]["closureSha256"].as_str().unwrap()),
-            "platform":"darwin", "architecture":"arm64", "expiresAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
+            "nativeClosureDigest":format!("sha256:{}",distributions["platforms"][format!("{platform}-{architecture}")]["closureSha256"].as_str().unwrap()),
+            "platform":platform, "architecture":architecture, "expiresAt":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64 + 60_000,
             "runId":"run-1", "normalizedSessionId":"session-1"
         }).to_string();
         let mut args = vec!["--acpx-candidate-admission-json".to_owned(), encoded];
@@ -922,8 +935,9 @@ mod tests {
             "--acpx-sidecar-script-sha256".to_owned(),
             format!("sha256:{}", "c".repeat(64)),
         ]);
-        let parsed = acpx_launch_profile(&args).unwrap().unwrap();
-        assert_eq!(parsed.candidate_admission.unwrap().run_id, "run-1");
+        // Released Antigravity refuses any candidate startup grant even with a
+        // complete launch profile.
+        assert!(acpx_launch_profile(&args).is_err());
         assert!(acpx_launch_profile(&[]).unwrap().is_none());
     }
 

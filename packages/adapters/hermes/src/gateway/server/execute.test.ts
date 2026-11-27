@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute, mapFinalResultForTest, parseSseFramesForTest, resolveSessionKey } from "./execute.js";
+import { hasHermesGatewayTerminalStopProof } from "./index.js";
 import { testEnvironment } from "./test.js";
 import { parseHermesGatewayStdoutLine } from "../ui/parse-stdout.js";
 
@@ -344,7 +345,7 @@ describe("execute", () => {
     expect(input.split("Keep this deliberate repetition. Keep this deliberate repetition.")).toHaveLength(2);
     const continuationHeading = "## Current request and continuation context";
     const continuationStart = input.indexOf(continuationHeading);
-    const fencedStart = input.indexOf("```text\n", continuationStart);
+    const fencedStart = input.indexOf("```text\n{", continuationStart);
     const fencedEnd = input.indexOf("\n```", fencedStart + "```text\n".length);
     expect(continuationStart).toBeGreaterThanOrEqual(0);
     expect(fencedStart).toBeGreaterThan(continuationStart);
@@ -1139,5 +1140,178 @@ describe("mapFinalResultForTest", () => {
     expect(result.exitCode).toBe(1);
     expect(result.errorCode).toBe("hermes_gateway_run_failed");
     expect(result.errorMessage).toBe("boom");
+    expect(result.errorFamily ?? null).toBeNull();
+  });
+
+  it.each([
+    ["HTTP 429: This request would exceed your account's rate limit. Please try again later.", "transient_upstream"],
+    ["HTTP 429: Rate limit exceeded: new-account-rpm/requests", "transient_upstream"],
+    ["API Error: 529 overloaded_error", "transient_upstream"],
+    ["HTTP 503 Service Unavailable", "transient_upstream"],
+    ["HTTP/1.1 502", "transient_upstream"],
+    ["502 Bad Gateway", "transient_upstream"],
+    ["504 Gateway Timeout", "transient_upstream"],
+  ])("classifies terminal provider failure %j as %s", (error, expectedFamily) => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-429",
+        status: "failed",
+        payload: { status: "failed", error, retry_not_before: "2099-01-01T00:05:00.000Z" },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.exitCode).toBe(1);
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe(expectedFamily);
+    expect(result.retryNotBefore).toBe("2099-01-01T00:05:00.000Z");
+  });
+
+  it("classifies structured quota errors as provider_quota over rate_limit_error and 401", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-quota",
+        status: "failed",
+        payload: {
+          status: "failed",
+          error: {
+            type: "rate_limit_error",
+            code: "insufficient_quota",
+            status_code: 401,
+            message: "You exceeded your current quota.",
+          },
+          retry_after: 120,
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("provider_quota");
+    expect(result.errorMessage).toBe("You exceeded your current quota.");
+    expect(typeof result.retryNotBefore).toBe("string");
+    expect(Number.isFinite(Date.parse(result.retryNotBefore!))).toBe(true);
+  });
+
+  it("maps gateway shutdown interruptions to retryable failed outcomes while keeping deliberate cancels unchanged", () => {
+    const shutdown = mapFinalResultForTest({
+      terminal: {
+        runId: "run-shutdown",
+        status: "cancelled",
+        payload: { status: "cancelled", error: "Gateway shutdown interrupted the run." },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(shutdown.exitCode).toBe(1);
+    expect(shutdown.signal).toBeNull();
+    expect(shutdown.errorCode).toBe("hermes_gateway_run_failed");
+    expect(shutdown.errorFamily).toBe("transient_upstream");
+    expect(shutdown.resultJson).toMatchObject({ status: "interrupted", gateway_status: "cancelled" });
+
+    const deliberate = mapFinalResultForTest({
+      terminal: {
+        runId: "run-stop",
+        status: "cancelled",
+        payload: { status: "cancelled", error: "Stopped by operator." },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(deliberate.errorCode).toBe("hermes_gateway_cancelled");
+    expect(deliberate.signal).toBe("SIGTERM");
+    expect(deliberate.resultJson?.status).toBe("cancelled");
+    expect(deliberate.errorFamily ?? null).toBeNull();
+  });
+
+  it.each([1e20, "1e20", "99999999999999999999"])("ignores out-of-range retry_after %j without discarding terminal result", (retryAfter) => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-huge-retry",
+        status: "failed",
+        payload: {
+          status: "failed",
+          error: "HTTP 429: Rate limit exceeded",
+          retry_after: retryAfter,
+          usage: { input_tokens: 12, output_tokens: 4 },
+        },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.retryNotBefore).toBeUndefined();
+    expect(result.usage).toEqual({ inputTokens: 12, outputTokens: 4 });
+  });
+
+  it("classifies camelCase statusCode 429 in nested error payloads as transient_upstream", () => {
+    const result = mapFinalResultForTest({
+      terminal: {
+        runId: "run-camel-429",
+        status: "failed",
+        payload: { status: "failed", error: { statusCode: 429, message: "slow down" } },
+      },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily).toBe("transient_upstream");
+    expect(result.errorMessage).toBe("slow down");
+  });
+
+  it.each([
+    { status: "failed", error: "HTTP 400: invalid request body" },
+    { status: "failed", error: "HTTP 400: rate_limit_error header invalid" },
+    { status: "failed", error: "HTTP 403: API key limit denied" },
+    { status: "failed", error: "HTTP 403: overloaded project key" },
+    { status: "failed", error: "HTTP/1.1 403: overloaded project key" },
+    { status: "failed", error: "Validation error: maximum 500 tokens exceeded" },
+    { status: "failed", error: { status_code: 403, message: "Forbidden" } },
+  ])("keeps non-transient terminal error %j unclassified", (payload) => {
+    const result = mapFinalResultForTest({
+      terminal: { runId: "run-perm", status: "failed", payload },
+      outputChunks: [],
+      sessionKey: "session-key",
+      strategy: "issue",
+    });
+    expect(result.errorCode).toBe("hermes_gateway_run_failed");
+    expect(result.errorFamily ?? null).toBeNull();
+  });
+
+  it("recognizes confirmed terminal stop proofs and fails closed on unconfirmed timeout or missing status", () => {
+    expect(hasHermesGatewayTerminalStopProof({ status: "completed" })).toBe(true);
+    expect(hasHermesGatewayTerminalStopProof({ status: "failed" })).toBe(true);
+    expect(hasHermesGatewayTerminalStopProof({ status: "cancelled" })).toBe(true);
+    expect(hasHermesGatewayTerminalStopProof({ status: "interrupted", gateway_status: "cancelled" })).toBe(true);
+    expect(hasHermesGatewayTerminalStopProof({
+      connectionFailure: { provider: "hermes_gateway", operation: "configuration" },
+    })).toBe(true);
+    expect(hasHermesGatewayTerminalStopProof({
+      connectionFailure: { provider: "hermes_gateway", operation: "create_run", reason: "rate_limited" },
+    })).toBe(false);
+    expect(hasHermesGatewayTerminalStopProof({
+      connectionFailure: { provider: "hermes_gateway", operation: "create_run", reason: "remote_unavailable" },
+    })).toBe(false);
+    expect(hasHermesGatewayTerminalStopProof({
+      connectionFailure: { provider: "hermes_gateway", operation: "create_run", reason: "connection_refused" },
+    })).toBe(false);
+    expect(hasHermesGatewayTerminalStopProof({
+      connectionFailure: { provider: "hermes_gateway", operation: "create_run", reason: "connection_timeout" },
+    })).toBe(false);
+    expect(hasHermesGatewayTerminalStopProof({
+      connectionFailure: { provider: "hermes_gateway", operation: "create_run", reason: "connection_reset" },
+    })).toBe(false);
+    expect(hasHermesGatewayTerminalStopProof({ status: "timeout" })).toBe(false);
+    expect(hasHermesGatewayTerminalStopProof({
+      connectionFailure: { provider: "hermes_gateway", operation: "stream" },
+    })).toBe(false);
+    expect(hasHermesGatewayTerminalStopProof(null)).toBe(false);
   });
 });

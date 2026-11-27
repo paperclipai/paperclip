@@ -130,7 +130,7 @@ beforeEach(() => {
       companyId: "11111111-1111-4111-8111-111111111111", environmentId: "22222222-2222-4222-8222-222222222222" },
     browser: { headed: true, channel: "chromium", freshness: "signed-in" },
     savedConnection: { id: "33333333-3333-4333-8333-333333333333", name: "Synthetic subscription", ownerUserId: "synthetic-operator" },
-    candidate: { platform: "darwin", architecture: "arm64", nativeVersion: "1.4.3-paperclip.5", profileDigest: `sha256:${"b".repeat(64)}`, nativeClosureDigest: `sha256:${"c".repeat(64)}` },
+    candidate: { platform: "darwin", architecture: "arm64", nativeVersion: "1.5.2-paperclip.2", profileDigest: `sha256:${"b".repeat(64)}`, nativeClosureDigest: `sha256:${"c".repeat(64)}` },
     limits: { durationMs: 900_000, turnTimeoutMs: 300_000, maxRuns: 2, budgetCents: 100 } });
   scenario.prepare.mockResolvedValue({ identity: { commit: "a".repeat(40) }, company: { issuePrefix: "QA" },
     connection: { id: scenario.config.savedConnection.id, grantId: "synthetic-grant", ownerUserId: "synthetic-operator", isDefault: true, method: "subscription" }, accounting: {} });

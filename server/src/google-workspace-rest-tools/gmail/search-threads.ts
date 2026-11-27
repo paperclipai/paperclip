@@ -31,15 +31,19 @@ export function unquotedOperators(query: string): string {
   return query.replace(/"[^"]*"?/g, " ");
 }
 
-export function effectiveQuery(input: SearchThreadsArgs): string {
-  const query = (input.query ?? "").trim();
+export function queryWithExclusions(rawQuery: string | undefined, exclude: { drafts: boolean; spam: boolean }): string {
+  const query = (rawQuery ?? "").trim();
   const operators = unquotedOperators(query);
   const added: string[] = [];
-  if (!/(^|[\s({])-?(in|is):(drafts?|anywhere)\b/i.test(operators)) added.push("-in:draft");
-  if (input.includeTrash && !/(^|[\s({])-?(in|is):(spam|anywhere)\b/i.test(operators)) added.push("-in:spam");
+  if (exclude.drafts && !/(^|[\s({])-?(in|is):(drafts?|anywhere)\b/i.test(operators)) added.push("-in:draft");
+  if (exclude.spam && !/(^|[\s({])-?(in|is):(spam|anywhere)\b/i.test(operators)) added.push("-in:spam");
   if (!query) return added.join(" ");
   if (added.length === 0) return query;
   return [`(${query})`, ...added].join(" ");
+}
+
+export function effectiveQuery(input: SearchThreadsArgs): string {
+  return queryWithExclusions(input.query, { drafts: true, spam: Boolean(input.includeTrash) });
 }
 
 export function threadDetail(view: SearchThreadsArgs["view"]): MessageDetail {
@@ -109,6 +113,7 @@ export async function readThreads(ids: string[], http: GoogleHttp): Promise<Arra
 export const searchThreads = defineTool({
   definition: {
     name: "search_threads",
+    title: "Search threads",
     description: "Lists the signed-in user's Gmail threads that match an optional Gmail search query, one page at a time. Returns thread IDs with message summaries, not full bodies; use get_thread with a thread ID for full messages. A thread matches when any of its messages matches.",
     inputSchema: {
       type: "object",

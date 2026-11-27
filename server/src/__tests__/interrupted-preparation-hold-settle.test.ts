@@ -21,6 +21,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { currentProcessSpaceHash } from "../services/controller-process-identity.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION } from "../services/remote-workspace-snapshot-archive.js";
 import { settleHeldInterruptedPreparation } from "../services/interrupted-preparation-hold-settlement.js";
 import { isAbandonedPreparedRemoteWorkspace } from "../services/remote-workspace-abandoned-preparation.js";
 import { inspectWorkspaceRecoverySource } from "../services/workspace-recovery-source.js";
@@ -331,7 +332,7 @@ suite("held interrupted preparations on the shared ownership path", () => {
       workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: f.runId, status: "blocked", stage: "verifying_stop",
         attempt: 1, attemptLimit: 6, retryable: true, requestIds: [],
         message: "Automatic recovery of saved work failed (last failure: source_unavailable). Retry to try again; the agent will not repeat its work." },
-      systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1, capturePolicyVersion: 2, state: "exhausted",
+      systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1, capturePolicyVersion: REMOTE_WORKSPACE_CAPTURE_POLICY_VERSION, state: "exhausted",
         phase: "verify_execution", sourceRunId: f.runId, generationId: randomUUID(), attemptId: randomUUID(), intentId: null,
         attempts: 1, retriesUsed: 0, revision: 2, nextAttemptAt: null, providerCooldownAt: null, freshAttemptRunId: null,
         preservationOperationIds: [], failure: { code: "source_unavailable", retryClass: "use_alternative_strategy",

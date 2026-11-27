@@ -534,6 +534,9 @@ export type IssueReferenceSourceKind = (typeof ISSUE_REFERENCE_SOURCE_KINDS)[num
 export const DOCUMENT_ANNOTATION_THREAD_STATUSES = ["open", "resolved"] as const;
 export type DocumentAnnotationThreadStatus = (typeof DOCUMENT_ANNOTATION_THREAD_STATUSES)[number];
 
+export const DOCUMENT_ANNOTATION_COMMENT_REACTIONS = ["done", "check", "thumbs_up", "question"] as const;
+export type DocumentAnnotationCommentReactionName = (typeof DOCUMENT_ANNOTATION_COMMENT_REACTIONS)[number];
+
 export const DOCUMENT_ANNOTATION_ANCHOR_STATES = ["active", "stale", "orphaned"] as const;
 export type DocumentAnnotationAnchorState = (typeof DOCUMENT_ANNOTATION_ANCHOR_STATES)[number];
 
@@ -1130,6 +1133,8 @@ export const LIVE_EVENT_TYPES = [
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",
+  "agent_setup_progress.updated",
+  "cloud_trial.status.updated",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
 
@@ -1200,6 +1205,7 @@ export const PERMISSION_KEYS = [
   "tasks:assign",
   "tasks:assign_scope",
   "tasks:manage_active_checkouts",
+  "tasks:retry",
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
@@ -1401,6 +1407,8 @@ export const TOOL_CONNECTION_LIFECYCLE_EVENT_TYPES = [
   "reconnected",
   "disconnected",
   "actions_quarantined",
+  "google_access_ended",
+  "google_access_not_ended",
 ] as const;
 export type ToolConnectionLifecycleEventType = (typeof TOOL_CONNECTION_LIFECYCLE_EVENT_TYPES)[number];
 

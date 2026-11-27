@@ -3,13 +3,16 @@
 import { describe, expect, it } from "vitest";
 import type { ToolApplication, ToolConnection } from "@paperclipai/shared";
 import { getConnectableAppDefinition } from "@paperclipai/shared";
+import { readOAuthWindowFailureDetails, readOAuthWindowOutcome } from "@/lib/oauthWindowOutcome";
 import {
   isConnectionDefinitionUnavailable,
   isVercelConnectUnavailable,
   isMissingOAuthStateMessage,
+  oauthCallbackErrorMessage,
   oauthFailureMessage,
   readConnectionIntentGitHubRecovery,
   readConnectionIntentOAuthFailureCode,
+  readConnectionIntentOAuthProviderError,
   readConnectionIntentOAuthOutcome,
   retainedResumeMatches,
   retainedReconnectMatches,
@@ -196,6 +199,41 @@ describe("retained reconnect definition lookup", () => {
     })).toBe(expected);
   });
 
+  it("resumes an older Copilot draft saved under the GitHub application through GitHub Copilot", () => {
+    const github = {
+      id: "app-github",
+      companyId: "company-1",
+      applicationKey: "app-gallery:github",
+      metadata: { sourceTemplateKey: "github" },
+    } as unknown as ToolApplication;
+    const copilotDraft = {
+      id: "connection-1",
+      companyId: "company-1",
+      applicationId: "app-github",
+      status: "draft",
+      connectionPurpose: "ai",
+      config: { sourceTemplateKey: "github", ai: { provider: "github", method: "api_key" } },
+    } as unknown as ToolConnection;
+    const githubDraft = {
+      id: "connection-2",
+      companyId: "company-1",
+      applicationId: "app-github",
+      status: "draft",
+      config: { sourceTemplateKey: "github" },
+    } as unknown as ToolConnection;
+    const resume = (requestedAppKey: string, resumeConnection: ToolConnection) => retainedResumeMatches({
+      requestedAppKey,
+      resumeConnection,
+      resumeApplication: github,
+      completedResumeConnectionId: null,
+    });
+
+    expect(resume("github-copilot", copilotDraft)).toBe(true);
+    expect(resume("github", copilotDraft)).toBe(false);
+    expect(resume("github-copilot", githubDraft)).toBe(false);
+    expect(resume("github", githubDraft)).toBe(true);
+  });
+
   it("does not apply fresh-setup availability to an exact retained reconnect", () => {
     expect(isVercelConnectUnavailable({
       credentialSource: "vercel_connect",
@@ -267,6 +305,33 @@ describe("retained reconnect target matching", () => {
       reconnectApplication: curated,
     })).toBe(false);
   });
+
+  it("reconnects older Copilot accounts saved under the GitHub application through GitHub Copilot", () => {
+    const github = {
+      id: "app-1",
+      applicationKey: "app-gallery:github",
+      metadata: { sourceTemplateKey: "github" },
+    } as unknown as ToolApplication;
+    const copilot = {
+      applicationId: "app-1",
+      connectionPurpose: "ai",
+      config: { sourceTemplateKey: "github", ai: { provider: "github", method: "api_key" } },
+    } as unknown as ToolConnection;
+    expect(retainedReconnectMatches({
+      requestedAppKey: "github-copilot",
+      byo: false,
+      applicationId: undefined,
+      reconnectConnection: copilot,
+      reconnectApplication: github,
+    })).toBe(true);
+    expect(retainedReconnectMatches({
+      requestedAppKey: "github-copilot",
+      byo: false,
+      applicationId: undefined,
+      reconnectConnection: connection,
+      reconnectApplication: github,
+    })).toBe(false);
+  });
 });
 
 describe("connection intent OAuth failure reasons", () => {
@@ -288,9 +353,60 @@ describe("connection intent OAuth failure reasons", () => {
   it("ignores malformed codes and never shows a raw code", () => {
     expect(readConnectionIntentOAuthFailureCode({ code: "<script>" })).toBeNull();
     expect(readConnectionIntentOAuthFailureCode(null)).toBeNull();
+    expect(readConnectionIntentOAuthProviderError({ providerError: "<script>" })).toBeNull();
+    expect(readConnectionIntentOAuthProviderError({ providerError: "invalid_scope" })).toBe("invalid_scope");
     const fallback = oauthFailureMessage("oauth_callback_http_500");
     expect(fallback).toBe("Authorization did not complete. Try again when you’re ready.");
     expect(fallback).not.toContain("oauth_");
+  });
+
+  it("maps allowlisted callback providerError and Slack MCP error codes to actionable Paperclip copy", () => {
+    expect(oauthCallbackErrorMessage("denied", "oauth_authorization_denied", "invalid_scope"))
+      .toMatch(/rejected the requested permissions/i);
+    expect(oauthCallbackErrorMessage("denied", "oauth_authorization_denied", "invalid_redirect_uri"))
+      .toMatch(/rejected Paperclip’s callback URL/i);
+    expect(oauthCallbackErrorMessage("failed", "slack_mcp_access_disabled"))
+      .toMatch(/Slack MCP access is disabled/i);
+    expect(oauthCallbackErrorMessage("failed", "oauth_token_exchange_failed"))
+      .toMatch(/didn’t give Paperclip access/i);
+    expect(oauthCallbackErrorMessage("denied", "oauth_authorization_denied", "access_denied"))
+      .toBe("Authorization was cancelled or declined. Your saved connection was not changed.");
+    expect(oauthCallbackErrorMessage("failed", "unknown_raw_code", "attacker_raw_text"))
+      .toBe("Authorization did not complete. Your saved connection is still here, so you can try again.");
+    for (const inheritedKey of ["__proto__", "constructor", "toString", "valueOf"]) {
+      expect(readConnectionIntentOAuthProviderError({ providerError: inheritedKey })).toBeNull();
+      expect(oauthFailureMessage(null, inheritedKey)).toBe("Authorization did not complete. Try again when you’re ready.");
+      expect(oauthCallbackErrorMessage("denied", "oauth_authorization_denied", inheritedKey))
+        .toBe("Authorization was cancelled or declined. Your saved connection was not changed.");
+    }
+  });
+
+  it("reads same-origin OAuth window failure details only for the matching connection", () => {
+    const sameOriginPopup = (href: string, closed = false) =>
+      ({ closed, location: { href } }) as unknown as Window;
+
+    const failedPopup = sameOriginPopup(
+      `${window.location.origin}/ACM/apps/connect?source=slack&resume=conn-1&oauth=denied&code=oauth_authorization_denied&provider_error=invalid_scope`,
+    );
+    expect(readOAuthWindowOutcome(failedPopup, "conn-1")).toBe("denied");
+    expect(readOAuthWindowFailureDetails(failedPopup, "conn-1")).toEqual({
+      code: "oauth_authorization_denied",
+      providerError: "invalid_scope",
+    });
+
+    expect(readOAuthWindowFailureDetails(failedPopup, "conn-other")).toBeNull();
+    expect(
+      readOAuthWindowFailureDetails(
+        sameOriginPopup("https://evil.example/ACM/apps/connect?resume=conn-1&oauth=failed&code=oauth_state_expired"),
+        "conn-1",
+      ),
+    ).toBeNull();
+    expect(
+      readOAuthWindowFailureDetails(
+        sameOriginPopup(`${window.location.origin}/ACM/apps/conn-1/permissions?success=1`),
+        "conn-1",
+      ),
+    ).toBeNull();
   });
 });
 

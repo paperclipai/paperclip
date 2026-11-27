@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   areaDealFlow,
@@ -126,22 +125,22 @@ describe("searchOutlineV2Groups", () => {
 
 describe("collapsed areas in storage", () => {
   it("round-trips, and ignores anything that is not a list of keys", () => {
-    writeCollapsedAreas(new Set(["area-a", OUTLINE_V2_NO_AREA_KEY]));
-    expect([...readCollapsedAreas()]).toEqual(["area-a", OUTLINE_V2_NO_AREA_KEY]);
-    localStorage.setItem(OUTLINE_V2_COLLAPSED_STORAGE_KEY, "{not json");
-    expect(readCollapsedAreas().size).toBe(0);
-    localStorage.setItem(OUTLINE_V2_COLLAPSED_STORAGE_KEY, JSON.stringify({ a: 1 }));
-    expect(readCollapsedAreas().size).toBe(0);
+    writeCollapsedAreas(new Set(["area-a", OUTLINE_V2_NO_AREA_KEY]), "owner");
+    expect([...readCollapsedAreas("owner")]).toEqual(["area-a", OUTLINE_V2_NO_AREA_KEY]);
+    localStorage.setItem(`${OUTLINE_V2_COLLAPSED_STORAGE_KEY}:owner`, "{not json");
+    expect(readCollapsedAreas("owner").size).toBe(0);
+    localStorage.setItem(`${OUTLINE_V2_COLLAPSED_STORAGE_KEY}:owner`, JSON.stringify({ a: 1 }));
+    expect(readCollapsedAreas("owner").size).toBe(0);
   });
 
   it("never throws when storage is blocked", () => {
-    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+    vi.spyOn(localStorage, "getItem").mockImplementation(() => {
       throw new Error("blocked");
     });
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    vi.spyOn(localStorage, "setItem").mockImplementation(() => {
       throw new Error("blocked");
     });
-    expect(readCollapsedAreas().size).toBe(0);
-    expect(() => writeCollapsedAreas(new Set(["area-a"]))).not.toThrow();
+    expect(readCollapsedAreas("owner").size).toBe(0);
+    expect(() => writeCollapsedAreas(new Set(["area-a"]), "owner")).not.toThrow();
   });
 });

@@ -1,4 +1,5 @@
 export const queryKeys = {
+  agentSetupProgress: (id: string | null) => ["agent-setup-progress", id] as const,
   linkPreview: (companyId: string, userId: string | null, url: string) =>
     ["link-preview", companyId, userId, url] as const,
   workspacePreferences: {
@@ -323,6 +324,9 @@ export const queryKeys = {
     detail: (issueId: string, viewId: string) => ["mcp-app-views", issueId, "detail", viewId] as const,
   },
   toolCallProgress: (issueId: string) => ["tool-call-progress", issueId] as const,
+  cloudInference: {
+    status: (companyId: string) => ["cloud-inference", companyId, "status"] as const,
+  },
   issues: {
     recoveryActions: (id: string, actionId: string | null, runId: string | null) =>
       ["issues", id, "recovery-actions", actionId, runId] as const,
@@ -591,7 +595,7 @@ export const queryKeys = {
     /** The responsibilities one routine is under, directly or through its project. */
     routineLinks: (companyId: string, routineId: string) =>
       ["responsibilities", "links", companyId, "routine", routineId] as const,
-    /** The company's areas (active and proposed). */
+    /** The viewer's active and proposed areas. */
     areas: (companyId: string) => ["responsibilities", "areas", companyId] as const,
     /** Recent activity on one responsibility, for who last reported its reading. */
     activity: (id: string) => ["responsibilities", "activity", id] as const,

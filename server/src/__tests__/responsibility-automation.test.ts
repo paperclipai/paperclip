@@ -284,14 +284,14 @@ describeEmbeddedPostgres("responsibility automation read", () => {
     const seeded = await seed();
     // Agents name the person.
     const agent: Actor = { type: "agent", companyId: seeded.company.id, agentId: seeded.agent.id, source: "agent_jwt" };
-    expect((await read(seeded.company.id, agent)).status).toBe(422);
+    expect((await read(seeded.company.id, agent)).status).toBe(403);
     const asAgent = await read(seeded.company.id, agent, `?ownerUserId=${OWNER}`);
-    expect(asAgent.status).toBe(200);
-    expect(asAgent.body.responsibilities).toHaveLength(4);
+    expect(asAgent.status).toBe(403);
+    expect(asAgent.body.responsibilities).toBeUndefined();
 
     // Another person's dashboard by ownerUserId.
     const theirs = await read(seeded.company.id, boardActor(), "?ownerUserId=someone-else");
-    expect(theirs.body.responsibilities.map((item: ResponsibilityAutomation) => item.responsibilityId)).toEqual([seeded.responsibilities.someoneElse.id]);
+    expect(theirs.status).toBe(404);
 
     // A board user from outside the company cannot read it.
     const outsider: Actor = {

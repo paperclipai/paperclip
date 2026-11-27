@@ -892,7 +892,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     } finally { clearTimeout(timeout); release(); await Promise.allSettled(pending); }
   });
 
-  it("retries expired upload claims with fresh keys and only deletes the abandoned attempt", async () => {
+  it("retries failed upload claims immediately with fresh keys and only deletes the abandoned attempt", async () => {
     const companyId = await company();
     const store = skillPackageStore(db, storage);
     const put = vi.spyOn(storage, "putFile").mockRejectedValueOnce(new Error("connection lost"));
@@ -900,8 +900,7 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     put.mockRestore();
     const [pending] = await db.select().from(snapshots).where(eq(snapshots.companyId, companyId));
     expect(pending!.storage).toBeNull();
-    await expect(store.prepare(companyId, files)).rejects.toThrow("being saved");
-    await db.update(snapshots).set({ upload: { ...pending!.upload!, expiresAt: new Date(0).toISOString() } }).where(eq(snapshots.id, pending!.id));
+    expect(new Date(pending!.upload!.expiresAt).getTime()).toBeLessThanOrEqual(Date.now());
     const id = await store.prepare(companyId, files);
     expect(id).toBe(pending!.id);
     const receipt = (await store.descriptor(companyId, id)).storage!;
@@ -1048,4 +1047,37 @@ describe.skipIf(!support.supported)("external skill packages", () => {
     expect(converted!.packageSnapshotId).toBe(id);
     expect(skillSnapshotHash(await store.versionFiles(converted!))).toBe(skillSnapshotHash(large));
   }, 90_000);
+
+  it("starts package transfer deadlines after queued storage waits", async () => {
+    const timeout = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation(ms => timeout(ms === 180_000 ? 1_000 : ms));
+    const busy = [await fixture(), await fixture()];
+    const target = await fixture();
+    for (const f of [...busy, target]) await fs.rm(skillPackagePaths(f.companyId, f.id).directory, { recursive: true, force: true });
+    const stalled = new Set(await Promise.all(busy.map(async f => (await f.store.descriptor(f.companyId, f.id)).storage!.archiveKey)));
+    const get = storage.getObject.bind(storage);
+    let entered = 0;
+    let bothEntered!: () => void;
+    const started = new Promise<void>(resolve => { bothEntered = resolve; });
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    vi.spyOn(storage, "getObject").mockImplementation(async (...args) => {
+      if (stalled.has(args[1])) {
+        if (++entered === 2) bothEntered();
+        await blocked;
+      }
+      return get(...args);
+    });
+    const occupied = busy.map(f => f.resolve());
+    let herd: ReturnType<typeof target.resolve>[] = [];
+    try {
+      await started;
+      herd = Array.from({ length: 5 }, () => target.resolve());
+      await new Promise(resolve => setTimeout(resolve, 1_500));
+      release();
+      for (const entries of await Promise.all(herd)) {
+        expect(entries.map(entry => entry.missingDetail ?? entry.sourceStatus)).toEqual(["available", "available"]);
+      }
+    } finally { release(); await Promise.allSettled([...occupied, ...herd]); }
+  });
 });

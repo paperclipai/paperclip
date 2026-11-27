@@ -1,5 +1,6 @@
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
-import { AWS_MCP_ISSUER_CONFIG_KEY, awsMcpMethodUsesIssuer, type AwsMcpClients } from "./connectors/aws/mcp-credentials.js";
+import { AWS_MCP_ISSUER_CONFIG_KEY, AWS_ROLE_ARN_PATTERN, awsMcpMethodUsesIssuer, isAwsMcpConnection, type AwsMcpClients } from "./connectors/aws/mcp-credentials.js";
+import { awsRoleSetup } from "./connectors/aws/setup.js";
 import { workloadIdentityIssuer, workloadIdentityIssuerOrigin, workloadIdentityService } from "./workload-identity.js";
 import { RepositoryCatalogUnavailableError, findRepositoryCatalogUnavailableError } from "./repository-catalog-unavailable-error.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
@@ -12,6 +13,7 @@ import { createConnectionCredentialValidation } from "./tool-access/connections/
 import { createConnectionGrants } from "./tool-access/connections/grants.js";
 import { createConnectionInstalls } from "./tool-access/connections/installs.js";
 import { createConnectionRemoval } from "./tool-access/connections/removal.js";
+import { createFirstSignInDrafts } from "./tool-access/connections/first-sign-in.js";
 import { createToolRemoteHttp } from "./tool-access/remote-http.js";
 import { classifyRisk, normalizeToolDescriptor, type McpToolDescriptor } from "./tool-access/catalog/descriptors.js";
 export { classifyRisk, isGmailToolPermanentlyBlocked, isGoogleWorkspaceToolAllowed, type McpToolDescriptor } from "./tool-access/catalog/descriptors.js";
@@ -97,7 +99,7 @@ import { defaultConnectionAgentInstructions, paperclipPeerAgentInstructions, pap
 import { isBrowserUseConnection } from "./browser-use-client.js";
 
 import { COGNEE_STDIO_TEMPLATE } from "./cognee-connection.js";
-import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
+import { isCatalogEntryBlocked, isCatalogEntryOffered, isCatalogEntryRemovedByProvider, isRemoteMcpConnectorMethod, type AwsConnectionSetup } from "@paperclipai/shared";
 
 import { githubBotRequest } from "./chat-github-client.js";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
@@ -150,9 +152,11 @@ import { toolAccessPolicyService } from "./tool-access-policy.js";
 
 import { googleChatToolDescription } from "./google-chat-tool-policy.js";
 import { gmailArchiveToolDescription } from "./gmail-archive-tool-policy.js";
+import { googleWorkspaceCatalogToolTitle } from "./google-workspace-rest-dispatch.js";
 
 import { createToolRuntimeSupervisor } from "./tool-runtime-supervisor.js";
 
+import { paperclipGoogleSignInAvailable } from "./google-sign-in-availability.js";
 import { appWithPaperclipCloudConnectorAvailability, paperclipCloudConnectorCapabilitiesFromEnv, createPaperclipCloudConnector, isPaperclipCloudConnectorStrategy, paperclipCloudConnectorConfigFromEnv, type PaperclipCloudConnector } from "./paperclip-cloud-connector.js";
 import { createVercelConnectClient, deriveVercelConnectSubject, vercelConnectIntegrationStatus, type VercelConnectClient } from "./vercel-connect.js";
 
@@ -593,6 +597,7 @@ function toCatalogEntryForConnection(
   const rawCatalogEntry = toCatalogEntry(row);
   const catalogEntry = {
     ...rawCatalogEntry,
+    title: googleWorkspaceCatalogToolTitle(asRecord(connection.config).sourceTemplateKey, row.toolName, rawCatalogEntry.title),
     inputSchema: projectedConnectionToolInputSchema(
       connection,
       rawCatalogEntry.inputSchema ?? {},
@@ -778,7 +783,7 @@ export function toolAccessService(
     const profiles = connectorWasProvided
       ? (await currentCloudConnector()?.getCapabilities() ?? [])
       : await paperclipCloudConnectorCapabilitiesFromEnv();
-    return appWithPaperclipCloudConnectorAvailability(app, profiles);
+    return appWithPaperclipCloudConnectorAvailability(app, profiles, paperclipGoogleSignInAvailable());
   }
   const vercelConnect =
     options.vercelConnectClient === undefined
@@ -787,6 +792,7 @@ export function toolAccessService(
   const runtimeSupervisor = createToolRuntimeSupervisor(db, options);
   const connectionGrantsService = createConnectionGrants(db, { getConnectionRow, assertSecretRefs, vercelConnect, currentCloudConnector, secrets });
   const removeConnection = createConnectionRemoval(db, { options, secrets, runtimeSupervisor, vercelConnect, currentCloudConnector, getConnectionRow });
+  const firstSignInDrafts = createFirstSignInDrafts(db, { removeConnection });
   /**
    * Connection setup resolves connector definitions synchronously. Refresh the
    * plugin-provided part of the catalog from the plugins table first, so a
@@ -2256,22 +2262,35 @@ export function toolAccessService(
           }
         : { templateId: method?.defaults?.templateKey };
     // The issuer an AWS role is asked to trust, recorded so a later change of this instance's address
-    // gets a clear message instead of a role refusal. A draft being resumed keeps the issuer recorded at
-    // the draft step; any other setup or reconnect records the current address (the one now in AWS).
-    const recordedAwsIssuer = !input.reconnectConnectionId && retainedConnection?.status === "draft"
+    // gets a clear message instead of a role refusal. Testing a draft keeps the issuer recorded at the
+    // draft step; saving the draft again, any other setup, or a reconnect records the current address.
+    const recordedAwsIssuer = !input.reconnectConnectionId && !input.saveDraft && retainedConnection?.status === "draft"
       ? asRecord(retainedConnection.config)[AWS_MCP_ISSUER_CONFIG_KEY]
       : undefined;
     const awsIssuerOrigin = workloadIdentityIssuerOrigin();
     const awsRoleIssuer = !awsMcpMethodUsesIssuer(galleryEntry?.slug, method?.key) ? null
       : typeof recordedAwsIssuer === "string" ? recordedAwsIssuer
         : awsIssuerOrigin.available ? workloadIdentityIssuer(awsIssuerOrigin.origin, companyId) : null;
+    const preservedAccessMarkers = retainedConnection && retainedConnection.status !== "archived"
+      ? {
+          ...(asRecord(retainedConnection.config).agentAccessConfigured === true ? { agentAccessConfigured: true } : {}),
+          ...(transport === "mcp_remote" && asRecord(retainedConnection.config).mcpAgentAccessConfigured === true
+            ? { mcpAgentAccessConfigured: true }
+            : {}),
+        }
+      : {};
     let config: Record<string, unknown> = galleryEntry
       ? {
           ...baseConfig,
+          ...preservedAccessMarkers,
           ...(awsRoleIssuer ? { [AWS_MCP_ISSUER_CONFIG_KEY]: awsRoleIssuer } : {}),
           sourceTemplateKey: galleryEntry.slug,
           connectionMethodKey: method?.key,
-          methodConfig: normalizedMethodConfig?.values ?? {},
+          methodConfig: input.saveDraft && awsMcpMethodUsesIssuer(galleryEntry.slug, method?.key)
+            // A role ARN is only kept once AWS accepted it in a test, so an unchecked ARN never reaches
+            // the setup steps (which tell an AWS administrator to update that role).
+            ? Object.fromEntries(Object.entries(normalizedMethodConfig?.values ?? {}).filter(([key]) => key !== "roleArn"))
+            : normalizedMethodConfig?.values ?? {},
           ...(galleryEntry.slug === "google-workspace" && retainedConnection?.status === "draft"
             ? { workspaceSetup: retainedConnection.config.workspaceSetup }
             : {}),
@@ -2305,6 +2324,7 @@ export function toolAccessService(
         }
       : {
           ...baseConfig,
+          ...preservedAccessMarkers,
           quarantineNewEntries: false,
           unverifiedServer: true,
           // Peer tool prefix, fixed when the identity is created. A retained
@@ -2983,13 +3003,25 @@ export function toolAccessService(
           allowUnauthenticatedProbe: unauthenticatedPersonalProbe,
         });
       } catch (error) {
+        const healthFailureCode =
+          error instanceof HttpError ? asRecord(error.details).code : null;
+        // A new personal OAuth draft has no user grant until the callback, so
+        // its probe stops at "needs the current user's authorization" before
+        // any request reaches the server. That is the same sign-in-required
+        // state as a 401 challenge, not a failed setup: keep the draft and
+        // start sign-in instead of deleting it and returning its dead link.
+        const personalOAuthDraftNeedsSignIn =
+          healthFailureCode === "user_authorization_required" &&
+          genericAuthKind === "oauth" &&
+          Boolean(personalIdentityUserId) &&
+          !retainedPersonalIdentity?.grant;
         if (
           (!galleryEntry || remoteMcpConnector) &&
           input.authMode !== "none" &&
           input.authMode !== "bearer" &&
           input.authMode !== "custom_headers" &&
           error instanceof HttpError &&
-          asRecord(error.details).code === "oauth_challenge"
+          (healthFailureCode === "oauth_challenge" || personalOAuthDraftNeedsSignIn)
         ) {
           const [oauthConnection] = await db
             .select()
@@ -3115,6 +3147,7 @@ export function toolAccessService(
     } catch (error) {
       if (personalPublicSetupEstablished) throw error;
       let identityRollbackError: unknown = null;
+      let removedConnectionId: string | null = null;
       let preserveConcurrentRevival = false;
       if (connectionRow && revivedConnectionPrevious) {
         const attemptedConnection = connectionRow;
@@ -3246,10 +3279,11 @@ export function toolAccessService(
         }
       } else if (connectionRow) {
         const failedConnectionId = connectionRow.id;
-        await writeToolConnectionHealthChange(db, { companyId, id: failedConnectionId }, tx => tx
+        const removed = await writeToolConnectionHealthChange(db, { companyId, id: failedConnectionId }, tx => tx
           .delete(toolConnections)
           .where(eq(toolConnections.id, failedConnectionId)))
-          .catch(() => undefined);
+          .then(() => true, () => false);
+        if (removed) removedConnectionId = failedConnectionId;
       }
       if (
         !preserveConcurrentRevival &&
@@ -3293,8 +3327,28 @@ export function toolAccessService(
           },
         );
       }
-      throw error;
+      throw withoutRemovedConnectionLinks(error, removedConnectionId);
     }
+  }
+
+  // A setup failure deletes its new draft, so a credential error raised while
+  // probing it must not hand the caller a link to that draft: the link would
+  // open a connection that no longer exists. Edit the error in place so its
+  // remote-failure classification, keyed by identity, still applies.
+  function withoutRemovedConnectionLinks(error: unknown, removedConnectionId: string | null): unknown {
+    if (!removedConnectionId || !(error instanceof HttpError)) return error;
+    const details = asRecord(error.details);
+    const removedPath = `/apps/${removedConnectionId}/permissions`;
+    if (details.setupUrl !== removedPath && details.reconnectUrl !== removedPath) return error;
+    const rest = { ...details };
+    delete rest.setupUrl;
+    delete rest.reconnectUrl;
+    error.details = {
+      ...rest,
+      connectionRemoved: true,
+      nextStep: "This setup was not saved. Start the connection again; do not send a link to this setup.",
+    };
+    return error;
   }
 
   async function assertCatalogEntriesForConnection(
@@ -3396,11 +3450,11 @@ export function toolAccessService(
       connection.id,
       input.askFirstCatalogEntryIds,
     );
-    if (enabledRows.some((entry) => entry.status === "disabled" && !(entry.quarantineReason === "mcp_tool_removed" && isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)))) {
+    if (enabledRows.some(isCatalogEntryBlocked)) {
       throw badRequest("Disabled actions cannot be enabled");
     }
     if (reviewedIds.length > 0) {
-      await assertCatalogEntriesForConnection(
+      const reviewedRows = await assertCatalogEntriesForConnection(
         companyId,
         connection.id,
         reviewedIds,
@@ -3415,7 +3469,7 @@ export function toolAccessService(
             eq(toolCatalogEntries.status, "quarantined"),
           ),
         );
-      const reviewedIdSet = new Set(reviewedIds);
+      const reviewedIdSet = new Set(reviewedRows.filter((entry) => !isCatalogEntryRemovedByProvider(entry)).map((entry) => entry.id));
       if (
         quarantinedRows.length !== reviewedIdSet.size ||
         quarantinedRows.some((entry) => !reviewedIdSet.has(entry.id))
@@ -3428,7 +3482,7 @@ export function toolAccessService(
     if (input.access !== "all_agents")
       await assertAgentsInCompany(companyId, input.access.agentIds);
 
-    const entries: CreateToolProfileEntryForProfile[] = enabledRows.map(
+    const entries: CreateToolProfileEntryForProfile[] = enabledRows.filter(isCatalogEntryOffered).map(
       (entry) => ({
         selectorType: "catalog_entry",
         effect: "include",
@@ -3530,8 +3584,19 @@ export function toolAccessService(
                 priority: prior.priority,
                 metadata: prior.metadata,
               });
+          const priorCatalogEntryIds = [...new Set(priorEntries.flatMap((prior) => prior.catalogEntryId ? [prior.catalogEntryId] : []))];
+          const removedPriorCatalogEntryIds = new Set(
+            (priorCatalogEntryIds.length > 0
+              ? await tx
+                  .select({ id: toolCatalogEntries.id, status: toolCatalogEntries.status, quarantineReason: toolCatalogEntries.quarantineReason })
+                  .from(toolCatalogEntries)
+                  .where(and(eq(toolCatalogEntries.companyId, companyId), inArray(toolCatalogEntries.id, priorCatalogEntryIds)))
+              : []
+            ).filter(isCatalogEntryRemovedByProvider).map((entry) => entry.id),
+          );
           for (const prior of priorEntries)
             if (
+              !(prior.effect === "include" && prior.catalogEntryId && removedPriorCatalogEntryIds.has(prior.catalogEntryId)) &&
               !entries.some(
                 (entry) =>
                   entry.catalogEntryId &&
@@ -3710,6 +3775,7 @@ export function toolAccessService(
               inArray(toolCatalogEntries.id, enabledIds),
               ne(toolCatalogEntries.status, "quarantined"),
               ne(toolCatalogEntries.status, "disabled"),
+              ne(toolCatalogEntries.status, "removed"),
             ),
           );
       }
@@ -3718,7 +3784,7 @@ export function toolAccessService(
         {
           companyId,
           connection,
-          askFirstEntries: askFirstRows,
+          askFirstEntries: askFirstRows.filter(isCatalogEntryOffered),
           disableStale: !input.preserveExistingAccess,
           actor,
         },
@@ -3730,10 +3796,15 @@ export function toolAccessService(
         .update(toolConnections)
         .set({
           status: "active", enabled: true,
-          ...(connection.connectionPurpose === "tool" && connection.transport === "mcp_remote" ? {
-            config: sql`${toolConnections.config} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
-            transportConfig: sql`${toolConnections.transportConfig} || '{"mcpAgentAccessConfigured":true}'::jsonb`,
-          } : {}),
+          ...(connection.connectionPurpose === "tool" ? (() => {
+            const accessMarker = connection.transport === "mcp_remote"
+              ? '{"agentAccessConfigured":true,"mcpAgentAccessConfigured":true}'
+              : '{"agentAccessConfigured":true}';
+            return {
+              config: sql`${toolConnections.config} || ${accessMarker}::jsonb`,
+              transportConfig: sql`${toolConnections.transportConfig} || ${accessMarker}::jsonb`,
+            };
+          })() : {}),
           ...(input.agentInstructions !== undefined ? { agentInstructions: input.agentInstructions } : {}),
           updatedAt: new Date(),
         })
@@ -4000,6 +4071,45 @@ export function toolAccessService(
     return preflightConnectionMetadata(app, method, method.defaults, serverUrl, () => options.now?.() ?? new Date());
   }
 
+  /** The values and template a customer needs to create an AWS role for this connection. */
+  async function getAwsSetup(
+    companyId: string, connectionId: string, options: { accessLevel?: "read_only" | "full" } = {},
+  ): Promise<AwsConnectionSetup> {
+    const [row] = await db.select().from(toolConnections)
+      .where(and(eq(toolConnections.id, connectionId), eq(toolConnections.companyId, companyId)));
+    if (!row) throw notFound("Tool connection not found");
+    if (!isAwsMcpConnection(row) || row.config.connectionMethodKey !== "aws-role") {
+      throw unprocessable("This connection does not use an AWS role.", { code: "aws_role_setup_unavailable" });
+    }
+    // Without a usable public address Paperclip cannot sign, so a recorded issuer would only look usable.
+    const origin = workloadIdentityIssuerOrigin();
+    if (!origin.available) return { available: false, reason: origin.reason };
+    const issuer = workloadIdentityIssuer(origin.origin, companyId);
+    // Paperclip signs only as its current address, so a draft set up for an older one could never pass
+    // the test: it is saved again first. Reconnecting a connection records the current address, so it
+    // gets setup for that address.
+    const recorded = row.config[AWS_MCP_ISSUER_CONFIG_KEY];
+    if (row.status === "draft" && typeof recorded === "string" && recorded !== issuer) {
+      return { available: false, reason: "address_changed" };
+    }
+    const methodConfig = asRecord(row.config.methodConfig);
+    const setup = awsRoleSetup({
+      issuer, connectionId: row.id,
+      accessLevel: options.accessLevel ?? (methodConfig.accessLevel === "full" ? "full" : "read_only"),
+    });
+    return {
+      available: true,
+      ...setup,
+      // The setup steps tell an AWS administrator to update this role, so only the role made for this
+      // connection (named after it, so no other role shares the name) on a finished connection is
+      // offered. A draft's unchecked value, or any other role, could point that update at an unrelated role.
+      savedRoleArn: row.status !== "draft" && typeof methodConfig.roleArn === "string"
+        && methodConfig.roleArn.split(":role/")[1] === setup.roleName && AWS_ROLE_ARN_PATTERN.test(methodConfig.roleArn)
+        ? methodConfig.roleArn : null,
+      issuerPublished: Boolean(await workloadIdentityService(db).publicKeySet(companyId)),
+    };
+  }
+
   return {
     /** Identity-only verification: no bot installation/repository access required. */
     verifyPersonalGitHubIdentity: async (companyId: string, connectionId: string, userId: string) => {
@@ -4108,6 +4218,7 @@ export function toolAccessService(
     rotateMachineSignIn: clientCredentials.rotateMachineSignIn,
     completeMachineSignInRotation: clientCredentials.completeMachineSignInRotation,
     getMachineSignIn: clientCredentials.getMachineSignIn,
+    getAwsSetup,
 
     reconnectGalleryApp: withPluginApps(reconnectGalleryApp),
 
@@ -4748,6 +4859,7 @@ export function toolAccessService(
       await annotateAiGrantHealth(connections);
       await annotateGitHubAuthorization(connections, viewerUserId);
       await annotateSavedOAuthClientSecret(connections, viewerUserId);
+      await firstSignInDrafts.annotateFirstSignInPending(companyId, rows, connections);
       return connections;
     },
 
@@ -4876,6 +4988,7 @@ export function toolAccessService(
 
     listConnectionInstalls,
     putConnectionInstalls: connectionInstalls.putConnectionInstalls,
+    ensureAgentConnectionInstalls: connectionInstalls.ensureAgentConnectionInstalls,
 
     updateConnection: async (
       connectionId: string,
@@ -4958,6 +5071,8 @@ export function toolAccessService(
     },
 
     archiveConnection: removeConnection,
+
+    abandonFirstSignIn: firstSignInDrafts.abandonFirstSignIn,
 
     checkHealth: checkConnectionHealth,
 

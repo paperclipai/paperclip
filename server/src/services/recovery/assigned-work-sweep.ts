@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, desc, eq, gte, inArray, isNull, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import {
   activityLog,
   agentTaskSessions,
@@ -28,6 +28,7 @@ import { legacyControllerOwnerStamp } from "../legacy-controller-lease.js";
 import { currentProcessProbe, proveOwnerGone, type OwnerProof, type LocalOwnerStamp } from "../owner-proof.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { taskInterruptionPresentations } from "../task-interruption-presentation.js";
+import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { CHAT_CONTROL_RECOVERY_STOP_CODE, CHAT_CONTROL_RECOVERY_UNRESOLVED_CODE } from "../chat-control-recovery-stop.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { workspaceRecoverySourceEligible } from "../workspace-recovery-source.js";
@@ -41,7 +42,9 @@ import { automaticRunCreationHeldUntil, readAutomaticWorkStatus, reserveAutomati
 import { isReattachPhaseActive, reattachPhaseRecheckAt } from "../heartbeat/run-admission.js";
 import { wakeBecameFreshContinuation } from "./wake-became-fresh-continuation.js";
 import { continueSweepTaskFromSavedWork } from "./sweep-saved-work-continuation.js";
-import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, strandedHoldContinuesAutomatically, type StrandedHoldRun } from "./stranded-hold-continuation.js";
+import { isSetupFailureBeforeProviderWork, setupFailureBeforeProviderWorkSql } from "../continuation-cause.js";
+import { STRANDED_CONTINUATION_MAX_AGE_MS, STRANDED_KIND, STRANDED_PRE_PROVIDER_SETUP_MAX_AGE_MS, strandedHoldContinuesAutomatically,
+  type StrandedHoldRun } from "./stranded-hold-continuation.js";
 import {
   continuationActivityMessage,
   continuationAllowance,
@@ -87,6 +90,13 @@ const PROVIDER_LIMIT_CAUSES = ["provider_quota", "native_provider_usage_limit"];
 type IssueRow = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "assigneeUserId" | "hiddenAt"
   | "blockedTransitionAt" | "updatedAt" | "unblockDescriptor" | "monitorNextCheckAt" | "conversationAgentId" | "originKind"
   | "projectId" | "statusVersion" | "executionState" | "identifier" | "createdAt" | "blockedOwnerNotifiedAt">;
+
+/** TS twin of `latestRunFailedBeforeProviderWork` for the loaded facts. */
+function chatFailedBeforeProviderWork(latest: RunRow | null, issue: Pick<IssueRow, "assigneeAgentId">, at: Date): boolean {
+  if (!latest || latest.status !== "failed" || latest.agentId !== issue.assigneeAgentId || !latest.finishedAt) return false;
+  if (at.getTime() - new Date(latest.finishedAt).getTime() > STRANDED_PRE_PROVIDER_SETUP_MAX_AGE_MS) return false;
+  return isSetupFailureBeforeProviderWork({ errorCode: latest.errorCode, resultJson: latest.resultJson });
+}
 
 type RunRow = Pick<typeof heartbeatRuns.$inferSelect, "id" | "status" | "agentId" | "runtimeMode" | "errorCode" | "finishedAt"
   | "scheduledRetryAt" | "controllerBootId" | "controllerLeaseExpiresAt" | "controllerProcess" | "resultJson"> & { issueId: string };
@@ -204,9 +214,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     };
     const agentIds = [...new Set(issueRows.flatMap(issue => issue.assigneeAgentId ? [issue.assigneeAgentId] : []))];
     const blockedRows = issueRows.filter(issue => issue.status === "blocked");
-    const notSupersededByUserContinuation = interactionNotSupersededSql(issueThreadInteractions.companyId,
-      sql`${issueThreadInteractions.issueId}::text`, issueThreadInteractions.createdAt);
-
     const [activeRuns, latestRuns, wakes, chatWakes, nativePending, handoffs, goals, interactions, approvalRows,
       blockerRows, resolvedBlockerRows, childRows, actionMap, agentRows, companyRows, onboardingRows, blockActivity, interruptions,
       savedWorkRows] = await Promise.all([
@@ -223,7 +230,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
             r.finished_at as "finishedAt", r.scheduled_retry_at as "scheduledRetryAt",
             r.controller_boot_id as "controllerBootId", r.controller_lease_expires_at as "controllerLeaseExpiresAt",
             r.controller_process as "controllerProcess",
-            jsonb_build_object('cancelledByActorType', r.result_json->'cancelledByActorType') as "resultJson"
+            jsonb_build_object('cancelledByActorType', r.result_json->'cancelledByActorType',
+              'executionRecovery', r.result_json->'executionRecovery') as "resultJson"
           from heartbeat_runs r
           where r.company_id = ${companyId} and (r.context_snapshot->>'issueId') = requested.id
           order by r.created_at desc limit 1
@@ -262,12 +270,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         goalDesiredState: agentTaskSessions.goalDesiredState })
         .from(agentTaskSessions).where(and(eq(agentTaskSessions.companyId, companyId), inArray(agentTaskSessions.taskKey, ids),
           sql`${agentTaskSessions.goalStatus} is not null`, sql`${agentTaskSessions.goalStatus} <> 'complete'`)),
-      // A pending question counts as the person's move until the person
-      // answers it another way: a Retry or message started after the question
-      // was asked (an explicit user continuation) supersedes it as a wait.
       database.select({ issueId: issueThreadInteractions.issueId, count: sql<number>`count(*)::int` }).from(issueThreadInteractions)
         .where(and(eq(issueThreadInteractions.companyId, companyId), inArray(issueThreadInteractions.issueId, ids),
-          eq(issueThreadInteractions.status, "pending"), notSupersededByUserContinuation))
+          eq(issueThreadInteractions.status, "pending"), activeIssueInteractionCondition()))
         .groupBy(issueThreadInteractions.issueId),
       database.select({ issueId: issueApprovals.issueId, count: sql<number>`count(*)::int` }).from(issueApprovals)
         .innerJoin(approvals, eq(approvals.id, issueApprovals.approvalId))
@@ -434,7 +439,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
           createdAt: issue.createdAt,
           unblockOwner: (issue.unblockDescriptor?.owner ?? null) as AssignedWorkFacts["issue"]["unblockOwner"],
           monitorNextCheckAt: issue.monitorNextCheckAt,
-          isConversation: Boolean(issue.conversationAgentId) || issue.originKind === "chat_channel",
+          isConversation: Boolean(issue.conversationAgentId)
+            || (issue.originKind === "chat_channel" && !(issue.status === "blocked" && chatFailedBeforeProviderWork(latest, issue, at))),
           awaitingFirstMessage: onboardingIds.has(issue.id),
         },
         activeRuns: ownedRuns,
@@ -497,13 +503,18 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
     )).orderBy(desc(issues.updatedAt)).limit(limit);
   }
 
-  /**
-   * The cheap, indexed pre-filter the sweep reconstructs from: open assigned
-   * tasks with no run that is plainly live, no pending wake and no pending
-   * question. Everything it lets through is judged by the full predicate.
-   * Chat conversations and blocks older than the stale window are left out:
-   * the first wait on a person's message, the second is only reported.
-   */
+  /** A chat task whose latest run, its assignee's, failed in setup before any
+   * provider work: the agent never received the message, so the task waits on
+   * the system, not on the person's next message. SQL twin of
+   * `chatFailedBeforeProviderWork`; the chat-review test covers both. */
+  function latestRunFailedBeforeProviderWork(at: Date) {
+    return sql`coalesce((select lr.status = 'failed' and lr.agent_id = ${issues.assigneeAgentId}
+        and lr.finished_at > ${new Date(at.getTime() - STRANDED_PRE_PROVIDER_SETUP_MAX_AGE_MS).toISOString()}::timestamptz
+        and ${setupFailureBeforeProviderWorkSql("lr")}
+      from heartbeat_runs lr where lr.company_id = ${issues.companyId} and (lr.context_snapshot->>'issueId') = ${issues.id}::text
+      order by lr.created_at desc limit 1), false)`;
+  }
+
   function latestRunRefusedAtDispatch(at: Date) {
     return sql`coalesce((select lr.status = 'cancelled' and lr.started_at is null and lr.error_code = 'execution_reconciliation_required'
         and lr.finished_at > ${new Date(at.getTime() - STRANDED_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz
@@ -511,6 +522,14 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       order by lr.created_at desc limit 1), false)`;
   }
 
+  /**
+   * The cheap, indexed pre-filter the sweep reconstructs from: open assigned
+   * tasks with no run that is plainly live, no pending wake and no pending
+   * question. Everything it lets through is judged by the full predicate.
+   * Chat conversations (except a blocked chat task whose run failed before
+   * provider work) and blocks older than the stale window are left out:
+   * the first wait on a person's message, the second is only reported.
+   */
   async function listSuspects(scope: { companyId?: string; issueId?: string; issueIds?: string[]; createdAfter?: Date | null;
     changed?: SQL },
     cursor: string | null, limit: number) {
@@ -538,7 +557,8 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
       isNull(issues.assigneeUserId),
       isNull(issues.hiddenAt),
       isNull(issues.conversationAgentId),
-      sql`coalesce(${issues.originKind}, '') <> 'chat_channel'`,
+      sql`(coalesce(${issues.originKind}, '') <> 'chat_channel'
+        or (${issues.status} = 'blocked' and ${latestRunFailedBeforeProviderWork(at)}))`,
       sql`(${issues.status} <> 'blocked' or coalesce(${issues.blockedTransitionAt}, ${issues.updatedAt}) > ${new Date(at.getTime() - STALE_BLOCK_MS).toISOString()}::timestamptz)`,
       sql`(${issues.monitorNextCheckAt} is null or ${issues.monitorNextCheckAt} <= ${at.toISOString()}::timestamptz)`,
       // A legacy run whose controller lease lapsed may have lost its owner;
@@ -552,9 +572,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
             or coalesce(w.claimed_at, w.created_at) > ${new Date(at.getTime() - DEFERRED_WAKE_PENDING_BOUND_MS).toISOString()}::timestamptz)))
         and not exists (select 1 from heartbeat_runs wake_run where wake_run.id = w.run_id
           and ${queuedRunStalledSql(aliasedRun("wake_run"), at)})))`,
-      sql`not exists (select 1 from issue_thread_interactions t where t.company_id = ${issues.companyId}
-        and t.issue_id = ${issues.id} and t.status = 'pending'
-        and ${interactionNotSupersededSql(sql`t.company_id`, sql`t.issue_id::text`, sql`t.created_at`)})`,
+      sql`not exists (select 1 from ${issueThreadInteractions} where ${issueThreadInteractions.companyId} = ${issues.companyId}
+        and ${issueThreadInteractions.issueId} = ${issues.id} and ${issueThreadInteractions.status} = 'pending'
+        and ${activeIssueInteractionCondition()})`,
       // Plain waits on someone else, decided without the full read. The
       // predicate re-checks every task this lets through.
       sql`not exists (select 1 from issue_relations rel inner join issues blocker
@@ -575,7 +595,9 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
         -- except a recent board escalation, which the predicate judges by its failed run's cause
         and not (ra.kind = ${STRANDED_KIND} and ra.owner_type = 'board' and exists (select 1 from heartbeat_runs sr
           where sr.company_id = ra.company_id and sr.id::text = ra.evidence->>'latestRunId'
-            and sr.finished_at > ${new Date(at.getTime() - STRANDED_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz))
+            and (sr.finished_at > ${new Date(at.getTime() - STRANDED_CONTINUATION_MAX_AGE_MS).toISOString()}::timestamptz
+              or (sr.finished_at > ${new Date(at.getTime() - STRANDED_PRE_PROVIDER_SETUP_MAX_AGE_MS).toISOString()}::timestamptz
+                and ${setupFailureBeforeProviderWorkSql("sr")}))))
         and not (${issues.status} = 'blocked' and ra.cause not in ('configuration_incomplete', 'ownership_owner_unprovable')
           and ${latestRunRefusedAtDispatch(at)}))`,
       // An assignee that cannot take work (paused, being set up, held) is
@@ -1019,16 +1041,6 @@ export function assignedWorkSweep(db: Db, deps: AssignedWorkDeps) {
 
   return { checkIssue, listSuspects, report, loadFacts, flushPassLog: passLog.flush };
 }
-
-/** A pending interaction no explicit user continuation (Retry or message)
- * started after it. Uses the (company, issueId, created) run index. */
-function interactionNotSupersededSql(companyId: SQLWrapper, issueIdText: SQLWrapper, createdAt: SQLWrapper) {
-  return sql`not exists (select 1 from heartbeat_runs retry where retry.company_id = ${companyId}
-    and (retry.context_snapshot->>'issueId') = ${issueIdText}
-    and jsonb_typeof(retry.context_snapshot->'explicitUserContinuation') = 'object'
-    and retry.created_at > ${createdAt})`;
-}
-
 
 /** The status a block replaced, from the activity entry that blocked the task:
  * the normal update route records it as `_previous.status`, recovery as

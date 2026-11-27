@@ -1,3 +1,7 @@
+import { looksLikeCredentialToken } from "@paperclipai/shared";
+
+export { looksLikeCredentialToken };
+
 /**
  * Sensitive-value detection (plan §6.6). Kept in sync with the server-side
  * migration heuristic so the UI flags the same things the backend would.
@@ -41,6 +45,7 @@ function looksHighEntropy(value: string): boolean {
 export function isSensitiveEnv(name: string, value: string): boolean {
   if (!value) return false;
   if (SENSITIVE_ENV_KEY_RE.test(name)) return true;
+  if (looksLikeCredentialToken(value)) return true;
   if (CREDENTIAL_VALUE_RES.some((re) => re.test(value))) return true;
   return looksHighEntropy(value);
 }

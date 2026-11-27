@@ -6,6 +6,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { undeliveredLegacyUserCommentIds } from "./explicit-native-continuation.js";
 import { PaperclipRunnerToolAuthority } from "./native-runtime/paperclip-runner-tool-authority.js";
 import { taskHistoryReadsForRun } from "./queued-comment-delivery.js";
+import { uniqueIssuePrefix } from "../__tests__/helpers/issue-prefix.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 const USER = "history-read-user";
@@ -20,7 +21,7 @@ describe.skipIf(!support.supported)("task history reads", () => {
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
   async function seed() {
-    const [company] = await db.insert(companies).values({ name: "History read", issuePrefix: `H${randomUUID().slice(0, 4)}` }).returning();
+    const [company] = await db.insert(companies).values({ name: "History read", issuePrefix: uniqueIssuePrefix("H") }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company!.id, name: "Codie", adapterType: "paperclip_runner" }).returning();
     const issueId = randomUUID();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company!.id, agentId: agent!.id, status: "running",

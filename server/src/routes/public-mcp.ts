@@ -9,7 +9,7 @@ import { z } from "zod";
 import { type PublicMcpEvents } from "../services/public-mcp/events.js";
 import type { PublicMcpToolExtension } from "../services/public-mcp/dot-runner.js";
 import { McpEventError } from "../services/public-mcp/event-webhooks.js";
-import { DOT_RUNNER_MCP_PATH, mcpConsentSchema, mcpInvitation, mcpSetupUrl } from "@paperclipai/shared";
+import { DOT_RUNNER_MCP_PATH, DOT_RUNNER_MCP_SCOPES, mcpConsentSchema, mcpInvitation, mcpSetupUrl } from "@paperclipai/shared";
 import { renderMcpSetup, mcpSetupMarkdown } from "../services/public-mcp/setup.js";
 import { McpOAuthError, type PublicMcpOAuth } from "../services/public-mcp/oauth.js";
 import { McpApiError, McpCapabilityError, publicMcpCapabilities, type createPublicMcpExecutor } from "../services/public-mcp/capabilities.js";
@@ -87,7 +87,7 @@ export function publicMcpIngressRoutes(oauth: PublicMcpOAuth, execute: ReturnTyp
     let principal;
     try { if (!token) throw new Error(); principal = await oauth.authenticate(token); }
     catch {
-      res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${resourceMetadata}", scope="${agentConnection ? "paperclip:agent" : "paperclip:read paperclip:write paperclip:configure"}", error="invalid_token"`);
+      res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${resourceMetadata}", scope="${agentConnection ? DOT_RUNNER_MCP_SCOPES.join(" ") : "paperclip:read paperclip:write paperclip:configure"}", error="invalid_token"`);
       res.status(401).json({ error: "invalid_token" }); return;
     }
     if (req.method !== "POST") { res.setHeader("Allow", "POST"); res.status(405).end(); return; }

@@ -30,6 +30,7 @@ export type ToastActor = {
 
 export interface ToastInput {
   id?: string;
+  dedupe?: boolean;
   dedupeKey?: string;
   title: string;
   body?: string;
@@ -135,11 +136,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
         const lastSeen = dedupeRef.current.get(key);
         return lastSeen !== undefined && now - lastSeen < DEDUPE_WINDOW_MS;
       });
-      if (recentlyShown) {
-        return null;
+      if (input.dedupe !== false) {
+        if (recentlyShown) return null;
+        dedupeRef.current.set(dedupeKey, now);
+        dedupeRef.current.set(contentKey, now);
       }
-      dedupeRef.current.set(dedupeKey, now);
-      dedupeRef.current.set(contentKey, now);
 
       const id = input.id ?? generateToastId();
       clearTimer(id);

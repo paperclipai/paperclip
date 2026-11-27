@@ -50,7 +50,7 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Prep
 
 ### `permissions`
 
-Automated: [app detail](../../ui/src/pages/apps/AppDetail.test.tsx) covers agent/action controls, quarantined actions, and navigation using mocked requests.
+Automated: none for mocked UI controls (`AppDetail` component tests were removed; see server tests below and verify UI controls manually or via Storybook).
 
 [Runtime assignment tests](../../server/src/__tests__/agent-runtime-assignments.test.ts)
 use PostgreSQL to verify committed assignment notifications, bounded snapshots,
@@ -88,7 +88,7 @@ still need live account qualification.
 
 ### `test-and-maintain`
 
-Automated: [app detail tests](../../ui/src/pages/apps/AppDetail.test.tsx) cover test-dialog/UI contracts. Real provider execution and revocation require the selected provider’s live check.
+Automated: none for mocked UI test-dialog contracts (`AppDetail` component tests were removed; verify UI manually). Real provider execution and revocation require the selected provider’s live check.
 
 Manual: Run a read-only action with explicit inputs and inspect returned data and activity. Refresh discovery and review new actions. Revoke or disconnect only the disposable credential, then verify subsequent use fails with an actionable reconnect state.
 
@@ -135,7 +135,7 @@ Capability ID: `app-permissions/catalog-change`.
 Scope: ui
 Storybook: Mount PermissionsPanel/AppDetail with quarantined actions, selection/review, refresh pending, empty and failed discovery states. Existing auto-allowed NewToolsAllowed examples are not quarantine review.
 Production: Exercise catalog refresh and new-tool review with permitted/denied actors; unreviewed actions stay quarantined, prior Off/Ask choices survive refresh, and approved review persists.
-Sources: Source: [PermissionsPanel.tsx](../../ui/src/pages/apps/app-detail/PermissionsPanel.tsx), [AppDetail.tsx](../../ui/src/pages/apps/AppDetail.tsx), [tool-access.ts](../../server/src/routes/tool-access.ts). Tests: [AppDetail.test.tsx](../../ui/src/pages/apps/AppDetail.test.tsx), [tool-access-service.test.ts](../../server/src/__tests__/tool-access-service.test.ts), [tool-access-policy-service.test.ts](../../server/src/__tests__/tool-access-policy-service.test.ts)
+Sources: Source: [PermissionsPanel.tsx](../../ui/src/pages/apps/app-detail/PermissionsPanel.tsx), [AppDetail.tsx](../../ui/src/pages/apps/AppDetail.tsx), [tool-access.ts](../../server/src/routes/tool-access.ts). Tests: [tool-access-service.test.ts](../../server/src/__tests__/tool-access-service.test.ts), [tool-access-policy-service.test.ts](../../server/src/__tests__/tool-access-policy-service.test.ts)
 ### `delegated-configuration`
 
 See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).

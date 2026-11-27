@@ -20,9 +20,10 @@ beforeEach(() => {
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
 afterEach(() => { flushSync(() => root.unmount()); host.remove(); });
-function Harness({ name = "Account", provider = "openai", enabled = true }: { name?: string; provider?: "anthropic" | "openai"; enabled?: boolean }) {
+function Harness({ name = "Account", provider = "openai", enabled = true, hostedRedirect = false }: { name?: string; provider?: "anthropic" | "openai" | "google"; enabled?: boolean; hostedRedirect?: boolean }) {
   const login = useLocalAiLogin("company", { provider, method: "subscription", name, ownership: "personal", agentIds: [], allAgents: true }, enabled);
-  return <><LocalProviderLoginInstructions adapterType={provider === "anthropic" ? "claude_local" : "codex_local"} login={login} /><button onClick={() => void login.connect()}>Connect</button><button onClick={login.cancel}>Back</button></>;
+  const adapterType = provider === "google" ? "antigravity_runtime" : provider === "anthropic" ? "claude_local" : "codex_local";
+  return <><LocalProviderLoginInstructions adapterType={adapterType} hostedRedirect={hostedRedirect} login={login} /><button onClick={() => void login.connect()}>Connect</button><button onClick={login.cancel}>Back</button></>;
 }
 it("checks once under StrictMode, preserves renaming and navigation, and cancels only on explicit retry", async () => {
   flushSync(() => root.render(<StrictMode><Harness name="First name" /></StrictMode>));
@@ -178,4 +179,24 @@ it.each(["start", "check"])("cancels a local subscription with a pending %s and 
   expect(host.textContent).not.toContain("CANCELLED-CODE");
   expect(api.checkLocalLogin).toHaveBeenCalledTimes(stage === "start" ? 0 : 1);
   expect(api.connectLocal).not.toHaveBeenCalled();
+});
+
+it("immediately triggers check after submitting a hosted Google redirect URL", async () => {
+  api.checkLocalLogin
+    .mockResolvedValueOnce({ status: "sign_in_required", authorizationUrl: "https://accounts.google.com/o/oauth2/v2/auth?state=hosted" })
+    .mockResolvedValueOnce({ status: "ready", accountLabel: "hosted.user@example.test" });
+  flushSync(() => root.render(<Harness provider="google" hostedRedirect />));
+  await vi.waitFor(() => expect(host.querySelector('input[aria-label="Antigravity redirect URL"]')).not.toBeNull());
+  expect(api.checkLocalLogin).toHaveBeenCalledTimes(1);
+
+  const input = host.querySelector('input[aria-label="Antigravity redirect URL"]') as HTMLInputElement;
+  flushSync(() => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "http://127.0.0.1:41234/?state=hosted&code=abc123");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  flushSync(() => Array.from(host.querySelectorAll("button")).find(b => b.textContent === "Submit redirect URL")!.click());
+
+  await vi.waitFor(() => expect(api.submitLocalLoginCode).toHaveBeenCalledWith("company", "attempt-1", "http://127.0.0.1:41234/?state=hosted&code=abc123"));
+  await vi.waitFor(() => expect(api.checkLocalLogin).toHaveBeenCalledTimes(2));
+  await vi.waitFor(() => expect(host.textContent).toContain("hosted.user@example.test is signed in"));
 });

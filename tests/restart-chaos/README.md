@@ -303,7 +303,56 @@ inside or outside a release window (from the old build's last answer to 60 s aft
 on no answer, a server error, or 401, 403, 408 or 429; a deliberate 400, 404, 409 or 422 answer is not a failure. Runs come from the company run list, or from every task's
 run list when that list is full, so no task's early runs are lost. A queued or running run with no activity for 5
 minutes is not a live owner, the same window the drain uses. The drain also waits for the 90 s quiet period
-(`--hosted-quiet-seconds`), and the grade reads runs and task views again immediately before grading.
+(`--hosted-quiet-seconds`), and the grade reads runs and task views again immediately before grading. The drain cap
+counts from the later of the last release and the end of arrivals, so a run that stops launching at `--hosted-max-hours`
+long after its last release still drains for `--hosted-drain-minutes`. Run activity is aged from the moment the grade
+read the runs, not from after the task view reads. A task that is still open, has no failed run, and whose every live run is still queued
+behind its agent's full `maxConcurrentRuns` cap, with the queue-wait proof finding no idle slot and no newer
+assignment run started ahead of it, is not graded: `SUMMARY.md` names it on a `Not graded` line and
+`hosted-release-swap.json` lists it under `notGraded`. The runs holding the slots are still graded.
+
+**Failure evidence** (`hosted-diagnostics.ts`). The health probe opens a new connection for every probe and closes it
+after the answer, so a stale keep-alive socket cannot look like an outage. Every request records its connection:
+new or reused socket (API requests, from undici's diagnostics channels), remote and local address, and the DNS,
+connect, TLS and first-byte times where they are cheap to read. Every failed request in `health.jsonl` and
+`requests.jsonl` carries a `failure` object: for an answer, its status, the headers `x-paperclip-status`, `retry-after`,
+`server`, `via`, `x-railway-request-id`, `x-railway-edge`, `cf-ray`, `date`, `content-type`, `cache-control` and
+`connection`, the first 512 bytes of the body (the health client stops reading a non-2xx body after 16 KiB), and the parsed `error` and `statusPage.code`; for an exception, undici's
+`error.cause` (`code`, `errno`, `syscall`, `hostname`, `address`, `port`, message, and the socket's addresses and byte
+counts for `UND_ERR_SOCKET`). It also records the client clock: how late an abort fired (`timerLagMs`), how far the
+wall clock moved past the monotonic clock, the event loop's longest delay (`monitorEventLoopDelay`), and the pause
+before the probe. Right after any failure the harness requests `https://www.cloudflare.com/cdn-cgi/trace` (the control
+probe) and, for a GET that did not time out, retries the same URL once with a 2 s limit, and records both outcomes and
+timings. Neither counts as a request. The failure is recorded at once and this evidence is attached in the background,
+so neither the health probe loop nor the API client's own retries wait for it. After the drain, the grade stops the
+health probe, freezes its samples, waits up to 30 s for their evidence, and detects the releases from those samples. A
+diagnosis that did not finish stays pending and counts as a failure (unclassified, and a failed probe for release detection).
+A failed probe that has no class in the summary counts as unclassified. A failed probe's line goes into `health.jsonl` when its evidence is complete. The health client follows up to
+three same-origin redirects. If an answer is cut short, its status, headers and partial body are kept with the error.
+Only the live entry point (`hosted-main.ts`) turns the control probe on; unit tests never reach the network for it.
+
+Each failure gets a class. Server-side: any HTTP answer that is not a readable 2xx; a reset or refused connection
+while the control probe succeeded; a timeout while the control probe succeeded and the client did not stall.
+Client-side: a `client_stall` (an abort more than 1 s late, a clock jump over 1 s, an event-loop delay over 1 s, or a
+pause before the probe longer than twice the interval); a control probe that failed too, once the neutral endpoint
+has answered at least once in the run (the run probes it right after sign-in; if it never answered, a failed control
+probe proves nothing and the failure stays unclassified); a client DNS failure
+(`EAI_AGAIN`, or `ENOTFOUND` that the immediate retry did not repeat). Anything else is unclassified. Release
+detection skips client-side failures, so a client-side failure in a swap gap does not make a release stop-then-start.
+
+**Gate D verdict** (`hosted-gate.ts`). A run exits 0 only when every check in the `Gate D` block of `SUMMARY.md` holds:
+every started task completed hands-off; every task the harness launched was created; every started task passes the local waves'
+R1 (`gradeR1` from `grader.ts`); no Retry banner was shown; no health probe failed server-side or unclassified (client-side
+failures are listed under `Health probe failures` with their evidence but do not fail the gate); no overlapping runs, duplicated
+agent comments or duplicated subtasks; no release was stop-then-start; and at least one release was detected, each
+with a live run carried across it. A fixed batch (`--hosted-releases 0`) skips the release check. R1 uses the
+staging-mix budget (`stagingMixBudgetMs`); a subtask the agent created under a launched task is graded from its own creation time with the
+budget of its two rounds. It adds outage time only for a release whose health probes failed
+before the new build answered. It credits the first run's queue wait when the agent's slots prove it fair
+(`queueWaitFairnessFrom`, from the run list and each agent's `runtimeConfig.heartbeat.maxConcurrentRuns`). The API
+has no wake evidence, so a follow-up run's queue wait is never credited. Per-release hand-off and reach are API
+proxies: runs alive at the old build's last answer, and how many of them wrote an event after it. The server log's
+`handed live native runs` and `reattach phase ended` lines are not readable through the tenant API.
 
 These fields are unavailable over the API and are reported as unavailable, not guessed:
 
@@ -406,7 +455,28 @@ part of U3 is checked only in waves run with this harness.
 - R1 allows the workload budget plus outage time. When a Retry was needed R1 is
   `n/a` and R3 decides; a task that rests unfinished with no Retry fails both.
   A task that never rested within its deadline fails R1 as `no_rest_within_budget`,
-  whatever its last status.
+  whatever its last status. R1 also allows fair queue waits of runs that new
+  input started, chosen by these rules in order:
+  1. If any run on the task has no `createdAt`, nothing is credited.
+  2. The first run (earliest `createdAt`) is a candidate unless it is a retry.
+  3. For each harness follow-up comment: without a send time, nothing is
+     credited for it. Otherwise the candidate is the earliest run that carries
+     the comment, was created at or after the send time, and was not cancelled
+     before it executed.
+  4. That run counts only if it is not a retry, the previous executed run
+     succeeded and finished before it was created, and
+     `wake-evidence/<task>.json` shows a comment wake reason and no continued
+     run (no wake evidence: nothing is credited).
+  5. Each candidate's wait, from `createdAt` to `startedAt` inside the task's
+     own lifetime and minus outage time, is credited only when
+     `wake-evidence/agent-slots.json` proves it fair: no newer fresh assignment
+     run of that agent started during the wait (newer follow-ups and retries
+     rank higher by design), and the agent had no idle slot for more than 2 s
+     outside a server outage. A provably unfair wait fails as
+     `unfair_queue_wait`; one that cannot be proven is not credited, and the R1
+     detail says why.
+  The observer holds the deadline while a candidate run is queued (up to one
+  more budget) and extends it by that run's wait once it starts.
 - Speed: an aggregate p50/p95 row can breach only with at least 5 samples; a
   smaller row is reported as `insufficient sample (n < 5)`. Every cold or warm run
   over its p95 budget, and every restart recovery whose Paperclip share exceeds

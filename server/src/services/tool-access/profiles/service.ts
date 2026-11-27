@@ -4,15 +4,25 @@ import { createConnectionProfileConfigurationReader } from "./connection-configu
 import { connectionActorUserId } from "../actor.js";
 import { assertProfileEntryInputs } from "../../tool-profile-entry-validation.js";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agents, issues, projects, routines, toolApplications, toolCatalogEntries, toolConnections, toolMcpGateways, toolProfileBindings, toolProfileEntries, toolProfiles } from "@paperclipai/db";
-import type { CreateToolProfileBindingForProfile, CreateToolProfileEntryForProfile, CreateToolProfileWithEntries, DeleteToolProfile, DuplicateToolProfile, ToolProfile, ToolProfileBinding, ToolProfileEntry, ToolProfileNewToolReviewItem, ToolProfileNewToolsReview, ToolProfileNewToolsReviewResult, ToolProfileSummary, ToolProfileWithDetails, ReviewToolProfileNewTools, UpdateToolProfileEntry, UpdateToolProfileWithEntries, UnbindToolProfileBinding } from "@paperclipai/shared";
+import type { CreateToolProfileBindingForProfile, CreateToolProfileEntryForProfile, CreateToolProfileWithEntries, DeleteToolProfile, DuplicateToolProfile, ToolProfile, ToolProfileBinding, ToolProfileEntry, ToolProfileListItem, ToolProfileNewToolReviewItem, ToolProfileNewToolsReview, ToolProfileNewToolsReviewResult, ToolProfileSummary, ToolProfileWithDetails, ReviewToolProfileNewTools, UpdateToolProfileEntry, UpdateToolProfileWithEntries, UnbindToolProfileBinding } from "@paperclipai/shared";
 import { badRequest, conflict, notFound, unprocessable } from "../../../errors.js";
 import type { ActorInfo, ToolAccessMutationDb } from "../types.js";
 import { lockProfileEntryReferences, lockToolAssignmentAgents } from "../assignment-locks.js";
 import { normalizeKey } from "../identifiers.js";
-import { toProfile, toProfileEntry, toProfileBinding, profileCatalogColumns, profileReviewCatalogColumns, pendingNewToolsForProfile, buildProfileDetails } from "./projection.js";
+import { toProfile, toProfileEntry, toProfileBinding, profileCatalogColumns, profileReviewCatalogColumns, pendingNewToolsForProfile, buildProfileDetails, profileSummaryEntryColumns, summarizeProfile } from "./projection.js";
+
+function groupByProfile<T extends { profileId: string }>(rows: T[]) {
+  const groups = new Map<string, T[]>();
+  for (const row of rows) {
+    const group = groups.get(row.profileId);
+    if (group) group.push(row);
+    else groups.set(row.profileId, [row]);
+  }
+  return groups;
+}
 
 export function createToolProfileService(db: Db, now: () => Date) {
   async function getProfileRow(profileId: string, companyId?: string, dbClient: ToolAccessMutationDb = db) {
@@ -246,9 +256,8 @@ export function createToolProfileService(db: Db, now: () => Date) {
     companyId: string,
     profileId: string,
     entries: CreateToolProfileEntryForProfile[],
-    dbClient: ToolAccessMutationDb = db,
+    dbClient: ToolAccessMutationDb,
   ) {
-    await assertProfileEntryInputs(dbClient, companyId, entries);
     if (entries.length === 0) return;
     await dbClient.insert(toolProfileEntries).values(
       entries.map((entry) => ({
@@ -264,6 +273,27 @@ export function createToolProfileService(db: Db, now: () => Date) {
         conditions: entry.conditions ?? null,
       })),
     );
+  }
+
+  async function createProfileRow(companyId: string, input: CreateToolProfileWithEntries) {
+    const entries = input.entries ?? [];
+    return db.transaction(async (tx) => {
+      await assertProfileEntryInputs(tx, companyId, entries);
+      const [row] = await tx
+        .insert(toolProfiles)
+        .values({
+          companyId,
+          profileKey: input.profileKey,
+          name: input.name,
+          description: input.description ?? null,
+          status: input.status ?? "active",
+          defaultAction: input.defaultAction ?? "deny",
+          metadata: input.metadata ?? {},
+        })
+        .returning();
+      await createProfileEntries(companyId, row.id, entries, tx);
+      return row;
+    });
   }
 
   async function replaceProfileEntries(
@@ -364,6 +394,59 @@ export function createToolProfileService(db: Db, now: () => Date) {
   return {
     listConnectionProfileConfiguration: createConnectionProfileConfigurationReader(db),
 
+    async listProfileSummaries(companyId: string): Promise<ToolProfileListItem[]> {
+      const profiles = await db.select({
+        id: toolProfiles.id,
+        name: toolProfiles.name,
+        status: toolProfiles.status,
+        updatedAt: toolProfiles.updatedAt,
+        companyId: toolProfiles.companyId,
+        defaultAction: toolProfiles.defaultAction,
+        createdAt: toolProfiles.createdAt,
+        newToolsReviewedAt: toolProfiles.newToolsReviewedAt,
+      }).from(toolProfiles).where(eq(toolProfiles.companyId, companyId)).orderBy(desc(toolProfiles.updatedAt));
+      if (!profiles.length) return [];
+      const ids = profiles.map(profile => profile.id);
+      const [entryGroups, bindings, catalog, companyAgents] = await Promise.all([
+        db.select({
+          ...profileSummaryEntryColumns,
+          profiles: sql<number[]>`json_agg(summary_profiles.ordinal)`,
+        }).from(toolProfileEntries)
+          .innerJoin(sql`unnest(${sql.param(ids)}::uuid[]) with ordinality as summary_profiles(id, ordinal)`,
+            sql`summary_profiles.id = ${toolProfileEntries.profileId}`)
+          .where(eq(toolProfileEntries.companyId, companyId))
+          .groupBy(...Object.values(profileSummaryEntryColumns)),
+        db.select({
+          profileId: toolProfileBindings.profileId,
+          targetType: toolProfileBindings.targetType,
+          targetId: toolProfileBindings.targetId,
+        }).from(toolProfileBindings).where(and(
+          eq(toolProfileBindings.companyId, companyId), inArray(toolProfileBindings.profileId, ids),
+        )),
+        db.select(profileCatalogColumns).from(toolCatalogEntries).where(and(
+          eq(toolCatalogEntries.companyId, companyId), eq(toolCatalogEntries.status, "active"),
+        )),
+        db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, companyId)),
+      ]);
+      type Entry = Omit<(typeof entryGroups)[number], "profiles">;
+      const entriesByProfile = ids.map((): Entry[] => []);
+      for (const { profiles: ordinals, ...entry } of entryGroups) {
+        for (const ordinal of ordinals) entriesByProfile[ordinal - 1].push(entry);
+      }
+      const bindingsByProfile = groupByProfile(bindings);
+      const agentIds = companyAgents.map(agent => agent.id);
+      return profiles.map((profile, index) => {
+        const { id, name, status, updatedAt } = profile;
+        const entries = entriesByProfile[index];
+        const bindings = bindingsByProfile.get(id) ?? [];
+        return {
+          id, name, status, updatedAt,
+          newToolsPendingCount: pendingNewToolsForProfile({ profile, entries, catalog }).length,
+          summary: summarizeProfile({ profile, entries, bindings, catalog, agentIds }),
+        };
+      });
+    },
+
     listProfiles: async (
       companyId: string,
     ): Promise<ToolProfileWithDetails[]> => {
@@ -427,24 +510,8 @@ export function createToolProfileService(db: Db, now: () => Date) {
           .from(toolConnections)
           .where(eq(toolConnections.companyId, companyId)),
       ]);
-      const entriesByProfile = new Map<
-        string,
-        Array<typeof toolProfileEntries.$inferSelect>
-      >();
-      const bindingsByProfile = new Map<
-        string,
-        Array<typeof toolProfileBindings.$inferSelect>
-      >();
-      for (const entry of entries) {
-        const list = entriesByProfile.get(entry.profileId) ?? [];
-        list.push(entry);
-        entriesByProfile.set(entry.profileId, list);
-      }
-      for (const binding of bindings) {
-        const list = bindingsByProfile.get(binding.profileId) ?? [];
-        list.push(binding);
-        bindingsByProfile.set(binding.profileId, list);
-      }
+      const entriesByProfile = groupByProfile(entries);
+      const bindingsByProfile = groupByProfile(bindings);
       const agentIds = companyAgents.map((agent) => agent.id);
       const applicationsById = new Map(
         applications.map((application) => [application.id, application]),
@@ -470,22 +537,11 @@ export function createToolProfileService(db: Db, now: () => Date) {
       input: CreateToolProfileWithEntries, managementContext?: ConnectionManagementContext,
     ): Promise<ToolProfileWithDetails> => {
       await managementContext?.reauthorize();
-      await assertProfileEntryInputs(db, companyId, input.entries ?? []);
-      const [row] = await db
-        .insert(toolProfiles)
-        .values({
-          companyId,
-          profileKey: input.profileKey,
-          name: input.name,
-          description: input.description ?? null,
-          status: input.status ?? "active",
-          defaultAction: input.defaultAction ?? "deny",
-          metadata: input.metadata ?? {},
-        })
-        .returning();
-      await createProfileEntries(companyId, row.id, input.entries ?? []);
+      const row = await createProfileRow(companyId, input);
       return profileDetails(row.id, companyId);
     },
+
+    createProfileRow,
 
     getProfile: profileDetails,
 

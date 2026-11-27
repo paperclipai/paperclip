@@ -1721,6 +1721,20 @@ async function githubOperationLauncherBasePath(
   return remotePath;
 }
 
+export const EXECUTION_TARGET_GIT_CONTEXT_UNAVAILABLE_CODE = "execution_target_git_context_unavailable";
+
+function gitContextUnavailable(reason: string): Error {
+  return Object.assign(new Error(`Could not read execution-target Git context: ${reason}`),
+    { code: EXECUTION_TARGET_GIT_CONTEXT_UNAVAILABLE_CODE });
+}
+
+function gitContextProbeFailureReason(result: Pick<RunProcessResult, "exitCode" | "signal" | "timedOut">): string {
+  if (result.timedOut) return "the probe timed out";
+  if (typeof result.signal === "string" && /^SIG[A-Z0-9]{1,12}$/.test(result.signal)) return `the probe was stopped by ${result.signal}`;
+  if (Number.isSafeInteger(result.exitCode)) return `the probe exited with code ${result.exitCode}`;
+  return "the probe reported no exit status";
+}
+
 /** Read only execution-target Git context; never import the controller's credentials into SSH. */
 export async function prepareGitHubExecutionEnvironment(input: {
   target: AdapterExecutionTarget | null | undefined;
@@ -1807,9 +1821,9 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
       // workspaces can live at a different path on the execution target.
       cwd: remote.remoteCwd, timeoutMs: 15_000,
     });
-    if (result.exitCode !== 0) throw new Error("Could not read execution-target Git context");
+    if (result.exitCode !== 0) throw gitContextUnavailable(gitContextProbeFailureReason(result));
     const payload = result.stdout.split("\0PAPERCLIP_GIT_CONTEXT_V1\0")[1]?.split("\0PAPERCLIP_GIT_CONTEXT_END\0")[0];
-    if (payload === undefined) throw new Error("Could not read execution-target Git context");
+    if (payload === undefined) throw gitContextUnavailable("the probe output was incomplete");
     discovered = {};
     const records = payload.split("\0");
     const roots: string[] = [];
@@ -1826,7 +1840,7 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
   } else {
     const result = await promisify(execFile)(process.execPath, args, { cwd: input.cwd, timeout: 15_000, maxBuffer: 1024 * 1024 });
     try { discovered = JSON.parse(result.stdout.split("\0")[1] ?? ""); }
-    catch { throw new Error("Could not read execution-target Git context"); }
+    catch { throw gitContextUnavailable("the probe output was not valid"); }
   }
   // Controller-derived roots and mode must not be replaced by agent bindings.
   return { ...discovered, ...input.env,
@@ -1842,6 +1856,7 @@ printf '\0PAPERCLIP_GIT_CONTEXT_END\0'
 export async function prepareGitHubOperationLaunchers(input: {
   runId: string; target: AdapterExecutionTarget | null | undefined; cwd: string; env: Record<string, string>;
   broker?: { url: string; token: string };
+  anonymous?: boolean;
 }): Promise<Record<string, string>> {
   const remote = input.target?.kind === "remote" ? input.target : null;
   const directory = githubOperationLauncherDirectory(input);
@@ -1861,7 +1876,7 @@ export async function prepareGitHubOperationLaunchers(input: {
     // Remote launchers live beneath the checkout. Pin their own package scope
     // so an enclosing project's "type": "module" cannot reinterpret require().
     ["package.json", '{"type":"commonjs"}\n'],
-    ...["git", "gh"].map((name) => [name, githubLauncherSource({ brokerFile: input.broker !== undefined })] as const),
+    ...["git", "gh"].map((name) => [name, githubLauncherSource({ brokerFile: input.broker !== undefined, anonymous: input.anonymous })] as const),
     ...[".zshenv", ".zprofile", ".zshrc", ".bash_profile", ".bashrc", ".profile"].map((name) => [name, profile] as const),
     ...(input.broker ? [["broker.json", `${JSON.stringify({ url: input.broker.url, token: input.broker.token })}\n`] as const] : []),
   ]);

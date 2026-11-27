@@ -34,7 +34,7 @@ const env = {
   SLACK_GATE_PROCESS_LOG: process.env.SLACK_GATE_PROCESS_LOG,
 };
 const child = spawn(process.execPath, ['--require', guard, vitest, 'run',
-  'src/__tests__/chat-channels.integration.test.ts', '--testNamePattern', testNamePattern, '--maxWorkers=1', '--no-file-parallelism', `--execArgv=--require=${guard}`],
+  'src/__tests__/chat-channels/slack-protocol.integration.test.ts', '--testNamePattern', testNamePattern, '--maxWorkers=1', '--no-file-parallelism', `--execArgv=--require=${guard}`],
 { cwd: server, env, stdio: 'inherit' });
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => child.kill(signal));
 child.on('error', error => { console.error(error); process.exitCode = 1; });

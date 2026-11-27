@@ -2,7 +2,7 @@ import { recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "./public-
 import { assertAgentInteraction } from "./agent-interaction-policy.js";
 import { instancePublicOrigin, mayContainInventedHostLink, relativizeInventedHostLinks } from "./agent-invented-host-links.js";
 import { currentPluginInteractionOrigin } from "./plugin-interaction-context.js";
-import type { IssueDisplayStatus } from "@paperclipai/shared";
+import type { IssueDisplayStatus, IssueInboxArchiveFilter } from "@paperclipai/shared";
 import { issueDisplayStatusSql } from "./issue-display-status.js";
 import { notifyStrandedAgentStatus, notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
 import { finishedIdleWake } from "./idle-work-proof.js";
@@ -38,13 +38,14 @@ import { assertNoCaseHandoffMutation, cancelCaseHandoffsForIssue, completeTermin
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { automaticReadRecoveryCleanupCondition, directHumanCommentCondition, humanCreatedIssueCondition, pendingUserRequestCondition, pendingUserRequestRowCondition, touchedByUserCondition, userParticipationActivityCondition } from "./issue-participation.js";
 import { resolveProjectDefaultWorkspaceId } from "./project-default-workspace.js";
-import { type AuthorizationActor, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
+import { type AuthorizationActor, canActorReadIssuePrivacy, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
 import { type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { notifyChatPublicationWork } from "./chat-work-notifications.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { requestRestorePointDeletion } from "./git-restore-point-ledger.js";
+import { requestIssueConnectionContentDeletion } from "./tool-access/connections/issue-content-deletion.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { recordChatHandoff, recordAcceptedChatHandoff, lockAcceptedChatHandoffSource, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
@@ -1873,7 +1874,7 @@ export function parseStatusFilter(
 /** Closed, content-free phases of `issueService.list`, for response timing headers. */
 export type IssueListPhase =
   | "candidates" | "query" | "labels" | "active_runs" | "user_stats" | "read_stats" | "last_activity"
-  | "archives" | "blocked_by" | "live_descendants" | "attention";
+  | "archives" | "active_archives" | "blocked_by" | "live_descendants" | "attention";
 
 export interface IssueListOptions {
   /** Wraps each internal read so callers can report per-phase timing. */
@@ -1914,6 +1915,7 @@ export interface IssueFilters {
    */
   touchedCandidates?: "participation";
   inboxArchivedByUserId?: string;
+  inboxArchive?: { userId: string; mode: IssueInboxArchiveFilter };
   unreadForUserId?: string;
   /** Read projection only; never filters the result set by participation. */
   readStateForUserId?: string;
@@ -1947,6 +1949,8 @@ export interface IssueFilters {
   sortDir?: "asc" | "desc";
   /** ISO 8601 timestamp — only return issues with updatedAt strictly after this value. */
   updatedSince?: string;
+  /** ISO 8601 timestamp — only return issues with updatedAt strictly before this value. */
+  updatedBefore?: string;
 }
 
 type IssueRow = typeof issues.$inferSelect & { displayStatus?: IssueDisplayStatus; externalConversationState?: "active" | "waiting" | null };
@@ -2208,6 +2212,10 @@ const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
 function escapeLikePattern(value: string): string {
   return value.replace(/[\\%_]/g, "\\$&");
+}
+
+function originKindPrefixCondition(prefix: string) {
+  return like(issues.originKind, `${escapeLikePattern(String(prefix))}%`);
 }
 
 export function clampIssueListLimit(limit: number): number {
@@ -6798,7 +6806,7 @@ async function blockedInboxIssueConditions(
   if (filters?.originKind)
     conditions.push(eq(issues.originKind, filters.originKind));
   if (filters?.originKindPrefix)
-    conditions.push(like(issues.originKind, `${filters.originKindPrefix}%`));
+    conditions.push(originKindPrefixCondition(filters.originKindPrefix));
   if (filters?.originId) conditions.push(eq(issues.originId, filters.originId));
   if (filters?.hasPlanDocument !== undefined) {
     conditions.push(
@@ -6825,6 +6833,18 @@ async function blockedInboxIssueConditions(
         labeledIssueIds.map((row: { issueId: string }) => row.issueId),
       ),
     );
+  }
+  if (filters?.updatedSince) {
+    const since = new Date(filters.updatedSince);
+    if (Number.isFinite(since.getTime())) {
+      conditions.push(gt(issues.updatedAt, since));
+    }
+  }
+  if (filters?.updatedBefore) {
+    const before = new Date(filters.updatedBefore);
+    if (Number.isFinite(before.getTime())) {
+      conditions.push(lt(issues.updatedAt, before));
+    }
   }
   if (
     filters?.excludeRoutineExecutions &&
@@ -8591,11 +8611,16 @@ export function issueService(db: Db) {
         if (filters.parentIds.length === 0) return [];
         conditions.push(inArray(issues.parentId, filters.parentIds));
       }
+      const inboxArchive = filters?.inboxArchive;
+      const archivedCondition = inboxArchive
+        ? sql<boolean>`NOT (${inboxVisibleForUserCondition(companyId, inboxArchive.userId)})`
+        : undefined;
+      if (inboxArchive?.mode === "archived" && archivedCondition) conditions.push(archivedCondition);
       if (!filters?.q?.trim() && !filters?.issueIds) {
         conditions.push(isNull(issues.conversationAgentId));
         // Explicit child navigation includes waiting chat tasks, just like
         // readable-child counts. Ambient lists still omit idle conversations.
-        if (!filters?.parentId && !filters?.parentIds && !filters?.descendantOf && !filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId) {
+        if (!filters?.parentId && !filters?.parentIds && !filters?.descendantOf && !filters?.touchedByUserId && !filters?.unreadForUserId && !filters?.inboxArchivedByUserId && inboxArchive?.mode !== "archived") {
           conditions.push(nonIdleSlackIssueCondition());
         }
       }
@@ -8713,9 +8738,7 @@ export function issueService(db: Db) {
       if (filters?.originKind)
         conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix)
-        conditions.push(
-          like(issues.originKind, `${filters.originKindPrefix}%`),
-        );
+        conditions.push(originKindPrefixCondition(filters.originKindPrefix));
       if (filters?.originId)
         conditions.push(eq(issues.originId, filters.originId));
       if (filters?.hasPlanDocument !== undefined) {
@@ -8748,6 +8771,12 @@ export function issueService(db: Db) {
         const since = new Date(filters.updatedSince);
         if (Number.isFinite(since.getTime())) {
           conditions.push(gt(issues.updatedAt, since));
+        }
+      }
+      if (filters?.updatedBefore) {
+        const before = new Date(filters.updatedBefore);
+        if (Number.isFinite(before.getTime())) {
+          conditions.push(lt(issues.updatedAt, before));
         }
       }
       if (
@@ -8837,6 +8866,7 @@ export function issueService(db: Db) {
         readRows,
         lastActivityRows,
         archiveRows,
+        activeArchiveIds,
         blockedByMap,
         liveDescendantCountByIssueId,
       ] = await Promise.all([
@@ -8850,6 +8880,13 @@ export function issueService(db: Db) {
         contextUserId
           ? timePhase("archives", () => inboxArchiveRowsForIssues(db, companyId, contextUserId, issueIds))
           : Promise.resolve([]),
+        inboxArchive?.mode === "include" && archivedCondition
+          ? timePhase("active_archives", async () => {
+            const archived = await db.select({ id: issues.id }).from(issues)
+              .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds), archivedCondition));
+            return new Set(archived.map(row => row.id));
+          })
+          : Promise.resolve(null),
         includeBlockedBy
           ? timePhase("blocked_by", () => blockedByMapForIssues(db, companyId, issueIds))
           : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
@@ -8882,6 +8919,10 @@ export function issueService(db: Db) {
             : Promise.resolve(new Map<string, IssueBlockedInboxAttention>()),
         ]));
 
+      const archiveFields = (id: string) => inboxArchive
+        ? { isArchivedForMe: inboxArchive.mode === "archived" || activeArchiveIds?.has(id) === true }
+        : {};
+
       if (!contextUserId) {
         return withRuns.map((row) => {
           const activity = lastActivityByIssueId.get(row.id);
@@ -8893,6 +8934,7 @@ export function issueService(db: Db) {
             ) ?? row.updatedAt;
           return {
             ...row,
+            ...archiveFields(row.id),
             ...(includeBlockedBy
               ? { blockedBy: blockedByMap.get(row.id) ?? [] }
               : {}),
@@ -8934,6 +8976,7 @@ export function issueService(db: Db) {
           ) ?? row.updatedAt;
         return {
           ...row,
+          ...archiveFields(row.id),
           ...activeInboxArchiveFields(
             archiveByIssueId.get(row.id),
             lastActivityAt,
@@ -9025,9 +9068,7 @@ export function issueService(db: Db) {
       if (filters?.originKind)
         conditions.push(eq(issues.originKind, filters.originKind));
       if (filters?.originKindPrefix)
-        conditions.push(
-          like(issues.originKind, `${filters.originKindPrefix}%`),
-        );
+        conditions.push(originKindPrefixCondition(filters.originKindPrefix));
       if (filters?.originId)
         conditions.push(eq(issues.originId, filters.originId));
       if (filters?.hasPlanDocument !== undefined) {
@@ -12773,6 +12814,9 @@ export function issueService(db: Db) {
           }
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
           await notifyRoutineExecutionStatus(tx, id);
+          if (owner) {
+            await requestIssueConnectionContentDeletion(tx as unknown as Db, { companyId: owner.companyId, issueId: id, actorAgentId });
+          }
           removedIssue = await tx
             .delete(issues)
             .where(eq(issues.id, id))
@@ -13700,9 +13744,23 @@ export function issueService(db: Db) {
       if (pluginOrigin) {
         actor = { ...actor, agentId: pluginOrigin.agentId, runId: pluginOrigin.runId ?? undefined, userId: undefined };
       }
+      const lockPeerChatPrivacyTree = async (txOrDb: any) => {
+        if (!actor.agentId) return;
+        const [target] = await txOrDb
+          .select({ companyId: issues.companyId, conversationAgentId: issues.conversationAgentId })
+          .from(issues)
+          .where(eq(issues.id, issueId));
+        if (target?.conversationAgentId && target.conversationAgentId !== actor.agentId) {
+          await txOrDb.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${target.companyId}`}, 0))`);
+        }
+      };
       if (dbOrTx === db) {
         const append = () =>
           measureRunTransaction(db, "response", async (tx) => {
+            // Acquire the company privacy-tree lock before locking any issue row
+            // so peer-chat source privacy checks stay in the same lock order as
+            // issue/project privacy mutations and sendAgentChatMessage.
+            await lockPeerChatPrivacyTree(tx);
             // Serialize run-authored comments on the issue so a provider retry
             // cannot publish the same visible result twice. This needs no schema
             // change: the issue row is the transaction fence, and the recursive
@@ -13719,6 +13777,10 @@ export function issueService(db: Db) {
           ? retryNativeChatReviewPresentation(append)
           : append();
       }
+      // For caller-owned transactions that have not locked the issue row yet,
+      // acquire the privacy-tree lock before issueQuery.for("update") so all
+      // peer-chat writes preserve the global lock order.
+      await lockPeerChatPrivacyTree(dbOrTx);
       // The query below locks human comments on caller-owned transactions too,
       // sharing the fence with both question creation and Slack settlement.
       const issueQuery = dbOrTx
@@ -13765,18 +13827,37 @@ export function issueService(db: Db) {
       if (options?.metadata?.chatMessage && !options.proactiveChatMessage) {
         throw forbidden("Chat message provenance is server-owned");
       }
-      if (issue.conversationAgentId && actor.agentId && issue.conversationAgentId !== actor.agentId) {
-        throw forbidden("Only this conversation's agent can post agent messages");
-      }
+      const peerChatMessage = Boolean(issue.conversationAgentId && actor.agentId && issue.conversationAgentId !== actor.agentId);
       if (issue.conversationAgentId && actor.agentId && !actor.runId) {
         throw forbidden("Agent chat messages require an authenticated run");
       }
       if (issue.conversationAgentId && actor.runId) {
         const [run] = await dbOrTx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, actor.runId));
         const [current] = await dbOrTx.select().from(issues).where(eq(issues.id, issueId));
-        if (agentRunWritesRevoked(run)) throw conflict("This conversation turn was cancelled; it cannot post a reply");
+        if (agentRunWritesRevoked(run)) {
+          throw conflict(peerChatMessage
+            ? "This run was cancelled; it cannot post in another agent's chat"
+            : "This conversation turn was cancelled; it cannot post a reply");
+        }
         const runTaskId = run?.nativeIssueId ?? run?.issueId ?? run?.contextSnapshot?.issueId ?? run?.contextSnapshot?.taskId;
-        if (options?.proactiveChatMessage) {
+        if (peerChatMessage) {
+          if (options?.proactiveChatMessage) throw forbidden("Invalid background chat message authority");
+          if (run?.status !== "running" || run.agentId !== actor.agentId || run.companyId !== issue.companyId) {
+            throw forbidden("An agent can post in another agent's chat only from its own running run");
+          }
+          if (!run.responsibleUserId || run.responsibleUserId !== current.conversationUserId
+            || (actor.onBehalfOfUserId !== undefined && actor.onBehalfOfUserId !== current.conversationUserId)) {
+            throw forbidden("An agent can post in another agent's chat only while it acts for the person who owns that chat");
+          }
+          await dbOrTx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${issue.companyId}`}, 0))`);
+          const [source] = typeof runTaskId === "string" && isUuidLike(runTaskId)
+            ? await dbOrTx.select().from(issues).where(and(eq(issues.id, runTaskId), eq(issues.companyId, issue.companyId)))
+            : [];
+          if (!source) throw forbidden("An agent can post in another agent's chat only from a task-bound run");
+          if (!(await canActorReadIssuePrivacy(dbOrTx, { type: "none" }, source))) {
+            throw forbidden("Restricted task content cannot be sent to a company-visible chat");
+          }
+        } else if (options?.proactiveChatMessage) {
           if (run?.status !== "running" || run.agentId !== actor.agentId || run.companyId !== issue.companyId
             || runTaskId !== options.proactiveChatMessage.sourceTaskId || runTaskId === issueId
             || current.conversationUserId !== options.proactiveChatMessage.userId

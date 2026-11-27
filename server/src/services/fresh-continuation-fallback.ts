@@ -21,12 +21,17 @@ import { issueService } from "./issues.js";
 import { holdOwnsBlockedStatus } from "./recovery-hold-blocked-status.js";
 import { proveRunProcessGone } from "./run-process-owner.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
+import { hasHumanGateEvidence } from "./recovery/human-gate-evidence.js";
 import { abandonUnverifiedRemoteWorkspaceEpoch } from "./remote-workspace-epoch-abandonment.js";
+import { isAbandonedPreparedRemoteWorkspace } from "./remote-workspace-abandoned-preparation.js";
 import { notifyRoutineExecutionStatus } from "./routine-execution-status-notifications.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { readRunCancellation } from "./run-cancellation.js";
+import { activeIssueInteractionCondition } from "./issue-question-context.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
-import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, isPersonOwnedFailureCode } from "./continuation-cause.js";
+import { readWorkspaceProviderFailure } from "./workspace-provider-failure.js";
+import { RESTART_CLASS_FAILURE_CODES, continuationCauseIsSystemOwned, isLegacyLaunchUnpreparedFailure, isPersonOwnedFailureCode }
+  from "./continuation-cause.js";
 import { sharedContinuationAttempts } from "./recovery/continuation-ledger.js";
 import { BACKLOG_CONTINUATION_MAX_AGE_MS, failureOwnsBlock, heldExecutionWhere, heldRunIdSql, interruptionEligibility,
   liveDispositionHoldSql, recentInterruptionSourceSql, sourceRunKey } from "./fresh-continuation-eligibility.js";
@@ -150,7 +155,7 @@ async function personOwnedTaskWait(tx: Db, input: { companyId: string; issue: ty
   if (approval) return "approval_pending";
   const [question] = await tx.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issue.id),
-    eq(issueThreadInteractions.status, "pending"))).limit(1);
+    eq(issueThreadInteractions.status, "pending"), activeIssueInteractionCondition())).limit(1);
   if (question) return "question_pending";
   const [agent] = await tx.select({ status: agents.status, lifecycleState: agents.lifecycleState }).from(agents)
     .where(and(eq(agents.companyId, companyId), eq(agents.id, run.agentId)));
@@ -293,8 +298,7 @@ async function fenceSourceWorkspace(tx: Db, run: typeof heartbeatRuns.$inferSele
  * gate again.
  */
 export function isHumanGate(hold: Pick<typeof issueRecoveryActions.$inferSelect, "ownerUserId" | "evidence">): boolean {
-  return Boolean(hold.ownerUserId || hold.evidence.ownerGoneAttestation || hold.evidence.explicitUserContinuation
-    || hold.evidence.executionReconciliation);
+  return Boolean(hold.ownerUserId) || hasHumanGateEvidence(hold.evidence);
 }
 
 const isRestoreHold = (hold: typeof issueRecoveryActions.$inferSelect) =>
@@ -303,9 +307,11 @@ const blocksExecution = (hold: typeof issueRecoveryActions.$inferSelect) =>
   ["active", "escalated"].includes(hold.status) || object(hold.evidence.automaticRecovery).replay === "blocked";
 
 /** A reconciliation hold that blocks the task and that this decision settles. */
-function isOwnedReconciliationHold(hold: typeof issueRecoveryActions.$inferSelect) {
+function isOwnedReconciliationHold(hold: typeof issueRecoveryActions.$inferSelect, run: { error?: string | null }) {
   if (hold.kind === "stranded_assigned_issue") return false;
-  const interruption = hold.kind === "active_run_watchdog" && (RESTART_CLASS_FAILURE_CODES as readonly string[]).includes(hold.cause);
+  const interruption = hold.kind === "active_run_watchdog" && ((RESTART_CLASS_FAILURE_CODES as readonly string[]).includes(hold.cause)
+    // An older release held this controller launch gap as a pack incompatibility.
+    || isLegacyLaunchUnpreparedFailure(hold.cause, run));
   if ((!(EXECUTION_RECONCILIATION_CAUSES as readonly string[]).includes(hold.cause) && !interruption) || !blocksExecution(hold)) return false;
   if (isHumanGate(hold)) return false;
   // A restore hold is owned only once its saved-work recovery completed.
@@ -411,13 +417,13 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     .orderBy(asc(issueRecoveryActions.createdAt), asc(issueRecoveryActions.id)).for("update");
   const prior = holds.find(hold => object(hold.evidence.freshContinuation).sourceRunId === run.id);
   if (prior) {
-    await settleLateHolds(tx, { companyId, issue, run, prior, holds: holds.filter(isOwnedReconciliationHold), now });
+    await settleLateHolds(tx, { companyId, issue, run, prior, holds: holds.filter(hold => isOwnedReconciliationHold(hold, run)), now });
     return { kind: "already_continued", recoveryActionId: prior.id };
   }
   // The holds this decision owns: reconciliation holds that still block the
   // task. Workspace restore/repair holds stay with workspace recovery, and
   // resolved history is never rewritten.
-  const ownedHolds = holds.filter(isOwnedReconciliationHold);
+  const ownedHolds = holds.filter(hold => isOwnedReconciliationHold(hold, run));
 
   const [refused] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, companyId), sql`${heartbeatRuns.id} <> ${run.id}`,
@@ -507,7 +513,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
     if (recovery && EXACT_RECOVERY_STATES.includes(recovery.state))
       waits.push(pending("saved_work_recovery_running",
         new Date(Math.max(recheck.getTime(), recovery.nextAttemptAt ?? 0))));
-    if (!isOwnedReconciliationHold(hold) && isRestoreHold(hold) && blocksExecution(hold) && recovery?.state !== "complete")
+    if (!isOwnedReconciliationHold(hold, run) && isRestoreHold(hold) && blocksExecution(hold) && recovery?.state !== "complete")
       waits.push(pending("workspace_recovery_owns_restore", recheck));
     const retainedCheck = object(hold.evidence.retainedSourceFallbackCheck);
     if (recovery?.state === "exhausted" && typeof retainedCheck.nextCheckAt === "number" && retainedCheck.nextCheckAt > now.getTime())
@@ -517,7 +523,7 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   if (firstWait) return firstWait;
   // Past the bound, a hold that workspace recovery still owns is settled too:
   // the continuation never uses that workspace (isolation below).
-  const owned = pastBound() ? holds.filter(hold => isOwnedReconciliationHold(hold)
+  const owned = pastBound() ? holds.filter(hold => isOwnedReconciliationHold(hold, run)
     || (isRestoreHold(hold) && blocksExecution(hold) && !isHumanGate(hold))) : ownedHolds;
 
   // (b) Causes that are the person's.
@@ -585,9 +591,17 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   const aliveWait = writer === "alive" ? pending("previous_process_running", new Date(now.getTime() + step)) : null;
   if (aliveWait) return aliveWait;
   const fenced = await fenceSourceWorkspace(tx, run);
+  const workspaceProviderFailure = readWorkspaceProviderFailure(run.resultJson);
+  const workspaceBindingInvalidated = workspaceProviderFailure?.retryable === false
+    && workspaceProviderFailure.reason === "binding_mismatch";
   // Never claim a stop that was not proven: record what isolates the successor.
+  // Only a workspace binding mismatch forces a fresh isolated workspace; other
+  // non-retryable operator/provider errors (e.g. credential_unavailable,
+  // unsupported_operation) preserve the usable task workspace.
   const isolation: FreshContinuationIsolation = fenced || remoteSource ? "remote_epoch"
-    : writer === "ended" && !pastBound() && !refused ? "writer_ended" : "fresh_isolated_workspace";
+    : writer === "ended" && !pastBound() && !refused && !workspaceBindingInvalidated
+      ? "writer_ended"
+      : "fresh_isolated_workspace";
   if (isolation === "fresh_isolated_workspace" && delivery === "saved_input") delivery = "recorded";
   const unconfirmed = object(coordinator?.failureDetail).unconfirmedActions;
   const unverified = [...new Set([...await unverifiedActions(tx, run),
@@ -605,7 +619,9 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
       ? `Paperclip abandoned unverified workspace epoch ${fenced.abandonedEpoch} of run ${run.id}; the continuation restores `
         + `${fenced.snapshotId ? `committed snapshot ${fenced.snapshotId}` : "the workspace source"} into a new root.`
       : isolation === "fresh_isolated_workspace"
-        ? `The previous writer of run ${run.id} is not proven stopped, so the continuation starts in a new isolated workspace; no unverified files are applied.`
+        ? workspaceBindingInvalidated
+          ? `The previous workspace of run ${run.id} could not be reused (${workspaceProviderFailure.reason}), so the continuation starts in a new isolated workspace.`
+          : `The previous writer of run ${run.id} is not proven stopped, so the continuation starts in a new isolated workspace; no unverified files are applied.`
         : `The continuation of run ${run.id} starts from the task's last saved workspace; no unverified files are applied.` };
   const freshContinuation = { schema: FRESH_CONTINUATION_SCHEMA, sourceRunId: run.id, trigger: input.trigger,
     failureCode: run.errorCode ?? null, delivery, recordedAt: now.toISOString(), isolation,
@@ -699,6 +715,36 @@ export async function continueFreshInTransaction(tx: Db, input: Input): Promise<
   logger.info({ runId: run.id, issueId: issue.id, failureCode: run.errorCode, trigger: input.trigger, delivery },
     "Unfinished run continues in a fresh run from saved work");
   return { kind: "continued", recoveryActionId: primaryId, delivery, isolation };
+}
+
+export async function settleHoldIntoAbandonedEpochContinuation(db: Db, input: {
+  companyId: string; issueId: string; runId: string; actionId: string; now?: Date;
+}): Promise<boolean> {
+  const now = input.now ?? new Date();
+  return db.transaction(async raw => {
+    const tx = raw as unknown as Db;
+    const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
+    const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
+      eq(heartbeatRuns.id, input.runId)));
+    if (!issue || !run) return false;
+    const [hold] = await tx.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, input.companyId),
+      eq(issueRecoveryActions.sourceIssueId, issue.id), eq(issueRecoveryActions.id, input.actionId))).for("update");
+    if (!hold || !["active", "escalated"].includes(hold.status) || isHumanGate(hold) || hold.evidence.runId !== run.id
+      || hold.evidence.workspaceRestoreFailure === "restore_unsafe_archive"
+      || readSystemRecovery(hold.evidence)?.state !== "exhausted") return false;
+    const [prior] = await tx.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, input.companyId),
+      eq(issueRecoveryActions.sourceIssueId, issue.id), sql`${issueRecoveryActions.id} <> ${hold.id}`,
+      sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,schema}' = ${FRESH_CONTINUATION_SCHEMA}`,
+      sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,sourceRunId}' = ${run.id}`,
+      sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,isolation}' = 'remote_epoch'`,
+      inArray(sql<string>`${issueRecoveryActions.evidence}->>'continuationDelivery'`, ["pending", "delivered", "delegated", "not_requested"])))
+      .orderBy(desc(sql`${issueRecoveryActions.evidence}#>>'{freshContinuation,recordedAt}'`)).limit(1).for("update");
+    if (!prior || !await isAbandonedPreparedRemoteWorkspace(tx, run)) return false;
+    await settleLateHolds(tx, { companyId: input.companyId, issue, run, prior, holds: [hold], now });
+    logger.info({ runId: run.id, issueId: issue.id, recoveryActionId: hold.id, continuationId: prior.id },
+      "Workspace recovery hold settled into the continuation that already moved the task to a new workspace epoch");
+    return true;
+  });
 }
 
 async function settleLateHolds(tx: Db, input: { companyId: string; issue: typeof issues.$inferSelect; run: typeof heartbeatRuns.$inferSelect;
