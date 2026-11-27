@@ -1052,6 +1052,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     slots?: { full: boolean },
   ) {
     if (run.status !== "queued") return run;
+    let nonAssigneeCommentWake: boolean | undefined;
     // Every start path ends here (dispatch passes, executeRun of a queued run,
     // a delivered continuation). A server whose run admission is closed (it
     // received SIGTERM and is draining) or that yields new starts to a
@@ -1510,6 +1511,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         companyId: run.companyId,
         expectedStatus: "queued",
       });
+      if (staleness.outcome === "not_stale") nonAssigneeCommentWake = staleness.nonAssigneeCommentWake;
       if (staleness.outcome === "cancelled" || staleness.outcome === "deferred") {
         applyRunDispatchPostCommitEffects(staleness.postCommitEffects);
         if (staleness.outcome === "cancelled" && staleness.errorCode === "issue_assignee_changed") {
@@ -1808,7 +1810,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   .update(heartbeatRuns)
                   .set({
                     status: "running",
-                    runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+                    runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType },
+                    ...(nonAssigneeCommentWake !== undefined ? { aiConnectionNonAssigneeCommentWake: nonAssigneeCommentWake } : {}) })}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
                     responsibleUserId,
                     startedAt: lockedRun.startedAt ?? claimedAt,
@@ -1919,7 +1922,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 .update(heartbeatRuns)
                 .set({
                   status: "running",
-                  runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+                  runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType },
+                    ...(nonAssigneeCommentWake !== undefined ? { aiConnectionNonAssigneeCommentWake: nonAssigneeCommentWake } : {}) })}::jsonb`,
                     ...legacyControllerClaim(run.runtimeMode),
                   responsibleUserId,
                   startedAt: lockedRun.startedAt ?? claimedAt,
@@ -1991,7 +1995,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       : await withChatControlRecoveryGate(run, "claim", async (tx) => {
           const claimValues = {
             status: "running",
-            runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType } })}::jsonb`,
+            runnerProfileJson: sql`(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object' then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) || ${JSON.stringify({ adapterDispatch: { adapterType: agent.adapterType },
+                    ...(nonAssigneeCommentWake !== undefined ? { aiConnectionNonAssigneeCommentWake: nonAssigneeCommentWake } : {}) })}::jsonb`,
             ...legacyControllerClaim(run.runtimeMode),
             responsibleUserId,
             startedAt: run.startedAt ?? claimedAt,
