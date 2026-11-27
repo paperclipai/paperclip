@@ -106,7 +106,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Only the receiver-admission fixture writes this task-owned command journal.
     let mut admission_journal = if matches!(
         mode,
-        "admission-tool" | "admission-tool-oversized" | "admission-tool-burst"
+        "admission-tool"
+            | "admission-tool-oversized"
+            | "admission-tool-burst"
+            | "admission-startup-quota"
     ) {
         let path = args
             .windows(2)
@@ -667,6 +670,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         if let Some(journal) = admission_journal.as_mut() {
             write_json(journal, &json!({"request":request}))?;
+            #[cfg(unix)]
+            if mode == "admission-startup-quota" && command == "session.commit" {
+                let mut provider = std::process::Command::new("/bin/sh")
+                    .args(["-c", "exit 0"])
+                    .spawn()?;
+                write_json(journal, &json!({"providerSpawned": provider.id()}))?;
+                provider.wait()?;
+            }
             let response = if command == "tool.resolve" && mode == "admission-tool-burst" {
                 json!({"protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
                     "id":id,"ok":true,"result":{"resolved":true}})
@@ -1526,6 +1537,11 @@ fn bootstrap_success(
     lifetime_fence_candidates: [u16; 3],
     session_identity: &mut Value,
 ) -> Value {
+    if mode == "admission-startup-quota" && command == "session.commit" {
+        return json!({"protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION, "id": id, "ok": false,
+            "error": {"code": "provider_quota", "message": "quota exceeded", "retryable": false,
+                "providerFailure": {"schema": "paperclip.provider-failure.v1", "provider": "anthropic", "phase": "startup", "category": "quota_exhausted", "message": "quota exceeded", "retryability": "requires_action"}}});
+    }
     if command == "permission.resolve" {
         if mode.starts_with("permissions-") {
             return json!({"protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION, "id": id, "ok":true, "result":{"resolved": mode != "permissions-wrong-ack"}});
@@ -1543,6 +1559,16 @@ fn bootstrap_success(
     }
     let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
     let result = match command {
+        "session.prepare" => {
+            *session_identity = json!({"prepareParams": params.clone()});
+            json!({
+                "schema": "paperclip.acpx-provider-preparation.v1",
+                "preparationId": "22222222-2222-4222-8222-222222222222",
+                "normalizedSessionId": params.get("normalizedSessionId"),
+                "sidecarPid": std::process::id(),
+                "providerLifetimeFenceCandidates": lifetime_fence_candidates,
+            })
+        }
         "initialize" => json!({
             "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
             "sidecarPid": std::process::id(),
@@ -1555,7 +1581,15 @@ fn bootstrap_success(
                 "structuredInput": "paperclip.question_set.v1",
             },
         }),
-        "session.open" => {
+        "session.open" | "session.commit" => {
+            let params = if command == "session.commit" {
+                session_identity
+                    .get("prepareParams")
+                    .cloned()
+                    .unwrap_or(Value::Null)
+            } else {
+                params.clone()
+            };
             let model = params
                 .get("model")
                 .and_then(Value::as_str)

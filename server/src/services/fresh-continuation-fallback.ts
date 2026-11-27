@@ -1,3 +1,4 @@
+import { isUndispatchedRunnerApiReceipt } from "./recovery-effect-receipts.js";
 import { and, asc, desc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
 import {
   agentWakeupRequests, agents, approvals, companies, documentRevisions, documents, executionWorkspaces, heartbeatRuns, issueApprovals,
@@ -170,7 +171,7 @@ async function personOwnedTaskWait(tx: Db, input: { companyId: string; issue: ty
 async function unverifiedActions(tx: Db, run: typeof heartbeatRuns.$inferSelect): Promise<string[]> {
   const names = new Set<string>();
   for (const receipt of Object.values(object(object(run.resultJson).apiToolReceipts)).map(object)) {
-    if (receipt.state !== "completed" || object(receipt.result).outcome === "unknown")
+    if (!isUndispatchedRunnerApiReceipt(receipt) && (receipt.state !== "completed" || object(receipt.result).outcome === "unknown"))
       names.add(typeof receipt.toolName === "string" ? receipt.toolName : "a Paperclip API call");
   }
   const rows = await tx.select({ toolName: toolInvocations.toolName }).from(toolInvocations).where(and(

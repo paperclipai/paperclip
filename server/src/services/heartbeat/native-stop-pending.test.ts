@@ -2,7 +2,7 @@ import type { Db } from "@paperclipai/db";
 import { heartbeatRuns } from "@paperclipai/db";
 import { describe, expect, it, vi } from "vitest";
 import { HttpError } from "../../errors.js";
-import { cancelNativeSession, NativeCancellationPendingRecoveryError } from "../native-runtime/index.js";
+import { NativeCancellationPendingRecoveryError } from "../native-runtime/native-session-executor.js";
 import { createHeartbeatRunControl } from "./run-control.js";
 import { callbacks, runControlPostgresSupport, setupRunControlDatabase } from "./__tests__/run-control-fixtures.js";
 
@@ -11,11 +11,6 @@ vi.mock("../local-service-supervisor.js", async (importOriginal) => ({
   ...await importOriginal<typeof import("../local-service-supervisor.js")>(),
   terminateLocalService: vi.fn(async () => undefined),
 }));
-vi.mock("../native-runtime/index.js", async (importOriginal) => ({
-  ...await importOriginal<typeof import("../native-runtime/index.js")>(),
-  cancelNativeSession: vi.fn(),
-}));
-
 describe.skipIf(!runControlPostgresSupport.supported)("native Stop while the provider session is still starting", () => {
   let db: Db;
   const { fixture } = setupRunControlDatabase("paperclip-heartbeat-native-stop-pending", value => { db = value; });
@@ -36,8 +31,7 @@ describe.skipIf(!runControlPostgresSupport.supported)("native Stop while the pro
     ["remote owner acknowledgement timed out", () => new Error("native_cancellation_pending_recovery")],
   ])("answers a recorded but unacknowledged Stop (%s) with a pending conflict", async (_label, failure) => {
     const run = await startingNativeRun();
-    const deps = callbacks(db);
-    vi.mocked(cancelNativeSession).mockRejectedValueOnce(failure());
+    const deps = { ...callbacks(db), cancelNativeRun: vi.fn().mockRejectedValueOnce(failure()) };
     const error = await createHeartbeatRunControl(db, deps)
       .cancelRunInternal(run.id, "Cancelled by a board operator", { resultJson: { cancelledByActorType: "user", cancelledByUserId: "user-1" } })
       .catch((err: unknown) => err);
@@ -55,9 +49,8 @@ describe.skipIf(!runControlPostgresSupport.supported)("native Stop while the pro
 
   it("keeps other native Stop failures unchanged", async () => {
     const run = await startingNativeRun();
-    const deps = callbacks(db);
     const failure = new Error("native_cancellation_intent_conflict");
-    vi.mocked(cancelNativeSession).mockRejectedValueOnce(failure);
+    const deps = { ...callbacks(db), cancelNativeRun: vi.fn().mockRejectedValueOnce(failure) };
     await expect(createHeartbeatRunControl(db, deps).cancelRunInternal(run.id)).rejects.toBe(failure);
     expect(deps.setRunStatusFromLive).not.toHaveBeenCalled();
   });

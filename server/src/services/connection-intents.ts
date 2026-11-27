@@ -1,3 +1,5 @@
+import { legacyPoolAccountEvidenceMatches } from "./heartbeat/legacy-pool-account-proof.js";
+import { classifyRunLiveness } from "./run-liveness.js";
 import { canActorReadIssuePrivacy } from "./authorization.js";
 import { isAgentAwaitingSetup } from "../modules/agent-lifecycle/index.js";
 import { readAiConnectionConfigurationFailure } from "./ai-connection-configuration-failure.js";
@@ -12,8 +14,8 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import { logActivity } from "./activity-log.js";
 import { aiConnectionService } from "./ai-connections.js";
-import { aiConnectionBindingSchema, aiConnectionCatalogSlug, aiConnectionRouterBindingSchema, aiConnectionSourceSlug } from "@paperclipai/shared";
-import { aiBindingForAuthRecovery, isAiAuthenticationRepairable } from "./ai-auth-failure.js";
+import { aiConnectionBindingSchema, aiConnectionCatalogSlug, aiConnectionRouterBindingSchema, aiConnectionSourceSlug, effectiveAiConnectionInput } from "@paperclipai/shared";
+import { aiBindingForAuthRecovery, isAiAuthenticationFailure, isAiAuthenticationRepairable } from "./ai-auth-failure.js";
 import {
   detectUnconfiguredGitHubAuthFailureInEvents,
   isGitHubWorkspaceCloneAuthFailure,
@@ -35,6 +37,7 @@ import {
   companyMemberships,
   heartbeatRunEvents,
   heartbeatRuns,
+  nativeRunFinalizations,
   issueThreadInteractions,
   issueComments,
   issues,
@@ -269,6 +272,8 @@ export function connectionIntentService(db: Db) {
         id: issues.id,
         companyId: issues.companyId,
         status: issues.status,
+        title: issues.title,
+        description: issues.description,
         assigneeAgentId: issues.assigneeAgentId,
       }).from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).then((rows) => rows[0] ?? null),
       db.select({ id: agents.id, companyId: agents.companyId, name: agents.name })
@@ -315,9 +320,9 @@ export function connectionIntentService(db: Db) {
   // Reuse host verification's durable lifecycle allocation. This read must not
   // allocate a task route, advance a pool cursor, or replace the agent's pool.
   async function queuedSetupManagedAgent(agent: typeof agents.$inferSelect, client = db) {
-    const saved = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
+    const saved = aiConnectionBindingSchema.safeParse(effectiveAiConnectionInput(agent.runtimeConfig)).data;
     if (saved) return { agent, binding: saved, adapterConfig: agent.adapterConfig, requiresAdoption: false };
-    const router = aiConnectionRouterBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
+    const router = aiConnectionRouterBindingSchema.safeParse(effectiveAiConnectionInput(agent.runtimeConfig)).data;
     const operationId = text(agent.lifecycleOperation?.id);
     if (!router || !operationId) return null;
     const [pin] = await client.select().from(aiConnectionTaskPins).where(and(
@@ -340,11 +345,11 @@ export function connectionIntentService(db: Db) {
       if (!source || source.status !== "queued" || source.startedAt || source.runtimeMode !== "legacy" || source.activeIdentityContextId) return null;
       // Routed setup cards must name the lifecycle operation that selected the
       // account. Legacy direct-account cards remain readable across upgrades.
-      if (!options.agentSetupOperationId && aiConnectionRouterBindingSchema.safeParse(agent.runtimeConfig.aiConnection).success) return null;
+      if (!options.agentSetupOperationId && aiConnectionRouterBindingSchema.safeParse(effectiveAiConnectionInput(agent.runtimeConfig)).success) return null;
       const managed = await queuedSetupManagedAgent(agent, client);
       return managed && aiBindingMatchesService(managed.binding.provider, serviceSlug) ? managed : null;
     }
-    const router = aiConnectionRouterBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
+    const router = aiConnectionRouterBindingSchema.safeParse(effectiveAiConnectionInput(agent.runtimeConfig)).data;
     if (router) {
       // Repair the durable task allocation, without adopting a personal default
       // or replacing the agent's pool. A changed pool invalidates the old card.
@@ -358,7 +363,7 @@ export function connectionIntentService(db: Db) {
       if (!pin || !binding || !aiBindingMatchesService(binding.provider, serviceSlug) || JSON.stringify(evidence.binding) !== JSON.stringify(binding)) return null;
       return { agent, binding, adapterConfig: { ...agent.adapterConfig, ...pin.selection.runtimeConfig }, requiresAdoption: false };
     }
-    const saved = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
+    const saved = aiConnectionBindingSchema.safeParse(effectiveAiConnectionInput(agent.runtimeConfig)).data;
     const binding = saved ?? options.fallback;
     return binding && aiBindingMatchesService(binding.provider, serviceSlug) ? { agent, binding, adapterConfig: agent.adapterConfig, requiresAdoption: !saved } : null;
   }
@@ -1133,7 +1138,7 @@ export function connectionIntentService(db: Db) {
         eq(heartbeatRuns.agentId, payload.requestingAgentId),
       ));
       const [agent] = await db.select().from(agents).where(and(eq(agents.id, payload.requestingAgentId), eq(agents.companyId, loaded.issue.companyId)));
-      if (source?.status === "failed" && isAiAuthenticationRepairable(source) && !source.contextSnapshot?.aiConnection && agent && !agent.runtimeConfig.aiConnection) {
+      if (source?.status === "failed" && isAiAuthenticationRepairable(source) && !source.contextSnapshot?.aiConnection && agent && !effectiveAiConnectionInput(agent.runtimeConfig)) {
         managed = await managedAgent(loaded.issue.companyId, agent.id, app.slug, { fallback: aiBindingForAuthRecovery(agent.adapterType, agent.adapterConfig, source) });
       }
     }
@@ -1312,7 +1317,7 @@ export function connectionIntentService(db: Db) {
             .where(and(eq(agents.companyId, loaded.issue.companyId), sql`${agents.status} NOT IN ('pending_approval', 'terminated')`))
             .orderBy(agents.id).for("no key update");
           const [agent] = await tx.select().from(agents).where(and(eq(agents.id, payload.requestingAgentId), eq(agents.companyId, loaded.issue.companyId))).for("no key update");
-          if (!agent || agent.runtimeConfig.aiConnection || agent.updatedAt.getTime() !== options.validatedAdoption.agentUpdatedAt.getTime()) {
+          if (!agent || effectiveAiConnectionInput(agent.runtimeConfig) || agent.updatedAt.getTime() !== options.validatedAdoption.agentUpdatedAt.getTime()) {
             throw conflict("The agent changed during validation. Reload the task and try again.");
           }
           const binding = options.validatedAdoption.binding;
@@ -1539,23 +1544,52 @@ export function connectionIntentService(db: Db) {
       if (latest?.id !== run.id) return null;
       const [agent] = await db.select().from(agents).where(and(eq(agents.id, run.agentId), eq(agents.companyId, run.companyId)));
       if (!agent) return null;
-      const saved = aiConnectionBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
-      const router = aiConnectionRouterBindingSchema.safeParse(agent.runtimeConfig.aiConnection).data;
+      const saved = aiConnectionBindingSchema.safeParse(effectiveAiConnectionInput(agent.runtimeConfig)).data;
+      const router = aiConnectionRouterBindingSchema.safeParse(effectiveAiConnectionInput(agent.runtimeConfig)).data;
+      const nativePoolRepair = Boolean(router && run.runtimeMode === "native" && run.errorCode === "native_provider_auth_failed");
       const selected = router ? record(run.contextSnapshot?.aiRouterSelection) : null;
       const managed = router && selected ? await managedAgent(run.companyId, run.agentId, String(record(selected.binding)?.provider), { sourceRunId: run.id }) : null;
       const binding = router ? managed?.binding : saved ?? aiBindingForAuthRecovery(agent.adapterType, agent.adapterConfig, run);
       if (!binding) return null;
+      if (router && run.runtimeMode !== "native" && isAiAuthenticationFailure(run.errorCode)) {
+        const [receipt] = await db.select().from(heartbeatRunEvents).where(and(
+          eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.agentId, run.agentId),
+          eq(heartbeatRunEvents.runId, run.id), isNull(heartbeatRunEvents.sourceInstanceId),
+          eq(heartbeatRunEvents.eventType, "ai_connection.auth_attributed"),
+          eq(heartbeatRunEvents.sourceEventId, `ai-connection-auth-attributed:${run.id}`)));
+        const proof = record(receipt?.payload);
+        if (proof?.schema !== "paperclip.ai-connection-auth-attribution.v1" ||
+            proof.taskKey !== run.contextSnapshot?.aiRouterTaskKey || !isDeepStrictEqual(proof.selection, selected) ||
+            !legacyPoolAccountEvidenceMatches("auth", binding.provider, proof.providerEvidence)) return null;
+      }
       const attribution = record(run.contextSnapshot?.aiConnection);
       // The recorded account is authoritative for routed/proxy connections:
       // a driver's provider name can identify the upstream protocol instead.
       if (!attribution && !isAiAuthenticationRepairable(run, binding.provider)) return null;
       if (attribution && attribution.provider !== binding.provider) return null;
-      if ((saved || managed) && attribution && typeof attribution.identity === "string" && typeof attribution.connectionId === "string" && typeof attribution.grantId === "string") {
+      if (!nativePoolRepair && (saved || managed) && attribution && typeof attribution.identity === "string" && typeof attribution.connectionId === "string" && typeof attribution.grantId === "string") {
         await aiConnectionService(db).markAuthenticationFailed({ companyId: run.companyId, runId: run.id, agentId: run.agentId,
           runStartedAt: run.startedAt ?? run.createdAt,
           attribution: attribution as unknown as AiConnectionAttribution & { identity: string } });
       }
-      return requestWithContext(context, binding.provider, { purpose: "ai" });
+      if (nativePoolRepair) {
+        const [decision] = await db.select().from(nativeRunFinalizations).where(and(
+          eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId),
+          eq(nativeRunFinalizations.issueId, context.issue.id),
+        ));
+        // A repair interaction blocks automatic continuation. Let native
+        // recovery decide whether a healthy backup can run before creating it.
+        if (decision?.phase !== "terminal_failure" || decision.failureCode !== "native_provider_auth_failed"
+          || decision.failureDetail?.successorRunId || decision.failureDetail?.replacementDenied !== "quota_failover_unavailable") return null;
+      }
+      const requested = await requestWithContext(context, binding.provider, { purpose: "ai" });
+      if (nativePoolRepair && requested.interactionId) {
+        const projection = classifyRunLiveness({ runStatus: run.status, issue: context.issue,
+          errorCode: run.errorCode, resultJson: run.resultJson, authenticationRepairRequested: true });
+        await db.update(heartbeatRuns).set({ livenessState: projection.livenessState, livenessReason: projection.livenessReason })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "failed")));
+      }
+      return requested;
     },
     // Controller-only entry point. Runtime tokens still require a running run.
     requestForRunGitHubAuthFailure: async (runId: string, resultJsonOverride?: Record<string, unknown> | null) => {

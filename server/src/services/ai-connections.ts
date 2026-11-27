@@ -1,3 +1,5 @@
+import { reopenAiPoolWaits } from "./ai-pool-wake.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -63,6 +65,13 @@ function canUseCredential(
     audience.length === 0 || audience.some((member) => member.subjectType === "user" && member.subjectId === userId)
   );
 }
+
+export type AiConnectionAuthenticationFailure = {
+  runId?: string;
+  agentId?: string;
+  runStartedAt: Date;
+  attribution: AiConnectionAttribution & { identity: string; sessionIdentity?: string };
+};
 
 export function aiConnectionService(db: Db) {
   const secrets = secretService(db);
@@ -662,7 +671,7 @@ export function aiConnectionService(db: Db) {
     )
       throw unprocessable("Reconnect cannot change providers");
     if (reconnect && !isDeepStrictEqual((reconnect.connection.config.ai as AiConnectionMetadata).routing, routing))
-      throw unprocessable("Reconnect must retain this connection’s routing. Create another connection to change its destination.");
+      throw unprocessable("Reconnect must retain this connectionâ€™s routing. Create another connection to change its destination.");
     if (
       reconnect &&
       ((reconnect.connection.config.ai as AiConnectionMetadata).method !==
@@ -675,6 +684,7 @@ export function aiConnectionService(db: Db) {
     const id = reconnect?.connection.id ?? randomUUID();
     const grantId = reconnect?.grant.id ?? randomUUID();
     const persist = () => withAccountHomeSecretMutationLock(undefined, companyId, () => db.transaction(async (tx) => {
+      await reopenAiPoolWaits(tx as unknown as Db, { companyId, connectionId: id });
       await managementContext?.reauthorize();
       const secrets = secretService(tx);
       if (loginSession) {
@@ -746,6 +756,7 @@ export function aiConnectionService(db: Db) {
           : source?.name === `ai-${grantId}`;
         if (!privateSlot) secretId = undefined;
       }
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement, companyId);
       if (!verifiedCredential) { secretId = undefined; }
       else if (secretId)
         await secrets.rotate(
@@ -1112,56 +1123,69 @@ export function aiConnectionService(db: Db) {
   }
 
   /** A late failure must never invalidate credentials that were refreshed or reconnected meanwhile. */
-  async function markAuthenticationFailed(input: {
-    companyId: string;
-    runId?: string;
-    agentId?: string;
-    runStartedAt: Date;
-    attribution: AiConnectionAttribution & { identity: string };
-  }) {
-    return withAccountHomeSecretMutationLock(undefined, input.companyId, async () => {
-      let recovered = false;
-      await db.transaction(async (tx) => {
-        const { attribution } = input;
-        const [grant] = await tx.select().from(connectionGrants).where(and(
-          eq(connectionGrants.companyId, input.companyId),
-          eq(connectionGrants.id, attribution.grantId),
-          eq(connectionGrants.connectionId, attribution.connectionId),
-        )).for("update");
-        if (!grant || grant.status !== "active" || grant.updatedAt > input.runStartedAt) return;
-        const [connection] = await tx.select().from(toolConnections).where(and(
-          eq(toolConnections.companyId, input.companyId),
-          eq(toolConnections.id, attribution.connectionId),
-          eq(toolConnections.connectionPurpose, "ai"),
-        ));
-        if (!connection) return;
-        const metadata = aiConnectionMetadataSchema.safeParse(connection.config.ai);
-        if (!metadata.success || metadata.data.provider !== attribution.provider || metadata.data.method !== attribution.method) return;
-        const ref = grant.credentialSecretRefs.find((candidate) => candidate.configPath === "ai.credential");
-        if (!ref) return;
-        await tx.select({ id: companySecrets.id }).from(companySecrets).where(and(
-          eq(companySecrets.companyId, input.companyId), eq(companySecrets.id, ref.secretId),
-        )).for("update");
-        const value = await aiConnectionService(tx as unknown as Db).credential({ connection, grant });
-        const generation = createHash("sha256").update(value).digest("hex").slice(0, 16);
-        if (attribution.identity !== `${grant.id}:${attribution.responsibleUserId ?? "shared"}:${generation}`) return;
-        // A quota exchange may have consumed this run's token before a failed
-        // database commit. Save its working replacement instead of revoking it.
-        recovered = await recoverQuotaCredentialInTransaction(tx as unknown as Db, { connection, grant }, value) !== null;
-        if (recovered) return;
-        await tx.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date() })
-          .where(eq(connectionGrants.id, grant.id));
-        await tx.update(toolConnections).set({ healthStatus: "error", healthMessage: "Sign in again to restore this AI connection.", updatedAt: new Date() })
-          .where(eq(toolConnections.id, connection.id));
-        await logActivity(tx as unknown as Db, {
-          companyId: input.companyId, actorType: "system", actorId: input.runId ? "heartbeat" : "adapter_test",
-          agentId: input.agentId, runId: input.runId, action: "ai_connection.authentication_failed",
-          entityType: "tool_connection", entityId: connection.id,
-          details: { provider: attribution.provider, grantId: grant.id },
+  async function withAuthenticationFailureTransaction<T>(
+    companyId: string,
+    operation: (tx: Db, markFailed: (input: AiConnectionAuthenticationFailure) => Promise<void>) => Promise<T>,
+  ): Promise<T> {
+    return withAccountHomeSecretMutationLock(undefined, companyId, async () => {
+      let recoveredGrantId: string | undefined;
+      const result = await db.transaction(async transaction => {
+        const tx = transaction as unknown as Db;
+        return operation(tx, async input => {
+          const { attribution } = input;
+          const [grant] = await tx.select().from(connectionGrants).where(and(
+            eq(connectionGrants.companyId, companyId),
+            eq(connectionGrants.id, attribution.grantId),
+            eq(connectionGrants.connectionId, attribution.connectionId),
+          )).for("update");
+          if (!grant || grant.status !== "active" || grant.updatedAt > input.runStartedAt) return;
+          const [connection] = await tx.select().from(toolConnections).where(and(
+            eq(toolConnections.companyId, companyId),
+            eq(toolConnections.id, attribution.connectionId),
+            eq(toolConnections.connectionPurpose, "ai"),
+          ));
+          if (!connection) return;
+          const metadata = aiConnectionMetadataSchema.safeParse(connection.config.ai);
+          if (!metadata.success || metadata.data.provider !== attribution.provider || metadata.data.method !== attribution.method) return;
+          const ref = grant.credentialSecretRefs.find((candidate) => candidate.configPath === "ai.credential");
+          if (!ref) return;
+          const [secret] = await tx.select({ id: companySecrets.id, epoch: companySecrets.aiSessionEpoch }).from(companySecrets).where(and(
+            eq(companySecrets.companyId, companyId), eq(companySecrets.id, ref.secretId),
+          )).for("update");
+          if (!secret || attribution.sessionIdentity !== undefined &&
+              attribution.sessionIdentity !== `${grant.id}:${attribution.responsibleUserId ?? "shared"}:${secret.id}:${secret.epoch}`) return;
+          const value = await aiConnectionService(tx).credential({ connection, grant });
+          const generation = createHash("sha256").update(value).digest("hex").slice(0, 16);
+          if (attribution.identity !== `${grant.id}:${attribution.responsibleUserId ?? "shared"}:${generation}`) return;
+          // A quota exchange may have consumed this run's token before a failed
+          // database commit. Save its working replacement instead of revoking it.
+          if (await recoverQuotaCredentialInTransaction(tx, { connection, grant }, value) !== null) {
+            recoveredGrantId = grant.id;
+            return;
+          }
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement, companyId);
+          await tx.update(connectionGrants).set({ status: "needs_reauthorization", updatedAt: new Date() })
+            .where(eq(connectionGrants.id, grant.id));
+          await tx.update(toolConnections).set({ healthStatus: "error", healthMessage: "Sign in again to restore this AI connection.", updatedAt: new Date() })
+            .where(eq(toolConnections.id, connection.id));
+          await logActivity(tx, {
+            companyId, actorType: "system", actorId: input.runId ? "heartbeat" : "adapter_test",
+            agentId: input.agentId, runId: input.runId, action: "ai_connection.authentication_failed",
+            entityType: "tool_connection", entityId: connection.id,
+            details: { provider: attribution.provider, grantId: grant.id },
+          });
         });
       });
-      if (recovered) await quotaCredentialRecovery(input.companyId, input.attribution.grantId).clear()
-        .catch(error => logger.warn({ err: error, grantId: input.attribution.grantId }, "Saved failed-run credential recovery cleanup pending"));
+      if (recoveredGrantId) await quotaCredentialRecovery(companyId, recoveredGrantId).clear()
+        .catch(error => logger.warn({ err: error, grantId: recoveredGrantId }, "Saved failed-run credential recovery cleanup pending"));
+      return result;
+    });
+  }
+
+  async function markAuthenticationFailed(input: AiConnectionAuthenticationFailure & { companyId: string }) {
+    return withAuthenticationFailureTransaction(input.companyId, async (tx, markFailed) => {
+      await reopenAiPoolWaits(tx, { companyId: input.companyId, connectionId: input.attribution.connectionId });
+      await markFailed(input);
     });
   }
   /** Refresh only the selected vaulted identity, serializing rotation and reconnect. */
@@ -1281,5 +1305,5 @@ export function aiConnectionService(db: Db) {
       return [{ ...row, summary }];
     });
   }
-  return { list, selectDecision, selectFastResponse, selectImageGeneration, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed };
+  return { list, selectDecision, selectFastResponse, selectImageGeneration, selectPromptInjectionPrevention, quotaAccounts, subscriptionAccounts: (companyId: string, userId: string) => quotaAccounts(companyId, userId, true), refreshQuotaCredential, select, credential, runtimeCredential, probeUsage, accountIdentity, save, setDefault, membership, markAuthenticationFailed, withAuthenticationFailureTransaction };
 }

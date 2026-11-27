@@ -17,7 +17,10 @@ const serviceMocks = vi.hoisted(() => ({
   spekoToolsForSession: vi.fn(),
 }));
 
-vi.mock("../voice/speko-agent-tools.js", () => ({ spekoToolsForSession: serviceMocks.spekoToolsForSession }));
+vi.mock("../voice/speko-agent-tools.js", () => ({
+  spekoToolsForSession: serviceMocks.spekoToolsForSession,
+  spekoAssignedResources: vi.fn(async () => []),
+}));
 vi.mock("../chat-github-tools.js", () => ({
   githubBotConnectionIdsForRun: serviceMocks.githubBotConnectionIdsForRun,
 }));

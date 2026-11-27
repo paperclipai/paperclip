@@ -1,10 +1,12 @@
 export const MODEL_HIDDEN_RUN_ID_KEYS: ReadonlySet<string> = new Set([
   "runId",
+  "actionSourceRunId",
   "baseRunId",
   "createdByRunId",
   "executionRunId",
   "failedRunId",
   "interruptedRunId",
+  "predecessorRunId",
   "previousContextRunId",
   "previousRunId",
   "producerRunId",
@@ -15,6 +17,7 @@ export const MODEL_HIDDEN_RUN_ID_KEYS: ReadonlySet<string> = new Set([
   "retryOfRunId",
   "reviewerRunId",
   "sourceRunId",
+  "successorRunId",
 ]);
 
 export type ModelFacingValue =

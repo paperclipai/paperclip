@@ -684,6 +684,14 @@ describeEmbeddedPostgres("chat channels: github webhook recovery", () => {
           publicId: copy.id, botExternalId: copy.appId, botUsername: "recovery-" + copy.id })));
         ids.push(...copies.map(copy => copy.id));
       }
+      // Exclude source fixtures from the scan even when copying endpoints takes over a minute.
+      for (const fixture of [first, second]) {
+        const checkpoint = await fixture.checkpoint();
+        await db.update(chatSdkState).set({ value: {
+          ...(checkpoint.value as Record<string, unknown>),
+          nextScanAt: new Date(Date.now() + 3_600_000).toISOString(),
+        } }).where(eq(chatSdkState.id, checkpoint.id));
+      }
       const windows = () => db.select({ companyId: chatSdkState.companyId }).from(chatSdkState).where(and(
         inArray(chatSdkState.endpointId, ids), eq(chatSdkState.stateKey, "paperclip:github-webhook-recovery:v1")));
       const errors: unknown[] = [];

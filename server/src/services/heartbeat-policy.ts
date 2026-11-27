@@ -1,19 +1,18 @@
 import { agents } from "@paperclipai/db";
 import { asBoolean, parseObject } from "../adapters/utils.js";
 
-/** Runner work needs a task; unscoped heartbeats (timer or manual) have no task owner.
- * Task-bound schedules, monitors and external-provider assignments use their
- * existing wake paths and are unaffected by this policy.
+/**
+ * Direct Runner work needs a task. A pool can dispatch a company heartbeat
+ * through its member harness without a task owner.
  */
-export function supportsUnscopedHeartbeat(
-  agent: Pick<typeof agents.$inferSelect, "adapterType">,
-) {
-  return agent.adapterType !== "paperclip_runner";
+type UnscopedHeartbeatAgent = Pick<typeof agents.$inferSelect, "adapterType">
+  & Partial<Pick<typeof agents.$inferSelect, "runtimeConfig">>;
+
+export function supportsUnscopedHeartbeat(agent: UnscopedHeartbeatAgent) {
+  return agent.adapterType !== "paperclip_runner" || Boolean(parseObject(agent.runtimeConfig).harnessPool);
 }
 
-export function supportsUnscopedTimerHeartbeat(
-  agent: Pick<typeof agents.$inferSelect, "adapterType">,
-) {
+export function supportsUnscopedTimerHeartbeat(agent: UnscopedHeartbeatAgent) {
   return supportsUnscopedHeartbeat(agent);
 }
 

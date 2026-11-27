@@ -1,16 +1,21 @@
 import { createHash } from "node:crypto";
 import { and, asc, desc, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { z } from "zod";
 import {
   agentWakeupRequests,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueComments,
   issueRecoveryActions,
   issueThreadInteractions,
   issues,
+  nativeRunFinalizations,
+  nativeRunResults,
   type Db,
 } from "@paperclipai/db";
 import type { ExecutionContinuationEnvelope } from "@paperclipai/shared";
+import { AI_CONNECTION_POOL_WAIT_RETRY_REASON } from "../modules/run-dispatch/index.js";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
 import { hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
@@ -18,6 +23,9 @@ import { queuedInteractionId } from "./queued-interaction-response.js";
 import { childReviewOutcomes } from "./native-runtime/child-review-outcomes.js";
 import { isCompletedOnboardingHandoffWake } from "./chat-completion-delivery.js";
 import { githubRecoveryReceipts } from "./chat-channels/github/recovery-receipts.js";
+import { hasReviewPoolAllocation } from "./heartbeat/pool-allocation-affinity.js";
+import { readNativeReviewAssignmentContext } from "./native-runtime/native-review-participant.js";
+import { nativePoolFailureKind } from "./native-runtime/native-pool-failure.js";
 import { readTaskRetryIntent } from "./task-retry.js";
 
 const retryWakeReasons = new Set(["task_retry", "retry_failed_run"]);
@@ -224,6 +232,71 @@ async function requeuedWakeReason(db: Db, input: {
   return null;
 }
 
+/** A provider summary is progress evidence. Read only the predecessor that
+ * queue admission retained for the same task, owner and scheduled retry. */
+async function readPreDispatchPoolHandoff(db: Db, input: {
+  companyId: string; issueId: string; agentId: string; runId?: string;
+  sourceRunId: string | null; context: Record<string, unknown>;
+}) {
+  const handoff = object(input.context.aiPoolPreDispatchHandoff);
+  const predecessor = z.uuid().safeParse(handoff.predecessorRunId);
+  if (!input.runId || !input.sourceRunId || handoff.sourceRunId !== input.sourceRunId ||
+      !predecessor.success || input.context.previousRunId !== predecessor.data || input.context.forceFreshSession !== true) return null;
+  const retry = alias(heartbeatRuns, "pool_handoff_retry");
+  const [prior] = await db.select({ id: heartbeatRuns.id, summary: sql<string | null>`left(case
+    when ${heartbeatRuns.runtimeMode} = 'native' and jsonb_typeof(${nativeRunResults.resultJson}->'summary') = 'string'
+      then ${nativeRunResults.resultJson}->>'summary'
+    when ${heartbeatRuns.runtimeMode} = 'legacy' and jsonb_typeof(${heartbeatRuns.resultJson}->'summary') = 'string'
+      then ${heartbeatRuns.resultJson}->>'summary'
+    end, 8000)`,
+  }).from(heartbeatRuns)
+    .innerJoin(retry, and(
+      eq(retry.companyId, heartbeatRuns.companyId), eq(retry.agentId, heartbeatRuns.agentId), eq(retry.issueId, heartbeatRuns.issueId),
+      eq(retry.responsibleUserId, heartbeatRuns.responsibleUserId), eq(retry.scopeKind, "issue"), eq(retry.id, input.runId),
+      eq(retry.retryOfRunId, input.sourceRunId), eq(retry.scheduledRetryReason, AI_CONNECTION_POOL_WAIT_RETRY_REASON),
+      sql`${retry.contextSnapshot}->'forceFreshSession' = 'true'::jsonb`,
+      sql`${retry.contextSnapshot}#>>'{aiPoolPreDispatchHandoff,sourceRunId}' = ${input.sourceRunId}`,
+      sql`${retry.contextSnapshot}#>>'{aiPoolPreDispatchHandoff,predecessorRunId}' = ${predecessor.data}`,
+    ))
+    .leftJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
+      eq(nativeRunFinalizations.issueId, heartbeatRuns.issueId), eq(nativeRunFinalizations.runId, heartbeatRuns.id),
+      eq(nativeRunFinalizations.phase, "committed")))
+    .leftJoin(nativeRunResults, and(eq(nativeRunResults.id, nativeRunFinalizations.resultId),
+      eq(nativeRunResults.companyId, nativeRunFinalizations.companyId), eq(nativeRunResults.issueId, nativeRunFinalizations.issueId),
+      eq(nativeRunResults.runId, nativeRunFinalizations.runId), eq(nativeRunResults.schemaStatus, "accepted")))
+    .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.agentId, input.agentId),
+      eq(heartbeatRuns.issueId, input.issueId), eq(heartbeatRuns.scopeKind, "issue"),
+      eq(heartbeatRuns.id, predecessor.data), eq(heartbeatRuns.status, "succeeded")))
+    .limit(1);
+  return prior ?? null;
+}
+
+async function mayReadPoolReviewContinuation(input: {
+  db: Db; companyId: string; issueId: string; agentId: string; runId?: string;
+  context: Record<string, unknown>;
+}): Promise<boolean> {
+  const { db, companyId, issueId, agentId, runId, context } = input;
+  const review = readNativeReviewAssignmentContext(context);
+  if (!runId || !review) return false;
+  const predecessorId = string(object(context.aiPoolFailover).sourceRunId) ?? runId;
+  if (!z.uuid().safeParse(predecessorId).success) return false;
+  const [source] = await db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId),
+    eq(heartbeatRuns.issueId, issueId), eq(heartbeatRuns.id, predecessorId), eq(heartbeatRuns.status, "failed"),
+  ));
+  if (!source || !nativePoolFailureKind(source.errorCode) ||
+      context.aiRouterTaskKey !== source.contextSnapshot?.aiRouterTaskKey ||
+      source.contextSnapshot?.nativeReviewInteractionId !== review.nativeReviewInteractionId ||
+      source.contextSnapshot?.nativeReviewDecisionId !== review.nativeReviewDecisionId) return false;
+  if (runId !== predecessorId) {
+    const [owner] = await db.select({ failureDetail: nativeRunFinalizations.failureDetail })
+      .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, companyId),
+        eq(nativeRunFinalizations.issueId, issueId), eq(nativeRunFinalizations.runId, predecessorId)));
+    if (owner?.failureDetail?.successorRunId !== runId) return false;
+  }
+  return hasReviewPoolAllocation(db, source, `native-review:${review.nativeReviewInteractionId}`, { pendingOnly: true });
+}
+
 export async function buildExecutionContinuation(input: {
   db: Db;
   companyId: string;
@@ -244,7 +317,7 @@ export async function buildExecutionContinuation(input: {
     .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
   if (
     !issue ||
-    issue.assigneeAgentId !== input.agentId ||
+    (issue.assigneeAgentId !== input.agentId && !await mayReadPoolReviewContinuation(input)) ||
     issue.status === "cancelled" ||
     (issue.status === "done" && input.prospectiveTaskStatus !== "todo" && !await isCompletedOnboardingHandoffWake(db, {
       companyId, issueId, agentId: input.agentId,
@@ -429,6 +502,7 @@ export async function buildExecutionContinuation(input: {
       ),
     )
     .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id));
+  const poolHandoff = await readPreDispatchPoolHandoff(db, { ...input, sourceRunId });
   const completedActions = priorRuns.flatMap((run) =>
     Object.entries(object(object(run.result).apiToolReceipts)).flatMap(
       ([receiptId, receipt]) => {
@@ -447,6 +521,21 @@ export async function buildExecutionContinuation(input: {
       },
     ),
   );
+  const actionSourceRunId = poolHandoff?.id ?? sourceRunId;
+  if (actionSourceRunId && priorRuns.some(run => run.id === actionSourceRunId)) {
+    const actions = await db.select({ id: heartbeatRunEvents.id,
+      name: sql<string>`left(coalesce(${heartbeatRunEvents.payload}#>>'{prpEvent,payload,name}', ${heartbeatRunEvents.payload}->>'name'), 256)`,
+      status: sql<string>`coalesce(${heartbeatRunEvents.payload}#>>'{prpEvent,payload,status}', ${heartbeatRunEvents.payload}->>'status')`,
+    }).from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.companyId, companyId),
+      eq(heartbeatRunEvents.runId, actionSourceRunId), eq(heartbeatRunEvents.eventType, "tool.execution.completed")))
+      .orderBy(desc(heartbeatRunEvents.seq)).limit(200);
+    for (const action of actions.reverse()) {
+      if (action.name && ["succeeded", "completed"].includes(action.status)) completedActions.push({
+        runId: actionSourceRunId, receiptId: String(action.id), operationId: action.name,
+        result: { status: action.status, eventId: action.id, outputOmitted: true },
+      });
+    }
+  }
   completedActions.push(...await githubRecoveryReceipts(db, companyId, issueId));
   const reconciliations = await db
     .select({
@@ -608,6 +697,7 @@ export async function buildExecutionContinuation(input: {
     // from requestContext and encodes it in the fenced, non-authoritative
     // continuation-evidence section. It cannot supply objective or authority.
     completedWork: input.summary ??
+      poolHandoff?.summary ??
       string(object(object(sourceRun?.result).nativeResult).summary)?.slice(0, 32_000) ??
       string(object(sourceRun?.result).summary)?.slice(0, 32_000) ?? null,
     completedActions,

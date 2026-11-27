@@ -154,6 +154,8 @@ export interface GitWorktreeBranchIncoherenceEvidence {
 }
 
 export interface HeartbeatRun {
+  /** Recorded execution metadata, including the admitted adapter identity. */
+  runnerProfileJson?: Record<string, unknown> | null;
   /** Persisted native driver identity; older servers may omit this field. */
   driverKind?: string | null;
   execution?: import("./execution-projection.js").ExecutionProjection | null;

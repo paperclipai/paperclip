@@ -163,7 +163,9 @@ describe("bulk issue documents through native API tools", () => {
 
   it("rejects many large documents using a size-only query before loading any bodies", async () => {
     const f = await server.fixture();
-    const ids = Array.from({ length: 200 }, () => randomUUID());
+    // Seventeen 512 KiB bodies exceed the 8 MiB response cap. Keep another
+    // complete 16-body slice for the metadata-overhead assertion below.
+    const ids = Array.from({ length: 17 }, () => randomUUID());
     await server.db.insert(issues).values(ids.map(id => ({ id, companyId: f.companyId, title: "Large case", status: "todo" })));
     const rows = await server.db.insert(documents).values(ids.map(() => ({ companyId: f.companyId, latestBody: sql<string>`repeat('x', 524288)` }))).returning({ id: documents.id });
     await server.db.insert(issueDocuments).values(rows.map((row, index) => ({ companyId: f.companyId, issueId: ids[index], documentId: row.id, key: "sentry-case" })));

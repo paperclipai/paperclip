@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import { and, desc, eq, gte, inArray, ne, or, sql } from "drizzle-orm";
-import { connectionGrants, heartbeatRuns, type Db } from "@paperclipai/db";
+import { aiConnectionTaskPins, aiConnectionQuotaCooldowns, connectionGrants, heartbeatRuns, type Db } from "@paperclipai/db";
 import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
 import { logger } from "../../middleware/logger.js";
 import { infrastructureRetryDelayMs, PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 import { isProviderQuotaActionRequired, parseProviderQuotaClockReset } from "../provider-quota-reset.js";
+import { quotaIdentityFromSessionSnapshot } from "../ai-connection-router.js";
 import { ANTIGRAVITY_CLI_QUOTA_SCOPE } from "../antigravity-swarm-refusal.js";
 
 /** Categories that report an exhausted account or request allowance. */
@@ -229,6 +230,42 @@ export async function agentProviderLimitCooldown(db: Db, input: {
   };
 }
 
+async function routedAccountCooldown(input: {
+  db: Db;
+  binding: { companyId: string; agentId: string; runId: string };
+  failure: ProviderFailure | null;
+  now: Date;
+  managedAiAccountIdentity?: string;
+}): Promise<{ matched: boolean; cooldown: Date | null }> {
+  if (!input.managedAiAccountIdentity) return { matched: false, cooldown: null };
+  const [routed] = await input.db
+    .select({ grantId: sql<string>`${aiConnectionTaskPins.selection}->'binding'->>'grantId'` })
+    .from(heartbeatRuns)
+    .innerJoin(aiConnectionTaskPins, and(eq(aiConnectionTaskPins.companyId, heartbeatRuns.companyId),
+      eq(aiConnectionTaskPins.agentId, heartbeatRuns.agentId),
+      sql`${aiConnectionTaskPins.poolId}::text = ${heartbeatRuns.contextSnapshot}->'aiRouterSelection'->>'poolId'`,
+      sql`${aiConnectionTaskPins.taskKey} = ${heartbeatRuns.contextSnapshot}->>'aiRouterTaskKey'`,
+      sql`(${aiConnectionTaskPins.selection} - 'runtimeConfig' - 'notes' - 'adapterType' - 'runnerScope') =
+        ((${heartbeatRuns.contextSnapshot}->'aiRouterSelection') - 'runtimeConfig' - 'notes' - 'adapterType' - 'runnerScope')`,
+      sql`${aiConnectionTaskPins.member}->'binding' = ${aiConnectionTaskPins.selection}->'binding'`,
+      sql`${aiConnectionTaskPins.member}->>'id' = ${aiConnectionTaskPins.selection}->>'memberId'`))
+    .where(and(eq(heartbeatRuns.id, input.binding.runId), eq(heartbeatRuns.companyId, input.binding.companyId),
+      eq(heartbeatRuns.agentId, input.binding.agentId),
+      sql`${input.managedAiAccountIdentity} LIKE (${aiConnectionTaskPins.selection}->'binding'->>'grantId') || ':%'`,
+      sql`((${heartbeatRuns.scopeKind} = 'issue' and (${heartbeatRuns.issueId}::text = ${aiConnectionTaskPins.taskKey}
+          or exists (select 1 from issues where issues.id = ${heartbeatRuns.issueId} and issues.company_id = ${heartbeatRuns.companyId} and issues.identifier = ${aiConnectionTaskPins.taskKey})))
+        or (${heartbeatRuns.scopeKind} <> 'issue' and (${heartbeatRuns.id}::text = ${aiConnectionTaskPins.taskKey}
+          or (${aiConnectionTaskPins.taskKey} = '__heartbeat__' and ${heartbeatRuns.invocationSource} = 'timer' and ${heartbeatRuns.contextSnapshot}->>'wakeSource' = 'timer'))))`)).limit(1);
+  const identity = routed ? quotaIdentityFromSessionSnapshot(routed.grantId, input.managedAiAccountIdentity) : null;
+  if (!identity) return { matched: false, cooldown: null };
+  const [account] = await input.db.select({ retryAt: aiConnectionQuotaCooldowns.retryAt }).from(aiConnectionQuotaCooldowns)
+    .where(and(eq(aiConnectionQuotaCooldowns.companyId, input.binding.companyId),
+      eq(aiConnectionQuotaCooldowns.credentialIdentity, identity))).limit(1);
+  const current = limitEvidence(input.failure, input.now, input.binding.runId)?.resetAt ?? 0;
+  const resetAt = Math.max(current, account?.retryAt.getTime() ?? 0);
+  return { matched: true, cooldown: resetAt > input.now.getTime() ? new Date(resetAt) : null };
+}
+
 /**
  * Schedules a same-run bootstrap retry after a failure that provably came
  * before provider work. The attempt budget stays with the coordinator; this
@@ -241,15 +278,19 @@ export async function planNativeStartupRetry(input: {
   retryable: boolean;
   failure: ProviderFailure | null;
   now: Date;
+  managedAiAccountIdentity?: string;
 }): Promise<{ nextAttemptAt: Date | null; providerCooldownAt: Date | null }> {
   if (isProviderQuotaActionRequired({ resultJson: { providerFailure: input.failure } }, input.now))
     return { nextAttemptAt: null, providerCooldownAt: null };
   // Limit evidence only refines the schedule. A failed read must not stop the
   // failure from settling, so the retry falls back to plain backoff.
-  const providerCooldownAt = await input.db
-    .select({ contextSnapshot: heartbeatRuns.contextSnapshot, runnerProfileJson: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
-    .where(and(eq(heartbeatRuns.companyId, input.binding.companyId), eq(heartbeatRuns.id, input.binding.runId)))
-    .then(([run]) => agentProviderLimitCooldown(input.db, {
+  const providerCooldownAt = await (async () => {
+    const account = await routedAccountCooldown(input);
+    if (account.matched) return account.cooldown;
+    const [run] = await input.db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot, runnerProfileJson: heartbeatRuns.runnerProfileJson }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, input.binding.companyId), eq(heartbeatRuns.id, input.binding.runId)));
+    const cooldown = await agentProviderLimitCooldown(input.db, {
       companyId: input.binding.companyId,
       agentId: input.binding.agentId,
       runId: input.binding.runId,
@@ -258,7 +299,9 @@ export async function planNativeStartupRetry(input: {
       credential: runProviderLimitCredential(run?.contextSnapshot),
       quotaScope: runProviderQuotaScope(run?.contextSnapshot, run?.runnerProfileJson),
       now: input.now,
-    })).then((cooldown) => cooldown?.resetAt ?? null, (error: unknown) => {
+    });
+    return cooldown?.resetAt ?? null;
+  })().catch((error: unknown) => {
     logger.warn({ err: error, runId: input.binding.runId }, "native provider limit evidence unavailable");
     return null;
   });

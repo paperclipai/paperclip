@@ -82,6 +82,9 @@ test.describe.serial("applications lifecycle", () => {
 
     await gotoApps(page, seed.prefix);
 
+    // Search for both fixtures because the unconnected item is paginated.
+    await page.getByRole("searchbox", { name: "Search plugins" }).fill(APP_PREFIX);
+
     // The connected app starts with a "Connected" status. A
     // background health sweep then probes the connection endpoint. The test
     // endpoint is an unreachable loopback URL, so the probe fails and the pill
@@ -119,6 +122,7 @@ test.describe.serial("applications lifecycle", () => {
     );
 
     await gotoApps(page, seed.prefix);
+    await page.getByRole("searchbox", { name: "Search plugins" }).fill(APP_PREFIX);
     await notConnectedRow.getByRole("button", { name: `Connect ${notConnectedName}` }).click();
     await expect(page).toHaveURL(
       new RegExp(`/${seed.prefix}/apps/app/${notConnected.id}/permissions$`),

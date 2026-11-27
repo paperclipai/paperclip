@@ -16,6 +16,7 @@ import {
 import { InlineBanner } from "@/components/InlineBanner";
 import { IssuePullRequestLinks } from "@/components/IssuePullRequestLinks";
 import { getIssuePullRequests, pullRequestNeedsReview } from "@/lib/issue-pull-requests";
+import { describePoolWait } from "@/lib/runRetryState";
 import { cn } from "@/lib/utils";
 import {
   areAutomaticMonitorChecksPaused,
@@ -88,6 +89,7 @@ export function buildMonitorSurfaceCopy(
   pendingPullRequestReviews = 0,
   issueStatus?: string,
   hasActiveRun = false,
+  poolWaitScope?: NonNullable<Issue["scheduledRetry"]>["poolWaitScope"],
 ): MonitorSurfaceCopy | null {
   if (!isWaitingMonitorState(derived.state) || !derived.nextCheckAt) return null;
 
@@ -156,11 +158,13 @@ export function buildMonitorSurfaceCopy(
     };
   }
   if (derived.source === "scheduled-retry" && scheduledRetryReason === "ai_connection_pool_wait") {
+    const title = describePoolWait(poolWaitScope, derived.nextCheckAt, now);
+    const hint = "Paperclip rechecks the pool and can switch accounts when it can safely continue the task.";
     return {
-      bannerTitle: "Pool exhausted",
-      stripTitle: "Pool exhausted",
-      bannerMeta: [`Usage recheck ${eta} · ${absolute} (your time)`, "Tasks with a selected account keep it while waiting. Work resumes when usage permits or the agent uses a different account."],
-      stripMeta: [`Usage recheck ${eta} · ${absolute}`, "Tasks with a selected account keep it while waiting."],
+      bannerTitle: title,
+      stripTitle: title,
+      bannerMeta: [`Usage recheck ${eta} · ${absolute} (your time)`, hint],
+      stripMeta: [`Usage recheck ${eta} · ${absolute}`, hint],
       tone: "info",
       usageWait: true,
     };
@@ -218,7 +222,18 @@ function useMonitorSurfaceCopy(issue: Issue, pendingPullRequestReviews: number, 
     return derived.source === "monitor" && areAutomaticMonitorChecksPaused(issue) ? null : derived.nextCheckAt;
   }, [issue]);
   const now = useMonitorCountdown(nextCheckAt);
-  return useMemo(() => buildMonitorSurfaceCopy(deriveMonitorState(issue, now), now, issue.scheduledRetry?.scheduledRetryReason, pendingPullRequestReviews, issue.status, hasActiveRun), [issue, now, pendingPullRequestReviews, hasActiveRun]);
+  return useMemo(
+    () => buildMonitorSurfaceCopy(
+      deriveMonitorState(issue, now),
+      now,
+      issue.scheduledRetry?.scheduledRetryReason,
+      pendingPullRequestReviews,
+      issue.status,
+      hasActiveRun,
+      issue.scheduledRetry?.poolWaitScope,
+    ),
+    [issue, now, pendingPullRequestReviews, hasActiveRun],
+  );
 }
 
 function CheckNowButton({

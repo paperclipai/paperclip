@@ -1,6 +1,9 @@
+import { isUndispatchedRunnerApiReceipt } from "../recovery-effect-receipts.js";
+
 /** Automatic replacement requires positive evidence at every boundary. */
 export interface NativeReplacementEvidence {
   failedSession: boolean;
+  freshConversation?: boolean;
   failureMeaningKnown: boolean;
   predecessorFenced: boolean;
   providerStopped: boolean;
@@ -61,10 +64,8 @@ export function decideNativeReplacement(
     );
   const incompleteReceipt = Object.entries(evidence.apiReceipts).find(
     ([, receipt]) =>
-      !receipt ||
-      typeof receipt !== "object" ||
-      !("state" in receipt) ||
-      receipt.state !== "completed",
+      !isUndispatchedRunnerApiReceipt(receipt) &&
+      (!receipt || typeof receipt !== "object" || !("state" in receipt) || receipt.state !== "completed"),
   );
   if (incompleteReceipt)
     return stop(
@@ -76,6 +77,7 @@ export function decideNativeReplacement(
   // the receipt to avoid repeating the action under a new call id.
   const unidentifiedReceipt = Object.entries(evidence.apiReceipts).find(
     ([, receipt]) => {
+      if (isUndispatchedRunnerApiReceipt(receipt)) return false;
       const value = receipt as Record<string, unknown>;
       return typeof value.operationId !== "string" || !("result" in value);
     },
@@ -87,7 +89,7 @@ export function decideNativeReplacement(
     );
   const invocation = evidence.invocations.find(
     (row) =>
-      row.riskLevel !== "read" ||
+      (!evidence.freshConversation && row.riskLevel !== "read") ||
       row.status !== "succeeded" ||
       !row.completedAt ||
       !row.resultHash,

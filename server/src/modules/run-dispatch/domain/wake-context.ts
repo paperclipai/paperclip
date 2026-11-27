@@ -24,7 +24,8 @@ export const AI_CONNECTION_POOL_WAIT_RETRY_REASON = "ai_connection_pool_wait";
 export const AI_CONNECTION_BUSY_RETRY_REASON = "ai_connection_busy";
 export const RUNNER_REVISION_WAIT_RETRY_REASON = "runner_revision_wait";
 export const STORAGE_UNAVAILABLE_WAIT_RETRY_REASON = "storage_unavailable_wait";
-export const AGENT_DIRECTORY_BUSY_RETRY_REASON = "agent_directory_busy";
+import { AGENT_DIRECTORY_BUSY_RETRY_REASON } from "@paperclipai/shared";
+export { AGENT_DIRECTORY_BUSY_RETRY_REASON };
 export const PREPARATION_WAIT_RETRY_REASONS: ReadonlySet<string> = new Set([
   RUNNER_REVISION_WAIT_RETRY_REASON, STORAGE_UNAVAILABLE_WAIT_RETRY_REASON,
 ]);

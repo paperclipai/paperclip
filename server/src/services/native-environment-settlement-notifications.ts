@@ -6,6 +6,7 @@ export type NativeEnvironmentSettlementScope = { companyId: string; runId?: stri
 export async function notifyNativeEnvironmentSettlement(tx: object, scope?: NativeEnvironmentSettlementScope) {
   await notifyNativeHarnessBackupExpiration(tx, scope);
   if (scope) await notifySkillVersionRetention(tx, scope.companyId);
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionReplacement, scope?.companyId);
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.nativeEnvironmentSettlement,
     scope ? JSON.stringify({ companyId: scope.companyId, runId: scope.runId, issueId: scope.issueId }) : "*");
 }

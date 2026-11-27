@@ -339,6 +339,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     remoteCwd: executionTarget?.kind === "remote" ? executionTarget.remoteCwd : null,
     authorityCwd: sshAuthority?.location?.remoteCwd ?? null,
   });
+  if (nativeRuntimeResolution.kind !== "native" && readNativeReviewAssignmentContext(context))
+    throw new Error("native_review_requires_paperclip_runner: a completion review can only be resolved on the Paperclip Runner. Assign a Paperclip Runner pool member to the reviewer, then retry.");
   let nativeExecution: NativeExecutionInput | null = null;
   let toolRefreshOnResume: boolean | undefined;
   let getNativeFreshSessionHandoff: (() => Promise<string | null>) | undefined;
@@ -1216,6 +1218,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
                 else '{}'::jsonb end)
               || (case when ${heartbeatRuns.runnerProfileJson} ? 'adapterDispatch'
                 then jsonb_build_object('adapterDispatch', ${heartbeatRuns.runnerProfileJson}->'adapterDispatch')
+                else '{}'::jsonb end)
+              || (case when ${heartbeatRuns.runnerProfileJson} ? 'legacyQuotaPrestartFence'
+                then jsonb_build_object('legacyQuotaPrestartFence', ${heartbeatRuns.runnerProfileJson}->'legacyQuotaPrestartFence')
                 else '{}'::jsonb end)
               || (case when ${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,schema}' = 'paperclip.remote-workspace-run.v1'
                 then jsonb_build_object('remoteWorkspace', ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace')

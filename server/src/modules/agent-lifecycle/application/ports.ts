@@ -20,7 +20,7 @@ export interface LifecycleStore {
   setRequiredPlugins(agent: LifecycleAgent, owner: string, pluginIds: string[]): Promise<boolean>;
   completeHost(agent: LifecycleAgent, owner: string): Promise<boolean>;
   completePlugin(agent: LifecycleAgent, owner: string, pluginId: string): Promise<boolean>;
-  defer(agent: LifecycleAgent, owner: string, error: string | null, now: Date, options?: { retryRequired?: boolean; verificationFailures?: number; waitForSignal?: boolean; pendingReason?: string }): Promise<boolean>;
+  defer(agent: LifecycleAgent, owner: string, error: string | null, now: Date, options?: { retryRequired?: boolean; verificationFailures?: number; waitForSignal?: boolean; pendingReason?: string; retryAt?: string }): Promise<boolean>;
   pending(limit: number, now: Date): Promise<string[]>;
 }
 

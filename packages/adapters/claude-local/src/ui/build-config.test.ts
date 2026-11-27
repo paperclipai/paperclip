@@ -92,3 +92,9 @@ describe("buildClaudeLocalConfig", () => {
     });
   });
 });
+it.each(["auto", "acp"] as const)("persists explicit ACP policy and session settings for effective %s engine", claudeEngine => {
+  expect(buildClaudeLocalConfig(makeValues({ runner: "legacy", claudeEngine, claudeAcpMode: "oneshot", adapterSchemaValues: { permissionMode: "deny-all" } }))).toMatchObject({ mode: "oneshot", permissionMode: "deny-all" });
+});
+it("does not carry ACP permissions to explicit CLI", () => {
+  expect(buildClaudeLocalConfig(makeValues({ claudeEngine: "cli", adapterSchemaValues: { permissionMode: "deny-all" } })).permissionMode).toBeUndefined();
+});

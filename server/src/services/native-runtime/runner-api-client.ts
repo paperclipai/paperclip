@@ -47,6 +47,7 @@ export interface RunnerApiIo {
   responseTextPageBytes?: number;
   /** Revalidate server-owned authority after asynchronous file preparation. */
   beforeDispatch?(): Promise<void>;
+  onDispatch?(): void;
   /** Reserve before spilling. Settle completed bytes; failed captures retain their reservation. */
   reserveResponseCapture?(): Promise<(completedBytes?: number, cleanupSucceeded?: boolean) => Promise<void>>;
   readFile(file: RunnerApiFile): Promise<{ bytes: Buffer; filename: string; contentType: string }>;
@@ -334,6 +335,7 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
   // Bound connection setup and stalled body reads, not the total download time.
   let timeout = setTimeout(() => controller.abort(), RUNNER_API_TIMEOUT_MS);
   try {
+    io.onDispatch?.();
     response = await (io.fetch ?? fetch)(url, { method: operation.method, headers, body, redirect: "manual", signal: controller.signal });
     clearTimeout(timeout);
     if (sensitiveResponse) {

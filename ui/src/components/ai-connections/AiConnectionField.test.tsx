@@ -1,0 +1,365 @@
+// @vitest-environment jsdom
+import { flushSync } from "react-dom";
+import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { ComponentProps } from "react";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY, type AiConnectionPool, type AiManagedConnectionSummary, type AiRuntimeConnectionBinding } from "@paperclipai/shared";
+import { AiConnectionField, aiProviderForAdapter } from "./AiConnectionField";
+import { ApiError } from "@/api/client";
+import type { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
+import { replayLeaks } from "@/lib/analytics/replay-recording.test-utils";
+
+const mocks = vi.hoisted(() => ({ list: vi.fn(), setDefault: vi.fn() }));
+let credentialProps: ComponentProps<typeof AiConnectionCredentialStep> | undefined;
+vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: mocks }));
+vi.mock("./AiConnectionCredentialStep", () => ({
+  AiConnectionCredentialStep: (props: ComponentProps<typeof AiConnectionCredentialStep>) => {
+    credentialProps = props;
+    return <div>Provider sign-in</div>;
+  },
+}));
+vi.mock("./AiProviderSetup", () => ({ AiProviderSetup: () => <div>Advanced provider setup</div> }));
+vi.mock("@/pages/apps/AppLogo", () => ({ AppLogo: () => null }));
+
+let root: Root;
+let container: HTMLDivElement;
+let client: QueryClient;
+const onChange = vi.fn();
+const account = (overrides: Partial<AiManagedConnectionSummary> = {}): AiManagedConnectionSummary => ({
+  id: "old-connection", grantId: "old-grant", companyId: "company",
+  provider: "anthropic", method: "subscription", name: "My Claude",
+  ownership: "personal", ownerUserId: "owner", isDefault: true,
+  status: "needs_attention", ...overrides,
+});
+async function settle() {
+  for (let i = 0; i < 5; i++) {
+    await new Promise(resolve => setTimeout(resolve, 0));
+    flushSync(() => {});
+  }
+}
+async function mount(connections: AiManagedConnectionSummary[], canManageConnections = true, preferAdvanced = false, props: Partial<ComponentProps<typeof AiConnectionField>> = {}) {
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections, canManageConnections });
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Nova" adapterType="claude_local"
+      preferAdvanced={preferAdvanced}
+      value={{ provider: "anthropic", method: "subscription", mode: "responsible_user" }} onChange={onChange} {...props} />
+  </QueryClientProvider>));
+  await settle();
+}
+async function click(label: string) {
+  if (label === "Connect another account") {
+    const trigger = document.querySelector('[role="combobox"][aria-label="Connection"]')!;
+    flushSync(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+    await settle();
+    const option = Array.from(document.querySelectorAll<HTMLElement>('[role="option"]')).find(item => item.textContent?.includes("Connect an account"));
+    expect(option).toBeDefined();
+    flushSync(() => option!.click());
+    await settle();
+    return;
+  }
+  const button = Array.from(document.querySelectorAll("button")).find(item => item.textContent === label);
+  expect(button, `Missing button: ${label}`).toBeDefined();
+  flushSync(() => button!.click());
+}
+beforeEach(() => {
+  vi.clearAllMocks();
+  credentialProps = undefined;
+  mocks.setDefault.mockResolvedValue({});
+  container = document.createElement("div");
+  document.body.append(container);
+  root = createRoot(container);
+  client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+});
+
+it("disables a saved Claude subscription after the harness changes to Codex", async () => {
+  const value = { provider: "anthropic" as const, method: "subscription" as const, mode: "shared" as const,
+    connectionId: "11111111-1111-4111-8111-111111111111", grantId: "22222222-2222-4222-8222-222222222222" };
+  const connections = [account({ id: value.connectionId, grantId: value.grantId, ownership: "shared", status: "connected" })];
+  await mount(connections, true, false, { value });
+  await mount(connections, true, false, { value, adapterType: "codex_local" });
+  const trigger = container.querySelector<HTMLElement>('[role="combobox"][aria-label="Connection"]')!;
+  flushSync(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  await settle();
+  const option = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(option => option.textContent?.includes("My Claude"));
+  expect(option?.getAttribute("aria-disabled")).toBe("true");
+  expect(option?.textContent).toContain("Incompatible with this harness and model");
+  expect(onChange).not.toHaveBeenCalled();
+});
+afterEach(() => { flushSync(() => root.unmount()); client.clear(); container.remove(); });
+
+it("reconnects the unavailable personal default in place", async () => {
+  await mount([account()]);
+  await click("Reconnect account");
+  expect(credentialProps).toMatchObject({ connectionId: "old-connection", initialMethod: "subscription", fixedMethod: true });
+  credentialProps!.onComplete({ connectionId: "old-connection", grantId: "old-grant", method: "subscription" });
+  await settle();
+  expect(mocks.setDefault).not.toHaveBeenCalled();
+  expect(onChange).toHaveBeenCalledWith({ provider: "anthropic", method: "subscription", mode: "responsible_user" });
+});
+
+it("identifies duplicate-named accounts before adopting the exact personal grant", async () => {
+  const personal = account({ id: "00000000-0000-4000-8000-000000000001", grantId: "00000000-0000-4000-8000-000000000002", provider: "openai", method: "api_key", name: "OpenAI", ownerName: "Avery", status: "connected", isDefault: false });
+  const shared = account({ id: "00000000-0000-4000-8000-000000000003", grantId: "00000000-0000-4000-8000-000000000004", provider: "openai", method: "subscription", name: "OpenAI", accountLabel: "engineering@example.test", ownership: "shared", ownerUserId: undefined, status: "connected", isDefault: false });
+  const sharedKey = account({ id: "00000000-0000-4000-8000-000000000005", grantId: "00000000-0000-4000-8000-000000000006", provider: "openai", method: "api_key", name: "OpenAI", ownerName: "Engineering", ownership: "shared", ownerUserId: undefined, status: "connected", isDefault: false });
+  const unavailable = account({ id: "expired-account", grantId: "expired-grant", provider: "openai", method: "api_key", name: "Expired account", ownerName: "Avery" });
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [shared, personal, sharedKey, unavailable], canManageConnections: true });
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Nova" adapterType="codex_local" legacy onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  await click("Choose a managed connection");
+  const trigger = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+  flushSync(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  await settle();
+  const choices = [...document.querySelectorAll<HTMLElement>('[role="option"]')];
+  expect(choices.map(choice => choice.textContent)).toContain("OpenAI · API key · Personal · Avery");
+  expect(choices.map(choice => choice.textContent)).toContain("OpenAI · ChatGPT subscription · Company shared · engineering@example.test");
+  expect(choices.map(choice => choice.textContent)).toContain("OpenAI · API key · Company shared · Engineering");
+  expect(choices.find(choice => choice.textContent?.includes("Expired account"))?.getAttribute("aria-disabled")).toBe("true");
+  flushSync(() => choices.find(choice => choice.textContent === "OpenAI · API key · Personal · Avery")!.click());
+  await settle();
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("OpenAI · API key · Personal · Avery");
+  expect(onChange).not.toHaveBeenCalled();
+  await click("Use this binding when saved");
+  expect(onChange).toHaveBeenCalledExactlyOnceWith({ provider: "openai", method: "api_key", mode: "delegated", connectionId: personal.id, grantId: personal.grantId });
+});
+
+it("opens provider setup directly when connecting from the advanced mode", async () => {
+  await mount([], true, true);
+  await click("Connect another account");
+  expect(document.body.textContent).toContain("Advanced provider setup");
+  expect(credentialProps).toBeUndefined();
+});
+
+it("selects the returned new grant and actual method before adopting the personal default", async () => {
+  await mount([account()]);
+  await click("Connect another account");
+  expect(document.body.textContent).toContain("default");
+  expect(credentialProps).toMatchObject({ connectionId: undefined, allAgents: true });
+  let resolveDefault!: () => void;
+  mocks.setDefault.mockImplementation(() => new Promise<void>(resolve => { resolveDefault = resolve; }));
+  credentialProps!.onComplete({ connectionId: "new-connection", grantId: "new-grant", method: "api_key" });
+  await settle();
+  expect(mocks.setDefault).toHaveBeenCalledWith("company", "new-grant");
+  expect(onChange).not.toHaveBeenCalled();
+  resolveDefault();
+  await settle();
+  expect(onChange).toHaveBeenCalledWith({ provider: "anthropic", method: "api_key", mode: "responsible_user" });
+});
+
+it("lets the owner limit a new personal connection to this agent", async () => {
+  await mount([]);
+  await click("Connect another account");
+  const checkbox = document.querySelector<HTMLButtonElement>('[role="checkbox"]')!;
+  expect(checkbox).not.toBeNull();
+  expect(checkbox.getAttribute("aria-checked")).toBe("true");
+  flushSync(() => checkbox.click());
+  expect(credentialProps).toMatchObject({ allAgents: false, agentIds: ["agent"] });
+});
+
+it("keeps default-update failures visible and retries without another provider login", async () => {
+  await mount([account()]);
+  await click("Connect another account");
+  mocks.setDefault.mockRejectedValueOnce(new Error("Default update failed"));
+  credentialProps!.onComplete({ connectionId: "new-connection", grantId: "new-grant", method: "api_key" });
+  await settle();
+  expect(document.body.textContent).toContain("Default update failed");
+  expect(onChange).not.toHaveBeenCalled();
+  await click("Retry default selection");
+  await settle();
+  expect(mocks.setDefault).toHaveBeenCalledTimes(2);
+  expect(onChange).toHaveBeenCalledWith({ provider: "anthropic", method: "api_key", mode: "responsible_user" });
+});
+
+it("does not offer reconnection for a healthy default or another owner's account", async () => {
+  await mount([account({ status: "connected" }), account({ id: "someone-else", ownerUserId: "other" })]);
+  expect(document.body.textContent).not.toContain("Reconnect account");
+});
+
+it("keeps an ordinary member's new connection scoped to the current agent by default", async () => {
+  await mount([], false);
+  expect(document.body.textContent).toContain("You have no default account");
+  await click("Connect another account");
+  expect(document.querySelector<HTMLButtonElement>('[role="checkbox"]')!.disabled).toBe(true);
+  expect(credentialProps).toMatchObject({ allAgents: false, agentIds: ["agent"] });
+});
+
+it("uses the server's connection-manager permission for company-wide access", async () => {
+  await mount([], true);
+  await click("Connect another account");
+  expect(credentialProps).toMatchObject({ allAgents: true });
+});
+
+it("offers Pi account selection before choosing its required model", async () => {
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [], canManageConnections: true });
+  expect(aiProviderForAdapter("pi_local")).toBe("openrouter");
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Pi" adapterType="pi_local" model=""
+      value={{ provider: "openrouter", method: "api_key", mode: "responsible_user" }} onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  expect(document.querySelector('[role="combobox"][aria-label="Connection"]')).not.toBeNull();
+  expect(container.textContent).not.toContain("does not support the current harness");
+  await click("Connect another account");
+  expect(document.body.textContent).toContain("Advanced provider setup");
+});
+
+it.each(["openai", "anthropic", "google", "openrouter"] as const)("keeps a matching saved Pi %s API-key account selectable", async provider => {
+  const saved = account({ provider, method: "api_key", name: "Pi provider account", accountLabel: "avery@example.test", status: "connected" });
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [saved], canManageConnections: true });
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Pi" adapterType="pi_local" model={`${provider}/provider-model`}
+      value={{ provider, method: "api_key", mode: "delegated", connectionId: saved.id, grantId: saved.grantId }} onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  expect(container.textContent).toContain("Pi provider account");
+  expect(container.textContent).not.toContain("incompatible");
+  expect(container.textContent).not.toContain("does not support");
+  const trigger = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+  expect(trigger.getAttribute("title")).toBe("Pi provider account · API key · Personal · avery@example.test");
+  flushSync(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  await settle();
+  const choice = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent?.includes("Pi provider account"));
+  expect(choice).toBeDefined();
+  expect(choice?.getAttribute("aria-disabled")).not.toBe("true");
+});
+
+it("keeps loaded connections usable when a refetch fails during an outage", async () => {
+  await mount([account()]);
+  expect(document.body.textContent).toContain("Reconnect account");
+  mocks.list.mockRejectedValue(new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }));
+  await client.invalidateQueries();
+  await settle();
+  expect(document.body.textContent).toContain("Reconnect account");
+  expect(document.body.textContent).not.toContain("Retry connections");
+  expect(document.body.textContent).not.toContain("Paperclip is restarting.");
+  expect(document.querySelector('[data-query-view="error"]')).toBeNull();
+});
+
+it("shows readable copy with a retry when connections cannot be loaded", async () => {
+  mocks.list.mockRejectedValueOnce(new ApiError("Request failed: 500", 500, { error: "internal_error" }));
+  await mount([account()]);
+  const alerts = Array.from(document.querySelectorAll('[role="alert"]')).map(node => node.textContent).join(" ");
+  expect(alerts).toContain("An unexpected error occurred");
+  expect(document.body.textContent).not.toContain("internal_error");
+  expect(document.body.textContent).not.toContain("Request failed: 500");
+  expect(document.body.textContent).not.toContain("Reconnect account");
+  await click("Retry connections");
+  await settle();
+  expect(mocks.list).toHaveBeenCalledTimes(2);
+  expect(document.body.textContent).toContain("Reconnect account");
+  expect(document.body.textContent).not.toContain("Retry connections");
+});
+
+const mixedPool = (overrides: Partial<AiConnectionPool> = {}): AiConnectionPool => ({
+  id: "00000000-0000-4000-8000-000000000010", companyId: "company", pluginKey: BUILTIN_AI_FAILOVER_ROUTER_KEY, revision: 1,
+  name: "Mixed backup pool", enabled: true, mode: "failover", thresholdPercent: 90,
+  members: [{ id: "member", binding: { mode: "shared", provider: "openai", method: "subscription", connectionId: "codex-account", grantId: "codex-grant" }, profile: { provider: "codex", model: "gpt-5.6-sol" } }],
+  ...overrides,
+});
+
+async function mountPoolField(pools: AiConnectionPool[], value: AiRuntimeConnectionBinding, adapterType = "claude_local") {
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [account({ status: "connected" })], pools, canManageConnections: true });
+  const render = (binding: AiRuntimeConnectionBinding) => flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Nova" adapterType={adapterType} value={binding} onChange={onChange} />
+  </QueryClientProvider>));
+  render(value);
+  await settle();
+  return render;
+}
+
+it.each(["claude_local", "codex_local", "grok_local", "opencode_local"])("offers a Codex-only pool to a %s agent and preserves its individual account", async adapterType => {
+  const saved: AiRuntimeConnectionBinding = { mode: "delegated", provider: "anthropic", method: "subscription", connectionId: "old-connection", grantId: "old-grant" };
+  const pool = mixedPool();
+  const render = await mountPoolField([pool], saved, adapterType);
+  const select = container.querySelector("select")!;
+  expect([...select.options].map(option => option.text)).toEqual(["Individual account", "Mixed backup pool"]);
+  flushSync(() => { select.value = pool.id; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(onChange).toHaveBeenLastCalledWith({ mode: "router", connectionId: pool.id });
+  render({ mode: "router", connectionId: pool.id });
+  flushSync(() => { select.value = ""; select.dispatchEvent(new Event("change", { bubbles: true })); });
+  expect(onChange).toHaveBeenLastCalledWith(saved);
+});
+
+it.each([false, true])("keeps a compatible plugin-owned Pi pool selectable with a saved pool=%s", async saved => {
+  const pluginPool = mixedPool({ id: "00000000-0000-4000-8000-000000000020", pluginKey: "plugin.pi-router", name: "Pi plugin pool",
+    members: [{ id: "pi-member", binding: { mode: "shared", provider: "openai", method: "api_key", connectionId: "pi-account", grantId: "pi-grant" },
+      profile: { provider: "codex", model: "openai/gpt-5.6-sol" } }],
+  });
+  const incompatible = mixedPool({ id: "00000000-0000-4000-8000-000000000030", pluginKey: "plugin.other-router" });
+  const disabled = { ...pluginPool, id: "00000000-0000-4000-8000-000000000040", enabled: false };
+  await mountPoolField([mixedPool(), pluginPool, incompatible, disabled], saved
+    ? { mode: "router", connectionId: pluginPool.id }
+    : { mode: "responsible_user", provider: "openai", method: "api_key" }, "pi_local");
+  const select = container.querySelector("select");
+  expect(select).not.toBeNull();
+  expect([...select!.options].map(option => option.text)).toEqual(["Individual account", "Pi plugin pool"]);
+  expect(container.textContent).not.toContain("pool is unavailable");
+  if (!saved) {
+    flushSync(() => { select!.value = pluginPool.id; select!.dispatchEvent(new Event("change", { bubbles: true })); });
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ mode: "router", connectionId: pluginPool.id });
+  }
+});
+
+it("retains an unavailable saved pool and explains why it cannot be used", async () => {
+  const pool = mixedPool({ enabled: false });
+  await mountPoolField([pool], { mode: "router", connectionId: pool.id });
+  expect(container.querySelector("select")?.value).toBe(pool.id);
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("This pool is unavailable for this agent");
+  expect(onChange).not.toHaveBeenCalled();
+});
+
+it("keeps unsupported local harnesses from choosing built-in pools", async () => {
+  await mountPoolField([mixedPool()], { mode: "responsible_user", provider: "google", method: "api_key" }, "gemini_local");
+  expect(container.querySelector("select")).toBeNull();
+});
+
+it("shows connection-load failures for a saved pool with a retry", async () => {
+  mocks.list.mockRejectedValue(new ApiError("Request failed: 500", 500, { error: "internal_error" }));
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Nova" adapterType="claude_local" value={{ mode: "router", connectionId: mixedPool().id }} onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain("An unexpected error occurred");
+  expect(container.querySelector("select")?.selectedOptions[0]?.textContent).toBe("Saved connection pool");
+  expect(container.textContent).not.toContain("Pool unavailable");
+  await click("Retry connections");
+  await settle();
+  expect(mocks.list).toHaveBeenCalledTimes(2);
+});
+
+it("keeps saved-pool copy neutral while loading, then confirms availability", async () => {
+  let resolveList!: (value: unknown) => void;
+  mocks.list.mockImplementation(() => new Promise(resolve => { resolveList = resolve; }));
+  const pool = mixedPool();
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Nova" adapterType="claude_local" value={{ mode: "router", connectionId: pool.id }} onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  expect(container.querySelector("select")?.selectedOptions[0]?.textContent).toBe("Saved connection pool");
+  expect(container.textContent).not.toContain("Pool unavailable");
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  resolveList({ currentUserId: "owner", connections: [], pools: [pool] });
+  await settle();
+  expect(container.querySelector("select")?.selectedOptions[0]?.textContent).toBe(pool.name);
+  expect(container.textContent).not.toContain("Pool unavailable");
+});
+
+it("masks the adoption dialog's account label in session replay", async () => {
+  const personal = account({ id: "00000000-0000-4000-8000-000000000011", grantId: "00000000-0000-4000-8000-000000000012", provider: "openai", method: "api_key", name: "OpenAI", accountLabel: "solenne.drake@example.test", status: "connected", isDefault: false });
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [personal], canManageConnections: true });
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Nova" adapterType="codex_local" legacy onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  await click("Choose a managed connection");
+  const trigger = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+  flushSync(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  await settle();
+  flushSync(() => [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(choice => choice.textContent?.includes("solenne.drake@example.test"))!.click());
+  await settle();
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(replayLeaks("solenne.drake@example.test", dialog)).toEqual({ rendered: true, recorded: false });
+  expect(replayLeaks("Adopt Connections for Nova", dialog)).toEqual({ rendered: true, recorded: false });
+});

@@ -138,7 +138,7 @@ const MASKED_SURFACES: Array<{ file: string; content: string }> = [
   { file: "components/ai-connections/AiConnectionAccountDetails.tsx", content: "{identity.data?.organizationLabel ??" },
   { file: "components/ai-connections/AiConnectionAccountControls.tsx", content: "` · ${account.accountLabel}`" },
   { file: "components/ai-connections/AiConnectionIdentity.tsx", content: "` · ${connection.accountLabel}`" },
-  { file: "components/ai-connections/AiConnectionPoolRunDetails.tsx", content: "Task-pinned pool account · {account?.accountName" },
+  { file: "components/ai-connections/AiConnectionPoolRunDetails.tsx", content: " · {accountName ?? connectionId ?? " },
   { file: "components/AdapterLoginChrome.tsx", content: "{login?.accountLabel ?? provider} is signed in." },
   { file: "components/chat/ExternallyConnectedTaskBanner.tsx", content: "{binding.externalLabel} ·" },
   { file: "pages/apps/chat/ChatEndpointDetail.tsx", content: "Confirm {confirmationFor" },
@@ -454,7 +454,7 @@ describe("session replay text masking", () => {
     expect(replayLeaks("Company shared")).toEqual({ rendered: true, recorded: true });
 
     document.body.innerHTML = renderToStaticMarkup(<AiConnectionPoolRunDetails context={{
-      aiRouterSelection: { binding: { provider: "anthropic" }, runtimeConfig: { model: "claude-sonnet" }, notes: [] },
+      aiRouterSelection: { binding: { provider: "anthropic", connectionId: "connection" }, runtimeConfig: { model: "claude-sonnet" }, notes: [] },
       aiConnection: { accountName: "Juniper Ops Pool Account", connectionId: "connection" },
     }} />);
     expect(replayLeaks("Juniper Ops Pool Account")).toEqual({ rendered: true, recorded: false });

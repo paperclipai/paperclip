@@ -1136,6 +1136,11 @@ describe("durable task Retry admission", () => {
     await db.update(heartbeatRuns).set({ resultJson: { apiToolReceipts: { receipt: { ...receipt,
       state: "pending", result: { ok: false, outcome: "unknown" } } } } }).where(eq(heartbeatRuns.id, earlier.id));
     expect(await priorRecoveryApiReceipt(db, call)).toMatchObject({ state: "pending", result: { outcome: "unknown" } });
+    const digest = "a".repeat(64);
+    await db.update(heartbeatRuns).set({ resultJson: { apiToolReceipts: { receipt: {
+      operationId: receipt.operationId, digest, state: "undispatched",
+    } } } }).where(eq(heartbeatRuns.id, earlier.id));
+    expect(await priorRecoveryApiReceipt(db, { ...call, digest })).toBeNull();
   });
 
   async function automaticSuccessorOfTaskRetry() {

@@ -15,7 +15,7 @@ import {
   markExecutionReconciliation,
   deliverReconciledExecutions,
 } from "../execution-recovery-resolution.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { persistHeartbeatRunProcessMetadata } from "../heartbeat/run-lifecycle.js";
 import { hasNativeLocalProcessStop, releaseSettledNativeRunProcess } from "../native-local-process-stop.js";
@@ -28,7 +28,14 @@ import { join } from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   agents,
+  authUsers,
+  companyMemberships,
+  companySecrets,
+  connectionGrants,
+  aiConnectionTaskPins,
+  aiConnectionQuotaCooldowns,
   companies,
   createDb,
   environmentLeases,
@@ -43,12 +50,23 @@ import {
   documentRevisions,
   issues,
   nativeRunFinalizations,
+  completionContracts,
+  nativeRunResults,
+  workAssessments,
+  statusDecisions,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../__tests__/helpers/embedded-postgres.js";
 import { invalidateNativeReplacementDiscovery, reconcileSafeNativeReplacements } from "./native-safe-replacement.js";
+import { aiConnectionService } from "../ai-connections.js";
+import { aiConnectionRouterService } from "../ai-connection-router.js";
+import { BUILTIN_AI_FAILOVER_ROUTER_KEY } from "@paperclipai/shared";
+import { recordVerifiedRouterQuotaCooldown } from "../heartbeat/run-completion.js";
+import { reopenNativeQuotaPoolWaits } from "./native-quota-wake.js";
+import { connectionIntentService } from "../connection-intents.js";
+import { prepareManagedAiRuntime } from "../ai-connection-runtime.js";
 import { reconcileAbandonedExecutionControl } from "../execution-control-reconciliation.js";
 const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
 const support = externalDatabaseUrl
@@ -144,6 +162,628 @@ const support = externalDatabaseUrl
       });
       return { companyId, agentId, issueId, runId };
     }
+    async function seedReview(source: Awaited<ReturnType<typeof seed>>) {
+      const { companyId, issueId, agentId } = source;
+      const worker = randomUUID(), workerRunId = randomUUID(), contractId = randomUUID();
+      const resultId = randomUUID(), assessmentId = randomUUID(), decisionId = randomUUID(), interactionId = randomUUID();
+      await db.insert(agents).values({ id: worker, companyId, name: "Task worker", adapterType: "paperclip_runner" });
+      await db.insert(completionContracts).values({ id: contractId, companyId, issueId, revision: 1,
+        schemaVersion: "fixture", policyVersion: "fixture", risk: "low", completionAuthority: "agent_review",
+        incompleteCriteriaPolicy: "block", contractJson: {}, canonicalSha256: "fixture", createdByActorType: "system", createdByActorId: "fixture" });
+      await db.insert(heartbeatRuns).values({ id: workerRunId, companyId, agentId: worker, scopeKind: "issue", issueId,
+        nativeIssueId: issueId, completionContractId: contractId, status: "succeeded", runtimeMode: "native" });
+      await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId, runId: workerRunId,
+        completionContractId: contractId, serverFingerprint: "fixture", schemaStatus: "valid", resultJson: {}, canonicalSha256: "fixture" });
+      await db.insert(workAssessments).values({ id: assessmentId, companyId, issueId, runId: workerRunId, resultId, contractId,
+        triggerKind: "run_result", triggerActorCompanyId: companyId, priorIssueStatus: "in_progress", priorStatusVersion: 0,
+        policyVersion: "fixture", assessmentJson: {}, inputDigest: "fixture" });
+      await db.insert(statusDecisions).values({ id: decisionId, companyId, issueId, runId: workerRunId, assessmentId,
+        decisionVersion: 1, policyVersion: "fixture", fromStatus: "in_progress", toStatus: "in_review",
+        reasonCode: "fixture", decisionJson: { projectedStatusVersion: 1 }, decisionDigest: "fixture", applicationState: "applied" });
+      await db.update(issues).set({ assigneeAgentId: worker, status: "in_review", statusVersion: 1, lastStatusDecisionId: decisionId,
+        executionRunId: source.runId, checkoutRunId: source.runId }).where(eq(issues.id, issueId));
+      await db.insert(issueThreadInteractions).values({ id: interactionId, companyId, issueId, kind: "request_confirmation",
+        sourceRunId: workerRunId, createdByAgentId: worker, addresseeAgentId: agentId,
+        payload: { version: 1, prompt: "Review the work", acceptLabel: "Approve", rejectLabel: "Decline", allowDeclineReason: true,
+          target: { type: "custom", key: "native_completion_review", revisionId: decisionId } } });
+      return { worker, context: { nativeReviewInteractionId: interactionId, nativeReviewDecisionId: decisionId },
+        taskKey: `native-review:${interactionId}` };
+    }
+    it("holds an invalid admitted attribution once without recurring replacement work", async () => {
+      const source = await seed();
+      await db.update(heartbeatRuns).set({ errorCode: "native_provider_auth_failed", finishedAt: new Date(),
+        contextSnapshot: { issueId: source.issueId, aiConnection: { sessionIdentity: "invalid-account" } } })
+        .where(eq(heartbeatRuns.id, source.runId));
+      await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_auth_failed" })
+        .where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(await executionControlSchedule(db).replacement()).not.toBeNull();
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scheduled: 0 });
+      const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(owner.failureDetail).toMatchObject({ replacementDenied: "pool_attribution_unverified" });
+      expect(await executionControlSchedule(db).replacement()).toBeNull();
+      expect(await reconcileSafeNativeReplacements(db)).toMatchObject({ scanned: 0, scheduled: 0 });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId))).toHaveLength(0);
+    });
+    it("does not consider a quota failure without a run-bound attribution receipt", async () => {
+      const source = await seed();
+      await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_usage_limit" })
+        .where(eq(nativeRunFinalizations.runId, source.runId));
+      const verifyStoppedSession = vi.fn(async () => ({ evidence: {}, retire: () => true }));
+      const outcome = await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+      expect(outcome).toEqual({ scanned: 0, scheduled: 0 });
+      expect(verifyStoppedSession).not.toHaveBeenCalled();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId))).toHaveLength(0);
+    });
+    it("holds quota recovery for an operator when provider stop is unproven", async () => {
+      const source = await seed();
+      await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_usage_limit" }).where(eq(nativeRunFinalizations.runId, source.runId));
+      await db.insert(heartbeatRunEvents).values({ companyId: source.companyId, runId: source.runId, agentId: source.agentId,
+        seq: 1, eventType: "ai_connection.quota_attributed", sourceEventId: `ai-connection-quota-attributed:${source.runId}`, payload: {} });
+      await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: async () => null });
+      const [finalization] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(finalization?.failureDetail?.replacementDenied).toBe("provider_ownership_unverified");
+      expect(finalization?.nextAttemptAt).toBeNull();
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, source.issueId)))
+        .toMatchObject([{ cause: "provider_ownership_unverified", ownerType: "board" }]);
+      expect((await reconcileSafeNativeReplacements(db)).scanned).toBe(0);
+    });
+    it("waits without polling for pending lease cleanup and rechecks on settlement", async () => {
+      const source = await seed();
+      await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_usage_limit" }).where(eq(nativeRunFinalizations.runId, source.runId));
+      await db.insert(heartbeatRunEvents).values({ companyId: source.companyId, runId: source.runId, agentId: source.agentId,
+        seq: 1, eventType: "ai_connection.quota_attributed", sourceEventId: `ai-connection-quota-attributed:${source.runId}`, payload: {} });
+      const [lease] = await db.insert(environmentLeases).values({ companyId: source.companyId, heartbeatRunId: source.runId, status: "pending_cleanup" }).returning();
+      const verifyStoppedSession = vi.fn(async () => null);
+      await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+      const [waiting] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(waiting?.failureDetail?.replacementWaitingForCleanup).toBe(true);
+      expect(waiting?.failureDetail?.replacementDenied).toBeUndefined();
+      expect(await executionControlSchedule(db).replacement()).toBeNull();
+      expect(verifyStoppedSession).not.toHaveBeenCalled();
+      await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" }).where(eq(environmentLeases.id, lease!.id));
+      await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+      const [held] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(verifyStoppedSession).toHaveBeenCalledOnce();
+      expect(held?.failureDetail?.replacementDenied).toBe("provider_ownership_unverified");
+    });
+    it("does not let more than 25 cleanup waits starve a ready quota candidate", async () => {
+      const source = await seed();
+      await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_usage_limit" }).where(eq(nativeRunFinalizations.runId, source.runId));
+      await db.insert(heartbeatRunEvents).values({ companyId: source.companyId, runId: source.runId, agentId: source.agentId,
+        seq: 1, eventType: "ai_connection.quota_attributed", sourceEventId: `ai-connection-quota-attributed:${source.runId}`, payload: {} });
+      const ids = Array.from({ length: 26 }, () => ({ issueId: randomUUID(), runId: randomUUID() }));
+      await db.insert(issues).values(ids.map(row => ({ id: row.issueId, companyId: source.companyId, title: "Waiting", assigneeAgentId: source.agentId })));
+      await db.insert(heartbeatRuns).values(ids.map(row => ({ id: row.runId, companyId: source.companyId, agentId: source.agentId, nativeIssueId: row.issueId, status: "failed" })));
+      await db.insert(nativeRunFinalizations).values(ids.map(row => ({ runId: row.runId, companyId: source.companyId, issueId: row.issueId,
+        phase: "terminal_failure", failureCode: "native_provider_usage_limit", failureDetail: { replacementWaitingForCleanup: true } })));
+      await db.insert(heartbeatRunEvents).values(ids.map(row => ({ companyId: source.companyId, runId: row.runId, agentId: source.agentId, seq: 1,
+        eventType: "ai_connection.quota_attributed", sourceEventId: `ai-connection-quota-attributed:${row.runId}`, payload: {} })));
+      await db.insert(environmentLeases).values(ids.map(row => ({ companyId: source.companyId, heartbeatRunId: row.runId, status: "pending_cleanup" })));
+      const legacy = Array.from({ length: 26 }, () => ({ issueId: randomUUID(), runId: randomUUID() }));
+      await db.insert(issues).values(legacy.map(row => ({ id: row.issueId, companyId: source.companyId, title: "Legacy waiting", assigneeAgentId: source.agentId })));
+      await db.insert(heartbeatRuns).values(legacy.map(row => ({ id: row.runId, companyId: source.companyId, agentId: source.agentId, nativeIssueId: row.issueId, status: "failed" })));
+      await db.insert(nativeRunFinalizations).values(legacy.map(row => ({ runId: row.runId, companyId: source.companyId, issueId: row.issueId,
+        phase: "terminal_failure", failureCode: "provider_transport_failed" })));
+      await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: async () => null });
+      const [ready] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(ready?.failureDetail?.replacementDenied).toBe("provider_ownership_unverified");
+    });
+    it("reopens more than 25 pool waits transactionally without touching other companies or pools", async () => {
+      const source = await seed();
+      const other = await seed();
+      const poolId = randomUUID(), otherPoolId = randomUUID(), deadline = new Date(Date.now() + 60_000);
+      await db.update(heartbeatRuns).set({ contextSnapshot: { aiRouterSelection: { poolId } } }).where(eq(heartbeatRuns.id, other.runId));
+      await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_usage_limit", nextAttemptAt: deadline,
+        failureDetail: { replacementWaitingForCleanup: true } }).where(eq(nativeRunFinalizations.runId, other.runId));
+      const ids = Array.from({ length: 27 }, () => ({ issueId: randomUUID(), runId: randomUUID() }));
+      await db.insert(issues).values(ids.map(row => ({ id: row.issueId, companyId: source.companyId, title: "Waiting", assigneeAgentId: source.agentId })));
+      await db.insert(heartbeatRuns).values(ids.map((row, index) => ({ id: row.runId, companyId: source.companyId, agentId: source.agentId, nativeIssueId: row.issueId, status: "failed",
+        contextSnapshot: { aiRouterSelection: { poolId: index === 26 ? otherPoolId : poolId } } })));
+      await db.insert(nativeRunFinalizations).values(ids.map((row, index) => ({ runId: row.runId, companyId: source.companyId, issueId: row.issueId,
+        phase: "terminal_failure", failureCode: "native_provider_usage_limit", nextAttemptAt: deadline, failureDetail: { replacementWaitingForCleanup: index === 0 } })));
+      await expect(db.transaction(async tx => {
+        expect(await reopenNativeQuotaPoolWaits(tx as unknown as typeof db, { companyId: source.companyId, poolId })).toBe(26);
+        throw new Error("rollback wake");
+      })).rejects.toThrow("rollback wake");
+      let rows = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, source.companyId));
+      expect(rows.filter(row => row.nextAttemptAt !== null)).toHaveLength(27);
+      expect(await db.transaction(tx => reopenNativeQuotaPoolWaits(tx as unknown as typeof db, { companyId: randomUUID(), poolId }))).toBe(0);
+      expect(await db.transaction(tx => reopenNativeQuotaPoolWaits(tx as unknown as typeof db, { companyId: source.companyId, poolId }))).toBe(26);
+      rows = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.companyId, source.companyId));
+      expect(rows.filter(row => row.nextAttemptAt !== null)).toHaveLength(1);
+      expect(rows.filter(row => row.failureDetail?.replacementWaitingForCleanup === true)).toHaveLength(1);
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: deadline }).where(and(eq(nativeRunFinalizations.companyId, source.companyId), eq(nativeRunFinalizations.failureCode, "native_provider_usage_limit")));
+      expect(await db.transaction(tx => reopenNativeQuotaPoolWaits(tx as unknown as typeof db, { companyId: source.companyId, connectionId: randomUUID() }))).toBe(27);
+      const [cleanup] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, ids[0]!.runId));
+      expect(cleanup?.failureDetail?.replacementWaitingForCleanup).toBe(true);
+      const [foreign] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, other.runId));
+      expect(foreign?.nextAttemptAt).toEqual(deadline);
+      expect(foreign?.failureDetail?.replacementWaitingForCleanup).toBe(true);
+    });
+    it("continues through five authorized members without reusing an exhausted account", async () => {
+      const source = await seed();
+      const userId = `five-${randomUUID()}`;
+      await db.insert(authUsers).values({ id: userId, name: "Five", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: source.companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+      const accounts = aiConnectionService(db);
+      const saved = await Promise.all(Array.from({ length: 5 }, (_, i) => accounts.save(source.companyId, userId, {
+        provider: "openai", method: "api_key", ownership: "personal", name: `Account ${i}`, apiKey: `fixture-${i}`, agentIds: [], allAgents: true,
+      }, randomUUID())));
+      const members = saved.map(account => ({ id: randomUUID(), binding: { mode: "delegated" as const,
+        provider: "openai" as const, method: "api_key" as const, ...account }, profile: { provider: "codex" as const, model: "gpt-5" } }));
+      const router = aiConnectionRouterService(db);
+      const pool = await router.save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId: source.companyId,
+        config: { name: "Five accounts", enabled: true, mode: "failover", thresholdPercent: 90, members } }, userId);
+      await db.update(agents).set({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } }).where(eq(agents.id, source.agentId));
+      let selection = await router.resolve({ companyId: source.companyId, poolId: pool.id, agentId: source.agentId,
+        userId, adapterType: "paperclip_runner", taskKey: source.issueId });
+      let currentId: string = source.runId;
+      for (let i = 0; i < 5; i++) {
+        const runtime = await prepareManagedAiRuntime(db, { companyId: source.companyId, agentId: source.agentId,
+          responsibleUserId: userId, adapterType: "paperclip_runner", binding: selection.binding, config: selection.runtimeConfig });
+        await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: source.issueId, runtimeMode: "native", nativeIssueId: source.issueId,
+          status: "failed", startedAt: new Date(), errorCode: "native_provider_auth_failed", responsibleUserId: userId,
+          resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn", category: "authentication", message: "Unauthorized", retryability: "requires_action" } },
+          runnerProfileJson: { recoveryEventInventoryVersion: 1, nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: tmpdir() } } },
+          contextSnapshot: { issueId: source.issueId, aiRouterTaskKey: source.issueId, aiRouterSelection: selection,
+            aiConnection: { ...runtime.attribution, identity: runtime.identity, sessionIdentity: runtime.sessionIdentity } } }).where(eq(heartbeatRuns.id, currentId));
+        await runtime.cleanup();
+        if (i === 0) await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_auth_failed" }).where(eq(nativeRunFinalizations.runId, currentId));
+        else await db.insert(nativeRunFinalizations).values({ runId: currentId, companyId: source.companyId, issueId: source.issueId,
+          phase: "terminal_failure", failureCode: "native_provider_auth_failed", attempt: 1 });
+        const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved[i].grantId));
+        const ref = grant.credentialSecretRefs.find(item => item.configPath === "ai.credential")!;
+        const [secret] = await db.select().from(companySecrets).where(eq(companySecrets.id, ref.secretId));
+        expect(await recordVerifiedRouterQuotaCooldown(db, { runId: currentId, companyId: source.companyId, agentId: source.agentId,
+          credentialIdentity: `${grant.id}:${userId}:${secret.id}:${secret.aiSessionEpoch}`, retryNotBefore: null, failureKind: "auth" })).toBe(true);
+        expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, saved[i].grantId)))[0].status).toBe("needs_reauthorization");
+        expect(await connectionIntentService(db).requestForRunAuthFailure(currentId)).toBeNull();
+        expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, source.issueId))).toHaveLength(0);
+        if (i === 0) {
+          let release!: () => void, ready!: () => void;
+          const held = new Promise<void>(resolve => { ready = resolve; });
+          const gate = new Promise<void>(resolve => { release = resolve; });
+          const blocker = db.transaction(async tx => {
+            await tx.select().from(issues).where(eq(issues.id, source.issueId)).for("update");
+            ready(); await gate;
+          });
+          await held;
+          const timer = setTimeout(release, 2500);
+          try {
+            await expect(reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: async run => run.id === currentId ? { evidence: {}, retire: () => true } : null })).rejects.toThrow("native_replacement_decision_retry_required");
+          } finally { release(); clearTimeout(timer); await blocker; }
+          const [pending] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, currentId));
+          expect(pending.failureDetail?.replacementDenied).toBeUndefined();
+          expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, currentId))).toHaveLength(0);
+        }
+        if (i === 4) {
+          await expect(reconcileSafeNativeReplacements(db, new Date(), {
+            verifyStoppedSession: async run => run.id === currentId ? { evidence: {}, retire: () => true } : null,
+            failpoint: phase => { if (phase === "authentication_repair_requested") throw new Error("repair transaction interrupted"); },
+          })).rejects.toThrow("repair transaction interrupted");
+          expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, source.issueId))).toHaveLength(0);
+          expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, currentId)))[0].failureDetail?.replacementDenied).toBeUndefined();
+        }
+        const recovered = await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession: async run => run.id === currentId ? { evidence: {}, retire: () => true } : null });
+        if (i === 4) {
+          expect(recovered.scheduled).toBe(0);
+          const [finalization] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, currentId));
+          expect(finalization.failureDetail?.replacementDenied).toBe("quota_failover_unavailable");
+          expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, source.issueId))).toHaveLength(1);
+          expect(await connectionIntentService(db).requestForRunAuthFailure(currentId)).toMatchObject({ state: "needs_user_action", service: "openai" });
+          expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, currentId)))[0].livenessState).toBe("blocked");
+          break;
+        }
+        expect(recovered.scheduled).toBe(1);
+        const [next] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, currentId));
+        expect(next.contextSnapshot?.aiRouterSelection).toMatchObject({ memberId: members[i + 1].id });
+        expect(next.contextSnapshot?.aiPoolFailover).toEqual({ sourceRunId: currentId, reason: "auth" });
+        selection = next.contextSnapshot!.aiRouterSelection as typeof selection;
+        currentId = next.id;
+      }
+      expect(selection.memberId).toBe(members[4].id);
+    });
+    it.each([
+      { scenario: "pending API mutation", blocked: "uncertain_control_plane_action" },
+      { scenario: "different API receipt", blocked: "uncertain_provider_action" },
+      { scenario: "undispatched API mutation", blocked: null },
+      { scenario: "failed task document read", blocked: null },
+      { scenario: "failed task history read", blocked: null },
+      { scenario: "failed task history read with a semantic failure", blocked: null },
+      { scenario: "failed task history read with an unrelated semantic failure", blocked: "uncertain_provider_action" },
+      { scenario: "failed task history read with an untrusted semantic failure", blocked: "uncertain_provider_action" },
+      { scenario: "failed cross-task read", blocked: null },
+      { scenario: "failed cross-task comment with unknown outcome", blocked: "uncertain_provider_action" },
+      { scenario: "cross-task comment rejected by the bridge schema", blocked: null },
+      { scenario: "failed cross-task comment with a completed receipt", blocked: null },
+      { scenario: "failed cross-task comment with a pending mutation receipt", blocked: "uncertain_control_plane_action" },
+      { scenario: "failed cross-task comment with a mismatched mutation receipt", blocked: "uncertain_provider_action" },
+      { scenario: "failed chat attachment list", blocked: null },
+      { scenario: "call_api rejected by the bridge schema", blocked: null },
+      { scenario: "call_api failed with a generic error", blocked: "uncertain_provider_action" },
+      { scenario: "call_api schema rejection with pending mutation evidence", blocked: "uncertain_control_plane_action" },
+      { scenario: "failed artifact download with a settled install history", blocked: null },
+      { scenario: "failed artifact download with an unconfirmed install", blocked: "uncertain_provider_action" },
+      { scenario: "failed artifact download with mismatched install identities", blocked: "uncertain_provider_action" },
+      { scenario: "failed task document read in an external namespace", blocked: "uncertain_provider_action" },
+      { scenario: "failed task document read from a different source", blocked: "uncertain_provider_action" },
+      { scenario: "failed task document read in a preconfigured home", blocked: "uncertain_provider_action" },
+      { scenario: "requalified failed task document read", blocked: null },
+      { scenario: "requalification after the sweep restored the original block", blocked: null },
+      { scenario: "requalification after an unexplained block change", blocked: "uncertain_provider_action" },
+      { scenario: "requalification after a user change", blocked: "uncertain_provider_action" },
+      { scenario: "requalification with a newer task run", blocked: "uncertain_provider_action" },
+      { scenario: "requalification with a changed workspace", blocked: "uncertain_provider_action" },
+      { scenario: "requalification superseded by an operator hold", blocked: "uncertain_provider_action" },
+      { scenario: "failed task history read on completion review", blocked: null },
+      { scenario: "failed task history read on superseded review", blocked: "continuation_evidence_incomplete" },
+    ])("checks $scenario before Claude-to-Codex failover", async ({ scenario, blocked }) => {
+      const source = await seed();
+      const review = scenario.includes("review") ? await seedReview(source) : null;
+      const taskKey = review?.taskKey ?? source.issueId;
+      const userId = `quota-${randomUUID()}`;
+      await db.insert(authUsers).values({ id: userId, name: "Quota", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: source.companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+      const { harnessPoolService } = await import("../harness-pools.js");
+      const accounts = aiConnectionService(db);
+      const claude = await accounts.save(source.companyId, userId, { provider: "anthropic", method: "subscription", ownership: "personal", name: "Claude", loginSessionId: "fixture", agentIds: [], allAgents: true }, randomUUID());
+      const codex = await accounts.save(source.companyId, userId, { provider: "openai", method: "api_key", ownership: "personal", name: "Codex", apiKey: "fixture", agentIds: [], allAgents: true }, randomUUID());
+      const claudeId = randomUUID();
+      const codexId = randomUUID();
+      const pool = await harnessPoolService(db).save(source.companyId, { config: {
+        schemaVersion: 2, kind: "harness_pool", name: "Smart", enabled: true, mode: "failover", members: [
+          { id: claudeId, harness: { type: "claude_code" }, runner: "paperclip", model: "claude-sonnet-5",
+            connection: { ...claude, mode: "delegated", provider: "anthropic", method: "subscription" } },
+          { id: codexId, harness: { type: "codex" }, model: "gpt-6.1-sol",
+            connection: { ...codex, mode: "delegated", provider: "openai", method: "api_key" } },
+        ],
+      } }, userId);
+      await db.update(agents).set({ runtimeConfig: { harnessPool: { poolId: pool.id } } }).where(eq(agents.id, source.agentId));
+      const router = aiConnectionRouterService(db);
+      const selection = await router.resolve({ companyId: source.companyId, poolId: pool.id, agentId: source.agentId,
+        userId, adapterType: "paperclip_runner", taskKey, skipUsageProbe: true });
+      expect(selection.memberId).toBe(claudeId);
+      const runtime = await prepareManagedAiRuntime(db, { companyId: source.companyId, agentId: source.agentId,
+        responsibleUserId: userId, adapterType: "paperclip_runner", config: selection.runtimeConfig, binding: selection.binding });
+      await db.update(heartbeatRuns).set({
+        scopeKind: "issue", issueId: source.issueId, responsibleUserId: userId, finishedAt: new Date(),
+        errorCode: "native_provider_usage_limit",
+        resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "turn",
+          category: "quota_exhausted", message: "Quota exhausted", retryability: "requires_action" } },
+        contextSnapshot: { issueId: source.issueId, aiRouterTaskKey: taskKey, aiRouterSelection: selection, ...review?.context },
+      }).where(eq(heartbeatRuns.id, source.runId));
+      await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_usage_limit" }).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(await recordVerifiedRouterQuotaCooldown(db, { runId: source.runId, companyId: source.companyId,
+        agentId: source.agentId, credentialIdentity: runtime.sessionIdentity,
+        retryNotBefore: new Date(Date.now() + 60 * 60_000).toISOString() })).toBe(true);
+      if (scenario.includes("superseded review")) {
+        await db.update(issues).set({ statusVersion: 2 }).where(eq(issues.id, source.issueId));
+      }
+      const callId = "fixture-call";
+      const [failedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.runId));
+      if (scenario.includes("API")) {
+        const callKey = createHash("sha256").update(scenario === "different API receipt" ? "different-call" : `tool-use:${callId}`).digest("hex");
+        const state = scenario === "pending API mutation" ? "pending" : "undispatched";
+        await db.update(heartbeatRuns).set({ resultJson: { ...failedRun!.resultJson, apiToolReceipts: {
+          [callKey]: { state, operationId: "create_issue_attachment", digest: "a".repeat(64) },
+        } } }).where(eq(heartbeatRuns.id, source.runId));
+        await appendHeartbeatRunEvent(db, { ...source, eventType: "tool.execution.started", stream: "system", level: "info",
+          payload: { executionId: callId, name: "call_api", transport: "mcp", status: "running" } });
+        await appendHeartbeatRunEvent(db, { ...source, eventType: "tool.execution.completed", stream: "system", level: "info",
+          payload: { executionId: callId, name: "call_api", transport: "mcp", status: "failed" } });
+      } else {
+        const runnerInstanceId = randomUUID();
+        const nativeSessionId = randomUUID();
+        await db.update(heartbeatRuns).set({ runnerInstanceId, nativeSessionId,
+          runnerProfileJson: { ...failedRun!.runnerProfileJson, nativeExecutionInput: {
+            ...failedRun!.runnerProfileJson!.nativeExecutionInput as Record<string, unknown>,
+            provider: { kind: "acpx", agent: "claude" },
+            binding: { executionWorkspaceId: scenario.includes("changed workspace") ? randomUUID() : source.runId },
+            homeMode: scenario.includes("preconfigured") ? "preconfigured" : "isolated",
+          } },
+        }).where(eq(heartbeatRuns.id, source.runId));
+        const download = scenario.includes("artifact download");
+        const name = download ? "download_artifact" : scenario.includes("chat attachment") ? "list_chat_attachments"
+          : scenario.includes("task history") ? "get_task_history"
+          : scenario.includes("cross-task read") ? "get_task"
+          : scenario.includes("cross-task comment") ? "comment_on_task"
+          : scenario.startsWith("call_api") ? "call_api" : "list_task_documents";
+        const namespace = scenario.includes("external namespace") ? "external" : "paperclip";
+        for (const [offset, status] of (["running", "failed"] as const).entries()) {
+          const eventType = status === "running" ? "tool.execution.started" : "tool.execution.completed";
+          const sourceInstanceId = status === "failed" && scenario.includes("different source") ? randomUUID() : runnerInstanceId;
+          const sourceSeq = offset + 1;
+          const failure = download || scenario.includes("generic error") || (name === "comment_on_task" && !scenario.includes("bridge schema"))
+            ? "Paperclip semantic operation failed"
+            : name === "list_chat_attachments" ? "Paperclip semantic operation failed: paperclip_runner_chat_attachment_binding_denied"
+            : name === "call_api" ? "Invalid tool input: missing required field: operationId. This call included only: method, path."
+            : "Invalid tool input: missing required field: taskId. This call included only: issueId.";
+          const output = status === "running" ? null : failure;
+          const prpEvent = { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", runId: source.runId,
+            sourceInstanceId, sourceEventId: `fixture:${sourceSeq}`, sourceSeq, normalizedSessionId: nativeSessionId,
+            turnId: "provider-turn", itemId: callId, eventType, emittedAt: new Date().toISOString(), priority: 1,
+            payload: { schema: "paperclip.tool.execution.v1", executionId: callId, transport: "mcp", name, namespace,
+              operation: "execute", readOnly: false, status, output, outputBytes: output?.length ?? 0, outputTruncated: false, outputDigest: null } };
+          await appendHeartbeatRunEvent(db, { ...source, eventType, stream: "system", level: "info", payload: { prpEvent },
+            nativeSource: { sourceInstanceId, sourceEventId: prpEvent.sourceEventId, sourceSeq, protocolSchemaVersion: 1, canonicalPayload: prpEvent } });
+        }
+        if (scenario.includes("semantic failure")) {
+          const itemId = "semantic-item";
+          const semanticCallId = scenario.includes("unrelated") ? "tool-use:another-call" : "tool-use:" + callId;
+          for (const [offset, phase] of (["input", "result"] as const).entries()) {
+            const eventType = phase === "input" ? "semantic_tool.input" : "semantic_tool.result";
+            const sourceInstanceId = phase === "result" && scenario.includes("untrusted") ? randomUUID() : runnerInstanceId;
+            const sourceSeq = offset + 3;
+            const prpEvent = { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", runId: source.runId,
+              sourceInstanceId, sourceEventId: "fixture:" + sourceSeq, sourceSeq, normalizedSessionId: nativeSessionId,
+              turnId: "provider-turn", itemId, eventType, emittedAt: new Date().toISOString(), priority: 0,
+              payload: { semantic_tool: { schema: "paperclip.prp.semantic_tool.v1", schemaVersion: 1, phase,
+                callId: semanticCallId, operationId: name, correlation: { runId: source.runId, normalizedSessionId: nativeSessionId,
+                  turnId: "provider-turn", itemId }, ...(phase === "input" ? { input: {} } : { outcome: "failed", operationReceiptId: "operation_" + semanticCallId }) } } };
+            await appendHeartbeatRunEvent(db, { ...source, eventType, stream: "system", level: "info", payload: { prpEvent },
+              nativeSource: { sourceInstanceId, sourceEventId: prpEvent.sourceEventId, sourceSeq, protocolSchemaVersion: 1, canonicalPayload: prpEvent } });
+          }
+        }
+        if (scenario.includes("pending mutation evidence")) {
+          const key = createHash("sha256").update(`tool-use:${callId}`).digest("hex");
+          await db.update(heartbeatRuns).set({ resultJson: { ...failedRun!.resultJson,
+            apiToolReceipts: { [key]: { state: "pending", operationId: "create_issue_attachment", digest: "a".repeat(64) } },
+          } }).where(eq(heartbeatRuns.id, source.runId));
+        }
+        if (name === "comment_on_task" && scenario.includes("receipt")) {
+          const key = createHash("sha256").update(`tool-use:${callId}`).digest("hex");
+          const state = scenario.includes("pending") ? "pending" : "completed";
+          const operationId = scenario.includes("mismatched") ? "PUT /api/issues/{id}/documents/{key}" : "POST /api/issues/{id}/comments";
+          await db.update(heartbeatRuns).set({ resultJson: { ...failedRun!.resultJson, apiToolReceipts: {
+            [key]: { state, operationId, digest: "a".repeat(64), ...(state === "completed" ? { result: { ok: true, status: 201 } } : {}) },
+          } } }).where(eq(heartbeatRuns.id, source.runId));
+        }
+        if (download) {
+          const identity = { artifactId: randomUUID(), destination: "fixture.txt", byteSize: 1, sha256: "b".repeat(64) };
+          const outcome = scenario.includes("unconfirmed") ? "unconfirmed" : "completed";
+          await db.insert(activityLog).values([
+            { companyId: source.companyId, runId: source.runId, actorType: "agent", actorId: source.agentId,
+              entityType: "issue", entityId: source.issueId, action: "runner.artifact_install", details: { ...identity, outcome: "started" } },
+            { companyId: source.companyId, runId: source.runId, actorType: "agent", actorId: source.agentId,
+              entityType: "issue", entityId: source.issueId, action: "runner.artifact_install",
+              details: { ...identity, outcome, ...(scenario.includes("mismatched") ? { destination: "different.txt" } : {}) } },
+          ]);
+        }
+      }
+      const now = new Date();
+      const requalify = scenario.startsWith("requalif");
+      const verifyStoppedSession = async () => ({ evidence: {}, retire: () => true });
+      const runReplacement = () => reconcileSafeNativeReplacements(db, now, {
+        verifyStoppedSession,
+        ...(review ? { failpoint: () => {} } : {}),
+        ...(requalify ? { requalifyQuotaFailure: { companyId: source.companyId, runIds: [source.runId] } } : {}),
+      });
+      if (requalify) {
+        const time = (offset: number) => new Date(now.getTime() + offset);
+        const [task] = await db.update(issues).set({ status: "blocked", blockedTransitionAt: time(-3_000) })
+          .where(eq(issues.id, source.issueId)).returning();
+        await db.update(nativeRunFinalizations).set({ failureDetail: {
+          replacementDenied: "uncertain_provider_action",
+        } }).where(eq(nativeRunFinalizations.runId, source.runId));
+        const hold = { companyId: source.companyId, sourceIssueId: source.issueId,
+          kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: source.agentId, nextAction: "Reconcile the previous run." };
+        await db.insert(issueRecoveryActions).values([
+          { ...hold, cause: "native_provider_usage_limit", fingerprint: "failed-run-projection", status: "cancelled", outcome: "cancelled",
+            createdAt: time(-4_000), evidence: { runId: source.runId, nativeFailureBlock: { runId: source.runId, statusVersion: task!.statusVersion } } },
+          { ...hold, cause: "uncertain_provider_action", fingerprint: `native-replacement:${source.runId}`, status: "resolved", outcome: "blocked",
+            createdAt: time(-2_500), resolvedAt: time(-2_000), evidence: { runId: source.runId,
+              automaticRecovery: { policy: "preserve_without_replay_v1", actionOutcome: "unknown", replay: "blocked", runId: source.runId } } },
+        ]);
+        if (scenario.startsWith("requalification after")) {
+          await db.update(issues).set({ status: "todo" }).where(eq(issues.id, source.issueId));
+          await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, source.issueId));
+          if (!scenario.includes("unexplained")) {
+            await db.insert(activityLog).values({ companyId: source.companyId, agentId: source.agentId, actorType: "system",
+              actorId: "system", entityType: "issue", entityId: source.issueId, action: "issue.continued_automatically", createdAt: time(-1_000),
+              details: { status: "todo", previousStatus: "blocked", violation: "unknown_block", outcome: "not_started", attempt: 1 } });
+          }
+          if (scenario.includes("user change")) {
+            await db.insert(activityLog).values({ companyId: source.companyId, actorType: "user", actorId: userId, entityType: "issue",
+              entityId: source.issueId, action: "issue.updated", createdAt: time(-500), details: { status: "blocked" } });
+          }
+        }
+        if (scenario.includes("newer task run")) {
+          await db.insert(heartbeatRuns).values({ companyId: source.companyId, agentId: source.agentId, scopeKind: "issue",
+            issueId: source.issueId, status: "cancelled", createdAt: new Date(now.getTime() + 1) });
+        }
+        if (scenario.includes("operator hold")) {
+          await db.insert(issueRecoveryActions).values({ ...hold, cause: "operator_hold", fingerprint: "operator", status: "active" });
+        }
+        expect(await reconcileSafeNativeReplacements(db, now, { verifyStoppedSession })).toMatchObject({ scanned: 0, scheduled: 0 });
+      }
+      if (blocked) {
+        expect(await runReplacement()).toMatchObject({ scheduled: 0 });
+        const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+        expect(owner?.failureDetail?.replacementDenied).toBe(blocked);
+        if (requalify) {
+          const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.fingerprint, `native-replacement:${source.runId}`));
+          expect(hold?.outcome).toBe("blocked");
+        }
+        return;
+      }
+      const replacement = await runReplacement();
+      const [decision] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(replacement, JSON.stringify(decision?.failureDetail)).toMatchObject({ scheduled: 1 });
+      if (requalify) {
+        const [hold] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.fingerprint, `native-replacement:${source.runId}`));
+        const [owner] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+        expect(hold).toMatchObject({ status: "resolved", outcome: "handed_back" });
+        const [original] = await db.select().from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.sourceIssueId, source.issueId), eq(issueRecoveryActions.fingerprint, "failed-run-projection"),
+        ));
+        expect(original).toMatchObject({ status: "cancelled", outcome: "cancelled" });
+        expect(owner?.failureDetail?.replacementDenied).toBeUndefined();
+        expect(await runReplacement()).toMatchObject({ scanned: 0, scheduled: 0 });
+      }
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
+      if (review) {
+        expect(successor?.contextSnapshot).toMatchObject(review.context);
+        const [task] = await db.select().from(issues).where(eq(issues.id, source.issueId));
+        expect(task).toMatchObject({ assigneeAgentId: review.worker, status: "in_review", executionRunId: null, checkoutRunId: null });
+      }
+      expect(successor).toMatchObject({ issueId: source.issueId, status: "scheduled_retry", scheduledRetryAt: now,
+        contextSnapshot: { forceFreshSession: true, aiRouterSelection: { memberId: codexId, binding: { provider: "openai" } },
+          aiPoolFailover: { sourceRunId: source.runId, reason: "quota" } } });
+    });
+    it.each(["deadline", "reconnect"] as const)("atomically commits the quota successor and pin and rolls both back on failure (%s)", async repair => {
+      const source = await seed();
+      const userId = `quota-${randomUUID()}`;
+      await db.insert(authUsers).values({ id: userId, name: "Quota", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: source.companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "member" });
+      const accounts = aiConnectionService(db);
+      const first = await accounts.save(source.companyId, userId, { provider: "openai", method: "api_key", ownership: "personal", name: "First", apiKey: "fixture", agentIds: [], allAgents: true }, randomUUID());
+      const second = await accounts.save(source.companyId, userId, { provider: "openai", method: "api_key", ownership: "personal", name: "Second", apiKey: "fixture", agentIds: [], allAgents: true }, randomUUID());
+      const members = [first, second].map(account => ({ id: randomUUID(), binding: { mode: "delegated" as const, provider: "openai" as const, method: "api_key" as const, ...account }, profile: { provider: "codex" as const, model: "gpt-5" } }));
+      const router = aiConnectionRouterService(db);
+      const pool = await router.save(BUILTIN_AI_FAILOVER_ROUTER_KEY, { companyId: source.companyId, config: { name: "Pool", enabled: true, mode: "failover", thresholdPercent: 90, members } }, userId);
+      await db.update(agents).set({ runtimeConfig: { aiConnection: { mode: "router", connectionId: pool.id } } }).where(eq(agents.id, source.agentId));
+      const selection = await router.resolve({ companyId: source.companyId, poolId: pool.id, agentId: source.agentId, userId, adapterType: "paperclip_runner", taskKey: source.issueId });
+      if (selection.binding.mode === "responsible_user") throw new Error("Expected explicit binding");
+      const credentialIdentity = async (grantId: string) => {
+        const [grant] = await db.select().from(connectionGrants).where(and(eq(connectionGrants.companyId, source.companyId), eq(connectionGrants.id, grantId)));
+        const ref = grant?.credentialSecretRefs.find(item => item.configPath === "ai.credential");
+        if (!ref) throw new Error("Fixture grant has no AI credential");
+        const [secret] = await db.select().from(companySecrets).where(and(eq(companySecrets.companyId, source.companyId), eq(companySecrets.id, ref.secretId)));
+        if (!secret) throw new Error("Fixture credential is missing");
+        return `${grantId}:${ref.secretId}:${secret.aiSessionEpoch}`;
+      };
+      let firstIdentity = await credentialIdentity(selection.binding.grantId);
+      const secondIdentity = await credentialIdentity(second.grantId);
+      await db.update(heartbeatRuns).set({ scopeKind: "issue", issueId: source.issueId, responsibleUserId: userId,
+        errorCode: "native_provider_usage_limit", resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn", category: "quota_exhausted", message: "Quota exhausted", retryability: "requires_action" } },
+        contextSnapshot: { issueId: source.issueId, aiRouterTaskKey: source.issueId, aiRouterSelection: selection } }).where(eq(heartbeatRuns.id, source.runId));
+      await db.update(nativeRunFinalizations).set({ failureCode: "native_provider_usage_limit" }).where(eq(nativeRunFinalizations.runId, source.runId));
+      const firstRetryAt = new Date(Date.now() + 60_000);
+      expect(await recordVerifiedRouterQuotaCooldown(db, { runId: source.runId, companyId: source.companyId, agentId: source.agentId, credentialIdentity: firstIdentity.replace(`${selection.binding.grantId}:`, `${selection.binding.grantId}:${userId}:`), retryNotBefore: firstRetryAt.toISOString() })).toBe(true);
+      // Completed ordinary work is context for a new turn, never a command to replay.
+      await appendHeartbeatRunEvent(db, { ...source, eventType: "tool.execution.started", stream: "system", level: "info",
+        payload: { executionId: "saved-file", name: "write_file", transport: "process" } });
+      await appendHeartbeatRunEvent(db, { ...source, eventType: "tool.execution.completed", stream: "system", level: "info",
+        payload: { executionId: "saved-file", name: "write_file", transport: "process", status: "completed", output: "Saved fixture.txt" } });
+      const verifyStoppedSession = async () => ({ evidence: {}, retire: () => true });
+      await expect(db.transaction(async tx => {
+        await appendHeartbeatRunEvent(tx as unknown as typeof db, { ...source,
+          eventType: "tool.execution.started", stream: "system", level: "info",
+          payload: { executionId: "pending-email", name: "send_email", transport: "process" } });
+        expect((await reconcileSafeNativeReplacements(tx as unknown as typeof db, new Date(), { verifyStoppedSession })).scheduled).toBe(0);
+        const [held] = await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+        expect(held?.failureDetail?.replacementDenied).toBe("uncertain_provider_action");
+        throw new Error("discard unresolved-action fixture");
+      })).rejects.toThrow("discard unresolved-action fixture");
+      const retryAt = new Date(Date.now() + 120_000);
+      await router.recordQuotaCooldown(source.companyId, second.connectionId, `secret:${secondIdentity.slice(second.grantId.length + 1)}`, retryAt);
+      expect((await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).scheduled).toBe(0);
+      const [waiting] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, source.runId));
+      expect(waiting?.nextAttemptAt).toEqual(firstRetryAt);
+      expect(waiting?.failureDetail?.replacementDenied).toBeUndefined();
+      await db.delete(aiConnectionQuotaCooldowns).where(and(eq(aiConnectionQuotaCooldowns.companyId, source.companyId), eq(aiConnectionQuotaCooldowns.credentialIdentity, `secret:${secondIdentity.slice(second.grantId.length + 1)}`)));
+      await expect(reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession, failpoint: phase => { if (phase === "successor_inserted") throw new Error("rollback"); } })).rejects.toThrow("rollback");
+      const pins = () => db.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id));
+      expect((await pins())[0]!.selection.memberId).toBe(members[0]!.id);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId))).toHaveLength(0);
+      expect((await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).scheduled).toBe(1);
+      expect((await pins())[0]!.selection.memberId).toBe(members[1]!.id);
+      const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, source.runId));
+      expect(successor).toMatchObject({ scopeKind: "issue", issueId: source.issueId });
+      expect(successor?.contextSnapshot?.aiRouterSelection).toEqual((await pins())[0]!.selection);
+      if (!successor) throw new Error("Missing first successor");
+      const selectedSecond = (await pins())[0]!.selection;
+      await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native", nativeIssueId: source.issueId,
+        errorCode: "native_provider_usage_limit", resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn", category: "quota_exhausted", message: "Quota exhausted", retryability: "requires_action" } },
+        runnerProfileJson: { recoveryEventInventoryVersion: 1, nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: tmpdir() } } },
+      }).where(eq(heartbeatRuns.id, successor.id));
+      await db.insert(nativeRunFinalizations).values({ runId: successor.id, companyId: source.companyId, issueId: source.issueId,
+        phase: "terminal_failure", attempt: 1, failureCode: "native_provider_usage_limit" });
+      expect(await recordVerifiedRouterQuotaCooldown(db, { runId: successor.id, companyId: source.companyId, agentId: source.agentId,
+        credentialIdentity: secondIdentity.replace(`${second.grantId}:`, `${second.grantId}:${userId}:`), retryNotBefore: new Date(Date.now() + 60_000).toISOString() })).toBe(true);
+      await expect(db.transaction(async tx => {
+        await expect(heartbeatService(tx as unknown as typeof db).cancelRun(successor.id, "Stopped", { resultJson: { cancelledByActorType: "user" } })).rejects.toMatchObject({ status: 409 });
+        await reconcileSafeNativeReplacements(tx as unknown as typeof db, new Date(), { verifyStoppedSession });
+        expect(await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, successor.id))).toHaveLength(0);
+        expect((await tx.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id)))[0]!.selection).toEqual(selectedSecond);
+        throw new Error("restore real stop fixture");
+      })).rejects.toThrow("restore real stop fixture");
+      await expect(db.transaction(async tx => {
+        await tx.delete(aiConnectionQuotaCooldowns).where(eq(aiConnectionQuotaCooldowns.companyId, source.companyId));
+        await reconcileSafeNativeReplacements(tx as unknown as typeof db, new Date(), { verifyStoppedSession });
+        const [held] = await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, successor.id));
+        expect(held?.failureDetail?.replacementDenied).toBe("quota_failover_unavailable");
+        throw new Error("restore cooldown fixtures");
+      })).rejects.toThrow("restore cooldown fixtures");
+      await expect(db.transaction(async tx => {
+        await tx.update(issues).set({ status: "cancelled" }).where(eq(issues.id, source.issueId));
+        await reconcileSafeNativeReplacements(tx as unknown as typeof db, new Date(), { verifyStoppedSession });
+        expect(await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, successor.id))).toHaveLength(0);
+        expect((await tx.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id)))[0]!.selection).toEqual(selectedSecond);
+        throw new Error("restore task fixture");
+      })).rejects.toThrow("restore task fixture");
+      await expect(db.transaction(async tx => {
+        const [current] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successor.id));
+        await tx.update(heartbeatRuns).set({ resultJson: { ...current!.resultJson, executionCancellation: { state: "requested" } } }).where(eq(heartbeatRuns.id, successor.id));
+        await reconcileSafeNativeReplacements(tx as unknown as typeof db, new Date(), { verifyStoppedSession });
+        expect(await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, successor.id))).toHaveLength(0);
+        expect((await tx.select().from(aiConnectionTaskPins).where(eq(aiConnectionTaskPins.poolId, pool.id)))[0]!.selection).toEqual(selectedSecond);
+        throw new Error("restore stop fixture");
+      })).rejects.toThrow("restore stop fixture");
+      // Once every member was attempted, a real recorded cooldown is required
+      // before the lineage can begin another bounded cycle.
+      await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+      let [cycle] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, successor.id));
+      expect(cycle?.nextAttemptAt).not.toBeNull();
+      expect((await pins())[0]!.selection).toEqual(selectedSecond);
+      if (repair === "deadline") {
+        const past = new Date(Date.now() - 1000);
+        await db.update(aiConnectionQuotaCooldowns).set({ retryAt: past }).where(and(eq(aiConnectionQuotaCooldowns.companyId, source.companyId), eq(aiConnectionQuotaCooldowns.credentialIdentity, `secret:${firstIdentity.slice(first.grantId.length + 1)}`)));
+        const [firstReceipt] = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.sourceEventId, `ai-connection-quota-attributed:${source.runId}`));
+        await db.update(heartbeatRunEvents).set({ payload: { ...firstReceipt!.payload, retryAt: past.toISOString() } }).where(eq(heartbeatRunEvents.id, firstReceipt!.id));
+      } else {
+        const secretId = firstIdentity.split(":")[1]!;
+        await db.update(companySecrets).set({ aiSessionEpoch: Number(firstIdentity.split(":")[2]) + 1 }).where(eq(companySecrets.id, secretId));
+        firstIdentity = await credentialIdentity(first.grantId);
+        await db.transaction(tx => reopenNativeQuotaPoolWaits(tx as unknown as typeof db, { companyId: source.companyId, connectionId: first.connectionId }));
+      }
+      expect((await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession })).scheduled).toBe(1);
+      [cycle] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, successor.id));
+      const [next] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, successor.id));
+      expect(cycle?.failureDetail?.quotaCycleResetSuccessorRunId).toBe(next?.id);
+      expect((await pins())[0]!.selection.memberId).toBe(members[0]!.id);
+      if (!next) throw new Error("Missing reset successor");
+      await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native", nativeIssueId: source.issueId,
+        errorCode: "native_provider_usage_limit", resultJson: { providerFailure: { schema: "paperclip.provider-failure.v1", provider: "openai", phase: "turn", category: "quota_exhausted", message: "Quota exhausted", retryability: "requires_action" } },
+        runnerProfileJson: { recoveryEventInventoryVersion: 1, nativeExecutionInput: { provider: { kind: "codex" }, workspace: { cwd: tmpdir() } } },
+      }).where(eq(heartbeatRuns.id, next.id));
+      await db.insert(nativeRunFinalizations).values({ runId: next.id, companyId: source.companyId, issueId: source.issueId,
+        phase: "terminal_failure", attempt: 1, failureCode: "native_provider_usage_limit" });
+      expect(await recordVerifiedRouterQuotaCooldown(db, { runId: next.id, companyId: source.companyId, agentId: source.agentId,
+        credentialIdentity: firstIdentity.replace(`${first.grantId}:`, `${first.grantId}:${userId}:`), retryNotBefore: new Date(Date.now() + 60_000).toISOString() })).toBe(true);
+      // A new service instance must use the committed cycle boundary rather
+      // than treating the earlier use of this member as a loop.
+      await reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession });
+      const [afterRestart] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, next.id));
+      expect(afterRestart?.failureDetail?.replacementDenied).toBeUndefined();
+      expect(afterRestart?.nextAttemptAt).not.toBeNull();
+      await db.delete(aiConnectionQuotaCooldowns).where(and(eq(aiConnectionQuotaCooldowns.companyId, source.companyId), eq(aiConnectionQuotaCooldowns.credentialIdentity, `secret:${secondIdentity.slice(second.grantId.length + 1)}`)));
+      let entered!: () => void, release!: () => void;
+      const enteredBarrier = new Promise<void>(resolve => { entered = resolve; });
+      const releaseBarrier = new Promise<void>(resolve => { release = resolve; });
+      const replacement = reconcileSafeNativeReplacements(db, new Date(), { verifyStoppedSession, failpoint: async phase => {
+        if (phase === "successor_inserted") { entered(); await releaseBarrier; }
+      } });
+      await enteredBarrier;
+      let stopFinished = false;
+      const stop = heartbeatService(db).cancelRun(next.id, "Stopped", { resultJson: { cancelledByActorType: "user" } }).finally(() => { stopFinished = true; });
+      await new Promise(resolve => setTimeout(resolve, 100));
+      try { expect(stopFinished).toBe(false); } finally { release(); }
+      expect((await replacement).scheduled).toBe(1);
+      await stop;
+      const [stoppedSuccessor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, next.id));
+      expect(stoppedSuccessor?.status).toBe("cancelled");
+    }, 30_000);
     it.each(["verified", "unproven", "unknown_action"] as const)(
       "preserves saved work and a queued request at a controlled recovery boundary (%s)",
       async (mode) => {

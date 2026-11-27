@@ -1,6 +1,6 @@
 import type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionUsage } from "@paperclipai/shared";
 import { api } from "./client";
-export type PoolInspection = Record<string, { reason: string; checkedAt: string | null; usage?: AiConnectionUsage }>;
+export type PoolInspection = Record<string, { reason: string; checkedAt: string | null; retryAt?: string; usage?: AiConnectionUsage }>;
 export const aiConnectionPoolsApi = {
   list: (companyId: string) => api.get<AiConnectionPool[]>(`/companies/${companyId}/ai-connection-pools`),
   save: (companyId: string, body: { pluginKey: string; id?: string; expectedRevision?: number; config: AiConnectionPoolConfig }) => api.post<AiConnectionPool>(`/companies/${companyId}/ai-connection-pools`, body),

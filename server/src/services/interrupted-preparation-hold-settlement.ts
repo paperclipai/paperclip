@@ -1,7 +1,8 @@
+import { LEGACY_RECOVERY_CAUSE } from "./legacy-execution-recovery-contract.js";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { isInterruptedNativePreparation } from "./cancelled-native-startup.js";
-import { LEGACY_RECOVERY_CAUSE, settleInterruptedNativeBootstrap } from "./legacy-execution-recovery.js";
+import { settleInterruptedNativeBootstrap } from "./legacy-execution-recovery.js";
 import { logger } from "../middleware/logger.js";
 import type { OwnerProof } from "./owner-proof.js";
 import type { InProgressRecord, SettleOutcome } from "./recovery/ownership-registry.js";

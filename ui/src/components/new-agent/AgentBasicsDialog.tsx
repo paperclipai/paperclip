@@ -94,6 +94,7 @@ export function AgentBasicsDialog({
   const antigravityQualified = PAPERCLIP_RUNNER_ACPX_PROFILES.some(profile => profile.value === "antigravity" && profile.qualified);
   const antigravityCandidate = nativeRunner?.candidateHarnesses?.some(candidate => candidate.agent === "antigravity");
   const antigravityAvailable = (!cloud || harnessPolicy.isCloudRunnerProviderAllowed("antigravity")) && Boolean(nativeRunner);
+  const poolAvailable = !cloud && Boolean(nativeRunner) && experimental.data?.enableNativeRunner === true;
   const choices = [...(adapters ?? []).filter(
     (adapter) =>
       adapter.loaded &&
@@ -110,7 +111,8 @@ export function AgentBasicsDialog({
       !getAdapterDisplay(adapter.type).comingSoon,
   ), ...(copilotAvailable ? [{ ...nativeRunner!, type: "copilot_runtime" }] : []),
     ...(antigravityAvailable ? [{ ...nativeRunner!, type: "antigravity_runtime" }] : []),
-    ...(kimiAvailable ? [{ ...nativeRunner!, type: "kimi_runtime" }] : [])];
+    ...(kimiAvailable ? [{ ...nativeRunner!, type: "kimi_runtime" }] : []),
+    ...(poolAvailable ? [{ ...nativeRunner!, type: "paperclip_runner" }] : [])];
   const validAdapter = choices.some((adapter) => adapter.type === adapterType);
   async function submit() {
     if (busy.current || !name.trim() || (step === "adapter" && !validAdapter)) return;
@@ -142,19 +144,19 @@ export function AgentBasicsDialog({
       saved.current = agent;
       const hostedCursor = cloud && adapterType === "cursor_cloud";
       const nextAdapter = hostedCursor || ["openai_dot", "copilot_runtime", "antigravity_runtime", "kimi_runtime"].includes(adapterType) ? "paperclip_runner" : adapterType;
-      const nextProvider = hostedCursor ? "cursor_cloud" : adapterType === "kimi_runtime" ? "kimi" : adapterType === "antigravity_runtime" ? "antigravity" : adapterType === "copilot_runtime" ? "copilot" : adapterType === "openai_dot" ? "openai_dot" : "codex";
+      const nextProvider = hostedCursor ? "cursor_cloud" : adapterType === "kimi_runtime" ? "kimi" : adapterType === "antigravity_runtime" ? "antigravity" : adapterType === "copilot_runtime" ? "copilot" : adapterType === "openai_dot" ? "openai_dot" : adapterType === "paperclip_runner" ? "pool" : "codex";
       const nextRunner = hostedCursor ? "paperclip" as const : "auto" as const;
       // Pending providers can show setup while the saved name-only draft stays held.
-      const pendingAntigravity = nextProvider === "antigravity" && !antigravityQualified;
+      const heldSetupChoice = nextProvider === "pool" || (nextProvider === "antigravity" && !antigravityQualified);
       if (step === "adapter" || (!creatingRecord && agent.name !== name.trim())) {
         const { setupAdapterChoice: _previousChoice, ...metadata } = agent.metadata ?? {};
         agent = await agentsApi.update(agent.id, {
           name: name.trim(),
-          ...(step === "adapter" && pendingAntigravity ? {
+          ...(step === "adapter" && heldSetupChoice ? {
             metadata: { ...metadata, setupAdapterPending: true,
               setupAdapterChoice: { adapterType: nextAdapter, runnerProvider: nextProvider, runner: "auto" } },
           } : {}),
-          ...(step === "adapter" && !pendingAntigravity ? {
+          ...(step === "adapter" && !heldSetupChoice ? {
             adapterType: nextAdapter, runner: nextRunner,
             adapterConfig: nextAdapter === "paperclip_runner" ? {
               provider: ["copilot", "antigravity", "kimi"].includes(nextProvider) ? "acpx" : nextProvider,
@@ -300,7 +302,7 @@ export function AgentBasicsDialog({
                         >
                           <AdapterMark type={adapter.type} />
                           <span className="text-sm font-medium">
-                            {display.label}
+                            {adapter.type === "paperclip_runner" ? "Pool (Paperclip Runner)" : display.label}
                           </span>
                           {adapter.type === "antigravity_runtime" && !antigravityQualified && (
                             <span className="text-xs text-muted-foreground">{antigravityCandidate ? "Candidate" : "Not available yet"}</span>

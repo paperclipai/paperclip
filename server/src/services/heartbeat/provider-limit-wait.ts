@@ -16,6 +16,7 @@ function quotaScopeLabel(scope: string): string {
 import { aiConnectionService } from "../ai-connections.js";
 import { ANTIGRAVITY_CLI_QUOTA_SCOPE } from "../antigravity-swarm-refusal.js";
 import { parseObject } from "../../adapters/utils.js";
+import { effectiveAiConnectionInput } from "@paperclipai/shared";
 import { logActivity, publishActivity } from "../activity-log.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import type { ActivityPublication } from "../../types/activity-publication.js";
@@ -77,7 +78,7 @@ export function createProviderLimitWait(db: Db, deps: ProviderLimitWaitDependenc
   ): Promise<boolean> {
     if (options.resumingAdmittedRun || options.conversation) return false;
     if (run.invocationSource === "on_demand" && run.triggerDetail === "manual") return false;
-    if (parseObject(parseObject(agent.runtimeConfig).aiConnection).mode === "router") return false;
+    if (parseObject(effectiveAiConnectionInput(agent.runtimeConfig)).mode === "router") return false;
     const now = new Date();
     // The limit belongs to the credential it was reported on. A run that would
     // use another account, or whose limited account was revoked, is not held.

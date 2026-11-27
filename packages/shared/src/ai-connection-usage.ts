@@ -45,6 +45,8 @@ export interface AiConnectionUsage {
   limits: AiConnectionUsageLimit[];
   overage: AiConnectionUsageOverage | null;
   errorCode?: "unsupported" | "connection_unavailable" | "authentication_required" | "permission_denied" | "rate_limited" | "provider_unavailable" | "invalid_response";
+  /** Actual provider HTTP response status; absent for local parsing or network failures. */
+  providerStatus?: number;
   message?: string;
 }
 

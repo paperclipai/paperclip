@@ -42,7 +42,7 @@ function PoolComposer({ scenario }: { scenario: Scenario }) {
 }
 function PoolWait({ checking = false }: { checking?: boolean }) {
   const [issue] = useState<Issue>(() => ({ ...storybookIssues[0]!, status: "in_progress", executionState: null,
-    scheduledRetry: { status: "scheduled_retry", scheduledRetryReason: "ai_connection_pool_wait", scheduledRetryAt: new Date(Date.now() + 60_000).toISOString(), scheduledRetryAttempt: 1 } as Issue["scheduledRetry"],
+    scheduledRetry: { status: "scheduled_retry", scheduledRetryReason: "ai_connection_pool_wait", poolWaitScope: "pool", scheduledRetryAt: new Date(Date.now() + 60_000).toISOString(), scheduledRetryAttempt: 1 } as Issue["scheduledRetry"],
   }));
   return <div className="space-y-4"><IssueMonitorBanner issue={issue} onCheckNow={() => undefined} checkingNow={checking} /><IssueMonitorComposerStrip issue={issue} onCheckNow={() => undefined} checkingNow={checking} /></div>;
 }
@@ -53,7 +53,7 @@ function PoolRun({ scenario }: { scenario: Scenario }) {
     notes: scenario === "fallback" ? ["Model override is unavailable for this member; using its default.", "Effort override is unavailable for the effective model; using its default."] : [],
   };
   return <div className="space-y-4"><AiConnectionPoolRunDetails context={{ aiRouterSelection: selection, aiConnection: { accountName: claude ? "My Claude subscription" : "My OpenAI subscription" } }} />
-    {scenario === "retry" && <RunRetryDetails agentRouteId={agentId} run={{ status: "scheduled_retry", scheduledRetryReason: "ai_connection_pool_wait", scheduledRetryAt: new Date(Date.now() + 60_000).toISOString(), scheduledRetryAttempt: 1, retryOfRunId: "run-pool-wait" }} />}</div>;
+    {scenario === "retry" && <RunRetryDetails agentRouteId={agentId} run={{ status: "scheduled_retry", scheduledRetryReason: "ai_connection_pool_wait", contextSnapshot: { poolWaitScope: "pool" }, scheduledRetryAt: new Date(Date.now() + 60_000).toISOString(), scheduledRetryAttempt: 1, retryOfRunId: "run-pool-wait" }} />}</div>;
 }
 function PoolSurfaces({ scenario = "overview" }: { scenario?: Scenario }) {
   const [client] = useState(() => {

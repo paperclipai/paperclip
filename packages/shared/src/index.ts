@@ -1,3 +1,4 @@
+export { AGENT_DIRECTORY_BUSY_RETRY_REASON } from "./execution-retry-reasons.js";
 export type { InboxMineSnapshot, InboxSourceError } from "./types/inbox-mine.js";
 export { CASE_HANDOFF_STATES, handoffCaseSchema, agentCaseHandoffSchema, doneCaseHandoffSchema, caseWorkflowDocumentTextSchema, caseInitialDocumentSchema, caseInitialDocumentsSchema, type CaseInitialDocument, type CaseHandoffState, type CaseHandoffDestinationKind, type AgentCaseHandoffInput, type DoneCaseHandoffInput, type HandoffCaseInput, type HandoffCaseResult, type CaseHandoff, type CaseWorkflowTransition } from "./case-handoffs.js";
 export * from "./slack-app-manifest.js";
@@ -1244,6 +1245,7 @@ export type {
   IssueWatchdogSummary,
   SuccessfulRunHandoffState,
   SuccessfulRunHandoffStateKind,
+  AiConnectionPoolWaitScope,
   IssueScheduledRetry,
   IssueScheduledRetryStatus,
   IssueRetryNowOutcome,
@@ -3037,6 +3039,7 @@ export * from "./agent-appearance.js";
 export * from "./attention-audience.js";
 export * from "./ai-connections.js";
 export * from "./ai-connection-router.js";
+export * from "./harness-pools.js";
 export * from "./ai-connection-usage.js";
 export * from "./subscriptions.js";
 export * from "./types/email.js";

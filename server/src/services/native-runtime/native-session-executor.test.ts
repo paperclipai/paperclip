@@ -476,10 +476,13 @@ import {
   nativeSessionFailureDisposition,
   nativeFailedRunRetryStateIsSafe,
   verifyStoppedNativeSessionForContinuation,
+  verifyStoppedNativeSessionForReplacement,
   nativePreProviderRetryAfterCleanupStateIsSafe,
   reconcileRetainedNativeSessionCleanup,
   retainedNativeCleanupJournalMatches,
   nativeProviderUsageLimitFromEvent,
+  nativeProviderQuotaFailureFromEvent,
+  nativeProviderAuthenticationFailureFromEvent,
   nativeSessionFailureSourceCode,
   nativeStartupFailureMessage,
   NATIVE_PROVIDER_SESSION_CLOSED,
@@ -8067,7 +8070,7 @@ describe("retained native cleanup activation", () => {
 describe("stopped native conversation physical cleanup", () => {
   it.each(["codex", "acpx"].flatMap(provider => [
     "stopped", "provider_alive", "worker_alive", "missing_receipt", "wrong_receipt", "new_launch",
-    "foreign_run", "foreign_company", "foreign_runner", "remote", "unreleased", "changed_state", "changed_pid", "symlink", "startup_intent", "pending_identity", "wrong_schema", "replacement", "replacement_alive", "agent_alive", "checkpoint_owner_alive", "diagnostic_owner_alive", "normalized_session_receipt",
+    "foreign_run", "foreign_company", "foreign_runner", "remote", "unreleased", "changed_state", "changed_pid", "symlink", "startup_intent", "pending_identity", "wrong_schema", "replacement", "replacement_alive", "agent_alive", "checkpoint_owner_alive", "diagnostic_owner_alive", "normalized_session_receipt", "quota_stopped",
   ].map(mode => ({ provider, mode }))))("$provider $mode", async ({ provider, mode }) => {
     const base = await mkdtemp(join(tmpdir(), "native-conversation-cleanup-"));
     const previous = process.env.PAPERCLIP_RUNNER_STATE_DIR;
@@ -8133,12 +8136,14 @@ describe("stopped native conversation physical cleanup", () => {
       await writeFile(runnerPath, JSON.stringify(durableRunnerState({ ...identity, ...(mode === "foreign_run" ? { runId: "foreign" } : {}) }, "ready")));
       await writeFile(join(root, `runner/${provider}-provider-state.json`), JSON.stringify(providerState));
       if (mode === "symlink") { await rename(runnerPath, join(base, "external")); await symlink(join(base, "external"), runnerPath); }
-      const proof = await verifyStoppedNativeSessionForContinuation(db, run);
-      if (["stopped", "changed_state", "changed_pid", "replacement", "normalized_session_receipt"].includes(mode)) {
+      const proof = mode === "quota_stopped"
+        ? await verifyStoppedNativeSessionForReplacement(db, { ...run, errorCode: "native_provider_usage_limit" })
+        : await verifyStoppedNativeSessionForContinuation(db, run);
+      if (["stopped", "changed_state", "changed_pid", "replacement", "normalized_session_receipt", "quota_stopped"].includes(mode)) {
         expect(proof).not.toBeNull();
         if (mode === "changed_state") await writeFile(runnerPath, "{}");
         const kill = mode === "changed_pid" ? vi.spyOn(process, "kill").mockReturnValue(true) : null;
-        try { expect(proof!.retire()).toBe(["stopped", "replacement", "normalized_session_receipt"].includes(mode)); } finally { kill?.mockRestore(); }
+        try { expect(proof!.retire()).toBe(["stopped", "replacement", "normalized_session_receipt", "quota_stopped"].includes(mode)); } finally { kill?.mockRestore(); }
         expect(await readFile(join(root, `runner/${provider}-provider-state.json`), "utf8")).toBe(JSON.stringify(providerState));
       } else expect(proof).toBeNull();
     } finally {
@@ -16636,14 +16641,24 @@ describe("native session bounded recovery", () => {
       message: "error creating thread: failed to load AGENTS.md instructions for environment `local`: fs sandbox helper failed with status exit status: 1: bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted",
       ...fields });
 
-    it.each(["authentication", "permission", "invalid_request"])("stops on the first %s rejection and hands the run to the board", (category) => {
+    it.each([
+      ["authentication", "native_provider_auth_failed"],
+      ["permission", NATIVE_PROVIDER_STARTUP_REJECTED],
+      ["invalid_request", NATIVE_PROVIDER_STARTUP_REJECTED],
+    ])("stops on the first %s rejection and hands the run to the board", (category, expectedCode) => {
       const code = nativeSessionFailureSourceCode(sessionOpenFailure(startupFailure({ category, retryability: "requires_action" })));
-      expect(code).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
+      expect(code).toBe(expectedCode);
       const disposition = nativeSessionFailureDisposition(1, new Date(), code);
-      expect(disposition).toEqual({ phase: "terminal_failure", failureCode: NATIVE_PROVIDER_STARTUP_REJECTED, nextAttemptAt: null });
+      expect(disposition).toEqual({ phase: "terminal_failure", failureCode: expectedCode, nextAttemptAt: null });
       expect(nativeSessionRecoveryProjection({ ...disposition, agentId: "agent" })).toMatchObject({
         issueStatus: "blocked", recoveryOwner: { kind: "board" },
       });
+    });
+
+    it("does not attribute a startup failure to the account without the Runner command result", () => {
+      const providerFailure = startupFailure({ category: "authentication", retryability: "requires_action" });
+      const error = Object.assign(new Error(sessionOpenFailure(providerFailure).message), { providerFailure });
+      expect(nativeSessionFailureSourceCode(error)).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
     });
 
     it.each([false, true])("stops a billing refusal on its first attempt even with a confirmed runner exit (remote: %s)", remote => {
@@ -16756,7 +16771,7 @@ describe("native session bounded recovery", () => {
         confirmed({ message: "Query closed before response received" }), true, previous)).toBe("provider_session_open_rejected");
       // A deterministic rejection never retries, even with exit proof.
       const deterministic = confirmed({ category: "authentication", retryability: "requires_action" });
-      expect(nativeSessionFailureSourceCode(deterministic)).toBe(NATIVE_PROVIDER_STARTUP_REJECTED);
+      expect(nativeSessionFailureSourceCode(deterministic)).toBe("native_provider_auth_failed");
     });
 
     it("waits out a remote startup rate limit or quota as a usage-limit hold, not a board Retry", () => {
@@ -17320,6 +17335,20 @@ describe("native session bounded recovery", () => {
     });
   });
 
+  it("normalizes only authoritative exact provider authentication failures", () => {
+    const event = { sourceKind: "runner" as const, eventType: "turn.failed" as const,
+      payload: { status: "failed", error: { codexErrorInfo: "unauthorized", message: "Private account metadata" } } };
+    expect(nativeProviderAuthenticationFailureFromEvent(event)).toMatchObject({ category: "authentication", providerCode: "unauthorized" });
+    expect(nativeProviderAuthenticationFailureFromEvent({ ...event, sourceKind: "control_plane" })).toBeNull();
+    expect(nativeProviderAuthenticationFailureFromEvent({ ...event, eventType: "tool.execution.completed" })).toBeNull();
+    for (const code of ["model_not_found", "invalid_request", "unknown"]) expect(nativeProviderAuthenticationFailureFromEvent({
+      ...event, payload: { status: "failed", error: { codexErrorInfo: code, message: "unauthorized" } } })).toBeNull();
+    expect(nativeProviderAuthenticationFailureFromEvent({ ...event, payload: { status: "failed", error: { message: "unauthorized" } } })).toBeNull();
+    expect(nativeSessionFailureDisposition(1, new Date(), "native_provider_auth_failed").phase).toBe("terminal_failure");
+    expect(nativeSessionFailureDisposition(1, new Date(), "native_runner_process_exited").phase).toBe("retryable_failure");
+    expect(nativeSessionFailureDisposition(2, new Date(), "native_runner_process_exited").phase).toBe("retryable_failure");
+    expect(nativeSessionFailureDisposition(3, new Date(), "native_runner_process_exited")).toMatchObject({ phase: "terminal_failure", failureCode: "native_provider_runner_failed" });
+  });
   it("stops retries only for an authenticated provider usage-limit terminal", () => {
     const event = {
       sourceKind: "runner" as const,
@@ -24737,7 +24766,7 @@ it("records a runner process exit that closed the provider event stream as runne
   const code = nativeSessionFailureSourceCode(lost);
   expect(code).toBe("native_runner_process_exited");
   expect(nativeSessionFailureDisposition(1, new Date(), code)).toMatchObject({ phase: "retryable_failure", failureCode: "native_session_interrupted" });
-  expect(nativeSessionFailureDisposition(3, new Date(), code)).toEqual({ phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null });
+  expect(nativeSessionFailureDisposition(3, new Date(), code)).toEqual({ phase: "terminal_failure", failureCode: "native_provider_runner_failed", nextAttemptAt: null });
   // Other closed-stream causes, and the runner code only inside provider text, stay provider failures.
   expect(nativeSessionFailureSourceCode(new NativeProviderTerminalFailure("notification_transport_failed", false,
     "Notification transport failed closed: provider stream ended"))).toBe("native_provider_terminal_failed");
@@ -24886,6 +24915,21 @@ describe("HTTP Stop during remote runner staging", () => {
       expect(dispatches).toBe(0);
     } finally { release(); await outcome; await stopping; await bundle.transport.detachControllerForRestart?.().catch(() => {}); await temporary.cleanup(); await rm(root, { recursive: true, force: true }); }
   }, 120000);
+});
+
+
+describe("native quota event normalization", () => {
+  it("normalizes an exact runner terminal code and holds arbitrary error prose", () => {
+    const event = { sourceKind: "runner", eventType: "turn.failed", payload: {
+      status: "failed", error: { codexErrorInfo: "usageLimitExceeded", message: "private account details" },
+    } } as Parameters<typeof nativeProviderQuotaFailureFromEvent>[0];
+    expect(nativeProviderQuotaFailureFromEvent(event)).toMatchObject({
+      provider: "openai", category: "quota_exhausted", providerCode: "usageLimitExceeded",
+    });
+    expect(nativeProviderQuotaFailureFromEvent({ ...event, payload: { status: "failed", error: { message: "usage limit exceeded" } } })).toBeNull();
+    expect(nativeProviderQuotaFailureFromEvent({ ...event, eventType: "tool.execution.completed" })).toBeNull();
+    expect(nativeProviderQuotaFailureFromEvent({ ...event, sourceKind: "control_plane" })).toBeNull();
+  });
 });
 
 describe("remoteProviderStateNeverOpened", () => {

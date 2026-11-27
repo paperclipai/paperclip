@@ -421,7 +421,8 @@ export async function admitExplicitNativeContinuation(input: {
     const legacyUserTurn = failedPreparation || run.runtimeMode === "legacy" &&
       action.cause === "legacy_execution_requires_reconciliation" &&
       (isConversationAdapter(agent.adapterType) ||
-        (agent.adapterType === "paperclip_runner" && (freshIntent || await hasVerifiedWorkspaceRepair(db, run))));
+        (agent.adapterType === "paperclip_runner" && (freshIntent || await hasVerifiedWorkspaceRepair(db, run) ||
+          isConversationAdapter(await historicalAdapterType(db, run) ?? ""))));
     // Saved input is a request for a new turn, never permission to undo an
     // operator Stop or redeliver a message already consumed by this run.
     if (queuedRequest && !queuedInterrupt && (run.contextSnapshot?.wakeCommentId === commentId ||

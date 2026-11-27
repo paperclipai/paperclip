@@ -1,6 +1,9 @@
 export const REMOTE_RUNNER_RECONNECT_GRACE_MS = 7 * 60_000;
 export const REMOTE_CONTROLLER_LEASE_MS = 60_000;
 
+/** A recovery claim for one run failed unexpectedly and was deferred. */
+export const NATIVE_RESTART_RECOVERY_FAILED = "restart_recovery_failed";
+
 /**
  * How long a local runnerd keeps running with no authenticated controller.
  *

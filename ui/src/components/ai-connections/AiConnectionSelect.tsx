@@ -43,8 +43,9 @@ export function AiConnectionSelect({
   onChange,
   adapterType,
   model,
+  explicitAccount = false,
   onUseHarnessAuth,
-}: AiConnectionPickerProps & { adapterType: string; model?: string; onUseHarnessAuth?: () => void }) {
+}: AiConnectionPickerProps & { adapterType: string; model?: string; explicitAccount?: boolean; onUseHarnessAuth?: () => void }) {
   const selectId = useId();
   const personal = personalAiDefault(connections, requirement, currentUserId);
   const selected =
@@ -57,6 +58,7 @@ export function AiConnectionSelect({
     .filter(
       (c) =>
         c.companyId === requirement.companyId &&
+        (!explicitAccount || c.provider === requirement.provider) &&
         isAiConnectionCompatibleForSelection(
           c,
           adapterType,
@@ -87,17 +89,20 @@ export function AiConnectionSelect({
   );
   const incompatible =
     selected && !compatible.some((c) => c.id === selected.id);
+  const isDisabled = (connection: (typeof connections)[number]) =>
+    Boolean(aiConnectionProblem(connection)) &&
+    (!explicitAccount || Boolean(connection.unavailableReason) || connection.status === "revoked");
   const change = (id: string) => {
     if (id === "connect") return onConnect();
     if (id === "harness_auth") return onUseHarnessAuth?.();
-    if (id === "responsible_user" && canUseDefault)
+    if (id === "responsible_user" && !explicitAccount && canUseDefault)
       return onChange({
         provider: requirement.provider,
         method: personal?.method ?? "api_key",
         mode: "responsible_user",
       });
     const connection = compatible.find((c) => c.id === id);
-    if (!connection || aiConnectionProblem(connection)) return;
+    if (!connection || isDisabled(connection)) return;
     onChange({
       provider: connection.provider,
       method: connection.method,
@@ -144,12 +149,12 @@ export function AiConnectionSelect({
             <SelectItem
               key={c.id}
               value={c.id}
-              disabled={Boolean(aiConnectionProblem(c))}
+              disabled={isDisabled(c)}
             >
               <ConnectionLabel connection={c} label={`${aiConnectionDisplayLabel(c)}${c.status !== "connected" ? " · Reconnect" : ""}`} wrap />
             </SelectItem>
           ))}
-          {(canUseDefault || value?.mode === "responsible_user") && (
+          {!explicitAccount && (canUseDefault || value?.mode === "responsible_user") && (
             <SelectItem value="responsible_user" disabled={!canUseDefault}>
               <span className="flex size-5 shrink-0 items-center justify-center"><UserRound className="size-4" /></span>
               Responsible user’s default

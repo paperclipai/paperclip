@@ -3564,6 +3564,13 @@
       "when": 1795635927842,
       "tag": "0510_clear_speedball",
       "breakpoints": true
+    },
+    {
+      "idx": 509,
+      "version": "7",
+      "when": 1795636077710,
+      "tag": "0511_pool_failover",
+      "breakpoints": true
     }
   ]
 }

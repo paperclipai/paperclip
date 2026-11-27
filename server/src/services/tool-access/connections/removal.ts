@@ -1,3 +1,4 @@
+import { reopenNativeQuotaPoolWaits } from "../../native-runtime/native-quota-wake.js";
 import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import { notifyVoiceChange } from "../../voice/voice-recovery-notifications.js";
 import { notifyChatEndpointWork } from "../../chat-work-notifications.js";
@@ -279,6 +280,7 @@ async function removeConnection(
         publications: releasedWaitPublications,
         ...(binding.actorType && binding.actorId ? { actor: { actorType: binding.actorType, actorId: binding.actorId } } : {}),
       });
+      if (connection.connectionPurpose === "ai") await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId: connection.companyId, connectionId: connection.id });
     });
     releasedWaitPublications.forEach(publishActivity);
     let externalCredentialCleanup: ToolConnectionRemovalSummary["externalCredentialCleanup"] =
@@ -533,6 +535,7 @@ async function removeConnection(
       if (connection.transport === "chat_sdk") await notifyChatEndpointWork(tx, connection.id, connection.companyId);
           if (connection.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: connection.id });
       await notifyGitHubCredentialChange(tx, connection);
+      if (connection.connectionPurpose === "ai") await reopenNativeQuotaPoolWaits(tx as unknown as Db, { companyId: connection.companyId, connectionId: connection.id });
       await notifyToolConnectionHealth(tx, connection);
       await tx.select({ id: toolApplications.id }).from(toolApplications)
         .where(and(eq(toolApplications.id, connection.applicationId), eq(toolApplications.companyId, connection.companyId)))

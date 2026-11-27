@@ -26,9 +26,9 @@ export class SidecarProcess {
 
   constructor(options: {loader?:string;environment?:Record<string,string>} = {}) {
     this.#child = spawn(
-      options.loader ? process.execPath : fileURLToPath(new URL("../../node_modules/.bin/tsx", import.meta.url)),
-      [...(options.loader ? ["--import","tsx","--import",options.loader] : []), fileURLToPath(new URL("../cli/acpx-runtime-sidecar.ts", import.meta.url))],
-      { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH, LANG: "C.UTF-8", ...options.environment } },
+      process.execPath,
+      ["--import", "tsx", ...(options.loader ? ["--import", options.loader] : []), fileURLToPath(new URL("../cli/acpx-runtime-sidecar.ts", import.meta.url))],
+      { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH, LANG: "C.UTF-8", ...(process.env.NODE_PATH ? { NODE_PATH: process.env.NODE_PATH } : {}), ...(process.env.PAPERCLIP_TEST_SIDECAR_ESBUILD ? { ESBUILD_BINARY_PATH: process.env.PAPERCLIP_TEST_SIDECAR_ESBUILD } : {}), ...options.environment } },
     );
     this.#exit = new Promise(resolve => this.#child.once("exit", (code, signal) => resolve({code,signal})));
     let stdout = "";
@@ -87,8 +87,9 @@ export class SidecarProcess {
 
   async next(
     predicate: (frame: Record<string, unknown>) => boolean,
+    timeoutMs = 5_000,
   ): Promise<Record<string, unknown>> {
-    const deadline = Date.now() + 5_000;
+    const deadline = Date.now() + timeoutMs;
     for (;;) {
       const index = this.#frames.findIndex(predicate);
       if (index >= 0) return this.#frames.splice(index, 1)[0]!;

@@ -1,3 +1,4 @@
+import { LOCAL_WORKSPACE_COMMAND_PHASES } from "../workspace-operation-phases.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { and, asc, eq, inArray, isNotNull, isNull, like, notInArray, notLike, or, sql, type SQL } from "drizzle-orm";
@@ -40,7 +41,7 @@ import { settleClaimedWakeRequest } from "./wake-request-claimed-settlement.js";
 import { settleAbandonedRemoteSnapshotSave, settleAbandonedWorkspaceCommandOperation, settleAbandonedWorkspaceFinalizeAttempt } from "./workspace-finalize-attempt-settlement.js";
 import { preparationOnlyWriterCondition, settlePreparationOnlyRemoteWorkspaceEpoch } from "./remote-workspace-unsaved-files-settlement.js";
 import { retirableRemoteSnapshotLedgerCondition, settleAbandonedRemoteSnapshotLedger } from "./remote-snapshot-ledger-settlement.js";
-import { LOCAL_WORKSPACE_COMMAND_PHASES, runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
+import { runtimeControlOperationOwnerStamp, settleRuntimeControlOperation } from "../workspace-operations.js";
 import { copybackOwnerHoldOwner, settleCopybackOwnerHold } from "./copyback-owner-hold.js";
 import { applyObservedFenceProviderProof, observedWorkspaceFenceOwner, settleObservedWorkspaceFence } from "./observed-workspace-fence.js";
 import { copybackOwnerStamp } from "../native-runtime/native-workspace-owner-stop-proof.js";
@@ -343,12 +344,12 @@ const runColumns = {
   controllerProcess: heartbeatRuns.controllerProcess,
 };
 
-function runKind(id: string, title: string, obligation: Obligation, where: SQL | undefined,
+function runKind(id: string, title: string, obligation: Obligation, where: SQL | undefined | (() => SQL | undefined),
   owner: (row: RunRow) => RecordOwner, invariantChecks: readonly number[] = [1, 2]): OwnableKind {
   return {
     id, title, obligation, storage: "database", settle: null, invariantChecks,
     listInProgress: async (db, limit, offset) => {
-      const rows = await db.select(runColumns).from(heartbeatRuns).where(where).orderBy(asc(heartbeatRuns.id)).limit(limit + 1).offset(offset);
+      const rows = await db.select(runColumns).from(heartbeatRuns).where(typeof where === "function" ? where() : where).orderBy(asc(heartbeatRuns.id)).limit(limit + 1).offset(offset);
       const result = page(rows as RunRow[], limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.id, issueId: row.issueId,
@@ -379,7 +380,7 @@ function legacyControllerLeaseOwner(row: RunRow): RecordOwner {
 type LeaseRow = Pick<typeof environmentLeases.$inferSelect, "id" | "companyId" | "heartbeatRunId" | "issueId"
   | "metadata" | "updatedAt">;
 
-function leaseKind(id: string, title: string, obligation: Obligation, where: SQL | undefined,
+function leaseKind(id: string, title: string, obligation: Obligation, where: SQL | undefined | (() => SQL | undefined),
   owner: (row: LeaseRow) => RecordOwner, invariantChecks: readonly number[] = [1, 2]): OwnableKind {
   return {
     id, title, obligation, storage: "database", settle: null, invariantChecks,
@@ -387,7 +388,7 @@ function leaseKind(id: string, title: string, obligation: Obligation, where: SQL
       const rows = await db.select({ id: environmentLeases.id, companyId: environmentLeases.companyId,
         heartbeatRunId: environmentLeases.heartbeatRunId, issueId: environmentLeases.issueId,
         metadata: environmentLeases.metadata, updatedAt: environmentLeases.updatedAt })
-        .from(environmentLeases).where(where).orderBy(asc(environmentLeases.id)).limit(limit + 1).offset(offset);
+        .from(environmentLeases).where(typeof where === "function" ? where() : where).orderBy(asc(environmentLeases.id)).limit(limit + 1).offset(offset);
       const result = page(rows, limit);
       return { truncated: result.truncated, records: result.rows.map(row => ({
         recordId: row.id, companyId: row.companyId, runId: row.heartbeatRunId, issueId: row.issueId,
@@ -872,7 +873,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     // releasable orphans are listed, so a held one is never polled; its
     // retention window end is a due time.
     ...leaseKind("environment_retained_orphan_sandbox", "Retained orphan sandbox", "workspace_preservation",
-      releasableRetainedOrphanCondition(), row => runOwner(row.heartbeatRunId), [1]),
+      releasableRetainedOrphanCondition, row => runOwner(row.heartbeatRunId), [1]),
     settle: settleRetainedOrphanSandbox,
     nextDueAt: nextRetainedOrphanDueAt,
   },
@@ -896,7 +897,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
         const stamp = runtimeControlOperationOwnerStamp(row.metadata);
         return stamp ? { kind: "process", stamp } : { kind: "none" };
       }),
-    settle: settleRuntimeControlOperation,
+    settle: (db, record, context) => settleRuntimeControlOperation(db, record, context),
 
   }, versionLock(workspaceOperations)),
   ownerGoneAttestable({
@@ -1105,7 +1106,7 @@ export const OWNABLE_KINDS: readonly OwnableKind[] = [
     // Keep this entry after the environment teardown kinds: a lease they settle
     // in a pass is released before this kind lists in that same pass.
     ...runKind("legacy_interrupted_preparation_hold", "Interrupted preparation held for replay", "ownership",
-      heldInterruptedPreparationWhere(), row => {
+      heldInterruptedPreparationWhere, row => {
         // A preparation the orphan reaper ended has a revoked lease: its owner
         // is still the recorded controller process.
         const stamp = finishedLegacyControllerOwnerStamp(row);

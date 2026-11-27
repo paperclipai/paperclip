@@ -59,12 +59,12 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
     const nextRuntimeConfig: Record<string, unknown> = { ...existingRc };
 
     if (Object.keys(overlay.heartbeat).length > 0) {
-      const existingHb = (existingRc.heartbeat ?? {}) as Record<string, unknown>;
+      const existingHb = (nextRuntimeConfig.heartbeat ?? {}) as Record<string, unknown>;
       nextRuntimeConfig.heartbeat = { ...existingHb, ...overlay.heartbeat };
     }
 
     if (Object.keys(overlay.debug).length > 0) {
-      const existingDebug = (existingRc.debug ?? {}) as Record<string, unknown>;
+      const existingDebug = (nextRuntimeConfig.debug ?? {}) as Record<string, unknown>;
       const nextDebug = omitUndefinedEntries({ ...existingDebug, ...overlay.debug });
       if (Object.keys(nextDebug).length === 0) {
         delete nextRuntimeConfig.debug;

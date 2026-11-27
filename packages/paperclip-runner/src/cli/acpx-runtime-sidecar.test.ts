@@ -2010,6 +2010,15 @@ describe("qualified ACPX runtime sidecar", () => {
       error: { message: "ACPX working directory must be a non-root directory" } });
   });
 
+  it("rejects a commit without an owned provider preparation", async () => {
+    const sidecar = startSidecar();
+    sidecar.write(initializeRequest(1, "claude", "claude-sonnet-5"));
+    expect(await sidecar.next(frame => frame.id === 1, 20_000)).toMatchObject({ ok: true });
+    sidecar.write({ protocolVersion: ACPX_SIDECAR_PROTOCOL_VERSION, id: 2, command: "session.commit", params: { preparationId: "missing" } });
+    expect(await sidecar.next(frame => frame.id === 2)).toMatchObject({ ok: false,
+      error: { message: "ACPX provider preparation does not match" } });
+  }, 30_000);
+
   it.each(["off", "low", "high", "max"])(
     "accepts Pi thinking level %s through the actual session.open dispatcher",
     async (piThinkingLevel) => {
@@ -2222,6 +2231,7 @@ describe("qualified ACPX runtime sidecar", () => {
     });
   });
 });
+
 
 
 type ToolCallResponseBody = { result: { content: Array<{ text: string }>; isError?: boolean } };

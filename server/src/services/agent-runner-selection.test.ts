@@ -306,7 +306,7 @@ describe("server-owned Codex runner selection", () => {
     expect(resolveNewAgentRunner({ adapterType: "paperclip_runner", runner: "legacy", adapterConfig: { provider: "codex", codexPermissionMode: "never", lifecycleMode: "per_turn", dangerouslyBypassApprovalsAndSandbox: false } }))
       .toEqual({ adapterType: "codex_local", adapterConfig: { dangerouslyBypassApprovalsAndSandbox: false } });
   });
-  it.each([{ platform: "win32", architecture: "x64" }, { platform: "linux", architecture: "arm" }, { platform: "darwin", architecture: "ia32" }])("keeps unqualified $platform/$architecture targets legacy while preserving explicit native profiles", ({ platform, architecture }) => {
+  it.each([{ platform: "win32", architecture: "arm64" }, { platform: "linux", architecture: "arm" }, { platform: "darwin", architecture: "ia32" }])("keeps unqualified $platform/$architecture targets legacy while preserving explicit native profiles", ({ platform, architecture }) => {
     const input = { adapterType: "codex_local", target: { driver: "local", platform, architecture } };
     expect(resolveNewAgentRunner(input).adapterType).toBe("codex_local");
     expect(() => resolveNewAgentRunner({ ...input, runner: "paperclip" })).toThrow("unavailable");
@@ -315,7 +315,7 @@ describe("server-owned Codex runner selection", () => {
     expect(resolveNewAgentRunner({ ...saved, runner: "paperclip" })).toEqual({ adapterType: saved.adapterType, adapterConfig: saved.adapterConfig });
   });
   it.each(qualifiedTargets)("automatically keeps unsupported targets and active external overrides legacy on $platform/$architecture", target => {
-    const input = { adapterType: "codex_local", target: { driver: "local", platform: "win32", architecture: "x64" } };
+    const input = { adapterType: "codex_local", target: { driver: "local", platform: "win32", architecture: "arm64" } };
     expect(resolveNewAgentRunner(input).adapterType).toBe("codex_local");
     expect(() => resolveNewAgentRunner({ ...input, runner: "paperclip" })).toThrow("unavailable");
     state.overridden.add("codex_local");
@@ -700,6 +700,23 @@ describe("Grok runner migration", () => {
 });
 
 describe("Codex creation runner contract", () => {
+  it("keeps Windows Codex on Legacy by default while allowing explicit native selection", () => {
+    const windows = { driver: "local", platform: "win32", architecture: "x64" };
+    expect(paperclipRunnerSupportsPlatform("codex_local", "win32", "x64")).toBe(true);
+    expect(agentRunnerAvailability("codex_local", windows)).toEqual({ supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" });
+    for (const runner of [undefined, "auto"] as const) {
+      expect(resolveNewAgentRunner({ adapterType: "codex_local", target: windows, runner }).adapterType).toBe("codex_local");
+    }
+    const config = { model: "gpt-6.1-sol", dangerouslyBypassApprovalsAndSandbox: true };
+    expect(resolveNewAgentRunner({ adapterType: "codex_local", adapterConfig: config, target: windows, runner: "paperclip" }))
+      .toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol" } });
+    expect(resolveNewAgentRunner({ adapterType: "codex_local", adapterConfig: config, target: windows, runner: "legacy" }))
+      .toEqual({ adapterType: "codex_local", adapterConfig: config });
+    for (const harness of ["claude_local", "pi_local", "opencode_local", "grok_local", "cursor_cloud"]) {
+      expect(paperclipRunnerSupportsPlatform(harness, "win32", "x64")).toBe(false);
+      expect(agentRunnerAvailability(harness, windows).defaultRunner).toBe("legacy");
+    }
+  });
   it("graduates qualified harnesses and retains saved provider identity", () => {
     expect(paperclipRunnerProfileForHarness("codex_local")).toEqual({ provider: "codex" });
     expect(paperclipRunnerProfileForHarness("claude_local")).toEqual({ provider: "acpx", acpxAgent: "claude" });
@@ -720,7 +737,8 @@ describe("Codex creation runner contract", () => {
       expect(paperclipRunnerSupportsPlatform("codex_local", "linux", architecture, "musl")).toBe(false);
       expect(paperclipRunnerSupportsPlatform("codex_local", "linux", architecture, "unknown")).toBe(false);
     }
-    for (const [platform, architecture] of [["darwin", "ia32"], ["linux", "arm"], ["win32", "x64"], ["win32", "arm64"], ["freebsd", "x64"]]) expect(paperclipRunnerSupportsPlatform("codex_local", platform, architecture)).toBe(false);
+    expect(paperclipRunnerSupportsPlatform("codex_local", "win32", "x64")).toBe(true);
+    for (const [platform, architecture] of [["darwin", "ia32"], ["linux", "arm"], ["win32", "arm64"], ["freebsd", "x64"]]) expect(paperclipRunnerSupportsPlatform("codex_local", platform, architecture)).toBe(false);
     expect(paperclipRunnerSupportsPlatform("claude_local", "darwin", "arm64")).toBe(true);
   });
   it("keeps auto out of saved update defaults and validates request intent", () => {

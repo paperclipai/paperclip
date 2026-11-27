@@ -32,7 +32,8 @@ const ACP_AUTH_REQUIRED = -32000;
 
 /** The typed AIR session failure ACPX reports beside its generic terminal error. */
 export type AcpxTerminalSessionFailure = {
-  category: string; title?: string; details?: string;
+  category: string;
+  recoveryActions?: readonly string[]; title?: string; details?: string;
   /** Structured provider fields an owned runtime patch reported beside the AIR failure. */
   provider?: AcpxStructuredTurnFailure;
 };
@@ -102,6 +103,8 @@ export function acpxTypedTerminalSessionFailure(meta: unknown): AcpxTerminalSess
     category: typeof failure.category === "string" && TYPED_SESSION_FAILURE_CATEGORIES.has(failure.category) ? failure.category : "unknown",
     ...(typeof failure.title === "string" ? { title: failure.title } : {}),
     ...(typeof failure.details === "string" ? { details: failure.details } : {}),
+    ...(air.version === 1 && Array.isArray(failure.actions) && failure.actions.every(action => typeof action === "string")
+      ? { recoveryActions: failure.actions } : {}),
     ...(provider ? { provider } : {}),
   };
 }
@@ -109,13 +112,23 @@ export function acpxTypedTerminalSessionFailure(meta: unknown): AcpxTerminalSess
 /**
  * AIR's `limit` category also covers context, turn and configured budget
  * limits. Only an exhausted account allowance is a provider limit; the
- * provider's own title distinguishes it.
+ * Claude's recovery actions distinguish its limit types. Older receipts may
+ * carry only the provider title.
  */
-function sessionLimitCategory(failure: AcpxTerminalSessionFailure | undefined): ProviderFailure["category"] | undefined {
+function sessionLimitCategory(agent: string, failure: AcpxTerminalSessionFailure | undefined): ProviderFailure["category"] | undefined {
   if (failure?.category !== "limit") return undefined;
+  // Claude ACP's AIR v1 policy assigns no action to quota exhaustion,
+  // retry to rate limiting, and new_session to context and budget exhaustion.
+  // These actions describe the provider failure and grant no execution authority.
+  const actions = failure.recoveryActions;
+  if (agent === "claude" && actions) {
+    if (actions.length === 0) return "quota_exhausted";
+    if (actions.length === 1 && actions[0] === "retry") return "rate_limit";
+    if (actions.includes("new_session")) return undefined;
+  }
   const text = [failure.title, failure.details].filter(value => typeof value === "string").join("\n");
   if (/\brate[- ]limit/i.test(text)) return "rate_limit";
-  if (/no available quota|usage limit|you(?:'|’)ve hit your (?:\w+ )?limit|out of (?:extra )?usage|quota (?:limit )?exceeded/i.test(text)) {
+  if (/no available quota|usage limit|you(?:'|’)ve hit your (?:[\w-]+ )?limit|out of (?:extra )?usage|quota (?:limit )?exceeded/i.test(text)) {
     return "quota_exhausted";
   }
   return undefined;
@@ -170,7 +183,7 @@ export function acpxProviderFailure(error: unknown, agent: string, phase: Provid
   const code = detail.type ?? detail.code ?? data.errorType ?? data.errorKind;
   const category = (typeof code === "string" ? CATEGORIES.get(code) : undefined)
     ?? (acp?.code === ACP_AUTH_REQUIRED ? "authentication" : undefined)
-    ?? sessionLimitCategory(sessionFailure)
+    ?? sessionLimitCategory(agent, sessionFailure)
     ?? sessionModelCategory(agent, sessionFailure);
   return createProviderFailure({ provider: agent === "claude" ? "anthropic" : agent === "codex" ? "openai" : agent,
     phase, message, httpStatus: status, providerCode: code, requestId: data.request_id, category, environment });

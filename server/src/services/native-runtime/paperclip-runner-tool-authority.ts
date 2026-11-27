@@ -23,7 +23,8 @@ import { skillAccessService } from "../skill-access.js";
 import { SKILL_LIBRARY_SCHEMAS, SKILL_LIBRARY_TOOL_DEFINITIONS, SkillLibraryReadCache, executeSkillLibraryTool } from "./native-skill-library-tools.js";
 import { withExternalExecutionAdmission, type ExternalAdmissionTransaction } from "../../modules/external-agents/index.js";
 import { apiResultMayHaveWorkspace, callTaskWorkspaceTool, pendingTaskRepositoryContinuation, withWorkspacePageHref } from "../task-workspace-tools.js";
-import { TaskAttachmentReadCache, TASK_ATTACHMENT_DEFINITIONS, TASK_ATTACHMENT_SCHEMAS, listTaskAttachments, readTaskAttachment } from "./runner-task-attachments.js";
+import { TaskAttachmentReadCache, listTaskAttachments, readTaskAttachment } from "./runner-task-attachments.js";
+import { TASK_ATTACHMENT_DEFINITIONS, TASK_ATTACHMENT_SCHEMAS } from "./task-attachment-tool-definitions.js";
 import { RUNNER_BRIDGE_READ_OPERATIONS, RUNNER_BRIDGE_SCHEMAS, runnerBridgeDefinitions, readAssignedSkill, executeWorkspaceTool, readWorkspaceUploadFile, settleRunnerBridgeRead, assertRunnerWorkspacePathAllowed } from "./runner-bridge-tools.js";
 import type { NativeRuntimeContextSnapshot } from "../../vendor/paperclip-runner/index.js";
 import { assertCanManageIssueMonitor, eligibleIssueMonitorWait, prepareIssueMonitorUpdate, setTaskMonitorSchema, summarizeIssueMonitor } from "../issue-monitors.js";
@@ -126,16 +127,13 @@ import {
   readCurrentWakeComments,
   type CurrentWakeCommentsBinding,
 } from "./current-wake-comments.js";
+import { LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION, LIST_CHAT_ATTACHMENTS_TOOL_NAME, REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION, REUSE_CHAT_ATTACHMENT_TOOL_NAME } from "./chat-attachment-tool-definitions.js";
 import {
   readPublishedGitHubReviewCompletionContinuation,
   authorizeChatAttachmentReuse,
   authorizeChatConversationForBoundRun,
-  LIST_CHAT_ATTACHMENTS_TOOL_DEFINITION,
-  LIST_CHAT_ATTACHMENTS_TOOL_NAME,
   listAuthorizedChatAttachments,
   prepareReusedChatAttachment,
-  REUSE_CHAT_ATTACHMENT_TOOL_DEFINITION,
-  REUSE_CHAT_ATTACHMENT_TOOL_NAME,
   type ChatAttachmentReuseSource,
 } from "./chat-attachment-reuse.js";
 import {
@@ -188,6 +186,9 @@ const RECOVERABLE_READ_OPERATIONS = new Set([
   READ_CURRENT_WAKE_COMMENTS_TOOL_NAME, LIST_CHAT_ATTACHMENTS_TOOL_NAME, READ_CHAT_ATTACHMENT_TOOL_NAME,
   READ_TOOL_RESULT, "connections_search",
 ]);
+export function isRecoverableRunnerRead(tool: string): boolean {
+  return RECOVERABLE_READ_OPERATIONS.has(tool);
+}
 // Writes whose effect and idempotency receipt commit in one transaction, with
 // no outside effect before commit, and whose effect is compare-and-swap on the
 // state it read. Recovery may run them again: the receipt proves whether the
@@ -332,6 +333,14 @@ const TASK_API_PATHS: Readonly<Record<string, readonly [string, string]>> = {
   read_task_document: ["GET", "/api/issues/{id}/documents/{key}"],
   write_task_document: ["PUT", "/api/issues/{id}/documents/{key}"],
 };
+
+/** These tools dispatch mutations exclusively through the run's API receipt
+ * journal. A fixed endpoint can also validate the receipt's operation. */
+export function runnerToolMutationJournal(tool: string): { operationId: string | null } | null {
+  if (tool === "call_api") return { operationId: null };
+  const endpoint = Object.hasOwn(TASK_API_PATHS, tool) ? TASK_API_PATHS[tool] : undefined;
+  return endpoint && !readOnlyApiMethod(endpoint[0]) ? { operationId: endpoint.join(" ") } : null;
+}
 
 export function taskBridgeApiRequest(tool: string, input: Record<string, any>): RunnerApiCall {
   const [method, path] = TASK_API_PATHS[tool]!;
@@ -1280,11 +1289,13 @@ export class PaperclipRunnerToolAuthority {
     if (!apiUrl) throw new Error("Paperclip API origin is unavailable");
     const token = this.#apiToken(bound);
     if (!token) throw new Error("Paperclip run authentication is unavailable");
+    let dispatched = false;
     const execute = async (callKey?: string) => {
       const current = await this.#boundContext();
       assertAvailable(current.issue.workMode);
       const result = await executeRunnerApi(input, { ...context, workMode: current.issue.workMode }, {
         apiUrl, token, callKey,
+        onDispatch: () => { dispatched = true; },
         beforeDispatch: async () => {
           const fresh = await this.#boundContext();
           assertAvailable(fresh.issue.workMode);
@@ -1316,19 +1327,43 @@ export class PaperclipRunnerToolAuthority {
       const existing = record(receipts[key]);
       if (receipts[key]) {
         if (existing.digest !== digest) throw badRequest("API call id was reused with different arguments");
-        const result = await this.#apiReceiptResult(existing);
-        return { result: existing.encryptedResult ? result : result ?? { ok: false, status: null, error: "api_outcome_unknown", outcome: "unknown", guidance: "Inspect state before issuing another mutation." } };
+        if (existing.state !== "undispatched") {
+          const result = await this.#apiReceiptResult(existing);
+          return { result: existing.encryptedResult ? result : result ?? { ok: false, status: null, error: "api_outcome_unknown", outcome: "unknown", guidance: "Inspect state before issuing another mutation." } };
+        }
       }
       // A new call that would be rejected before dispatch must not reserve a
       // pending receipt; that would make its callId report an unknown outcome.
       assertRunnerApiDispatchable(operation, input, record(value));
-      if (Object.keys(receipts).length >= 512) throw badRequest("Run API mutation limit reached");
+      if (!receipts[key] && Object.keys(receipts).length >= 512) throw badRequest("Run API mutation limit reached");
       receipts[key] = { digest, operationId: operation.operationId, state: "pending" };
       await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiToolReceipts: receipts } }).where(eq(heartbeatRuns.id, this.binding.runId));
       return null;
     });
     if (prior) return prior.result;
-    const result = await execute(key);
+    const result = await execute(key).catch(async error => {
+      // A failure while preparing the request cannot have committed its mutation.
+      // Once fetch is attempted, leave the receipt for reconciliation.
+      if (!dispatched) {
+        await this.db.transaction(async tx => {
+          const [run] = await tx.select().from(heartbeatRuns).where(and(
+            eq(heartbeatRuns.id, this.binding.runId),
+            eq(heartbeatRuns.companyId, this.binding.companyId),
+          )).for("update");
+          const resultJson = record(run?.resultJson);
+          const receipts = record(resultJson.apiToolReceipts);
+          const receipt = record(receipts[key]);
+          if (receipt.state !== "pending" || receipt.digest !== digest) return;
+          receipts[key] = { ...receipt, state: "undispatched" };
+          await tx.update(heartbeatRuns).set({ resultJson: { ...resultJson, apiToolReceipts: receipts } }).where(and(
+            eq(heartbeatRuns.id, this.binding.runId),
+            eq(heartbeatRuns.companyId, this.binding.companyId),
+          ));
+        }).catch(cleanupError => logger.warn({ err: cleanupError, runId: this.binding.runId, operationId: operation.operationId },
+          "Failed to record undispatched runner API receipt"));
+      }
+      throw error;
+    });
     const storedResult = provider
       ? { encryptedResult: (await provider.createSecret({ value: JSON.stringify(result) })).material }
       : { result };

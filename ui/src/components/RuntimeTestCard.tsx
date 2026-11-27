@@ -68,8 +68,12 @@ export function RuntimeTestCard({
   const missingRuntime = state === "fail"
     ? result?.checks.find(check => check.code === "acpx_runtime_package_missing")
     : undefined;
+  const poolPreview = state === "warn" && result?.checks.length === 1
+    && result.checks[0].code === "ai_connection_pool_task_test_required";
   const content = missingRuntime
     ? { ...copy.fail, title: "Runtime missing", description: missingRuntime.message }
+    : poolPreview
+      ? { title: "Pool configuration available", description: "Run a task to verify the selected account and harness.", action: "Check again" }
     : (variant === "prerequisites" ? prerequisiteCopy : copy)[state];
   const description = metadataOnly && state === "idle"
     ? "Verify your saved token, runtime installation, and selected model without sending a model prompt."

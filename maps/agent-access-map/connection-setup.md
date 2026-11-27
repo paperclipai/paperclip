@@ -397,3 +397,28 @@ Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2
 Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
 Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
 Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+
+## `harness-pools`
+
+Capability ID: `connection-setup/harness-pools`.
+
+Review: `operation-reviewed`.
+
+### `manage-harness-pools`
+
+API: `present` — `GET /api/companies/{companyId}/harness-pools` and POST on that company-scoped path,
+`/{poolId}/inspection` GET, `/{poolId}/convert` POST and `/{poolId}` DELETE.
+Agent access: `available` — REST through existing connection-management grants;
+this is not implicit permission to manage accounts or configure another agent.
+Policy: company membership, connection management read/configure scope, personal
+ownership and revision checks. Agent configuration additionally requires its
+existing configure permission, supported native runner and eligible member access.
+Select with `runtimeConfig.harnessPool: { poolId }`; direct `aiConnection` is
+mutually exclusive. Native task scope, Stop, budgets and current execution access
+remain enforced by their existing owners.
+Evidence: `verified` — real database/API company/revision/conversion and
+two-agent configuration tests in `server/src/__tests__/ai-connection-router.test.ts`.
+Verification: `passed` — central UI and native lifecycle fixtures are separate from live
+provider or physical cleanup evidence. No private provider session is transferred.
+Gaps: live account handoff and cross-platform runtime qualification remain separate.

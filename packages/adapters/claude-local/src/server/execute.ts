@@ -1,3 +1,4 @@
+import { withLocalProviderSettlement } from "@paperclipai/adapter-utils/local-provider-settlement";
 import { isOpenRouterUrl, openRouterClaudeHeaders } from "@paperclipai/shared/openrouter-attribution";
 import { applyObservabilityEnvironment } from "@paperclipai/adapter-utils/agent-observability";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
@@ -411,6 +412,10 @@ export async function runClaudeLogin(input: {
 }
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+  return withLocalProviderSettlement(ctx, executeWithCleanup);
+}
+
+async function executeWithCleanup(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const providerStop = createProviderStoppedBoundary(ctx.onProviderStopped);
   const engineSelection = await resolveClaudeExecutionEngineForRun(ctx);
   if (engineSelection.unavailableReason) {
@@ -420,9 +425,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timedOut: false,
       errorCode: "adapter_engine_unavailable",
       errorMessage: engineSelection.unavailableReason,
-      resultJson: {
-        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
-      },
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
     };
   }
   if (engineSelection.engine === "acp") {

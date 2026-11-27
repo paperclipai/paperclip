@@ -50,6 +50,16 @@ describe("agent roster filters", () => {
     expect(matchesAgentRosterFilters(byAgentId.get("local"), { ...emptyAgentRosterFilters, model: "missing" })).toBe(false);
   });
 
+  it("keeps a harness pool model distinct from the agent's stale model and harness defaults", () => {
+    const poolAgent = agent("harness-pool", { adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "stale-model" },
+      runtimeConfig: { harnessPool: { poolId: connectionId } } });
+    const { byAgentId, options } = buildAgentRosterIndex([poolAgent, agent("default")]);
+    expect(byAgentId.get(poolAgent.id)?.harness.label).toBe("Pool");
+    expect(byAgentId.get(poolAgent.id)?.connection.label).toBe("Connection pool");
+    expect(byAgentId.get(poolAgent.id)?.model).toEqual({ value: "pool", label: "From pool" });
+    expect(options.model.map(option => option.label)).toEqual(["From pool", "Harness default"]);
+  });
+
   it("indexes hundreds of connection names once for a large roster", () => {
     let reads = 0;
     const id = (i: number) => `10000000-0000-4000-8000-${String(i).padStart(12, "0")}`;

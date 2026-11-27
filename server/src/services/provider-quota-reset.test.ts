@@ -17,6 +17,12 @@ describe("provider account action", () => {
 });
 
 describe("parseProviderQuotaClockReset", () => {
+  it("reads a five-hour allowance reset in Amsterdam winter time", () => {
+    const message = "ACP agent reported a terminal limit failure.\nYou've hit your 5-hour limit · resets 5pm (Europe/Amsterdam)";
+    expect(parseProviderQuotaClockReset(message, new Date("2026-11-19T14:30:00Z")))
+      .toEqual(new Date("2026-11-19T16:00:00Z"));
+  });
+
   it("reads a weekly limit's calendar reset, as Claude's ACP agent reports it", () => {
     // Staging run c086fa26 (PAP-1057), 2026-11-10: the reset is two days out.
     const now = new Date("2026-11-10T20:06:33.000Z");

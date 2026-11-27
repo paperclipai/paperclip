@@ -872,6 +872,8 @@ fn a_tool_result_for_a_call_retired_by_our_cancellation_does_not_fail_the_transp
 
 fn reusable_config(directory: &std::path::Path) -> AcpxProviderSessionConfig {
     let mut config = config("source-reconcile");
+    // These tests verify generation ownership, not cold process startup latency.
+    config.transport.request_timeout = Duration::from_secs(5);
     config.transport.args = vec![
         "--mode".to_owned(),
         "source-reconcile".to_owned(),
@@ -893,8 +895,19 @@ fn settle_turn(session: &mut AcpxProviderSession, turn_id: &str) -> Vec<AcpxProv
         .start_turn(turn_id, "Please continue", &std::env::temp_dir())
         .unwrap();
     let mut seen = Vec::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let events = session.poll_event(Duration::from_secs(1)).unwrap().unwrap();
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        assert!(
+            !remaining.is_zero(),
+            "fixture turn {turn_id} did not settle"
+        );
+        let Some(events) = session
+            .poll_event(remaining.min(Duration::from_secs(1)))
+            .unwrap()
+        else {
+            continue;
+        };
         let settled = events.iter().any(|event| {
             matches!(event, AcpxProviderStateEvent::TurnTerminal { turn_id: settled, .. } if settled == turn_id)
         });
