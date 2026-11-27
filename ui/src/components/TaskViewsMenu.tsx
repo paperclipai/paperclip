@@ -42,7 +42,7 @@ export function TaskViewsMenu({
           <ChevronDown aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-(--sz-260px)">
+      <DropdownMenuContent collisionPadding={8} align="start" className="w-(--sz-260px)">
         {TASK_VIEW_GROUPS.map((group, groupIndex) => (
           <div key={group.label}>
             {groupIndex > 0 ? <DropdownMenuSeparator /> : null}

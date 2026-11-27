@@ -66,7 +66,7 @@ describe("selected remote daemon target", () => {
     const binary = join(root, "paperclip-runnerd");
     try {
       await writeFile(binary, header(`${platform}-${architecture}`));
-      const select = vi.spyOn(runner, "defaultCapabilityRunnerdBinary").mockReturnValue(binary);
+      const select = vi.spyOn(runner, "defaultCapabilityRunnerdBinaryAsync").mockResolvedValue(binary);
       const target = remote(`${os}\n${arch}\n`);
       expect(await resolveRemotePaperclipRunnerBinary({ runner: target, remoteCwd: "/selected-workspace" })).toBe(binary);
       expect(select).toHaveBeenCalledExactlyOnceWith(platform, architecture);
@@ -83,7 +83,7 @@ describe("selected remote daemon target", () => {
         const controllerBinary = join(root, "controller-runnerd");
         await writeFile(controllerBinary, header(`darwin-${controllerArch}`), { mode: 0o700 });
         vi.stubEnv("PAPERCLIP_RUNNER_BINARY", controllerBinary);
-        const select = vi.spyOn(runner, "defaultCapabilityRunnerdBinary").mockReturnValue(binary);
+        const select = vi.spyOn(runner, "defaultCapabilityRunnerdBinaryAsync").mockResolvedValue(binary);
         const target = remote(`Linux\n${targetArch === "arm64" ? "aarch64" : "x86_64"}\n`);
         expect(await resolveRemotePaperclipRunnerBinary({ runner: target, remoteCwd: "/sandbox-workspace" })).toBe(binary);
         expect(select).toHaveBeenCalledExactlyOnceWith("linux", targetArch);
@@ -100,7 +100,7 @@ describe("selected remote daemon target", () => {
         await writeFile(fresh, Buffer.concat([header(`${platform}-${architecture}`), Buffer.from("fresh")]), { mode: 0o700 });
         await writeFile(stale, Buffer.concat([header(`${platform}-${architecture}`), Buffer.from("stale")]), { mode: 0o700 });
         vi.stubEnv("PAPERCLIP_RUNNER_BINARY", fresh);
-        const select = vi.spyOn(runner, "defaultCapabilityRunnerdBinary").mockReturnValue(stale);
+        const select = vi.spyOn(runner, "defaultCapabilityRunnerdBinaryAsync").mockResolvedValue(stale);
         const target = remote(`${platform === "linux" ? "Linux" : "Darwin"}\n${architecture === "arm64" ? "arm64" : "x86_64"}\n`);
         expect(await resolveRemotePaperclipRunnerBinary({ runner: target, remoteCwd: "/workspace" })).toBe(fresh);
         expect(select).not.toHaveBeenCalled();
@@ -115,7 +115,7 @@ describe("selected remote daemon target", () => {
       if (scenario !== "missing") await writeFile(override, scenario === "malformed" ? Buffer.alloc(64) : header("linux-arm64"), { mode: 0o700 });
       await writeFile(fallback, header("linux-x64"), { mode: 0o700 });
       vi.stubEnv("PAPERCLIP_RUNNER_BINARY", scenario === "relative" ? "relative-runnerd" : override);
-      vi.spyOn(runner, "defaultCapabilityRunnerdBinary").mockReturnValue(fallback);
+      vi.spyOn(runner, "defaultCapabilityRunnerdBinaryAsync").mockResolvedValue(fallback);
       const request = resolveRemotePaperclipRunnerBinary({ runner: remote("Linux\nx86_64\n"), remoteCwd: "/workspace" });
       if (scenario === "missing") expect(await request).toBe(fallback);
       else await expect(request).rejects.toThrow(scenario === "relative" ? "PAPERCLIP_RUNNER_BINARY must be an absolute path" : "runner_remote_artifact_platform_mismatch");
@@ -128,7 +128,7 @@ describe("selected remote daemon target", () => {
       vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "relative-controller-runnerd");
       const binary = join(root, "linux-runnerd");
       await writeFile(binary, header("linux-arm64"));
-      const select = vi.spyOn(runner, "defaultCapabilityRunnerdBinary").mockReturnValue(binary);
+      const select = vi.spyOn(runner, "defaultCapabilityRunnerdBinaryAsync").mockResolvedValue(binary);
       expect(await resolveRemotePaperclipRunnerBinary({ runner: remote("Linux\naarch64\n"), remoteCwd: "/workspace" })).toBe(binary);
       expect(select).toHaveBeenCalledExactlyOnceWith("linux", "arm64");
     } finally { await rm(root, { recursive: true, force: true }); }
@@ -140,7 +140,7 @@ describe("selected remote daemon target", () => {
       vi.stubGlobal("process", { ...process, platform: "linux", arch: "arm64" });
       vi.stubEnv("PAPERCLIP_RUNNER_BINARY", "invalid-relative-controller-override");
       if (scenario !== "missing") await writeFile(binary, scenario === "malformed" ? Buffer.alloc(64) : header(scenario === "matching" ? "linux-arm64" : "linux-x64"));
-      const select = vi.spyOn(runner, "defaultCapabilityRunnerdBinary");
+      const select = vi.spyOn(runner, "defaultCapabilityRunnerdBinaryAsync");
       const request = resolveRemotePaperclipRunnerBinary({ runner: remote("Linux\naarch64\n"), remoteCwd: "/workspace", configuredPath: binary });
       if (scenario === "matching") expect(await request).toBe(binary);
       else await expect(request).rejects.toThrow(scenario === "missing" ? "runner_remote_artifact_unavailable" : "runner_remote_artifact_platform_mismatch");
@@ -148,7 +148,7 @@ describe("selected remote daemon target", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
   it("keeps missing package targets actionable without a controller or legacy fallback", async () => {
-    const select = vi.spyOn(runner, "defaultCapabilityRunnerdBinary").mockImplementation(() => { throw new Error("runner_remote_artifact_unavailable: install the matching release"); });
+    const select = vi.spyOn(runner, "defaultCapabilityRunnerdBinaryAsync").mockRejectedValue(new Error("runner_remote_artifact_unavailable: install the matching release"));
     await expect(resolveRemotePaperclipRunnerBinary({ runner: remote("Linux\naarch64\n"), remoteCwd: "/workspace" })).rejects.toThrow("runner_remote_artifact_unavailable");
     expect(select).toHaveBeenCalledExactlyOnceWith("linux", "arm64");
   });
@@ -156,7 +156,7 @@ describe("selected remote daemon target", () => {
     ["Linux\naarch64\n", { exitCode: 1 }], ["Linux\naarch64\n", { timedOut: true }],
     ["Linux\nriscv64\n", {}], ["FreeBSD\nx86_64\n", {}], ["", {}],
   ])("fails a missing, failed or unsupported platform probe (%s)", async (stdout, overrides) => {
-    const select = vi.spyOn(runner, "defaultCapabilityRunnerdBinary");
+    const select = vi.spyOn(runner, "defaultCapabilityRunnerdBinaryAsync");
     await expect(resolveRemotePaperclipRunnerBinary({ runner: remote(stdout as string, overrides), remoteCwd: "/workspace" })).rejects.toThrow("runner_remote_artifact_platform_mismatch");
     expect(select).not.toHaveBeenCalled();
   });

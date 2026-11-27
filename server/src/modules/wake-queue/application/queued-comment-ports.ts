@@ -179,3 +179,34 @@ export interface QueuedCommentIssueLockWriter {
     fn: (locked: LockedQueuedCommentState, transaction: QueuedCommentQueueTransaction) => Promise<T>,
   ): Promise<T>;
 }
+
+export type SteerQueuedCommentInput = {
+  issue: Pick<QueuedCommentIssueContext, "id" | "companyId">;
+  actor: QueuedCommentActor;
+  queueId: string;
+  commentId: string;
+  targetRunId: string;
+  revision: string;
+};
+
+interface QueuedCommentSteeringTransaction<Identity> {
+  previousAcknowledgement: { status?: unknown; queueId?: unknown; turnId?: unknown };
+  readReplayQueue(): Promise<QueuedCommentQueueSnapshot>;
+  readPendingQueue(): Promise<QueuedCommentQueueSnapshot>;
+  assertDeliveryAllowed(): Promise<void>;
+  deliver(message: string, identity: Identity | null): Promise<{ turnId: string }>;
+  /** Locks the run after provider acknowledgement and commits the receipt and queue change together. */
+  acceptAcknowledgement(input: {
+    identity: Identity | null;
+    turnId: string;
+    remainingIds: string[];
+  }): Promise<QueuedCommentQueueSnapshot | null>;
+}
+
+export interface QueuedCommentSteeringPort<Identity> {
+  /** Persists the identity independently so a late provider acknowledgement can survive rollback. */
+  reserveIdentity(input: SteerQueuedCommentInput): Promise<Identity | null>;
+  rejectIdentity(identity: Identity): Promise<void>;
+  isDeliveryUncertain(error: unknown, attempted: boolean): boolean;
+  withLockedTarget<T>(input: SteerQueuedCommentInput, apply: (tx: QueuedCommentSteeringTransaction<Identity>) => Promise<T>): Promise<T>;
+}

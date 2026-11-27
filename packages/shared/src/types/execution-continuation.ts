@@ -7,6 +7,7 @@ export interface ExecutionContinuationEnvelope {
     reason: string;
     interactionId: string | null;
     sourceRunId: string | null;
+    retriedReason?: string;
   };
   originCommentIds: string[];
   objective: string;

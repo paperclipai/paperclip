@@ -8,6 +8,8 @@ import { describeEmbeddedPostgres, nativeRestartFixture } from "../__tests__/hel
 import { createMaintenanceS3Boundary } from "../__tests__/helpers/maintenance/s3-boundary.js";
 import { withMaintenanceProvider } from "../__tests__/helpers/maintenance/server-harness.js";
 import { migrateRunEvidence } from "./run-evidence-migration.js";
+import { migrateRunEvidencePage } from "./run-evidence-migration-page.js";
+import { createObjectRunLogStore } from "./object-run-log-store.js";
 import { getRunLogStore } from "./run-log-store.js";
 import { createObjectByteJournal } from "./object-byte-journal.js";
 import { readRecoverableRunLog } from "./native-runtime/native-run-log-recovery.js";
@@ -75,6 +77,33 @@ describeEmbeddedPostgres("online native historical log preservation", () => {
     });
   });
 
+  it("archives by run id a settled source whose canonical online import cannot prove coverage", async () => {
+    await withSource(async f => {
+      const { preserveSettledNativeFiles: _archive, ...canonical } = f.options;
+      expect((await migrateRunEvidence(f.db, canonical)).items)
+        .toMatchObject([{ id: f.runId, state: "blocked", reason: "native_log_source_coverage_unproven" }]);
+      const result = await migrateRunEvidence(f.db, { apply: true, runId: f.runId, kinds: ["log"], limit: 1, preserveSettledNativeFiles: true });
+      expect(result.items).toMatchObject([{ id: f.runId, state: "migrated", historicalArchive: true, bytes: f.bytes.length }]);
+      expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
+        .toMatchObject({ logStore: "s3_archive", logRef: `${f.companyId}/${f.agentId}/${f.runId}.archive` });
+    });
+  });
+
+  it("clears a retained local log through the page shared by preparation and background work", async () => {
+    await withSource(async f => {
+      const result = await migrateRunEvidencePage(f.db, { kinds: ["log"], limit: 1 });
+      expect(result.items).toMatchObject([{ id: f.runId, state: "migrated", historicalArchive: true }]);
+      const [after] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      expect(after.logStore).toBe("s3_archive");
+      expect(after.status).toBe("failed");
+      await rm(f.file);
+      const reader = createObjectRunLogStore({ ...storage.resolveRunEvidenceStorage()!,
+        assertWriterAuthority: async () => { throw new Error("archive is read-only"); } });
+      expect((await readRecoverableRunLog(f.db, reader, { store: "s3_archive", logRef: after.logRef! })).content)
+        .toBe(f.bytes.toString());
+    });
+  });
+
   it("preserves a committed successful run without changing its result or completeness metadata", async () => {
     await withSource(async f => {
       const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
@@ -105,7 +134,9 @@ describeEmbeddedPostgres("online native historical log preservation", () => {
       expect(Buffer.concat([await archive.readRange(head, 0, 4 * 1024 * 1024),
         await archive.readRange(head, 4 * 1024 * 1024, 7)])).toEqual(bytes);
     });
-  });
+    // A 4 MiB migration plus two segment reads against embedded PostgreSQL
+    // exceeds the 15 s default on loaded CI runners.
+  }, 60_000);
 
   it.each(["expired_owner", "pending_attempt", "pending_recovery", "allocation", "process_group", "physical_owner", "task_bound"])("refuses unresolved source authority: %s", async kind => {
     await withSource(async f => {

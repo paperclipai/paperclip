@@ -52,7 +52,7 @@ async function fixture(request: APIRequestContext) {
 }
 
 async function outage(page: Page) {
-  const until = Date.now() + 20_000;
+  let until = Date.now() + 20_000;
   let failures = 0;
   const control = realtime.get(page);
   if (!control) throw new Error("Realtime interception must be installed before navigation");
@@ -63,7 +63,14 @@ async function outage(page: Page) {
     await route.fulfill({ status: 503, json: { error: "tenant_app_unavailable" } });
   });
   await closeSockets(control);
-  return { until, failures: () => failures };
+  return {
+    get until() { return until; },
+    end() {
+      until = Date.now();
+      control.until = 0;
+    },
+    failures: () => failures,
+  };
 }
 
 test("an outage closes the first realtime socket before it can report a late recovery", async ({ page, request }) => {
@@ -139,6 +146,7 @@ test("a comment typed during a 20-second outage posts once and loaded task conte
     await expect(header.getByRole("heading", { name: data.issue.title, exact: true })).toBeVisible();
     await expect(page.getByText(body, { exact: true }).first()).toBeVisible();
     expect((await json(await request.get(`/api/issues/${data.issue.id}/comments`))).filter((comment: { body: string }) => comment.body === body)).toHaveLength(0);
+    interruption.end();
     await expect(page.locator('[data-connection-status="back_online"]')).toBeVisible({ timeout: 35_000 });
     expect(Date.now()).toBeGreaterThanOrEqual(interruption.until);
     await expect.poll(async () => (await json(await request.get(`/api/issues/${data.issue.id}/comments`)))
@@ -180,6 +188,7 @@ test("a queued comment survives an outage reload and sends once after session ve
     await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: data.issue.title, exact: true })).toBeVisible();
     await expectReconnecting(page);
     expect((await json(await request.get(`/api/issues/${data.issue.id}/comments`))).filter((comment: { body: string }) => comment.body === body)).toHaveLength(0);
+    interruption.end();
     await expect(page.locator('[data-connection-status="back_online"]')).toBeVisible({ timeout: 35_000 });
     await expect.poll(() => sessionHeld).toBe(true);
     expect(await page.evaluate(async () => (await fetch("/api/health")).ok)).toBe(true);
@@ -215,11 +224,12 @@ test("a document edit stays visible and saves after a 20-second outage", async (
     await expect(document.getByText(original, { exact: true })).toBeVisible();
     await document.getByRole("button", { name: "Document actions", exact: true }).click();
     await page.getByRole("menuitem", { name: "Edit document", exact: true }).click();
-    await outage(page);
+    const interruption = await outage(page);
     await document.locator('[contenteditable="true"]').fill(edited);
     await expectReconnecting(page);
     await expect(document.locator('[contenteditable="true"]')).toContainText(edited);
     expect((await json(await request.get(`/api/issues/${data.issue.id}/documents/handoff`))).body).toBe(original);
+    interruption.end();
     await expect(page.locator('[data-connection-status="back_online"]')).toBeVisible({ timeout: 35_000 });
     await expect.poll(async () => (await json(await request.get(`/api/issues/${data.issue.id}/documents/handoff`))).body).toBe(edited);
     await page.reload();
@@ -241,7 +251,7 @@ test("a reload during a 20-second outage restores settings, sidebar and a recent
     await expect(page.getByRole("heading", { name: "General", exact: true })).toBeVisible();
     await expect(page.locator('input[type="text"]').first()).toHaveValue(data.company.name);
     await expect.poll(() => page.evaluate(() => Object.keys(localStorage).some(key => key.startsWith("paperclip:query-cache:v1:") && key.endsWith(":root")))).toBe(true);
-    await outage(page);
+    const interruption = await outage(page);
     await page.reload();
     await expect(page.getByRole("heading", { name: "General", exact: true })).toBeVisible();
     await expect(page.locator('input[type="text"]').first()).toHaveValue(data.company.name);
@@ -251,6 +261,7 @@ test("a reload during a 20-second outage restores settings, sidebar and a recent
     await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: data.issue.title, exact: true })).toBeVisible();
     await expectReconnecting(page);
     await expect(page.getByText(data.issue.description, { exact: true }).first()).toBeVisible();
+    interruption.end();
     await expect(page.locator('[data-connection-status="back_online"]')).toBeVisible({ timeout: 35_000 });
   } finally {
     await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
@@ -284,11 +295,12 @@ test("a legacy Inbox reload retains its saved task rows during a 20-second outag
           query.queryKey.includes("compact") && Array.isArray(query.state.data) && query.state.data.some(task => task.id === id)) ?? false;
       } catch { return false; }
     }), data.issue.id)).toBe(true);
-    await outage(page);
+    const interruption = await outage(page);
     await page.reload();
     await expectReconnecting(page);
     await expect(row).toBeVisible();
     await expect(page.getByRole("status", { name: "Loading tasks" })).toHaveCount(0);
+    interruption.end();
     await expect(page.locator('[data-connection-status="back_online"]')).toBeVisible({ timeout: 35_000 });
     await expect(row).toBeVisible();
   } finally {
@@ -302,7 +314,13 @@ for (const status of [403, 404]) test(`a genuine ${status} replaces cached task 
     await page.goto(data.route);
     await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     await expectCachedTask(page, data.issue);
-    await page.route("**/api/issues/*?view=core", route => route.fulfill({ status, json: { error: status === 403 ? "forbidden" : "not_found" } }));
+    // The bootstrap omits inaccessible tasks. Mirror that alongside both
+    // detail endpoints so either cache revalidation path observes the denial.
+    await page.route(url => url.pathname === `/api/companies/${data.company.id}/issues/chat-bootstrap`,
+      route => route.fulfill({ json: { items: [] } }));
+    const taskPaths = new Set([`/api/issues/${data.issue.id}`, `/api/issues/${data.issue.identifier}`]);
+    await page.route(url => taskPaths.has(url.pathname),
+      route => route.fulfill({ status, json: { error: status === 403 ? "forbidden" : "not_found" } }));
     await page.reload();
     await expect(page.getByText(status === 403 ? "You don’t have permission to do that." : "This item doesn’t exist or was moved.", { exact: true })).toBeVisible();
     await expect(page.getByTestId("issue-detail-header")).toHaveCount(0);

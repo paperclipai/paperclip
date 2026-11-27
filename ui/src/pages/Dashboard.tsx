@@ -1,11 +1,10 @@
+import { companyProjectsQuery } from "@/lib/company-projects-query";
+import { useAccountIdentity } from "@/api/companies-query";
 import { AgentIdentity } from "../components/AgentIdentity";
 import { TaskSummaryList } from "../components/TaskSummaryList";
 import { useDesignSandbox } from "../context/DesignSandboxContext";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useLocation } from "@/lib/router";
-import { shouldRouteAgentlessCompanyToOnboarding } from "../lib/onboarding-route";
-import { claimOnboardingOffer, dashboardOnboardingOptions } from "../lib/onboarding-auto-open";
-import { onboardingDraftStorage } from "../lib/onboarding-state";
+import { useAgentlessOnboardingAutoOpen } from "../hooks/useAgentlessOnboardingAutoOpen";
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { dashboardApi } from "../api/dashboard";
@@ -13,7 +12,6 @@ import { activityApi } from "../api/activity";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { agentsApi } from "../api/agents";
-import { projectsApi } from "../api/projects";
 import { buildCompanyUserProfileMap } from "../lib/company-members";
 import { useCompany } from "../context/CompanyContext";
 import { useDialogActions } from "../context/DialogContext";
@@ -37,17 +35,42 @@ import { QueryErrorState, useQueryView } from "../components/QueryView";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { InlineBanner } from "../components/InlineBanner";
-import type { Agent, Issue } from "@paperclipai/shared";
+import type { Agent, CompactIssue, Issue, IssueSummary } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
+const DASHBOARD_RECENT_TASK_LIMIT = 10;
 
-function getRecentIssues(issues: Issue[]): Issue[] {
-  return [...issues]
-    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+export function recentTaskIndexRows(issues: readonly CompactIssue[]): CompactIssue[] {
+  const recent: Array<{ issue: CompactIssue; at: number }> = [];
+  for (const issue of issues) {
+    const at = new Date(issue.updatedAt).getTime();
+    if (recent.length === DASHBOARD_RECENT_TASK_LIMIT && at <= recent[recent.length - 1]!.at) continue;
+    let index = recent.length;
+    while (index > 0 && recent[index - 1]!.at < at) index -= 1;
+    recent.splice(index, 0, { issue, at });
+    if (recent.length > DASHBOARD_RECENT_TASK_LIMIT) recent.pop();
+  }
+  return recent.map(entry => entry.issue);
 }
+
+export function withTaskSummaries(rows: readonly CompactIssue[], summaries: readonly IssueSummary[] | undefined): Issue[] {
+  const byId = new Map((summaries ?? []).map((summary) => [summary.id, summary]));
+  return rows.map((row) => {
+    const summary = byId.get(row.id);
+    return {
+      ...row,
+      ...(summary ? {
+        displayStatus: summary.displayStatus,
+        externalConversationState: summary.externalConversationState,
+        ...(summary.blockerAttention ? { blockerAttention: summary.blockerAttention } : {}),
+      } : {}),
+    } as Issue;
+  });
+}
+
 
 export type PausedAgentBanner =
   | { kind: "imported"; pausedImportedAgentIds: string[] }
@@ -77,7 +100,6 @@ export function Dashboard() {
   const designSandbox = useDesignSandbox();
   const { selectedCompanyId, companies } = useCompany();
   const { openOnboarding } = useDialogActions();
-  const location = useLocation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [animatedActivityIds, setAnimatedActivityIds] = useState<Set<string>>(new Set());
   const seenActivityIdsRef = useRef<Set<string>>(new Set());
@@ -118,48 +140,9 @@ export function Dashboard() {
     },
   });
 
-  // A company with no agent cannot do anything — no runs, no tasks, nothing
-  // to show. The banner below already says so and offers a link; this takes
-  // the customer there instead of asking them to notice.
-  //
-  // It also closes the gap a Cloud-provisioned stack falls into. Cloud creates
-  // the company before the tenant boots, so the companyless redirect never
-  // fires and a seeded customer lands here, on an empty dashboard, straight
-  // out of signup.
-  //
-  // Opened as the dialog rather than navigated to: the wizard is already
-  // mounted globally, so there is no route to race and no redirect to loop.
-  // Placed with the other hooks — the early returns below mean anything
-  // further down would be called conditionally.
-  //
-  // The company and the step are both passed. Opening with empty options would
-  // start the wizard at the front door with no company, and the new-company
-  // path there would create a *second* company instead of giving this one an
-  // agent.
-  // A saved agent that is still in setup is unfinished onboarding after reload.
-  // Only the matching browser draft may resume it; other setup records stay put.
-  const onboardingOptions = selectedCompanyId
-    ? dashboardOnboardingOptions(selectedCompanyId, agents, onboardingDraftStorage.read())
-    : null;
-  const onboardingInitialStep = onboardingOptions?.initialStep;
-  const shouldOpenOnboarding = shouldRouteAgentlessCompanyToOnboarding({
-    pathname: location.pathname,
-    agentsLoaded: agents !== undefined,
-    agentsRefreshing,
-    agentCount: onboardingOptions ? 0 : agents?.length ?? 0,
-  });
-  // Auto-open once per company. Every input to the effect sits behind a query,
-  // so a refetch re-runs it, and the customer can also navigate away and come
-  // back — both would otherwise call `openOnboarding` again and reopen a
-  // wizard that was deliberately closed. `claimOnboardingOffer` holds the
-  // companies already offered; see it for why that outlives this component.
-  useEffect(() => {
-    if (!shouldOpenOnboarding || !selectedCompanyId || !onboardingInitialStep) return;
-    if (!claimOnboardingOffer(selectedCompanyId)) return;
-    openOnboarding({ companyId: selectedCompanyId, initialStep: onboardingInitialStep });
-    // No mission lookup to wait on any more: the step this opens is the same
-    // whatever the goals say, so waiting only delayed the open.
-  }, [shouldOpenOnboarding, selectedCompanyId, onboardingInitialStep, openOnboarding]);
+  // Opens onboarding once for a company with no agent (shared with the
+  // Responsibilities home page).
+  useAgentlessOnboardingAutoOpen();
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);
@@ -196,14 +179,21 @@ export function Dashboard() {
   usePublishSharedQueryData(sharedActivity, activity, activityUpdatedAt);
 
   const { data: issues } = useQuery({
-    queryKey: queryKeys.issues.list(selectedCompanyId!),
-    queryFn: () => issuesApi.list(selectedCompanyId!),
+    queryKey: queryKeys.issues.listIndex(selectedCompanyId!),
+    queryFn: ({ signal }) => issuesApi.listCompact(selectedCompanyId!, { projection: "index" }, { signal }),
     enabled: !!selectedCompanyId,
+  });
+  const { userId: accountUserId, settled: accountSettled } = useAccountIdentity();
+  const recentIndexRows = useMemo(() => recentTaskIndexRows(issues ?? []), [issues]);
+  const recentIds = useMemo(() => recentIndexRows.map((issue) => issue.id).sort(), [recentIndexRows]);
+  const { data: recentSummaries } = useQuery({
+    queryKey: queryKeys.issues.summaryBatch(selectedCompanyId!, accountUserId, recentIds),
+    queryFn: ({ signal }) => issuesApi.summaries(selectedCompanyId!, recentIds, { signal }),
+    enabled: !!selectedCompanyId && accountSettled && recentIds.length > 0,
   });
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
-    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
+    ...companyProjectsQuery(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
 
@@ -218,7 +208,10 @@ export function Dashboard() {
     [companyMembers?.users],
   );
 
-  const recentIssues = issues ? getRecentIssues(issues) : [];
+  const recentIssues = useMemo(
+    () => withTaskSummaries(recentIndexRows, recentSummaries),
+    [recentIndexRows, recentSummaries],
+  );
   const recentActivity = useMemo(() => (activity ?? []).slice(0, 10), [activity]);
 
   useEffect(() => {

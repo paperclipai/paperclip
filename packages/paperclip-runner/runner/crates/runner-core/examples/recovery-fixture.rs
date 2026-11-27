@@ -273,6 +273,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             value("--reconnect-grace-ms")?.parse()?,
         )),
         max_runtime: Duration::ZERO,
+        turn_scoped: false,
+        controller_silence: paperclip_runner_core::durable::DEFAULT_CONTROLLER_SILENCE,
     };
     run_durable_runner(
         config,

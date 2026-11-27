@@ -47,6 +47,7 @@ enum CommandLifecycle {
 }
 
 const TERMINAL_RESULT_ACK_TIMEOUT: Duration = Duration::from_secs(2);
+const HOST_PARK_PREPARATION_BUDGET: Duration = Duration::from_secs(20);
 const CUMULATIVE_ACK_PERSIST_INTERVAL: usize = 16;
 
 fn reconnect_delay(base: Duration, max_delay: Duration, attempt: &mut u32) -> Duration {
@@ -318,9 +319,33 @@ pub trait CommandExecutor {
         Ok(false)
     }
 
+    fn prepare_for_park(&mut self, _deadline: Instant) -> Result<bool, DurableRunnerError> {
+        Ok(false)
+    }
+
+    fn prepare_next_turn(&mut self) -> Result<(), DurableRunnerError> {
+        Ok(())
+    }
+
+    /// The cause of a provider restart after a turn that failed and was
+    /// recovered, once; recorded as a runner diagnostic.
+    fn take_turn_end_restart_failure(&mut self) -> Option<String> {
+        None
+    }
+
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
 
     fn observe_recovery_state(&mut self, _state: &DurableState) -> Result<(), DurableRunnerError> {
+        Ok(())
+    }
+
+    fn defer_parked_acpx_restore(&mut self) -> Result<(), DurableRunnerError> {
+        Err(DurableRunnerError::invalid(
+            "parked ACPX recovery requires an ACPX checkpoint",
+        ))
+    }
+
+    fn observe_fresh_durable_state(&mut self) -> Result<(), DurableRunnerError> {
         Ok(())
     }
 
@@ -370,6 +395,10 @@ pub trait CommandExecutor {
     /// from their durable owner; terminal observation precedes deadline expiry.
     fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {
         Ok(())
+    }
+
+    fn provider_poll_is_live(&self) -> bool {
+        false
     }
 
     /// Removes the prefix returned by `poll_events` after every event in that
@@ -475,16 +504,27 @@ struct HostedRunnerControl {
     channel: HostControl,
     park_id: Option<String>,
     claiming: Option<(String, String)>,
+    acpx_park_relaunch: bool,
 }
 
 #[cfg(unix)]
 impl HostedRunnerControl {
     fn new(channel: HostControl) -> Self {
         Self {
+            acpx_park_relaunch: channel.acpx_park_relaunch,
             channel,
             park_id: None,
             claiming: None,
         }
+    }
+
+    fn awaiting_attachment(&self) -> bool {
+        self.claiming.is_some() || self.acpx_park_relaunch
+    }
+
+    fn finish_attachment(&mut self) {
+        self.claiming = None;
+        self.acpx_park_relaunch = false;
     }
 }
 
@@ -516,7 +556,26 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         };
     }
     let store = DurableStateStore::new(&config.state_dir)?;
+    if !store.exists() {
+        executor.observe_fresh_durable_state()?;
+    }
     let (mut state, recovered) = store.load_or_create(&config)?;
+    #[cfg(unix)]
+    if let Some(control) = host_control
+        .as_mut()
+        .filter(|control| control.acpx_park_relaunch)
+    {
+        if state.warm_transition.is_some() {
+            control.finish_attachment();
+        } else if !recovered
+            || !matches!(state.lifecycle.as_str(), "ready" | "suspended")
+            || !host_park_checkpoint_is_settled(&state)
+        {
+            return Err(DurableRunnerError::invalid(
+                "parked ACPX recovery requires a settled Runner checkpoint",
+            ));
+        }
+    }
     if state.lifecycle == "revoked"
         || (state.lifecycle == "stopped"
             && state.pending_terminal_delivery.is_none()
@@ -525,7 +584,16 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         return Ok(());
     }
     if recovered {
+        // A restarted runner process emits a new event generation (section G).
+        state.begin_recovered_generation();
         executor.observe_recovery_state(&state)?;
+        #[cfg(unix)]
+        if host_control
+            .as_ref()
+            .is_some_and(|control| control.acpx_park_relaunch)
+        {
+            executor.defer_parked_acpx_restore()?;
+        }
     }
     if recovered && state.warm_transition.is_none() {
         state.reconnect_count = state.reconnect_count.saturating_add(1);
@@ -709,7 +777,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         let (mut transport, welcome) = match connection {
             Ok(Some(connection)) => connection,
             Ok(None) => {
-                next_connection_attempt = Instant::now() + config.reconnect_delay;
+                next_connection_attempt =
+                    Instant::now() + endpoint.retry_delay(config.reconnect_delay);
                 continue;
             }
             Err(error) => {
@@ -728,7 +797,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 }
                 next_connection_attempt = Instant::now()
                     + reconnect_delay(
-                        config.reconnect_delay,
+                        endpoint.retry_delay(config.reconnect_delay),
                         connect_deadline.saturating_duration_since(Instant::now()),
                         &mut reconnect_attempt,
                     );
@@ -849,7 +918,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                         )?;
                         #[cfg(unix)]
                         if let Some(control) = host_control.as_mut() {
-                            control.claiming = None;
+                            control.finish_attachment();
                         }
                     }
                     Err(error) => {
@@ -882,6 +951,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
             notifications.poll(&config, &mut state, &store);
         }
         let mut sent_source_seq = state.acked_source_seq;
+        let replayed_through_source_seq = state.highest_source_seq();
         let mut ack_persistence = CumulativeAckPersistence::default();
 
         let mut lifecycle_after_reply = CommandLifecycle::Continue;
@@ -973,7 +1043,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
             apply_authority_rotation(&mut state, &store, &mut config, &mut endpoint, next)?;
             #[cfg(unix)]
             if let Some(control) = host_control.as_mut() {
-                control.claiming = None;
+                control.finish_attachment();
             }
             disconnected_since = Some(Instant::now());
             continue;
@@ -1033,11 +1103,13 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                     .map(|credential| credential.expires_at_unix_ms),
             );
             next_connection_attempt = Instant::now()
-                + config
-                    .reconnect_delay
+                + endpoint
+                    .retry_delay(config.reconnect_delay)
                     .min(reconnect_deadline.saturating_duration_since(Instant::now()));
             continue;
         }
+        let mut control_frame_consumed = false;
+        let mut quiet_through_source_seq = replayed_through_source_seq;
         loop {
             if !config.max_runtime.is_zero() && started.elapsed() >= config.max_runtime {
                 break;
@@ -1136,7 +1208,19 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                     }
                 }
             }
-            let control_message = transport.receive_json();
+            let control_message = if control_frame_consumed
+                && state.highest_source_seq() > quiet_through_source_seq
+                && executor.provider_poll_is_live()
+            {
+                transport.receive_queued_json()
+            } else {
+                transport.receive_json()
+            };
+            control_frame_consumed = matches!(control_message, Ok(Some(_)));
+            let source_seq_before_poll = state.highest_source_seq();
+            let polls_provider = matches!(control_message, Ok(None))
+                && state.pending_provider_cleanup.is_none()
+                && state.acked_source_seq >= sent_source_seq;
             poll_executor_events_when_control_idle(
                 &mut state,
                 &store,
@@ -1145,6 +1229,9 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 sent_source_seq,
                 &control_message,
             )?;
+            if polls_provider {
+                quiet_through_source_seq = source_seq_before_poll;
+            }
             let message = match control_message {
                 Ok(Some(message)) => message,
                 Ok(None) => continue,
@@ -1281,7 +1368,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                         )?;
                         #[cfg(unix)]
                         if let Some(control) = host_control.as_mut() {
-                            control.claiming = None;
+                            control.finish_attachment();
                         }
                         disconnected_since = Some(Instant::now());
                         break;
@@ -1380,8 +1467,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                 .map(|credential| credential.expires_at_unix_ms),
         );
         next_connection_attempt = Instant::now()
-            + config
-                .reconnect_delay
+            + endpoint
+                .retry_delay(config.reconnect_delay)
                 .min(reconnect_deadline.saturating_duration_since(Instant::now()));
     }
 }
@@ -1400,7 +1487,7 @@ fn admit_host_claim(
     command: &Command,
     next_authority: Option<&DurableRunnerConfig>,
 ) -> Result<(), DurableRunnerError> {
-    if control.is_some_and(|control| control.claiming.is_some())
+    if control.is_some_and(HostedRunnerControl::awaiting_attachment)
         && !(matches!(
             command.command_type.as_str(),
             "session.snapshot"
@@ -1440,7 +1527,7 @@ fn process_host_control<E: CommandExecutor>(
             acked_source_seq,
         } if !parked
             && control.park_id.is_none()
-            && control.claiming.is_none()
+            && !control.awaiting_attachment()
             && host_park_cut_matches(
                 state,
                 identity,
@@ -1449,6 +1536,20 @@ fn process_host_control<E: CommandExecutor>(
             )
             && executor.host_park_ready()? =>
         {
+            let ready =
+                match executor.prepare_for_park(Instant::now() + HOST_PARK_PREPARATION_BUDGET) {
+                    Ok(false) => true,
+                    Ok(true) => executor.host_park_ready()?,
+                    Err(error) => {
+                        state.record_diagnostic(format!("host park preparation failed: {error}"));
+                        store.save(state)?;
+                        false
+                    }
+                };
+            if !ready {
+                control.channel.reply(&request, "conflict")?;
+                return Ok(HostAction::None);
+            }
             control.park_id = Some(id.clone());
             control.channel.reply(&request, "parked")?;
             Ok(HostAction::Park)
@@ -1517,7 +1618,12 @@ fn host_park_cut_matches(
         && identity.item_id == state.item_id
         && command_seq == state.last_controller_command_seq
         && acked_seq == state.acked_source_seq
-        && state.outbox.is_empty()
+        && host_park_checkpoint_is_settled(state)
+}
+
+#[cfg(unix)]
+fn host_park_checkpoint_is_settled(state: &DurableState) -> bool {
+    state.outbox.is_empty()
         && state.acked_source_seq == state.highest_source_seq()
         && state.warm_transition.is_none()
         && state.pending_terminal_delivery.is_none()
@@ -1699,13 +1805,18 @@ fn wait_for_terminal_result_ack(
                             "terminal command result acknowledgement payload is required",
                         )
                     })?;
+                // The controller acknowledges the status it received. An
+                // indeterminate journal entry travels as `failed`, so either
+                // spelling names this exact receipt.
+                let status = payload.get("status").and_then(Value::as_str);
                 if payload.get("commandId").and_then(Value::as_str)
                     != Some(result.command_id.as_str())
                     || payload.get("commandType").and_then(Value::as_str)
                         != Some(result.command_type.as_str())
                     || payload.get("controllerSeq").and_then(Value::as_u64)
                         != Some(result.controller_seq)
-                    || payload.get("status").and_then(Value::as_str) != Some(result.status.as_str())
+                    || (status != Some(result.status.as_str())
+                        && status != Some(wire_command_status(result)))
                 {
                     return Err(DurableRunnerError::invalid(
                         "terminal command result acknowledgement changed its durable identity",
@@ -2147,7 +2258,15 @@ fn poll_executor_events_after_controller_ack<E: CommandExecutor>(
     if state.acked_source_seq < sent_source_seq {
         return executor.maintain_backpressured_provider();
     }
-    poll_executor_events(state, store, config, executor)
+    poll_executor_events(state, store, config, executor)?;
+    if state.acked_source_seq >= state.highest_source_seq() {
+        executor.prepare_next_turn()?;
+        if let Some(failure) = executor.take_turn_end_restart_failure() {
+            state.record_diagnostic(format!("turn-end provider restart failed: {failure}"));
+            store.save(state)?;
+        }
+    }
+    Ok(())
 }
 
 fn poll_executor_events_when_control_idle<E: CommandExecutor>(
@@ -2246,40 +2365,50 @@ fn commit_executor_events<E: CommandExecutor>(
 ) -> Result<(), DurableRunnerError> {
     let mut events = events.into_iter().peekable();
     while events.peek().is_some() {
-        let mut durable_prefix = 0;
-        let committed = (|| -> Result<(), DurableRunnerError> {
-            // Keep each PRP event's durable save. Only coalesce provider queue
-            // acknowledgements, bounded below the retained receipt window so
-            // a crash before the prefix ACK can replay every event exactly.
-            for event in events.by_ref().take(128) {
-                if !state.has_executor_event_receipt(
-                    &event.executor_event_id,
-                    &event.event_type,
-                    event.priority,
-                    &event.payload,
-                )? {
-                    state.enqueue_executor_event(
+        // Group commit: enqueue a bounded batch, then make all of it durable
+        // with one save before the provider may release any of it. The batch
+        // stays below the retained receipt window, so a crash between this
+        // save and the provider acknowledgement replays every event exactly.
+        let mut accepted = 0;
+        let mut enqueued = false;
+        let mut rejected = Ok(());
+        for event in events.by_ref().take(128) {
+            let committed = match state.has_executor_event_receipt(
+                &event.executor_event_id,
+                &event.event_type,
+                event.priority,
+                &event.payload,
+            ) {
+                Ok(true) => Ok(()),
+                Ok(false) => state
+                    .enqueue_executor_event(
                         config,
                         event.executor_event_id,
                         event.event_type,
                         event.priority,
                         event.payload,
-                    )?;
-                    store.save(state)?;
-                }
-                durable_prefix += 1;
+                    )
+                    .map(|_| enqueued = true),
+                Err(error) => Err(error),
+            };
+            if let Err(error) = committed {
+                rejected = Err(error);
+                break;
             }
-            Ok(())
-        })();
-        // Even when a later save/validation fails, remove only the already
-        // durable prefix. A failed provider ACK leaves that prefix replayable;
-        // it must not hide the original commit/identity error, if any.
-        let acknowledged = if durable_prefix > 0 {
-            executor.acknowledge_events(durable_prefix)
-        } else {
-            Ok(())
+            accepted += 1;
+        }
+        // A rejected event still leaves the accepted prefix durable and
+        // releasable. A failed save releases nothing: the provider keeps the
+        // whole batch for replay.
+        let saved = if enqueued { store.save(state) } else { Ok(()) };
+        let acknowledged = match (&saved, accepted) {
+            (Ok(()), 1..) => executor.acknowledge_events(accepted),
+            _ => Ok(()),
         };
-        committed?;
+        // A failed provider ACK leaves that prefix replayable; it must not
+        // hide the original commit/identity error, if any.
+        saved?;
+        rejected?;
         acknowledged?;
     }
     Ok(())
@@ -2367,6 +2496,9 @@ fn process_command<E: CommandExecutor>(
             }
             if let Some(provider_failure) = error.provider_failure() {
                 failure["providerFailure"] = provider_failure;
+            }
+            if let Some(rejection) = error.sidecar_rejection() {
+                failure["sidecarRejection"] = rejection;
             }
             let result = state.fail_command(command, failure)?;
             store.save(state)?;
@@ -2490,18 +2622,24 @@ fn send_outbox(
     Ok(())
 }
 
+/// "indeterminate" is an internal crash-recovery journal state. On the wire it
+/// is a failed command with the preserved execution_indeterminate reason so the
+/// controller can settle the command and continue replay.
+fn wire_command_status(result: &StoredCommandResult) -> &str {
+    if result.status == "indeterminate" {
+        "failed"
+    } else {
+        result.status.as_str()
+    }
+}
+
 fn command_result_envelope(
     state: &DurableState,
     result: &StoredCommandResult,
     protocol_version: u64,
 ) -> Value {
     let mut payload = json!(result);
-    // "indeterminate" is an internal crash-recovery journal state. On the
-    // wire it is a failed command with the preserved execution_indeterminate
-    // reason so the controller can settle the command and continue replay.
-    if result.status == "indeterminate" {
-        payload["status"] = json!("failed");
-    }
+    payload["status"] = json!(wire_command_status(result));
     json!({
         "protocol": PROTOCOL,
         "version": protocol_version,
@@ -2546,6 +2684,8 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+
+    include!("tests/batched_saves.rs");
 
     struct CountingExecutor {
         calls: usize,
@@ -3014,6 +3154,8 @@ mod tests {
             reconnect_delay: Duration::from_millis(1),
             reconnect_grace: None,
             max_runtime: Duration::from_secs(1),
+            turn_scoped: false,
+            controller_silence: crate::durable::DEFAULT_CONTROLLER_SILENCE,
         }
     }
 
@@ -3197,7 +3339,12 @@ mod tests {
         assert_eq!(executor.shutdowns, 0);
         executor.ready = true;
         // Simulate completed run.attach before a later exact parked cut.
-        control.claiming = None;
+        control.finish_attachment();
+        control.acpx_park_relaunch = true;
+        assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_err());
+        assert!(admit_host_claim(Some(&control), &command("run.attach"), None).is_err());
+        assert!(admit_host_claim(Some(&control), &command("session.snapshot"), None).is_ok());
+        control.finish_attachment();
         assert!(admit_host_claim(Some(&control), &command("turn.start"), None).is_ok());
         let mut next_park = park.clone();
         next_park["id"] = json!("park-2");
@@ -3212,6 +3359,136 @@ mod tests {
         ));
         assert_eq!(executor.shutdowns, 1);
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hosted_park_reproves_a_prepared_provider_before_replying() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        struct PreparingExecutor {
+            calls: Vec<&'static str>,
+            prepared: Option<bool>,
+            ready_after_prepare: bool,
+            prepared_once: bool,
+        }
+        impl CommandExecutor for PreparingExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                panic!("private control cannot execute PRP commands");
+            }
+            fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+                self.calls.push("proof");
+                Ok(!self.prepared_once || self.ready_after_prepare)
+            }
+            fn prepare_for_park(&mut self, _deadline: Instant) -> Result<bool, DurableRunnerError> {
+                self.calls.push("prepare");
+                self.prepared_once = true;
+                self.prepared
+                    .ok_or_else(|| DurableRunnerError::invalid("replacement provider failed"))
+            }
+            fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                self.calls.push("shutdown");
+                Ok(())
+            }
+        }
+        for (prepared, ready_after_prepare, status, calls) in [
+            (
+                Some(true),
+                true,
+                "parked",
+                vec!["proof", "prepare", "proof"],
+            ),
+            (
+                Some(true),
+                false,
+                "conflict",
+                vec!["proof", "prepare", "proof"],
+            ),
+            (None, true, "conflict", vec!["proof", "prepare"]),
+            (Some(false), false, "parked", vec!["proof", "prepare"]),
+        ] {
+            let directory = std::env::temp_dir()
+                .join(format!("paperclip-host-prepare-{}", uuid::Uuid::new_v4()));
+            let config = config(directory.clone());
+            let store = DurableStateStore::new(&config.state_dir).unwrap();
+            let mut state = DurableState::new(&config);
+            let (socket, mut host) = UnixStream::pair().unwrap();
+            let mut reader = BufReader::new(host.try_clone().unwrap());
+            let mut control = HostedRunnerControl::new(HostControl::new(socket).unwrap());
+            let mut executor = PreparingExecutor {
+                calls: Vec::new(),
+                prepared,
+                ready_after_prepare,
+                prepared_once: false,
+            };
+            let identity = json!({
+                "runnerInstanceId":state.runner_instance_id,"environmentLeaseId":state.environment_lease_id,
+                "runId":state.run_id,"normalizedSessionId":state.normalized_session_id,"turnId":state.turn_id,"itemId":state.item_id,
+            });
+            let mut exchange = |request: Value,
+                                state: &mut DurableState,
+                                control: &mut HostedRunnerControl,
+                                executor: &mut PreparingExecutor,
+                                parked: bool| {
+                writeln!(host, "{request}").unwrap();
+                let action = process_host_control(
+                    control,
+                    state,
+                    &store,
+                    executor,
+                    parked,
+                    Some(Duration::from_secs(1)),
+                )
+                .unwrap();
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                (action, serde_json::from_str::<Value>(&line).unwrap())
+            };
+            let (action, reply) = exchange(
+                json!({"op":"park","id":"park-1","identity":identity,
+                    "lastControllerCommandSeq":0,"ackedSourceSeq":0}),
+                &mut state,
+                &mut control,
+                &mut executor,
+                false,
+            );
+            assert_eq!(reply["status"], status);
+            assert_eq!(executor.calls, calls);
+            assert_eq!(matches!(action, HostAction::Park), status == "parked");
+            assert_eq!(control.park_id.is_some(), status == "parked");
+            assert_eq!(
+                state
+                    .diagnostics
+                    .iter()
+                    .any(|message| message.contains("host park preparation failed")),
+                prepared.is_none()
+            );
+            if prepared == Some(true) && status == "parked" {
+                let (action, _) = exchange(
+                    json!({"op":"claim","id":"claim-1","parkId":"park-1","bootstrapTicket":"fresh-private-ticket"}),
+                    &mut state,
+                    &mut control,
+                    &mut executor,
+                    true,
+                );
+                assert!(matches!(action, HostAction::Claim(_)));
+                let (action, reply) = exchange(
+                    json!({"op":"retire","id":"retire-claim","parkId":"park-1","claimId":"claim-1",
+                        "identity":identity,"lastControllerCommandSeq":0,"ackedSourceSeq":0}),
+                    &mut state,
+                    &mut control,
+                    &mut executor,
+                    false,
+                );
+                assert_eq!(reply["status"], "retired");
+                assert!(matches!(action, HostAction::Retire));
+                assert_eq!(
+                    executor.calls,
+                    ["proof", "prepare", "proof", "proof", "shutdown"]
+                );
+            }
+            fs::remove_dir_all(directory).unwrap();
+        }
     }
 
     #[test]
@@ -4925,6 +5202,98 @@ mod tests {
     }
 
     #[test]
+    fn turn_boundary_preparation_waits_until_the_controller_acks_the_terminal_event() {
+        struct BoundaryExecutor {
+            events: VecDeque<PolledEvent>,
+            calls: Vec<&'static str>,
+        }
+        impl CommandExecutor for BoundaryExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                panic!("the poll gate cannot execute a command")
+            }
+            fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                self.calls.push("poll");
+                Ok(self.events.iter().cloned().collect())
+            }
+            fn acknowledge_events(&mut self, count: usize) -> Result<(), DurableRunnerError> {
+                self.events.drain(..count);
+                Ok(())
+            }
+            fn maintain_backpressured_provider(&mut self) -> Result<(), DurableRunnerError> {
+                self.calls.push("maintain");
+                Ok(())
+            }
+            fn prepare_next_turn(&mut self) -> Result<(), DurableRunnerError> {
+                self.calls.push("prepare");
+                Ok(())
+            }
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-turn-boundary-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let mut executor = BoundaryExecutor {
+            events: VecDeque::from([PolledEvent {
+                executor_event_id: "provider-terminal".to_owned(),
+                event_type: "turn.completed".to_owned(),
+                priority: EventPriority::P0,
+                payload: json!({"status": "completed"}),
+            }]),
+            calls: Vec::new(),
+        };
+        poll_executor_events_after_controller_ack(&mut state, &store, &config, &mut executor, 0)
+            .unwrap();
+        assert_eq!(executor.calls, ["poll"]);
+        assert_eq!(state.highest_source_seq(), 1);
+        poll_executor_events_after_controller_ack(&mut state, &store, &config, &mut executor, 0)
+            .unwrap();
+        assert_eq!(
+            executor.calls,
+            ["poll", "poll"],
+            "an unsent terminal is not out"
+        );
+        poll_executor_events_after_controller_ack(&mut state, &store, &config, &mut executor, 1)
+            .unwrap();
+        assert_eq!(executor.calls[2..], ["maintain"]);
+        state.apply_ack(1, 2).unwrap();
+        store.save(&state).unwrap();
+        poll_executor_events_when_control_idle(
+            &mut state,
+            &store,
+            &config,
+            &mut executor,
+            1,
+            &Ok(Some(json!({"kind": "command"}))),
+        )
+        .unwrap();
+        assert_eq!(executor.calls[3..], ["maintain"], "control frames go first");
+        poll_executor_events_when_control_idle(
+            &mut state,
+            &store,
+            &config,
+            &mut executor,
+            1,
+            &Err(DurableRunnerError::invalid("disconnected")),
+        )
+        .unwrap();
+        assert_eq!(executor.calls.len(), 4);
+        poll_executor_events_when_control_idle(
+            &mut state,
+            &store,
+            &config,
+            &mut executor,
+            1,
+            &Ok(None),
+        )
+        .unwrap();
+        assert_eq!(executor.calls[4..], ["poll", "prepare"]);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn controller_ack_debt_runs_cleanup_without_moving_event_or_ack_cursors() {
         struct MaintenanceExecutor {
             calls: usize,
@@ -6206,5 +6575,72 @@ mod tests {
             .candidate_admission = Some(grant);
         assert!(stale_candidate.validate().is_err());
         assert!(next_authority_config(&injected, &stale_candidate).is_err());
+    }
+
+    #[test]
+    #[cfg(any(
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    ))]
+    fn released_antigravity_handoff_uses_ordinary_authority_and_rejects_candidate_injection() {
+        assert!(
+            !crate::generated_acpx_profiles::acpx_release_profile("antigravity")
+                .unwrap()
+                .qualification_pending
+        );
+        let directory =
+            std::env::temp_dir().join(format!("antigravity-grant-handoff-{}", std::process::id()));
+        let mut current = config(directory);
+        let grant = crate::acpx_candidate_admission::test_admission(
+            "run_1",
+            &current.normalized_session_id,
+        );
+        let ordinary = crate::durable::AcpxLaunchProfile {
+            authority_digest: format!("sha256:{}", "a".repeat(64)),
+            command: PathBuf::from("/fixture/node"),
+            args: vec!["/fixture/sidecar.cjs".to_owned()],
+            artifacts: vec![crate::durable::QualifiedLaunchArtifact {
+                path: PathBuf::from("/fixture/node"),
+                sha256: format!("sha256:{}", "b".repeat(64)),
+            }],
+            candidate_admission: None,
+        };
+        let mut candidate = current.clone();
+        candidate.acpx_launch_profile = Some(crate::durable::AcpxLaunchProfile {
+            candidate_admission: Some(grant.clone()),
+            ..ordinary.clone()
+        });
+
+        current.acpx_launch_profile = Some(ordinary);
+        current.validate().unwrap();
+        let mut next_grant = grant.clone();
+        next_grant.run_id = "run_2".to_owned();
+        let mut attach = command("run.attach");
+        attach.payload = json!({"paperclipNextAuthority":{
+            "identity":{"runnerInstanceId":current.runner_instance_id,"environmentLeaseId":current.environment_lease_id,
+                "runId":"run_2","normalizedSessionId":current.normalized_session_id,"turnId":"turn_2","itemId":"item_2"},
+            "connection":{"mode":"external"}
+        }});
+        let next = next_authority_config(&attach, &current).unwrap().unwrap();
+        assert!(next
+            .acpx_launch_profile
+            .as_ref()
+            .unwrap()
+            .candidate_admission
+            .is_none());
+        assert_eq!(next.acpx_launch_profile, current.acpx_launch_profile);
+        assert_eq!(next.run_id, "run_2");
+        assert_eq!(next.turn_id, "turn_2");
+        assert_eq!(next.item_id, "item_2");
+        let mut injected = attach.clone();
+        injected.payload["paperclipNextAuthority"]["candidateAdmission"] = json!(next_grant);
+        assert!(next_authority_config(&injected, &current).is_err());
+        // Released: a stale grant no longer admits startup or a handoff.
+        assert!(candidate.validate().is_err());
+        assert!(next_authority_config(&attach, &candidate).is_err());
+        assert!(next_authority_config(&injected, &candidate).is_err());
     }
 }

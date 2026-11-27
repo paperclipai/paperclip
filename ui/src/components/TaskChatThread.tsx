@@ -1,4 +1,11 @@
-import { imagePreparationReceiptIds } from "./task-chat/image-resources";
+import {
+  hasVisibleRunAnswer,
+  LEGACY_WITHHELD_RUN_COMMENT,
+  presentationDecisionCommentId,
+  semanticProgressCommentIds,
+} from "@/lib/run-answer-visibility";
+import { preparationReceiptIds, runFileCardAttachments } from "./task-chat/image-resources";
+import { RunFileCardsContext } from "./task-chat/RunFileCardsContext";
 import type { ScrollingHistory } from "@/components/task-chat/TaskMessageScroller";
 import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
 import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
@@ -44,6 +51,10 @@ import {
 } from "@/components/transcript/useLiveRunTranscripts";
 import { useNativeRunTranscripts } from "@/components/transcript/useNativeRunTranscripts";
 import { TaskChatLiveTail } from "@/components/task-chat/TaskChatLiveTail";
+import { McpAppIssueProvider } from "@/components/mcp-app/McpAppIssueContext";
+import { ProviderToolIconsProvider } from "@/components/ProviderToolIcon";
+import { McpAppTurnViews, mcpAppRunRefreshKey } from "@/components/mcp-app/McpAppTurnViews";
+import { ToolCallProgressProvider } from "@/components/task-chat/tool-call-progress";
 import { TaskChatRunnerHeader, TaskChatRunnerTurn } from "@/components/task-chat/TaskChatRunnerTurn";
 import { partitionRunHealthItems } from "@/components/task-chat/TaskChatRunHealthBanner";
 import {
@@ -55,6 +66,7 @@ import {
   taskChatStatusRelevance,
   withoutHistoricalRunStatus,
 } from "@/components/task-chat/status-relevance";
+import { selectBudgetedTranscriptRuns } from "@/components/task-chat/transcript-reveal-budget";
 import {
   assembleThreadItems,
   attachSettledTurns,
@@ -123,10 +135,12 @@ import {
   useRunnerGoalControl,
 } from "@/components/task-chat/RunnerGoalWidget";
 import { TaskChatQueuedMessages } from "@/components/task-chat/TaskChatQueuedMessages";
+import { QUEUED_MESSAGE_AUTO_STEER_DELAY_MS } from "@/components/task-chat/queued-message-auto-steer";
 import { useSidebar } from "@/context/SidebarContext";
 import { useStreamlinedUiEnabled } from "@/hooks/useStreamlinedUiEnabled";
 import { useDismissedTaskQuestions } from "@/hooks/useDismissedTaskQuestions";
 import { cn } from "@/lib/utils";
+import { ANALYTICS_MASK_CLASS } from "@/lib/analytics/privacy";
 import { Button } from "@/components/ui/button";
 import { useIssuePlanDocument } from "@/hooks/useIssuePlanDocument";
 import { isRedundantAiRecoveryNotice, latestSameRunHandoffTimestamp } from "@/lib/issue-chat-messages";
@@ -149,9 +163,18 @@ import { queryKeys } from "@/lib/queryKeys";
 import { useQueryClient } from "@tanstack/react-query";
 import { TaskChatPresentationProvider } from "@/components/task-chat/presentation-mode";
 import { isRunStopConfirmed } from "@/lib/wait-for-stopped-runs";
+import { safeNavigableUrl } from "@/lib/safe-url";
 
 const EMPTY_BROWSERS: TaskBrowser[] = [];
 const COMPACT_RUN_LOG_READ_LIMIT_BYTES = 32_000;
+
+/** Mirrors task-interruption-presentation.ts: a swarm-route failure needs the person when Antigravity says so. */
+function swarmFailureNeedsAction(resultJson: Record<string, unknown> | null | undefined): boolean {
+  const failure = resultJson?.providerFailure;
+  if (!failure || typeof failure !== "object" || Array.isArray(failure)) return false;
+  const { provider, retryability } = failure as Record<string, unknown>;
+  return provider === "antigravity" && retryability === "requires_action";
+}
 
 function toMs(value: Date | string | null | undefined): number {
   if (!value) return 0;
@@ -161,17 +184,6 @@ function toMs(value: Date | string | null | undefined): number {
 
 function normalizedMessageText(value: string | null | undefined): string {
   return (value ?? "").trim().replace(/\s+/g, " ");
-}
-
-function safeResourceHref(value: string | null | undefined): string | null {
-  if (!value) return null;
-  if (value.startsWith("/") || value.startsWith("#")) return value;
-  try {
-    const url = new URL(value);
-    return url.protocol === "http:" || url.protocol === "https:" ? value : null;
-  } catch {
-    return null;
-  }
 }
 
 function formatResourceBytes(value: number): string {
@@ -266,6 +278,12 @@ function isRunnerResponseComment(params: {
 // well within this as soon as the settled turn/comment lands.
 const SETTLING_TAIL_MAX_MS = 15_000;
 const INITIAL_HISTORY_REVEAL_TIMEOUT_MS = 15_000;
+// Once saved history is ready, a run transcript may hold the first reveal only
+// this long. A slow run-log read must not hide saved messages and the composer.
+// Live runs then stream into the tail; settled compact runs keep a fixed
+// "More run output" control instead of inserting output after the reveal.
+export const INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS = 600;
+const EMPTY_RUN_IDS: ReadonlySet<string> = new Set<string>();
 const INITIAL_FONT_REVEAL_TIMEOUT_MS = 3000;
 const EMPTY_LIVE_ISSUE_IDS: ReadonlySet<string> = new Set<string>();
 const LONG_THREAD_BLOCKER_REPEAT_COUNT = 4;
@@ -293,8 +311,6 @@ function isNativePaperclipRunnerRun(
     run?.runtimeMode === "native" && run.adapterType === "paperclip_runner"
   );
 }
-const LEGACY_WITHHELD_RUN_COMMENT =
-  "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
 
 function acceptedSemanticResult(
   value: unknown,
@@ -335,42 +351,6 @@ function acceptedSemanticResultDisposition(value: unknown): string | null {
     : null;
 }
 
-function presentationDecisionCommentId(
-  value: unknown,
-): string | null | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return undefined;
-  const decision = (value as Record<string, unknown>).presentationDecision;
-  if (!decision || typeof decision !== "object" || Array.isArray(decision))
-    return undefined;
-  const record = decision as Record<string, unknown>;
-  if (record.schema !== "paperclip.run_presentation_decision.v1")
-    return undefined;
-  return typeof record.commentId === "string" && record.commentId.trim()
-    ? record.commentId
-    : null;
-}
-
-function semanticProgressCommentIds(value: unknown): Set<string> {
-  if (!value || typeof value !== "object" || Array.isArray(value))
-    return new Set();
-  const receipts = (value as Record<string, unknown>).semanticToolReceipts;
-  if (!receipts || typeof receipts !== "object" || Array.isArray(receipts))
-    return new Set();
-  const ids = new Set<string>();
-  for (const receipt of Object.values(receipts)) {
-    if (!receipt || typeof receipt !== "object" || Array.isArray(receipt))
-      continue;
-    const record = receipt as Record<string, unknown>;
-    if (record.operationId !== "report_progress") continue;
-    const result = record.result;
-    if (!result || typeof result !== "object" || Array.isArray(result))
-      continue;
-    const commentId = (result as Record<string, unknown>).commentId;
-    if (typeof commentId === "string" && commentId) ids.add(commentId);
-  }
-  return ids;
-}
 
 function acceptedSemanticResultVerificationCaveats(value: unknown) {
   const runResult =
@@ -476,6 +456,14 @@ function durableInputLabel(
     return interaction.title ?? "Review items";
   if (interaction.kind === "connection_intent")
     return interaction.title ?? "Connect service";
+  if (interaction.kind === "suggest_routine")
+    return interaction.title ?? "Routine offer";
+  if (interaction.kind === "propose_responsibility_bar")
+    return interaction.title ?? "Proposed bar";
+  if (interaction.kind === "propose_automation")
+    return interaction.title ?? "Proposed automation";
+  if (interaction.kind === "propose_dashboard_changes")
+    return interaction.title ?? "Proposed dashboard changes";
   if (
     interaction.payload.target?.type === "issue_document" &&
     interaction.payload.target.key === "plan"
@@ -586,6 +574,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     onEditQueuedComment,
     onReorderQueuedComments,
     onSteerQueuedComment,
+    queuedMessageAutoSteerDelayMs = QUEUED_MESSAGE_AUTO_STEER_DELAY_MS,
     onDiscardQueuedComment,
     blockedBy = [],
     blockerAttention,
@@ -911,9 +900,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   // prefers the accepted semantic result so runs such as DOT-20 recover their
   // real upstream response without a data migration.
   const imageReceipts = useMemo(
-    () => imagePreparationReceiptIds(comments, attachments, workProducts),
+    () => preparationReceiptIds(comments, attachments, workProducts),
     [comments, attachments, workProducts],
   );
+  const runFileCards = useMemo(() => runFileCardAttachments(workProducts), [workProducts]);
   const projectedComments = useMemo(
     () =>
       comments.flatMap((comment) => {
@@ -1003,26 +993,31 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   if (requestedTranscripts.current.issueId !== issueId) {
     requestedTranscripts.current = { issueId, ids: new Set<string>() };
   }
+  // Runs whose transcript outlasted INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS on the
+  // first open of this issue. Latched per issue so the decision never flips.
+  // `deferred` holds only runs that had already settled at that moment, so a
+  // live transcript that finishes later stays visible.
+  const [slowTranscripts, setSlowTranscripts] = useState<{
+    issueId: typeof issueId; ids: ReadonlySet<string>; deferred: ReadonlySet<string>;
+  } | null>(null);
+  const slowTranscriptsForIssue = slowTranscripts && slowTranscripts.issueId === issueId ? slowTranscripts : null;
+  const slowTranscriptRunIds = slowTranscriptsForIssue?.ids ?? EMPTY_RUN_IDS;
+  const slowSettledTranscriptRunIds = slowTranscriptsForIssue?.deferred ?? EMPTY_RUN_IDS;
+  const compactTranscriptDeferral = Boolean(props.compactHistory && !conversationMode && props.onExpandHistory && !scrollNavigation.hash);
   const deferredTranscriptRunIds = useMemo(() => {
     const deferred = new Set<string>();
-    if (!props.compactHistory || conversationMode || !props.onExpandHistory || scrollNavigation.hash) return deferred;
+    if (!compactTranscriptDeferral) return deferred;
+    for (const run of runs) if (slowSettledTranscriptRunIds.has(run.id)) deferred.add(run.id);
     for (const run of runs) {
       if (requestedTranscripts.current.ids.has(run.id) || run.status !== "succeeded" ||
         !run.createdAt || toMs(run.createdAt) > openedAt) continue;
       const meta = linkedRunMetaById.get(run.id);
       if (acceptedSemanticResultDisposition(meta?.resultJson) === "yielded" ||
         interactions?.some(interaction => interaction.sourceRunId === run.id && interaction.status === "pending")) continue;
-      const presentationCommentId = presentationDecisionCommentId(meta?.resultJson);
-      const progressCommentIds = semanticProgressCommentIds(meta?.resultJson);
-      if (projectedComments.some(comment =>
-        comment.authorType === "agent" && !comment.deletedAt && comment.body.trim() &&
-        comment.body !== LEGACY_WITHHELD_RUN_COMMENT && !progressCommentIds.has(comment.id) &&
-        (comment.runId ?? comment.createdByRunId ?? comment.derivedCreatedByRunId) === run.id &&
-        (presentationCommentId === undefined || presentationCommentId === comment.id),
-      )) deferred.add(run.id);
+      if (hasVisibleRunAnswer(projectedComments, run.id, meta?.resultJson)) deferred.add(run.id);
     }
     return deferred;
-  }, [issueId, runs, projectedComments, linkedRunMetaById, interactions, props.compactHistory, conversationMode, props.onExpandHistory, scrollNavigation.hash, openedAt]);
+  }, [issueId, runs, projectedComments, linkedRunMetaById, interactions, compactTranscriptDeferral, slowSettledTranscriptRunIds, openedAt]);
   const transcriptRuns = useMemo(() => runs.filter(run =>
     !deferredTranscriptRunIds.has(run.id) &&
     !(props.compactHistory && !conversationMode && props.onExpandHistory && !scrollNavigation.hash &&
@@ -1375,8 +1370,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         continue;
       }
       const createdAtMs = toMs(interaction.createdAt);
+      // A routine offer follows the same run's completion message even when
+      // the agent made it before that message was saved.
       const handoffAtMs =
-        interaction.kind === "request_confirmation" && interaction.sourceRunId
+        (interaction.kind === "request_confirmation" || interaction.kind === "suggest_routine"
+          || interaction.kind === "propose_responsibility_bar" || interaction.kind === "propose_automation"
+          || interaction.kind === "propose_dashboard_changes") && interaction.sourceRunId
           ? latestSameRunHandoffTimestamp({
               interactionCreatedAtMs: createdAtMs,
               sourceRunId: interaction.sourceRunId,
@@ -1442,7 +1441,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           ]
             .filter(Boolean)
             .join(" · "),
-          href: safeResourceHref(href),
+          href: safeNavigableUrl(href),
           timestamp: new Date(workProduct.createdAt).toISOString(),
           workProduct,
         },
@@ -1464,7 +1463,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           resourceKind: "attachment",
           title: attachment.originalFilename ?? "Agent attachment",
           subtitle: `${attachment.contentType} · ${formatResourceBytes(attachment.byteSize)}`,
-          href: safeResourceHref(attachment.openPath ?? attachment.contentPath),
+          href: safeNavigableUrl(attachment.openPath ?? attachment.contentPath),
           timestamp: new Date(attachment.createdAt).toISOString(),
           attachment,
         },
@@ -1668,7 +1667,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       const historical = statusRelevance.isHistoricalRun(source.id);
       // A workspace admission attempt never started provider work. Its live
       // successor owns the waiting indicator; retain this attempt in the run log.
-      if (source.status === "cancelled" && meta?.errorCode === "workspace_busy") {
+      if (source.status === "cancelled" && (meta?.errorCode === "workspace_busy" || meta?.errorCode === "agent_directory_busy")) {
         settledRunIds.add(source.id);
         continue;
       }
@@ -1823,10 +1822,14 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             ? "Runtime missing"
             : code === "native_provider_model_rejected" && source.status === "failed"
             ? "Model unavailable"
+            : code === "antigravity_swarm_unavailable" && source.status === "failed"
+            ? swarmFailureNeedsAction(meta?.resultJson) ? "Swarm did not start" : "Swarm did not finish"
             : code === "native_provider_approval_required" && source.status === "failed"
             ? "Approval required"
             : code === "native_provider_usage_limit" && source.status === "failed"
             ? "Usage limit reached"
+            : code === "sandbox_disk_full" && source.status === "failed"
+            ? "Disk full"
             : source.status === "cancelled"
               ? "Run cancelled"
               : source.status === "interrupted"
@@ -1847,10 +1850,17 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               : code === "native_provider_approval_required"
                 ? "This operation requires approval, but this runner has no interactive approval handler. Review the operation and update the agent's permission setting before retrying."
                 : code === "native_provider_model_rejected"
-                ? `${meta?.error || "The provider rejected the selected model."} Choose a supported model or clear the task's model override, then retry.`
+                ? `${props.interruption?.observedRunId === source.id && props.interruption.rejectedModel
+                    ? `The provider rejected the model "${props.interruption.rejectedModel}".`
+                    : meta?.error || "The provider rejected the selected model."} Choose a supported model or clear the task's model override, then retry.`
+                : code === "antigravity_swarm_unavailable" && source.status === "failed"
+                  // The swarm route's own plain sentence; never the code.
+                  ? meta?.error?.trim() || "Swarm did not start, and nothing was changed. Send /swarm again to try once more."
                 : code === "native_provider_usage_limit" &&
                     source.status === "failed"
                   ? "The model provider has reached its current usage limit. Try again after the limit resets."
+                  : code === "sandbox_disk_full" && source.status === "failed"
+                  ? "The agent filled the disk of its computer, so the run stopped. Ask the agent to use less disk space, then retry."
                   : code === "provider_frame_too_large"
                     ? "Provider output exceeded the safe limit."
                     : source.status === "timed_out"
@@ -1862,7 +1872,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           : undefined;
         const finishedAt =
           meta?.finishedAt ?? meta?.startedAt ?? meta?.createdAt;
-        if (!historical && (!props.interruption || credentialAccess ||
+        const diskFullBesideInterruption = Boolean(props.interruption) && code === "sandbox_disk_full" && source.status === "failed";
+        if (!historical && (!props.interruption || credentialAccess || diskFullBesideInterruption ||
             (props.interruption.responsibility === "user" &&
               ["native_provider_model_rejected", "native_provider_approval_required"].includes(code)))) entriesWithFailures.push({
           ms: toMs(finishedAt),
@@ -1875,7 +1886,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
             tone: source.status === "cancelled" ? "neutral" : "error",
             label,
             detail,
-            retryable: code !== "native_session_cleanup_quarantined",
+            // A /swarm the route refused for something the person must change (another model,
+            // a planning run) has no Retry; one that ran and failed (no result, helpers timed
+            // out) keeps it. The same rule as the server's task interruption state.
+            retryable: code !== "native_session_cleanup_quarantined" && !diskFullBesideInterruption &&
+              !(code === "antigravity_swarm_unavailable" && swarmFailureNeedsAction(meta?.resultJson)),
             ...(credentialAccess ? { credentialAccess, retryable: false } : {}),
             collapsible: true,
             runId: source.id,
@@ -2759,6 +2774,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         (interaction) =>
           interaction.status === "pending" &&
           interaction.kind !== "connection_intent" &&
+          interaction.kind !== "suggest_routine" &&
+          // A proposed bar stays in the conversation; the agent does not wait on it.
+          interaction.kind !== "propose_responsibility_bar" &&
+          // Nor does a proposed automation.
+          interaction.kind !== "propose_automation" &&
+          // Nor do proposed dashboard changes.
+          interaction.kind !== "propose_dashboard_changes" &&
           !(coordinatorEnabled && interaction.kind === "suggest_tasks") &&
           !shouldHideInteractionCard(interaction),
       )
@@ -2786,29 +2808,27 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     input.kind === "durable"
       ? Boolean(input.interaction.dismissedAt) || dismissedInputIds.has(input.interaction.id) || dismissedInputIds.has(input.key)
       : dismissedInputIds.has(input.key), [dismissedInputIds]);
-  const pendingReminderInputs = useMemo(() => pendingComposerInputs.filter(input =>
-    !isInputDismissed(input) && !(input.kind === "durable" && input.interaction.kind === "ask_user_questions")),
-  [pendingComposerInputs, isInputDismissed]);
   const [dismissError, setDismissError] = useState<string | null>(null);
   const latestUserComment = useMemo(() => comments
     .filter(comment => !comment.deletedAt && comment.authorUserId && !comment.authorAgentId && !comment.createdByRunId)
     .reduce<(typeof comments)[number] | null>((latest, comment) =>
       !latest || toMs(comment.createdAt) >= toMs(latest.createdAt) ? comment : latest, null), [comments]);
-  const latestUserCommentId = latestUserComment?.id ?? null;
-  // A later message leaves a question answerable in history, without reopening
-  // its form on every render or reload. Explicit selection can still reopen it.
   const currentPendingInputs = useMemo(() => pendingComposerInputs.filter(input =>
-    !isInputDismissed(input) && !(input.kind === "durable" && input.interaction.kind === "ask_user_questions"
+    !isInputDismissed(input) && !(input.kind === "durable"
       && latestUserComment && toMs(input.interaction.createdAt) < toMs(latestUserComment.createdAt))),
   [pendingComposerInputs, isInputDismissed, latestUserComment]);
+  const pendingReminderInputs = useMemo(() => currentPendingInputs.filter(input =>
+    !(input.kind === "durable" && input.interaction.kind === "ask_user_questions")),
+  [currentPendingInputs]);
   const currentPendingKeys = useMemo(() => new Set(currentPendingInputs.map(input => input.key)), [currentPendingInputs]);
   const [takeoverMode, setTakeoverMode] = useState<"open" | "normal">("open");
   const [selectedPendingKey, setSelectedPendingKey] = useState<string | null>(
     null,
   );
   const explicitlyOpenedInputRef = useRef<string | null>(null);
+  const inputSelectionVersionRef = useRef(0);
   const knownPendingKeysRef = useRef<Set<string>>(new Set());
-  const lastInputUserCommentRef = useRef(latestUserCommentId);
+  const lastInputUserCommentRef = useRef(latestUserComment);
   useEffect(() => {
     const currentKeys = new Set(
       pendingComposerInputs.map((input) => input.key),
@@ -2816,21 +2836,27 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     const hasNewInput = pendingComposerInputs.some(
       (input) => currentPendingKeys.has(input.key) && !knownPendingKeysRef.current.has(input.key),
     );
-    const movedOn = lastInputUserCommentRef.current !== latestUserCommentId;
-    lastInputUserCommentRef.current = latestUserCommentId;
+    const previousUserComment = lastInputUserCommentRef.current;
+    const movedOn = latestUserComment && previousUserComment?.id !== latestUserComment.id
+      && (!previousUserComment || toMs(latestUserComment.createdAt) >= toMs(previousUserComment.createdAt));
+    lastInputUserCommentRef.current = latestUserComment;
     knownPendingKeysRef.current = currentKeys;
     setSelectedPendingKey((current) => {
+      if (hasNewInput) return currentPendingInputs[0]?.key ?? null;
       const currentInput = pendingComposerInputs.find(input => input.key === current);
-      const questionMovedOn = movedOn && currentInput?.kind === "durable"
-        && currentInput.interaction.kind === "ask_user_questions" && !currentPendingKeys.has(currentInput.key);
+      const requestMovedOn = movedOn && currentInput?.kind === "durable"
+        && !isInputDismissed(currentInput) && !currentPendingKeys.has(currentInput.key);
       return current && currentKeys.has(current)
         && (currentPendingKeys.has(current) || explicitlyOpenedInputRef.current === current)
-        && !questionMovedOn
+        && !requestMovedOn
         ? current
         : (currentPendingInputs[0]?.key ?? null);
     });
-    if (hasNewInput) setTakeoverMode("open");
-  }, [pendingComposerInputs, latestUserCommentId, currentPendingInputs, currentPendingKeys]);
+    if (hasNewInput) {
+      inputSelectionVersionRef.current += 1;
+      setTakeoverMode("open");
+    }
+  }, [pendingComposerInputs, latestUserComment, currentPendingInputs, currentPendingKeys, isInputDismissed]);
   const selectedPendingInput =
     pendingComposerInputs.find((input) => input.key === selectedPendingKey) ??
     currentPendingInputs[0] ??
@@ -2843,6 +2869,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     ? `paperclip:task-input:${issueId ?? "unknown"}:${selectedPendingInput.key}`
     : undefined;
   const openPendingTakeover = useCallback(() => {
+    inputSelectionVersionRef.current += 1;
     if (!pendingReminderInputs.some(input => input.key === selectedPendingInput?.key)) {
       setSelectedPendingKey(pendingReminderInputs[0]?.key ?? null);
     }
@@ -2850,6 +2877,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   }, [pendingReminderInputs, selectedPendingInput]);
   const showNextPendingInput = useCallback(() => {
     if (pendingReminderInputs.length < 2) return;
+    inputSelectionVersionRef.current += 1;
     const currentIndex = pendingReminderInputs.findIndex(
       (input) => input.key === selectedPendingInput?.key,
     );
@@ -2860,6 +2888,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   }, [pendingReminderInputs, selectedPendingInput?.key]);
   const skipPendingInput = useCallback(
     async (input: PendingComposerInput) => {
+      inputSelectionVersionRef.current += 1;
       if (input.kind === "runtime") {
         await handleRuntimeRequestDecision(input.item, { action: "cancel" });
       } else {
@@ -2879,20 +2908,30 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       const attempt = beginSubmission(args[4], args[2] ? {
         agentId: args[2].assigneeAgentId,
         agent: agentMap?.get(args[2].assigneeAgentId ?? ""),
-      } : undefined);
+      } : undefined, args[1]);
+      const selectionVersion = ++inputSelectionVersionRef.current;
+      explicitlyOpenedInputRef.current = null;
+      setTakeoverMode("normal");
       try {
         await onAdd(...args);
-        if (selectedPendingInput?.kind === "durable" && selectedPendingInput.interaction.kind === "ask_user_questions") {
-          dismissInput(selectedPendingInput.interaction.id);
-          setSelectedPendingKey(null);
-          setTakeoverMode("normal");
-        }
+        dismissInput(pendingComposerInputs.map(input => input.kind === "durable" ? input.interaction.id : input.key));
       } catch (error) {
+        if (inputSelectionVersionRef.current === selectionVersion) {
+          explicitlyOpenedInputRef.current = selectedPendingInput?.key ?? null;
+          setSelectedPendingKey(selectedPendingInput?.key ?? null);
+          setTakeoverMode(takeoverMode);
+        }
         rejectSubmission(attempt, error);
         throw error;
       }
     },
-    [beginSubmission, rejectSubmission, onAdd, selectedPendingInput, dismissInput, agentMap],
+    [beginSubmission, rejectSubmission, onAdd, pendingComposerInputs, selectedPendingInput, dismissInput, agentMap, takeoverMode],
+  );
+  // A message an MCP Apps view proposed, sent only after the viewer clicked
+  // Send, through the same path as a typed message.
+  const sendMcpAppMessage = useCallback(
+    (body: string, clientRequestId: string) => handleThreadAdd(body, undefined, undefined, undefined, clientRequestId),
+    [handleThreadAdd],
   );
   const optimisticRunnerStartup =
     hasAgentAssignee &&
@@ -2972,6 +3011,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   );
 
   const reopenToolReview = useCallback((interactionId: string) => {
+    inputSelectionVersionRef.current += 1;
     const key = pendingComposerInputs.find(input => input.kind === "durable" && input.interaction.id === interactionId)?.key ?? `interaction:${interactionId}`;
     explicitlyOpenedInputRef.current = key;
     setSelectedPendingKey(key);
@@ -3090,6 +3130,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           pendingCount: Math.max(1, pendingReminderInputs.length),
           content: takeoverContent,
           onDismiss: () => {
+            inputSelectionVersionRef.current += 1;
             void (async () => {
               setDismissError(null);
               try {
@@ -3170,7 +3211,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         initialCommentWindow.current.oldestAt
     );
   });
-  const transcriptHistoryPending = initialRuns.some((run) => {
+  const pendingTranscriptRuns = initialRuns.filter((run) => {
+    if (slowTranscriptRunIds.has(run.id)) return false;
     // A scheduled retry has not started and has no log to hydrate yet.
     if (run.status === "scheduled_retry") return false;
     if (
@@ -3189,6 +3231,20 @@ export function TaskChatThread(props: TaskChatThreadProps) {
       ? !hydratedLogRunIds.has(run.id)
       : logsAreInitiallyHydrating;
   });
+  const transcriptHistoryPending = pendingTranscriptRuns.length > 0;
+  // Only these may stop holding the reveal after the budget. See
+  // selectBudgetedTranscriptRuns for the live, steered and settled rules.
+  const budgetedTranscriptRuns = selectBudgetedTranscriptRuns(pendingTranscriptRuns, {
+    compactDeferral: compactTranscriptDeferral,
+    hasTimelineAnchors: (run) => ((isNativePaperclipRunnerRun(run)
+      ? steeringAnchorsByRun.get(run.id)
+      : legacyTimelineAnchorsByRun.get(run.id))?.length ?? 0) > 0,
+  });
+  // The budget timer reads the runs that are still pending when it fires, so
+  // a transcript that hydrates early does not restart the budget.
+  const budgetedTranscriptRunsRef = useRef(budgetedTranscriptRuns);
+  budgetedTranscriptRunsRef.current = budgetedTranscriptRuns;
+  const hasBudgetedTranscriptRuns = budgetedTranscriptRuns.length > 0;
   // Hydrating a run inserts activity around its saved reply and can move the
   // latest viewport substantially. Compact opens hydrate only their bounded
   // recent window, but its saved cards and latest turn must arrive together so
@@ -3198,7 +3254,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     (decisionReceipts.enabled && decisionReceipts.isPending) ||
     (taskHandoffs.enabled && taskHandoffs.isPending)
   ));
-  const historyPending = initialHistoryPending || planLoading || transcriptHistoryPending || chatMetadataPending;
+  const savedHistoryPending = initialHistoryPending || planLoading || chatMetadataPending;
+  const historyPending = savedHistoryPending || transcriptHistoryPending;
   useEffect(() => {
     recordIssueDetailReadiness({ plan: !planLoading, transcripts: !transcriptHistoryPending, history: !historyPending });
   }, [issueId, planLoading, transcriptHistoryPending, historyPending]);
@@ -3218,6 +3275,32 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   useEffect(() => {
     if (revealCachedHeader) setRevealedHistoryKey(historyKey);
   }, [revealCachedHeader, historyKey]);
+  // The budget is one deadline per history key. It starts the first time
+  // saved history is ready, and later changes to the pending runs keep it.
+  const transcriptRevealDeadline = useRef<{ historyKey: typeof historyKey; at: number } | null>(null);
+  useEffect(() => {
+    if (historyRevealed || savedHistoryPending) return;
+    if (transcriptRevealDeadline.current?.historyKey !== historyKey) {
+      transcriptRevealDeadline.current = { historyKey, at: Date.now() + INITIAL_TRANSCRIPT_REVEAL_BUDGET_MS };
+    }
+    if (!hasBudgetedTranscriptRuns) return;
+    const timer = window.setTimeout(() => {
+      const expired = budgetedTranscriptRunsRef.current;
+      if (expired.length === 0) return;
+      setSlowTranscripts((current) => {
+        const previous = current && current.issueId === issueId ? current : null;
+        return {
+          issueId,
+          ids: new Set([...(previous?.ids ?? []), ...expired.map((run) => run.runId)]),
+          deferred: new Set([
+            ...(previous?.deferred ?? []),
+            ...expired.filter((run) => run.settled).map((run) => run.runId),
+          ]),
+        };
+      });
+    }, Math.max(0, transcriptRevealDeadline.current.at - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [historyRevealed, savedHistoryPending, hasBudgetedTranscriptRuns, historyKey, issueId]);
   const historyShellRef = useRef<HTMLDivElement>(null);
   const [expiredHistoryWait, setExpiredHistoryWait] = useState<{ historyKey: typeof historyKey } | null>(null);
   const historyWaitExpired = expiredHistoryWait !== null && expiredHistoryWait.historyKey === historyKey;
@@ -3283,6 +3366,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   return (
     <TaskChatRequestHistoryContext.Provider value={issueId ?? "unknown"}>
+    <McpAppIssueProvider issueId={issueId} sendMessage={composerDisabledReason ? null : sendMcpAppMessage}>
+    <ProviderToolIconsProvider companyId={companyId}>
+    <ToolCallProgressProvider issueId={issueId}>
     <TaskChatExpansionState.Provider value={expansionState.current}>
       <TaskChatScrollReady.Provider value={(historyRevealed || !historyPending || historyWaitExpired) && !scrollTargetPending}>
         <TaskChatPresentationProvider
@@ -3291,6 +3377,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           <div
             className={cn(
               "relative flex min-h-0 flex-1 flex-col",
+              // Customer content: masked in session replay, skipped by autocapture.
+              ANALYTICS_MASK_CLASS,
               isMobile && !historyRevealed && "task-chat-history-pending",
             )}
             data-testid="task-chat-thread"
@@ -3363,6 +3451,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         ) : null}
                       </div>
                     ) : (
+                      <RunFileCardsContext.Provider value={runFileCards}>
                       <TaskChatThreadView
                         items={threadItems}
                         scrollingHistory={scrollingHistory}
@@ -3456,11 +3545,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                     />
                                   ) : (
                                     <TaskChatShimmerScope items={tailItems}>
+                                      <McpAppTurnViews runId={tailRunId} refreshKey={mcpAppRunRefreshKey(tailItems, tailStatus)} />
                                       <TaskChatLiveTail
                                         items={tailItems}
                                         emptyMessage={
                                           tailStatus === "queued"
-                                            ? "Waiting to start..."
+                                            ? undefined
                                             : (liveRun && liveRun.id === tailRunId
                                                 ? liveRun.currentStatusMessage
                                                 : null) ||
@@ -3490,6 +3580,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                         contentKey={`${autoFollowContentKey}:${historyRevealed}`}
                         className={isMobile ? undefined : "pt-3"}
                       />
+                      </RunFileCardsContext.Provider>
                     )}
                   </>
                 ) : null}
@@ -3529,6 +3620,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                           key={issueId}
                           queue={queuedMessageQueue ?? emptyQueuedCommentQueue}
                           onEdit={beginQueuedEdit}
+                          editingCommentId={queuedEdit?.commentId ?? null}
+                          autoSteerDelayMs={queuedMessageAutoSteerDelayMs}
                           onReorder={async (orderedCommentIds, revision) => {
                             if (!onReorderQueuedComments)
                               throw new Error("Queue reordering is unavailable.");
@@ -3627,6 +3720,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
         </TaskChatPresentationProvider>
       </TaskChatScrollReady.Provider>
     </TaskChatExpansionState.Provider>
+    </ToolCallProgressProvider>
+    </ProviderToolIconsProvider>
+    </McpAppIssueProvider>
     </TaskChatRequestHistoryContext.Provider>
   );
 }

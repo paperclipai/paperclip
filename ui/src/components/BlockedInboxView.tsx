@@ -8,6 +8,7 @@ import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { cn } from "../lib/utils";
 import { applyIssueFilters, type IssueFilterState, type IssueFilterWorkspaceContext } from "../lib/issue-filters";
+import { useIssueUpdatedFilterNow } from "../hooks/useIssueUpdatedFilterNow";
 import { resolveInboxIssueBlockerAttention } from "../lib/inbox-live-descendants";
 import {
   blockedRowMatchesSearch,
@@ -28,6 +29,8 @@ import { StatusIcon } from "./StatusIcon";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { taskStatusIconProps } from "@/lib/task-status-presentation";
+
+const EMPTY_BLOCKED_ISSUES: Issue[] = [];
 
 interface BlockedInboxViewProps {
   companyId: string;
@@ -87,16 +90,18 @@ export function BlockedInboxView({
       }),
   });
   const {
-    data: issues = [] as Issue[],
+    data: issues,
     isLoading,
   } = blockedQuery;
+  const blockedIssues = issues ?? EMPTY_BLOCKED_ISSUES;
   const blockedView = useQueryView(blockedQuery);
 
-  const allRows = useMemo(() => buildBlockedInboxRows(issues), [issues]);
+  const allRows = useMemo(() => buildBlockedInboxRows(blockedIssues), [blockedIssues]);
   const filteredRows = useMemo(
     () => allRows.filter((row) => blockedRowMatchesSearch(row, searchQuery)),
     [allRows, searchQuery],
   );
+  const updatedFilterNow = useIssueUpdatedFilterNow(blockedIssues, issueFilters.updatedWithin);
   const issueFilteredRows = useMemo(() => {
     const visibleIssueIds = new Set(
       applyIssueFilters(
@@ -106,10 +111,11 @@ export function BlockedInboxView({
         false,
         liveIssueIds,
         workspaceFilterContext,
+        updatedFilterNow,
       ).map((issue) => issue.id),
     );
     return filteredRows.filter((row) => visibleIssueIds.has(row.issue.id));
-  }, [currentUserId, filteredRows, issueFilters, liveIssueIds, workspaceFilterContext]);
+  }, [currentUserId, filteredRows, issueFilters, liveIssueIds, workspaceFilterContext, updatedFilterNow]);
   const sortedRows = useMemo(() => sortBlockedInboxRows(issueFilteredRows, sortBy), [issueFilteredRows, sortBy]);
   const groups = useMemo(
     () => groupBlockedInboxRows(issueFilteredRows, sortBy),

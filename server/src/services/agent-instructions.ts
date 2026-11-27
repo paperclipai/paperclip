@@ -508,6 +508,10 @@ export function syncInstructionsBundleConfigFromFilePath(
     delete next[ENTRY_KEY];
     return next;
   }
+  const saved = deriveBundleState(agent);
+  if (saved.mode === "managed" && saved.rootPath && instructionsFilePath === asString(saved.config[FILE_KEY])) {
+    return applyBundleConfig(next, { mode: "managed", rootPath: saved.rootPath, entryFile: saved.entryFile });
+  }
   const resolvedPath = resolveLegacyInstructionsPath(instructionsFilePath, adapterConfig);
   const managedRoot = resolveManagedInstructionsRoot(agent);
   const relative = path.relative(managedRoot, resolvedPath);
